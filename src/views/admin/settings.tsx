@@ -1,0 +1,138 @@
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Save, Upload, X, Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { adminFetch, fileToDataUrl } from "./_lib";
+
+type Settings = {
+  siteName: string;
+  logoUrl: string;
+  phones: string[];
+  social: { instagram: string; facebook: string; whatsapp: string };
+  paymentQr: string;
+  packagingFee: number;
+  deliveryFee: number;
+  deliveryTime: string;
+  address: string;
+};
+
+export default function SettingsPage() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "settings"],
+    queryFn: () => adminFetch<Settings>("/admin/settings"),
+  });
+  const [form, setForm] = useState<Settings | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => { if (data && !form) setForm(data); }, [data, form]);
+
+  const save = useMutation({
+    mutationFn: (s: Settings) => adminFetch("/admin/settings", { method: "PUT", body: JSON.stringify(s) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "settings"] });
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+    },
+  });
+
+  async function handleLogoUpload(file: File) {
+    const dataUrl = await fileToDataUrl(file);
+    setForm(f => ({ ...f!, logoUrl: dataUrl }));
+  }
+  async function handleQrUpload(file: File) {
+    const dataUrl = await fileToDataUrl(file);
+    setForm(f => ({ ...f!, paymentQr: dataUrl }));
+  }
+
+  if (isLoading || !form) return <div className="space-y-4">{[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>;
+
+  return (
+    <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
+      <div className="flex items-center justify-between sticky top-0 bg-background py-2 z-10">
+        <h1 className="text-2xl font-bold text-foreground">إعدادات الموقع</h1>
+        <Button type="submit" disabled={save.isPending} className="gap-2">
+          <Save className="w-4 h-4" /> {save.isPending ? "جاري الحفظ..." : savedFlash ? "تم الحفظ ✓" : "حفظ التغييرات"}
+        </Button>
+      </div>
+
+      <Section title="معلومات الموقع">
+        <Field label="اسم الموقع" value={form.siteName} onChange={v => setForm(f => ({ ...f!, siteName: v }))} />
+        <Field label="العنوان" value={form.address} onChange={v => setForm(f => ({ ...f!, address: v }))} />
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">الشعار (Logo)</label>
+          {form.logoUrl && <img src={form.logoUrl} alt="شعار" className="h-16 mb-2 rounded-lg bg-background/40 p-2" />}
+          <div className="flex gap-2 items-center">
+            <label className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary/10 text-primary border border-primary/30 cursor-pointer hover:bg-primary/20">
+              <Upload className="w-3.5 h-3.5" /> رفع
+              <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleLogoUpload(e.target.files[0])} className="hidden" />
+            </label>
+            <input value={form.logoUrl.startsWith("data:") ? "" : form.logoUrl} onChange={e => setForm(f => ({ ...f!, logoUrl: e.target.value }))}
+              placeholder="أو رابط URL"
+              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="أرقام الهاتف">
+        <div className="space-y-2">
+          {form.phones.map((p, i) => (
+            <div key={i} className="flex gap-2">
+              <input value={p} onChange={e => setForm(f => ({ ...f!, phones: f!.phones.map((x, idx) => idx === i ? e.target.value : x) }))}
+                className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              <button type="button" onClick={() => setForm(f => ({ ...f!, phones: f!.phones.filter((_, idx) => idx !== i) }))}
+                className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg"><X className="w-4 h-4" /></button>
+            </div>
+          ))}
+          <button type="button" onClick={() => setForm(f => ({ ...f!, phones: [...f!.phones, ""] }))}
+            className="text-xs text-primary inline-flex items-center gap-1 hover:underline"><Plus className="w-3.5 h-3.5" /> إضافة رقم</button>
+        </div>
+      </Section>
+
+      <Section title="السوشيال ميديا">
+        <Field label="إنستغرام" value={form.social.instagram} onChange={v => setForm(f => ({ ...f!, social: { ...f!.social, instagram: v } }))} placeholder="https://instagram.com/..." />
+        <Field label="فيسبوك" value={form.social.facebook} onChange={v => setForm(f => ({ ...f!, social: { ...f!.social, facebook: v } }))} placeholder="https://facebook.com/..." />
+        <Field label="واتساب" value={form.social.whatsapp} onChange={v => setForm(f => ({ ...f!, social: { ...f!.social, whatsapp: v } }))} placeholder="https://wa.me/..." />
+      </Section>
+
+      <Section title="الدفع والتوصيل">
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">QR الدفع</label>
+          {form.paymentQr && <img src={form.paymentQr} alt="QR" className="h-32 mb-2 rounded-lg bg-white p-2" />}
+          <div className="flex gap-2 items-center">
+            <label className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary/10 text-primary border border-primary/30 cursor-pointer hover:bg-primary/20">
+              <Upload className="w-3.5 h-3.5" /> رفع QR
+              <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleQrUpload(e.target.files[0])} className="hidden" />
+            </label>
+            <input value={form.paymentQr.startsWith("data:") ? "" : form.paymentQr} onChange={e => setForm(f => ({ ...f!, paymentQr: e.target.value }))}
+              placeholder="أو رابط URL"
+              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          </div>
+        </div>
+        <Field label="سعر التغليف (د.ع)" type="number" value={String(form.packagingFee)} onChange={v => setForm(f => ({ ...f!, packagingFee: parseFloat(v) || 0 }))} />
+        <Field label="تكلفة التوصيل الافتراضية (د.ع)" type="number" value={String(form.deliveryFee)} onChange={v => setForm(f => ({ ...f!, deliveryFee: parseFloat(v) || 0 }))} />
+        <Field label="مدة التوصيل" value={form.deliveryTime} onChange={v => setForm(f => ({ ...f!, deliveryTime: v }))} placeholder="مثلاً: 1-3 أيام" />
+      </Section>
+    </form>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="bg-card rounded-xl border border-border/30 p-6 space-y-4">
+      <h2 className="font-semibold text-foreground border-b border-border/20 pb-2">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function Field({ label, value, onChange, type = "text", placeholder }: { label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string }) {
+  return (
+    <div>
+      <label className="block text-xs text-muted-foreground mb-1">{label}</label>
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+    </div>
+  );
+}

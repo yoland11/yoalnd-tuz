@@ -73,6 +73,7 @@ onlyBuiltDependencies:
   - core-js
   - esbuild
   - msw
+  - sharp
   - unrs-resolver
 
 overrides:
@@ -162,3 +163,4 @@ overrides:
 allowBuilds:
   core-js: true
   esbuild: true
+  sharp: true

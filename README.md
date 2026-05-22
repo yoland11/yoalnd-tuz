@@ -23,14 +23,14 @@ pnpm run db:push
 pnpm run db:seed
 ```
 
-4. شغل الـ API والواجهة:
+4. شغل Next.js fullstack:
 
 ```bash
 pnpm run dev
 ```
 
-الواجهة الافتراضية: `http://localhost:20796`  
-الـ API الافتراضي: `http://localhost:8080/api/healthz`
+التطبيق والـ API على نفس الدومين: `http://localhost:3000`  
+فحص الـ API: `http://localhost:3000/api/healthz`
 
 ## أوامر مهمة
 
@@ -52,6 +52,7 @@ pnpm run audit
 
 ## ملاحظات نشر
 
+- إعداد Vercel: Framework = Next.js، Root Directory = `./`، Build Command = `pnpm run build`، واترك Output Directory فارغاً.
 - لا ترفع `node_modules`, `.cache`, `.local`, `dist`, `.git`, أو ملفات البيئة.
 - بعد تغيير `lib/api-spec/openapi.yaml` شغل `pnpm run codegen`.
 - بعد تغيير جداول Drizzle شغل `pnpm run db:push` ثم `pnpm run typecheck`.
