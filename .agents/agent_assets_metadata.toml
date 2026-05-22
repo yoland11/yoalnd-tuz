@@ -1,0 +1,44 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "vCMwAHMgisGuwuy-bG9iQ"
+uri = "file://artifacts/ajn-platform/public/images/hero.png"
+type = "image"
+title = "Luxurious Arabic wedding kosha"
+
+[[generated]]
+id = "Hk49dmAJG25T9vw9VhGLv"
+uri = "file://artifacts/ajn-platform/public/images/kosha.png"
+type = "image"
+title = "Arabic wedding arch koshah"
+
+[[generated]]
+id = "vEQnqa7pIMDxjcq6rz-De"
+uri = "file://artifacts/ajn-platform/public/images/photo.png"
+type = "image"
+title = "Professional photography setup"
+
+[[generated]]
+id = "y5XJQfbSoWNMkcocysr6v"
+uri = "file://artifacts/ajn-platform/public/images/setup.png"
+type = "image"
+title = "Elegant event table setup"
+
+[[generated]]
+id = "1qaXMxb1Ufy9fwE0pWjjV"
+uri = "file://artifacts/ajn-platform/public/images/gifts.png"
+type = "image"
+title = "Luxury gift distribution boxes"
+
+[[generated]]
+id = "2_REspsSTJIZPM3XehZMM"
+uri = "file://artifacts/ajn-platform/public/images/album.png"
+type = "image"
+title = "Luxury photo album"
+
+[[generated]]
+id = "2dP5uO-Ayt1BodDJaSnYw"
+uri = "file://artifacts/ajn-platform/public/images/research.png"
+type = "image"
+title = "Professional document and pen"
