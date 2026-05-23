@@ -38,7 +38,7 @@ export function MobileNav() {
           <span className="text-[10px] font-medium">السلة</span>
         </Link>
 
-        <Link href="/account" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/account') ? 'text-primary' : 'text-muted-foreground'}`}>
+        <Link href="/profile" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/profile') || location.startsWith('/account') ? 'text-primary' : 'text-muted-foreground'}`}>
           <User className="h-5 w-5" />
           <span className="text-[10px] font-medium">حسابي</span>
         </Link>

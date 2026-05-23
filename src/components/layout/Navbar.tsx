@@ -59,7 +59,7 @@ export function Navbar() {
           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
             <Search className="h-5 w-5" />
           </Button>
-          <Link href="/account">
+          <Link href="/profile">
             <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
               <User className="h-5 w-5" />
             </Button>

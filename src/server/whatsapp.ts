@@ -374,7 +374,8 @@ async function logEntry(
 }
 
 export function buildTrackingLink(trackingCode: string): string {
-  const base = process.env.PUBLIC_BASE_URL
+  const base = process.env.APP_BASE_URL
+    ?? process.env.PUBLIC_BASE_URL
     ?? (process.env.REPLIT_DOMAINS?.split(",")[0]
       ? `https://${process.env.REPLIT_DOMAINS.split(",")[0]}`
       : "");

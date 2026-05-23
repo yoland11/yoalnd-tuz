@@ -16,7 +16,8 @@ import Cart from "@/views/cart";
 import Checkout from "@/views/checkout";
 import Track from "@/views/track";
 import Gallery from "@/views/gallery";
-import Account from "@/views/account";
+import Login from "@/views/login";
+import Profile from "@/views/profile";
 import Admin from "@/views/admin/index";
 import Invoice from "@/views/admin/invoice";
 
@@ -43,7 +44,9 @@ function Router() {
             <Route path="/checkout" component={Checkout} />
             <Route path="/track" component={Track} />
             <Route path="/gallery" component={Gallery} />
-            <Route path="/account" component={Account} />
+            <Route path="/login" component={Login} />
+            <Route path="/profile" component={Profile} />
+            <Route path="/account" component={Profile} />
             <Route component={NotFound} />
           </Switch>
         </Layout>

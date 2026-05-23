@@ -82,6 +82,7 @@ import {
 } from "@/server/whatsapp";
 
 export const COOKIE_NAME = "ajn_admin_session";
+export const CUSTOMER_COOKIE_NAME = "ajn_customer_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const ALL_PERMISSIONS = [
   "dashboard",
@@ -125,6 +126,7 @@ const respondHits = new Map<string, number[]>();
 let seedPromise: Promise<void> | null = null;
 let crewsTablePromise: Promise<void> | null = null;
 let otpTablePromise: Promise<void> | null = null;
+let customerProfilePromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -203,12 +205,30 @@ function generateTrackingCode(prefix = "AJN"): string {
 
 function sessionSecret(): string {
   return (
+    process.env.AUTH_SECRET ||
     process.env.SESSION_SECRET ||
     process.env.NEXTAUTH_SECRET ||
     process.env.ADMIN_PASSWORD ||
     process.env.DATABASE_URL ||
     "ajn-dev-secret"
   );
+}
+
+function otpSecret(): string {
+  return process.env.AUTH_SECRET || sessionSecret();
+}
+
+function hashOtp(phone: string, code: string): string {
+  return createHmac("sha256", otpSecret()).update(`${phone}:${code}`).digest("hex");
+}
+
+function verifyOtpHash(phone: string, code: string, hash: string): boolean {
+  const expected = hashOtp(phone, code);
+  try {
+    return timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(expected, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 function signCustomerToken(customerId: number): string {
@@ -244,8 +264,30 @@ function getSessionId(req: NextRequest): string {
 }
 
 function getCurrentCustomerId(req: NextRequest): number | null {
-  const token = bearer(req);
+  const token = req.cookies.get(CUSTOMER_COOKIE_NAME)?.value || bearer(req);
   return token ? verifyCustomerToken(token) : null;
+}
+
+function withCustomerCookie(response: NextResponse, token: string): NextResponse {
+  response.cookies.set(CUSTOMER_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProd,
+    path: "/",
+    maxAge: Math.floor(SESSION_TTL_MS / 1000),
+  });
+  return response;
+}
+
+function clearCustomerCookie(response: NextResponse): NextResponse {
+  response.cookies.set(CUSTOMER_COOKIE_NAME, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isProd,
+    path: "/",
+    maxAge: 0,
+  });
+  return response;
 }
 
 export function hashPassword(plain: string): string {
@@ -513,16 +555,36 @@ async function ensureOtpTable(): Promise<void> {
       create table if not exists "otp_codes" (
         "id" serial primary key,
         "phone" varchar(20) not null,
-        "code" varchar(10) not null,
+        "code" varchar(10),
+        "code_hash" text not null default '',
         "expires_at" timestamp not null,
         "used" boolean not null default false,
+        "attempts" integer not null default 0,
         "created_at" timestamp not null default now()
       )
     `).then(async () => {
+      await db.execute(sql`alter table "otp_codes" add column if not exists "code_hash" text not null default ''`);
+      await db.execute(sql`alter table "otp_codes" add column if not exists "attempts" integer not null default 0`);
+      await db.execute(sql`alter table "otp_codes" add column if not exists "code" varchar(10)`);
+      await db.execute(sql`alter table "otp_codes" alter column "code" drop not null`);
       await db.execute(sql`create index if not exists "otp_codes_phone_idx" on "otp_codes" ("phone")`);
+      await db.execute(sql`create index if not exists "otp_codes_phone_created_idx" on "otp_codes" ("phone", "created_at")`);
     }).then(() => undefined);
   }
   await otpTablePromise;
+}
+
+async function ensureCustomerProfileColumns(): Promise<void> {
+  if (!customerProfilePromise) {
+    customerProfilePromise = db.execute(sql`alter table "customers" add column if not exists "full_name" text`)
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "email" text`))
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "avatar_url" text`))
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "address" text`))
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "city" text`))
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "updated_at" timestamp not null default now()`))
+      .then(() => undefined);
+  }
+  await customerProfilePromise;
 }
 
 async function cleanupOtpCodes(): Promise<void> {
@@ -535,6 +597,7 @@ async function cleanupOtpCodes(): Promise<void> {
 }
 
 async function findCustomerByPhone(phone: string) {
+  await ensureCustomerProfileColumns();
   const variants = iraqiPhoneVariants(phone);
   if (variants.length === 0) return null;
   return db.query.customersTable.findFirst({
@@ -543,6 +606,7 @@ async function findCustomerByPhone(phone: string) {
 }
 
 async function ensureCustomerForPhone(phone: string) {
+  await ensureCustomerProfileColumns();
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) return null;
   const existing = await findCustomerByPhone(normalized);
@@ -551,7 +615,7 @@ async function ensureCustomerForPhone(phone: string) {
       try {
         const [updated] = await db
           .update(customersTable)
-          .set({ phone: normalized })
+          .set({ phone: normalized, updatedAt: new Date() })
           .where(eq(customersTable.id, existing.id))
           .returning();
         return updated;
@@ -563,9 +627,26 @@ async function ensureCustomerForPhone(phone: string) {
   }
   const [created] = await db
     .insert(customersTable)
-    .values({ phone: normalized, name: formatIraqiPhone(normalized) })
+    .values({ phone: normalized, name: formatIraqiPhone(normalized), fullName: "" })
     .returning();
   return created;
+}
+
+function publicCustomer(customer: any) {
+  return {
+    id: customer.id,
+    phone: customer.phone,
+    phoneDisplay: formatIraqiPhone(customer.phone),
+    name: customer.fullName || customer.name || formatIraqiPhone(customer.phone),
+    fullName: customer.fullName ?? customer.name ?? "",
+    email: customer.email ?? "",
+    avatarUrl: customer.avatarUrl ?? "",
+    address: customer.address ?? "",
+    city: customer.city ?? "",
+    role: customer.role,
+    createdAt: customer.createdAt?.toISOString?.() ?? customer.createdAt,
+    updatedAt: customer.updatedAt?.toISOString?.() ?? customer.updatedAt ?? null,
+  };
 }
 
 async function buildCart(sessionId: string) {
@@ -755,44 +836,60 @@ async function insertServiceOrderWithUniqueTracking(values: Omit<typeof serviceO
 
 async function handleAuth(req: NextRequest, parts: string[]) {
   const method = req.method;
-  if (method === "POST" && parts[1] === "request-otp") {
+  const isWhatsAppRequest = parts[1] === "whatsapp" && parts[2] === "request-otp";
+  const isWhatsAppVerify = parts[1] === "whatsapp" && parts[2] === "verify-otp";
+
+  if (method === "POST" && (parts[1] === "request-otp" || isWhatsAppRequest)) {
     const parsed = RequestOtpBody.safeParse(await body(req));
     if (!parsed.success) return error("رقم الهاتف مطلوب", 400);
     const phone = normalizeIraqiPhone(parsed.data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const reqIp = ip(req);
-    if (!checkRateLimit(otpRequestByPhone, phone, 3, 10 * 60 * 1000)) {
+    if (!checkRateLimit(otpRequestByPhone, phone, 5, 10 * 60 * 1000)) {
       return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
     }
     if (!checkRateLimit(otpRequestByIp, reqIp, 10, 60 * 60 * 1000)) {
       return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
     }
     await cleanupOtpCodes();
+    const recent = await db.query.otpCodesTable.findFirst({
+      where: and(
+        eq(otpCodesTable.phone, phone),
+        eq(otpCodesTable.used, false),
+        gt(otpCodesTable.createdAt, new Date(Date.now() - 60 * 1000)),
+      ),
+      orderBy: [desc(otpCodesTable.createdAt)],
+    });
+    if (recent) return error("انتظر 60 ثانية قبل طلب رمز جديد", 429);
+
     const code = generateOtp();
-    await db.delete(otpCodesTable).where(inArray(otpCodesTable.phone, iraqiPhoneVariants(phone)));
     await db.insert(otpCodesTable).values({
       phone,
-      code,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      codeHash: hashOtp(phone, code),
+      attempts: 0,
+      used: false,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
     });
     const sent = await sendOtpViaUltraMsg(phone, code);
     if (!sent.ok) {
-      await db.delete(otpCodesTable).where(and(eq(otpCodesTable.phone, phone), eq(otpCodesTable.code, code)));
+      await db
+        .update(otpCodesTable)
+        .set({ used: true })
+        .where(and(eq(otpCodesTable.phone, phone), eq(otpCodesTable.codeHash, hashOtp(phone, code))));
       return error("تعذر إرسال رمز التحقق عبر واتساب، تأكد من الرقم وحاول لاحقاً", 502);
     }
     return json({
       message: "تم إرسال رمز التحقق",
       phone,
-      devOtp: null,
     });
   }
 
-  if (method === "POST" && parts[1] === "verify-otp") {
+  if (method === "POST" && (parts[1] === "verify-otp" || isWhatsAppVerify)) {
     const parsed = VerifyOtpBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const phone = normalizeIraqiPhone(parsed.data.phone);
-    const otp = normalizePhoneDigits(parsed.data.otp).slice(0, 10);
-    if (!phone || !otp) return error("بيانات غير صحيحة", 400);
+    const otp = normalizePhoneDigits(parsed.data.otp).slice(0, 6);
+    if (!phone || otp.length !== 6) return error("بيانات غير صحيحة", 400);
     if (!checkRateLimit(otpVerifyByPhone, phone, 5, 10 * 60 * 1000)) {
       return error("تجاوزت عدد المحاولات، حاول لاحقاً", 429);
     }
@@ -800,49 +897,73 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const record = await db.query.otpCodesTable.findFirst({
       where: and(
         inArray(otpCodesTable.phone, iraqiPhoneVariants(phone)),
-        eq(otpCodesTable.code, otp),
         eq(otpCodesTable.used, false),
         gt(otpCodesTable.expiresAt, new Date()),
       ),
+      orderBy: [desc(otpCodesTable.createdAt)],
     });
     if (!record) return error("رمز التحقق غير صحيح أو منتهي الصلاحية", 400);
+    if ((record.attempts ?? 0) >= 5) return error("تم قفل محاولة التحقق، اطلب رمزاً جديداً", 423);
+    if (!verifyOtpHash(phone, otp, record.codeHash || "")) {
+      await db
+        .update(otpCodesTable)
+        .set({ attempts: (record.attempts ?? 0) + 1 })
+        .where(eq(otpCodesTable.id, record.id));
+      return error((record.attempts ?? 0) + 1 >= 5 ? "تم قفل محاولة التحقق، اطلب رمزاً جديداً" : "رمز التحقق غير صحيح", 400);
+    }
+
     await db.update(otpCodesTable).set({ used: true }).where(eq(otpCodesTable.id, record.id));
     const customer = await ensureCustomerForPhone(phone);
     if (!customer) return error("رقم الهاتف العراقي غير صحيح", 400);
     const token = signCustomerToken(customer.id);
     customerSessions.set(token, customer.id);
-    return json({
-      customer: {
-        id: customer.id,
-        phone: customer.phone,
-        name: customer.name,
-        role: customer.role,
-        createdAt: customer.createdAt.toISOString(),
-      },
+    return withCustomerCookie(json({
+      customer: publicCustomer(customer),
       token,
-    });
+      redirectTo: "/profile",
+    }), token);
   }
 
   if (method === "GET" && parts[1] === "me") {
     const customerId = getCurrentCustomerId(req);
     if (!customerId) return error("غير مخول", 401);
+    await ensureCustomerProfileColumns();
     const customer = await db.query.customersTable.findFirst({
       where: eq(customersTable.id, customerId),
     });
     if (!customer) return error("المستخدم غير موجود", 404);
-    return json({
-      id: customer.id,
-      phone: customer.phone,
-      name: customer.name,
-      role: customer.role,
-      createdAt: customer.createdAt.toISOString(),
-    });
+    return json(publicCustomer(customer));
+  }
+
+  if (method === "PATCH" && parts[1] === "me") {
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("غير مخول", 401);
+    await ensureCustomerProfileColumns();
+    const data = await body(req);
+    const fullName = String(data?.fullName ?? "").trim().slice(0, 160);
+    const email = String(data?.email ?? "").trim().slice(0, 180);
+    const address = String(data?.address ?? "").trim().slice(0, 500);
+    const city = String(data?.city ?? "").trim().slice(0, 120);
+    const [customer] = await db
+      .update(customersTable)
+      .set({
+        fullName: fullName || null,
+        name: fullName || undefined,
+        email: email || null,
+        address: address || null,
+        city: city || null,
+        updatedAt: new Date(),
+      })
+      .where(eq(customersTable.id, customerId))
+      .returning();
+    if (!customer) return error("المستخدم غير موجود", 404);
+    return json(publicCustomer(customer));
   }
 
   if (method === "POST" && parts[1] === "logout") {
-    const token = bearer(req);
+    const token = req.cookies.get(CUSTOMER_COOKIE_NAME)?.value || bearer(req);
     if (token) customerSessions.delete(token);
-    return json({ message: "تم تسجيل الخروج" });
+    return clearCustomerCookie(json({ message: "تم تسجيل الخروج" }));
   }
 
   return null;
@@ -3011,6 +3132,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
+    if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard") {
+      await ensureCustomerProfileColumns();
+    }
 
     const route =
       root === "auth"
