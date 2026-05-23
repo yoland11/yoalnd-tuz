@@ -1,3 +1,4 @@
+import { revalidateTag } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createHmac,
@@ -82,6 +83,13 @@ import {
   sendOtpViaUltraMsg,
   whatsappSend,
 } from "@/server/whatsapp";
+import {
+  PUBLIC_SETTINGS_REVALIDATE_SECONDS,
+  PUBLIC_SETTINGS_TAG,
+  cleanPublicUrl,
+  getCachedPublicSettings,
+  loadSiteSettings,
+} from "@/server/public-settings";
 
 export const COOKIE_NAME = "ajn_admin_session";
 export const CUSTOMER_COOKIE_NAME = "ajn_customer_session";
@@ -1787,62 +1795,6 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
   return null;
 }
 
-const DEFAULT_SETTINGS: Record<string, any> = {
-  siteName: "مجموعة علي جان",
-  logoUrl: "",
-  phones: ["07701234567"],
-  social: { instagram: "", facebook: "", whatsapp: "" },
-  paymentQr: "",
-  packagingFee: 2000,
-  deliveryFee: 5000,
-  deliveryTime: "1-3 أيام",
-  address: "طوزخورماتو، العراق",
-  city: "طوزخورماتو",
-  mapUrl: "",
-};
-
-async function loadSiteSettings(): Promise<Record<string, any>> {
-  const rows = await db.query.settingsTable.findMany();
-  const result: Record<string, any> = { ...DEFAULT_SETTINGS, social: { ...DEFAULT_SETTINGS.social } };
-  for (const r of rows) {
-    result[r.key] = r.value;
-  }
-  result.social = { ...DEFAULT_SETTINGS.social, ...(result.social ?? {}) };
-  result.phones = Array.isArray(result.phones) ? result.phones : [String(result.phone ?? "")].filter(Boolean);
-  return result;
-}
-
-function cleanPublicUrl(value: unknown): string {
-  const raw = String(value ?? "").trim();
-  if (!raw) return "";
-  if (raw.startsWith("data:image/")) return raw;
-  try {
-    const url = new URL(raw);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
-  } catch {
-    return raw.startsWith("/") && !raw.startsWith("//") ? raw : "";
-  }
-}
-
-function publicSettingsPayload(settings: Record<string, any>) {
-  const phone = String(settings.phones?.[0] ?? settings.phone ?? "").trim();
-  const social = settings.social && typeof settings.social === "object" ? settings.social : {};
-  return {
-    site_name: String(settings.siteName ?? DEFAULT_SETTINGS.siteName),
-    phone,
-    whatsapp: String(social.whatsapp || settings.whatsapp || phone || ""),
-    address: String(settings.address ?? ""),
-    city: String(settings.city ?? ""),
-    map_url: cleanPublicUrl(settings.mapUrl ?? settings.map_url ?? ""),
-    social_links: {
-      instagram: cleanPublicUrl(social.instagram),
-      facebook: cleanPublicUrl(social.facebook),
-      whatsapp: String(social.whatsapp || ""),
-    },
-    logo_url: cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? ""),
-  };
-}
-
 const PAYMENT_METHODS = ["cod", "transfer", "paid"] as const;
 function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
   return (PAYMENT_METHODS as readonly string[]).includes(v as string) ? (v as any) : null;
@@ -1894,8 +1846,8 @@ async function normalizeAddressBody(input: any, customer: any, partial = false) 
 
 async function handlePublicSettings(req: NextRequest, parts: string[]) {
   if (req.method === "GET" && parts[1] === "public") {
-    return json(publicSettingsPayload(await loadSiteSettings()), 200, {
-      "Cache-Control": "no-store",
+    return json(await getCachedPublicSettings(), 200, {
+      "Cache-Control": `public, s-maxage=${PUBLIC_SETTINGS_REVALIDATE_SECONDS}, stale-while-revalidate=86400`,
     });
   }
   return null;
@@ -2190,6 +2142,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .insert(settingsTable)
         .values({ key: "logoUrl", value: logoUrl as any })
         .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoUrl as any, updatedAt: new Date() } });
+      revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
       return json({ logoUrl, logo_url: logoUrl });
     }
     if (method === "PUT" || method === "PATCH") {
@@ -2203,6 +2156,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             .onConflictDoUpdate({ target: settingsTable.key, set: { value: storedValue as any, updatedAt: new Date() } });
         }),
       );
+      revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
       return json({ message: "تم الحفظ" });
     }
   }

@@ -44,7 +44,7 @@ export function AdminLayout({
     <div className="min-h-screen bg-background flex" dir="rtl">
       <aside className="w-60 bg-card border-l border-border/30 flex flex-col py-6 px-3 fixed right-0 top-0 h-full z-10 overflow-y-auto">
         <div className="px-3 mb-6">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-12 w-28 object-contain mb-3" />
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 object-contain mb-3" />
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
           <h2 className="text-lg font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
           <p className="text-[11px] text-primary mt-2">

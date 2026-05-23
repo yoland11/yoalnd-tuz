@@ -57,7 +57,7 @@ export default function AdminLogin() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-12 w-12 object-contain" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={48} height={48} decoding="async" className="h-12 w-12 object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">دخول الإدارة</h1>
           <p className="text-muted-foreground text-sm mt-1">{settings?.site_name ?? "مجموعة علي جان"}</p>

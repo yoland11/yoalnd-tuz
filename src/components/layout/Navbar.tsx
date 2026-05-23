@@ -18,7 +18,7 @@ export function Navbar() {
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2">
           <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-full w-full object-contain" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-full w-full object-contain" />
           </span>
           <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
           <span className="font-semibold text-lg hidden sm:block">{settings?.site_name ?? "مجموعة علي جان"}</span>

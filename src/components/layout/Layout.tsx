@@ -16,7 +16,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <MobileNav />
       <footer className="border-t border-border/40 py-6 text-center text-sm text-muted-foreground mt-auto" dir="rtl">
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-10 w-24 object-contain" />
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} decoding="async" className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">
             <span className="text-foreground font-medium">{settings?.site_name ?? "مجموعة علي جان"}</span>
             {settings?.phone && <a href={`tel:${settings.phone}`} className="hover:text-primary transition-colors">{settings.phone}</a>}

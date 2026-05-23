@@ -114,7 +114,7 @@ export default function Invoice() {
         {/* Header */}
         <div className="flex items-start justify-between border-b-2 border-amber-500 pb-4 mb-6">
           <div className="flex items-center gap-3">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-14 w-24 object-contain" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={56} decoding="async" className="h-14 w-24 object-contain" />
             <div>
               <h1 className="text-3xl font-bold tracking-tight">{settings?.site_name ?? "AJN"}</h1>
               <p className="text-sm text-neutral-600">{settings?.address || "مجموعة علي جان — طوزخورماتو"}</p>

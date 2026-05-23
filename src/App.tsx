@@ -21,7 +21,16 @@ import Profile from "@/views/profile";
 import Admin from "@/views/admin/index";
 import Invoice from "@/views/admin/invoice";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 10 * 60_000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 function Router() {
   return (

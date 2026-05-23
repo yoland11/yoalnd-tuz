@@ -15,7 +15,13 @@ export type PublicSettings = {
   logo_url: string;
 };
 
-export const FALLBACK_LOGO_URL = "/favicon.svg";
+declare global {
+  interface Window {
+    __AJN_PUBLIC_SETTINGS__?: PublicSettings;
+  }
+}
+
+export const FALLBACK_LOGO_URL = "/images/logo-fallback.svg";
 
 export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
   site_name: "مجموعة علي جان",
@@ -29,17 +35,29 @@ export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
 };
 
 export async function fetchPublicSettings(): Promise<PublicSettings> {
-  const res = await fetch("/api/settings/public", { credentials: "include", cache: "no-store" });
+  const res = await fetch("/api/settings/public", { credentials: "include" });
   if (!res.ok) return DEFAULT_PUBLIC_SETTINGS;
   const data = await res.json().catch(() => ({}));
   return { ...DEFAULT_PUBLIC_SETTINGS, ...data, social_links: { ...DEFAULT_PUBLIC_SETTINGS.social_links, ...(data.social_links ?? {}) } };
+}
+
+export function initialPublicSettings(): PublicSettings {
+  if (typeof window === "undefined") return DEFAULT_PUBLIC_SETTINGS;
+  return window.__AJN_PUBLIC_SETTINGS__
+    ? { ...DEFAULT_PUBLIC_SETTINGS, ...window.__AJN_PUBLIC_SETTINGS__ }
+    : DEFAULT_PUBLIC_SETTINGS;
 }
 
 export function usePublicSettings() {
   return useQuery({
     queryKey: ["settings", "public"],
     queryFn: fetchPublicSettings,
-    staleTime: 30_000,
+    initialData: initialPublicSettings,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

@@ -27,7 +27,7 @@ export default function Home() {
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
+          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg font-serif">
             {siteName}
           </h1>
