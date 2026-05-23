@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { formatIraqiPhone } from "@/lib/phone";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار", confirmed: "مؤكد", processing: "قيد التجهيز",
@@ -174,7 +175,7 @@ export default function DeliveryPage() {
                       <p className="font-mono text-sm font-bold text-foreground">{o.trackingCode}</p>
                       <p className="text-sm text-foreground">
                         {o.customerName} —{" "}
-                        <a href={`tel:${o.customerPhone}`} className="text-primary hover:underline">{o.customerPhone}</a>
+                        <a href={`tel:${formatIraqiPhone(o.customerPhone)}`} className="text-primary hover:underline">{formatIraqiPhone(o.customerPhone)}</a>
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {[o.governorate, area].filter(Boolean).join(" • ") || "—"}

@@ -8,11 +8,12 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { and, desc, eq, gt, gte, ilike, like, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
   cartItemsTable,
   categoriesTable,
+  crewsTable,
   customersTable,
   deliveryZonesTable,
   expenseCategoriesTable,
@@ -34,6 +35,16 @@ import {
   whatsappLogTable,
   db,
 } from "@workspace/db";
+import {
+  primaryLocationFromDetails,
+  withDerivedServiceDetails,
+} from "@/lib/service-details";
+import {
+  formatIraqiPhone,
+  iraqiPhoneVariants,
+  normalizeIraqiPhone,
+  normalizePhoneDigits,
+} from "@/lib/phone";
 import {
   AddToCartBody,
   CreateDeliveryZoneBody,
@@ -66,6 +77,7 @@ import {
   getProviderStatus,
   getSettings as getWaSettings,
   updateSettings as updateWaSettings,
+  sendOtpViaUltraMsg,
   whatsappSend,
 } from "@/server/whatsapp";
 
@@ -111,6 +123,8 @@ const phoneLookupHits = new Map<string, number[]>();
 const respondHits = new Map<string, number[]>();
 
 let seedPromise: Promise<void> | null = null;
+let crewsTablePromise: Promise<void> | null = null;
+let otpTablePromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -463,6 +477,97 @@ function formatStaff(s: any) {
   };
 }
 
+function formatCrew(c: any) {
+  return {
+    id: c.id,
+    name: c.name,
+    isActive: c.isActive,
+    createdAt: c.createdAt?.toISOString?.() ?? null,
+    updatedAt: c.updatedAt?.toISOString?.() ?? null,
+  };
+}
+
+function normalizeDetailsInput(value: unknown): Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, any>;
+}
+
+async function ensureCrewsTable(): Promise<void> {
+  if (!crewsTablePromise) {
+    crewsTablePromise = db.execute(sql`
+      create table if not exists "crews" (
+        "id" serial primary key,
+        "name" text not null,
+        "is_active" boolean not null default true,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      )
+    `).then(() => undefined);
+  }
+  await crewsTablePromise;
+}
+
+async function ensureOtpTable(): Promise<void> {
+  if (!otpTablePromise) {
+    otpTablePromise = db.execute(sql`
+      create table if not exists "otp_codes" (
+        "id" serial primary key,
+        "phone" varchar(20) not null,
+        "code" varchar(10) not null,
+        "expires_at" timestamp not null,
+        "used" boolean not null default false,
+        "created_at" timestamp not null default now()
+      )
+    `).then(async () => {
+      await db.execute(sql`create index if not exists "otp_codes_phone_idx" on "otp_codes" ("phone")`);
+    }).then(() => undefined);
+  }
+  await otpTablePromise;
+}
+
+async function cleanupOtpCodes(): Promise<void> {
+  await ensureOtpTable();
+  await db.execute(sql`
+    delete from "otp_codes"
+    where "expires_at" < now()
+       or ("used" = true and "created_at" < now() - interval '1 day')
+  `);
+}
+
+async function findCustomerByPhone(phone: string) {
+  const variants = iraqiPhoneVariants(phone);
+  if (variants.length === 0) return null;
+  return db.query.customersTable.findFirst({
+    where: inArray(customersTable.phone, variants),
+  });
+}
+
+async function ensureCustomerForPhone(phone: string) {
+  const normalized = normalizeIraqiPhone(phone);
+  if (!normalized) return null;
+  const existing = await findCustomerByPhone(normalized);
+  if (existing) {
+    if (existing.phone !== normalized) {
+      try {
+        const [updated] = await db
+          .update(customersTable)
+          .set({ phone: normalized })
+          .where(eq(customersTable.id, existing.id))
+          .returning();
+        return updated;
+      } catch (err: any) {
+        if (err?.code !== "23505") throw err;
+      }
+    }
+    return existing;
+  }
+  const [created] = await db
+    .insert(customersTable)
+    .values({ phone: normalized, name: formatIraqiPhone(normalized) })
+    .returning();
+  return created;
+}
+
 async function buildCart(sessionId: string) {
   const items = await db.query.cartItemsTable.findMany({
     where: eq(cartItemsTable.sessionId, sessionId),
@@ -612,6 +717,7 @@ async function buildServiceTracking(so: any) {
     estimatedDelivery: null,
     eventDate: so.eventDate ?? null,
     eventLocation: so.eventLocation ?? null,
+    customFields: so.customFields ?? {},
     customerConfirmation: so.customerConfirmation ?? null,
     requestedDate: so.requestedDate ?? null,
     confirmationNote: so.confirmationNote ?? null,
@@ -652,7 +758,8 @@ async function handleAuth(req: NextRequest, parts: string[]) {
   if (method === "POST" && parts[1] === "request-otp") {
     const parsed = RequestOtpBody.safeParse(await body(req));
     if (!parsed.success) return error("رقم الهاتف مطلوب", 400);
-    const { phone } = parsed.data;
+    const phone = normalizeIraqiPhone(parsed.data.phone);
+    if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const reqIp = ip(req);
     if (!checkRateLimit(otpRequestByPhone, phone, 3, 10 * 60 * 1000)) {
       return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
@@ -660,29 +767,39 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     if (!checkRateLimit(otpRequestByIp, reqIp, 10, 60 * 60 * 1000)) {
       return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
     }
+    await cleanupOtpCodes();
     const code = generateOtp();
-    await db.delete(otpCodesTable).where(eq(otpCodesTable.phone, phone));
+    await db.delete(otpCodesTable).where(inArray(otpCodesTable.phone, iraqiPhoneVariants(phone)));
     await db.insert(otpCodesTable).values({
       phone,
       code,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
+    const sent = await sendOtpViaUltraMsg(phone, code);
+    if (!sent.ok) {
+      await db.delete(otpCodesTable).where(and(eq(otpCodesTable.phone, phone), eq(otpCodesTable.code, code)));
+      return error("تعذر إرسال رمز التحقق عبر واتساب، تأكد من الرقم وحاول لاحقاً", 502);
+    }
     return json({
       message: "تم إرسال رمز التحقق",
-      devOtp: process.env.NODE_ENV !== "production" ? code : null,
+      phone,
+      devOtp: null,
     });
   }
 
   if (method === "POST" && parts[1] === "verify-otp") {
     const parsed = VerifyOtpBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
-    const { phone, otp } = parsed.data;
+    const phone = normalizeIraqiPhone(parsed.data.phone);
+    const otp = normalizePhoneDigits(parsed.data.otp).slice(0, 10);
+    if (!phone || !otp) return error("بيانات غير صحيحة", 400);
     if (!checkRateLimit(otpVerifyByPhone, phone, 5, 10 * 60 * 1000)) {
       return error("تجاوزت عدد المحاولات، حاول لاحقاً", 429);
     }
+    await cleanupOtpCodes();
     const record = await db.query.otpCodesTable.findFirst({
       where: and(
-        eq(otpCodesTable.phone, phone),
+        inArray(otpCodesTable.phone, iraqiPhoneVariants(phone)),
         eq(otpCodesTable.code, otp),
         eq(otpCodesTable.used, false),
         gt(otpCodesTable.expiresAt, new Date()),
@@ -690,12 +807,8 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     });
     if (!record) return error("رمز التحقق غير صحيح أو منتهي الصلاحية", 400);
     await db.update(otpCodesTable).set({ used: true }).where(eq(otpCodesTable.id, record.id));
-    let customer = await db.query.customersTable.findFirst({
-      where: eq(customersTable.phone, phone),
-    });
-    if (!customer) {
-      [customer] = await db.insert(customersTable).values({ phone, name: phone }).returning();
-    }
+    const customer = await ensureCustomerForPhone(phone);
+    if (!customer) return error("رقم الهاتف العراقي غير صحيح", 400);
     const token = signCustomerToken(customer.id);
     customerSessions.set(token, customer.id);
     return json({
@@ -880,6 +993,19 @@ async function handleServices(req: NextRequest, parts: string[]) {
   return null;
 }
 
+async function handleCrews(req: NextRequest, parts: string[]) {
+  if (req.method === "GET" && parts.length === 1) {
+    await ensureCrewsTable();
+    const rows = await db.query.crewsTable.findMany({
+      where: eq(crewsTable.isActive, true),
+      orderBy: (c, { asc }) => [asc(c.name), asc(c.id)],
+    });
+    return json(rows.map((c) => ({ id: c.id, name: c.name, isActive: c.isActive })));
+  }
+
+  return null;
+}
+
 async function handleServiceOrders(req: NextRequest, parts: string[]) {
   const method = req.method;
 
@@ -887,22 +1013,30 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     const parsed = CreateServiceOrderBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const data = parsed.data;
+    const service = await db.query.servicesTable.findFirst({
+      where: eq(servicesTable.id, data.serviceId),
+    });
+    if (!service) return error("الخدمة غير موجودة", 404);
+    const customFields = withDerivedServiceDetails(service.type, normalizeDetailsInput(data.customFields));
+    const eventLocation =
+      data.eventLocation ??
+      primaryLocationFromDetails(service.type, customFields) ??
+      "";
+    const phone = normalizeIraqiPhone(data.phone);
+    if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const order = await insertServiceOrderWithUniqueTracking({
       serviceId: data.serviceId,
       customerName: data.customerName,
-      phone: data.phone,
+      phone,
       eventDate: data.eventDate,
-      eventLocation: data.eventLocation,
+      eventLocation,
       notes: data.notes,
-      customFields: data.customFields,
+      customFields,
     });
     await db.insert(serviceOrderStatusHistoryTable).values({
       serviceOrderId: order.id,
       status: order.status,
       notes: "تم إنشاء الحجز",
-    });
-    const service = await db.query.servicesTable.findFirst({
-      where: eq(servicesTable.id, data.serviceId),
     });
     void fireOrderEvent("booking_placed", {
       name: order.customerName,
@@ -922,6 +1056,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         eventDate: order.eventDate ?? null,
         eventLocation: order.eventLocation ?? null,
         notes: order.notes ?? null,
+        customFields: order.customFields ?? {},
         status: order.status,
         createdAt: order.createdAt.toISOString(),
       },
@@ -1049,11 +1184,37 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   if (method === "GET" && parts[1] === "my") {
     const customerId = getCurrentCustomerId(req);
     if (!customerId) return error("غير مخول", 401);
+    const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+    const phoneVariants = iraqiPhoneVariants(customer?.phone);
     const orders = await db.query.ordersTable.findMany({
-      where: eq(ordersTable.customerId, customerId),
+      where: phoneVariants.length > 0
+        ? or(eq(ordersTable.customerId, customerId), inArray(ordersTable.customerPhone, phoneVariants))
+        : eq(ordersTable.customerId, customerId),
       orderBy: [desc(ordersTable.createdAt)],
     });
-    return json(await Promise.all(orders.map(formatOrder)));
+    const serviceOrders = phoneVariants.length > 0
+      ? await db.query.serviceOrdersTable.findMany({
+          where: inArray(serviceOrdersTable.phone, phoneVariants),
+          orderBy: [desc(serviceOrdersTable.createdAt)],
+        })
+      : [];
+    const services = serviceOrders.length > 0 ? await db.query.servicesTable.findMany() : [];
+    const serviceMap = new Map(services.map((s) => [s.id, s]));
+    const rows = [
+      ...(await Promise.all(orders.map(async (order) => ({ ...(await formatOrder(order)), kind: "order" })))),
+      ...serviceOrders.map((booking) => ({
+        id: booking.id,
+        kind: "service",
+        trackingCode: booking.trackingCode ?? `SRV-${booking.id}`,
+        customerName: booking.customerName,
+        customerPhone: booking.phone,
+        serviceName: serviceMap.get(booking.serviceId)?.nameAr ?? serviceMap.get(booking.serviceId)?.name ?? "حجز خدمة",
+        status: booking.status,
+        total: 0,
+        createdAt: booking.createdAt.toISOString(),
+      })),
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return json(rows);
   }
 
   if (method === "GET" && parts[1] === "track" && parts[2]) {
@@ -1116,6 +1277,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       where: eq(cartItemsTable.sessionId, sessionId),
     });
     if (cartItems.length === 0) return error("السلة فارغة", 400);
+    const customerPhone = normalizeIraqiPhone(data.customerPhone);
+    if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
     let deliveryFee = 0;
     if (data.deliveryZoneId) {
       const zone = await db.query.deliveryZonesTable.findFirst({
@@ -1131,7 +1294,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         trackingCode: generateTrackingCode(),
         customerId: customerId ?? undefined,
         customerName: data.customerName,
-        customerPhone: data.customerPhone,
+        customerPhone,
         status: "pending",
         total: total.toString(),
         deliveryFee: deliveryFee.toString(),
@@ -1741,6 +1904,48 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  if (section === "crews") {
+    const auth = await requirePermission(req, "staff");
+    if (isResponse(auth)) return auth;
+    await ensureCrewsTable();
+    if (method === "GET") {
+      const rows = await db.query.crewsTable.findMany({
+        orderBy: (c, { desc }) => [desc(c.id)],
+      });
+      return json(rows.map(formatCrew));
+    }
+    if (method === "POST") {
+      const b = await body(req);
+      const name = typeof b?.name === "string" ? b.name.trim() : "";
+      if (!name) return error("اسم الكادر مطلوب", 400);
+      const [row] = await db
+        .insert(crewsTable)
+        .values({ name, isActive: b?.isActive ?? true })
+        .returning();
+      return json(formatCrew(row), 201);
+    }
+    if ((method === "PATCH" || method === "DELETE") && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const existing = await db.query.crewsTable.findFirst({ where: eq(crewsTable.id, id) });
+      if (!existing) return error("غير موجود", 404);
+      if (method === "DELETE") {
+        await db.delete(crewsTable).where(eq(crewsTable.id, id));
+        return json({ message: "تم الحذف" });
+      }
+      const b = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (b?.name !== undefined) {
+        const name = typeof b.name === "string" ? b.name.trim() : "";
+        if (!name) return error("اسم الكادر مطلوب", 400);
+        update.name = name;
+      }
+      if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
+      const [row] = await db.update(crewsTable).set(update).where(eq(crewsTable.id, id)).returning();
+      return json(formatCrew(row));
+    }
+  }
+
   if (section === "customers") {
     const auth = await requirePermission(req, "customers");
     if (isResponse(auth)) return auth;
@@ -1753,19 +1958,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .select({ phone: ordersTable.customerPhone, count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(total::numeric),0)::float` })
         .from(ordersTable)
         .groupBy(ordersTable.customerPhone);
-      const phoneMap = new Map(orderCounts.map((o) => [o.phone, { count: o.count, total: o.total }]));
+      const phoneMap = new Map<string, { count: number; total: number }>();
+      for (const o of orderCounts) {
+        const key = normalizeIraqiPhone(o.phone) ?? o.phone;
+        const prev = phoneMap.get(key) ?? { count: 0, total: 0 };
+        phoneMap.set(key, { count: prev.count + o.count, total: prev.total + o.total });
+      }
       let result = customers.map((c) => ({
         id: c.id,
         name: c.name,
         phone: c.phone,
         role: c.role,
         createdAt: c.createdAt.toISOString(),
-        orderCount: phoneMap.get(c.phone)?.count ?? 0,
-        totalSpent: phoneMap.get(c.phone)?.total ?? 0,
+        orderCount: phoneMap.get(normalizeIraqiPhone(c.phone) ?? c.phone)?.count ?? 0,
+        totalSpent: phoneMap.get(normalizeIraqiPhone(c.phone) ?? c.phone)?.total ?? 0,
       }));
       if (search) {
         const s = search.toLowerCase();
-        result = result.filter((c) => c.name.toLowerCase().includes(s) || c.phone.includes(s));
+        const phoneSearch = normalizePhoneDigits(search);
+        result = result.filter((c) =>
+          c.name.toLowerCase().includes(s) ||
+          c.phone.includes(phoneSearch || search) ||
+          formatIraqiPhone(c.phone).includes(phoneSearch || search)
+        );
       }
       return json(result);
     }
@@ -1774,13 +1989,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
       if (!customer) return error("غير موجود", 404);
+      const phoneVariants = iraqiPhoneVariants(customer.phone);
       const [orders, serviceOrders] = await Promise.all([
         db.query.ordersTable.findMany({
-          where: eq(ordersTable.customerPhone, customer.phone),
+          where: inArray(ordersTable.customerPhone, phoneVariants),
           orderBy: [desc(ordersTable.createdAt)],
         }),
         db.query.serviceOrdersTable.findMany({
-          where: eq(serviceOrdersTable.phone, customer.phone),
+          where: inArray(serviceOrdersTable.phone, phoneVariants),
           orderBy: [desc(serviceOrdersTable.createdAt)],
         }),
       ]);
@@ -1835,6 +2051,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           eventDate: r.eventDate,
           eventLocation: r.eventLocation,
           notes: r.notes,
+          customFields: r.customFields ?? {},
           status: r.status,
           customerConfirmation: r.customerConfirmation ?? null,
           requestedDate: r.requestedDate ?? null,
@@ -1843,6 +2060,62 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           preRescheduleStatus: r.preRescheduleStatus ?? null,
           createdAt: r.createdAt.toISOString(),
         })),
+      );
+    }
+
+    if (method === "POST" && !parts[2]) {
+      const parsed = CreateServiceOrderBody.safeParse(await body(req));
+      if (!parsed.success) return error("بيانات غير صحيحة", 400);
+      const data = parsed.data;
+      const service = await db.query.servicesTable.findFirst({
+        where: eq(servicesTable.id, data.serviceId),
+      });
+      if (!service) return error("الخدمة غير موجودة", 404);
+      const customFields = withDerivedServiceDetails(service.type, normalizeDetailsInput(data.customFields));
+      const eventLocation =
+        data.eventLocation ??
+        primaryLocationFromDetails(service.type, customFields) ??
+        "";
+      const phone = normalizeIraqiPhone(data.phone);
+      if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+      const order = await insertServiceOrderWithUniqueTracking({
+        serviceId: data.serviceId,
+        customerName: data.customerName,
+        phone,
+        eventDate: data.eventDate,
+        eventLocation,
+        notes: data.notes,
+        customFields,
+      });
+      await db.insert(serviceOrderStatusHistoryTable).values({
+        serviceOrderId: order.id,
+        status: order.status,
+        notes: "إضافة من الإدارة",
+      });
+      void fireOrderEvent("booking_placed", {
+        name: order.customerName,
+        phone: order.phone,
+        tracking: order.trackingCode ?? "",
+        status: order.status,
+        service: service.nameAr ?? service.name ?? "",
+      });
+      return json(
+        {
+          id: order.id,
+          trackingCode: order.trackingCode,
+          serviceId: order.serviceId,
+          serviceName: service.nameAr ?? "",
+          serviceType: service.type ?? null,
+          customerName: order.customerName,
+          phone: order.phone,
+          eventDate: order.eventDate ?? null,
+          eventLocation: order.eventLocation ?? null,
+          notes: order.notes ?? null,
+          customFields: order.customFields ?? {},
+          status: order.status,
+          createdAt: order.createdAt.toISOString(),
+        },
+        201,
       );
     }
 
@@ -1913,8 +2186,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       const prev = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
+      if (!prev) return error("غير موجود", 404);
+      if (update.phone !== undefined) {
+        const phone = normalizeIraqiPhone(String(update.phone));
+        if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+        update.phone = phone;
+      }
+      if (b?.customFields !== undefined) {
+        const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, prev.serviceId) });
+        update.customFields = withDerivedServiceDetails(service?.type, normalizeDetailsInput(b.customFields));
+        if (b?.eventLocation === undefined) {
+          update.eventLocation = primaryLocationFromDetails(service?.type, update.customFields) || prev.eventLocation;
+        }
+      }
       const [row] = await db.update(serviceOrdersTable).set(update).where(eq(serviceOrdersTable.id, id)).returning();
-      if (!row) return error("غير موجود", 404);
       if (typeof update.status === "string" && update.status && update.status !== prev?.status) {
         await db.insert(serviceOrderStatusHistoryTable).values({
           serviceOrderId: row.id,
@@ -1952,6 +2237,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const { customerName, customerPhone, governorate, area, address, notes, items, deliveryFee, mapsUrl, paymentMethod } = await body(req);
       if (!customerName || !customerPhone || !Array.isArray(items) || items.length === 0) return error("بيانات ناقصة", 400);
       if (paymentMethod !== undefined && normalizePayment(paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
+      const normalizedPhone = normalizeIraqiPhone(customerPhone);
+      if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const total = items.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
@@ -1960,7 +2247,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             .values({
               trackingCode: generateTrackingCode(),
               customerName,
-              customerPhone,
+              customerPhone: normalizedPhone,
               governorate,
               address,
               notes,
@@ -2008,6 +2295,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const update: any = { updatedAt: new Date() };
       for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
+      }
+      if (update.customerPhone !== undefined) {
+        const normalizedPhone = normalizeIraqiPhone(update.customerPhone);
+        if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
+        update.customerPhone = normalizedPhone;
       }
       if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
       if (b?.attachments !== undefined) update.attachments = b.attachments;
@@ -2087,7 +2379,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const n = typeof v === "string" ? Number.parseFloat(v) : Number(v);
         return Number.isFinite(n) ? n : 0;
       };
-      const price = num(cf.price ?? cf.agreedPrice ?? cf.total);
+      const explicitTotal = num(cf.total);
+      const basePrice = num(cf.price ?? cf.agreedPrice);
+      const price = explicitTotal > 0 ? explicitTotal : basePrice + num(cf.wrappingFee);
       const deposit = num(cf.deposit ?? cf.downPayment);
       const balance = price > 0 ? Math.max(price - deposit, 0) : 0;
       return json({
@@ -2337,7 +2631,9 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const amt = parseAmount(b?.amount);
       if (!b?.payerName || amt === null) return error("بيانات ناقصة", 400);
       if (!customerId && typeof b?.customerPhone === "string" && b.customerPhone.trim()) {
-        const c = await db.query.customersTable.findFirst({ where: eq(customersTable.phone, b.customerPhone.trim()) });
+        const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
+        if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
+        const c = await findCustomerByPhone(normalizedPhone);
         if (c) customerId = c.id;
       }
       const a = actor(auth);
@@ -2476,15 +2772,18 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     if (isResponse(auth)) return auth;
     if (method === "GET" && parts[2] === "statement") {
       const customerId = req.nextUrl.searchParams.get("customerId") ? Number.parseInt(req.nextUrl.searchParams.get("customerId")!, 10) : null;
-      const phoneParam = req.nextUrl.searchParams.get("phone")?.trim();
+      const rawPhoneParam = req.nextUrl.searchParams.get("phone")?.trim();
+      const phoneParam = rawPhoneParam ? normalizeIraqiPhone(rawPhoneParam) : null;
+      if (rawPhoneParam && !phoneParam) return error("رقم الهاتف العراقي غير صحيح", 400);
       let customer = null as any;
       if (customerId) customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
-      if (!customer && phoneParam) customer = await db.query.customersTable.findFirst({ where: eq(customersTable.phone, phoneParam) });
+      if (!customer && phoneParam) customer = await findCustomerByPhone(phoneParam);
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
+      const phoneVariants = iraqiPhoneVariants(phone);
       const [orders, bookings, receipts] = await Promise.all([
-        db.select().from(ordersTable).where(eq(ordersTable.customerPhone, phone)).orderBy(desc(ordersTable.createdAt)),
-        db.select().from(serviceOrdersTable).where(eq(serviceOrdersTable.phone, phone)).orderBy(desc(serviceOrdersTable.createdAt)),
+        db.select().from(ordersTable).where(inArray(ordersTable.customerPhone, phoneVariants)).orderBy(desc(ordersTable.createdAt)),
+        db.select().from(serviceOrdersTable).where(inArray(serviceOrdersTable.phone, phoneVariants)).orderBy(desc(serviceOrdersTable.createdAt)),
         customer
           ? db.select().from(receiptVouchersTable).where(eq(receiptVouchersTable.customerId, customer.id)).orderBy(desc(receiptVouchersTable.date))
           : Promise.resolve([] as any[]),
@@ -2720,23 +3019,25 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
           ? await handleProducts(req, parts)
           : root === "services"
             ? await handleServices(req, parts)
-            : root === "service-orders"
-              ? await handleServiceOrders(req, parts)
-              : root === "cart"
-                ? await handleCart(req, parts)
-                : root === "orders"
-                  ? await handleOrders(req, parts)
-                  : root === "gallery"
-                    ? await handleGallery(req, parts)
-                    : root === "reviews"
-                      ? await handleReviews(req, parts)
-                      : root === "delivery-zones"
-                        ? await handleDelivery(req, parts)
-                        : root === "dashboard"
-                          ? await handleDashboard(req, parts)
-                          : root === "admin"
-                            ? await handleAdmin(req, parts)
-                            : null;
+            : root === "crews"
+              ? await handleCrews(req, parts)
+              : root === "service-orders"
+                ? await handleServiceOrders(req, parts)
+                : root === "cart"
+                  ? await handleCart(req, parts)
+                  : root === "orders"
+                    ? await handleOrders(req, parts)
+                    : root === "gallery"
+                      ? await handleGallery(req, parts)
+                      : root === "reviews"
+                        ? await handleReviews(req, parts)
+                        : root === "delivery-zones"
+                          ? await handleDelivery(req, parts)
+                          : root === "dashboard"
+                            ? await handleDashboard(req, parts)
+                            : root === "admin"
+                              ? await handleAdmin(req, parts)
+                              : null;
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {

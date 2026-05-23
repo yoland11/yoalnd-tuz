@@ -9,6 +9,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
+import { serviceDetailsToRows } from "@/lib/service-details";
+import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
 
 const AJN_PHONE = "07701234567"; // store contact
 
@@ -86,7 +88,7 @@ export default function Track() {
           ) : (
             <input
               value={phone}
-              onChange={e => setPhone(e.target.value)}
+              onChange={e => setPhone(formatIraqiPhoneInput(e.target.value))}
               placeholder="آخر 4 أرقام من رقمك"
               inputMode="numeric"
               className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
@@ -145,6 +147,7 @@ function OrderCard({ tracking }: { tracking: any }) {
   const currentIdx = getStageIndex(stages, tracking.status);
   const isCancelled = tracking.status === "cancelled";
   const isBooking = tracking.kind === "service";
+  const detailRows = serviceDetailsToRows(tracking.serviceType, tracking.customFields);
 
   const waMsg = `استفسار عن الطلب ${tracking.trackingCode}`;
   const waLink = buildWhatsAppLink(AJN_PHONE, waMsg);
@@ -191,6 +194,38 @@ function OrderCard({ tracking }: { tracking: any }) {
           )}
         </div>
       </div>
+
+      {isBooking && (tracking.eventDate || tracking.eventLocation || tracking.notes || detailRows.length > 0) && (
+        <div className="bg-card rounded-2xl border border-border/30 p-6">
+          <h3 className="text-sm font-semibold text-foreground mb-5">تفاصيل الخدمة</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {tracking.eventDate && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">تاريخ الحجز</p>
+                <p className="text-sm text-foreground break-words">{tracking.eventDate}</p>
+              </div>
+            )}
+            {tracking.eventLocation && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">الموقع</p>
+                <p className="text-sm text-foreground break-words">{tracking.eventLocation}</p>
+              </div>
+            )}
+            {detailRows.map((row) => (
+              <div key={row.key}>
+                <p className="text-xs text-muted-foreground mb-1">{row.label}</p>
+                <p className="text-sm text-foreground break-words">{row.value}</p>
+              </div>
+            ))}
+            {tracking.notes && (
+              <div className="sm:col-span-2">
+                <p className="text-xs text-muted-foreground mb-1">ملاحظات</p>
+                <p className="text-sm text-foreground break-words">{tracking.notes}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Progress Steps */}
       {!isCancelled && (

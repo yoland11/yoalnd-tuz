@@ -9,6 +9,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { formatIraqiPhone } from "@/lib/phone";
 
 type DashboardData = {
   totalOrders: number; activeOrders: number; cancelledOrders: number; deliveredOrders: number;
@@ -146,7 +147,7 @@ export default function DashboardPage() {
             <ul className="space-y-2 text-sm">
               {data.topCustomers.map((c, i) => (
                 <li key={c.phone} className="flex items-center justify-between gap-2">
-                  <span className="text-foreground truncate"><span className="text-primary font-bold ml-2">#{i + 1}</span>{c.name || c.phone}</span>
+                  <span className="text-foreground truncate"><span className="text-primary font-bold ml-2">#{i + 1}</span>{c.name || formatIraqiPhone(c.phone)}</span>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">{c.orderCount} • <span className="text-primary">{formatCurrency(c.totalSpent)}</span></span>
                 </li>
               ))}

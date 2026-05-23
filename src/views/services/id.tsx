@@ -1,22 +1,32 @@
+import { useEffect, useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useQuery } from "@tanstack/react-query";
 import { useGetService, useCreateServiceOrder } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { ServiceDetailFields } from "@/components/service-detail-fields";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CalendarIcon, MapPinIcon, PhoneIcon, UserIcon } from "lucide-react";
+import {
+  type CrewOption,
+  defaultServiceDetails,
+  primaryLocationFromDetails,
+  validateServiceDetails,
+  withDerivedServiceDetails,
+} from "@/lib/service-details";
+import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
+import { CalendarIcon, PhoneIcon, UserIcon } from "lucide-react";
 
 const formSchema = z.object({
   customerName: z.string().min(2, "الاسم يجب أن يكون حرفين على الأقل"),
   phone: z.string().min(10, "رقم الهاتف غير صالح"),
-  eventDate: z.string().min(1, "تاريخ المناسبة مطلوب"),
-  eventLocation: z.string().optional(),
+  eventDate: z.string().min(1, "تاريخ الحجز مطلوب"),
   notes: z.string().optional(),
 });
 
@@ -33,6 +43,18 @@ export default function ServiceRequest() {
   });
 
   const createOrder = useCreateServiceOrder();
+  const [serviceDetails, setServiceDetails] = useState<Record<string, any>>({});
+  const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
+  const serviceType = service?.type ?? null;
+
+  const { data: crews = [] } = useQuery({
+    queryKey: ["crews"],
+    queryFn: async () => {
+      const res = await fetch("/api/crews");
+      if (!res.ok) throw new Error("Failed to load crews");
+      return res.json() as Promise<CrewOption[]>;
+    },
+  });
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -40,16 +62,42 @@ export default function ServiceRequest() {
       customerName: "",
       phone: "",
       eventDate: "",
-      eventLocation: "",
       notes: "",
     },
   });
 
+  useEffect(() => {
+    setServiceDetails(defaultServiceDetails(serviceType));
+    setDetailErrors({});
+  }, [serviceType]);
+
   function onSubmit(data: FormValues) {
+    const phone = normalizeIraqiPhone(data.phone);
+    if (!phone) {
+      form.setError("phone", { message: "أدخل رقم عراقي صحيح مثل 07700000000" });
+      return;
+    }
+    const details = withDerivedServiceDetails(serviceType, serviceDetails);
+    const errors = validateServiceDetails(serviceType, details);
+    setDetailErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      toast({
+        title: "أكمل تفاصيل الخدمة",
+        description: "يرجى مراجعة الحقول المطلوبة قبل إرسال الطلب.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     createOrder.mutate({
       data: {
         serviceId: id,
-        ...data
+        customerName: data.customerName,
+        phone,
+        eventDate: data.eventDate,
+        eventLocation: primaryLocationFromDetails(serviceType, details),
+        notes: data.notes,
+        customFields: details,
       }
     }, {
       onSuccess: (order) => {
@@ -134,7 +182,14 @@ export default function ServiceRequest() {
                     <FormControl>
                       <div className="relative">
                         <PhoneIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input placeholder="07XX XXX XXXX" dir="ltr" className="pr-10 text-right bg-background" {...field} />
+                        <Input
+                          placeholder="07XX XXX XXXX"
+                          dir="ltr"
+                          inputMode="numeric"
+                          className="pr-10 text-right bg-background"
+                          {...field}
+                          onChange={(e) => field.onChange(formatIraqiPhoneInput(e.target.value))}
+                        />
                       </div>
                     </FormControl>
                     <FormMessage />
@@ -147,7 +202,7 @@ export default function ServiceRequest() {
                 name="eventDate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>تاريخ المناسبة *</FormLabel>
+                    <FormLabel>تاريخ الحجز *</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <CalendarIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -159,21 +214,17 @@ export default function ServiceRequest() {
                 )}
               />
 
-              <FormField
-                control={form.control}
-                name="eventLocation"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>موقع المناسبة</FormLabel>
-                    <FormControl>
-                      <div className="relative">
-                        <MapPinIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input placeholder="العنوان التفصيلي (اختياري)" className="pr-10 bg-background" {...field} />
-                      </div>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
+              <ServiceDetailFields
+                serviceType={serviceType}
+                value={serviceDetails}
+                onChange={(next) => {
+                  setServiceDetails(next);
+                  setDetailErrors({});
+                }}
+                crews={crews}
+                errors={detailErrors}
+                grid={false}
+                density="form"
               />
 
               <FormField

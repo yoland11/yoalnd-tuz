@@ -1,3 +1,5 @@
+import { toWhatsAppPhone } from "@/lib/phone";
+
 export type StageDef = { value: string; label: string };
 
 export type ServiceFlow = {
@@ -86,8 +88,7 @@ export function getStageIndex(flow: ServiceFlow, status: string): number {
 }
 
 export function buildWhatsAppLink(phone: string, message: string): string {
-  const cleaned = phone.replace(/\D/g, "");
-  const intl = cleaned.startsWith("964") ? cleaned : cleaned.replace(/^0/, "964");
+  const intl = toWhatsAppPhone(phone) ?? phone.replace(/\D/g, "");
   return `https://wa.me/${intl}?text=${encodeURIComponent(message)}`;
 }
 

@@ -1,3 +1,5 @@
+import { toWhatsAppPhone } from "@/lib/phone";
+
 export type Stage = { id: string; label: string };
 
 export const PRODUCT_STAGES: Stage[] = [
@@ -81,12 +83,6 @@ export function getStageIndex(stages: Stage[], statusId: string): number {
 }
 
 export function buildWhatsAppLink(phone: string, message: string): string {
-  // Normalize Iraqi phone: drop leading 0, prepend 964 country code
-  const digits = phone.replace(/\D/g, "");
-  let intl = digits;
-  if (digits.startsWith("00964")) intl = digits.slice(2);
-  else if (digits.startsWith("964")) intl = digits;
-  else if (digits.startsWith("0"))   intl = "964" + digits.slice(1);
-  else                                intl = "964" + digits;
+  const intl = toWhatsAppPhone(phone) ?? phone.replace(/\D/g, "");
   return `https://wa.me/${intl}?text=${encodeURIComponent(message)}`;
 }

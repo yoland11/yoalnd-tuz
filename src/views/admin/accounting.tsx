@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "pnl";
 
@@ -138,7 +139,7 @@ function ReceiptsTab() {
             <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="الواصل من"><input value={editing.payerName} onChange={e => setEditing({ ...editing, payerName: e.target.value })} className={inputCls} /></Field>
-            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerPhone: e.target.value })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
+            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
             <Field label="طريقة الدفع">
               <select value={editing.method} onChange={e => setEditing({ ...editing, method: e.target.value })} className={inputCls}>
                 {METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -154,7 +155,7 @@ function ReceiptsTab() {
                 date: editing.date,
                 amount: editing.amount,
                 payerName: editing.payerName,
-                customerPhone: editing.customerPhone || undefined,
+                customerPhone: editing.customerPhone ? normalizeIraqiPhone(editing.customerPhone) ?? editing.customerPhone : undefined,
                 reference: editing.reference || undefined,
                 method: editing.method,
                 notes: editing.notes || undefined,
@@ -441,7 +442,7 @@ function StatementTab() {
         {selected && (
           <div className="text-sm text-foreground bg-card rounded-lg border border-border/30 px-3 py-2">
             <strong className="text-primary">{selected.name || "—"}</strong>
-            <span className="text-muted-foreground mr-2">{selected.phone}</span>
+            <span className="text-muted-foreground mr-2">{formatIraqiPhone(selected.phone)}</span>
             <button onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</button>
           </div>
         )}
@@ -451,7 +452,7 @@ function StatementTab() {
         <Modal title="اختر زبون" onClose={() => setPickerOpen(false)}>
           <div className="relative mb-3">
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
+            <input autoFocus value={search} onChange={e => setSearch(formatIraqiPhoneInput(e.target.value) || e.target.value)}
               placeholder="ابحث بالاسم أو الهاتف..."
               className={`${inputCls} pr-10`} />
           </div>
@@ -462,7 +463,7 @@ function StatementTab() {
               <button key={c.id} onClick={() => { setSelected({ id: c.id, name: c.name, phone: c.phone }); setPickerOpen(false); }}
                 className="w-full text-right p-3 hover:bg-background/50 flex justify-between items-center">
                 <span className="text-foreground">{c.name || "—"}</span>
-                <span className="text-xs text-muted-foreground">{c.phone}</span>
+                <span className="text-xs text-muted-foreground">{formatIraqiPhone(c.phone)}</span>
               </button>
             ))}
           </div>

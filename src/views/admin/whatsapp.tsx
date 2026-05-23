@@ -4,6 +4,7 @@ import { Save, Send, RefreshCw, Trash2, CheckCircle2, XCircle, KeyRound } from "
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch } from "./_lib";
+import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 
 type EnvVarStatus = { key: string; label: string; set: boolean };
 type Settings = {
@@ -272,7 +273,7 @@ export default function WhatsappPage() {
             <label className="block text-xs text-muted-foreground mb-1">رقم الهاتف</label>
             <input
               value={testPhone}
-              onChange={e => setTestPhone(e.target.value)}
+              onChange={e => setTestPhone(formatIraqiPhoneInput(e.target.value))}
               placeholder="07701234567"
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
             />
@@ -321,7 +322,7 @@ export default function WhatsappPage() {
                       {r.status === "sent"
                         ? <CheckCircle2 className="w-4 h-4 text-green-400" />
                         : <XCircle className="w-4 h-4 text-red-400" />}
-                      <span className="font-mono">{r.phone || "—"}</span>
+                      <span className="font-mono">{r.phone ? formatIraqiPhone(r.phone) : "—"}</span>
                       <span className="text-xs text-muted-foreground">· {EVENT_LABELS[r.event] ?? r.event}</span>
                       {r.provider && <span className="text-[10px] text-muted-foreground">[{r.provider}]</span>}
                     </div>

@@ -1,3 +1,5 @@
+import { toWhatsAppPhone } from "@/lib/phone";
+
 export type Stage = { value: string; label: string };
 
 const PRODUCT_STAGES: Stage[] = [
@@ -86,11 +88,6 @@ export function getStageIndex(serviceType: string | null | undefined, status: st
 export const CANCELLED_STATUS = { value: "cancelled", label: "ملغي" };
 
 export function buildWhatsAppLink(phone: string, message: string): string {
-  const digits = phone.replace(/\D/g, "");
-  const normalized = digits.startsWith("964")
-    ? digits
-    : digits.startsWith("0")
-    ? `964${digits.slice(1)}`
-    : `964${digits}`;
+  const normalized = toWhatsAppPhone(phone) ?? phone.replace(/\D/g, "");
   return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
 }

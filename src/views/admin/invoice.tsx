@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRoute, useSearch } from "wouter";
 import { Printer, ArrowRight, Download } from "lucide-react";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
+import { formatIraqiPhone } from "@/lib/phone";
 
 type InvoiceData = any;
 
@@ -134,7 +135,7 @@ export default function Invoice() {
           <div>
             <p className="text-xs text-neutral-500 mb-1">الزبون</p>
             <p className="font-semibold">{data.customerName}</p>
-            <p className="text-neutral-700">{data.customerPhone}</p>
+            <p className="text-neutral-700">{formatIraqiPhone(data.customerPhone)}</p>
           </div>
           {isBooking ? (
             <div>

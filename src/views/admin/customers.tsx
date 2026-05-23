@@ -4,6 +4,7 @@ import { Search, X, ShoppingBag, Sparkles } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 
 type Customer = {
   id: number; name: string; phone: string; role: string;
@@ -36,7 +37,7 @@ export default function CustomersPage() {
 
       <div className="relative">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <input value={search} onChange={e => setSearch(e.target.value)}
+        <input value={search} onChange={e => setSearch(formatIraqiPhoneInput(e.target.value) || e.target.value)}
           placeholder="بحث باسم أو هاتف..."
           className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
       </div>
@@ -58,7 +59,7 @@ export default function CustomersPage() {
               {data.map(c => (
                 <tr key={c.id} className="hover:bg-background/30 cursor-pointer" onClick={() => setSelectedId(c.id)}>
                   <td className="p-3 text-foreground">{c.name || "—"}</td>
-                  <td className="p-3 text-muted-foreground" dir="ltr">{c.phone}</td>
+                  <td className="p-3 text-muted-foreground" dir="ltr">{formatIraqiPhone(c.phone)}</td>
                   <td className="p-3"><span className="text-primary font-semibold">{c.orderCount}</span></td>
                   <td className="p-3 text-primary">{formatCurrency(c.totalSpent)}</td>
                   <td className="p-3 text-xs text-primary">عرض ←</td>
@@ -80,7 +81,7 @@ export default function CustomersPage() {
               <div className="p-6 space-y-6">
                 <div className="grid grid-cols-2 gap-4">
                   <Info label="الاسم" value={detail.name || "—"} />
-                  <Info label="الهاتف" value={detail.phone} ltr />
+                  <Info label="الهاتف" value={formatIraqiPhone(detail.phone)} ltr />
                   <Info label="منذ" value={new Date(detail.createdAt).toLocaleDateString("ar-IQ")} />
                   <Info label="النوع" value={detail.role} />
                 </div>

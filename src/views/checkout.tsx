@@ -9,6 +9,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { CheckCircle, Package, MapPin, ExternalLink } from "lucide-react";
+import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 
 export default function Checkout() {
   const [, navigate] = useLocation();
@@ -66,20 +67,26 @@ export default function Checkout() {
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
     const { name, value } = e.target;
+    const nextValue = name === "customerPhone" ? formatIraqiPhoneInput(value) : value;
     setForm(f => ({
       ...f,
-      [name]: name === "deliveryZoneId" ? parseInt(value) : value,
+      [name]: name === "deliveryZoneId" ? parseInt(value) : nextValue,
       ...(name === "deliveryZoneId" ? { governorate: zones?.find(z => z.id === parseInt(value))?.governorateAr ?? "", area: "" } : {}),
     }));
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const customerPhone = normalizeIraqiPhone(form.customerPhone);
+    if (!customerPhone) {
+      alert("أدخل رقم عراقي صحيح مثل 07700000000");
+      return;
+    }
     createOrder.mutate(
       {
         data: {
           customerName: form.customerName,
-          customerPhone: form.customerPhone,
+          customerPhone,
           governorate: form.governorate,
           area: form.area || undefined,
           address: form.address,
@@ -157,6 +164,7 @@ export default function Checkout() {
                   onChange={handleChange}
                   required
                   type="tel"
+                  inputMode="numeric"
                   className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
                   placeholder="07700000000"
                 />

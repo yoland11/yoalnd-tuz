@@ -17,6 +17,7 @@ const NAV: NavItem[] = [
   { href: "/admin/gallery",    label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
   { href: "/admin/delivery",   label: "التوصيل",            icon: Truck,           perm: "delivery" },
   { href: "/admin/customers",  label: "العملاء",            icon: Users,           perm: "customers" },
+  { href: "/admin/crews",      label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
   { href: "/admin/staff",      label: "الموظفون",           icon: UserCog,         perm: "staff" },
   { href: "/admin/accounting", label: "الحسابات",            icon: Wallet,          perm: "accounting" },
   { href: "/admin/whatsapp",   label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },

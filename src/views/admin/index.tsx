@@ -15,6 +15,7 @@ import CategoriesPage from "./categories";
 import GalleryPage from "./gallery";
 import DeliveryPage from "./delivery";
 import CustomersPage from "./customers";
+import CrewsPage from "./crews";
 import StaffPage from "./staff";
 import AccountingPage from "./accounting";
 import WhatsappPage from "./whatsapp";
@@ -76,6 +77,7 @@ export default function Admin() {
         <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"  ><GalleryPage    /></Guard>}</Route>
         <Route path="/admin/delivery"  >{() => <Guard me={me} perm="delivery" ><DeliveryPage   /></Guard>}</Route>
         <Route path="/admin/customers" >{() => <Guard me={me} perm="customers"><CustomersPage  /></Guard>}</Route>
+        <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>
         <Route path="/admin/staff"     >{() => <Guard me={me} perm="staff"    ><StaffPage      /></Guard>}</Route>
         <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
         <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>

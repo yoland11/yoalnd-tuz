@@ -1,4 +1,5 @@
 import { db, whatsappSettingsTable, whatsappLogTable } from "@workspace/db";
+import { normalizeIraqiPhone, toWhatsAppPhone } from "@/lib/phone";
 
 const logger = {
   warn: (...args: unknown[]) => console.warn(...args),
@@ -162,15 +163,6 @@ export function getProviderStatus(): Record<string, { configured: boolean; envVa
   return out;
 }
 
-export function normalizeIraqiPhone(phone: string): string {
-  const digits = (phone ?? "").replace(/\D/g, "");
-  if (!digits) return "";
-  if (digits.startsWith("00964")) return digits.slice(2);
-  if (digits.startsWith("964")) return digits;
-  if (digits.startsWith("0")) return "964" + digits.slice(1);
-  return "964" + digits;
-}
-
 export function renderTemplate(
   tpl: string,
   vars: Record<string, string | number | null | undefined>,
@@ -251,6 +243,26 @@ async function sendUltraMsg(to: string, body: string): Promise<SendResult> {
   return { ok: false, error: JSON.stringify(json) };
 }
 
+function safeSendError(errorValue: unknown): string {
+  return String(errorValue ?? "unknown").slice(0, 300);
+}
+
+export async function sendOtpViaUltraMsg(phone: string, code: string): Promise<SendResult> {
+  const to = toWhatsAppPhone(phone);
+  if (!to) return { ok: false, error: "invalid-phone" };
+  try {
+    const result = await sendUltraMsg(to, `رمز الدخول الخاص بك هو: ${code}`);
+    if (!result.ok) {
+      logger.warn({ event: "otp", to, err: safeSendError(result.error) }, "UltraMsg OTP send failed");
+    }
+    return result;
+  } catch (err: any) {
+    const message = safeSendError(err?.message ?? err);
+    logger.warn({ event: "otp", to, err: message }, "UltraMsg OTP send failed");
+    return { ok: false, error: message };
+  }
+}
+
 async function sendTwilio(to: string, body: string): Promise<SendResult> {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
@@ -326,7 +338,7 @@ export async function whatsappSend(
   settings?: WaSettings,
 ): Promise<SendResult> {
   const s = settings ?? (await getSettings());
-  const to = normalizeIraqiPhone(phone);
+  const to = normalizeIraqiPhone(phone) ?? "";
   let result: SendResult = { ok: false, error: "no-phone" };
   if (!to) {
     await logEntry(to, event, message, "failed", "phone empty", s.provider);
@@ -339,7 +351,7 @@ export async function whatsappSend(
   }
   await logEntry(to, event, message, result.ok ? "sent" : "failed", result.error, s.provider);
   if (!result.ok) {
-    logger.warn({ event, to, err: result.error }, "whatsapp send failed");
+    logger.warn({ event, to, err: safeSendError(result.error) }, "whatsapp send failed");
   }
   return result;
 }
