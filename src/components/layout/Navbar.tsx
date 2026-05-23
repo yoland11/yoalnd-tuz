@@ -2,10 +2,12 @@ import { Link, useLocation } from "wouter";
 import { Search, ShoppingBag, User, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 export function Navbar() {
   const [location] = useLocation();
   const { data: cart } = useGetCart();
+  const { data: settings } = usePublicSettings();
 
   const cartItemCount = cart?.itemCount || 0;
 
@@ -15,9 +17,11 @@ export function Navbar() {
         
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2">
-          <span className="font-bold text-xl tracking-tight text-primary uppercase">AJN</span>
+          <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-full w-full object-contain" />
+          </span>
           <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
-          <span className="font-semibold text-lg hidden sm:block">مجموعة علي جان</span>
+          <span className="font-semibold text-lg hidden sm:block">{settings?.site_name ?? "مجموعة علي جان"}</span>
         </Link>
 
         {/* Desktop Navigation */}

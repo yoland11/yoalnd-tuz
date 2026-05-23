@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLocation, Link } from "wouter";
-import { Settings as SettingsIcon, Loader2, ArrowRight } from "lucide-react";
+import { Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fetchAdminMe, loginAdmin, hasPerm } from "./_lib";
 import { ADMIN_NAV } from "./_layout";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 export default function AdminLogin() {
   const [, setLocation] = useLocation();
@@ -12,6 +13,7 @@ export default function AdminLogin() {
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { data: settings } = usePublicSettings();
 
   useEffect(() => {
     let alive = true;
@@ -55,10 +57,10 @@ export default function AdminLogin() {
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
-            <SettingsIcon className="w-8 h-8 text-primary" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-12 w-12 object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">دخول الإدارة</h1>
-          <p className="text-muted-foreground text-sm mt-1">مجموعة علي جان</p>
+          <p className="text-muted-foreground text-sm mt-1">{settings?.site_name ?? "مجموعة علي جان"}</p>
         </div>
         <div className="bg-card rounded-2xl border border-border/30 p-8">
           <form onSubmit={handleLogin} className="space-y-4">

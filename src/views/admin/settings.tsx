@@ -15,6 +15,8 @@ type Settings = {
   deliveryFee: number;
   deliveryTime: string;
   address: string;
+  city: string;
+  mapUrl: string;
 };
 
 export default function SettingsPage() {
@@ -29,9 +31,10 @@ export default function SettingsPage() {
   useEffect(() => { if (data && !form) setForm(data); }, [data, form]);
 
   const save = useMutation({
-    mutationFn: (s: Settings) => adminFetch("/admin/settings", { method: "PUT", body: JSON.stringify(s) }),
+    mutationFn: (s: Settings) => adminFetch("/admin/settings", { method: "PATCH", body: JSON.stringify(s) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "settings"] });
+      qc.invalidateQueries({ queryKey: ["settings", "public"] });
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
     },
@@ -39,7 +42,13 @@ export default function SettingsPage() {
 
   async function handleLogoUpload(file: File) {
     const dataUrl = await fileToDataUrl(file);
-    setForm(f => ({ ...f!, logoUrl: dataUrl }));
+    const res = await adminFetch<{ logoUrl: string }>("/admin/settings/logo", {
+      method: "POST",
+      body: JSON.stringify({ logoUrl: dataUrl }),
+    });
+    setForm(f => ({ ...f!, logoUrl: res.logoUrl }));
+    qc.invalidateQueries({ queryKey: ["admin", "settings"] });
+    qc.invalidateQueries({ queryKey: ["settings", "public"] });
   }
   async function handleQrUpload(file: File) {
     const dataUrl = await fileToDataUrl(file);
@@ -60,9 +69,11 @@ export default function SettingsPage() {
       <Section title="معلومات الموقع">
         <Field label="اسم الموقع" value={form.siteName} onChange={v => setForm(f => ({ ...f!, siteName: v }))} />
         <Field label="العنوان" value={form.address} onChange={v => setForm(f => ({ ...f!, address: v }))} />
+        <Field label="المدينة / المحافظة" value={form.city ?? ""} onChange={v => setForm(f => ({ ...f!, city: v }))} />
+        <Field label="رابط موقع المحل" value={form.mapUrl ?? ""} onChange={v => setForm(f => ({ ...f!, mapUrl: v }))} placeholder="https://maps.google.com/..." />
         <div>
           <label className="block text-xs text-muted-foreground mb-1">الشعار (Logo)</label>
-          {form.logoUrl && <img src={form.logoUrl} alt="شعار" className="h-16 mb-2 rounded-lg bg-background/40 p-2" />}
+          {form.logoUrl && <img src={form.logoUrl} alt="شعار" className="h-16 w-36 mb-2 rounded-lg bg-background/40 p-2 object-contain" />}
           <div className="flex gap-2 items-center">
             <label className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary/10 text-primary border border-primary/30 cursor-pointer hover:bg-primary/20">
               <Upload className="w-3.5 h-3.5" /> رفع

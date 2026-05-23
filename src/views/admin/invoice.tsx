@@ -3,6 +3,7 @@ import { useRoute, useSearch } from "wouter";
 import { Printer, ArrowRight, Download } from "lucide-react";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type InvoiceData = any;
 
@@ -22,6 +23,7 @@ export default function Invoice() {
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const { data: settings } = usePublicSettings();
 
   useEffect(() => {
     let alive = true;
@@ -111,9 +113,12 @@ export default function Invoice() {
       <div ref={sheetRef} className="invoice-sheet max-w-3xl mx-auto p-8 print:p-6 bg-white text-black">
         {/* Header */}
         <div className="flex items-start justify-between border-b-2 border-amber-500 pb-4 mb-6">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">AJN</h1>
-            <p className="text-sm text-neutral-600">مجموعة علي جان — طوزخورماتو</p>
+          <div className="flex items-center gap-3">
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-14 w-24 object-contain" />
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">{settings?.site_name ?? "AJN"}</h1>
+              <p className="text-sm text-neutral-600">{settings?.address || "مجموعة علي جان — طوزخورماتو"}</p>
+            </div>
           </div>
           <div className="text-left">
             <p className="text-xs text-neutral-500">{isBooking ? "رقم الحجز" : "رقم الفاتورة"}</p>

@@ -2,11 +2,16 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useGetFeaturedProducts } from "@workspace/api-client-react";
-import { ShoppingCart } from "lucide-react";
+import { MapPin, MessageCircle, Phone, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { buildWhatsAppLink } from "@/lib/order-stages";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
+  const { data: settings } = usePublicSettings();
+  const siteName = settings?.site_name ?? "مجموعة علي جان";
+  const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار عن خدمات AJN") : "";
 
   return (
     <div className="flex flex-col w-full">
@@ -22,12 +27,30 @@ export default function Home() {
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
+          <img src={logoSrc(settings)} alt={siteName} className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg font-serif">
-            مجموعة علي جان
+            {siteName}
           </h1>
           <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow">
             للمناسبات والتجهيزات
           </p>
+          <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85">
+            {settings?.phone && (
+              <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-2 hover:text-primary transition-colors">
+                <Phone className="w-4 h-4" /> {settings.phone}
+              </a>
+            )}
+            {waLink && (
+              <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
+                <MessageCircle className="w-4 h-4" /> واتساب
+              </a>
+            )}
+            {settings?.map_url && (
+              <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
+                <MapPin className="w-4 h-4" /> موقع المحل
+              </a>
+            )}
+          </div>
           
           <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto">
             <Link href="/services">
@@ -170,7 +193,7 @@ export default function Home() {
         <div className="container mx-auto px-4 text-center relative z-10 max-w-3xl">
           <h2 className="text-3xl font-serif text-primary mb-6">قصتنا</h2>
           <p className="text-lg text-muted-foreground leading-relaxed mb-8">
-            تأسست مجموعة علي جان في طوزخورماتو لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.
+            تأسست {siteName} في {settings?.city || "طوزخورماتو"} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.
           </p>
           <div className="flex justify-center gap-4">
             <div className="w-16 h-[1px] bg-primary/40 mt-4" />

@@ -15,16 +15,20 @@ import {
   Package,
   Pencil,
   Phone,
+  Plus,
   Printer,
   Search,
   Settings,
   ShoppingBag,
+  Star,
+  Trash2,
   User,
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { formatIraqiPhone } from "@/lib/phone";
+import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { usePublicSettings } from "@/lib/public-settings";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -46,6 +50,33 @@ type Customer = {
   avatarUrl?: string;
   address?: string;
   city?: string;
+};
+
+type CustomerAddress = {
+  id: number;
+  type: "home" | "work" | "other";
+  fullName: string;
+  phone: string;
+  governorate: string;
+  city: string;
+  address: string;
+  landmark: string;
+  notes: string;
+  isDefault: boolean;
+};
+
+type AddressForm = Omit<CustomerAddress, "id">;
+
+const emptyAddressForm: AddressForm = {
+  type: "home",
+  fullName: "",
+  phone: "",
+  governorate: "",
+  city: "",
+  address: "",
+  landmark: "",
+  notes: "",
+  isDefault: false,
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -76,11 +107,43 @@ function InfoItem({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
+function addressTypeLabel(type: string): string {
+  if (type === "work") return "العمل";
+  if (type === "other") return "عنوان آخر";
+  return "المنزل";
+}
+
+function AddressInput({
+  label,
+  value,
+  onChange,
+  inputMode,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+}) {
+  return (
+    <label className="block">
+      <span className="block text-xs text-muted-foreground mb-1">{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        inputMode={inputMode}
+        className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+      />
+    </label>
+  );
+}
+
 export default function Profile() {
   const [, navigate] = useLocation();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [cart, setCart] = useState<any>(null);
+  const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card">("cash");
   const [loading, setLoading] = useState(true);
   const [trackCode, setTrackCode] = useState("");
   const [trackResult, setTrackResult] = useState<any>(null);
@@ -90,6 +153,13 @@ export default function Profile() {
   const [profileForm, setProfileForm] = useState({ fullName: "", email: "", address: "", city: "" });
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const [addressForm, setAddressForm] = useState<AddressForm>(emptyAddressForm);
+  const [editingAddressId, setEditingAddressId] = useState<number | null>(null);
+  const [showAddressForm, setShowAddressForm] = useState(false);
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [savingPayment, setSavingPayment] = useState(false);
+  const { data: settings } = usePublicSettings();
 
   useEffect(() => {
     let mounted = true;
@@ -97,8 +167,10 @@ export default function Profile() {
       fetchJson<Customer>("/api/auth/me"),
       fetchJson<any[]>("/api/orders/my").catch(() => []),
       fetchJson<any>("/api/cart").catch(() => null),
+      fetchJson<CustomerAddress[]>("/api/customer/addresses").catch(() => []),
+      fetchJson<{ defaultPaymentMethod: "cash" | "card" }>("/api/customer/preferences").catch(() => ({ defaultPaymentMethod: "cash" as const })),
     ])
-      .then(([me, myOrders, myCart]) => {
+      .then(([me, myOrders, myCart, savedAddresses, preferences]) => {
         if (!mounted) return;
         setCustomer(me);
         setProfileForm({
@@ -109,6 +181,8 @@ export default function Profile() {
         });
         setOrders(myOrders);
         setCart(myCart);
+        setAddresses(savedAddresses);
+        setPaymentMethod(preferences.defaultPaymentMethod);
       })
       .catch(() => navigate("/login"))
       .finally(() => mounted && setLoading(false));
@@ -119,7 +193,7 @@ export default function Profile() {
 
   const productOrders = useMemo(() => orders.filter((order) => order.kind !== "service"), [orders]);
   const serviceOrders = useMemo(() => orders.filter((order) => order.kind === "service"), [orders]);
-  const ajnWhatsApp = buildWhatsAppLink("07701234567", "مرحباً، أحتاج مساعدة بخصوص حسابي");
+  const ajnWhatsApp = buildWhatsAppLink(settings?.whatsapp || settings?.phone || "07701234567", "مرحباً، أحتاج مساعدة بخصوص حسابي");
 
   async function logout() {
     await fetchJson("/api/auth/logout", { method: "POST" }).catch(() => null);
@@ -142,6 +216,80 @@ export default function Profile() {
       setProfileError(err?.message || "تعذر حفظ الملف");
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  function startAddressCreate(type: AddressForm["type"] = "home") {
+    setEditingAddressId(null);
+    setAddressError("");
+    setAddressForm({
+      ...emptyAddressForm,
+      type,
+      fullName: customer?.fullName || customer?.name || "",
+      phone: customer?.phone ? formatIraqiPhone(customer.phone) : "",
+      city: customer?.city || "",
+      address: customer?.address || "",
+    });
+    setShowAddressForm(true);
+  }
+
+  function startAddressEdit(address: CustomerAddress) {
+    setEditingAddressId(address.id);
+    setAddressError("");
+    setAddressForm({ ...address, phone: formatIraqiPhone(address.phone) });
+    setShowAddressForm(true);
+  }
+
+  async function saveAddress(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingAddress(true);
+    setAddressError("");
+    try {
+      const method = editingAddressId ? "PATCH" : "POST";
+      const url = editingAddressId ? `/api/customer/addresses/${editingAddressId}` : "/api/customer/addresses";
+      const saved = await fetchJson<CustomerAddress>(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(addressForm),
+      });
+      setAddresses((rows) => {
+        const next = editingAddressId ? rows.map((row) => row.id === saved.id ? saved : row) : [saved, ...rows];
+        return saved.isDefault ? next.map((row) => ({ ...row, isDefault: row.id === saved.id })) : next;
+      });
+      setShowAddressForm(false);
+      setEditingAddressId(null);
+    } catch (err: any) {
+      setAddressError(err?.message || "تعذر حفظ العنوان");
+    } finally {
+      setSavingAddress(false);
+    }
+  }
+
+  async function deleteAddress(id: number) {
+    await fetchJson(`/api/customer/addresses/${id}`, { method: "DELETE" });
+    setAddresses((rows) => rows.filter((row) => row.id !== id));
+  }
+
+  async function makeDefaultAddress(address: CustomerAddress) {
+    const saved = await fetchJson<CustomerAddress>(`/api/customer/addresses/${address.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isDefault: true }),
+    });
+    setAddresses((rows) => rows.map((row) => ({ ...row, isDefault: row.id === saved.id })));
+  }
+
+  async function savePaymentPreference(method: "cash" | "card") {
+    setSavingPayment(true);
+    try {
+      const saved = await fetchJson<{ defaultPaymentMethod: "cash" | "card" }>("/api/customer/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ defaultPaymentMethod: method }),
+      });
+      setPaymentMethod(saved.defaultPaymentMethod);
+    } finally {
+      setSavingPayment(false);
     }
   }
 
@@ -306,23 +454,112 @@ export default function Profile() {
 
             <Section title="العناوين المحفوظة" icon={MapPin}>
               <div className="space-y-3">
-                <InfoItem label="المنزل" value={customer.address || customer.city} />
-                <InfoItem label="العمل" value="" />
-                <Button variant="outline" className="w-full gap-2">
-                  <Home className="w-4 h-4" />
-                  إضافة عنوان جديد
-                </Button>
+                {addresses.length === 0 && !showAddressForm && (
+                  <div className="rounded-xl bg-background/60 border border-border/25 p-4 text-sm text-muted-foreground">
+                    لا توجد عناوين محفوظة بعد.
+                  </div>
+                )}
+                {addresses.map((address) => (
+                  <div key={address.id} className="rounded-xl bg-background/60 border border-border/25 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-sm font-semibold text-foreground">{addressTypeLabel(address.type)}</p>
+                          {address.isDefault && <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">افتراضي</span>}
+                        </div>
+                        <p className="text-sm text-muted-foreground">{address.fullName} · {formatIraqiPhone(address.phone)}</p>
+                        <p className="text-sm text-foreground mt-1">{address.governorate} / {address.city}</p>
+                        <p className="text-xs text-muted-foreground mt-1 break-words">{address.address}</p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {!address.isDefault && (
+                          <button type="button" onClick={() => makeDefaultAddress(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title="تعيين افتراضي">
+                            <Star className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button type="button" onClick={() => startAddressEdit(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title="تعديل">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button type="button" onClick={() => deleteAddress(address.id)} className="p-2 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10" title="حذف">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {showAddressForm && (
+                  <form onSubmit={saveAddress} className="rounded-xl bg-background/60 border border-border/25 p-4 space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <label className="block">
+                        <span className="block text-xs text-muted-foreground mb-1">نوع العنوان</span>
+                        <select value={addressForm.type} onChange={(e) => setAddressForm((form) => ({ ...form, type: e.target.value as AddressForm["type"] }))} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus:outline-none focus:border-primary/50">
+                          <option value="home">المنزل</option>
+                          <option value="work">العمل</option>
+                          <option value="other">عنوان آخر</option>
+                        </select>
+                      </label>
+                      <AddressInput label="الاسم الكامل" value={addressForm.fullName} onChange={(fullName) => setAddressForm((form) => ({ ...form, fullName }))} />
+                      <AddressInput label="رقم الهاتف" value={addressForm.phone} onChange={(phone) => setAddressForm((form) => ({ ...form, phone: formatIraqiPhoneInput(phone) }))} inputMode="numeric" />
+                      <AddressInput label="المحافظة" value={addressForm.governorate} onChange={(governorate) => setAddressForm((form) => ({ ...form, governorate }))} />
+                      <AddressInput label="المدينة" value={addressForm.city} onChange={(city) => setAddressForm((form) => ({ ...form, city }))} />
+                      <AddressInput label="العنوان التفصيلي" value={addressForm.address} onChange={(address) => setAddressForm((form) => ({ ...form, address }))} />
+                      <AddressInput label="أقرب نقطة دالة" value={addressForm.landmark} onChange={(landmark) => setAddressForm((form) => ({ ...form, landmark }))} />
+                      <AddressInput label="ملاحظات" value={addressForm.notes} onChange={(notes) => setAddressForm((form) => ({ ...form, notes }))} />
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-foreground">
+                      <input type="checkbox" checked={addressForm.isDefault} onChange={(e) => setAddressForm((form) => ({ ...form, isDefault: e.target.checked }))} />
+                      عنوان افتراضي
+                    </label>
+                    {addressError && <p className="text-sm text-red-400">{addressError}</p>}
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button type="submit" disabled={savingAddress} className="gap-2">
+                        {savingAddress && <Loader2 className="w-4 h-4 animate-spin" />}
+                        حفظ العنوان
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => setShowAddressForm(false)}>إلغاء</Button>
+                    </div>
+                  </form>
+                )}
+                {!showAddressForm && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <Button variant="outline" className="gap-2" onClick={() => startAddressCreate("home")}>
+                      <Home className="w-4 h-4" />
+                      المنزل
+                    </Button>
+                    <Button variant="outline" className="gap-2" onClick={() => startAddressCreate("work")}>
+                      <MapPin className="w-4 h-4" />
+                      العمل
+                    </Button>
+                    <Button variant="outline" className="gap-2" onClick={() => startAddressCreate("other")}>
+                      <Plus className="w-4 h-4" />
+                      عنوان جديد
+                    </Button>
+                  </div>
+                )}
               </div>
             </Section>
 
             <Section title="طرق الدفع" icon={Wallet}>
               <div className="grid grid-cols-2 gap-3">
-                <InfoItem label="كاش" value="متاح" />
-                <InfoItem label="بطاقة" value="اختياري" />
+                {(["cash", "card"] as const).map((method) => (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => savePaymentPreference(method)}
+                    disabled={savingPayment}
+                    className={`rounded-xl border p-4 text-right transition-colors ${paymentMethod === method ? "border-primary bg-primary/10 text-primary" : "border-border/25 bg-background/60 text-foreground hover:border-primary/40"}`}
+                  >
+                    <p className="text-xs text-muted-foreground mb-1">{method === "cash" ? "كاش" : "بطاقة"}</p>
+                    <p className="text-sm font-semibold">{paymentMethod === method ? "طريقة افتراضية" : method === "cash" ? "متاح دائماً" : "اختياري"}</p>
+                  </button>
+                ))}
               </div>
-              <Button variant="outline" className="w-full mt-3 gap-2">
+              <p className="text-xs text-muted-foreground mt-3 rounded-xl bg-background/60 border border-border/25 p-3">
+                لا يتم حفظ بيانات البطاقة داخل النظام.
+              </p>
+              <Button variant="outline" className="w-full mt-3 gap-2" onClick={() => savePaymentPreference(paymentMethod)} disabled={savingPayment}>
                 <CreditCard className="w-4 h-4" />
-                حفظ بيانات الدفع
+                حفظ طريقة الدفع
               </Button>
             </Section>
 

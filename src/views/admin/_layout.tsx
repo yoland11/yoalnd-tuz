@@ -5,6 +5,7 @@ import {
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database,
 } from "lucide-react";
 import { hasPerm, type AdminMe, type Permission } from "./_lib";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type NavItem = { href: string; label: string; icon: any; perm: Permission };
 
@@ -35,6 +36,7 @@ export function AdminLayout({
   me: AdminMe;
 }) {
   const [location] = useLocation();
+  const { data: settings } = usePublicSettings();
 
   const visibleNav = NAV.filter(item => hasPerm(me, item.perm));
 
@@ -42,8 +44,9 @@ export function AdminLayout({
     <div className="min-h-screen bg-background flex" dir="rtl">
       <aside className="w-60 bg-card border-l border-border/30 flex flex-col py-6 px-3 fixed right-0 top-0 h-full z-10 overflow-y-auto">
         <div className="px-3 mb-6">
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} className="h-12 w-28 object-contain mb-3" />
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
-          <h2 className="text-lg font-bold text-foreground">مجموعة علي جان</h2>
+          <h2 className="text-lg font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
           <p className="text-[11px] text-primary mt-2">
             {me.fullName || me.username}
             {me.role === "admin" && <span className="text-muted-foreground"> · مدير رئيسي</span>}

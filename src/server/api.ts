@@ -14,6 +14,8 @@ import {
   cartItemsTable,
   categoriesTable,
   crewsTable,
+  customerAddressesTable,
+  customerPreferencesTable,
   customersTable,
   deliveryZonesTable,
   expenseCategoriesTable,
@@ -127,6 +129,7 @@ let seedPromise: Promise<void> | null = null;
 let crewsTablePromise: Promise<void> | null = null;
 let otpTablePromise: Promise<void> | null = null;
 let customerProfilePromise: Promise<void> | null = null;
+let customerAddressTablesPromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -585,6 +588,41 @@ async function ensureCustomerProfileColumns(): Promise<void> {
       .then(() => undefined);
   }
   await customerProfilePromise;
+}
+
+async function ensureCustomerAddressTables(): Promise<void> {
+  if (!customerAddressTablesPromise) {
+    customerAddressTablesPromise = db.execute(sql`
+      create table if not exists "customer_addresses" (
+        "id" serial primary key,
+        "customer_id" integer not null references "customers"("id"),
+        "type" varchar(20) not null default 'home',
+        "full_name" text not null default '',
+        "phone" varchar(20) not null,
+        "governorate" text not null default '',
+        "city" text not null default '',
+        "address" text not null default '',
+        "landmark" text not null default '',
+        "notes" text not null default '',
+        "is_default" boolean not null default false,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      )
+    `)
+      .then(() => db.execute(sql`create index if not exists "customer_addresses_customer_id_idx" on "customer_addresses" ("customer_id")`))
+      .then(() => db.execute(sql`
+        create table if not exists "customer_preferences" (
+          "id" serial primary key,
+          "customer_id" integer not null references "customers"("id"),
+          "default_payment_method" varchar(20) not null default 'cash',
+          "created_at" timestamp not null default now(),
+          "updated_at" timestamp not null default now()
+        )
+      `))
+      .then(() => db.execute(sql`create unique index if not exists "customer_preferences_customer_id_unique" on "customer_preferences" ("customer_id")`))
+      .then(() => undefined);
+  }
+  await customerAddressTablesPromise;
 }
 
 async function cleanupOtpCodes(): Promise<void> {
@@ -1759,11 +1797,201 @@ const DEFAULT_SETTINGS: Record<string, any> = {
   deliveryFee: 5000,
   deliveryTime: "1-3 أيام",
   address: "طوزخورماتو، العراق",
+  city: "طوزخورماتو",
+  mapUrl: "",
 };
+
+async function loadSiteSettings(): Promise<Record<string, any>> {
+  const rows = await db.query.settingsTable.findMany();
+  const result: Record<string, any> = { ...DEFAULT_SETTINGS, social: { ...DEFAULT_SETTINGS.social } };
+  for (const r of rows) {
+    result[r.key] = r.value;
+  }
+  result.social = { ...DEFAULT_SETTINGS.social, ...(result.social ?? {}) };
+  result.phones = Array.isArray(result.phones) ? result.phones : [String(result.phone ?? "")].filter(Boolean);
+  return result;
+}
+
+function cleanPublicUrl(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("data:image/")) return raw;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
+  } catch {
+    return raw.startsWith("/") && !raw.startsWith("//") ? raw : "";
+  }
+}
+
+function publicSettingsPayload(settings: Record<string, any>) {
+  const phone = String(settings.phones?.[0] ?? settings.phone ?? "").trim();
+  const social = settings.social && typeof settings.social === "object" ? settings.social : {};
+  return {
+    site_name: String(settings.siteName ?? DEFAULT_SETTINGS.siteName),
+    phone,
+    whatsapp: String(social.whatsapp || settings.whatsapp || phone || ""),
+    address: String(settings.address ?? ""),
+    city: String(settings.city ?? ""),
+    map_url: cleanPublicUrl(settings.mapUrl ?? settings.map_url ?? ""),
+    social_links: {
+      instagram: cleanPublicUrl(social.instagram),
+      facebook: cleanPublicUrl(social.facebook),
+      whatsapp: String(social.whatsapp || ""),
+    },
+    logo_url: cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? ""),
+  };
+}
 
 const PAYMENT_METHODS = ["cod", "transfer", "paid"] as const;
 function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
   return (PAYMENT_METHODS as readonly string[]).includes(v as string) ? (v as any) : null;
+}
+
+function normalizeCustomerPayment(v: unknown): "cash" | "card" {
+  return v === "card" ? "card" : "cash";
+}
+
+function normalizeAddressType(v: unknown): "home" | "work" | "other" {
+  return v === "work" || v === "other" ? v : "home";
+}
+
+function addressPayload(row: any) {
+  return {
+    id: row.id,
+    type: row.type,
+    fullName: row.fullName,
+    phone: row.phone,
+    governorate: row.governorate,
+    city: row.city,
+    address: row.address,
+    landmark: row.landmark,
+    notes: row.notes,
+    isDefault: row.isDefault,
+    createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
+  };
+}
+
+async function normalizeAddressBody(input: any, customer: any, partial = false) {
+  const out: any = {};
+  if (!partial || input?.type !== undefined) out.type = normalizeAddressType(input?.type);
+  if (!partial || input?.fullName !== undefined) out.fullName = String(input?.fullName ?? customer.fullName ?? customer.name ?? "").trim().slice(0, 160);
+  if (!partial || input?.phone !== undefined) {
+    const phone = normalizeIraqiPhone(input?.phone ?? customer.phone);
+    if (!phone) throw new Error("رقم الهاتف العراقي غير صحيح");
+    out.phone = phone;
+  }
+  if (!partial || input?.governorate !== undefined) out.governorate = String(input?.governorate ?? "").trim().slice(0, 120);
+  if (!partial || input?.city !== undefined) out.city = String(input?.city ?? "").trim().slice(0, 120);
+  if (!partial || input?.address !== undefined) out.address = String(input?.address ?? "").trim().slice(0, 500);
+  if (!partial || input?.landmark !== undefined) out.landmark = String(input?.landmark ?? "").trim().slice(0, 250);
+  if (!partial || input?.notes !== undefined) out.notes = String(input?.notes ?? "").trim().slice(0, 500);
+  if (!partial || input?.isDefault !== undefined) out.isDefault = Boolean(input?.isDefault);
+  out.updatedAt = new Date();
+  return out;
+}
+
+async function handlePublicSettings(req: NextRequest, parts: string[]) {
+  if (req.method === "GET" && parts[1] === "public") {
+    return json(publicSettingsPayload(await loadSiteSettings()), 200, {
+      "Cache-Control": "no-store",
+    });
+  }
+  return null;
+}
+
+async function handleCustomer(req: NextRequest, parts: string[]) {
+  const method = req.method;
+  const section = parts[1];
+  const customerId = getCurrentCustomerId(req);
+  if (!customerId) return error("غير مخول", 401);
+  await ensureCustomerAddressTables();
+  await ensureCustomerProfileColumns();
+
+  const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+  if (!customer) return error("المستخدم غير موجود", 404);
+
+  if (section === "addresses") {
+    if (method === "GET") {
+      const rows = await db.query.customerAddressesTable.findMany({
+        where: eq(customerAddressesTable.customerId, customerId),
+        orderBy: [desc(customerAddressesTable.isDefault), desc(customerAddressesTable.updatedAt)],
+      });
+      return json(rows.map(addressPayload));
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      let values: any;
+      try {
+        values = await normalizeAddressBody(data, customer);
+      } catch (err: any) {
+        return error(err?.message ?? "بيانات العنوان غير صحيحة", 400);
+      }
+      if (!values.fullName || !values.phone || !values.governorate || !values.city || !values.address) {
+        return error("أكمل حقول العنوان الأساسية", 400);
+      }
+      if (values.isDefault) {
+        await db.update(customerAddressesTable).set({ isDefault: false, updatedAt: new Date() }).where(eq(customerAddressesTable.customerId, customerId));
+      }
+      const [row] = await db
+        .insert(customerAddressesTable)
+        .values({ ...values, customerId })
+        .returning();
+      return json(addressPayload(row), 201);
+    }
+    if (method === "PATCH" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const data = await body(req);
+      let patch: any;
+      try {
+        patch = await normalizeAddressBody(data, customer, true);
+      } catch (err: any) {
+        return error(err?.message ?? "بيانات العنوان غير صحيحة", 400);
+      }
+      if (patch.isDefault) {
+        await db.update(customerAddressesTable).set({ isDefault: false, updatedAt: new Date() }).where(eq(customerAddressesTable.customerId, customerId));
+      }
+      const [row] = await db
+        .update(customerAddressesTable)
+        .set(patch)
+        .where(and(eq(customerAddressesTable.id, id), eq(customerAddressesTable.customerId, customerId)))
+        .returning();
+      if (!row) return error("العنوان غير موجود", 404);
+      return json(addressPayload(row));
+    }
+    if (method === "DELETE" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      await db.delete(customerAddressesTable).where(and(eq(customerAddressesTable.id, id), eq(customerAddressesTable.customerId, customerId)));
+      return json({ message: "تم حذف العنوان" });
+    }
+  }
+
+  if (section === "preferences") {
+    if (method === "GET") {
+      const pref = await db.query.customerPreferencesTable.findFirst({
+        where: eq(customerPreferencesTable.customerId, customerId),
+      });
+      return json({ defaultPaymentMethod: pref?.defaultPaymentMethod ?? "cash" });
+    }
+    if (method === "PATCH") {
+      const data = await body(req);
+      const defaultPaymentMethod = normalizeCustomerPayment(data?.defaultPaymentMethod);
+      const [pref] = await db
+        .insert(customerPreferencesTable)
+        .values({ customerId, defaultPaymentMethod })
+        .onConflictDoUpdate({
+          target: customerPreferencesTable.customerId,
+          set: { defaultPaymentMethod, updatedAt: new Date() },
+        })
+        .returning();
+      return json({ defaultPaymentMethod: pref.defaultPaymentMethod });
+    }
+  }
+
+  return null;
 }
 
 async function handleAdmin(req: NextRequest, parts: string[]) {
@@ -1952,19 +2180,27 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "settings");
     if (isResponse(auth)) return auth;
     if (method === "GET") {
-      const rows = await db.query.settingsTable.findMany();
-      const result: Record<string, any> = { ...DEFAULT_SETTINGS };
-      for (const r of rows) result[r.key] = r.value;
-      return json(result);
+      return json(await loadSiteSettings());
     }
-    if (method === "PUT") {
+    if (method === "POST" && parts[2] === "logo") {
+      const data = await body(req);
+      const logoUrl = cleanPublicUrl(data?.logoUrl ?? data?.url ?? "");
+      if (!logoUrl) return error("رابط الشعار غير صالح", 400);
+      await db
+        .insert(settingsTable)
+        .values({ key: "logoUrl", value: logoUrl as any })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoUrl as any, updatedAt: new Date() } });
+      return json({ logoUrl, logo_url: logoUrl });
+    }
+    if (method === "PUT" || method === "PATCH") {
       const entries = Object.entries(await body(req));
       await Promise.all(
         entries.map(async ([key, value]) => {
+          const storedValue = key === "logoUrl" || key === "mapUrl" ? cleanPublicUrl(value) : value;
           await db
             .insert(settingsTable)
-            .values({ key, value: value as any })
-            .onConflictDoUpdate({ target: settingsTable.key, set: { value: value as any, updatedAt: new Date() } });
+            .values({ key, value: storedValue as any })
+            .onConflictDoUpdate({ target: settingsTable.key, set: { value: storedValue as any, updatedAt: new Date() } });
         }),
       );
       return json({ message: "تم الحفظ" });
@@ -3132,13 +3368,17 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
-    if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard") {
+    if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard" || root === "customer") {
       await ensureCustomerProfileColumns();
     }
 
     const route =
       root === "auth"
         ? await handleAuth(req, parts)
+        : root === "settings"
+          ? await handlePublicSettings(req, parts)
+          : root === "customer"
+            ? await handleCustomer(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
           : root === "services"
