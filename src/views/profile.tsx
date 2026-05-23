@@ -401,7 +401,7 @@ export default function Profile() {
                 <input
                   value={trackCode}
                   onChange={(e) => setTrackCode(e.target.value.toUpperCase())}
-                  placeholder="AJN1234567"
+                  placeholder="AJN-2089"
                   className="flex-1 bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground font-mono placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
                 />
                 <Button type="submit" disabled={trackLoading} className="gap-2">
@@ -411,14 +411,18 @@ export default function Profile() {
               </form>
               {trackError && <p className="text-sm text-red-400 mt-3">{trackError}</p>}
               {trackResult && (
-                <div className="mt-4 rounded-xl bg-background/60 border border-border/25 p-4 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-mono font-bold text-foreground">{trackResult.trackingCode}</p>
-                    <p className="text-sm text-muted-foreground">{STATUS_LABELS[trackResult.status] ?? trackResult.status}</p>
-                  </div>
-                  <Link href={`/track?code=${trackResult.trackingCode}`} className="text-primary text-sm font-medium">
-                    عرض التفاصيل
-                  </Link>
+                <div className="mt-4 space-y-3">
+                  {(Array.isArray(trackResult) ? trackResult : [trackResult]).map((result: any, index: number) => (
+                    <div key={`${result.kind ?? "order"}-${result.id ?? index}`} className="rounded-xl bg-background/60 border border-border/25 p-4 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-mono font-bold text-foreground">{result.trackingCode}</p>
+                        <p className="text-sm text-muted-foreground">{STATUS_LABELS[result.status] ?? result.status}</p>
+                      </div>
+                      <Link href={`/track?code=${result.trackingCode}`} className="text-primary text-sm font-medium">
+                        عرض التفاصيل
+                      </Link>
+                    </div>
+                  ))}
                 </div>
               )}
             </Section>

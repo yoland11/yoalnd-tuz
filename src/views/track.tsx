@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react";
 import { useSearch } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useTrackOrder, getTrackOrderQueryKey,
   useTrackOrdersByPhone, getTrackOrdersByPhoneQueryKey,
-  useRespondToBooking,
 } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock } from "lucide-react";
@@ -34,6 +33,7 @@ export default function Track() {
   const { data: phoneResults, isLoading: loadingPhone } = useTrackOrdersByPhone(searchPhone || "_", {
     query: { queryKey: getTrackOrdersByPhoneQueryKey(searchPhone || "_"), enabled: !!searchPhone },
   });
+  const codeResults = Array.isArray(order) ? order : order ? [order] : [];
 
   useEffect(() => {
     if (prefilledCode) setSearchCode(prefilledCode);
@@ -46,8 +46,8 @@ export default function Track() {
       setSearchCode(code.trim().toUpperCase());
     } else {
       setSearchCode("");
-      const last4 = phone.replace(/\D/g, "").slice(-4);
-      if (last4.length >= 3) setSearchPhone(last4);
+      const last4 = normalizePhoneDigits(phone).slice(-4);
+      if (last4.length === 4) setSearchPhone(last4);
     }
   }
 
@@ -82,7 +82,7 @@ export default function Track() {
             <input
               value={code}
               onChange={e => setCode(e.target.value)}
-              placeholder="AJN1234567"
+              placeholder="AJN-2089"
               className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg font-mono tracking-wider placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors uppercase"
             />
           ) : (
@@ -111,7 +111,18 @@ export default function Track() {
             <p className="text-muted-foreground">لم يتم العثور على طلب برمز: <span className="text-foreground font-mono">{searchCode}</span></p>
           </div>
         )}
-        {mode === "code" && order && <OrderCard tracking={order as any} />}
+        {mode === "code" && codeResults.length > 0 && (
+          <div className="space-y-6">
+            {codeResults.length > 1 && (
+              <p className="text-sm text-muted-foreground text-center">
+                يوجد أكثر من طلب بهذا الرمز. اختر الطلب حسب التاريخ والتفاصيل.
+              </p>
+            )}
+            {codeResults.map((o: any, i: number) => (
+              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} />
+            ))}
+          </div>
+        )}
 
         {/* Phone mode — list of orders */}
         {mode === "phone" && phoneResults && phoneResults.length === 0 && (
@@ -123,8 +134,8 @@ export default function Track() {
         {mode === "phone" && phoneResults && phoneResults.length > 0 && (
           <div className="space-y-6">
             <p className="text-sm text-muted-foreground text-center">عدد الطلبات: {phoneResults.length}</p>
-            {phoneResults.map((o, i) => (
-              <OrderCard key={i} tracking={o as any} />
+            {phoneResults.map((o: any, i: number) => (
+              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} />
             ))}
           </div>
         )}
@@ -328,17 +339,26 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const respond = useRespondToBooking({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getTrackOrderQueryKey(tracking.trackingCode) });
-        setMode("idle");
-        setRequestedDate("");
-        setNote("");
-        setError(null);
-      },
-      onError: (e: any) => setError(e?.message ?? "تعذر إرسال الرد، حاول مجدداً"),
+  const respond = useMutation({
+    mutationFn: async (data: { action: "confirm" | "reschedule"; requestedDate?: string; note?: string }) => {
+      const idQuery = tracking.id ? `?id=${encodeURIComponent(String(tracking.id))}` : "";
+      const res = await fetch(`/api/service-orders/track/${encodeURIComponent(tracking.trackingCode)}/respond${idQuery}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(payload?.error ?? "تعذر إرسال الرد، حاول مجدداً");
+      return payload;
     },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: getTrackOrderQueryKey(tracking.trackingCode) });
+      setMode("idle");
+      setRequestedDate("");
+      setNote("");
+      setError(null);
+    },
+    onError: (e: any) => setError(e?.message ?? "تعذر إرسال الرد، حاول مجدداً"),
   });
 
   const alreadyResponded = !!tracking.customerConfirmation;
@@ -367,7 +387,7 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
           <button
             type="button"
             disabled={respond.isPending}
-            onClick={() => respond.mutate({ trackingCode: tracking.trackingCode, data: { action: "confirm" } })}
+            onClick={() => respond.mutate({ action: "confirm" })}
             className="inline-flex items-center justify-center gap-2 bg-green-600/10 text-green-300 border border-green-600/30 hover:bg-green-600/20 disabled:opacity-50 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <CheckCircle className="w-4 h-4" /> تأكيد الموعد
@@ -386,10 +406,7 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
             e.preventDefault();
             setError(null);
             if (!requestedDate) { setError("الرجاء اختيار الموعد الجديد"); return; }
-            respond.mutate({
-              trackingCode: tracking.trackingCode,
-              data: { action: "reschedule", requestedDate, note: note || undefined },
-            });
+            respond.mutate({ action: "reschedule", requestedDate, note: note || undefined });
           }}
           className="space-y-3"
         >

@@ -19,7 +19,8 @@ export const servicesTable = pgTable("services", {
 export const serviceOrdersTable = pgTable("service_orders", {
   id: serial("id").primaryKey(),
   serviceId: integer("service_id").notNull().references(() => servicesTable.id),
-  trackingCode: varchar("tracking_code", { length: 20 }).unique(),
+  trackingCode: varchar("tracking_code", { length: 20 }),
+  phoneLast4: varchar("phone_last4", { length: 4 }),
   customerName: text("customer_name").notNull(),
   phone: varchar("phone", { length: 20 }).notNull(),
   eventDate: text("event_date"),

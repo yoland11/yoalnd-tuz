@@ -5,7 +5,8 @@ import { customersTable } from "./customers";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
-  trackingCode: varchar("tracking_code", { length: 20 }).notNull().unique(),
+  trackingCode: varchar("tracking_code", { length: 20 }).notNull(),
+  phoneLast4: varchar("phone_last4", { length: 4 }),
   customerId: integer("customer_id").references(() => customersTable.id),
   customerName: text("customer_name").notNull(),
   customerPhone: varchar("customer_phone", { length: 20 }).notNull(),

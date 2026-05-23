@@ -138,6 +138,7 @@ let crewsTablePromise: Promise<void> | null = null;
 let otpTablePromise: Promise<void> | null = null;
 let customerProfilePromise: Promise<void> | null = null;
 let customerAddressTablesPromise: Promise<void> | null = null;
+let trackingColumnsPromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -212,6 +213,32 @@ function generateTrackingCode(prefix = "AJN"): string {
   let code = prefix;
   for (let i = 0; i < 7; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
+}
+
+function phoneLast4(value: string | null | undefined): string {
+  const normalized = normalizeIraqiPhone(value);
+  const digits = normalized ?? normalizePhoneDigits(value);
+  return digits.length >= 4 ? digits.slice(-4) : "";
+}
+
+function trackingCodeForPhone(phone: string): string {
+  const last4 = phoneLast4(phone);
+  return last4 ? `AJN-${last4}` : generateTrackingCode();
+}
+
+function normalizeTrackingCode(value: string): string {
+  const raw = String(value ?? "").trim().toUpperCase();
+  const digits = normalizePhoneDigits(raw);
+  const compact = raw.replace(/[\s-]/g, "");
+  if (compact.startsWith("AJN") && digits.length >= 4 && compact.length <= 7) return `AJN-${digits.slice(-4)}`;
+  if (/^\d{4}$/.test(digits) && raw.length <= 4) return `AJN-${digits}`;
+  return raw;
+}
+
+function trackingCodeLast4(value: string): string {
+  const code = normalizeTrackingCode(value);
+  const match = /^AJN-(\d{4})$/.exec(code);
+  return match?.[1] ?? "";
 }
 
 function sessionSecret(): string {
@@ -633,6 +660,35 @@ async function ensureCustomerAddressTables(): Promise<void> {
   await customerAddressTablesPromise;
 }
 
+async function ensureTrackingColumns(): Promise<void> {
+  if (!trackingColumnsPromise) {
+    trackingColumnsPromise = db.execute(sql`alter table "orders" add column if not exists "phone_last4" varchar(4)`)
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "phone_last4" varchar(4)`))
+      .then(() => db.execute(sql`
+        update "orders"
+        set "phone_last4" = right(regexp_replace(coalesce("customer_phone", ''), '\\D', '', 'g'), 4)
+        where ("phone_last4" is null or "phone_last4" = '')
+          and length(regexp_replace(coalesce("customer_phone", ''), '\\D', '', 'g')) >= 4
+      `))
+      .then(() => db.execute(sql`
+        update "service_orders"
+        set "phone_last4" = right(regexp_replace(coalesce("phone", ''), '\\D', '', 'g'), 4)
+        where ("phone_last4" is null or "phone_last4" = '')
+          and length(regexp_replace(coalesce("phone", ''), '\\D', '', 'g')) >= 4
+      `))
+      .then(() => db.execute(sql`alter table "orders" drop constraint if exists "orders_tracking_code_unique"`))
+      .then(() => db.execute(sql`alter table "service_orders" drop constraint if exists "service_orders_tracking_code_unique"`))
+      .then(() => db.execute(sql`drop index if exists "orders_tracking_code_unique"`))
+      .then(() => db.execute(sql`drop index if exists "service_orders_tracking_code_unique"`))
+      .then(() => db.execute(sql`create index if not exists "orders_tracking_code_idx" on "orders" ("tracking_code")`))
+      .then(() => db.execute(sql`create index if not exists "orders_phone_last4_idx" on "orders" ("phone_last4")`))
+      .then(() => db.execute(sql`create index if not exists "service_orders_tracking_code_idx" on "service_orders" ("tracking_code")`))
+      .then(() => db.execute(sql`create index if not exists "service_orders_phone_last4_idx" on "service_orders" ("phone_last4")`))
+      .then(() => undefined);
+  }
+  await trackingColumnsPromise;
+}
+
 async function cleanupOtpCodes(): Promise<void> {
   await ensureOtpTable();
   await db.execute(sql`
@@ -743,6 +799,7 @@ async function formatOrder(order: any) {
   return {
     id: order.id,
     trackingCode: order.trackingCode,
+    phoneLast4: order.phoneLast4 ?? phoneLast4(order.customerPhone),
     customerId: order.customerId ?? null,
     customerName: order.customerName,
     customerPhone: order.customerPhone,
@@ -783,6 +840,8 @@ async function buildTracking(order: any) {
   });
   return {
     trackingCode: order.trackingCode,
+    id: order.id,
+    phoneLast4: order.phoneLast4 ?? phoneLast4(order.customerPhone),
     status: order.status,
     customerName: order.customerName,
     customerPhone: order.customerPhone ?? null,
@@ -832,6 +891,8 @@ async function buildServiceTracking(so: any) {
       : [{ status: so.status, notes: null, createdAt: so.createdAt.toISOString() }];
   return {
     trackingCode: so.trackingCode ?? `SRV-${so.id}`,
+    id: so.id,
+    phoneLast4: so.phoneLast4 ?? phoneLast4(so.phone),
     status: so.status,
     customerName: so.customerName,
     customerPhone: so.phone ?? null,
@@ -865,19 +926,17 @@ function stripPii<T extends { customerName: string; customerPhone: string | null
   return { ...t, customerName: maskName(t.customerName), customerPhone: null };
 }
 
-async function insertServiceOrderWithUniqueTracking(values: Omit<typeof serviceOrdersTable.$inferInsert, "trackingCode">) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      const [row] = await db
-        .insert(serviceOrdersTable)
-        .values({ ...values, trackingCode: generateTrackingCode("AJS") })
-        .returning();
-      return row;
-    } catch (err: any) {
-      if (err?.code !== "23505") throw err;
-    }
-  }
-  throw new Error("فشل توليد رمز تتبع فريد");
+async function insertServiceOrderWithTracking(values: Omit<typeof serviceOrdersTable.$inferInsert, "trackingCode" | "phoneLast4">) {
+  await ensureTrackingColumns();
+  const [row] = await db
+    .insert(serviceOrdersTable)
+    .values({
+      ...values,
+      trackingCode: trackingCodeForPhone(values.phone),
+      phoneLast4: phoneLast4(values.phone),
+    })
+    .returning();
+  return row;
 }
 
 async function handleAuth(req: NextRequest, parts: string[]) {
@@ -1191,7 +1250,8 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       "";
     const phone = normalizeIraqiPhone(data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
-    const order = await insertServiceOrderWithUniqueTracking({
+    await ensureTrackingColumns();
+    const order = await insertServiceOrderWithTracking({
       serviceId: data.serviceId,
       customerName: data.customerName,
       phone,
@@ -1239,8 +1299,12 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     const parsed = RespondToBookingBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const { action, requestedDate, note } = parsed.data;
+    const bookingId = int(req.nextUrl.searchParams.get("id") ?? undefined);
+    const trackingCode = normalizeTrackingCode(parts[2]);
     const so = await db.query.serviceOrdersTable.findFirst({
-      where: eq(serviceOrdersTable.trackingCode, parts[2]),
+      where: bookingId
+        ? and(eq(serviceOrdersTable.id, bookingId), eq(serviceOrdersTable.trackingCode, trackingCode))
+        : eq(serviceOrdersTable.trackingCode, trackingCode),
     });
     if (!so) return error("لم يتم العثور على الحجز", 404);
     if (action === "reschedule" && !requestedDate) return error("يلزم تحديد موعد جديد", 400);
@@ -1347,6 +1411,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
 
 async function handleOrders(req: NextRequest, parts: string[]) {
   const method = req.method;
+  await ensureTrackingColumns();
 
   if (method === "GET" && parts[1] === "my") {
     const customerId = getCurrentCustomerId(req);
@@ -1385,12 +1450,32 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "track" && parts[2]) {
+    const code = normalizeTrackingCode(parts[2]);
+    const last4 = trackingCodeLast4(code);
+    if (last4) {
+      const productOrders = await db.query.ordersTable.findMany({
+        where: or(eq(ordersTable.trackingCode, code), eq(ordersTable.phoneLast4, last4), like(ordersTable.customerPhone, `%${last4}`)),
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 20,
+      });
+      const serviceOrders = await db.query.serviceOrdersTable.findMany({
+        where: or(eq(serviceOrdersTable.trackingCode, code), eq(serviceOrdersTable.phoneLast4, last4), like(serviceOrdersTable.phone, `%${last4}`)),
+        orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit: 20,
+      });
+      const results = [
+        ...(await Promise.all(productOrders.map(buildTracking))),
+        ...(await Promise.all(serviceOrders.map(buildServiceTracking))),
+      ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      if (results.length === 1) return json(results[0]);
+      if (results.length > 1) return json(results);
+    }
     const order = await db.query.ordersTable.findFirst({
-      where: eq(ordersTable.trackingCode, parts[2]),
+      where: eq(ordersTable.trackingCode, code),
     });
     if (order) return json(await buildTracking(order));
     const so = await db.query.serviceOrdersTable.findFirst({
-      where: eq(serviceOrdersTable.trackingCode, parts[2]),
+      where: eq(serviceOrdersTable.trackingCode, code),
     });
     if (so) return json(await buildServiceTracking(so));
     return error("لم يتم العثور على الطلب", 404);
@@ -1404,12 +1489,12 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       return error("محاولات كثيرة، حاول لاحقاً", 429);
     }
     const productOrders = await db.query.ordersTable.findMany({
-      where: like(ordersTable.customerPhone, `%${last4}`),
+      where: or(eq(ordersTable.phoneLast4, last4), like(ordersTable.customerPhone, `%${last4}`)),
       orderBy: [desc(ordersTable.createdAt)],
       limit: 20,
     });
     const serviceOrders = await db.query.serviceOrdersTable.findMany({
-      where: like(serviceOrdersTable.phone, `%${last4}`),
+      where: or(eq(serviceOrdersTable.phoneLast4, last4), like(serviceOrdersTable.phone, `%${last4}`)),
       orderBy: [desc(serviceOrdersTable.createdAt)],
       limit: 20,
     });
@@ -1458,7 +1543,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const [order] = await db
       .insert(ordersTable)
       .values({
-        trackingCode: generateTrackingCode(),
+        trackingCode: trackingCodeForPhone(customerPhone),
+        phoneLast4: phoneLast4(customerPhone),
         customerId: customerId ?? undefined,
         customerName: data.customerName,
         customerPhone,
@@ -2389,7 +2475,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         "";
       const phone = normalizeIraqiPhone(data.phone);
       if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
-      const order = await insertServiceOrderWithUniqueTracking({
+      const order = await insertServiceOrderWithTracking({
         serviceId: data.serviceId,
         customerName: data.customerName,
         phone,
@@ -2502,6 +2588,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const phone = normalizeIraqiPhone(String(update.phone));
         if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
         update.phone = phone;
+        update.phoneLast4 = phoneLast4(phone);
       }
       if (b?.customFields !== undefined) {
         const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, prev.serviceId) });
@@ -2551,12 +2638,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const normalizedPhone = normalizeIraqiPhone(customerPhone);
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const total = items.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
           const [order] = await db
             .insert(ordersTable)
             .values({
-              trackingCode: generateTrackingCode(),
+              trackingCode: trackingCodeForPhone(normalizedPhone),
+              phoneLast4: phoneLast4(normalizedPhone),
               customerName,
               customerPhone: normalizedPhone,
               governorate,
@@ -2591,11 +2677,6 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             status: "pending",
           });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
-        } catch (err: any) {
-          if (err?.code !== "23505") throw err;
-        }
-      }
-      return error("تعذر إنشاء الطلب", 500);
     }
 
     if (method === "PATCH" && parts[2]) {
@@ -2611,6 +2692,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const normalizedPhone = normalizeIraqiPhone(update.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
         update.customerPhone = normalizedPhone;
+        update.phoneLast4 = phoneLast4(normalizedPhone);
       }
       if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
       if (b?.attachments !== undefined) update.attachments = b.attachments;
@@ -3324,6 +3406,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
     if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard" || root === "customer") {
       await ensureCustomerProfileColumns();
+    }
+    if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
+      await ensureTrackingColumns();
     }
 
     const route =
