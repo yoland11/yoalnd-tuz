@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useGetProduct, useListReviews, useCreateReview, useAddToCart, getGetCartQueryKey, getGetProductQueryKey, getListReviewsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus } from "lucide-react";
+import { Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus } from "lucide-react";
+import { ColorDot } from "@/components/product-colors";
+import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/colors";
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -23,7 +25,7 @@ export default function ProductDetail() {
   const addToCart = useAddToCart();
 
   const [selectedImage, setSelectedImage] = useState(0);
-  const [selectedColor, setSelectedColor] = useState<string | null>(null);
+  const [selectedColor, setSelectedColor] = useState<ProductColor | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [reviewerName, setReviewerName] = useState("");
@@ -37,11 +39,13 @@ export default function ProductDetail() {
     ? product.images
     : ["/placeholder-product.jpg"];
   const imageMetadata = product?.imageMetadata ?? [];
+  const colors = useMemo(() => normalizeColors(product?.colors ?? []), [product?.colors]);
 
   function handleAddToCart() {
     if (!product) return;
+    if (colors.length > 0 && !selectedColor) return;
     addToCart.mutate(
-      { data: { productId: product.id, quantity, selectedColor: selectedColor ?? undefined } },
+      { data: { productId: product.id, quantity, selectedColor: selectedColor?.name, selectedColorData: selectedColor ?? undefined } },
       {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() });
@@ -50,6 +54,14 @@ export default function ProductDetail() {
         },
       }
     );
+  }
+
+  function handleSelectColor(color: ProductColor) {
+    setSelectedColor(color);
+    const linkedImage = colorImage(color);
+    if (!linkedImage) return;
+    const index = images.findIndex((image) => image === linkedImage);
+    if (index >= 0) setSelectedImage(index);
   }
 
   function handleSubmitReview(e: React.FormEvent) {
@@ -172,23 +184,33 @@ export default function ProductDetail() {
             )}
 
             {/* Color Picker */}
-            {product.colors && product.colors.length > 0 && (
+            {colors.length > 0 && (
               <div>
-                <p className="text-sm font-medium mb-3 text-foreground">اللون: <span className="text-primary">{selectedColor ?? "اختر لوناً"}</span></p>
-                <div className="flex gap-2 flex-wrap">
-                  {product.colors.map((color) => (
+                <p className="text-sm font-medium mb-3 text-foreground">
+                  اللون: <span className="text-primary">{selectedColor?.name ?? "اختر لوناً"}</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {colors.map((color) => {
+                    const selected = colorKey(selectedColor) === colorKey(color);
+                    return (
                     <button
-                      key={color}
-                      onClick={() => setSelectedColor(color)}
-                      className={`px-4 py-2 rounded-full text-sm border transition-all duration-200 ${
-                        selectedColor === color
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border/40 text-muted-foreground hover:border-primary/50"
+                      key={colorKey(color)}
+                      onClick={() => handleSelectColor(color)}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm transition-all duration-200 ${
+                        selected
+                          ? "border-primary bg-primary/10 text-primary ring-1 ring-primary/20"
+                          : "border-border/40 text-muted-foreground hover:border-primary/50 hover:bg-primary/5"
                       }`}
+                      title={`${color.name} ${color.hex}`}
                     >
-                      {color}
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ColorDot color={color} size="md" />
+                        <span className="truncate">{color.name}</span>
+                      </span>
+                      {selected && <Check className="h-4 w-4 shrink-0" />}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -216,11 +238,11 @@ export default function ProductDetail() {
             {/* Add to Cart Button */}
             <Button
               className="w-full py-6 text-lg gap-2"
-              disabled={product.stock === 0 || addToCart.isPending}
+              disabled={product.stock === 0 || addToCart.isPending || (colors.length > 0 && !selectedColor)}
               onClick={handleAddToCart}
             >
               <ShoppingCart className="w-5 h-5" />
-              {addedToCart ? "تمت الإضافة!" : addToCart.isPending ? "جاري الإضافة..." : "أضف إلى السلة"}
+              {addedToCart ? "تمت الإضافة!" : addToCart.isPending ? "جاري الإضافة..." : colors.length > 0 && !selectedColor ? "اختر اللون أولاً" : "أضف إلى السلة"}
             </Button>
           </div>
         </div>

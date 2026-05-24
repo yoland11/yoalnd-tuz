@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { Product } from "./product";
+import type { ProductColor } from "./productColor";
 
 export interface CartItem {
   id: number;
@@ -15,6 +16,7 @@ export interface CartItem {
   price: number;
   /** @nullable */
   selectedColor?: string | null;
+  selectedColorData?: ProductColor | null;
   /** @nullable */
   customization?: string | null;
 }

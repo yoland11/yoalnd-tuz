@@ -12,6 +12,8 @@ import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { ProductColorPicker, ProductColorDots } from "@/components/product-colors";
+import { normalizeColors, type ProductColor } from "@/lib/colors";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -22,7 +24,7 @@ type ProductForm = {
   price: string; originalPrice?: string;
   stock: string;
   category?: string; subcategory?: string;
-  images: string[]; colors: string[];
+  images: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
   isFeatured: boolean; isActive?: boolean;
 };
@@ -74,7 +76,7 @@ export default function ProductsPage() {
       originalPrice: form.originalPrice ? parseFloat(form.originalPrice) : null,
       stock: parseInt(form.stock) || 0,
       category: form.category || null, subcategory: form.subcategory || null,
-      images: form.images, imageMetadata: form.imageMetadata ?? [], colors: form.colors,
+      images: form.images, imageMetadata: form.imageMetadata ?? [], colors: normalizeColors(form.colors),
       isFeatured: form.isFeatured,
       ...(form.isActive !== undefined ? { isActive: form.isActive } : {}),
     } as any;
@@ -196,11 +198,12 @@ export default function ProductsPage() {
                         {p.images?.[0]
                           ? <img src={p.images[0]} className="w-12 h-12 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                           : <div className="w-12 h-12 rounded-lg bg-background border border-border/30" />}
-                        <div>
-                          <p className="font-medium text-foreground">{p.nameAr}</p>
-                          <p className="text-xs text-muted-foreground">{p.name}</p>
-                          {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
-                        </div>
+                          <div>
+                            <p className="font-medium text-foreground">{p.nameAr}</p>
+                            <p className="text-xs text-muted-foreground">{p.name}</p>
+                            <ProductColorDots colors={p.colors} max={4} />
+                            {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
+                          </div>
                       </div>
                     </td>
                     <td className="p-3 text-primary font-semibold">{formatCurrency(p.price)}</td>
@@ -219,7 +222,7 @@ export default function ProductsPage() {
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                           stock: String(p.stock),
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
-                          images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: p.colors ?? [],
+                          images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
                           isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
                         })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                           <Edit2 className="w-4 h-4" />
@@ -369,7 +372,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             onComplete={addImages}
           />
           {form.images.length > 0 && (
-            <div className="flex gap-2 flex-wrap mt-3">
+            <div className="mt-3 flex gap-3 overflow-x-auto pb-2">
               {form.images.map((img, i) => (
                 <div
                   key={`${img}-${i}`}
@@ -377,9 +380,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   onDragStart={() => setDraggedImage(i)}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => dropImage(i)}
-                  className={`relative w-24 rounded-lg overflow-hidden border bg-background ${i === 0 ? "border-primary/60" : "border-border/30"}`}
+                  className={`relative w-28 shrink-0 rounded-xl overflow-hidden border bg-background transition-colors hover:border-primary/45 ${i === 0 ? "border-primary/60" : "border-border/30"}`}
                 >
-                  <button type="button" onClick={() => setPreviewImage(img)} className="block w-full h-20">
+                  <button type="button" onClick={() => setPreviewImage(img)} className="block h-24 w-full">
                     <img src={img} className="w-full h-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
                   </button>
                   {i === 0 && (
@@ -425,15 +428,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         </div>
 
         <div>
-          <label className="block text-xs text-muted-foreground mb-1">الألوان (افصل بفواصل)</label>
-          <input value={form.colors.join(", ")} onChange={e => onChange({ ...form, colors: e.target.value.split(",").map(c => c.trim()).filter(Boolean) })}
-            placeholder="ذهبي, أبيض, أحمر"
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
-          {form.colors.length > 0 && (
-            <div className="flex gap-2 mt-2 flex-wrap">
-              {form.colors.map((c, i) => <span key={i} className="text-xs px-2 py-1 rounded-full bg-primary/10 text-primary">{c}</span>)}
-            </div>
-          )}
+          <label className="block text-xs text-muted-foreground mb-1">الألوان</label>
+          <ProductColorPicker value={form.colors} onChange={(colors) => onChange({ ...form, colors })} />
         </div>
 
         <div className="flex items-center gap-4">

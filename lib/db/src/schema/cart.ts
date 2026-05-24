@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, numeric, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, numeric, text, timestamp, jsonb } from "drizzle-orm/pg-core";
 import { customersTable } from "./customers";
 import { productsTable } from "./products";
 
@@ -9,6 +9,7 @@ export const cartItemsTable = pgTable("cart_items", {
   quantity: integer("quantity").notNull().default(1),
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   selectedColor: text("selected_color"),
+  selectedColorData: jsonb("selected_color_data").$type<{ name: string; hex: string; image?: string | null; imageUrl?: string | null } | null>(),
   customization: text("customization"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

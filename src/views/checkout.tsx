@@ -10,6 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { CheckCircle, Package, MapPin, ExternalLink } from "lucide-react";
 import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 export default function Checkout() {
   const [, navigate] = useLocation();
@@ -296,9 +297,10 @@ export default function Checkout() {
             <h2 className="text-lg font-bold text-foreground mb-4">ملخص الطلب</h2>
             <div className="space-y-2 mb-4">
               {cart?.items?.map(item => (
-                <div key={item.id} className="flex justify-between text-sm">
-                  <span className="text-muted-foreground truncate max-w-[60%]">
-                    {item.product?.nameAr} × {item.quantity}
+                <div key={item.id} className="flex justify-between gap-3 text-sm">
+                  <span className="min-w-0 text-muted-foreground">
+                    <span className="block truncate">{item.product?.nameAr} × {item.quantity}</span>
+                    <SelectedColorLabel color={(item as any).selectedColorData} fallback={item.selectedColor} className="mt-1 flex text-[11px] text-muted-foreground" />
                   </span>
                   <span className="text-foreground">{(Number(item.price) * item.quantity).toLocaleString('ar-IQ')}</span>
                 </div>

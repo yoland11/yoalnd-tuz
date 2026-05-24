@@ -6,6 +6,7 @@ import { MapPin, MessageCircle, Phone, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { ProductColorDots } from "@/components/product-colors";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
@@ -185,6 +186,7 @@ export default function Home() {
                   <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
                     {product.nameAr || product.name_ar || product.name || "منتج"}
                   </h3>
+                  <ProductColorDots colors={product.colors} />
                   <div className="mt-auto flex items-center justify-between">
                     <span className="font-bold text-primary">
                       {Number(product.price || 0).toLocaleString("en-US")} د.ع

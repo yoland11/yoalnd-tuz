@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
+import type { ProductColor } from "./productColor";
+
 export interface Product {
   id: number;
   name: string;
@@ -24,7 +26,7 @@ export interface Product {
   subcategory?: string | null;
   images: string[];
   imageMetadata?: Record<string, unknown>[];
-  colors?: string[];
+  colors?: ProductColor[];
   isFeatured?: boolean;
   /** @nullable */
   rating?: number | null;

@@ -14,6 +14,7 @@ import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@
 import { serviceDetailsToRows } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
 import { usePublicSettings } from "@/lib/public-settings";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 type Mode = "code" | "phone";
 
@@ -386,7 +387,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
                 )}
                 <div className="flex-1">
                   <p className="text-foreground text-sm font-medium">{item.productNameAr || item.productName}</p>
-                  {item.selectedColor && <p className="text-xs text-muted-foreground">اللون: {item.selectedColor}</p>}
+                  <SelectedColorLabel color={item.selectedColorData} fallback={item.selectedColor} className="flex text-xs text-muted-foreground" />
                 </div>
                 <div className="text-right">
                   <p className="text-foreground text-sm">× {item.quantity}</p>

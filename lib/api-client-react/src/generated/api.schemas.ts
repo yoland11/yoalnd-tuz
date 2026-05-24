@@ -18,6 +18,13 @@ export interface CategoryItem {
   count: number;
 }
 
+export interface ProductColor {
+  name: string;
+  hex: string;
+  image?: string | null;
+  imageUrl?: string | null;
+}
+
 export interface OtpRequest {
   phone: string;
 }
@@ -64,7 +71,7 @@ export interface Product {
   subcategory?: string | null;
   images: string[];
   imageMetadata?: Record<string, unknown>[];
-  colors?: string[];
+  colors?: ProductColor[];
   isFeatured?: boolean;
   /** @nullable */
   rating?: number | null;
@@ -84,7 +91,7 @@ export interface ProductInput {
   subcategory?: string;
   images?: string[];
   imageMetadata?: Record<string, unknown>[];
-  colors?: string[];
+  colors?: ProductColor[];
   isFeatured?: boolean;
 }
 
@@ -100,7 +107,7 @@ export interface ProductUpdate {
   subcategory?: string;
   images?: string[];
   imageMetadata?: Record<string, unknown>[];
-  colors?: string[];
+  colors?: ProductColor[];
   isFeatured?: boolean;
 }
 
@@ -159,6 +166,7 @@ export interface CartItem {
   price: number;
   /** @nullable */
   selectedColor?: string | null;
+  selectedColorData?: ProductColor | null;
   /** @nullable */
   customization?: string | null;
 }
@@ -173,6 +181,7 @@ export interface CartItemInput {
   productId: number;
   quantity: number;
   selectedColor?: string;
+  selectedColorData?: ProductColor;
   customization?: string;
 }
 
@@ -198,6 +207,7 @@ export interface OrderItem {
   price: number;
   /** @nullable */
   selectedColor?: string | null;
+  selectedColorData?: ProductColor | null;
   /** @nullable */
   customization?: string | null;
   /** @nullable */

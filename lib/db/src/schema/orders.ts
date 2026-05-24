@@ -39,6 +39,7 @@ export const orderItemsTable = pgTable("order_items", {
   quantity: integer("quantity").notNull(),
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   selectedColor: text("selected_color"),
+  selectedColorData: jsonb("selected_color_data").$type<{ name: string; hex: string; image?: string | null; imageUrl?: string | null } | null>(),
   customization: text("customization"),
   image: text("image"),
 });

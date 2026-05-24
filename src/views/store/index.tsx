@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ShoppingCart, Search, Filter } from "lucide-react";
+import { ProductColorDots } from "@/components/product-colors";
 import {
   Select,
   SelectContent,
@@ -108,6 +109,7 @@ export default function Store() {
                   <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
                     {product.nameAr}
                   </h3>
+                  <ProductColorDots colors={product.colors} />
                   
                   <div className="mt-auto pt-4 flex items-center justify-between">
                     <div className="flex flex-col">

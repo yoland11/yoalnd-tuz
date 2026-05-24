@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ShoppingCart, Trash2, Minus, Plus, ArrowLeft } from "lucide-react";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 export default function Cart() {
   const [, navigate] = useLocation();
@@ -82,9 +83,7 @@ export default function Cart() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-foreground truncate">{item.product?.nameAr}</p>
-                  {item.selectedColor && (
-                    <p className="text-xs text-muted-foreground mt-0.5">اللون: {item.selectedColor}</p>
-                  )}
+                  <SelectedColorLabel color={(item as any).selectedColorData} fallback={item.selectedColor} className="mt-0.5 flex text-xs text-muted-foreground" />
                   <p className="text-primary font-bold mt-1">{Number(item.price).toLocaleString('ar-IQ')} د.ع</p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">

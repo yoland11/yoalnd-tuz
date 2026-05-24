@@ -39,6 +39,7 @@ export * from "./otpRequest";
 export * from "./otpResponse";
 export * from "./otpVerify";
 export * from "./product";
+export * from "./productColor";
 export * from "./productInput";
 export * from "./productUpdate";
 export * from "./review";

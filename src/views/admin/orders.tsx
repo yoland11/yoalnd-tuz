@@ -18,6 +18,7 @@ import {
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -412,6 +413,16 @@ export default function OrdersPage() {
                     onSave={(values) => updateProductPayment.mutate({ id: order.id, ...values })}
                     saving={updateProductPayment.isPending}
                   />
+                  {Array.isArray(order.items) && order.items.length > 0 && (
+                    <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-background/40 border border-border/20 p-3">
+                      {order.items.map((item: any) => (
+                        <div key={item.id} className="min-w-0">
+                          <p className="text-xs text-foreground truncate">{item.productNameAr || item.productName} × {item.quantity}</p>
+                          <SelectedColorLabel color={item.selectedColorData} fallback={item.selectedColor} className="mt-1 flex text-[11px] text-muted-foreground" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}

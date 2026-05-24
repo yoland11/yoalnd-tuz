@@ -51,6 +51,12 @@ import {
   normalizePhoneDigits,
 } from "@/lib/phone";
 import {
+  colorKey,
+  normalizeColor,
+  normalizeColors,
+  type ProductColor,
+} from "@/lib/colors";
+import {
   AddToCartBody,
   CreateDeliveryZoneBody,
   CreateGalleryItemBody,
@@ -147,6 +153,7 @@ let activityTablesPromise: Promise<void> | null = null;
 let orderReviewsTablePromise: Promise<void> | null = null;
 let staffActivityColumnPromise: Promise<void> | null = null;
 let imageMetadataColumnsPromise: Promise<void> | null = null;
+let productColorColumnsPromise: Promise<void> | null = null;
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -542,7 +549,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     category: p.category ?? null,
     images: p.images ?? [],
     imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
-    colors: p.colors ?? [],
+    colors: normalizeColors(p.colors ?? []),
     subcategory: p.subcategory ?? null,
     isFeatured: p.isFeatured,
     isActive: p.isActive ?? true,
@@ -551,6 +558,15 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     reviewCount: reviewCount ?? 0,
     createdAt: p.createdAt.toISOString(),
   };
+}
+
+function selectedColorPayload(value: unknown, fallback?: string | null): ProductColor | null {
+  return normalizeColor((value as Record<string, unknown> | string | null | undefined) ?? fallback ?? null);
+}
+
+function selectedColorName(value: unknown, fallback?: string | null): string | null {
+  const color = selectedColorPayload(value, fallback);
+  return color?.name ?? fallback ?? null;
 }
 
 function formatZone(z: any) {
@@ -843,6 +859,16 @@ async function ensureImageMetadataColumns(): Promise<void> {
   await imageMetadataColumnsPromise;
 }
 
+async function ensureProductColorColumns(): Promise<void> {
+  if (!productColorColumnsPromise) {
+    productColorColumnsPromise = db.execute(sql`
+      alter table cart_items add column if not exists selected_color_data jsonb;
+      alter table order_items add column if not exists selected_color_data jsonb;
+    `).then(() => undefined);
+  }
+  await productColorColumnsPromise;
+}
+
 async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
   try {
     await ensureActivityTables();
@@ -946,7 +972,7 @@ async function buildCart(sessionId: string) {
               price: Number.parseFloat(product.price),
               images: product.images ?? [],
               stock: product.stock,
-              colors: product.colors ?? [],
+              colors: normalizeColors(product.colors ?? []),
               isFeatured: product.isFeatured,
               rating: null,
               reviewCount: 0,
@@ -955,7 +981,8 @@ async function buildCart(sessionId: string) {
           : null,
         quantity: item.quantity,
         price: Number.parseFloat(item.price),
-        selectedColor: item.selectedColor ?? null,
+        selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+        selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
         customization: item.customization ?? null,
       };
     }),
@@ -1001,7 +1028,8 @@ async function formatOrder(order: any) {
       productNameAr: i.productNameAr,
       quantity: i.quantity,
       price: Number.parseFloat(i.price),
-      selectedColor: i.selectedColor ?? null,
+      selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
+      selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
       image: i.image ?? null,
     })),
@@ -1039,7 +1067,8 @@ async function buildTracking(order: any) {
       productNameAr: i.productNameAr,
       quantity: i.quantity,
       price: Number.parseFloat(i.price),
-      selectedColor: i.selectedColor ?? null,
+      selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
+      selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
       image: i.image ?? null,
     })),
@@ -1344,7 +1373,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         category: data.category,
         images: data.images ?? [],
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
-        colors: data.colors ?? [],
+        colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
         subcategory: data.subcategory ?? null,
         isActive: data.isActive ?? true,
@@ -1379,7 +1408,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "sortOrder",
       "stock",
     ]) {
-      if (data[k] !== undefined) update[k] = data[k];
+      if (data[k] !== undefined) update[k] = k === "colors" ? normalizeColors(data[k]) : data[k];
     }
     if (data.price !== undefined) update.price = data.price.toString();
     if (data.originalPrice !== undefined) update.originalPrice = data.originalPrice.toString();
@@ -1559,13 +1588,20 @@ async function handleCart(req: NextRequest, parts: string[]) {
   if (method === "POST" && parts.length === 1) {
     const parsed = AddToCartBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
-    const { productId, quantity, selectedColor, customization } = parsed.data;
+    const { productId, quantity, selectedColor, customization, selectedColorData } = parsed.data as any;
     const product = await db.query.productsTable.findFirst({
       where: eq(productsTable.id, productId),
     });
     if (!product) return error("المنتج غير موجود", 404);
-    const existing = await db.query.cartItemsTable.findFirst({
+    const pickedColor = selectedColorPayload(selectedColorData, selectedColor);
+    const existingItems = await db.query.cartItemsTable.findMany({
       where: and(eq(cartItemsTable.sessionId, sessionId), eq(cartItemsTable.productId, productId)),
+    });
+    const pickedKey = pickedColor ? colorKey(pickedColor) : "";
+    const existing = existingItems.find((item) => {
+      const itemColor = selectedColorPayload(item.selectedColorData, item.selectedColor);
+      const itemKey = itemColor ? colorKey(itemColor) : "";
+      return itemKey === pickedKey && (item.customization ?? "") === (customization ?? "");
     });
     if (existing) {
       await db
@@ -1578,7 +1614,8 @@ async function handleCart(req: NextRequest, parts: string[]) {
         productId,
         quantity,
         price: product.price,
-        selectedColor,
+        selectedColor: pickedColor?.name ?? selectedColor ?? null,
+        selectedColorData: pickedColor,
         customization,
       });
     }
@@ -1790,7 +1827,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           productNameAr: product?.nameAr ?? "",
           quantity: item.quantity,
           price: item.price,
-          selectedColor: item.selectedColor,
+          selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+          selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
           customization: item.customization,
           image: product?.images?.[0] ?? null,
         });
@@ -2349,7 +2387,8 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
         productId: product.id,
         quantity: Math.min(item.quantity, Math.max(1, product.stock)),
         price: product.price,
-        selectedColor: item.selectedColor ?? null,
+        selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+        selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
         customization: item.customization ?? null,
       });
     }
@@ -3299,7 +3338,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
                 productNameAr: it.productNameAr ?? it.productName ?? "",
                 quantity: it.quantity,
                 price: String(it.price),
-                selectedColor: it.selectedColor ?? null,
+                selectedColor: selectedColorName(it.selectedColorData, it.selectedColor),
+                selectedColorData: selectedColorPayload(it.selectedColorData, it.selectedColor),
               }),
             ),
           );
@@ -3490,7 +3530,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         productNameAr: i.productNameAr,
         quantity: i.quantity,
         price: Number.parseFloat(i.price),
-        selectedColor: i.selectedColor ?? null,
+        selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
+        selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       })),
     });
   }
@@ -4081,6 +4122,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     }
     if (root === "products" || root === "services" || root === "gallery" || root === "admin" || root === "auth" || root === "customer" || root === "settings") {
       await ensureImageMetadataColumns();
+    }
+    if (root === "cart" || root === "orders" || root === "products" || root === "admin" || root === "customer" || root === "dashboard") {
+      await ensureProductColorColumns();
     }
     if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
       await ensureTrackingColumns();

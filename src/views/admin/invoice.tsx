@@ -4,6 +4,7 @@ import { Printer, ArrowRight, Download } from "lucide-react";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 type InvoiceData = any;
 
@@ -226,7 +227,11 @@ export default function Invoice() {
                   <tr key={item.id}>
                     <td className="border border-neutral-300 px-3 py-2">
                       {item.productNameAr || item.productName}
-                      {item.selectedColor && <span className="text-xs text-neutral-500"> — {item.selectedColor}</span>}
+                      <SelectedColorLabel
+                        color={item.selectedColorData}
+                        fallback={item.selectedColor}
+                        className="mr-2 inline-flex text-xs text-neutral-500"
+                      />
                     </td>
                     <td className="border border-neutral-300 px-3 py-2 text-center">{item.quantity}</td>
                     <td className="border border-neutral-300 px-3 py-2 text-center">{Number(item.price).toLocaleString('en-US')}</td>

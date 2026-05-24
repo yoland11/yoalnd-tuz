@@ -33,6 +33,7 @@ import { usePublicSettings } from "@/lib/public-settings";
 import { getCartSessionId } from "@/lib/api-session";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { SelectedColorLabel } from "@/components/product-colors";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -730,6 +731,13 @@ function OrderList({
               </p>
               {["delivered", "completed"].includes(order.status) && (
                 <p className="text-xs text-green-300 mt-1">شكراً لك، اكتمل الطلب بنجاح.</p>
+              )}
+              {order.kind !== "service" && order.items?.[0] && (
+                <SelectedColorLabel
+                  color={order.items[0].selectedColorData}
+                  fallback={order.items[0].selectedColor}
+                  className="mt-2 flex text-xs text-muted-foreground"
+                />
               )}
               <div className="mt-3 flex items-center gap-2">
                 {["pending", "confirmed", "processing", "shipped", "delivered", "completed"].slice(0, order.kind === "service" ? 4 : 6).map((status, index) => {
