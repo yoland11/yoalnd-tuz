@@ -23,6 +23,7 @@ export interface Product {
   /** @nullable */
   subcategory?: string | null;
   images: string[];
+  imageMetadata?: Record<string, unknown>[];
   colors?: string[];
   isFeatured?: boolean;
   /** @nullable */

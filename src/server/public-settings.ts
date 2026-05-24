@@ -7,6 +7,7 @@ export const PUBLIC_SETTINGS_REVALIDATE_SECONDS = 300;
 export const DEFAULT_SITE_SETTINGS: Record<string, any> = {
   siteName: "مجموعة علي جان",
   logoUrl: "",
+  logoMetadata: {},
   phones: ["07701234567"],
   social: { instagram: "", facebook: "", whatsapp: "" },
   paymentQr: "",
@@ -70,6 +71,7 @@ export function publicSettingsPayload(settings: Record<string, any>) {
       whatsapp: String(social.whatsapp || ""),
     },
     logo_url: cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? ""),
+    logo_metadata: settings.logoMetadata && typeof settings.logoMetadata === "object" ? settings.logoMetadata : {},
     image_settings: {
       ...DEFAULT_SITE_SETTINGS.imageSettings,
       ...((settings.imageSettings && typeof settings.imageSettings === "object") ? settings.imageSettings : {}),

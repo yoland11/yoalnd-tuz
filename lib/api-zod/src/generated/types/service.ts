@@ -19,5 +19,6 @@ export interface Service {
   icon?: string | null;
   /** @nullable */
   image?: string | null;
+  imageMetadata?: Record<string, unknown>;
   isActive: boolean;
 }

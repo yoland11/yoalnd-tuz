@@ -14,6 +14,7 @@ export const productsTable = pgTable("products", {
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
   images: jsonb("images").$type<string[]>().notNull().default([]),
+  imageMetadata: jsonb("image_metadata").$type<Record<string, unknown>[]>().notNull().default([]),
   colors: jsonb("colors").$type<string[]>().notNull().default([]),
   isFeatured: boolean("is_featured").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),

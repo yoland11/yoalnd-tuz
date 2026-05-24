@@ -13,6 +13,7 @@ export type PublicSettings = {
     whatsapp: string;
   };
   logo_url: string;
+  logo_metadata?: Record<string, unknown>;
   image_settings: ImageSettings;
 };
 
@@ -44,6 +45,7 @@ export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
   map_url: "",
   social_links: { instagram: "", facebook: "", whatsapp: "" },
   logo_url: "",
+  logo_metadata: {},
   image_settings: {
     productMaxSize: 1600,
     serviceMaxSize: 1600,

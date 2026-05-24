@@ -7,9 +7,11 @@ import {
 import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
+import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import type { ImageMetadata } from "@/lib/image-tools";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -21,12 +23,13 @@ type ProductForm = {
   stock: string;
   category?: string; subcategory?: string;
   images: string[]; colors: string[];
+  imageMetadata: ImageMetadata[];
   isFeatured: boolean; isActive?: boolean;
 };
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", stock: "0",
-  images: [], colors: [], isFeatured: false, isActive: true,
+  images: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
 export default function ProductsPage() {
@@ -71,7 +74,7 @@ export default function ProductsPage() {
       originalPrice: form.originalPrice ? parseFloat(form.originalPrice) : null,
       stock: parseInt(form.stock) || 0,
       category: form.category || null, subcategory: form.subcategory || null,
-      images: form.images, colors: form.colors,
+      images: form.images, imageMetadata: form.imageMetadata ?? [], colors: form.colors,
       isFeatured: form.isFeatured,
       ...(form.isActive !== undefined ? { isActive: form.isActive } : {}),
     } as any;
@@ -139,7 +142,7 @@ export default function ProductsPage() {
                         <td className="p-3">
                           <div className="flex items-center gap-3">
                             {p.images?.[0]
-                              ? <img src={p.images[0]} className="w-10 h-10 rounded-lg object-cover" alt="" />
+                              ? <img src={p.images[0]} className="w-10 h-10 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                               : <div className="w-10 h-10 rounded-lg bg-background border border-border/30" />}
                             <span className="font-medium text-foreground">{p.nameAr}</span>
                           </div>
@@ -191,7 +194,7 @@ export default function ProductsPage() {
                     <td className="p-3">
                       <div className="flex items-center gap-3">
                         {p.images?.[0]
-                          ? <img src={p.images[0]} className="w-12 h-12 rounded-lg object-cover" alt="" />
+                          ? <img src={p.images[0]} className="w-12 h-12 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                           : <div className="w-12 h-12 rounded-lg bg-background border border-border/30" />}
                         <div>
                           <p className="font-medium text-foreground">{p.nameAr}</p>
@@ -216,7 +219,7 @@ export default function ProductsPage() {
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                           stock: String(p.stock),
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
-                          images: p.images ?? [], colors: p.colors ?? [],
+                          images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: p.colors ?? [],
                           isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
                         })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                           <Edit2 className="w-4 h-4" />
@@ -246,52 +249,69 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 }) {
   const [busy, setBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
+  const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const { data: publicSettings } = usePublicSettings();
   const filteredSubs = subCats.filter(s => {
     const parent = parentCats.find(p => p.slug === form.category);
     return parent ? s.parentId === parent.id : true;
   });
 
-  async function handleFiles(files: FileList | null) {
-    if (!files) return;
-    const imageSettings = publicSettings?.image_settings;
-    setUploadProgress(20);
-    const inputFiles = Array.from(files);
-    const dataUrls: string[] = [];
-    for (let index = 0; index < inputFiles.length; index++) {
-      dataUrls.push(await compressImageFile(inputFiles[index], imageSettings?.productMaxSize ?? 1600, imageSettings?.quality ?? 0.82, {
-        ...(imageSettings ?? {}),
-        watermarkText: publicSettings?.site_name,
-      }));
-      setUploadProgress(Math.round(((index + 1) / inputFiles.length) * 100));
-    }
-    onChange({ ...form, images: [...form.images, ...dataUrls] });
-    setTimeout(() => setUploadProgress(0), 600);
+  function addImages(results: ImageEditResult[]) {
+    onChange({
+      ...form,
+      images: [...form.images, ...results.map((result) => result.dataUrl)],
+      imageMetadata: [...(form.imageMetadata ?? []), ...results.map((result) => result.metadata)],
+    });
+  }
+
+  function replaceImage(results: ImageEditResult[]) {
+    if (replaceIndex == null || !results[0]) return;
+    const images = [...form.images];
+    const metadata = [...(form.imageMetadata ?? [])];
+    images[replaceIndex] = results[0].dataUrl;
+    metadata[replaceIndex] = results[0].metadata;
+    onChange({ ...form, images, imageMetadata: metadata });
+    setReplaceIndex(null);
   }
 
   function moveImage(index: number) {
     if (index <= 0) return;
     const images = [...form.images];
+    const metadata = [...(form.imageMetadata ?? [])];
     [images[index - 1], images[index]] = [images[index], images[index - 1]];
-    onChange({ ...form, images });
+    [metadata[index - 1], metadata[index]] = [metadata[index], metadata[index - 1]];
+    onChange({ ...form, images, imageMetadata: metadata });
   }
 
   function makeMain(index: number) {
     if (index === 0) return;
     const images = [...form.images];
+    const metadata = [...(form.imageMetadata ?? [])];
     const [selected] = images.splice(index, 1);
-    onChange({ ...form, images: [selected, ...images] });
+    const [selectedMeta] = metadata.splice(index, 1);
+    onChange({ ...form, images: [selected, ...images], imageMetadata: [selectedMeta ?? {}, ...metadata] });
   }
 
   function dropImage(targetIndex: number) {
     if (draggedImage == null || draggedImage === targetIndex) return;
     const images = [...form.images];
+    const metadata = [...(form.imageMetadata ?? [])];
     const [selected] = images.splice(draggedImage, 1);
+    const [selectedMeta] = metadata.splice(draggedImage, 1);
     images.splice(targetIndex, 0, selected);
-    onChange({ ...form, images });
+    metadata.splice(targetIndex, 0, selectedMeta ?? {});
+    onChange({ ...form, images, imageMetadata: metadata });
     setDraggedImage(null);
+  }
+
+  function removeImage(index: number) {
+    onChange({
+      ...form,
+      images: form.images.filter((_, idx) => idx !== index),
+      imageMetadata: (form.imageMetadata ?? []).filter((_, idx) => idx !== index),
+    });
+    if (replaceIndex === index) setReplaceIndex(null);
   }
 
   return (
@@ -339,28 +359,20 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs text-muted-foreground">الصور</label>
-            <label className="inline-flex items-center gap-1 text-xs text-primary cursor-pointer hover:underline">
-              <Upload className="w-3.5 h-3.5" /> رفع
-              <input type="file" multiple accept="image/*" onChange={e => handleFiles(e.target.files)} className="hidden" />
-            </label>
           </div>
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
-            className="mb-3 rounded-xl border border-dashed border-border/50 bg-background/40 px-4 py-5 text-center text-xs text-muted-foreground"
-          >
-            اسحب الصور هنا أو استخدم زر الرفع
-          </div>
-          {uploadProgress > 0 && (
-            <div className="mb-3 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
-              <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
-            </div>
-          )}
+          <ImageUploadEditor
+            kind="product"
+            multiple
+            label="اسحب الصور هنا أو استخدم زر الرفع"
+            settings={publicSettings?.image_settings}
+            watermarkText={publicSettings?.site_name}
+            onComplete={addImages}
+          />
           {form.images.length > 0 && (
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex gap-2 flex-wrap mt-3">
               {form.images.map((img, i) => (
                 <div
-                  key={img}
+                  key={`${img}-${i}`}
                   draggable
                   onDragStart={() => setDraggedImage(i)}
                   onDragOver={(e) => e.preventDefault()}
@@ -368,14 +380,14 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   className={`relative w-24 rounded-lg overflow-hidden border bg-background ${i === 0 ? "border-primary/60" : "border-border/30"}`}
                 >
                   <button type="button" onClick={() => setPreviewImage(img)} className="block w-full h-20">
-                    <img src={img} className="w-full h-full object-cover" alt="" />
+                    <img src={img} className="w-full h-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
                   </button>
                   {i === 0 && (
                     <span className="absolute top-1 right-1 inline-flex items-center gap-1 rounded bg-primary text-primary-foreground px-1.5 py-0.5 text-[10px]">
                       <Star className="w-3 h-3" /> رئيسية
                     </span>
                   )}
-                  <div className="grid grid-cols-4 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
+                  <div className="grid grid-cols-5 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
                     <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
                       <Eye className="w-3.5 h-3.5 mx-auto" />
                     </button>
@@ -385,12 +397,29 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     <button type="button" title="تقديم الصورة" onClick={() => moveImage(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
                       <ArrowRight className="w-3.5 h-3.5 mx-auto" />
                     </button>
-                    <button type="button" title="حذف" onClick={() => onChange({ ...form, images: form.images.filter((_, idx) => idx !== i) })} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                    <button type="button" title="استبدال" onClick={() => setReplaceIndex(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                      <Upload className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
                       <X className="w-3.5 h-3.5 mx-auto" />
                     </button>
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          {replaceIndex != null && form.images[replaceIndex] && (
+            <div className="mt-3">
+              <ImageUploadEditor
+                kind="product"
+                label="استبدال الصورة المحددة"
+                currentImage={form.images[replaceIndex]}
+                currentMetadata={form.imageMetadata?.[replaceIndex]}
+                settings={publicSettings?.image_settings}
+                watermarkText={publicSettings?.site_name}
+                onComplete={replaceImage}
+                onRemove={() => removeImage(replaceIndex)}
+              />
             </div>
           )}
         </div>

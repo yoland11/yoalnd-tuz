@@ -51,13 +51,14 @@ export default function Services() {
             <Card key={service.id} className="bg-card border-border overflow-hidden flex flex-col">
               <div className="relative h-64 overflow-hidden bg-muted">
                 <img 
-                  src={serviceImages[service.type] || (service as any).image || '/images/hero.png'} 
+                  src={(service as any).image || serviceImages[service.type] || '/images/hero.png'} 
                   alt={service.nameAr}
                   width={640}
                   height={420}
                   loading="lazy"
                   decoding="async"
-                  className="w-full h-full object-cover transition-transform duration-700 hover:scale-105"
+                  className="w-full h-full transition-transform duration-700 hover:scale-105"
+                  style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
                 />
                 <div className="absolute bottom-3 right-3 rounded-lg bg-black/55 border border-white/10 px-3 py-1 text-xs text-white backdrop-blur-sm">
                   صور وتفاصيل الخدمة

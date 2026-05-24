@@ -23,7 +23,6 @@ import {
   ShoppingBag,
   Star,
   Trash2,
-  Upload,
   User,
   Wallet,
 } from "lucide-react";
@@ -32,7 +31,8 @@ import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { usePublicSettings } from "@/lib/public-settings";
 import { getCartSessionId } from "@/lib/api-session";
-import { processImageFile } from "@/lib/image-tools";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import type { ImageMetadata } from "@/lib/image-tools";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -52,6 +52,7 @@ type Customer = {
   fullName?: string;
   email?: string;
   avatarUrl?: string;
+  avatarMetadata?: ImageMetadata;
   address?: string;
   city?: string;
 };
@@ -182,7 +183,7 @@ export default function Profile() {
   const [editing, setEditing] = useState(false);
   const [profileForm, setProfileForm] = useState({ fullName: "", email: "", address: "", city: "" });
   const [avatarDraft, setAvatarDraft] = useState("");
-  const [avatarProgress, setAvatarProgress] = useState(0);
+  const [avatarMetadata, setAvatarMetadata] = useState<ImageMetadata>({});
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [addressForm, setAddressForm] = useState<AddressForm>(emptyAddressForm);
@@ -214,6 +215,7 @@ export default function Profile() {
           city: me.city || "",
         });
         setAvatarDraft(me.avatarUrl || "");
+        setAvatarMetadata(me.avatarMetadata ?? {});
         setOrders(myOrders);
         setCart(myCart);
         setAddresses(savedAddresses);
@@ -245,7 +247,7 @@ export default function Profile() {
       const updated = await fetchJson<Customer>("/api/auth/me", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...profileForm, avatarUrl: avatarDraft }),
+        body: JSON.stringify({ ...profileForm, avatarUrl: avatarDraft, avatarMetadata }),
       });
       setCustomer(updated);
       setEditing(false);
@@ -256,20 +258,11 @@ export default function Profile() {
     }
   }
 
-  async function handleAvatarUpload(file: File) {
-    setAvatarProgress(25);
-    try {
-      const image = await processImageFile(file, {
-        ...settings?.image_settings,
-        maxSize: 512,
-        cropRatio: "1:1",
-        watermark: false,
-      });
-      setAvatarDraft(image);
-      setAvatarProgress(100);
-    } finally {
-      setTimeout(() => setAvatarProgress(0), 600);
-    }
+  function handleAvatarResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    setAvatarDraft(result.dataUrl);
+    setAvatarMetadata(result.metadata);
   }
 
   function startAddressCreate(type: AddressForm["type"] = "home") {
@@ -440,21 +433,15 @@ export default function Profile() {
                     ))}
                   </div>
                   <div className="rounded-xl bg-background/60 border border-border/25 p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-16 h-16 rounded-full overflow-hidden bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                        {avatarDraft ? <img src={avatarDraft} alt="" className="w-full h-full object-cover" /> : <span className="text-lg font-bold text-primary">{customerInitials(customer)}</span>}
-                      </div>
-                      <label className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary cursor-pointer hover:bg-primary/20">
-                        <Upload className="w-4 h-4" />
-                        رفع صورة
-                        <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && handleAvatarUpload(e.target.files[0])} />
-                      </label>
-                    </div>
-                    {avatarProgress > 0 && (
-                      <div className="mt-3 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
-                        <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${avatarProgress}%` }} />
-                      </div>
-                    )}
+                    <ImageUploadEditor
+                      kind="avatar"
+                      label="رفع صورة بروفايل"
+                      currentImage={avatarDraft}
+                      currentMetadata={avatarMetadata}
+                      settings={settings?.image_settings}
+                      onComplete={handleAvatarResult}
+                      onRemove={() => { setAvatarDraft(""); setAvatarMetadata({}); }}
+                    />
                   </div>
                   {profileError && <p className="text-sm text-red-400">{profileError}</p>}
                   <div className="flex flex-col sm:flex-row gap-3">

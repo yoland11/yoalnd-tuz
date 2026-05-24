@@ -84,6 +84,7 @@ export const ListProductsResponseItem = zod.object({
   category: zod.string().nullish(),
   subcategory: zod.string().nullish(),
   images: zod.array(zod.string()),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
   rating: zod.number().nullish(),
@@ -106,6 +107,7 @@ export const CreateProductBody = zod.object({
   category: zod.string().optional(),
   subcategory: zod.string().optional(),
   images: zod.array(zod.string()).optional(),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
 });
@@ -129,6 +131,7 @@ export const GetProductResponse = zod.object({
   category: zod.string().nullish(),
   subcategory: zod.string().nullish(),
   images: zod.array(zod.string()),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
   rating: zod.number().nullish(),
@@ -154,6 +157,7 @@ export const UpdateProductBody = zod.object({
   category: zod.string().optional(),
   subcategory: zod.string().optional(),
   images: zod.array(zod.string()).optional(),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
 });
@@ -170,6 +174,7 @@ export const UpdateProductResponse = zod.object({
   category: zod.string().nullish(),
   subcategory: zod.string().nullish(),
   images: zod.array(zod.string()),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
   rating: zod.number().nullish(),
@@ -203,6 +208,7 @@ export const GetFeaturedProductsResponseItem = zod.object({
   category: zod.string().nullish(),
   subcategory: zod.string().nullish(),
   images: zod.array(zod.string()),
+  imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(zod.string()).optional(),
   isFeatured: zod.boolean().optional(),
   rating: zod.number().nullish(),
@@ -236,6 +242,7 @@ export const ListServicesResponseItem = zod.object({
   type: zod.string(),
   icon: zod.string().nullish(),
   image: zod.string().nullish(),
+  imageMetadata: zod.object({}).passthrough().optional(),
   isActive: zod.boolean(),
 });
 export const ListServicesResponse = zod.array(ListServicesResponseItem);
@@ -256,6 +263,7 @@ export const GetServiceResponse = zod.object({
   type: zod.string(),
   icon: zod.string().nullish(),
   image: zod.string().nullish(),
+  imageMetadata: zod.object({}).passthrough().optional(),
   isActive: zod.boolean(),
 });
 
@@ -830,6 +838,7 @@ export const ListGalleryResponseItem = zod.object({
   id: zod.number(),
   mediaUrl: zod.string(),
   mediaType: zod.string(),
+  imageMetadata: zod.object({}).passthrough().optional(),
   title: zod.string().nullish(),
   titleAr: zod.string().nullish(),
   category: zod.string(),
@@ -843,6 +852,7 @@ export const ListGalleryResponse = zod.array(ListGalleryResponseItem);
 export const CreateGalleryItemBody = zod.object({
   mediaUrl: zod.string(),
   mediaType: zod.string(),
+  imageMetadata: zod.object({}).passthrough().optional(),
   title: zod.string().optional(),
   titleAr: zod.string().optional(),
   category: zod.string(),

@@ -17,6 +17,7 @@ export interface ProductInput {
   category?: string;
   subcategory?: string;
   images?: string[];
+  imageMetadata?: Record<string, unknown>[];
   colors?: string[];
   isFeatured?: boolean;
 }

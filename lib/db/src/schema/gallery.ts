@@ -1,4 +1,4 @@
-import { pgTable, serial, text, varchar, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, varchar, timestamp, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -6,6 +6,7 @@ export const galleryItemsTable = pgTable("gallery_items", {
   id: serial("id").primaryKey(),
   mediaUrl: text("media_url").notNull(),
   mediaType: varchar("media_type", { length: 10 }).notNull().default("image"),
+  imageMetadata: jsonb("image_metadata").$type<Record<string, unknown>>().notNull().default({}),
   title: text("title"),
   titleAr: text("title_ar"),
   category: varchar("category", { length: 50 }).notNull().default("general"),

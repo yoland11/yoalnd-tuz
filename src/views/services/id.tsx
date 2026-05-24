@@ -163,7 +163,7 @@ export default function ServiceRequest() {
               {item.mediaType === "video" ? (
                 <video src={item.mediaUrl} muted playsInline preload="metadata" className="h-full w-full object-cover" />
               ) : (
-                <img src={item.mediaUrl} alt={item.titleAr || item.title || service?.nameAr || "عمل سابق"} width={260} height={195} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                <img src={item.mediaUrl} alt={item.titleAr || item.title || service?.nameAr || "عمل سابق"} width={260} height={195} loading="lazy" decoding="async" className="h-full w-full" style={{ objectFit: item.imageMetadata?.objectFit ?? "cover" }} />
               )}
             </div>
           ))}

@@ -63,6 +63,7 @@ export interface Product {
   /** @nullable */
   subcategory?: string | null;
   images: string[];
+  imageMetadata?: Record<string, unknown>[];
   colors?: string[];
   isFeatured?: boolean;
   /** @nullable */
@@ -82,6 +83,7 @@ export interface ProductInput {
   category?: string;
   subcategory?: string;
   images?: string[];
+  imageMetadata?: Record<string, unknown>[];
   colors?: string[];
   isFeatured?: boolean;
 }
@@ -97,6 +99,7 @@ export interface ProductUpdate {
   category?: string;
   subcategory?: string;
   images?: string[];
+  imageMetadata?: Record<string, unknown>[];
   colors?: string[];
   isFeatured?: boolean;
 }
@@ -114,6 +117,7 @@ export interface Service {
   icon?: string | null;
   /** @nullable */
   image?: string | null;
+  imageMetadata?: Record<string, unknown>;
   isActive: boolean;
 }
 
@@ -321,6 +325,7 @@ export interface GalleryItem {
   id: number;
   mediaUrl: string;
   mediaType: string;
+  imageMetadata?: Record<string, unknown>;
   /** @nullable */
   title?: string | null;
   /** @nullable */
@@ -332,6 +337,7 @@ export interface GalleryItem {
 export interface GalleryItemInput {
   mediaUrl: string;
   mediaType: string;
+  imageMetadata?: Record<string, unknown>;
   title?: string;
   titleAr?: string;
   category: string;

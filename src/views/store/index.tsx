@@ -89,7 +89,8 @@ export default function Store() {
                   <img 
                     src={product.images[0] || 'https://placehold.co/400x400/1a1a1a/c9a84c?text=AJN'} 
                     alt={product.nameAr}
-                    className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-110"
+                    className="w-full h-full transition-transform duration-500 group-hover:scale-110"
+                    style={{ objectFit: String(product.imageMetadata?.[0]?.objectFit ?? "cover") as any }}
                   />
                   {product.stock <= 0 && (
                     <div className="absolute top-2 right-2 bg-destructive/90 text-destructive-foreground text-xs font-bold px-2 py-1 rounded backdrop-blur-sm">

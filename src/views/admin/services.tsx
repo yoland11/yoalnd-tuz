@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Trash2, X, Upload } from "lucide-react";
+import { Plus, Edit2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, compressImageFile } from "./_lib";
+import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import type { ImageMetadata } from "@/lib/image-tools";
 
 type Service = {
   id: number; name: string; nameAr: string;
   description: string | null; descriptionAr: string | null;
   type: string; icon: string | null; image: string | null;
+  imageMetadata?: ImageMetadata | null;
   isActive: boolean; sortOrder?: number;
 };
 
@@ -27,7 +30,6 @@ const SERVICE_TYPES = [
 export default function ServicesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Partial<Service> | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const { data: publicSettings } = usePublicSettings();
 
   const { data: services, isLoading } = useQuery({
@@ -59,16 +61,10 @@ export default function ServicesPage() {
     onSuccess: invalidate,
   });
 
-  async function handleImageUpload(file: File) {
-    const imageSettings = publicSettings?.image_settings;
-    setUploadProgress(25);
-    const dataUrl = await compressImageFile(file, imageSettings?.serviceMaxSize ?? 1600, imageSettings?.quality ?? 0.82, {
-      ...(imageSettings ?? {}),
-      watermarkText: publicSettings?.site_name,
-    });
-    setUploadProgress(100);
-    setEditing(e => ({ ...e!, image: dataUrl }));
-    setTimeout(() => setUploadProgress(0), 600);
+  function handleImageResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    setEditing(e => ({ ...e!, image: result.dataUrl, imageMetadata: result.metadata }));
   }
 
   return (
@@ -88,7 +84,7 @@ export default function ServicesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {services.map(s => (
             <div key={s.id} className="bg-card rounded-xl border border-border/30 overflow-hidden flex flex-col">
-              {s.image && <img src={s.image} alt={s.nameAr} className="w-full h-32 object-cover" />}
+              {s.image && <img src={s.image} alt={s.nameAr} className="w-full h-32" style={{ objectFit: s.imageMetadata?.objectFit ?? "cover" }} />}
               <div className="p-4 flex-1 flex flex-col">
                 <div className="flex items-start justify-between mb-2">
                   <div>
@@ -139,21 +135,16 @@ export default function ServicesPage() {
             <Field label="رمز الأيقونة (lucide)" value={editing.icon ?? ""} onChange={v => setEditing(e => ({ ...e!, icon: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">صورة الخدمة</label>
-              {editing.image && <img src={editing.image} className="h-24 w-full rounded-lg object-cover mb-2" alt="" />}
-              {uploadProgress > 0 && (
-                <div className="mb-2 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
-                  <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
-                </div>
-              )}
-              <label
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); e.dataTransfer.files?.[0] && handleImageUpload(e.dataTransfer.files[0]); }}
-                className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border/40 bg-background/40 py-5 text-sm text-foreground cursor-pointer hover:border-primary/50"
-              >
-                <Upload className="w-4 h-4 text-primary" />
-                رفع أو سحب صورة
-                <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleImageUpload(e.target.files[0])} className="hidden" />
-              </label>
+              <ImageUploadEditor
+                kind="service"
+                label="رفع أو سحب صورة الخدمة"
+                currentImage={editing.image}
+                currentMetadata={editing.imageMetadata}
+                settings={publicSettings?.image_settings}
+                watermarkText={publicSettings?.site_name}
+                onComplete={handleImageResult}
+                onRemove={() => setEditing(s => ({ ...s!, image: null, imageMetadata: null }))}
+              />
               <input type="text" placeholder="أو ضع رابط URL" value={editing.image ?? ""} onChange={e => setEditing(s => ({ ...s!, image: e.target.value }))}
                 className="w-full mt-2 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
             </div>

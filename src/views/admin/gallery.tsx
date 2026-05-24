@@ -4,52 +4,41 @@ import {
   useListGallery, useCreateGalleryItem, useDeleteGalleryItem,
   getListGalleryQueryKey,
 } from "@workspace/api-client-react";
-import { Plus, Trash2, X, Upload, Eye } from "lucide-react";
+import { Plus, Trash2, X, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { compressImageFile } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import type { ImageMetadata } from "@/lib/image-tools";
 
 export default function GalleryPage() {
   const qc = useQueryClient();
   const { data: items, isLoading } = useListGallery({});
   const create = useCreateGalleryItem();
   const del = useDeleteGalleryItem();
-  const [form, setForm] = useState({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام" });
+  const [form, setForm] = useState<{ mediaUrl: string; mediaType: string; titleAr: string; category: string; imageMetadata?: ImageMetadata }>({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} });
   const [showForm, setShowForm] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const { data: publicSettings } = usePublicSettings();
 
   function invalidate() { qc.invalidateQueries({ queryKey: getListGalleryQueryKey() }); }
 
-  async function handleFile(file: File) {
-    setUploading(true);
-    setUploadProgress(25);
-    try {
-      const imageSettings = publicSettings?.image_settings;
-      const dataUrl = await compressImageFile(file, imageSettings?.galleryMaxSize ?? 1800, imageSettings?.quality ?? 0.82, {
-        ...(imageSettings ?? {}),
-        watermarkText: publicSettings?.site_name,
-      });
-      setUploadProgress(100);
-      setForm(f => ({
-        ...f,
-        mediaUrl: dataUrl,
-        mediaType: file.type.startsWith("video") ? "video" : "image",
-      }));
-    } finally {
-      setUploading(false);
-      setTimeout(() => setUploadProgress(0), 600);
-    }
+  function handleFileResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    setForm(f => ({
+      ...f,
+      mediaUrl: result.dataUrl,
+      mediaType: result.dataUrl.startsWith("data:video") ? "video" : "image",
+      imageMetadata: result.metadata,
+    }));
   }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
     create.mutate({ data: form }, {
-      onSuccess: () => { invalidate(); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام" }); },
+      onSuccess: () => { invalidate(); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); },
     });
   }
 
@@ -67,7 +56,7 @@ export default function GalleryPage() {
             <div key={item.id} className="relative group bg-card rounded-xl overflow-hidden border border-border/30">
               {item.mediaType === "video"
                 ? <video src={item.mediaUrl} className="w-full aspect-square object-cover" />
-                : <img src={item.mediaUrl} alt={item.titleAr ?? ""} className="w-full aspect-square object-cover" />}
+                : <img src={item.mediaUrl} alt={item.titleAr ?? ""} className="w-full aspect-square" style={{ objectFit: (item as any).imageMetadata?.objectFit ?? "cover" }} />}
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                 <button onClick={() => setPreview(item.mediaUrl)} className="p-2 rounded-full bg-primary/20 text-primary hover:bg-primary/30">
                   <Eye className="w-4 h-4" />
@@ -90,27 +79,21 @@ export default function GalleryPage() {
               <h3 className="font-bold text-foreground">إضافة وسائط</h3>
               <button type="button" onClick={() => setShowForm(false)}><X className="w-5 h-5 text-muted-foreground" /></button>
             </div>
-            <label className="block">
-              <span className="text-xs text-muted-foreground">رفع ملف من الجهاز</span>
-              <div
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); e.dataTransfer.files?.[0] && handleFile(e.dataTransfer.files[0]); }}
-                className="mt-1 flex items-center justify-center gap-2 border-2 border-dashed border-border/40 rounded-xl py-6 cursor-pointer hover:border-primary/50"
-              >
-                <Upload className="w-5 h-5 text-primary" />
-                <span className="text-sm text-foreground">{uploading ? "جاري الرفع..." : "اختر صورة أو فيديو"}</span>
-                <input type="file" accept="image/*,video/*" className="hidden" onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
-              </div>
-            </label>
+            <ImageUploadEditor
+              kind="gallery"
+              label="اختر صورة أو فيديو"
+              accept="image/*,video/*"
+              currentImage={form.mediaType === "image" ? form.mediaUrl : null}
+              currentMetadata={form.imageMetadata}
+              settings={publicSettings?.image_settings}
+              watermarkText={publicSettings?.site_name}
+              onComplete={handleFileResult}
+              onRemove={() => setForm(f => ({ ...f, mediaUrl: "", imageMetadata: {} }))}
+            />
             {form.mediaUrl && (
               form.mediaType === "video"
                 ? <video src={form.mediaUrl} className="w-full h-40 object-cover rounded-lg" controls />
-                : <img src={form.mediaUrl} className="w-full h-40 object-cover rounded-lg" alt="" />
-            )}
-            {uploadProgress > 0 && (
-              <div className="h-2 rounded-full bg-background border border-border/20 overflow-hidden">
-                <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
-              </div>
+                : <img src={form.mediaUrl} className="w-full h-40 rounded-lg" style={{ objectFit: form.imageMetadata?.objectFit ?? "cover" }} alt="" />
             )}
             <div>
               <label className="block text-xs text-muted-foreground mb-1">أو الصق رابط URL</label>

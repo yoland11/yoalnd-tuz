@@ -146,6 +146,7 @@ let archiveColumnsPromise: Promise<void> | null = null;
 let activityTablesPromise: Promise<void> | null = null;
 let orderReviewsTablePromise: Promise<void> | null = null;
 let staffActivityColumnPromise: Promise<void> | null = null;
+let imageMetadataColumnsPromise: Promise<void> | null = null;
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -540,6 +541,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     stock: p.stock,
     category: p.category ?? null,
     images: p.images ?? [],
+    imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
     colors: p.colors ?? [],
     subcategory: p.subcategory ?? null,
     isFeatured: p.isFeatured,
@@ -573,6 +575,7 @@ function formatService(s: any) {
     type: s.type,
     icon: s.icon ?? null,
     image: s.image ?? null,
+    imageMetadata: s.imageMetadata ?? {},
     isActive: s.isActive,
   };
 }
@@ -828,6 +831,18 @@ async function ensureOrderReviewsTable(): Promise<void> {
   await orderReviewsTablePromise;
 }
 
+async function ensureImageMetadataColumns(): Promise<void> {
+  if (!imageMetadataColumnsPromise) {
+    imageMetadataColumnsPromise = db.execute(sql`
+      alter table products add column if not exists image_metadata jsonb not null default '[]'::jsonb;
+      alter table services add column if not exists image_metadata jsonb not null default '{}'::jsonb;
+      alter table gallery_items add column if not exists image_metadata jsonb not null default '{}'::jsonb;
+      alter table customers add column if not exists avatar_metadata jsonb not null default '{}'::jsonb;
+    `).then(() => undefined);
+  }
+  await imageMetadataColumnsPromise;
+}
+
 async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
   try {
     await ensureActivityTables();
@@ -902,6 +917,7 @@ function publicCustomer(customer: any) {
     fullName: customer.fullName ?? customer.name ?? "",
     email: customer.email ?? "",
     avatarUrl: customer.avatarUrl ?? "",
+    avatarMetadata: customer.avatarMetadata ?? {},
     address: customer.address ?? "",
     city: customer.city ?? "",
     role: customer.role,
@@ -1232,6 +1248,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const address = String(data?.address ?? "").trim().slice(0, 500);
     const city = String(data?.city ?? "").trim().slice(0, 120);
     const avatarUrl = cleanPublicUrl(data?.avatarUrl ?? "");
+    const avatarMetadata = data?.avatarMetadata && typeof data.avatarMetadata === "object" ? data.avatarMetadata : {};
     const [customer] = await db
       .update(customersTable)
       .set({
@@ -1239,6 +1256,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
         name: fullName || undefined,
         email: email || null,
         avatarUrl: avatarUrl || null,
+        avatarMetadata,
         address: address || null,
         city: city || null,
         updatedAt: new Date(),
@@ -1325,6 +1343,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         stock: data.stock,
         category: data.category,
         images: data.images ?? [],
+        imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
         colors: data.colors ?? [],
         isFeatured: data.isFeatured ?? false,
         subcategory: data.subcategory ?? null,
@@ -1351,6 +1370,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "description",
       "category",
       "images",
+      "imageMetadata",
       "colors",
       "isFeatured",
       "descriptionAr",
@@ -1873,6 +1893,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
         id: i.id,
         mediaUrl: i.mediaUrl,
         mediaType: i.mediaType,
+        imageMetadata: i.imageMetadata ?? {},
         title: i.title ?? null,
         titleAr: i.titleAr ?? null,
         category: i.category,
@@ -1893,6 +1914,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
         id: item.id,
         mediaUrl: item.mediaUrl,
         mediaType: item.mediaType,
+        imageMetadata: item.imageMetadata ?? {},
         title: item.title ?? null,
         titleAr: item.titleAr ?? null,
         category: item.category,
@@ -2656,13 +2678,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "POST" && parts[2] === "logo") {
       const data = await body(req);
       const logoUrl = cleanPublicUrl(data?.logoUrl ?? data?.url ?? "");
+      const logoMetadata = data?.logoMetadata && typeof data.logoMetadata === "object" ? data.logoMetadata : {};
       if (!logoUrl) return error("رابط الشعار غير صالح", 400);
-      await db
-        .insert(settingsTable)
-        .values({ key: "logoUrl", value: logoUrl as any })
-        .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoUrl as any, updatedAt: new Date() } });
+      await Promise.all([
+        db
+          .insert(settingsTable)
+          .values({ key: "logoUrl", value: logoUrl as any })
+          .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoUrl as any, updatedAt: new Date() } }),
+        db
+          .insert(settingsTable)
+          .values({ key: "logoMetadata", value: logoMetadata as any })
+          .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoMetadata as any, updatedAt: new Date() } }),
+      ]);
       revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
-      return json({ logoUrl, logo_url: logoUrl });
+      return json({ logoUrl, logo_url: logoUrl, logoMetadata });
     }
     if (method === "PUT" || method === "PATCH") {
       const entries = Object.entries(await body(req));
@@ -3353,7 +3382,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json(rows);
     }
     if (method === "POST" && !parts[2]) {
-      const { name, nameAr, description, descriptionAr, type, icon, image, isActive, sortOrder } = await body(req);
+      const { name, nameAr, description, descriptionAr, type, icon, image, imageMetadata, isActive, sortOrder } = await body(req);
       if (!name || !nameAr || !type) return error("بيانات ناقصة", 400);
       const [row] = await db
         .insert(servicesTable)
@@ -3365,6 +3394,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           type,
           icon: icon ?? null,
           image: image ?? null,
+          imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
           isActive: isActive ?? true,
           sortOrder: sortOrder ?? 0,
         })
@@ -3376,7 +3406,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
       const update: any = {};
-      for (const k of ["name", "nameAr", "description", "descriptionAr", "type", "icon", "image", "isActive", "sortOrder"]) {
+      for (const k of ["name", "nameAr", "description", "descriptionAr", "type", "icon", "image", "imageMetadata", "isActive", "sortOrder"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       const [row] = await db.update(servicesTable).set(update).where(eq(servicesTable.id, id)).returning();
@@ -3545,7 +3575,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "uploads" && method === "POST") {
     const auth = await requirePermission(req, "gallery");
     if (isResponse(auth)) return auth;
-    const { dataUrl, titleAr, category } = await body(req);
+    const { dataUrl, titleAr, category, imageMetadata } = await body(req);
     if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return error("صيغة غير صحيحة", 400);
     if (dataUrl.length > 5_000_000) return error("الملف كبير جداً (الحد الأقصى ~3.5 ميغا)", 413);
     const [row] = await db
@@ -3553,6 +3583,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       .values({
         mediaUrl: dataUrl,
         mediaType: dataUrl.startsWith("data:video/") ? "video" : "image",
+        imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
         titleAr: titleAr ?? null,
         category: category ?? "uploads",
       })
@@ -4047,6 +4078,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
     if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard" || root === "customer") {
       await ensureCustomerProfileColumns();
+    }
+    if (root === "products" || root === "services" || root === "gallery" || root === "admin" || root === "auth" || root === "customer" || root === "settings") {
+      await ensureImageMetadataColumns();
     }
     if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
       await ensureTrackingColumns();

@@ -3,11 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Save, Upload, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, compressImageFile, fileToDataUrl } from "./_lib";
+import { adminFetch, fileToDataUrl } from "./_lib";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import type { ImageMetadata } from "@/lib/image-tools";
 
 type Settings = {
   siteName: string;
   logoUrl: string;
+  logoMetadata?: ImageMetadata;
   phones: string[];
   social: { instagram: string; facebook: string; whatsapp: string };
   paymentQr: string;
@@ -63,16 +66,14 @@ export default function SettingsPage() {
     },
   });
 
-  async function handleLogoUpload(file: File) {
-    const dataUrl = await compressImageFile(file, form?.imageSettings?.logoMaxSize ?? 600, form?.imageSettings?.quality ?? 0.82, {
-      ...(form?.imageSettings ?? {}),
-      watermarkText: form?.siteName,
-    });
-    const res = await adminFetch<{ logoUrl: string }>("/admin/settings/logo", {
+  async function handleLogoResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    const res = await adminFetch<{ logoUrl: string; logoMetadata?: ImageMetadata }>("/admin/settings/logo", {
       method: "POST",
-      body: JSON.stringify({ logoUrl: dataUrl }),
+      body: JSON.stringify({ logoUrl: result.dataUrl, logoMetadata: result.metadata }),
     });
-    setForm(f => ({ ...f!, logoUrl: res.logoUrl }));
+    setForm(f => ({ ...f!, logoUrl: res.logoUrl, logoMetadata: res.logoMetadata ?? result.metadata }));
     qc.invalidateQueries({ queryKey: ["admin", "settings"] });
     qc.invalidateQueries({ queryKey: ["settings", "public"] });
   }
@@ -99,15 +100,20 @@ export default function SettingsPage() {
         <Field label="رابط موقع المحل" value={form.mapUrl ?? ""} onChange={v => setForm(f => ({ ...f!, mapUrl: v }))} placeholder="https://maps.google.com/..." />
         <div>
           <label className="block text-xs text-muted-foreground mb-1">الشعار (Logo)</label>
-          {form.logoUrl && <img src={form.logoUrl} alt="شعار" className="h-16 w-36 mb-2 rounded-lg bg-background/40 p-2 object-contain" />}
+          <ImageUploadEditor
+            kind="logo"
+            label="رفع أو سحب اللوغو"
+            currentImage={form.logoUrl}
+            currentMetadata={form.logoMetadata}
+            settings={form.imageSettings}
+            watermarkText={form.siteName}
+            onComplete={(results) => void handleLogoResult(results)}
+            onRemove={() => setForm(f => ({ ...f!, logoUrl: "", logoMetadata: {} }))}
+          />
           <div className="flex gap-2 items-center">
-            <label className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-primary/10 text-primary border border-primary/30 cursor-pointer hover:bg-primary/20">
-              <Upload className="w-3.5 h-3.5" /> رفع
-              <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleLogoUpload(e.target.files[0])} className="hidden" />
-            </label>
             <input value={form.logoUrl.startsWith("data:") ? "" : form.logoUrl} onChange={e => setForm(f => ({ ...f!, logoUrl: e.target.value }))}
               placeholder="أو رابط URL"
-              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 mt-2" />
           </div>
         </div>
       </Section>
@@ -154,11 +160,11 @@ export default function SettingsPage() {
 
       <Section title="إعدادات الصور">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="حجم صور المنتجات" type="number" value={String(form.imageSettings?.productMaxSize ?? 1600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, productMaxSize: parseInt(v) || 1600 } }))} />
-          <Field label="حجم صور الخدمات" type="number" value={String(form.imageSettings?.serviceMaxSize ?? 1600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, serviceMaxSize: parseInt(v) || 1600 } }))} />
-          <Field label="حجم صور المعرض" type="number" value={String(form.imageSettings?.galleryMaxSize ?? 1800)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, galleryMaxSize: parseInt(v) || 1800 } }))} />
-          <Field label="حجم اللوغو" type="number" value={String(form.imageSettings?.logoMaxSize ?? 600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, logoMaxSize: parseInt(v) || 600 } }))} />
-          <Field label="جودة الصور 0.45 - 0.95" type="number" value={String(form.imageSettings?.quality ?? 0.82)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, quality: Math.min(0.95, Math.max(0.45, parseFloat(v) || 0.82)) } }))} />
+          <SliderField label="حجم صور المنتجات" value={form.imageSettings?.productMaxSize ?? 1600} min={512} max={3200} step={32} suffix="px" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, productMaxSize: v } }))} />
+          <SliderField label="حجم صور الخدمات" value={form.imageSettings?.serviceMaxSize ?? 1600} min={512} max={3200} step={32} suffix="px" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, serviceMaxSize: v } }))} />
+          <SliderField label="حجم صور المعرض" value={form.imageSettings?.galleryMaxSize ?? 1800} min={512} max={3200} step={32} suffix="px" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, galleryMaxSize: v } }))} />
+          <SliderField label="حجم اللوغو" value={form.imageSettings?.logoMaxSize ?? 600} min={160} max={1280} step={16} suffix="px" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, logoMaxSize: v } }))} />
+          <SliderField label="جودة الصور" value={form.imageSettings?.quality ?? 0.82} min={0.45} max={0.95} step={0.01} suffix="" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, quality: Math.min(0.95, Math.max(0.45, v)) } }))} />
           <div>
             <label className="block text-xs text-muted-foreground mb-1">نسبة القص</label>
             <select value={form.imageSettings?.cropRatio ?? "free"} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, cropRatio: e.target.value } }))}
@@ -206,6 +212,29 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+    </div>
+  );
+}
+
+function SliderField({ label, value, min, max, step, suffix, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; onChange: (v: number) => void }) {
+  const precision = step < 1 ? 2 : 0;
+  return (
+    <div className="rounded-lg border border-border/25 bg-background/40 px-3 py-2">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <label className="text-xs text-muted-foreground">{label}</label>
+        <span className="rounded-md border border-border/30 bg-card px-2 py-1 text-xs text-foreground">
+          {value.toFixed(precision)}{suffix}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full accent-primary"
+      />
     </div>
   );
 }

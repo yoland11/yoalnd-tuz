@@ -36,6 +36,7 @@ export default function ProductDetail() {
   const images = product?.images?.length
     ? product.images
     : ["/placeholder-product.jpg"];
+  const imageMetadata = product?.imageMetadata ?? [];
 
   function handleAddToCart() {
     if (!product) return;
@@ -107,7 +108,8 @@ export default function ProductDetail() {
               <img
                 src={images[selectedImage]}
                 alt={product.nameAr}
-                className="w-full h-full object-cover transition-transform duration-300 hover:scale-105"
+                className="w-full h-full transition-transform duration-300 hover:scale-105"
+                style={{ objectFit: String(imageMetadata[selectedImage]?.objectFit ?? "cover") as any }}
               />
               <span className="absolute bottom-3 left-3 text-xs text-white/70 bg-black/40 px-2 py-1 rounded">معاينة</span>
             </div>
@@ -119,7 +121,7 @@ export default function ProductDetail() {
                     onClick={() => setSelectedImage(i)}
                     className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors ${i === selectedImage ? "border-primary" : "border-transparent"}`}
                   >
-                    <img src={img} alt="" className="w-full h-full object-cover" />
+                    <img src={img} alt="" className="w-full h-full" style={{ objectFit: String(imageMetadata[i]?.objectFit ?? "cover") as any }} />
                   </button>
                 ))}
               </div>

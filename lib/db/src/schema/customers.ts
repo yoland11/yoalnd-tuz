@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -9,6 +9,7 @@ export const customersTable = pgTable("customers", {
   fullName: text("full_name"),
   email: text("email"),
   avatarUrl: text("avatar_url"),
+  avatarMetadata: jsonb("avatar_metadata").$type<Record<string, unknown>>().notNull().default({}),
   address: text("address"),
   city: text("city"),
   role: varchar("role", { length: 20 }).notNull().default("customer"),
