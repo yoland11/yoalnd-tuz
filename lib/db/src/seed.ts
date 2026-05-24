@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   await seedProducts();
   await seedDeliveryZones();
   await seedGallery();
-  console.log("Database seed completed.");
+  process.stdout.write("Database seed completed.\n");
 }
 
 main()

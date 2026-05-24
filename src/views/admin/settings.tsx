@@ -183,7 +183,7 @@ export default function SettingsPage() {
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={!!form.imageSettings?.watermark} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, watermark: e.target.checked } }))} className="accent-primary" />
-            تفعيل watermark باسم المحل
+            تفعيل علامة مائية باسم المحل
           </label>
         </div>
         <div className="rounded-xl bg-background/60 border border-border/25 p-4">

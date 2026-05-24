@@ -10,5 +10,5 @@ pnpm --filter @workspace/db run push
 pnpm --filter @workspace/db run seed
 ```
 
-Use `push` for Replit/dev environments. For production, review generated SQL
+Use `push` for local development. For production, review SQL
 before applying it to a live database.

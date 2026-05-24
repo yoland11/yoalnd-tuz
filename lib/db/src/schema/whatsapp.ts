@@ -1,6 +1,6 @@
 import { pgTable, serial, text, varchar, timestamp, jsonb, boolean } from "drizzle-orm/pg-core";
 // Note: provider credentials are NOT stored in the DB. They are read from
-// environment variables (Replit secrets) only. The settings table holds
+// environment variables only. The settings table holds
 // non-sensitive configuration: provider name, toggles, and templates.
 
 export const whatsappSettingsTable = pgTable("whatsapp_settings", {

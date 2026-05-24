@@ -139,7 +139,7 @@ export default function WhatsappPage() {
         </p>
         {form.automationEnabled && !providerConfigured && (
           <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
-            ⚠ المزود المختار غير مكتمل الإعداد. يرجى إضافة المفاتيح المطلوبة في أسرار Replit أدناه.
+            ⚠ المزود المختار غير مكتمل الإعداد. يرجى إضافة المفاتيح المطلوبة في متغيرات البيئة أدناه.
           </p>
         )}
       </Section>
@@ -166,7 +166,7 @@ export default function WhatsappPage() {
             <p className="text-sm font-semibold text-foreground">المفاتيح المطلوبة</p>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
-            تُحفظ المفاتيح كأسرار في Replit Secrets ولا تُخزَّن في قاعدة البيانات ولا تُعرض في الواجهة.
+            تُحفظ المفاتيح داخل Environment Variables ولا تُخزَّن في قاعدة البيانات ولا تُعرض في الواجهة.
             بعد إضافة أي سر، أعد تشغيل خادم API لتفعيله.
           </p>
           <div className="space-y-1.5">

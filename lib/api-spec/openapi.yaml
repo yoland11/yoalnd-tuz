@@ -1181,7 +1181,7 @@ components:
           type: integer
         mapsUrl:
           type: string
-          description: Google Maps URL (auto-generated from geolocation or manually entered)
+          description: Google Maps URL (from geolocation or manual entry)
 
     OrderStatusUpdate:
       type: object

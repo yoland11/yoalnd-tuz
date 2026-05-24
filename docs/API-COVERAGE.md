@@ -1,11 +1,11 @@
 # API Coverage Notes
 
-`lib/api-spec/openapi.yaml` covers the public storefront API and the generated
+`lib/api-spec/openapi.yaml` covers the public storefront API and the typed
 React Query/Zod clients. The admin UI currently uses manual `adminFetch` calls
 for the broader `/api/admin/*` surface.
 
 The following implemented admin endpoints should be promoted into OpenAPI when
-you want generated admin hooks as well:
+you want typed admin hooks as well:
 
 - `POST /api/admin/auth/login`
 - `POST /api/admin/auth/logout`
@@ -38,4 +38,4 @@ you want generated admin hooks as well:
 - `POST /api/admin/backup/import`
 
 Until those routes are added to OpenAPI, keep admin API changes mirrored in the
-manual client helpers under `artifacts/ajn-platform/src/pages/admin/_lib.ts`.
+manual admin client helpers.

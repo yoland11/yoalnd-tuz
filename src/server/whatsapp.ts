@@ -107,7 +107,7 @@ export type WaSettings = {
 };
 
 // ─── Provider credentials (env-only, never persisted) ──────────────────
-// Each provider declares the Replit secrets it needs. The admin UI shows
+// Each provider declares the environment variables it needs. The admin UI shows
 // the names + whether they are set, but values are NEVER returned to the UI.
 export type ProviderSpec = {
   id: string;
@@ -376,8 +376,8 @@ async function logEntry(
 export function buildTrackingLink(trackingCode: string): string {
   const base = process.env.APP_BASE_URL
     ?? process.env.PUBLIC_BASE_URL
-    ?? (process.env.REPLIT_DOMAINS?.split(",")[0]
-      ? `https://${process.env.REPLIT_DOMAINS.split(",")[0]}`
+    ?? (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
       : "");
   if (!base) return `track?code=${trackingCode}`;
   return `${base.replace(/\/$/, "")}/track?code=${trackingCode}`;
