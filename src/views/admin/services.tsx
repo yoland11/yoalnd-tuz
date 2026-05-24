@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, compressImageFile } from "./_lib";
 import { EmptyState } from "./_layout";
+import { usePublicSettings } from "@/lib/public-settings";
 
 type Service = {
   id: number; name: string; nameAr: string;
@@ -26,6 +27,8 @@ const SERVICE_TYPES = [
 export default function ServicesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Partial<Service> | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const { data: publicSettings } = usePublicSettings();
 
   const { data: services, isLoading } = useQuery({
     queryKey: ["admin", "services"],
@@ -57,8 +60,15 @@ export default function ServicesPage() {
   });
 
   async function handleImageUpload(file: File) {
-    const dataUrl = await compressImageFile(file);
+    const imageSettings = publicSettings?.image_settings;
+    setUploadProgress(25);
+    const dataUrl = await compressImageFile(file, imageSettings?.serviceMaxSize ?? 1600, imageSettings?.quality ?? 0.82, {
+      ...(imageSettings ?? {}),
+      watermarkText: publicSettings?.site_name,
+    });
+    setUploadProgress(100);
     setEditing(e => ({ ...e!, image: dataUrl }));
+    setTimeout(() => setUploadProgress(0), 600);
   }
 
   return (
@@ -130,6 +140,11 @@ export default function ServicesPage() {
             <div>
               <label className="block text-xs text-muted-foreground mb-1">صورة الخدمة</label>
               {editing.image && <img src={editing.image} className="h-24 w-full rounded-lg object-cover mb-2" alt="" />}
+              {uploadProgress > 0 && (
+                <div className="mb-2 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
+                  <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
+                </div>
+              )}
               <label
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => { e.preventDefault(); e.dataTransfer.files?.[0] && handleImageUpload(e.dataTransfer.files[0]); }}

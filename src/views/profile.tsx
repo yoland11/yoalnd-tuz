@@ -23,6 +23,7 @@ import {
   ShoppingBag,
   Star,
   Trash2,
+  Upload,
   User,
   Wallet,
 } from "lucide-react";
@@ -30,6 +31,8 @@ import { Button } from "@/components/ui/button";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { usePublicSettings } from "@/lib/public-settings";
+import { getCartSessionId } from "@/lib/api-session";
+import { processImageFile } from "@/lib/image-tools";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -67,6 +70,18 @@ type CustomerAddress = {
 };
 
 type AddressForm = Omit<CustomerAddress, "id">;
+type OrderReview = {
+  id: number;
+  orderKind: "product" | "service" | string;
+  orderId: number;
+  rating: number;
+  comment: string;
+};
+
+type Recommendations = {
+  products: any[];
+  services: any[];
+};
 
 const emptyAddressForm: AddressForm = {
   type: "home",
@@ -81,7 +96,9 @@ const emptyAddressForm: AddressForm = {
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { credentials: "include", ...init });
+  const headers = new Headers(init?.headers);
+  if (typeof window !== "undefined" && !headers.has("x-session-id")) headers.set("x-session-id", getCartSessionId());
+  const res = await fetch(url, { credentials: "include", ...init, headers });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error || "تعذر تحميل البيانات");
   return json as T;
@@ -154,6 +171,8 @@ export default function Profile() {
   const [orders, setOrders] = useState<any[]>([]);
   const [cart, setCart] = useState<any>(null);
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
+  const [reviews, setReviews] = useState<OrderReview[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendations>({ products: [], services: [] });
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "card">("cash");
   const [loading, setLoading] = useState(true);
   const [trackCode, setTrackCode] = useState("");
@@ -162,6 +181,8 @@ export default function Profile() {
   const [trackLoading, setTrackLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [profileForm, setProfileForm] = useState({ fullName: "", email: "", address: "", city: "" });
+  const [avatarDraft, setAvatarDraft] = useState("");
+  const [avatarProgress, setAvatarProgress] = useState(0);
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [addressForm, setAddressForm] = useState<AddressForm>(emptyAddressForm);
@@ -180,8 +201,10 @@ export default function Profile() {
       fetchJson<any>("/api/cart").catch(() => null),
       fetchJson<CustomerAddress[]>("/api/customer/addresses").catch(() => []),
       fetchJson<{ defaultPaymentMethod: "cash" | "card" }>("/api/customer/preferences").catch(() => ({ defaultPaymentMethod: "cash" as const })),
+      fetchJson<OrderReview[]>("/api/customer/reviews").catch(() => []),
+      fetchJson<Recommendations>("/api/customer/recommendations").catch(() => ({ products: [], services: [] })),
     ])
-      .then(([me, myOrders, myCart, savedAddresses, preferences]) => {
+      .then(([me, myOrders, myCart, savedAddresses, preferences, savedReviews, suggested]) => {
         if (!mounted) return;
         setCustomer(me);
         setProfileForm({
@@ -190,10 +213,13 @@ export default function Profile() {
           address: me.address || "",
           city: me.city || "",
         });
+        setAvatarDraft(me.avatarUrl || "");
         setOrders(myOrders);
         setCart(myCart);
         setAddresses(savedAddresses);
         setPaymentMethod(preferences.defaultPaymentMethod);
+        setReviews(savedReviews);
+        setRecommendations(suggested);
       })
       .catch(() => navigate("/login"))
       .finally(() => mounted && setLoading(false));
@@ -219,7 +245,7 @@ export default function Profile() {
       const updated = await fetchJson<Customer>("/api/auth/me", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(profileForm),
+        body: JSON.stringify({ ...profileForm, avatarUrl: avatarDraft }),
       });
       setCustomer(updated);
       setEditing(false);
@@ -227,6 +253,22 @@ export default function Profile() {
       setProfileError(err?.message || "تعذر حفظ الملف");
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleAvatarUpload(file: File) {
+    setAvatarProgress(25);
+    try {
+      const image = await processImageFile(file, {
+        ...settings?.image_settings,
+        maxSize: 512,
+        cropRatio: "1:1",
+        watermark: false,
+      });
+      setAvatarDraft(image);
+      setAvatarProgress(100);
+    } finally {
+      setTimeout(() => setAvatarProgress(0), 600);
     }
   }
 
@@ -320,6 +362,24 @@ export default function Profile() {
     }
   }
 
+  async function submitReview(order: any, rating: number, comment: string) {
+    const saved = await fetchJson<OrderReview>("/api/customer/reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderKind: order.kind === "service" ? "service" : "product", orderId: order.id, rating, comment }),
+    });
+    setReviews((rows) => [saved, ...rows.filter((row) => !(row.orderKind === saved.orderKind && row.orderId === saved.orderId))]);
+  }
+
+  async function reorder(order: any) {
+    await fetchJson("/api/customer/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId: order.id }),
+    });
+    navigate("/cart");
+  }
+
   if (loading) {
     return (
       <div className="container mx-auto px-4 py-12 min-h-screen" dir="rtl">
@@ -337,9 +397,9 @@ export default function Profile() {
     <div className="container mx-auto px-4 py-10 min-h-screen" dir="rtl">
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="bg-card rounded-2xl border border-border/30 p-6 flex flex-col md:flex-row md:items-center gap-5">
-          <div className="w-20 h-20 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center overflow-hidden">
-            {customer.avatarUrl ? (
-              <img src={customer.avatarUrl} alt="" width={80} height={80} loading="lazy" decoding="async" className="w-full h-full object-cover" />
+          <div className="relative w-20 h-20 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center overflow-hidden">
+            {(avatarDraft || customer.avatarUrl) ? (
+              <img src={avatarDraft || customer.avatarUrl} alt="" width={80} height={80} loading="lazy" decoding="async" className="w-full h-full object-cover" />
             ) : (
               <span className="text-2xl font-bold text-primary">{customerInitials(customer)}</span>
             )}
@@ -379,6 +439,23 @@ export default function Profile() {
                       </label>
                     ))}
                   </div>
+                  <div className="rounded-xl bg-background/60 border border-border/25 p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-16 h-16 rounded-full overflow-hidden bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                        {avatarDraft ? <img src={avatarDraft} alt="" className="w-full h-full object-cover" /> : <span className="text-lg font-bold text-primary">{customerInitials(customer)}</span>}
+                      </div>
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary cursor-pointer hover:bg-primary/20">
+                        <Upload className="w-4 h-4" />
+                        رفع صورة
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && handleAvatarUpload(e.target.files[0])} />
+                      </label>
+                    </div>
+                    {avatarProgress > 0 && (
+                      <div className="mt-3 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
+                        <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${avatarProgress}%` }} />
+                      </div>
+                    )}
+                  </div>
                   {profileError && <p className="text-sm text-red-400">{profileError}</p>}
                   <div className="flex flex-col sm:flex-row gap-3">
                     <Button type="submit" disabled={savingProfile} className="gap-2">
@@ -402,13 +479,17 @@ export default function Profile() {
             </Section>
 
             <Section title="طلباتي / مشترياتي" icon={Package}>
-              <OrderList rows={productOrders} empty="لا توجد مشتريات حتى الآن" />
+              <OrderList rows={productOrders} empty="لا توجد مشتريات حتى الآن" reviews={reviews} onReview={submitReview} onReorder={reorder} contactPhone={settings?.whatsapp || settings?.phone} />
               {serviceOrders.length > 0 && (
                 <div className="mt-5">
                   <p className="text-sm font-semibold text-foreground mb-3">الحجوزات السابقة</p>
-                  <OrderList rows={serviceOrders} empty="" />
+                  <OrderList rows={serviceOrders} empty="" reviews={reviews} onReview={submitReview} contactPhone={settings?.whatsapp || settings?.phone} />
                 </div>
               )}
+            </Section>
+
+            <Section title="اقتراحات لك" icon={Star}>
+              <SuggestionGrid products={recommendations.products} services={recommendations.services} />
             </Section>
 
             <Section title="تتبع الطلب" icon={Search}>
@@ -623,12 +704,27 @@ export default function Profile() {
   );
 }
 
-function OrderList({ rows, empty }: { rows: any[]; empty: string }) {
+function OrderList({
+  rows,
+  empty,
+  reviews,
+  onReview,
+  onReorder,
+  contactPhone,
+}: {
+  rows: any[];
+  empty: string;
+  reviews: OrderReview[];
+  onReview: (order: any, rating: number, comment: string) => Promise<void>;
+  onReorder?: (order: any) => Promise<void>;
+  contactPhone?: string;
+}) {
   if (rows.length === 0) {
     return empty ? (
       <div className="text-center py-10 bg-background/60 rounded-xl border border-border/25">
         <Package className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
         <p className="text-muted-foreground">{empty}</p>
+        <Link href="/store" className="inline-flex mt-3 text-sm text-primary font-medium">تصفح المتجر</Link>
       </div>
     ) : null;
   }
@@ -638,17 +734,23 @@ function OrderList({ rows, empty }: { rows: any[]; empty: string }) {
       {rows.map((order) => (
         <div key={`${order.kind ?? "order"}-${order.id}`} className="rounded-xl bg-background/60 border border-border/25 p-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+            <div className="flex gap-3">
+              <OrderThumb order={order} />
+              <div>
+                <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
               <p className="text-xs text-muted-foreground mt-1">
                 {new Date(order.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}
               </p>
+              {["delivered", "completed"].includes(order.status) && (
+                <p className="text-xs text-green-300 mt-1">شكراً لك، اكتمل الطلب بنجاح.</p>
+              )}
               <div className="mt-3 flex items-center gap-2">
                 {["pending", "confirmed", "processing", "shipped", "delivered", "completed"].slice(0, order.kind === "service" ? 4 : 6).map((status, index) => {
                   const current = ["pending", "confirmed", "processing", "shipped", "delivered", "completed"].indexOf(order.status);
                   const active = current >= index;
                   return <span key={status} className={`h-1.5 flex-1 min-w-6 rounded-full ${active ? "bg-primary" : "bg-border/40"}`} />;
                 })}
+              </div>
               </div>
             </div>
             <div className="flex items-center gap-3 sm:justify-end">
@@ -660,16 +762,100 @@ function OrderList({ rows, empty }: { rows: any[]; empty: string }) {
                 )}
               </div>
               {order.kind !== "service" && (
-                <Link href="/store" className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
+                <button type="button" onClick={() => onReorder?.(order)} className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                   <RefreshCcw className="w-4 h-4" />
-                </Link>
+                </button>
               )}
+              <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-sm text-green-400 hover:bg-green-600/20 transition-colors">
+                <MessageCircle className="w-4 h-4" />
+              </a>
               <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                 عرض التفاصيل
               </Link>
             </div>
           </div>
+          {["delivered", "completed"].includes(order.status) && (
+            <ReviewBox
+              review={reviews.find((review) => review.orderKind === (order.kind === "service" ? "service" : "product") && review.orderId === order.id)}
+              onSubmit={(rating, comment) => onReview(order, rating, comment)}
+            />
+          )}
         </div>
+      ))}
+    </div>
+  );
+}
+
+function OrderThumb({ order }: { order: any }) {
+  const image = order.kind === "service" ? order.serviceImage : order.items?.[0]?.image;
+  return (
+    <div className="w-14 h-14 rounded-xl bg-card border border-border/30 overflow-hidden flex items-center justify-center shrink-0">
+      {image ? <img src={image} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" /> : <Package className="w-6 h-6 text-primary" />}
+    </div>
+  );
+}
+
+function ReviewBox({ review, onSubmit }: { review?: OrderReview; onSubmit: (rating: number, comment: string) => Promise<void> }) {
+  const [rating, setRating] = useState(review?.rating ?? 5);
+  const [comment, setComment] = useState(review?.comment ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setRating(review?.rating ?? 5);
+    setComment(review?.comment ?? "");
+  }, [review?.rating, review?.comment]);
+
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setSaving(true);
+        try {
+          await onSubmit(rating, comment);
+        } finally {
+          setSaving(false);
+        }
+      }}
+      className="mt-4 rounded-xl bg-card/70 border border-border/25 p-3"
+    >
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-xs font-semibold text-foreground">تقييمك بعد التسليم</p>
+          <div className="flex items-center gap-1 mt-2">
+            {[1, 2, 3, 4, 5].map((value) => (
+              <button key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
+                <Star className="w-4 h-4 fill-current" />
+              </button>
+            ))}
+          </div>
+        </div>
+        <Button type="submit" size="sm" disabled={saving}>{review ? "تحديث التقييم" : "إرسال التقييم"}</Button>
+      </div>
+      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="ملاحظتك عن الطلب" className="mt-3 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+    </form>
+  );
+}
+
+function SuggestionGrid({ products, services }: Recommendations) {
+  const items = [
+    ...products.map((product) => ({ key: `p-${product.id}`, title: product.nameAr, image: product.images?.[0], href: `/store/${product.id}`, meta: "منتج مقترح" })),
+    ...services.map((service) => ({ key: `s-${service.id}`, title: service.nameAr, image: service.image, href: `/services/${service.id}`, meta: "خدمة مقترحة" })),
+  ].slice(0, 4);
+  if (items.length === 0) {
+    return <div className="rounded-xl bg-background/60 border border-border/25 p-4 text-sm text-muted-foreground">لا توجد اقتراحات حالياً.</div>;
+  }
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {items.map((item) => (
+        <Link key={item.key} href={item.href} className="rounded-xl bg-background/60 border border-border/25 p-3 flex items-center gap-3 hover:border-primary/40 transition-colors">
+          <div className="w-14 h-14 rounded-lg bg-card border border-border/30 overflow-hidden shrink-0">
+            {item.image ? <img src={item.image} alt="" loading="lazy" className="w-full h-full object-cover" /> : null}
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-foreground">{item.title}</p>
+            <p className="text-xs text-muted-foreground mt-1">{item.meta}</p>
+          </div>
+        </Link>
       ))}
     </div>
   );

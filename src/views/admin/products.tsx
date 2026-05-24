@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { usePublicSettings } from "@/lib/public-settings";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -245,6 +246,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 }) {
   const [busy, setBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [draggedImage, setDraggedImage] = useState<number | null>(null);
+  const { data: publicSettings } = usePublicSettings();
   const filteredSubs = subCats.filter(s => {
     const parent = parentCats.find(p => p.slug === form.category);
     return parent ? s.parentId === parent.id : true;
@@ -252,8 +256,19 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
   async function handleFiles(files: FileList | null) {
     if (!files) return;
-    const dataUrls = await Promise.all(Array.from(files).map(file => compressImageFile(file)));
+    const imageSettings = publicSettings?.image_settings;
+    setUploadProgress(20);
+    const inputFiles = Array.from(files);
+    const dataUrls: string[] = [];
+    for (let index = 0; index < inputFiles.length; index++) {
+      dataUrls.push(await compressImageFile(inputFiles[index], imageSettings?.productMaxSize ?? 1600, imageSettings?.quality ?? 0.82, {
+        ...(imageSettings ?? {}),
+        watermarkText: publicSettings?.site_name,
+      }));
+      setUploadProgress(Math.round(((index + 1) / inputFiles.length) * 100));
+    }
     onChange({ ...form, images: [...form.images, ...dataUrls] });
+    setTimeout(() => setUploadProgress(0), 600);
   }
 
   function moveImage(index: number) {
@@ -268,6 +283,15 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
     const images = [...form.images];
     const [selected] = images.splice(index, 1);
     onChange({ ...form, images: [selected, ...images] });
+  }
+
+  function dropImage(targetIndex: number) {
+    if (draggedImage == null || draggedImage === targetIndex) return;
+    const images = [...form.images];
+    const [selected] = images.splice(draggedImage, 1);
+    images.splice(targetIndex, 0, selected);
+    onChange({ ...form, images });
+    setDraggedImage(null);
   }
 
   return (
@@ -327,10 +351,22 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           >
             اسحب الصور هنا أو استخدم زر الرفع
           </div>
+          {uploadProgress > 0 && (
+            <div className="mb-3 h-2 rounded-full bg-background border border-border/20 overflow-hidden">
+              <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
+            </div>
+          )}
           {form.images.length > 0 && (
             <div className="flex gap-2 flex-wrap">
               {form.images.map((img, i) => (
-                <div key={img} className={`relative w-24 rounded-lg overflow-hidden border bg-background ${i === 0 ? "border-primary/60" : "border-border/30"}`}>
+                <div
+                  key={img}
+                  draggable
+                  onDragStart={() => setDraggedImage(i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => dropImage(i)}
+                  className={`relative w-24 rounded-lg overflow-hidden border bg-background ${i === 0 ? "border-primary/60" : "border-border/30"}`}
+                >
                   <button type="button" onClick={() => setPreviewImage(img)} className="block w-full h-20">
                     <img src={img} className="w-full h-full object-cover" alt="" />
                   </button>

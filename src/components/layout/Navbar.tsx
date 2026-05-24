@@ -2,6 +2,7 @@ import { Link, useLocation } from "wouter";
 import { Facebook, Instagram, Lock, MapPin, MessageCircle, Phone, Search, ShoppingBag, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
+import { useQuery } from "@tanstack/react-query";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 
@@ -9,6 +10,16 @@ export function Navbar() {
   const [location] = useLocation();
   const { data: cart } = useGetCart();
   const { data: settings } = usePublicSettings();
+  const { data: customer } = useQuery({
+    queryKey: ["auth", "me", "navbar"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/me", { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
 
   const cartItemCount = cart?.itemCount || 0;
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار") : "";
@@ -100,7 +111,11 @@ export function Navbar() {
           </Button>
           <Link href="/profile">
             <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
-              <User className="h-5 w-5" />
+              {customer?.avatarUrl ? (
+                <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover border border-primary/20" />
+              ) : (
+                <User className="h-5 w-5" />
+              )}
             </Button>
           </Link>
           <Link href="/cart">

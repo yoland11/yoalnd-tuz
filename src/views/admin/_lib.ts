@@ -1,3 +1,5 @@
+import { fileToDataUrl, processImageFile, type ImageProcessOptions } from "@/lib/image-tools";
+
 // ───── Cookie-based admin auth client ─────
 export const ALL_PERMISSIONS = [
   "dashboard","orders","bookings","services","products","gallery",
@@ -81,39 +83,10 @@ export function hasPerm(user: AdminMe | null, perm: Permission | null): boolean 
   return user.permissions.includes(perm);
 }
 
-export function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+export { fileToDataUrl };
 
-export async function compressImageFile(file: File, maxSize = 1600, quality = 0.82): Promise<string> {
-  if (!file.type.startsWith("image/") || typeof window === "undefined") return fileToDataUrl(file);
-  const source = await fileToDataUrl(file);
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
-      const width = Math.max(1, Math.round(image.width * scale));
-      const height = Math.max(1, Math.round(image.height * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(source);
-        return;
-      }
-      ctx.drawImage(image, 0, 0, width, height);
-      const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
-      resolve(canvas.toDataURL(mime, mime === "image/jpeg" ? quality : undefined));
-    };
-    image.onerror = () => resolve(source);
-    image.src = source;
-  });
+export async function compressImageFile(file: File, maxSize = 1600, quality = 0.82, options: ImageProcessOptions = {}): Promise<string> {
+  return processImageFile(file, { ...options, maxSize, quality });
 }
 
 export function formatCurrency(n: number | string | null | undefined): string {

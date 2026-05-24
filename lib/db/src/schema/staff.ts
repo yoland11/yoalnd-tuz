@@ -10,6 +10,7 @@ export const staffTable = pgTable("staff", {
   role: varchar("role", { length: 30 }).notNull().default("staff"),
   permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
   isActive: boolean("is_active").notNull().default(true),
+  lastActivityAt: timestamp("last_activity_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

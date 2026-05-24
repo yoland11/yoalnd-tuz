@@ -8,7 +8,7 @@ import { EmptyState } from "./_layout";
 
 type Staff = {
   id: number; username: string; fullName: string; role: string;
-  permissions: string[]; isActive: boolean; createdAt: string;
+  permissions: string[]; isActive: boolean; createdAt: string; lastActivityAt?: string | null;
 };
 
 const PERMISSIONS = ALL_PERMISSIONS.map(id => ({ id, label: PERMISSION_LABELS[id] }));
@@ -88,6 +88,9 @@ export default function StaffPage() {
                   <div>
                     <p className="font-semibold text-foreground">{s.fullName || s.username}</p>
                     <p className="text-xs text-muted-foreground">@{s.username} • {ROLES.find(r => r.value === s.role)?.label ?? s.role}</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      آخر نشاط: {s.lastActivityAt ? new Date(s.lastActivityAt).toLocaleString("ar-IQ") : "لا يوجد"}
+                    </p>
                   </div>
                 </div>
                 <label className={`inline-flex items-center gap-1 ${s.role === "admin" ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}>

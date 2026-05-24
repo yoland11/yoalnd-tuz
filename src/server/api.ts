@@ -12,6 +12,7 @@ import bcrypt from "bcryptjs";
 import { and, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
+  adminActivityLogsTable,
   cartItemsTable,
   categoriesTable,
   crewsTable,
@@ -23,6 +24,7 @@ import {
   expensesTable,
   galleryItemsTable,
   orderItemsTable,
+  orderReviewsTable,
   ordersTable,
   orderStatusHistoryTable,
   otpCodesTable,
@@ -141,6 +143,12 @@ let customerAddressTablesPromise: Promise<void> | null = null;
 let trackingColumnsPromise: Promise<void> | null = null;
 let paymentWorkflowColumnsPromise: Promise<void> | null = null;
 let archiveColumnsPromise: Promise<void> | null = null;
+let activityTablesPromise: Promise<void> | null = null;
+let orderReviewsTablePromise: Promise<void> | null = null;
+let staffActivityColumnPromise: Promise<void> | null = null;
+
+const adminLoginByIp = new Map<string, Bucket>();
+const adminLoginByUsername = new Map<string, Bucket>();
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -577,6 +585,7 @@ function formatStaff(s: any) {
     role: s.role,
     permissions: s.permissions ?? [],
     isActive: s.isActive,
+    lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
     createdAt: s.createdAt.toISOString(),
   };
 }
@@ -586,6 +595,8 @@ function formatCrew(c: any) {
     id: c.id,
     name: c.name,
     isActive: c.isActive,
+    status: c.status ?? (c.isActive ? "available" : "inactive"),
+    internalNotes: c.internalNotes ?? "",
     createdAt: c.createdAt?.toISOString?.() ?? null,
     updatedAt: c.updatedAt?.toISOString?.() ?? null,
   };
@@ -603,10 +614,17 @@ async function ensureCrewsTable(): Promise<void> {
         "id" serial primary key,
         "name" text not null,
         "is_active" boolean not null default true,
+        "status" varchar(20) not null default 'available',
+        "internal_notes" text,
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
       )
-    `).then(() => undefined);
+    `)
+      .then(() => db.execute(sql`alter table "crews" add column if not exists "status" varchar(20) not null default 'available'`))
+      .then(() => db.execute(sql`alter table "crews" add column if not exists "internal_notes" text`))
+      .then(() => db.execute(sql`update "crews" set "status" = 'inactive' where "is_active" = false and ("status" is null or "status" = 'available')`))
+      .then(() => db.execute(sql`create index if not exists "crews_status_idx" on "crews" ("status")`))
+      .then(() => undefined);
   }
   await crewsTablePromise;
 }
@@ -759,6 +777,75 @@ async function ensureArchiveColumns(): Promise<void> {
       .then(() => undefined);
   }
   await archiveColumnsPromise;
+}
+
+async function ensureStaffActivityColumn(): Promise<void> {
+  if (!staffActivityColumnPromise) {
+    staffActivityColumnPromise = db.execute(sql`alter table "staff" add column if not exists "last_activity_at" timestamp`)
+      .then(() => undefined);
+  }
+  await staffActivityColumnPromise;
+}
+
+async function ensureActivityTables(): Promise<void> {
+  await ensureStaffActivityColumn();
+  if (!activityTablesPromise) {
+    activityTablesPromise = db.execute(sql`
+      create table if not exists "admin_activity_logs" (
+        "id" serial primary key,
+        "staff_id" integer references "staff" ("id"),
+        "action" varchar(80) not null,
+        "entity_type" varchar(80),
+        "entity_id" integer,
+        "metadata" jsonb not null default '{}'::jsonb,
+        "created_at" timestamp not null default now()
+      )
+    `)
+      .then(() => db.execute(sql`create index if not exists "admin_activity_staff_created_idx" on "admin_activity_logs" ("staff_id", "created_at")`))
+      .then(() => db.execute(sql`create index if not exists "admin_activity_action_created_idx" on "admin_activity_logs" ("action", "created_at")`))
+      .then(() => undefined);
+  }
+  await activityTablesPromise;
+}
+
+async function ensureOrderReviewsTable(): Promise<void> {
+  if (!orderReviewsTablePromise) {
+    orderReviewsTablePromise = db.execute(sql`
+      create table if not exists "order_reviews" (
+        "id" serial primary key,
+        "customer_id" integer references "customers" ("id"),
+        "order_kind" varchar(20) not null,
+        "order_id" integer not null,
+        "rating" integer not null,
+        "comment" text,
+        "created_at" timestamp not null default now()
+      )
+    `)
+      .then(() => db.execute(sql`create unique index if not exists "order_reviews_kind_order_customer_idx" on "order_reviews" ("order_kind", "order_id", "customer_id")`))
+      .then(() => db.execute(sql`create index if not exists "order_reviews_order_idx" on "order_reviews" ("order_kind", "order_id")`))
+      .then(() => undefined);
+  }
+  await orderReviewsTablePromise;
+}
+
+async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
+  try {
+    await ensureActivityTables();
+    const user = await getAdminUser(req);
+    const staffId = user?.id ?? null;
+    if (staffId) {
+      await db.update(staffTable).set({ lastActivityAt: new Date() }).where(eq(staffTable.id, staffId));
+    }
+    await db.insert(adminActivityLogsTable).values({
+      staffId,
+      action,
+      entityType: entityType ?? null,
+      entityId: entityId ?? null,
+      metadata,
+    });
+  } catch (err) {
+    console.warn("admin activity log failed", { action, entityType, entityId, err });
+  }
 }
 
 async function cleanupOtpCodes(): Promise<void> {
@@ -979,6 +1066,8 @@ async function buildServiceTracking(so: any) {
     customerName: so.customerName,
     customerPhone: so.phone ?? null,
     serviceType: service?.type ?? null,
+    serviceName: service?.nameAr ?? service?.name ?? null,
+    serviceImage: service?.image ?? null,
     kind: "service",
     total: Number.parseFloat(so.totalAmount ?? "0"),
     depositAmount: Number.parseFloat(so.depositAmount ?? "0"),
@@ -1142,12 +1231,14 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const email = String(data?.email ?? "").trim().slice(0, 180);
     const address = String(data?.address ?? "").trim().slice(0, 500);
     const city = String(data?.city ?? "").trim().slice(0, 120);
+    const avatarUrl = cleanPublicUrl(data?.avatarUrl ?? "");
     const [customer] = await db
       .update(customersTable)
       .set({
         fullName: fullName || null,
         name: fullName || undefined,
         email: email || null,
+        avatarUrl: avatarUrl || null,
         address: address || null,
         city: city || null,
         updatedAt: new Date(),
@@ -1241,6 +1332,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         sortOrder: data.sortOrder ?? 0,
       })
       .returning();
+    void logAdminActivity(req, "product_created", "product", product.id, { name: product.nameAr });
     return json(formatProduct(product), 201);
   }
 
@@ -1273,6 +1365,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (data.originalPrice !== undefined) update.originalPrice = data.originalPrice.toString();
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
+    void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
     return json(formatProduct(product));
   }
 
@@ -1282,6 +1375,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     await db.delete(productsTable).where(eq(productsTable.id, id));
+    void logAdminActivity(req, "product_deleted", "product", id);
     return json({ message: "تم حذف المنتج" });
   }
 
@@ -1319,7 +1413,12 @@ async function handleCrews(req: NextRequest, parts: string[]) {
       where: eq(crewsTable.isActive, true),
       orderBy: (c, { asc }) => [asc(c.name), asc(c.id)],
     });
-    return json(rows.map((c) => ({ id: c.id, name: c.name, isActive: c.isActive })));
+    return json(rows.map((c) => ({
+      id: c.id,
+      name: c.name,
+      isActive: c.isActive,
+      status: c.status ?? (c.isActive ? "available" : "inactive"),
+    })));
   }
 
   return null;
@@ -1697,6 +1796,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       total: formatted.total,
       status: order.status,
     });
+    void logAdminActivity(req, "customer_order_created", "order", order.id, { tracking: order.trackingCode });
     return json(formatted, 201);
   }
 
@@ -1787,6 +1887,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     const parsed = CreateGalleryItemBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const [item] = await db.insert(galleryItemsTable).values(parsed.data).returning();
+    void logAdminActivity(req, "gallery_created", "gallery", item.id, { mediaType: item.mediaType });
     return json(
       {
         id: item.id,
@@ -1807,6 +1908,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     await db.delete(galleryItemsTable).where(eq(galleryItemsTable.id, id));
+    void logAdminActivity(req, "gallery_deleted", "gallery", id);
     return json({ message: "تم حذف الصورة" });
   }
 
@@ -2000,6 +2102,12 @@ function normalizeStaffRole(role: unknown): string {
   return ["manager", "booking_staff", "photographer", "accountant", "staff"].includes(value) ? value : "staff";
 }
 
+function normalizeCrewStatus(status: unknown, isActive = true): "available" | "busy" | "vacation" | "inactive" {
+  if (!isActive) return "inactive";
+  const value = String(status ?? "available");
+  return value === "busy" || value === "vacation" || value === "inactive" ? value : "available";
+}
+
 function permissionsForRole(role: string, permissions?: unknown): Permission[] {
   if (Array.isArray(permissions) && permissions.length > 0) {
     return permissions.filter((p): p is Permission => (ALL_PERMISSIONS as readonly string[]).includes(String(p)));
@@ -2150,6 +2258,101 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
     }
   }
 
+  if (section === "reviews") {
+    await ensureOrderReviewsTable();
+    if (method === "GET") {
+      const rows = await db.query.orderReviewsTable.findMany({
+        where: eq(orderReviewsTable.customerId, customerId),
+        orderBy: [desc(orderReviewsTable.createdAt)],
+      });
+      return json(rows.map((row) => ({
+        id: row.id,
+        orderKind: row.orderKind,
+        orderId: row.orderId,
+        rating: row.rating,
+        comment: row.comment ?? "",
+        createdAt: row.createdAt.toISOString(),
+      })));
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const orderKind = data?.orderKind === "service" ? "service" : "product";
+      const orderId = int(data?.orderId);
+      const rating = Number(data?.rating);
+      const comment = String(data?.comment ?? "").trim().slice(0, 600);
+      if (!orderId || !Number.isInteger(rating) || rating < 1 || rating > 5) return error("بيانات التقييم غير صحيحة", 400);
+      const phoneVariants = iraqiPhoneVariants(customer.phone);
+      const owned =
+        orderKind === "service"
+          ? await db.query.serviceOrdersTable.findFirst({ where: and(eq(serviceOrdersTable.id, orderId), inArray(serviceOrdersTable.phone, phoneVariants)) })
+          : await db.query.ordersTable.findFirst({ where: and(eq(ordersTable.id, orderId), inArray(ordersTable.customerPhone, phoneVariants)) });
+      if (!owned) return error("الطلب غير موجود", 404);
+      if (!["delivered", "completed"].includes(String(owned.status))) return error("يمكن التقييم بعد اكتمال الطلب", 409);
+      const [row] = await db
+        .insert(orderReviewsTable)
+        .values({ customerId, orderKind, orderId, rating, comment })
+        .onConflictDoUpdate({
+          target: [orderReviewsTable.orderKind, orderReviewsTable.orderId, orderReviewsTable.customerId],
+          set: { rating, comment, createdAt: new Date() },
+        })
+        .returning();
+      return json({
+        id: row.id,
+        orderKind: row.orderKind,
+        orderId: row.orderId,
+        rating: row.rating,
+        comment: row.comment ?? "",
+        createdAt: row.createdAt.toISOString(),
+      });
+    }
+  }
+
+  if (section === "reorder" && method === "POST") {
+    const data = await body(req);
+    const orderId = int(data?.orderId);
+    if (!orderId) return error("معرف الطلب غير صحيح", 400);
+    const phoneVariants = iraqiPhoneVariants(customer.phone);
+    const order = await db.query.ordersTable.findFirst({
+      where: and(eq(ordersTable.id, orderId), inArray(ordersTable.customerPhone, phoneVariants)),
+    });
+    if (!order) return error("الطلب غير موجود", 404);
+    const items = await db.query.orderItemsTable.findMany({ where: eq(orderItemsTable.orderId, orderId) });
+    if (items.length === 0) return error("لا توجد منتجات لإعادة الطلب", 400);
+    const sessionId = getSessionId(req);
+    for (const item of items) {
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) });
+      if (!product || product.isActive === false || product.stock <= 0) continue;
+      await db.insert(cartItemsTable).values({
+        sessionId,
+        productId: product.id,
+        quantity: Math.min(item.quantity, Math.max(1, product.stock)),
+        price: product.price,
+        selectedColor: item.selectedColor ?? null,
+        customization: item.customization ?? null,
+      });
+    }
+    return json(await buildCart(sessionId));
+  }
+
+  if (section === "recommendations" && method === "GET") {
+    const [products, services] = await Promise.all([
+      db.query.productsTable.findMany({
+        where: and(eq(productsTable.isFeatured, true), eq(productsTable.isActive, true)),
+        orderBy: [desc(productsTable.createdAt)],
+        limit: 4,
+      }),
+      db.query.servicesTable.findMany({
+        where: eq(servicesTable.isActive, true),
+        orderBy: (s, { asc }) => [asc(s.sortOrder), asc(s.id)],
+        limit: 4,
+      }),
+    ]);
+    return json({
+      products: products.map((product) => formatProduct(product)),
+      services: services.map(formatService),
+    });
+  }
+
   return null;
 }
 
@@ -2165,11 +2368,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
         return error("بيانات ناقصة", 400);
       }
+      const loginIp = ip(req);
+      const userKey = username.trim().toLowerCase();
+      if (!checkRateLimit(adminLoginByIp, loginIp, 20, 15 * 60 * 1000) || !checkRateLimit(adminLoginByUsername, userKey, 8, 15 * 60 * 1000)) {
+        void logAdminActivity(req, "admin_login_rate_limited", "staff", undefined, { username: userKey });
+        return error("محاولات كثيرة، حاول لاحقاً", 429);
+      }
       const user = await db.query.staffTable.findFirst({ where: eq(staffTable.username, username) });
       if (!user || !user.isActive || !verifyPassword(password, user.passwordHash)) {
+        void logAdminActivity(req, "admin_login_failed", "staff", user?.id, { username: userKey });
         return error("بيانات الدخول غير صحيحة", 401);
       }
       const { token } = await createSession(user.id);
+      await ensureStaffActivityColumn();
+      await db.update(staffTable).set({ lastActivityAt: new Date() }).where(eq(staffTable.id, user.id));
+      void logAdminActivity(req, "admin_login_success", "staff", user.id, { username: userKey });
       return withSessionCookie(
         json({
           user: publicUser({
@@ -2544,7 +2757,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!name) return error("اسم الكادر مطلوب", 400);
       const [row] = await db
         .insert(crewsTable)
-        .values({ name, isActive: b?.isActive ?? true })
+        .values({
+          name,
+          isActive: b?.isActive ?? true,
+          status: normalizeCrewStatus(b?.status, b?.isActive ?? true),
+          internalNotes: typeof b?.internalNotes === "string" ? b.internalNotes.slice(0, 500) : null,
+        })
         .returning();
       return json(formatCrew(row), 201);
     }
@@ -2565,6 +2783,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.name = name;
       }
       if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
+      if (b?.status !== undefined || b?.isActive !== undefined) update.status = normalizeCrewStatus(b?.status ?? existing.status, b?.isActive ?? update.isActive ?? existing.isActive);
+      if (b?.internalNotes !== undefined) update.internalNotes = String(b.internalNotes ?? "").slice(0, 500);
       const [row] = await db.update(crewsTable).set(update).where(eq(crewsTable.id, id)).returning();
       return json(formatCrew(row));
     }
@@ -2663,18 +2883,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const [row] = await db
           .update(ordersTable)
           .set({ archivedAt: null, updatedAt: new Date() })
-          .where(eq(ordersTable.id, id))
-          .returning();
+        .where(eq(ordersTable.id, id))
+        .returning();
         if (!row) return error("غير موجود", 404);
+        void logAdminActivity(req, "order_restored", "order", id, { tracking: row.trackingCode });
         return json({ message: "تم استرجاع الطلب" });
       }
       if (kind === "service-orders") {
         const [row] = await db
           .update(serviceOrdersTable)
           .set({ archivedAt: null })
-          .where(eq(serviceOrdersTable.id, id))
-          .returning();
+        .where(eq(serviceOrdersTable.id, id))
+        .returning();
         if (!row) return error("غير موجود", 404);
+        void logAdminActivity(req, "booking_restored", "service_order", id, { tracking: row.trackingCode });
         return json({ message: "تم استرجاع الحجز" });
       }
       return error("نوع الأرشيف غير صحيح", 400);
@@ -2927,6 +3149,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           service: service?.nameAr ?? service?.name ?? "",
         });
       }
+      void logAdminActivity(req, action === "accept" ? "booking_reschedule_accepted" : "booking_reschedule_rejected", "service_order", id);
       return json(row);
     }
 
@@ -2992,6 +3215,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           });
         }
       }
+      void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
 
@@ -3000,6 +3224,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       await db.delete(serviceOrderStatusHistoryTable).where(eq(serviceOrderStatusHistoryTable.serviceOrderId, id));
       await db.delete(serviceOrdersTable).where(eq(serviceOrdersTable.id, id));
+      void logAdminActivity(req, "booking_deleted", "service_order", id);
       return json({ message: "تم الحذف" });
     }
   }
@@ -3057,6 +3282,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             total: Number(order.total),
             status: "pending",
           });
+          void logAdminActivity(req, "order_created", "order", order.id, { tracking: order.trackingCode });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
     }
 
@@ -3104,6 +3330,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
 
@@ -3113,6 +3340,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, id));
       await db.delete(orderStatusHistoryTable).where(eq(orderStatusHistoryTable.orderId, id));
       await db.delete(ordersTable).where(eq(ordersTable.id, id));
+      void logAdminActivity(req, "order_deleted", "order", id);
       return json({ message: "تم الحذف" });
     }
   }
@@ -3301,6 +3529,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!entry) return error("السجل غير موجود", 404);
       if (!entry.phone || !entry.message) return error("السجل ناقص", 400);
       const result = await whatsappSend(entry.phone, entry.message, entry.event as any);
+      void logAdminActivity(req, result.ok ? "whatsapp_resend_success" : "whatsapp_resend_failed", "whatsapp_log", entry.id, { event: entry.event });
       return result.ok ? json({ ok: true }) : json({ ok: false, error: result.error ?? "فشل إعادة الإرسال" }, 502);
     }
     if (method === "POST" && parts[2] === "test") {
@@ -3308,6 +3537,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (typeof phone !== "string" || !phone.trim()) return error("الرقم مطلوب", 400);
       const bodyText = typeof message === "string" && message.trim() ? message : "رسالة اختبار من مجموعة علي جان ✅";
       const result = await whatsappSend(phone, bodyText, "test");
+      void logAdminActivity(req, result.ok ? "whatsapp_test_success" : "whatsapp_test_failed", "whatsapp", undefined, { phone: normalizeIraqiPhone(phone) ?? "invalid" });
       return result.ok ? json({ ok: true }) : json({ ok: false, error: result.error ?? "فشل الإرسال" }, 502);
     }
   }
@@ -3822,6 +4052,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       await ensureTrackingColumns();
       await ensurePaymentWorkflowColumns();
       await ensureArchiveColumns();
+    }
+    if (root === "admin") {
+      await ensureStaffActivityColumn();
     }
 
     const route =

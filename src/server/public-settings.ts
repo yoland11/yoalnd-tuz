@@ -16,6 +16,16 @@ export const DEFAULT_SITE_SETTINGS: Record<string, any> = {
   address: "طوزخورماتو، العراق",
   city: "طوزخورماتو",
   mapUrl: "",
+  imageSettings: {
+    productMaxSize: 1600,
+    serviceMaxSize: 1600,
+    galleryMaxSize: 1800,
+    logoMaxSize: 600,
+    quality: 0.82,
+    cropRatio: "free",
+    compression: true,
+    watermark: false,
+  },
 };
 
 export function cleanPublicUrl(value: unknown): string {
@@ -60,6 +70,10 @@ export function publicSettingsPayload(settings: Record<string, any>) {
       whatsapp: String(social.whatsapp || ""),
     },
     logo_url: cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? ""),
+    image_settings: {
+      ...DEFAULT_SITE_SETTINGS.imageSettings,
+      ...((settings.imageSettings && typeof settings.imageSettings === "object") ? settings.imageSettings : {}),
+    },
   };
 }
 

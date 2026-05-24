@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useSearch } from "wouter";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useTrackOrder, getTrackOrderQueryKey,
   useTrackOrdersByPhone, getTrackOrdersByPhoneQueryKey,
@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
-  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Truck,
+  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck,
 } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
@@ -30,11 +30,11 @@ export default function Track() {
   const { data: settings } = usePublicSettings();
 
   const { data: order, isLoading: loadingCode, error: errorCode } = useTrackOrder(searchCode || "_", {
-    query: { queryKey: getTrackOrderQueryKey(searchCode || "_"), enabled: !!searchCode },
+    query: { queryKey: getTrackOrderQueryKey(searchCode || "_"), enabled: !!searchCode, refetchInterval: searchCode ? 30000 : false },
   });
 
   const { data: phoneResults, isLoading: loadingPhone } = useTrackOrdersByPhone(searchPhone || "_", {
-    query: { queryKey: getTrackOrdersByPhoneQueryKey(searchPhone || "_"), enabled: !!searchPhone },
+    query: { queryKey: getTrackOrdersByPhoneQueryKey(searchPhone || "_"), enabled: !!searchPhone, refetchInterval: searchPhone ? 30000 : false },
   });
   const codeResults = Array.isArray(order) ? order : order ? [order] : [];
 
@@ -187,6 +187,17 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
   const isBooking = tracking.kind === "service";
   const detailRows = serviceDetailsToRows(tracking.serviceType, tracking.customFields);
   const progress = stages.length > 1 ? Math.max(0, Math.min(100, (currentIdx / (stages.length - 1)) * 100)) : 0;
+  const heroImage = tracking.kind === "service" ? tracking.serviceImage : tracking.items?.[0]?.image;
+  const lastUpdate = tracking.statusHistory?.[0]?.createdAt ?? tracking.createdAt;
+  const { data: recommendations } = useQuery({
+    queryKey: ["track", "recommendations"],
+    queryFn: async () => {
+      const [productsRes, servicesRes] = await Promise.all([fetch("/api/products/featured"), fetch("/api/services")]);
+      const [products, services] = await Promise.all([productsRes.json().catch(() => []), servicesRes.json().catch(() => [])]);
+      return { products: Array.isArray(products) ? products.slice(0, 2) : [], services: Array.isArray(services) ? services.slice(0, 2) : [] };
+    },
+    staleTime: 5 * 60_000,
+  });
 
   const waMsg = `استفسار عن الطلب ${tracking.trackingCode}`;
   const waLink = buildWhatsAppLink(contactPhone || "07701234567", waMsg);
@@ -197,11 +208,17 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
       {/* Status Header */}
       <div className="bg-card rounded-2xl border border-border/30 p-6">
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-          <div>
-            <p className="text-xs text-muted-foreground mb-1">رمز التتبع</p>
-            <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
+          <div className="flex items-center gap-3">
+            <div className="w-16 h-16 rounded-xl bg-background border border-border/30 overflow-hidden flex items-center justify-center shrink-0">
+              {heroImage ? <img src={heroImage} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" /> : <Package className="w-7 h-7 text-primary" />}
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">رمز التتبع</p>
+              <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">آخر تحديث: {formatTrackDate(lastUpdate)}</p>
+            </div>
           </div>
-          <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${STATUS_TONES[tracking.status] ?? "text-primary border-border/30 bg-background"}`}>
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${STATUS_TONES[tracking.status] ?? "text-primary border-border/30 bg-background"} ${!isCancelled ? "animate-pulse" : ""}`}>
             <StatusIcon status={tracking.status} className="w-4 h-4" />
             <span className="text-sm font-medium">{getStageLabel(stages, tracking.status)}</span>
           </div>
@@ -380,6 +397,12 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
           </div>
         </div>
       )}
+
+      {["delivered", "completed"].includes(tracking.status) && (
+        <TrackingReviewBox tracking={tracking} />
+      )}
+
+      <TrackSuggestions products={recommendations?.products ?? []} services={recommendations?.services ?? []} />
     </div>
   );
 }
@@ -388,6 +411,73 @@ function paymentLabel(status?: string) {
   if (status === "paid") return "مدفوع";
   if (status === "partial") return "جزئي";
   return "غير مدفوع";
+}
+
+function TrackingReviewBox({ tracking }: { tracking: any }) {
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/customer/reviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ orderKind: tracking.kind === "service" ? "service" : "product", orderId: tracking.id, rating, comment }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.error ?? "سجل دخولك حتى يتم حفظ التقييم");
+      setMessage("شكراً لك، تم حفظ تقييمك.");
+    } catch (err: any) {
+      setMessage(err?.message ?? "تعذر حفظ التقييم");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="bg-card rounded-2xl border border-border/30 p-6">
+      <h3 className="text-sm font-semibold text-foreground mb-3">تقييم الطلب بعد التسليم</h3>
+      <div className="flex items-center gap-1 mb-3">
+        {[1, 2, 3, 4, 5].map((value) => (
+          <button key={value} type="button" onClick={() => setRating(value)} className={value <= rating ? "text-primary" : "text-muted-foreground"}>
+            <Star className="w-5 h-5 fill-current" />
+          </button>
+        ))}
+      </div>
+      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="اكتب ملاحظتك" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+      {message && <p className="text-xs text-muted-foreground mt-2">{message}</p>}
+      <Button type="submit" size="sm" className="mt-3" disabled={saving}>{saving ? "جاري الحفظ..." : "إرسال التقييم"}</Button>
+    </form>
+  );
+}
+
+function TrackSuggestions({ products, services }: { products: any[]; services: any[] }) {
+  const items = [
+    ...products.map((product) => ({ key: `p-${product.id}`, title: product.nameAr, image: product.images?.[0], href: `/store/${product.id}` })),
+    ...services.map((service) => ({ key: `s-${service.id}`, title: service.nameAr, image: service.image, href: `/services/${service.id}` })),
+  ].slice(0, 4);
+  if (items.length === 0) return null;
+  return (
+    <div className="bg-card rounded-2xl border border-border/30 p-6">
+      <h3 className="text-sm font-semibold text-foreground mb-4">اقتراحات مشابهة</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {items.map((item) => (
+          <a key={item.key} href={item.href} className="rounded-xl bg-background/60 border border-border/25 p-3 flex items-center gap-3 hover:border-primary/40 transition-colors">
+            <div className="w-14 h-14 rounded-lg bg-card border border-border/30 overflow-hidden shrink-0">
+              {item.image ? <img src={item.image} alt="" loading="lazy" className="w-full h-full object-cover" /> : null}
+            </div>
+            <p className="text-sm font-semibold text-foreground">{item.title}</p>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function BookingResponseCard({ tracking }: { tracking: any }) {

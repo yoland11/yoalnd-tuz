@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { compressImageFile } from "./_lib";
 import { EmptyState } from "./_layout";
+import { usePublicSettings } from "@/lib/public-settings";
 
 export default function GalleryPage() {
   const qc = useQueryClient();
@@ -19,19 +20,30 @@ export default function GalleryPage() {
   const [showForm, setShowForm] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const { data: publicSettings } = usePublicSettings();
 
   function invalidate() { qc.invalidateQueries({ queryKey: getListGalleryQueryKey() }); }
 
   async function handleFile(file: File) {
     setUploading(true);
+    setUploadProgress(25);
     try {
-      const dataUrl = await compressImageFile(file);
+      const imageSettings = publicSettings?.image_settings;
+      const dataUrl = await compressImageFile(file, imageSettings?.galleryMaxSize ?? 1800, imageSettings?.quality ?? 0.82, {
+        ...(imageSettings ?? {}),
+        watermarkText: publicSettings?.site_name,
+      });
+      setUploadProgress(100);
       setForm(f => ({
         ...f,
         mediaUrl: dataUrl,
         mediaType: file.type.startsWith("video") ? "video" : "image",
       }));
-    } finally { setUploading(false); }
+    } finally {
+      setUploading(false);
+      setTimeout(() => setUploadProgress(0), 600);
+    }
   }
 
   function submit(e: React.FormEvent) {
@@ -94,6 +106,11 @@ export default function GalleryPage() {
               form.mediaType === "video"
                 ? <video src={form.mediaUrl} className="w-full h-40 object-cover rounded-lg" controls />
                 : <img src={form.mediaUrl} className="w-full h-40 object-cover rounded-lg" alt="" />
+            )}
+            {uploadProgress > 0 && (
+              <div className="h-2 rounded-full bg-background border border-border/20 overflow-hidden">
+                <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${uploadProgress}%` }} />
+              </div>
             )}
             <div>
               <label className="block text-xs text-muted-foreground mb-1">أو الصق رابط URL</label>

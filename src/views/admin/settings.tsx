@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Save, Upload, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, fileToDataUrl } from "./_lib";
+import { adminFetch, compressImageFile, fileToDataUrl } from "./_lib";
 
 type Settings = {
   siteName: string;
@@ -17,6 +17,27 @@ type Settings = {
   address: string;
   city: string;
   mapUrl: string;
+  imageSettings: {
+    productMaxSize: number;
+    serviceMaxSize: number;
+    galleryMaxSize: number;
+    logoMaxSize: number;
+    quality: number;
+    cropRatio: string;
+    compression: boolean;
+    watermark: boolean;
+  };
+};
+
+const defaultImageSettings: Settings["imageSettings"] = {
+  productMaxSize: 1600,
+  serviceMaxSize: 1600,
+  galleryMaxSize: 1800,
+  logoMaxSize: 600,
+  quality: 0.82,
+  cropRatio: "free",
+  compression: true,
+  watermark: false,
 };
 
 export default function SettingsPage() {
@@ -28,7 +49,9 @@ export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
 
-  useEffect(() => { if (data && !form) setForm(data); }, [data, form]);
+  useEffect(() => {
+    if (data && !form) setForm({ ...data, imageSettings: { ...defaultImageSettings, ...(data.imageSettings ?? {}) } });
+  }, [data, form]);
 
   const save = useMutation({
     mutationFn: (s: Settings) => adminFetch("/admin/settings", { method: "PATCH", body: JSON.stringify(s) }),
@@ -41,7 +64,10 @@ export default function SettingsPage() {
   });
 
   async function handleLogoUpload(file: File) {
-    const dataUrl = await fileToDataUrl(file);
+    const dataUrl = await compressImageFile(file, form?.imageSettings?.logoMaxSize ?? 600, form?.imageSettings?.quality ?? 0.82, {
+      ...(form?.imageSettings ?? {}),
+      watermarkText: form?.siteName,
+    });
     const res = await adminFetch<{ logoUrl: string }>("/admin/settings/logo", {
       method: "POST",
       body: JSON.stringify({ logoUrl: dataUrl }),
@@ -124,6 +150,42 @@ export default function SettingsPage() {
         <Field label="سعر التغليف (د.ع)" type="number" value={String(form.packagingFee)} onChange={v => setForm(f => ({ ...f!, packagingFee: parseFloat(v) || 0 }))} />
         <Field label="تكلفة التوصيل الافتراضية (د.ع)" type="number" value={String(form.deliveryFee)} onChange={v => setForm(f => ({ ...f!, deliveryFee: parseFloat(v) || 0 }))} />
         <Field label="مدة التوصيل" value={form.deliveryTime} onChange={v => setForm(f => ({ ...f!, deliveryTime: v }))} placeholder="مثلاً: 1-3 أيام" />
+      </Section>
+
+      <Section title="إعدادات الصور">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="حجم صور المنتجات" type="number" value={String(form.imageSettings?.productMaxSize ?? 1600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, productMaxSize: parseInt(v) || 1600 } }))} />
+          <Field label="حجم صور الخدمات" type="number" value={String(form.imageSettings?.serviceMaxSize ?? 1600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, serviceMaxSize: parseInt(v) || 1600 } }))} />
+          <Field label="حجم صور المعرض" type="number" value={String(form.imageSettings?.galleryMaxSize ?? 1800)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, galleryMaxSize: parseInt(v) || 1800 } }))} />
+          <Field label="حجم اللوغو" type="number" value={String(form.imageSettings?.logoMaxSize ?? 600)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, logoMaxSize: parseInt(v) || 600 } }))} />
+          <Field label="جودة الصور 0.45 - 0.95" type="number" value={String(form.imageSettings?.quality ?? 0.82)} onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, quality: Math.min(0.95, Math.max(0.45, parseFloat(v) || 0.82)) } }))} />
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">نسبة القص</label>
+            <select value={form.imageSettings?.cropRatio ?? "free"} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, cropRatio: e.target.value } }))}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              <option value="free">بدون قص</option>
+              <option value="1:1">مربع 1:1</option>
+              <option value="4:3">4:3</option>
+              <option value="16:9">16:9</option>
+            </select>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.imageSettings?.compression !== false} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, compression: e.target.checked } }))} className="accent-primary" />
+            تفعيل ضغط الصور
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={!!form.imageSettings?.watermark} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, watermark: e.target.checked } }))} className="accent-primary" />
+            تفعيل watermark باسم المحل
+          </label>
+        </div>
+        <div className="rounded-xl bg-background/60 border border-border/25 p-4">
+          <p className="text-xs text-muted-foreground mb-2">Preview</p>
+          <div className="h-24 w-40 rounded-lg border border-border/30 bg-card overflow-hidden">
+            {form.logoUrl ? <img src={form.logoUrl} alt="" className="h-full w-full object-contain" /> : null}
+          </div>
+        </div>
       </Section>
     </form>
   );

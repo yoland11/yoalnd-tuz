@@ -1,9 +1,12 @@
 export { normalizePhoneDigits } from "@/lib/phone";
+import { fileToDataUrl, processImageFile } from "@/lib/image-tools";
 
 export type CrewOption = {
   id: number;
   name: string;
   isActive?: boolean;
+  status?: "available" | "busy" | "vacation" | "inactive" | string;
+  internalNotes?: string;
 };
 
 export type DetailInputType = "text" | "number" | "date" | "time" | "select" | "textarea" | "file";
@@ -181,13 +184,11 @@ export function validateServiceDetails(serviceType: string | null | undefined, d
 
 export async function filesToStoredValues(files: FileList | null, multiple?: boolean) {
   if (!files || files.length === 0) return multiple ? [] : null;
-  const read = (file: File) =>
-    new Promise<{ name: string; type: string; dataUrl: string }>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve({ name: file.name, type: file.type, dataUrl: reader.result as string });
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
+  const read = async (file: File): Promise<{ name: string; type: string; dataUrl: string }> => ({
+    name: file.name,
+    type: file.type,
+    dataUrl: file.type.startsWith("image/") ? await processImageFile(file, { maxSize: 1600, quality: 0.82 }) : await fileToDataUrl(file),
+  });
   const values = await Promise.all(Array.from(files).map(read));
   return multiple ? values : values[0];
 }

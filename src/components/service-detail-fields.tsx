@@ -68,6 +68,7 @@ function ServiceDetailInput({
   const label = `${field.label}${field.required ? " *" : ""}`;
   const currentValue = value == null ? "" : String(value);
   const crewOptions = field.source === "crews" ? activeCrewOptions(crews, currentValue) : [];
+  const selectedCrew = field.source === "crews" ? crewOptions.find((crew) => crew.name === currentValue) : undefined;
   const labelClass =
     density === "form"
       ? "block text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
@@ -88,22 +89,29 @@ function ServiceDetailInput({
           className={`${inputClass} min-h-[100px] resize-none`}
         />
       ) : field.type === "select" ? (
-        <select value={currentValue} onChange={(e) => onChange(e.target.value)} className={inputClass}>
-          {field.source === "crews" && (
-            <option value="">{crewOptions.length === 0 ? "لا يوجد كادر مفعّل" : "اختر الكادر"}</option>
+        <>
+          <select value={currentValue} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+            {field.source === "crews" && (
+              <option value="">{crewOptions.length === 0 ? "لا يوجد كادر مفعّل" : "اختر الكادر"}</option>
+            )}
+            {field.source === "crews"
+              ? crewOptions.map((crew) => (
+                  <option key={`${crew.id}-${crew.name}`} value={crew.name}>
+                    {crew.name}{crew.status && crew.status !== "available" ? ` - ${crewStatusLabel(crew.status)}` : ""}
+                  </option>
+                ))
+              : field.options?.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+          </select>
+          {selectedCrew && selectedCrew.status && !["available", "inactive"].includes(selectedCrew.status) && (
+            <p className="mt-1 text-[11px] text-amber-300">
+              تنبيه: حالة الكادر {crewStatusLabel(selectedCrew.status)}، يمكن إكمال الحجز عند الحاجة.
+            </p>
           )}
-          {field.source === "crews"
-            ? crewOptions.map((crew) => (
-                <option key={`${crew.id}-${crew.name}`} value={crew.name}>
-                  {crew.name}
-                </option>
-              ))
-            : field.options?.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-        </select>
+        </>
       ) : field.type === "file" ? (
         <>
           <input
@@ -133,8 +141,15 @@ function ServiceDetailInput({
   );
 }
 
+function crewStatusLabel(status?: string) {
+  if (status === "busy") return "مشغول";
+  if (status === "vacation") return "إجازة";
+  if (status === "inactive") return "غير مفعل";
+  return "متاح";
+}
+
 function activeCrewOptions(crews: CrewOption[], currentValue: string) {
-  const active = crews.filter((crew) => crew.isActive !== false);
+  const active = crews.filter((crew) => crew.isActive !== false && crew.status !== "inactive");
   if (currentValue && !active.some((crew) => crew.name === currentValue)) {
     return [{ id: -1, name: currentValue, isActive: true }, ...active];
   }
