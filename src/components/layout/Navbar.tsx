@@ -1,8 +1,9 @@
 import { Link, useLocation } from "wouter";
-import { Search, ShoppingBag, User, Lock } from "lucide-react";
+import { Facebook, Instagram, Lock, MapPin, MessageCircle, Phone, Search, ShoppingBag, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { buildWhatsAppLink } from "@/lib/order-stages";
 
 export function Navbar() {
   const [location] = useLocation();
@@ -10,15 +11,49 @@ export function Navbar() {
   const { data: settings } = usePublicSettings();
 
   const cartItemCount = cart?.itemCount || 0;
+  const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار") : "";
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="hidden border-b border-border/30 bg-card/80 md:block" dir="rtl">
+        <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-4">
+            {settings?.phone && (
+              <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
+                <Phone className="h-3.5 w-3.5" /> {settings.phone}
+              </a>
+            )}
+            {waLink && (
+              <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
+                <MessageCircle className="h-3.5 w-3.5" /> واتساب
+              </a>
+            )}
+            {settings?.map_url && (
+              <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
+                <MapPin className="h-3.5 w-3.5" /> موقع المحل
+              </a>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {settings?.social_links.instagram && (
+              <a href={settings.social_links.instagram} target="_blank" rel="noreferrer" aria-label="Instagram" className="hover:text-primary transition-colors">
+                <Instagram className="h-4 w-4" />
+              </a>
+            )}
+            {settings?.social_links.facebook && (
+              <a href={settings.social_links.facebook} target="_blank" rel="noreferrer" aria-label="Facebook" className="hover:text-primary transition-colors">
+                <Facebook className="h-4 w-4" />
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
       <div className="container mx-auto flex h-20 items-center justify-between px-4">
         
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2">
           <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-full w-full object-contain" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} fetchPriority="high" decoding="async" className="h-full w-full object-contain" />
           </span>
           <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
           <span className="font-semibold text-lg hidden sm:block">{settings?.site_name ?? "مجموعة علي جان"}</span>

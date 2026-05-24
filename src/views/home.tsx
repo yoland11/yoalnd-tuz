@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useGetFeaturedProducts } from "@workspace/api-client-react";
+import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
 import { MapPin, MessageCircle, Phone, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -9,6 +9,7 @@ import { buildWhatsAppLink } from "@/lib/order-stages";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
+  const { data: services = [], isLoading: loadingServices } = useListServices();
   const { data: settings } = usePublicSettings();
   const siteName = settings?.site_name ?? "مجموعة علي جان";
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار عن خدمات AJN") : "";
@@ -21,13 +22,16 @@ export default function Home() {
           <img 
             src="/images/hero.png" 
             alt="مجموعة علي جان" 
+            width={1600}
+            height={1000}
+            fetchPriority="high"
             className="w-full h-full object-cover object-center"
           />
           <div className="absolute inset-0 bg-black/60 bg-gradient-to-t from-background via-black/40 to-transparent" />
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
+          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg font-serif">
             {siteName}
           </h1>
@@ -89,20 +93,24 @@ export default function Home() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {[
-              { title: "كوشات الأعراس", image: "/images/kosha.png", id: 1 },
-              { title: "تصوير احترافي", image: "/images/photo.png", id: 3 },
-              { title: "تجهيزات متكاملة", image: "/images/setup.png", id: 2 }
-            ].map((service) => (
+            {loadingServices ? (
+              Array(3).fill(0).map((_, i) => (
+                <Skeleton key={i} className="h-64 rounded-lg" />
+              ))
+            ) : services.slice(0, 3).map((service: any) => (
               <Link key={service.id} href={`/services/${service.id}`}>
                 <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border">
                   <img 
-                    src={service.image} 
-                    alt={service.title} 
+                    src={service.image || serviceImageFor(service.type)} 
+                    alt={service.nameAr || service.name} 
+                    width={640}
+                    height={420}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-end p-6">
-                    <h3 className="text-xl font-bold text-white">{service.title}</h3>
+                    <h3 className="text-xl font-bold text-white">{service.nameAr || service.name}</h3>
                   </div>
                 </div>
               </Link>
@@ -161,9 +169,13 @@ export default function Home() {
                       (Array.isArray(product.images) ? product.images[0] : null) ||
                       product.imageUrl ||
                       product.image_url ||
-                      "https://placehold.co/400x400/1a1a1a/c9a84c?text=AJN"
+                      "/images/hero.png"
                     }
                     alt={product.nameAr || product.name_ar || product.name || "منتج"}
+                    width={400}
+                    height={400}
+                    loading="lazy"
+                    decoding="async"
                     className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-110"
                   />
                 </div>
@@ -204,4 +216,14 @@ export default function Home() {
       </section>
     </div>
   );
+}
+
+function serviceImageFor(type?: string | null): string {
+  const key = String(type ?? "");
+  if (key.includes("photo")) return "/images/photo.png";
+  if (key.includes("kosha")) return "/images/kosha.png";
+  if (key.includes("gift")) return "/images/gifts.png";
+  if (key.includes("album")) return "/images/album.png";
+  if (key.includes("research")) return "/images/research.png";
+  return "/images/setup.png";
 }

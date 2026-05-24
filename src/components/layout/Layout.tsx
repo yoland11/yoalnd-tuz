@@ -3,6 +3,7 @@ import { Navbar } from "./Navbar";
 import { MobileNav } from "./MobileNav";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { MessageCircle } from "lucide-react";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { data: settings } = usePublicSettings();
@@ -13,10 +14,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <main className="flex-1 pb-16 md:pb-0">
         {children}
       </main>
+      {settings?.whatsapp && (
+        <a
+          href={buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار")}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="تواصل واتساب"
+          className="fixed bottom-20 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-green-600/30 bg-green-600 text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-6"
+        >
+          <MessageCircle className="h-6 w-6" />
+        </a>
+      )}
       <MobileNav />
       <footer className="border-t border-border/40 py-6 text-center text-sm text-muted-foreground mt-auto" dir="rtl">
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} decoding="async" className="h-10 w-24 object-contain" />
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">
             <span className="text-foreground font-medium">{settings?.site_name ?? "مجموعة علي جان"}</span>
             {settings?.phone && <a href={`tel:${settings.phone}`} className="hover:text-primary transition-colors">{settings.phone}</a>}

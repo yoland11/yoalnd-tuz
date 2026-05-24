@@ -139,6 +139,7 @@ let otpTablePromise: Promise<void> | null = null;
 let customerProfilePromise: Promise<void> | null = null;
 let customerAddressTablesPromise: Promise<void> | null = null;
 let trackingColumnsPromise: Promise<void> | null = null;
+let paymentWorkflowColumnsPromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -239,6 +240,28 @@ function trackingCodeLast4(value: string): string {
   const code = normalizeTrackingCode(value);
   const match = /^AJN-(\d{4})$/.exec(code);
   return match?.[1] ?? "";
+}
+
+function money(value: unknown): number {
+  const raw = typeof value === "string" ? value.replace(/,/g, "") : value;
+  const n = Number(raw ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function paymentSummary(totalValue: unknown, depositValue: unknown, preferredStatus?: unknown) {
+  const total = money(totalValue);
+  const requestedDeposit = money(depositValue);
+  const deposit = preferredStatus === "paid" && requestedDeposit === 0 && total > 0
+    ? total
+    : Math.min(requestedDeposit, total || requestedDeposit);
+  const remaining = Math.max(total - deposit, 0);
+  const status =
+    preferredStatus === "paid" || (total > 0 && remaining === 0)
+      ? "paid"
+      : preferredStatus === "partial" || deposit > 0
+        ? "partial"
+        : "unpaid";
+  return { deposit, remaining, status };
 }
 
 function sessionSecret(): string {
@@ -689,6 +712,43 @@ async function ensureTrackingColumns(): Promise<void> {
   await trackingColumnsPromise;
 }
 
+async function ensurePaymentWorkflowColumns(): Promise<void> {
+  if (!paymentWorkflowColumnsPromise) {
+    paymentWorkflowColumnsPromise = db.execute(sql`alter table "orders" add column if not exists "deposit_amount" numeric(10,2) not null default 0`)
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "remaining_amount" numeric(10,2) not null default 0`))
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "payment_status" varchar(20) not null default 'unpaid'`))
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "internal_notes" text`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "total_amount" numeric(10,2) not null default 0`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "deposit_amount" numeric(10,2) not null default 0`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "remaining_amount" numeric(10,2) not null default 0`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "payment_status" varchar(20) not null default 'unpaid'`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "internal_notes" text`))
+      .then(() => db.execute(sql`
+        update "orders"
+        set
+          "deposit_amount" = case when "payment_method" = 'paid' then "total" else coalesce("deposit_amount", 0) end,
+          "remaining_amount" = case when "payment_method" = 'paid' then 0 else greatest("total" - coalesce("deposit_amount", 0), 0) end,
+          "payment_status" = case when "payment_method" = 'paid' then 'paid' else coalesce(nullif("payment_status", ''), 'unpaid') end
+        where "remaining_amount" = 0
+          and "payment_status" = 'unpaid'
+      `))
+      .then(() => db.execute(sql`
+        update "service_orders"
+        set
+          "remaining_amount" = greatest(coalesce("total_amount", 0) - coalesce("deposit_amount", 0), 0),
+          "payment_status" = case
+            when coalesce("total_amount", 0) > 0 and greatest(coalesce("total_amount", 0) - coalesce("deposit_amount", 0), 0) = 0 then 'paid'
+            when coalesce("deposit_amount", 0) > 0 then 'partial'
+            else coalesce(nullif("payment_status", ''), 'unpaid')
+          end
+      `))
+      .then(() => db.execute(sql`create index if not exists "orders_payment_status_idx" on "orders" ("payment_status")`))
+      .then(() => db.execute(sql`create index if not exists "service_orders_payment_status_idx" on "service_orders" ("payment_status")`))
+      .then(() => undefined);
+  }
+  await paymentWorkflowColumnsPromise;
+}
+
 async function cleanupOtpCodes(): Promise<void> {
   await ensureOtpTable();
   await db.execute(sql`
@@ -807,9 +867,13 @@ async function formatOrder(order: any) {
     serviceType: order.serviceType ?? null,
     total: Number.parseFloat(order.total),
     deliveryFee: Number.parseFloat(order.deliveryFee),
+    depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+    remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+    paymentStatus: order.paymentStatus ?? "unpaid",
     governorate: order.governorate ?? null,
     address: order.address ?? null,
     notes: order.notes ?? null,
+    internalNotes: order.internalNotes ?? null,
     paymentMethod: order.paymentMethod ?? "cod",
     area: order.area ?? null,
     mapsUrl: order.mapsUrl ?? null,
@@ -848,6 +912,9 @@ async function buildTracking(order: any) {
     serviceType: order.serviceType ?? null,
     kind: "product",
     total: Number.parseFloat(order.total),
+    depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+    remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+    paymentStatus: order.paymentStatus ?? "unpaid",
     items: items.map((i) => ({
       id: i.id,
       productId: i.productId,
@@ -870,6 +937,7 @@ async function buildTracking(order: any) {
     governorate: order.governorate ?? null,
     area: order.area ?? null,
     address: order.address ?? null,
+    notes: order.notes ?? null,
   };
 }
 
@@ -898,7 +966,10 @@ async function buildServiceTracking(so: any) {
     customerPhone: so.phone ?? null,
     serviceType: service?.type ?? null,
     kind: "service",
-    total: 0,
+    total: Number.parseFloat(so.totalAmount ?? "0"),
+    depositAmount: Number.parseFloat(so.depositAmount ?? "0"),
+    remainingAmount: Number.parseFloat(so.remainingAmount ?? "0"),
+    paymentStatus: so.paymentStatus ?? "unpaid",
     items: [],
     statusHistory,
     createdAt: so.createdAt.toISOString(),
@@ -906,6 +977,7 @@ async function buildServiceTracking(so: any) {
     eventDate: so.eventDate ?? null,
     eventLocation: so.eventLocation ?? null,
     customFields: so.customFields ?? {},
+    notes: so.notes ?? null,
     customerConfirmation: so.customerConfirmation ?? null,
     requestedDate: so.requestedDate ?? null,
     confirmationNote: so.confirmationNote ?? null,
@@ -928,12 +1000,18 @@ function stripPii<T extends { customerName: string; customerPhone: string | null
 
 async function insertServiceOrderWithTracking(values: Omit<typeof serviceOrdersTable.$inferInsert, "trackingCode" | "phoneLast4">) {
   await ensureTrackingColumns();
+  await ensurePaymentWorkflowColumns();
+  const payment = paymentSummary((values as any).totalAmount, (values as any).depositAmount, (values as any).paymentStatus);
   const [row] = await db
     .insert(serviceOrdersTable)
     .values({
       ...values,
       trackingCode: trackingCodeForPhone(values.phone),
       phoneLast4: phoneLast4(values.phone),
+      totalAmount: String(money((values as any).totalAmount)),
+      depositAmount: String(payment.deposit),
+      remainingAmount: String(payment.remaining),
+      paymentStatus: payment.status,
     })
     .returning();
   return row;
@@ -1540,6 +1618,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     }
     const subtotal = cartItems.reduce((sum, i) => sum + Number.parseFloat(i.price) * i.quantity, 0);
     const total = subtotal + deliveryFee;
+    const paymentMethod = data.paymentMethod && ["cod", "transfer", "paid"].includes(data.paymentMethod) ? data.paymentMethod : "cod";
+    const payment = paymentSummary(total, paymentMethod === "paid" ? total : 0, paymentMethod === "paid" ? "paid" : "unpaid");
     const [order] = await db
       .insert(ordersTable)
       .values({
@@ -1551,7 +1631,10 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         status: "pending",
         total: total.toString(),
         deliveryFee: deliveryFee.toString(),
-        paymentMethod: data.paymentMethod && ["cod", "transfer", "paid"].includes(data.paymentMethod) ? data.paymentMethod : "cod",
+        paymentMethod,
+        depositAmount: String(payment.deposit),
+        remainingAmount: String(payment.remaining),
+        paymentStatus: payment.status,
         governorate: data.governorate,
         area: data.area ?? null,
         address: data.address,
@@ -2080,8 +2163,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "dashboard" && method === "GET") {
     const auth = await requirePermission(req, "dashboard");
     if (isResponse(auth)) return auth;
+    await ensurePaymentWorkflowColumns();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const lateCutoff = new Date();
+    lateCutoff.setDate(lateCutoff.getDate() - 3);
     const last30 = new Date();
     last30.setDate(last30.getDate() - 30);
     const [
@@ -2099,6 +2188,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       topProducts,
       topCustomers,
       bookingsByService,
+      monthlyRevenue,
+      remainingTotals,
+      partialOrders,
+      unpaidOrders,
+      topCrews,
+      upcomingBookingsRaw,
+      lateProductOrders,
+      whatsappFailures,
     ] = await Promise.all([
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable),
       db.select({ c: sql<number>`count(*)::int` }).from(productsTable),
@@ -2152,7 +2249,70 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .leftJoin(servicesTable, eq(servicesTable.id, serviceOrdersTable.serviceId))
         .groupBy(serviceOrdersTable.serviceId)
         .orderBy(sql`count(*) desc`),
+      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, monthStart), sql`status <> 'cancelled'`)),
+      db
+        .select({
+          product: sql<number>`coalesce(sum(${ordersTable.remainingAmount}::numeric),0)::float`,
+          bookings: sql<number>`(select coalesce(sum(remaining_amount::numeric),0)::float from service_orders)`,
+        })
+        .from(ordersTable),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.paymentStatus, "partial")),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.paymentStatus, "unpaid")),
+      db
+        .select({
+          crewName: sql<string>`${serviceOrdersTable.customFields}->>'crewName'`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(serviceOrdersTable)
+        .where(sql`${serviceOrdersTable.customFields}->>'crewName' is not null and ${serviceOrdersTable.customFields}->>'crewName' <> ''`)
+        .groupBy(sql`${serviceOrdersTable.customFields}->>'crewName'`)
+        .orderBy(sql`count(*) desc`)
+        .limit(5),
+      db.query.serviceOrdersTable.findMany({
+        where: sql`${serviceOrdersTable.status} not in ('cancelled','completed','delivered')`,
+        orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit: 80,
+      }),
+      db.query.ordersTable.findMany({
+        where: and(sql`${ordersTable.status} not in ('cancelled','delivered')`, lt(ordersTable.createdAt, lateCutoff)),
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 8,
+      }),
+      db.select({ c: sql<number>`count(*)::int` }).from(whatsappLogTable).where(sql`${whatsappLogTable.status} not in ('sent','success','ok')`),
     ]);
+    const services = await db.query.servicesTable.findMany();
+    const serviceMap = new Map(services.map((s) => [s.id, s]));
+    const upcomingBookings = upcomingBookingsRaw
+      .map((booking) => {
+        const timestamp = booking.eventDate ? Date.parse(`${booking.eventDate}T00:00:00`) : NaN;
+        return { booking, timestamp };
+      })
+      .filter(({ timestamp }) => Number.isFinite(timestamp) && timestamp >= today.getTime())
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(0, 10)
+      .map(({ booking }) => ({
+        id: booking.id,
+        trackingCode: booking.trackingCode,
+        customerName: booking.customerName,
+        serviceName: serviceMap.get(booking.serviceId)?.nameAr ?? serviceMap.get(booking.serviceId)?.name ?? "حجز",
+        eventDate: booking.eventDate,
+        status: booking.status,
+      }));
+    const todayBookings = upcomingBookingsRaw.filter((booking) => {
+      const timestamp = booking.eventDate ? Date.parse(`${booking.eventDate}T00:00:00`) : NaN;
+      return Number.isFinite(timestamp) && timestamp >= today.getTime() && timestamp < tomorrow.getTime();
+    }).length;
+    const lateBookings = upcomingBookingsRaw.filter((booking) => {
+      const timestamp = booking.eventDate ? Date.parse(`${booking.eventDate}T00:00:00`) : NaN;
+      return Number.isFinite(timestamp) && timestamp < today.getTime() && booking.status !== "cancelled";
+    }).length;
+    const alerts = [
+      { key: "new-orders", label: "طلبات بانتظار المراجعة", count: statusBreakdown.find((s) => s.status === "pending")?.count ?? 0 },
+      { key: "bookings-today", label: "حجوزات اليوم", count: todayBookings },
+      { key: "late-orders", label: "طلبات متأخرة", count: lateProductOrders.length + lateBookings },
+      { key: "payment-followup", label: "مدفوع جزئياً أو غير مدفوع", count: (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0) },
+      { key: "whatsapp-failed", label: "رسائل واتساب تحتاج مراجعة", count: whatsappFailures[0]?.c ?? 0 },
+    ].filter((item) => item.count > 0);
     return json({
       totalOrders: totalOrders[0].c,
       activeOrders: activeOrders[0].c,
@@ -2163,11 +2323,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       totalCustomers: totalCustomers[0].c,
       totalRevenue: totalRevenue[0].s,
       todayRevenue: todayRevenue[0].s,
+      monthlyRevenue: monthlyRevenue[0].s,
+      remainingTotal: (remainingTotals[0]?.product ?? 0) + (remainingTotals[0]?.bookings ?? 0),
+      partialOrders: partialOrders[0]?.c ?? 0,
+      unpaidOrders: unpaidOrders[0]?.c ?? 0,
       revenueByDay,
       statusBreakdown,
       topProducts,
       topCustomers,
       bookingsByService,
+      topCrews,
+      upcomingBookings,
+      lateOrders: lateProductOrders.map((order) => ({
+        id: order.id,
+        trackingCode: order.trackingCode,
+        customerName: order.customerName,
+        status: order.status,
+        createdAt: order.createdAt.toISOString(),
+      })),
+      todayTasks: {
+        bookings: todayBookings,
+        late: lateProductOrders.length + lateBookings,
+        paymentFollowups: (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0),
+      },
+      alerts,
     });
   }
 
@@ -2448,6 +2627,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           eventDate: r.eventDate,
           eventLocation: r.eventLocation,
           notes: r.notes,
+          internalNotes: r.internalNotes ?? null,
+          totalAmount: Number.parseFloat(r.totalAmount ?? "0"),
+          depositAmount: Number.parseFloat(r.depositAmount ?? "0"),
+          remainingAmount: Number.parseFloat(r.remainingAmount ?? "0"),
+          paymentStatus: r.paymentStatus ?? "unpaid",
           customFields: r.customFields ?? {},
           status: r.status,
           customerConfirmation: r.customerConfirmation ?? null,
@@ -2461,16 +2645,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
 
     if (method === "POST" && !parts[2]) {
-      const parsed = CreateServiceOrderBody.safeParse(await body(req));
+      const rawBody = await body(req);
+      const parsed = CreateServiceOrderBody.safeParse(rawBody);
       if (!parsed.success) return error("بيانات غير صحيحة", 400);
       const data = parsed.data;
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, data.serviceId),
       });
       if (!service) return error("الخدمة غير موجودة", 404);
-      const customFields = withDerivedServiceDetails(service.type, normalizeDetailsInput(data.customFields));
+      const customFields = withDerivedServiceDetails(service.type, normalizeDetailsInput(rawBody?.customFields ?? data.customFields));
+      const payment = paymentSummary(rawBody?.totalAmount, rawBody?.depositAmount, rawBody?.paymentStatus);
       const eventLocation =
-        data.eventLocation ??
+        rawBody?.eventLocation ?? data.eventLocation ??
         primaryLocationFromDetails(service.type, customFields) ??
         "";
       const phone = normalizeIraqiPhone(data.phone);
@@ -2482,6 +2668,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         eventDate: data.eventDate,
         eventLocation,
         notes: data.notes,
+        internalNotes: typeof rawBody?.internalNotes === "string" ? rawBody.internalNotes : null,
+        totalAmount: String(money(rawBody?.totalAmount)),
+        depositAmount: String(payment.deposit),
+        remainingAmount: String(payment.remaining),
+        paymentStatus: payment.status,
         customFields,
       });
       await db.insert(serviceOrderStatusHistoryTable).values({
@@ -2508,6 +2699,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           eventDate: order.eventDate ?? null,
           eventLocation: order.eventLocation ?? null,
           notes: order.notes ?? null,
+          internalNotes: order.internalNotes ?? null,
+          totalAmount: Number.parseFloat(order.totalAmount ?? "0"),
+          depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+          remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+          paymentStatus: order.paymentStatus ?? "unpaid",
           customFields: order.customFields ?? {},
           status: order.status,
           createdAt: order.createdAt.toISOString(),
@@ -2579,7 +2775,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
       const update: any = {};
-      for (const k of ["status", "customerName", "phone", "eventDate", "eventLocation", "notes"]) {
+      for (const k of ["status", "customerName", "phone", "eventDate", "eventLocation", "notes", "internalNotes"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       const prev = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
@@ -2596,6 +2792,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         if (b?.eventLocation === undefined) {
           update.eventLocation = primaryLocationFromDetails(service?.type, update.customFields) || prev.eventLocation;
         }
+      }
+      if (b?.totalAmount !== undefined || b?.depositAmount !== undefined || b?.paymentStatus !== undefined) {
+        if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
+        const totalAmount = b?.totalAmount ?? prev.totalAmount;
+        const payment = paymentSummary(totalAmount, b?.depositAmount ?? prev.depositAmount, b?.paymentStatus ?? prev.paymentStatus);
+        update.totalAmount = String(money(totalAmount));
+        update.depositAmount = String(payment.deposit);
+        update.remainingAmount = String(payment.remaining);
+        update.paymentStatus = payment.status;
       }
       const [row] = await db.update(serviceOrdersTable).set(update).where(eq(serviceOrdersTable.id, id)).returning();
       if (typeof update.status === "string" && update.status && update.status !== prev?.status) {
@@ -2632,12 +2837,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "orders");
     if (isResponse(auth)) return auth;
     if (method === "POST" && !parts[2]) {
-      const { customerName, customerPhone, governorate, area, address, notes, items, deliveryFee, mapsUrl, paymentMethod } = await body(req);
+      const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus } = await body(req);
       if (!customerName || !customerPhone || !Array.isArray(items) || items.length === 0) return error("بيانات ناقصة", 400);
       if (paymentMethod !== undefined && normalizePayment(paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
       const normalizedPhone = normalizeIraqiPhone(customerPhone);
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const total = items.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
+      const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined));
           const [order] = await db
             .insert(ordersTable)
             .values({
@@ -2648,9 +2854,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               governorate,
               address,
               notes,
+              internalNotes: internalNotes ?? null,
               area: area ?? null,
               mapsUrl: mapsUrl ?? null,
               paymentMethod: paymentMethod ?? "cod",
+              depositAmount: String(payment.deposit),
+              remainingAmount: String(payment.remaining),
+              paymentStatus: payment.status,
               deliveryFee: String(deliveryFee ?? 0),
               total: String(total),
             })
@@ -2684,8 +2894,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
       if (b?.paymentMethod !== undefined && normalizePayment(b.paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
+      if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
       const update: any = { updatedAt: new Date() };
-      for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod"]) {
+      for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       if (update.customerPhone !== undefined) {
@@ -2696,6 +2907,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
       if (b?.attachments !== undefined) update.attachments = b.attachments;
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined) {
+        const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) });
+        if (!current) return error("غير موجود", 404);
+        const total = money(current.total);
+        const payment = paymentSummary(total, b?.depositAmount ?? current.depositAmount, b?.paymentStatus ?? current.paymentStatus);
+        update.depositAmount = String(payment.deposit);
+        update.remainingAmount = String(payment.remaining);
+        update.paymentStatus = payment.status;
+      }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
       return json(row);
@@ -2774,9 +2994,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       };
       const explicitTotal = num(cf.total);
       const basePrice = num(cf.price ?? cf.agreedPrice);
-      const price = explicitTotal > 0 ? explicitTotal : basePrice + num(cf.wrappingFee);
-      const deposit = num(cf.deposit ?? cf.downPayment);
-      const balance = price > 0 ? Math.max(price - deposit, 0) : 0;
+      const priceFromDetails = explicitTotal > 0 ? explicitTotal : basePrice + num(cf.wrappingFee);
+      const price = num(booking.totalAmount) > 0 ? num(booking.totalAmount) : priceFromDetails;
+      const deposit = num(booking.depositAmount) > 0 ? num(booking.depositAmount) : num(cf.deposit ?? cf.downPayment);
+      const balance = price > 0 ? Math.max(price - deposit, 0) : num(booking.remainingAmount);
       return json({
         kind: "booking",
         id: booking.id,
@@ -2793,6 +3014,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         price,
         deposit,
         balance,
+        paymentStatus: booking.paymentStatus ?? "unpaid",
         customFields: cf,
         createdAt: booking.createdAt.toISOString(),
       });
@@ -2810,6 +3032,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       area: order.area ?? null,
       address: order.address ?? null,
       paymentMethod: order.paymentMethod ?? "cod",
+      depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+      remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+      paymentStatus: order.paymentStatus ?? "unpaid",
       notes: order.notes ?? null,
       deliveryFee: Number.parseFloat(order.deliveryFee),
       total: Number.parseFloat(order.total),
@@ -3409,6 +3634,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     }
     if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
       await ensureTrackingColumns();
+      await ensurePaymentWorkflowColumns();
     }
 
     const route =

@@ -1,4 +1,4 @@
-import { pgTable, serial, text, boolean, varchar, timestamp, jsonb, integer } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, boolean, varchar, timestamp, jsonb, integer, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -27,7 +27,12 @@ export const serviceOrdersTable = pgTable("service_orders", {
   eventLocation: text("event_location"),
   notes: text("notes"),
   status: varchar("status", { length: 30 }).notNull().default("pending"),
+  totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  depositAmount: numeric("deposit_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  remainingAmount: numeric("remaining_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
   customFields: jsonb("custom_fields"),
+  internalNotes: text("internal_notes"),
   customerConfirmation: varchar("customer_confirmation", { length: 30 }),
   requestedDate: text("requested_date"),
   confirmationNote: text("confirmation_note"),

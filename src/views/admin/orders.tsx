@@ -14,7 +14,7 @@ import {
   validateServiceDetails,
   withDerivedServiceDetails,
 } from "@/lib/service-details";
-import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
+import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 
@@ -24,6 +24,11 @@ type ServiceOrder = {
   eventDate: string | null; eventLocation: string | null; notes: string | null;
   customFields?: Record<string, any>;
   status: string; createdAt: string;
+  totalAmount?: number;
+  depositAmount?: number;
+  remainingAmount?: number;
+  paymentStatus?: string;
+  internalNotes?: string | null;
   customerConfirmation?: string | null;
   requestedDate?: string | null;
   confirmationNote?: string | null;
@@ -42,6 +47,11 @@ type AdminService = {
 const PAYMENT_LABELS: Record<string, string> = {
   cod: "عند الاستلام",
   transfer: "حوالة",
+  paid: "مدفوع",
+};
+const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  unpaid: "غير مدفوع",
+  partial: "جزئي",
   paid: "مدفوع",
 };
 const PAYMENT_COLORS: Record<string, string> = {
@@ -66,6 +76,11 @@ export default function OrdersPage() {
   const [tab, setTab] = useState<"products" | "services">("products");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const [serviceFilter, setServiceFilter] = useState("");
+  const [crewFilter, setCrewFilter] = useState("");
+  const [governorateFilter, setGovernorateFilter] = useState("");
+  const [paymentFilter, setPaymentFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editingServiceOrder, setEditingServiceOrder] = useState<ServiceOrder | null>(null);
 
@@ -85,9 +100,14 @@ export default function OrdersPage() {
       adminFetch(`/orders/${vars.id}`, { method: "PATCH", body: JSON.stringify({ status: vars.status }) }),
     onSuccess: invalidateAll,
   });
-  const updatePayment = useMutation({
-    mutationFn: (vars: { id: number; paymentMethod: string }) =>
-      adminFetch(`/admin/orders/${vars.id}`, { method: "PATCH", body: JSON.stringify({ paymentMethod: vars.paymentMethod }) }),
+  const updateProductPayment = useMutation({
+    mutationFn: (vars: { id: number; paymentMethod?: string; depositAmount?: number; paymentStatus?: string; internalNotes?: string }) =>
+      adminFetch(`/admin/orders/${vars.id}`, { method: "PATCH", body: JSON.stringify(vars) }),
+    onSuccess: invalidateAll,
+  });
+  const updateServicePayment = useMutation({
+    mutationFn: (vars: { id: number; totalAmount?: number; depositAmount?: number; paymentStatus?: string; internalNotes?: string }) =>
+      adminFetch(`/admin/service-orders/${vars.id}`, { method: "PATCH", body: JSON.stringify(vars) }),
     onSuccess: invalidateAll,
   });
   const updateServiceStatus = useMutation({
@@ -115,28 +135,42 @@ export default function OrdersPage() {
   const filteredProducts = useMemo(() => {
     let rows = productOrders ?? [];
     if (statusFilter) rows = rows.filter(o => o.status === statusFilter);
+    if (dateFilter) rows = rows.filter(o => String(o.createdAt ?? "").slice(0, 10) === dateFilter);
+    if (governorateFilter) rows = rows.filter(o => (o.governorate ?? "") === governorateFilter);
+    if (paymentFilter) rows = rows.filter(o => ((o as any).paymentStatus ?? "unpaid") === paymentFilter);
     if (search) {
       const s = search.toLowerCase();
+      const digits = normalizePhoneDigits(search);
       rows = rows.filter(o =>
         o.trackingCode?.toLowerCase().includes(s) ||
         (o.customerName ?? "").toLowerCase().includes(s) ||
-        (o.customerPhone ?? "").includes(s) ||
-        formatIraqiPhone(o.customerPhone ?? "").includes(s)
+        (o.customerPhone ?? "").includes(digits || s) ||
+        formatIraqiPhone(o.customerPhone ?? "").includes(digits || s) ||
+        ((o as any).phoneLast4 ?? "").includes(digits)
       );
     }
     return rows;
-  }, [productOrders, statusFilter, search]);
+  }, [productOrders, statusFilter, dateFilter, governorateFilter, paymentFilter, search]);
 
   const filteredServices = useMemo(() => {
     let rows = serviceOrders ?? [];
     if (statusFilter) rows = rows.filter(o => o.status === statusFilter);
+    if (dateFilter) rows = rows.filter(o => String(o.eventDate || o.createdAt || "").slice(0, 10) === dateFilter);
+    if (serviceFilter) rows = rows.filter(o => String(o.serviceId) === serviceFilter);
+    if (crewFilter) rows = rows.filter(o => String(o.customFields?.crewName ?? "") === crewFilter);
+    if (governorateFilter) rows = rows.filter(o => String(o.customFields?.governorate ?? o.eventLocation ?? "").includes(governorateFilter));
+    if (paymentFilter) rows = rows.filter(o => (o.paymentStatus ?? "unpaid") === paymentFilter);
     if (search) {
       const s = search.toLowerCase();
+      const digits = normalizePhoneDigits(search);
       rows = rows.filter(o =>
         o.trackingCode?.toLowerCase().includes(s) ||
         o.customerName.toLowerCase().includes(s) ||
-        o.phone.includes(s) ||
-        formatIraqiPhone(o.phone).includes(s)
+        o.phone.includes(digits || s) ||
+        formatIraqiPhone(o.phone).includes(digits || s) ||
+        String(o.customFields?.crewName ?? "").toLowerCase().includes(s) ||
+        o.serviceName.toLowerCase().includes(s) ||
+        (digits.length > 0 && o.phone.endsWith(digits))
       );
     }
     // Pin pending reschedule requests to the top so they don't get missed.
@@ -145,7 +179,37 @@ export default function OrdersPage() {
       const br = b.status === "reschedule_pending" ? 0 : 1;
       return ar - br;
     });
-  }, [serviceOrders, statusFilter, search]);
+  }, [serviceOrders, statusFilter, dateFilter, serviceFilter, crewFilter, governorateFilter, paymentFilter, search]);
+
+  const governorateOptions = useMemo(() => {
+    const values = new Set<string>();
+    (productOrders ?? []).forEach((o) => o.governorate && values.add(o.governorate));
+    (serviceOrders ?? []).forEach((o) => {
+      const gov = String(o.customFields?.governorate ?? "").trim();
+      if (gov) values.add(gov);
+    });
+    return Array.from(values);
+  }, [productOrders, serviceOrders]);
+  const serviceOptions = useMemo(() => {
+    const map = new Map<number, string>();
+    (serviceOrders ?? []).forEach((o) => map.set(o.serviceId, o.serviceName));
+    return Array.from(map.entries());
+  }, [serviceOrders]);
+  const crewOptions = useMemo(() => {
+    const values = new Set<string>();
+    (serviceOrders ?? []).forEach((o) => {
+      const crew = String(o.customFields?.crewName ?? "").trim();
+      if (crew) values.add(crew);
+    });
+    return Array.from(values);
+  }, [serviceOrders]);
+  const bookingCalendarRows = useMemo(() => {
+    return (serviceOrders ?? [])
+      .filter((o) => o.eventDate && !["cancelled", "completed", "delivered"].includes(o.status))
+      .slice()
+      .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)))
+      .slice(0, 8);
+  }, [serviceOrders]);
 
   return (
     <div className="space-y-4">
@@ -173,7 +237,7 @@ export default function OrdersPage() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="بحث برقم تتبع، اسم، أو رقم..."
+            placeholder="بحث ذكي: اسم، هاتف، آخر 4 أرقام، تتبع، خدمة..."
             className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
           />
         </div>
@@ -184,7 +248,69 @@ export default function OrdersPage() {
         >
           {STATUS_FILTERS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
+        <input
+          type="date"
+          value={dateFilter}
+          onChange={e => setDateFilter(e.target.value)}
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+        />
+        <select
+          value={paymentFilter}
+          onChange={e => setPaymentFilter(e.target.value)}
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+        >
+          <option value="">كل الدفع</option>
+          <option value="unpaid">غير مدفوع</option>
+          <option value="partial">جزئي</option>
+          <option value="paid">مدفوع</option>
+        </select>
+        <select
+          value={governorateFilter}
+          onChange={e => setGovernorateFilter(e.target.value)}
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+        >
+          <option value="">كل المحافظات</option>
+          {governorateOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+        {tab === "services" && (
+          <>
+            <select
+              value={serviceFilter}
+              onChange={e => setServiceFilter(e.target.value)}
+              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            >
+              <option value="">كل الخدمات</option>
+              {serviceOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+            <select
+              value={crewFilter}
+              onChange={e => setCrewFilter(e.target.value)}
+              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            >
+              <option value="">كل الكادر</option>
+              {crewOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </>
+        )}
       </div>
+
+      {tab === "services" && bookingCalendarRows.length > 0 && (
+        <div className="bg-card rounded-xl border border-border/30 p-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h2 className="text-sm font-semibold text-foreground">تقويم الحجوزات القادمة</h2>
+            <span className="text-xs text-muted-foreground">يومي / أسبوعي / شهري حسب التاريخ المختار</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+            {bookingCalendarRows.map((booking) => (
+              <div key={booking.id} className="rounded-lg bg-background/60 border border-border/25 p-3">
+                <p className="font-mono text-xs text-primary">{booking.eventDate}</p>
+                <p className="text-sm text-foreground truncate mt-1">{booking.customerName}</p>
+                <p className="text-xs text-muted-foreground truncate">{booking.serviceName}{booking.customFields?.crewName ? ` • ${booking.customFields.crewName}` : ""}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === "products" ? (
         loadingP ? <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>
@@ -207,10 +333,13 @@ export default function OrdersPage() {
                       <span className={`text-xs px-2 py-1 rounded-full border ${PAYMENT_COLORS[order.paymentMethod ?? "cod"] ?? PAYMENT_COLORS.cod}`}>
                         {PAYMENT_LABELS[order.paymentMethod ?? "cod"] ?? "عند الاستلام"}
                       </span>
+                      <span className="text-xs px-2 py-1 rounded-full border border-border/30 bg-background text-muted-foreground">
+                        {PAYMENT_STATUS_LABELS[(order as any).paymentStatus ?? "unpaid"] ?? "غير مدفوع"}
+                      </span>
                       <span className="text-primary font-bold">{formatCurrency(order.total)}</span>
                       <select
                         value={order.paymentMethod ?? "cod"}
-                        onChange={e => updatePayment.mutate({ id: order.id, paymentMethod: e.target.value })}
+                        onChange={e => updateProductPayment.mutate({ id: order.id, paymentMethod: e.target.value })}
                         className="bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50"
                         title="طريقة الدفع"
                       >
@@ -243,6 +372,15 @@ export default function OrdersPage() {
                       <Trash2 className="w-3.5 h-3.5" /> حذف
                     </button>
                   </div>
+                  <PaymentPanel
+                    total={Number(order.total ?? 0)}
+                    deposit={Number((order as any).depositAmount ?? 0)}
+                    remaining={Number((order as any).remainingAmount ?? 0)}
+                    status={(order as any).paymentStatus ?? "unpaid"}
+                    internalNotes={(order as any).internalNotes ?? ""}
+                    onSave={(values) => updateProductPayment.mutate({ id: order.id, ...values })}
+                    saving={updateProductPayment.isPending}
+                  />
                 </div>
               );
             })}
@@ -326,6 +464,16 @@ export default function OrdersPage() {
                       ))}
                     </div>
                   )}
+                  <PaymentPanel
+                    total={Number(o.totalAmount ?? 0)}
+                    deposit={Number(o.depositAmount ?? 0)}
+                    remaining={Number(o.remainingAmount ?? 0)}
+                    status={o.paymentStatus ?? "unpaid"}
+                    internalNotes={o.internalNotes ?? ""}
+                    onSave={(values) => updateServicePayment.mutate({ id: o.id, totalAmount: values.total, ...values })}
+                    saving={updateServicePayment.isPending}
+                    allowTotal
+                  />
                   <div className="flex items-center gap-2 flex-wrap">
                     <a href={buildWhatsAppLink(o.phone, waMsg)} target="_blank" rel="noreferrer"
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-green-600/10 text-green-400 border border-green-600/30 hover:bg-green-600/20">
@@ -366,6 +514,86 @@ export default function OrdersPage() {
 }
 
 type BookingHistoryEntry = { status: string; notes: string | null; createdAt: string };
+
+function PaymentPanel({
+  total,
+  deposit,
+  remaining,
+  status,
+  internalNotes,
+  allowTotal = false,
+  saving,
+  onSave,
+}: {
+  total: number;
+  deposit: number;
+  remaining: number;
+  status: string;
+  internalNotes: string;
+  allowTotal?: boolean;
+  saving?: boolean;
+  onSave: (values: { total?: number; depositAmount: number; paymentStatus: string; internalNotes: string }) => void;
+}) {
+  const [localTotal, setLocalTotal] = useState(String(total || ""));
+  const [localDeposit, setLocalDeposit] = useState(String(deposit || ""));
+  const [localStatus, setLocalStatus] = useState(status || "unpaid");
+  const [notes, setNotes] = useState(internalNotes || "");
+
+  useEffect(() => {
+    setLocalTotal(String(total || ""));
+    setLocalDeposit(String(deposit || ""));
+    setLocalStatus(status || "unpaid");
+    setNotes(internalNotes || "");
+  }, [total, deposit, status, internalNotes]);
+
+  return (
+    <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 rounded-lg bg-background/40 border border-border/20 p-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {allowTotal && (
+          <label className="block">
+            <span className="block text-[11px] text-muted-foreground mb-1">السعر الكلي</span>
+            <input value={localTotal} onChange={(e) => setLocalTotal(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+          </label>
+        )}
+        <label className="block">
+          <span className="block text-[11px] text-muted-foreground mb-1">العربون</span>
+          <input value={localDeposit} onChange={(e) => setLocalDeposit(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+        </label>
+        <label className="block">
+          <span className="block text-[11px] text-muted-foreground mb-1">حالة الدفع</span>
+          <select value={localStatus} onChange={(e) => setLocalStatus(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50">
+            <option value="unpaid">غير مدفوع</option>
+            <option value="partial">جزئي</option>
+            <option value="paid">مدفوع</option>
+          </select>
+        </label>
+        <div>
+          <span className="block text-[11px] text-muted-foreground mb-1">المتبقي</span>
+          <div className="rounded-lg border border-border/25 bg-card px-2 py-1.5 text-xs text-primary font-semibold">
+            {formatCurrency(remaining)}
+          </div>
+        </div>
+        <label className="block col-span-2 md:col-span-4">
+          <span className="block text-[11px] text-muted-foreground mb-1">ملاحظات داخلية</span>
+          <input value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+        </label>
+      </div>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onSave({
+          total: allowTotal ? Number(localTotal || 0) : undefined,
+          depositAmount: Number(localDeposit || 0),
+          paymentStatus: localStatus,
+          internalNotes: notes,
+        })}
+        className="self-end rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20 disabled:opacity-60"
+      >
+        حفظ الدفع
+      </button>
+    </div>
+  );
+}
 
 function formatHistoryDate(iso: string): string {
   const d = new Date(iso);
@@ -425,7 +653,7 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<"product" | "service">("product");
   const [form, setForm] = useState({
     customerName: "", customerPhone: "", governorate: "", area: "", address: "", notes: "",
-    mapsUrl: "", deliveryFee: "0", paymentMethod: "cod",
+    mapsUrl: "", deliveryFee: "0", paymentMethod: "cod", depositAmount: "0", paymentStatus: "unpaid", internalNotes: "",
     items: [{ productName: "", productNameAr: "", quantity: 1, price: 0 }],
   });
   const [serviceForm, setServiceForm] = useState({
@@ -434,6 +662,10 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
     phone: "",
     eventDate: "",
     notes: "",
+    totalAmount: "0",
+    depositAmount: "0",
+    paymentStatus: "unpaid",
+    internalNotes: "",
     customFields: {} as Record<string, any>,
   });
   const [serviceErrors, setServiceErrors] = useState<Record<string, string>>({});
@@ -494,6 +726,8 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
       ...form,
       customerPhone,
       deliveryFee: parseFloat(form.deliveryFee) || 0,
+      depositAmount: parseFloat(form.depositAmount) || 0,
+      paymentStatus: form.paymentStatus,
       items: form.items.filter(it => it.productName && it.quantity > 0),
     });
   }
@@ -515,6 +749,10 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
       eventDate: serviceForm.eventDate,
       eventLocation: primaryLocationFromDetails(selectedService?.type, details),
       notes: serviceForm.notes,
+      internalNotes: serviceForm.internalNotes,
+      totalAmount: parseFloat(serviceForm.totalAmount) || 0,
+      depositAmount: parseFloat(serviceForm.depositAmount) || 0,
+      paymentStatus: serviceForm.paymentStatus,
       customFields: details,
     });
   }
@@ -557,6 +795,7 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
                 <Input label="العنوان" value={form.address} onChange={v => setForm(f => ({ ...f, address: v }))} />
                 <Input label="رابط الخارطة" value={form.mapsUrl} onChange={v => setForm(f => ({ ...f, mapsUrl: v }))} />
                 <Input label="رسوم التوصيل" type="number" value={form.deliveryFee} onChange={v => setForm(f => ({ ...f, deliveryFee: v }))} />
+                <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
                   <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value }))}
@@ -566,8 +805,18 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
                     <option value="paid">مدفوع</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
+                  <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                    <option value="unpaid">غير مدفوع</option>
+                    <option value="partial">جزئي</option>
+                    <option value="paid">مدفوع</option>
+                  </select>
+                </div>
               </div>
               <Input label="ملاحظات" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} />
+              <Input label="ملاحظات داخلية" value={form.internalNotes} onChange={v => setForm(f => ({ ...f, internalNotes: v }))} />
 
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -619,6 +868,17 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
                 <Input label="اسم الزبون *" value={serviceForm.customerName} onChange={v => setServiceForm(f => ({ ...f, customerName: v }))} required />
                 <Input label="رقم الهاتف *" value={serviceForm.phone} onChange={v => setServiceForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
                 <Input label="تاريخ الحجز *" type="date" value={serviceForm.eventDate} onChange={v => setServiceForm(f => ({ ...f, eventDate: v }))} required />
+                <Input label="السعر الكلي" type="number" value={serviceForm.totalAmount} onChange={v => setServiceForm(f => ({ ...f, totalAmount: v }))} />
+                <Input label="العربون" type="number" value={serviceForm.depositAmount} onChange={v => setServiceForm(f => ({ ...f, depositAmount: v }))} />
+                <div>
+                  <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
+                  <select value={serviceForm.paymentStatus} onChange={e => setServiceForm(f => ({ ...f, paymentStatus: e.target.value }))}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                    <option value="unpaid">غير مدفوع</option>
+                    <option value="partial">جزئي</option>
+                    <option value="paid">مدفوع</option>
+                  </select>
+                </div>
               </div>
               <ServiceDetailFields
                 serviceType={selectedService?.type}
@@ -631,6 +891,7 @@ function CreateOrderModal({ onClose }: { onClose: () => void }) {
                 errors={serviceErrors}
               />
               <Input label="ملاحظات" value={serviceForm.notes} onChange={v => setServiceForm(f => ({ ...f, notes: v }))} />
+              <Input label="ملاحظات داخلية" value={serviceForm.internalNotes} onChange={v => setServiceForm(f => ({ ...f, internalNotes: v }))} />
             </>
           )}
 
@@ -650,6 +911,10 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
     phone: formatIraqiPhone(order.phone),
     eventDate: order.eventDate ?? "",
     notes: order.notes ?? "",
+    internalNotes: order.internalNotes ?? "",
+    totalAmount: String(order.totalAmount ?? 0),
+    depositAmount: String(order.depositAmount ?? 0),
+    paymentStatus: order.paymentStatus ?? "unpaid",
     customFields: {
       ...defaultServiceDetails(order.serviceType),
       ...(order.customFields ?? {}),
@@ -691,6 +956,10 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       eventDate: form.eventDate,
       eventLocation: primaryLocationFromDetails(order.serviceType, details),
       notes: form.notes,
+      internalNotes: form.internalNotes,
+      totalAmount: parseFloat(form.totalAmount) || 0,
+      depositAmount: parseFloat(form.depositAmount) || 0,
+      paymentStatus: form.paymentStatus,
       customFields: details,
     });
   }
@@ -710,6 +979,17 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
             <Input label="اسم الزبون *" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} required />
             <Input label="رقم الهاتف *" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
             <Input label="تاريخ الحجز *" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} required />
+            <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
+            <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
+              <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                <option value="unpaid">غير مدفوع</option>
+                <option value="partial">جزئي</option>
+                <option value="paid">مدفوع</option>
+              </select>
+            </div>
           </div>
           <ServiceDetailFields
             serviceType={order.serviceType}
@@ -722,6 +1002,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
             errors={errors}
           />
           <Input label="ملاحظات" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} />
+          <Input label="ملاحظات داخلية" value={form.internalNotes} onChange={v => setForm(f => ({ ...f, internalNotes: v }))} />
           <Button type="submit" disabled={save.isPending} className="w-full">
             {save.isPending ? "جاري الحفظ..." : "حفظ التعديل"}
           </Button>

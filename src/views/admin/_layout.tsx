@@ -42,7 +42,7 @@ export function AdminLayout({
 
   return (
     <div className="min-h-screen bg-background flex" dir="rtl">
-      <aside className="w-60 bg-card border-l border-border/30 flex flex-col py-6 px-3 fixed right-0 top-0 h-full z-10 overflow-y-auto">
+      <aside className="hidden md:flex w-60 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10 overflow-y-auto">
         <div className="px-3 mb-6">
           <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 object-contain mb-3" />
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
@@ -77,7 +77,34 @@ export function AdminLayout({
           خروج
         </button>
       </aside>
-      <main className="flex-1 mr-60 p-6 max-w-[1400px]">{children}</main>
+      <div className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur" dir="rtl">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-9 object-contain" />
+            <div>
+              <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
+              <p className="text-sm font-semibold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</p>
+            </div>
+          </div>
+          <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-destructive">
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-3">
+          {visibleNav.map(item => {
+            const active = location === item.href || location.startsWith(item.href + "/");
+            return (
+              <Link key={item.href} href={item.href}>
+                <a className={`shrink-0 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${active ? "bg-primary/10 text-primary" : "bg-background/60 text-muted-foreground"}`}>
+                  <item.icon className="w-3.5 h-3.5" />
+                  {item.label}
+                </a>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
+      <main className="flex-1 p-4 pt-28 md:pt-6 md:mr-60 md:p-6 max-w-[1400px] w-full">{children}</main>
     </div>
   );
 }

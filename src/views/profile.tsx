@@ -17,6 +17,7 @@ import {
   Phone,
   Plus,
   Printer,
+  RefreshCcw,
   Search,
   Settings,
   ShoppingBag,
@@ -111,6 +112,16 @@ function addressTypeLabel(type: string): string {
   if (type === "work") return "العمل";
   if (type === "other") return "عنوان آخر";
   return "المنزل";
+}
+
+function customerInitials(customer: Customer): string {
+  const source = (customer.fullName || customer.name || formatIraqiPhone(customer.phone)).trim();
+  return source
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
 }
 
 function AddressInput({
@@ -327,7 +338,11 @@ export default function Profile() {
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="bg-card rounded-2xl border border-border/30 p-6 flex flex-col md:flex-row md:items-center gap-5">
           <div className="w-20 h-20 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center overflow-hidden">
-            {customer.avatarUrl ? <img src={customer.avatarUrl} alt="" className="w-full h-full object-cover" /> : <User className="w-10 h-10 text-primary" />}
+            {customer.avatarUrl ? (
+              <img src={customer.avatarUrl} alt="" width={80} height={80} loading="lazy" decoding="async" className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-2xl font-bold text-primary">{customerInitials(customer)}</span>
+            )}
           </div>
           <div className="flex-1">
             <h1 className="text-2xl font-bold text-foreground">{customer.fullName || customer.name || formatIraqiPhone(customer.phone)}</h1>
@@ -628,12 +643,27 @@ function OrderList({ rows, empty }: { rows: any[]; empty: string }) {
               <p className="text-xs text-muted-foreground mt-1">
                 {new Date(order.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}
               </p>
+              <div className="mt-3 flex items-center gap-2">
+                {["pending", "confirmed", "processing", "shipped", "delivered", "completed"].slice(0, order.kind === "service" ? 4 : 6).map((status, index) => {
+                  const current = ["pending", "confirmed", "processing", "shipped", "delivered", "completed"].indexOf(order.status);
+                  const active = current >= index;
+                  return <span key={status} className={`h-1.5 flex-1 min-w-6 rounded-full ${active ? "bg-primary" : "bg-border/40"}`} />;
+                })}
+              </div>
             </div>
             <div className="flex items-center gap-3 sm:justify-end">
               <div className="text-right">
                 <p className="font-bold text-primary">{Number(order.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
                 <p className="text-xs text-muted-foreground">{STATUS_LABELS[order.status] ?? order.status}</p>
+                {Number(order.remainingAmount ?? 0) > 0 && (
+                  <p className="text-xs text-muted-foreground">المتبقي: {Number(order.remainingAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+                )}
               </div>
+              {order.kind !== "service" && (
+                <Link href="/store" className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
+                  <RefreshCcw className="w-4 h-4" />
+                </Link>
+              )}
               <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                 عرض التفاصيل
               </Link>

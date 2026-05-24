@@ -14,20 +14,10 @@ const serviceImages: Record<string, string> = {
   'research': '/images/research.png',
 };
 
-// Fallback services if API fails or doesn't have them
-const fallbackServices = [
-  { id: 1, nameAr: "كوشات الأعراس", type: "kosha", descriptionAr: "تصميم وتنفيذ أرقى كوشات الأعراس بتفاصيل فخمة تناسب ذوقكم" },
-  { id: 2, nameAr: "تجهيزات تخرج", type: "setup", descriptionAr: "تجهيز كامل لحفلات التخرج مع منصات التصوير والديكورات" },
-  { id: 3, nameAr: "تصوير احترافي", type: "photography", descriptionAr: "توثيق أجمل اللحظات بعدسات احترافية وفريق متخصص" },
-  { id: 4, nameAr: "ألبومات فاخرة", type: "album", descriptionAr: "صناعة وطباعة ألبومات صور بجلود فاخرة وتفاصيل ذهبية" },
-  { id: 5, nameAr: "توزيعات وهدايا", type: "gifts", descriptionAr: "توزيعات وهدايا فخمة للمناسبات مصممة خصيصاً لكم" },
-  { id: 6, nameAr: "بحوث وتقارير", type: "research", descriptionAr: "خدمات كتابة وتنسيق البحوث والتقارير الأكاديمية والمهنية" }
-];
-
 export default function Services() {
   const { data: apiServices, isLoading } = useListServices();
   
-  const services = apiServices?.length ? apiServices : fallbackServices;
+  const services = apiServices ?? [];
 
   return (
     <div className="container mx-auto px-4 py-12">
@@ -52,6 +42,10 @@ export default function Services() {
               </CardContent>
             </Card>
           ))
+        ) : services.length === 0 ? (
+          <Card className="bg-card border-border md:col-span-2 lg:col-span-3">
+            <CardContent className="p-8 text-center text-muted-foreground">لا توجد خدمات متاحة حالياً</CardContent>
+          </Card>
         ) : (
           services.map((service) => (
             <Card key={service.id} className="bg-card border-border overflow-hidden flex flex-col">
@@ -59,14 +53,29 @@ export default function Services() {
                 <img 
                   src={serviceImages[service.type] || (service as any).image || '/images/hero.png'} 
                   alt={service.nameAr}
+                  width={640}
+                  height={420}
+                  loading="lazy"
+                  decoding="async"
                   className="w-full h-full object-cover transition-transform duration-700 hover:scale-105"
                 />
+                <div className="absolute bottom-3 right-3 rounded-lg bg-black/55 border border-white/10 px-3 py-1 text-xs text-white backdrop-blur-sm">
+                  صور وتفاصيل الخدمة
+                </div>
               </div>
               <CardContent className="p-6 flex flex-col flex-1">
                 <h2 className="text-2xl font-bold text-foreground mb-3">{service.nameAr}</h2>
                 <p className="text-muted-foreground mb-6 flex-1">
                   {service.descriptionAr}
                 </p>
+                <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
+                  <Link href="/gallery" className="rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-center text-muted-foreground hover:text-primary transition-colors">
+                    أعمالنا
+                  </Link>
+                  <Link href={`/services/${service.id}`} className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-center text-primary transition-colors">
+                    احجز الآن
+                  </Link>
+                </div>
                 <Link href={`/services/${service.id}`}>
                   <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
                     طلب الخدمة

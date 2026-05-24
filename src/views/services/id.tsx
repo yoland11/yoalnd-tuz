@@ -46,6 +46,15 @@ export default function ServiceRequest() {
   const [serviceDetails, setServiceDetails] = useState<Record<string, any>>({});
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const serviceType = service?.type ?? null;
+  const { data: galleryItems = [] } = useQuery({
+    queryKey: ["gallery", serviceType],
+    enabled: !!serviceType,
+    queryFn: async () => {
+      const res = await fetch(`/api/gallery?category=${encodeURIComponent(String(serviceType))}`);
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
 
   const { data: crews = [] } = useQuery({
     queryKey: ["crews"],
@@ -146,6 +155,20 @@ export default function ServiceRequest() {
           {service?.descriptionAr || "الرجاء ملء النموذج أدناه لطلب الخدمة وسنقوم بالتواصل معك."}
         </p>
       </div>
+
+      {galleryItems.length > 0 && (
+        <div className="mb-6 grid grid-cols-3 gap-2">
+          {galleryItems.slice(0, 3).map((item: any) => (
+            <div key={item.id} className="aspect-[4/3] overflow-hidden rounded-xl border border-border/30 bg-card">
+              {item.mediaType === "video" ? (
+                <video src={item.mediaUrl} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+              ) : (
+                <img src={item.mediaUrl} alt={item.titleAr || item.title || service?.nameAr || "عمل سابق"} width={260} height={195} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <Card className="bg-card border-border shadow-lg">
         <CardHeader className="border-b border-border/50 bg-muted/20">

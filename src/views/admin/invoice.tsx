@@ -12,6 +12,11 @@ const PAYMENT_LABELS_AR: Record<string, string> = {
   transfer: "حوالة",
   paid: "مدفوع",
 };
+const PAYMENT_STATUS_AR: Record<string, string> = {
+  unpaid: "غير مدفوع",
+  partial: "جزئي",
+  paid: "مدفوع",
+};
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
@@ -193,6 +198,10 @@ export default function Invoice() {
                   <span className="text-neutral-600">العربون المدفوع</span>
                   <span>{data.deposit > 0 ? `${Number(data.deposit).toLocaleString('en-US')} د.ع` : "—"}</span>
                 </div>
+                <div className="flex justify-between border-b border-neutral-200 pb-2">
+                  <span className="text-neutral-600">حالة الدفع</span>
+                  <span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span>
+                </div>
                 <div className="flex justify-between bg-amber-50 border border-amber-200 px-3 py-2 rounded font-bold">
                   <span>المتبقي</span>
                   <span>{data.price > 0 ? `${Number(data.balance).toLocaleString('en-US')} د.ع` : "—"}</span>
@@ -243,9 +252,17 @@ export default function Invoice() {
                       <span className="text-neutral-600">رسوم التوصيل</span>
                       <span>{deliveryFee.toLocaleString('en-US')} د.ع</span>
                     </div>
+                    <div className="flex justify-between border-b border-neutral-200 pb-2">
+                      <span className="text-neutral-600">العربون</span>
+                      <span>{Number(data.depositAmount ?? 0).toLocaleString('en-US')} د.ع</span>
+                    </div>
+                    <div className="flex justify-between border-b border-neutral-200 pb-2">
+                      <span className="text-neutral-600">حالة الدفع</span>
+                      <span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span>
+                    </div>
                     <div className="flex justify-between bg-amber-50 border border-amber-200 px-3 py-2 rounded font-bold">
-                      <span>الإجمالي النهائي</span>
-                      <span>{total.toLocaleString('en-US')} د.ع</span>
+                      <span>المتبقي</span>
+                      <span>{Number(data.remainingAmount ?? total).toLocaleString('en-US')} د.ع</span>
                     </div>
                   </div>
                 </div>

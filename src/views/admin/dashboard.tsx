@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
+  AlertTriangle, Bell, CalendarDays, CreditCard, ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -15,11 +15,17 @@ type DashboardData = {
   totalOrders: number; activeOrders: number; cancelledOrders: number; deliveredOrders: number;
   serviceOrders: number; totalProducts: number; totalCustomers: number;
   totalRevenue: number; todayRevenue: number;
+  monthlyRevenue: number; remainingTotal: number; partialOrders: number; unpaidOrders: number;
   revenueByDay: { day: string; total: number; orders: number }[];
   statusBreakdown: { status: string; count: number }[];
   topProducts: { productId: number; productName: string; qty: number; revenue: number }[];
   topCustomers: { phone: string; name: string; orderCount: number; totalSpent: number }[];
   bookingsByService: { serviceId: number; serviceName: string; count: number }[];
+  topCrews: { crewName: string; count: number }[];
+  upcomingBookings: { id: number; trackingCode: string | null; customerName: string; serviceName: string; eventDate: string | null; status: string }[];
+  lateOrders: { id: number; trackingCode: string; customerName: string; status: string; createdAt: string }[];
+  todayTasks: { bookings: number; late: number; paymentFollowups: number };
+  alerts: { key: string; label: string; count: number }[];
 };
 
 type RecentOrder = {
@@ -68,6 +74,8 @@ export default function DashboardPage() {
     { label: "المنتجات", value: data.totalProducts, icon: Package, color: "text-purple-400" },
     { label: "العملاء", value: data.totalCustomers, icon: Users, color: "text-cyan-400" },
     { label: "الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
+    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-green-400" },
+    { label: "المتبقي", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-amber-400" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({
@@ -92,6 +100,58 @@ export default function DashboardPage() {
             <p className="text-2xl font-bold text-foreground">{c.value}</p>
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-card rounded-xl border border-border/30 p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <Bell className="w-4 h-4 text-primary" /> إشعارات الإدارة
+          </h3>
+          {!data.alerts || data.alerts.length === 0 ? <EmptyState message="لا توجد تنبيهات حالياً" /> : (
+            <ul className="space-y-2">
+              {data.alerts.map((alert) => (
+                <li key={alert.key} className="flex items-center justify-between rounded-lg bg-background/60 border border-border/25 px-3 py-2 text-sm">
+                  <span className="text-foreground">{alert.label}</span>
+                  <span className="text-primary font-bold">{alert.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="bg-card rounded-xl border border-border/30 p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-primary" /> مهام اليوم
+          </h3>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-xl font-bold text-foreground">{data.todayTasks?.bookings ?? 0}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">حجوزات</p>
+            </div>
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-xl font-bold text-amber-400">{data.todayTasks?.late ?? 0}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">متأخر</p>
+            </div>
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-xl font-bold text-primary">{data.todayTasks?.paymentFollowups ?? 0}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">دفع</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-card rounded-xl border border-border/30 p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400" /> الطلبات المتأخرة
+          </h3>
+          {!data.lateOrders || data.lateOrders.length === 0 ? <EmptyState message="لا توجد طلبات متأخرة" /> : (
+            <ul className="space-y-2 text-sm">
+              {data.lateOrders.slice(0, 5).map((order) => (
+                <li key={order.id} className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs text-foreground">{order.trackingCode}</span>
+                  <span className="text-xs text-muted-foreground truncate">{order.customerName}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -163,6 +223,40 @@ export default function DashboardPage() {
                 <li key={s.serviceId} className="flex items-center justify-between">
                   <span className="text-foreground">{s.serviceName || `#${s.serviceId}`}</span>
                   <span className="text-primary font-semibold">{s.count}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-card rounded-xl border border-border/30 p-6">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-primary" /> الحجوزات القادمة
+          </h3>
+          {!data.upcomingBookings || data.upcomingBookings.length === 0 ? <EmptyState message="لا توجد حجوزات قادمة" /> : (
+            <div className="space-y-2">
+              {data.upcomingBookings.slice(0, 6).map((booking) => (
+                <div key={booking.id} className="rounded-lg bg-background/60 border border-border/25 p-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm text-foreground">{booking.customerName}</p>
+                    <p className="text-xs text-muted-foreground">{booking.serviceName}</p>
+                  </div>
+                  <p className="font-mono text-xs text-primary">{booking.eventDate}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="bg-card rounded-xl border border-border/30 p-6">
+          <h3 className="text-sm font-semibold text-foreground mb-4">أكثر كادر محجوز</h3>
+          {!data.topCrews || data.topCrews.length === 0 ? <EmptyState message="لا توجد حجوزات كادر بعد" /> : (
+            <ul className="space-y-2 text-sm">
+              {data.topCrews.map((crew, index) => (
+                <li key={crew.crewName} className="flex items-center justify-between">
+                  <span className="text-foreground"><span className="text-primary font-bold ml-2">#{index + 1}</span>{crew.crewName}</span>
+                  <span className="text-primary font-semibold">{crew.count}</span>
                 </li>
               ))}
             </ul>

@@ -10,8 +10,7 @@ import { Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapP
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
-
-const AJN_PHONE = "07701234567"; // store contact
+import { usePublicSettings } from "@/lib/public-settings";
 
 type Mode = "code" | "phone";
 
@@ -25,6 +24,7 @@ export default function Track() {
   const [phone, setPhone] = useState("");
   const [searchCode, setSearchCode] = useState(prefilledCode);
   const [searchPhone, setSearchPhone] = useState("");
+  const { data: settings } = usePublicSettings();
 
   const { data: order, isLoading: loadingCode, error: errorCode } = useTrackOrder(searchCode || "_", {
     query: { queryKey: getTrackOrderQueryKey(searchCode || "_"), enabled: !!searchCode },
@@ -119,7 +119,7 @@ export default function Track() {
               </p>
             )}
             {codeResults.map((o: any, i: number) => (
-              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} />
+              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
             ))}
           </div>
         )}
@@ -135,7 +135,7 @@ export default function Track() {
           <div className="space-y-6">
             <p className="text-sm text-muted-foreground text-center">عدد الطلبات: {phoneResults.length}</p>
             {phoneResults.map((o: any, i: number) => (
-              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} />
+              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
             ))}
           </div>
         )}
@@ -153,15 +153,26 @@ function formatTrackDate(iso: string): string {
   });
 }
 
-function OrderCard({ tracking }: { tracking: any }) {
+const STATUS_TONES: Record<string, string> = {
+  pending: "text-amber-300 border-amber-500/30 bg-amber-500/10",
+  confirmed: "text-blue-300 border-blue-500/30 bg-blue-500/10",
+  processing: "text-primary border-primary/30 bg-primary/10",
+  shipped: "text-cyan-300 border-cyan-500/30 bg-cyan-500/10",
+  delivered: "text-green-300 border-green-600/30 bg-green-600/10",
+  completed: "text-green-300 border-green-600/30 bg-green-600/10",
+  cancelled: "text-red-300 border-red-500/30 bg-red-500/10",
+};
+
+function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: string }) {
   const stages = getStagesFor(tracking.serviceType, tracking.kind);
   const currentIdx = getStageIndex(stages, tracking.status);
   const isCancelled = tracking.status === "cancelled";
   const isBooking = tracking.kind === "service";
   const detailRows = serviceDetailsToRows(tracking.serviceType, tracking.customFields);
+  const progress = stages.length > 1 ? Math.max(0, Math.min(100, (currentIdx / (stages.length - 1)) * 100)) : 0;
 
   const waMsg = `استفسار عن الطلب ${tracking.trackingCode}`;
-  const waLink = buildWhatsAppLink(AJN_PHONE, waMsg);
+  const waLink = buildWhatsAppLink(contactPhone || "07701234567", waMsg);
 
   return (
     <div className="space-y-6">
@@ -173,17 +184,38 @@ function OrderCard({ tracking }: { tracking: any }) {
             <p className="text-xs text-muted-foreground mb-1">رمز التتبع</p>
             <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
           </div>
-          <div className={`flex items-center gap-2 px-4 py-2 rounded-full bg-background border border-border/30 ${isCancelled ? "text-red-400" : "text-primary"}`}>
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${STATUS_TONES[tracking.status] ?? "text-primary border-border/30 bg-background"}`}>
             <CheckCircle className="w-4 h-4" />
             <span className="text-sm font-medium">{getStageLabel(stages, tracking.status)}</span>
           </div>
         </div>
+        {!isCancelled && (
+          <div className="mb-4 h-2 overflow-hidden rounded-full bg-background border border-border/20">
+            <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${progress}%` }} />
+          </div>
+        )}
         <div className="flex items-center justify-between text-sm text-muted-foreground flex-wrap gap-2">
           <span>{tracking.customerName}</span>
           {tracking.total > 0 && (
             <span className="text-primary font-bold">{Number(tracking.total).toLocaleString('ar-IQ')} د.ع</span>
           )}
         </div>
+        {(Number(tracking.depositAmount ?? 0) > 0 || Number(tracking.remainingAmount ?? 0) > 0) && (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-muted-foreground mb-1">العربون</p>
+              <p className="text-foreground font-semibold">{Number(tracking.depositAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+            </div>
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-muted-foreground mb-1">المتبقي</p>
+              <p className="text-primary font-semibold">{Number(tracking.remainingAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+            </div>
+            <div className="rounded-lg bg-background/60 border border-border/25 p-3">
+              <p className="text-muted-foreground mb-1">حالة الدفع</p>
+              <p className="text-foreground font-semibold">{paymentLabel(tracking.paymentStatus)}</p>
+            </div>
+          </div>
+        )}
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
           <a
             href={waLink}
@@ -330,6 +362,12 @@ function OrderCard({ tracking }: { tracking: any }) {
       )}
     </div>
   );
+}
+
+function paymentLabel(status?: string) {
+  if (status === "paid") return "مدفوع";
+  if (status === "partial") return "جزئي";
+  return "غير مدفوع";
 }
 
 function BookingResponseCard({ tracking }: { tracking: any }) {
