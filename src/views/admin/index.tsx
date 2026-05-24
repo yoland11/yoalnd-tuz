@@ -9,6 +9,7 @@ import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
 import AdminLogin from "./login";
 import DashboardPage from "./dashboard";
 import OrdersPage from "./orders";
+import ArchivePage from "./archive";
 import ServicesPage from "./services";
 import ProductsPage from "./products";
 import CategoriesPage from "./categories";
@@ -71,6 +72,7 @@ export default function Admin() {
       <Switch>
         <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
         <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
+        <Route path="/admin/archive"   >{() => <Guard me={me} perm="orders"   ><ArchivePage    /></Guard>}</Route>
         <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
         <Route path="/admin/products"  >{() => <Guard me={me} perm="products" ><ProductsPage   /></Guard>}</Route>
         <Route path="/admin/categories">{() => <Guard me={me} perm="products" ><CategoriesPage /></Guard>}</Route>

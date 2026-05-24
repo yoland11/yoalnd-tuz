@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import {
   AlertTriangle, Bell, CalendarDays, CreditCard, ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
+  CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -82,12 +84,33 @@ export default function DashboardPage() {
     name: STATUS_LABELS[s.status] ?? s.status,
     value: s.count,
   }));
+  const shortcuts = [
+    { label: "إنشاء طلب سريع", href: "/admin/orders?create=product", icon: PlusCircle },
+    { label: "إنشاء حجز سريع", href: "/admin/orders?create=service", icon: CalendarPlus },
+    { label: "إرسال واتساب سريع", href: "/admin/whatsapp", icon: MessageCircle },
+    { label: "طباعة فاتورة", href: "/admin/orders", icon: FileText },
+    { label: "إضافة منتج", href: "/admin/products", icon: Package },
+    { label: "إضافة صورة للمعرض", href: "/admin/gallery", icon: ImagePlus },
+  ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">لوحة التحكم</h1>
         <p className="text-sm text-muted-foreground">إيرادات اليوم: <span className="text-primary font-semibold">{formatCurrency(data.todayRevenue)}</span></p>
+      </div>
+
+      <div className="bg-card rounded-xl border border-border/30 p-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+          {shortcuts.map((item) => (
+            <Link key={item.label} href={item.href}>
+              <a className="inline-flex items-center justify-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2.5 text-xs text-foreground hover:border-primary/40 hover:text-primary transition-colors">
+                <item.icon className="w-4 h-4" />
+                <span className="truncate">{item.label}</span>
+              </a>
+            </Link>
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

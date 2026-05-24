@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Edit2, Trash2, X, ArrowUp, ArrowDown } from "lucide-react";
+import { Plus, Edit2, Trash2, X, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, fileToDataUrl } from "./_lib";
+import { adminFetch, compressImageFile } from "./_lib";
 import { EmptyState } from "./_layout";
 
 type Service = {
@@ -57,7 +57,7 @@ export default function ServicesPage() {
   });
 
   async function handleImageUpload(file: File) {
-    const dataUrl = await fileToDataUrl(file);
+    const dataUrl = await compressImageFile(file);
     setEditing(e => ({ ...e!, image: dataUrl }));
   }
 
@@ -129,9 +129,16 @@ export default function ServicesPage() {
             <Field label="رمز الأيقونة (lucide)" value={editing.icon ?? ""} onChange={v => setEditing(e => ({ ...e!, icon: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">صورة الخدمة</label>
-              {editing.image && <img src={editing.image} className="h-24 rounded-lg object-cover mb-2" alt="" />}
-              <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleImageUpload(e.target.files[0])}
-                className="text-xs text-foreground" />
+              {editing.image && <img src={editing.image} className="h-24 w-full rounded-lg object-cover mb-2" alt="" />}
+              <label
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); e.dataTransfer.files?.[0] && handleImageUpload(e.dataTransfer.files[0]); }}
+                className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border/40 bg-background/40 py-5 text-sm text-foreground cursor-pointer hover:border-primary/50"
+              >
+                <Upload className="w-4 h-4 text-primary" />
+                رفع أو سحب صورة
+                <input type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleImageUpload(e.target.files[0])} className="hidden" />
+              </label>
               <input type="text" placeholder="أو ضع رابط URL" value={editing.image ?? ""} onChange={e => setEditing(s => ({ ...s!, image: e.target.value }))}
                 className="w-full mt-2 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
             </div>

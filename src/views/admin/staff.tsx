@@ -14,9 +14,12 @@ type Staff = {
 const PERMISSIONS = ALL_PERMISSIONS.map(id => ({ id, label: PERMISSION_LABELS[id] }));
 
 const ROLES = [
-  { value: "admin", label: "مدير عام" },
+  { value: "admin", label: "مدير رئيسي" },
   { value: "manager", label: "مدير" },
-  { value: "staff", label: "موظف" },
+  { value: "booking_staff", label: "موظف حجوزات" },
+  { value: "photographer", label: "موظف تصوير" },
+  { value: "accountant", label: "محاسب" },
+  { value: "staff", label: "موظف عام" },
 ];
 
 type Editing = {
@@ -24,7 +27,15 @@ type Editing = {
   role: string; permissions: string[]; isActive: boolean;
 };
 
-const blank: Editing = { username: "", password: "", fullName: "", role: "staff", permissions: [], isActive: true };
+const ROLE_PRESETS: Record<string, string[]> = {
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting"],
+  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp"],
+  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp"],
+  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting"],
+  staff: ["dashboard"],
+};
+
+const blank: Editing = { username: "", password: "", fullName: "", role: "booking_staff", permissions: ROLE_PRESETS.booking_staff, isActive: true };
 
 export default function StaffPage() {
   const qc = useQueryClient();
@@ -79,8 +90,14 @@ export default function StaffPage() {
                     <p className="text-xs text-muted-foreground">@{s.username} • {ROLES.find(r => r.value === s.role)?.label ?? s.role}</p>
                   </div>
                 </div>
-                <label className="inline-flex items-center gap-1 cursor-pointer">
-                  <input type="checkbox" checked={s.isActive} onChange={() => toggle.mutate(s)} className="accent-primary" />
+                <label className={`inline-flex items-center gap-1 ${s.role === "admin" ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}>
+                  <input
+                    type="checkbox"
+                    checked={s.isActive}
+                    onChange={() => s.role !== "admin" && toggle.mutate(s)}
+                    disabled={s.role === "admin"}
+                    className="accent-primary"
+                  />
                   <span className={`text-xs ${s.isActive ? "text-green-400" : "text-red-400"}`}>{s.isActive ? "مفعّل" : "معطّل"}</span>
                 </label>
               </div>
@@ -98,10 +115,12 @@ export default function StaffPage() {
                   className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
                 </button>
-                <button onClick={() => confirm("حذف الموظف؟") && del.mutate(s.id)}
-                  className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                {s.role !== "admin" && (
+                  <button onClick={() => confirm("حذف الموظف؟") && del.mutate(s.id)}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -122,8 +141,15 @@ export default function StaffPage() {
               value={editing.password} onChange={v => setEditing(s => ({ ...s!, password: v }))} required={!editing.id} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">الدور</label>
-              <select value={editing.role} onChange={e => setEditing(s => ({ ...s!, role: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              <select
+                value={editing.role}
+                onChange={e => {
+                  const role = e.target.value;
+                  setEditing(s => ({ ...s!, role, permissions: ROLE_PRESETS[role] ?? s!.permissions }));
+                }}
+                disabled={editing.role === "admin"}
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 disabled:opacity-70"
+              >
                 {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
             </div>
@@ -133,15 +159,22 @@ export default function StaffPage() {
                 {PERMISSIONS.map(p => (
                   <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
                     <input type="checkbox" checked={editing.permissions.includes(p.id)}
+                      disabled={editing.role === "admin"}
                       onChange={e => setEditing(s => ({ ...s!, permissions: e.target.checked ? [...s!.permissions, p.id] : s!.permissions.filter(x => x !== p.id) }))}
-                      className="accent-primary" />
+                      className="accent-primary disabled:opacity-70" />
                     {p.label}
                   </label>
                 ))}
               </div>
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={editing.isActive} onChange={e => setEditing(s => ({ ...s!, isActive: e.target.checked }))} className="accent-primary" />
+            <label className={`flex items-center gap-2 text-sm ${editing.role === "admin" ? "opacity-70" : ""}`}>
+              <input
+                type="checkbox"
+                checked={editing.isActive}
+                disabled={editing.role === "admin"}
+                onChange={e => setEditing(s => ({ ...s!, isActive: e.target.checked }))}
+                className="accent-primary disabled:opacity-70"
+              />
               مفعّل
             </label>
             <Button type="submit" disabled={save.isPending} className="w-full">{save.isPending ? "جاري الحفظ..." : "حفظ"}</Button>

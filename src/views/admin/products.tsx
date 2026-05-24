@@ -4,10 +4,10 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, fileToDataUrl, formatCurrency } from "./_lib";
+import { adminFetch, compressImageFile, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
@@ -244,6 +244,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   parentCats: Category[]; subCats: Category[];
 }) {
   const [busy, setBusy] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const filteredSubs = subCats.filter(s => {
     const parent = parentCats.find(p => p.slug === form.category);
     return parent ? s.parentId === parent.id : true;
@@ -251,8 +252,22 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
   async function handleFiles(files: FileList | null) {
     if (!files) return;
-    const dataUrls = await Promise.all(Array.from(files).map(fileToDataUrl));
+    const dataUrls = await Promise.all(Array.from(files).map(file => compressImageFile(file)));
     onChange({ ...form, images: [...form.images, ...dataUrls] });
+  }
+
+  function moveImage(index: number) {
+    if (index <= 0) return;
+    const images = [...form.images];
+    [images[index - 1], images[index]] = [images[index], images[index - 1]];
+    onChange({ ...form, images });
+  }
+
+  function makeMain(index: number) {
+    if (index === 0) return;
+    const images = [...form.images];
+    const [selected] = images.splice(index, 1);
+    onChange({ ...form, images: [selected, ...images] });
   }
 
   return (
@@ -305,15 +320,39 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               <input type="file" multiple accept="image/*" onChange={e => handleFiles(e.target.files)} className="hidden" />
             </label>
           </div>
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
+            className="mb-3 rounded-xl border border-dashed border-border/50 bg-background/40 px-4 py-5 text-center text-xs text-muted-foreground"
+          >
+            اسحب الصور هنا أو استخدم زر الرفع
+          </div>
           {form.images.length > 0 && (
             <div className="flex gap-2 flex-wrap">
               {form.images.map((img, i) => (
-                <div key={i} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border/30">
-                  <img src={img} className="w-full h-full object-cover" alt="" />
-                  <button type="button" onClick={() => onChange({ ...form, images: form.images.filter((_, idx) => idx !== i) })}
-                    className="absolute top-0.5 left-0.5 bg-black/70 text-white p-0.5 rounded">
-                    <X className="w-3 h-3" />
+                <div key={img} className={`relative w-24 rounded-lg overflow-hidden border bg-background ${i === 0 ? "border-primary/60" : "border-border/30"}`}>
+                  <button type="button" onClick={() => setPreviewImage(img)} className="block w-full h-20">
+                    <img src={img} className="w-full h-full object-cover" alt="" />
                   </button>
+                  {i === 0 && (
+                    <span className="absolute top-1 right-1 inline-flex items-center gap-1 rounded bg-primary text-primary-foreground px-1.5 py-0.5 text-[10px]">
+                      <Star className="w-3 h-3" /> رئيسية
+                    </span>
+                  )}
+                  <div className="grid grid-cols-4 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
+                    <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <Eye className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                      <Star className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="تقديم الصورة" onClick={() => moveImage(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <ArrowRight className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="حذف" onClick={() => onChange({ ...form, images: form.images.filter((_, idx) => idx !== i) })} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                      <X className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -345,6 +384,11 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
         <Button type="submit" disabled={busy} className="w-full">{busy ? "جاري الحفظ..." : "حفظ"}</Button>
       </form>
+      {previewImage && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}>
+          <img src={previewImage} alt="" className="max-h-[86vh] max-w-[92vw] rounded-xl object-contain border border-border/40 bg-card" />
+        </div>
+      )}
     </div>
   );
 }

@@ -7,7 +7,7 @@ import {
 import { Plus, Trash2, X, Upload, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fileToDataUrl } from "./_lib";
+import { compressImageFile } from "./_lib";
 import { EmptyState } from "./_layout";
 
 export default function GalleryPage() {
@@ -25,7 +25,7 @@ export default function GalleryPage() {
   async function handleFile(file: File) {
     setUploading(true);
     try {
-      const dataUrl = await fileToDataUrl(file);
+      const dataUrl = await compressImageFile(file);
       setForm(f => ({
         ...f,
         mediaUrl: dataUrl,
@@ -80,7 +80,11 @@ export default function GalleryPage() {
             </div>
             <label className="block">
               <span className="text-xs text-muted-foreground">رفع ملف من الجهاز</span>
-              <div className="mt-1 flex items-center justify-center gap-2 border-2 border-dashed border-border/40 rounded-xl py-6 cursor-pointer hover:border-primary/50">
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); e.dataTransfer.files?.[0] && handleFile(e.dataTransfer.files[0]); }}
+                className="mt-1 flex items-center justify-center gap-2 border-2 border-dashed border-border/40 rounded-xl py-6 cursor-pointer hover:border-primary/50"
+              >
                 <Upload className="w-5 h-5 text-primary" />
                 <span className="text-sm text-foreground">{uploading ? "جاري الرفع..." : "اختر صورة أو فيديو"}</span>
                 <input type="file" accept="image/*,video/*" className="hidden" onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />

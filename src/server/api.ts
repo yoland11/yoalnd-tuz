@@ -140,6 +140,7 @@ let customerProfilePromise: Promise<void> | null = null;
 let customerAddressTablesPromise: Promise<void> | null = null;
 let trackingColumnsPromise: Promise<void> | null = null;
 let paymentWorkflowColumnsPromise: Promise<void> | null = null;
+let archiveColumnsPromise: Promise<void> | null = null;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): NextResponse {
   return NextResponse.json(data, { status, headers });
@@ -749,6 +750,17 @@ async function ensurePaymentWorkflowColumns(): Promise<void> {
   await paymentWorkflowColumnsPromise;
 }
 
+async function ensureArchiveColumns(): Promise<void> {
+  if (!archiveColumnsPromise) {
+    archiveColumnsPromise = db.execute(sql`alter table "orders" add column if not exists "archived_at" timestamp`)
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "archived_at" timestamp`))
+      .then(() => db.execute(sql`create index if not exists "orders_archived_at_idx" on "orders" ("archived_at")`))
+      .then(() => db.execute(sql`create index if not exists "service_orders_archived_at_idx" on "service_orders" ("archived_at")`))
+      .then(() => undefined);
+  }
+  await archiveColumnsPromise;
+}
+
 async function cleanupOtpCodes(): Promise<void> {
   await ensureOtpTable();
   await db.execute(sql`
@@ -870,6 +882,7 @@ async function formatOrder(order: any) {
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
+    archivedAt: order.archivedAt ? order.archivedAt.toISOString() : null,
     governorate: order.governorate ?? null,
     address: order.address ?? null,
     notes: order.notes ?? null,
@@ -915,6 +928,7 @@ async function buildTracking(order: any) {
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
+    archivedAt: order.archivedAt ? order.archivedAt.toISOString() : null,
     items: items.map((i) => ({
       id: i.id,
       productId: i.productId,
@@ -970,6 +984,7 @@ async function buildServiceTracking(so: any) {
     depositAmount: Number.parseFloat(so.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(so.remainingAmount ?? "0"),
     paymentStatus: so.paymentStatus ?? "unpaid",
+    archivedAt: so.archivedAt ? so.archivedAt.toISOString() : null,
     items: [],
     statusHistory,
     createdAt: so.createdAt.toISOString(),
@@ -1591,7 +1606,9 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const params = ListOrdersQueryParams.safeParse(query(req));
     const { status } = params.success ? params.data : {};
     const orders = await db.query.ordersTable.findMany({
-      where: status ? eq(ordersTable.status, status) : undefined,
+      where: status
+        ? and(eq(ordersTable.status, status), sql`${ordersTable.archivedAt} is null`)
+        : sql`${ordersTable.archivedAt} is null`,
       orderBy: [desc(ordersTable.createdAt)],
     });
     return json(await Promise.all(orders.map(formatOrder)));
@@ -1930,6 +1947,7 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
 
   if (parts[1] === "recent-orders") {
     const orders = await db.query.ordersTable.findMany({
+      where: sql`${ordersTable.archivedAt} is null`,
       orderBy: [desc(ordersTable.createdAt)],
       limit: 10,
     });
@@ -1967,6 +1985,26 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
 const PAYMENT_METHODS = ["cod", "transfer", "paid"] as const;
 function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
   return (PAYMENT_METHODS as readonly string[]).includes(v as string) ? (v as any) : null;
+}
+
+const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting"],
+  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp"],
+  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp"],
+  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting"],
+  staff: ["dashboard"],
+};
+
+function normalizeStaffRole(role: unknown): string {
+  const value = String(role ?? "staff");
+  return ["manager", "booking_staff", "photographer", "accountant", "staff"].includes(value) ? value : "staff";
+}
+
+function permissionsForRole(role: string, permissions?: unknown): Permission[] {
+  if (Array.isArray(permissions) && permissions.length > 0) {
+    return permissions.filter((p): p is Permission => (ALL_PERMISSIONS as readonly string[]).includes(String(p)));
+  }
+  return ROLE_PERMISSION_PRESETS[role] ?? ROLE_PERMISSION_PRESETS.staff;
 }
 
 function normalizeCustomerPayment(v: unknown): "cash" | "card" {
@@ -2197,15 +2235,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       lateProductOrders,
       whatsappFailures,
     ] = await Promise.all([
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
       db.select({ c: sql<number>`count(*)::int` }).from(productsTable),
       db.select({ c: sql<number>`count(*)::int` }).from(customersTable),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable),
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(sql`status in ('pending','confirmed','processing','shipped')`),
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.status, "cancelled")),
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.status, "delivered")),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(gte(ordersTable.createdAt, today)),
-      db.select({ c: sql<number>`count(*)::int` }).from(serviceOrdersTable),
+      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(sql`status in ('pending','confirmed','processing','shipped')`, sql`${ordersTable.archivedAt} is null`)),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.status, "cancelled"), sql`${ordersTable.archivedAt} is null`)),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.status, "delivered"), sql`${ordersTable.archivedAt} is null`)),
+      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, today), sql`${ordersTable.archivedAt} is null`)),
+      db.select({ c: sql<number>`count(*)::int` }).from(serviceOrdersTable).where(sql`${serviceOrdersTable.archivedAt} is null`),
       db
         .select({
           day: sql<string>`to_char(created_at, 'YYYY-MM-DD')`,
@@ -2213,10 +2251,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orders: sql<number>`count(*)::int`,
         })
         .from(ordersTable)
-        .where(gte(ordersTable.createdAt, last30))
+        .where(and(gte(ordersTable.createdAt, last30), sql`${ordersTable.archivedAt} is null`))
         .groupBy(sql`to_char(created_at, 'YYYY-MM-DD')`)
         .orderBy(sql`to_char(created_at, 'YYYY-MM-DD')`),
-      db.select({ status: ordersTable.status, count: sql<number>`count(*)::int` }).from(ordersTable).groupBy(ordersTable.status),
+      db.select({ status: ordersTable.status, count: sql<number>`count(*)::int` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`).groupBy(ordersTable.status),
       db
         .select({
           productId: orderItemsTable.productId,
@@ -2236,6 +2274,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           totalSpent: sql<number>`coalesce(sum(total::numeric),0)::float`,
         })
         .from(ordersTable)
+        .where(sql`${ordersTable.archivedAt} is null`)
         .groupBy(ordersTable.customerPhone)
         .orderBy(sql`coalesce(sum(total::numeric),0) desc`)
         .limit(5),
@@ -2247,34 +2286,36 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         })
         .from(serviceOrdersTable)
         .leftJoin(servicesTable, eq(servicesTable.id, serviceOrdersTable.serviceId))
+        .where(sql`${serviceOrdersTable.archivedAt} is null`)
         .groupBy(serviceOrdersTable.serviceId)
         .orderBy(sql`count(*) desc`),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, monthStart), sql`status <> 'cancelled'`)),
+      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, monthStart), sql`status <> 'cancelled'`, sql`${ordersTable.archivedAt} is null`)),
       db
         .select({
           product: sql<number>`coalesce(sum(${ordersTable.remainingAmount}::numeric),0)::float`,
-          bookings: sql<number>`(select coalesce(sum(remaining_amount::numeric),0)::float from service_orders)`,
+          bookings: sql<number>`(select coalesce(sum(remaining_amount::numeric),0)::float from service_orders where archived_at is null)`,
         })
-        .from(ordersTable),
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.paymentStatus, "partial")),
-      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.paymentStatus, "unpaid")),
+        .from(ordersTable)
+        .where(sql`${ordersTable.archivedAt} is null`),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.paymentStatus, "partial"), sql`${ordersTable.archivedAt} is null`)),
+      db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.paymentStatus, "unpaid"), sql`${ordersTable.archivedAt} is null`)),
       db
         .select({
           crewName: sql<string>`${serviceOrdersTable.customFields}->>'crewName'`,
           count: sql<number>`count(*)::int`,
         })
         .from(serviceOrdersTable)
-        .where(sql`${serviceOrdersTable.customFields}->>'crewName' is not null and ${serviceOrdersTable.customFields}->>'crewName' <> ''`)
+        .where(sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.customFields}->>'crewName' is not null and ${serviceOrdersTable.customFields}->>'crewName' <> ''`)
         .groupBy(sql`${serviceOrdersTable.customFields}->>'crewName'`)
         .orderBy(sql`count(*) desc`)
         .limit(5),
       db.query.serviceOrdersTable.findMany({
-        where: sql`${serviceOrdersTable.status} not in ('cancelled','completed','delivered')`,
+        where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered')`,
         orderBy: [desc(serviceOrdersTable.createdAt)],
         limit: 80,
       }),
       db.query.ordersTable.findMany({
-        where: and(sql`${ordersTable.status} not in ('cancelled','delivered')`, lt(ordersTable.createdAt, lateCutoff)),
+        where: and(sql`${ordersTable.status} not in ('cancelled','delivered')`, lt(ordersTable.createdAt, lateCutoff), sql`${ordersTable.archivedAt} is null`),
         orderBy: [desc(ordersTable.createdAt)],
         limit: 8,
       }),
@@ -2436,6 +2477,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "POST") {
       const { username, password, fullName, role, permissions, isActive } = await body(req);
       if (!username || !password) return error("بيانات ناقصة", 400);
+      const normalizedRole = normalizeStaffRole(role);
       try {
         const [row] = await db
           .insert(staffTable)
@@ -2443,8 +2485,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             username,
             passwordHash: hashPassword(password),
             fullName: fullName ?? "",
-            role: role === "admin" ? "staff" : (role ?? "staff"),
-            permissions: Array.isArray(permissions) ? permissions : [],
+            role: normalizedRole,
+            permissions: permissionsForRole(normalizedRole, permissions),
             isActive: isActive ?? true,
           })
           .returning();
@@ -2466,10 +2508,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const b = await body(req);
       const update: any = {};
-      for (const k of ["fullName", "permissions", "isActive"]) {
+      for (const k of ["fullName", "isActive"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
-      if (existing.role !== "admin" && b?.role !== undefined) update.role = b.role === "admin" ? "staff" : b.role;
+      if (existing.role !== "admin") {
+        const nextRole = b?.role !== undefined ? normalizeStaffRole(b.role) : existing.role;
+        if (b?.role !== undefined) update.role = nextRole;
+        if (b?.permissions !== undefined || b?.role !== undefined) {
+          update.permissions = permissionsForRole(nextRole, b?.permissions);
+        }
+      }
       if (existing.role === "admin") {
         delete update.isActive;
         delete update.permissions;
@@ -2519,6 +2567,117 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
       const [row] = await db.update(crewsTable).set(update).where(eq(crewsTable.id, id)).returning();
       return json(formatCrew(row));
+    }
+  }
+
+  if (section === "archive") {
+    const auth = await requirePermission(req, "orders");
+    if (isResponse(auth)) return auth;
+    await ensureArchiveColumns();
+
+    if (method === "GET") {
+      const params = req.nextUrl.searchParams;
+      const archiveType = params.get("type") ?? "all";
+      const status = params.get("status")?.trim();
+      const q = params.get("q")?.trim().toLowerCase() ?? "";
+      const qDigits = normalizePhoneDigits(q);
+      const includeProducts = archiveType === "all" || archiveType === "products";
+      const includeServices = archiveType === "all" || archiveType === "services";
+      const [productRows, serviceRows, services] = await Promise.all([
+        includeProducts
+          ? db.query.ordersTable.findMany({
+              where: and(sql`${ordersTable.archivedAt} is not null`, status ? eq(ordersTable.status, status) : undefined),
+              orderBy: [desc(ordersTable.archivedAt), desc(ordersTable.createdAt)],
+              limit: 500,
+            })
+          : Promise.resolve([]),
+        includeServices
+          ? db.query.serviceOrdersTable.findMany({
+              where: and(sql`${serviceOrdersTable.archivedAt} is not null`, status ? eq(serviceOrdersTable.status, status) : undefined),
+              orderBy: [desc(serviceOrdersTable.archivedAt), desc(serviceOrdersTable.createdAt)],
+              limit: 500,
+            })
+          : Promise.resolve([]),
+        db.query.servicesTable.findMany(),
+      ]);
+      const serviceMap = new Map(services.map((s) => [s.id, s]));
+      const rows = [
+        ...productRows.map((order) => ({
+          id: order.id,
+          kind: "product" as const,
+          trackingCode: order.trackingCode,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          serviceName: "طلب متجر",
+          serviceType: "product",
+          status: order.status,
+          total: Number.parseFloat(order.total ?? "0"),
+          depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+          remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+          paymentStatus: order.paymentStatus ?? "unpaid",
+          governorate: order.governorate ?? null,
+          archivedAt: order.archivedAt?.toISOString?.() ?? null,
+          createdAt: order.createdAt.toISOString(),
+        })),
+        ...serviceRows.map((order) => {
+          const service = serviceMap.get(order.serviceId);
+          return {
+            id: order.id,
+            kind: "service" as const,
+            trackingCode: order.trackingCode,
+            customerName: order.customerName,
+            customerPhone: order.phone,
+            serviceName: service?.nameAr ?? service?.name ?? "حجز خدمة",
+            serviceType: service?.type ?? null,
+            status: order.status,
+            total: Number.parseFloat(order.totalAmount ?? "0"),
+            depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
+            remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
+            paymentStatus: order.paymentStatus ?? "unpaid",
+            governorate: String((order.customFields as any)?.governorate ?? order.eventLocation ?? "") || null,
+            archivedAt: order.archivedAt?.toISOString?.() ?? null,
+            createdAt: order.createdAt.toISOString(),
+          };
+        }),
+      ]
+        .filter((row) => {
+          if (!q) return true;
+          return (
+            String(row.trackingCode ?? "").toLowerCase().includes(q) ||
+            row.customerName.toLowerCase().includes(q) ||
+            row.customerPhone.includes(qDigits || q) ||
+            formatIraqiPhone(row.customerPhone).includes(qDigits || q) ||
+            row.serviceName.toLowerCase().includes(q) ||
+            String(row.governorate ?? "").toLowerCase().includes(q)
+          );
+        })
+        .sort((a, b) => String(b.archivedAt ?? b.createdAt).localeCompare(String(a.archivedAt ?? a.createdAt)));
+      return json(rows);
+    }
+
+    if (method === "PATCH" && parts[2] && parts[3]) {
+      const kind = parts[2];
+      const id = int(parts[3]);
+      if (!id) return error("معرف غير صحيح", 400);
+      if (kind === "orders") {
+        const [row] = await db
+          .update(ordersTable)
+          .set({ archivedAt: null, updatedAt: new Date() })
+          .where(eq(ordersTable.id, id))
+          .returning();
+        if (!row) return error("غير موجود", 404);
+        return json({ message: "تم استرجاع الطلب" });
+      }
+      if (kind === "service-orders") {
+        const [row] = await db
+          .update(serviceOrdersTable)
+          .set({ archivedAt: null })
+          .where(eq(serviceOrdersTable.id, id))
+          .returning();
+        if (!row) return error("غير موجود", 404);
+        return json({ message: "تم استرجاع الحجز" });
+      }
+      return error("نوع الأرشيف غير صحيح", 400);
     }
   }
 
@@ -2605,6 +2764,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
     if (method === "GET" && !parts[2]) {
       const rows = await db.query.serviceOrdersTable.findMany({
+        where: sql`${serviceOrdersTable.archivedAt} is null`,
         orderBy: [desc(serviceOrdersTable.createdAt)],
       });
       const services = await db.query.servicesTable.findMany();
@@ -2802,6 +2962,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.remainingAmount = String(payment.remaining);
         update.paymentStatus = payment.status;
       }
+      if (b?.archived !== undefined) {
+        if (Boolean(b.archived)) {
+          const statusToArchive = String(update.status ?? prev.status);
+          if (!["delivered", "completed", "cancelled"].includes(statusToArchive)) {
+            return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
+          }
+          update.archivedAt = new Date();
+        } else {
+          update.archivedAt = null;
+        }
+      }
       const [row] = await db.update(serviceOrdersTable).set(update).where(eq(serviceOrdersTable.id, id)).returning();
       if (typeof update.status === "string" && update.status && update.status !== prev?.status) {
         await db.insert(serviceOrderStatusHistoryTable).values({
@@ -2907,14 +3078,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
       if (b?.attachments !== undefined) update.attachments = b.attachments;
-      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined) {
-        const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) });
+      let current: typeof ordersTable.$inferSelect | null = null;
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined || b?.archived !== undefined) {
+        current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) ?? null;
         if (!current) return error("غير موجود", 404);
-        const total = money(current.total);
-        const payment = paymentSummary(total, b?.depositAmount ?? current.depositAmount, b?.paymentStatus ?? current.paymentStatus);
+      }
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined) {
+        const existingOrder = current!;
+        const total = money(existingOrder.total);
+        const payment = paymentSummary(total, b?.depositAmount ?? existingOrder.depositAmount, b?.paymentStatus ?? existingOrder.paymentStatus);
         update.depositAmount = String(payment.deposit);
         update.remainingAmount = String(payment.remaining);
         update.paymentStatus = payment.status;
+      }
+      if (b?.archived !== undefined) {
+        if (Boolean(b.archived)) {
+          const statusToArchive = String(current?.status ?? "");
+          if (!["delivered", "completed", "cancelled"].includes(statusToArchive)) {
+            return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
+          }
+          update.archivedAt = new Date();
+        } else {
+          update.archivedAt = null;
+        }
       }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
@@ -3635,6 +3821,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
       await ensureTrackingColumns();
       await ensurePaymentWorkflowColumns();
+      await ensureArchiveColumns();
     }
 
     const route =

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useListOrders, getListOrdersQueryKey } from "@workspace/api-client-react";
-import { MessageCircle, Printer, Trash2, Plus, Search, X, History, Check, Edit2 } from "lucide-react";
+import { useSearch } from "wouter";
+import { Archive, MessageCircle, Printer, Trash2, Plus, Search, X, History, Check, Edit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ServiceDetailFields } from "@/components/service-detail-fields";
@@ -73,6 +74,7 @@ const STATUS_FILTERS = [
 
 export default function OrdersPage() {
   const queryClient = useQueryClient();
+  const routeSearch = useSearch();
   const [tab, setTab] = useState<"products" | "services">("products");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -82,7 +84,18 @@ export default function OrdersPage() {
   const [governorateFilter, setGovernorateFilter] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [createMode, setCreateMode] = useState<"product" | "service">("product");
   const [editingServiceOrder, setEditingServiceOrder] = useState<ServiceOrder | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(routeSearch);
+    const requested = params.get("create");
+    if (requested === "product" || requested === "service") {
+      setCreateMode(requested);
+      setTab(requested === "service" ? "services" : "products");
+      setShowCreate(true);
+    }
+  }, [routeSearch]);
 
   const { data: productOrders, isLoading: loadingP } = useListOrders({});
   const { data: serviceOrders, isLoading: loadingS } = useQuery({
@@ -94,6 +107,7 @@ export default function OrdersPage() {
     queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
     queryClient.invalidateQueries({ queryKey: ["admin", "service-orders"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "archive"] });
   }
   const updateProductStatus = useMutation({
     mutationFn: (vars: { id: number; status: string }) =>
@@ -121,6 +135,14 @@ export default function OrdersPage() {
   });
   const deleteService = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/service-orders/${id}`, { method: "DELETE" }),
+    onSuccess: invalidateAll,
+  });
+  const archiveProduct = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/orders/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
+    onSuccess: invalidateAll,
+  });
+  const archiveService = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/service-orders/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
     onSuccess: invalidateAll,
   });
   const rescheduleAction = useMutation({
@@ -215,7 +237,7 @@ export default function OrdersPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-foreground">الطلبات والحجوزات</h1>
-        <Button onClick={() => setShowCreate(true)} size="sm" className="gap-2">
+        <Button onClick={() => { setCreateMode(tab === "services" ? "service" : "product"); setShowCreate(true); }} size="sm" className="gap-2">
           <Plus className="w-4 h-4" /> إضافة طلب
         </Button>
       </div>
@@ -321,6 +343,7 @@ export default function OrdersPage() {
               const phone = order.customerPhone ?? "";
               const trackUrl = `${window.location.origin}/track?code=${order.trackingCode}`;
               const waMsg = `مرحبا ${order.customerName}، رمز تتبع طلبك: ${order.trackingCode}\n${trackUrl}`;
+              const canArchive = ["delivered", "completed", "cancelled"].includes(order.status);
               return (
                 <div key={order.id} className="bg-card rounded-xl border border-border/30 p-4">
                   <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
@@ -366,6 +389,14 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Printer className="w-3.5 h-3.5" /> فاتورة
                     </a>
+                    {canArchive && (
+                      <button
+                        onClick={() => confirm("أرشفة الطلب؟") && archiveProduct.mutate(order.id)}
+                        disabled={archiveProduct.isPending}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-60">
+                        <Archive className="w-3.5 h-3.5" /> أرشفة
+                      </button>
+                    )}
                     <button
                       onClick={() => confirm("حذف الطلب نهائياً؟") && deleteProduct.mutate(order.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
@@ -396,6 +427,7 @@ export default function OrdersPage() {
               const waMsg = `مرحبا ${o.customerName}، رمز تتبع حجزك: ${o.trackingCode}\n${trackUrl}`;
               const isReschedulePending = o.status === "reschedule_pending";
               const detailRows = serviceDetailsToRows(o.serviceType, o.customFields);
+              const canArchive = ["delivered", "completed", "cancelled"].includes(o.status);
               return (
                 <div key={o.id} className={`bg-card rounded-xl border p-4 ${isReschedulePending ? "border-amber-500/50 ring-1 ring-amber-500/30" : "border-border/30"}`}>
                   {isReschedulePending && (
@@ -488,6 +520,14 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Edit2 className="w-3.5 h-3.5" /> تعديل التفاصيل
                     </button>
+                    {canArchive && (
+                      <button
+                        onClick={() => confirm("أرشفة الحجز؟") && archiveService.mutate(o.id)}
+                        disabled={archiveService.isPending}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-60">
+                        <Archive className="w-3.5 h-3.5" /> أرشفة
+                      </button>
+                    )}
                     <button
                       onClick={() => confirm("حذف الحجز؟") && deleteService.mutate(o.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
@@ -502,7 +542,7 @@ export default function OrdersPage() {
         )
       )}
 
-      {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} />}
+      {showCreate && <CreateOrderModal initialMode={createMode} onClose={() => setShowCreate(false)} />}
       {editingServiceOrder && (
         <EditServiceOrderModal
           order={editingServiceOrder}
@@ -648,9 +688,9 @@ function BookingHistory({ bookingId, serviceType }: { bookingId: number; service
   );
 }
 
-function CreateOrderModal({ onClose }: { onClose: () => void }) {
+function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "service"; onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [mode, setMode] = useState<"product" | "service">("product");
+  const [mode, setMode] = useState<"product" | "service">(initialMode);
   const [form, setForm] = useState({
     customerName: "", customerPhone: "", governorate: "", area: "", address: "", notes: "",
     mapsUrl: "", deliveryFee: "0", paymentMethod: "cod", depositAmount: "0", paymentStatus: "unpaid", internalNotes: "",

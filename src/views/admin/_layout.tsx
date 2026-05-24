@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
-  Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database,
+  Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
 } from "lucide-react";
 import { hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -12,6 +12,7 @@ type NavItem = { href: string; label: string; icon: any; perm: Permission };
 const NAV: NavItem[] = [
   { href: "/admin/dashboard",  label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
   { href: "/admin/orders",     label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
+  { href: "/admin/archive",    label: "الأرشيف",           icon: Archive,        perm: "orders" },
   { href: "/admin/services",   label: "الخدمات",            icon: Sparkles,        perm: "services" },
   { href: "/admin/products",   label: "المتجر",             icon: Package,         perm: "products" },
   { href: "/admin/categories", label: "التصنيفات",          icon: Tag,             perm: "products" },

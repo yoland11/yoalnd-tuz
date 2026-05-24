@@ -90,6 +90,32 @@ export function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+export async function compressImageFile(file: File, maxSize = 1600, quality = 0.82): Promise<string> {
+  if (!file.type.startsWith("image/") || typeof window === "undefined") return fileToDataUrl(file);
+  const source = await fileToDataUrl(file);
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+      const width = Math.max(1, Math.round(image.width * scale));
+      const height = Math.max(1, Math.round(image.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(source);
+        return;
+      }
+      ctx.drawImage(image, 0, 0, width, height);
+      const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+      resolve(canvas.toDataURL(mime, mime === "image/jpeg" ? quality : undefined));
+    };
+    image.onerror = () => resolve(source);
+    image.src = source;
+  });
+}
+
 export function formatCurrency(n: number | string | null | undefined): string {
   const v = typeof n === "string" ? parseFloat(n) : (n ?? 0);
   if (!Number.isFinite(v)) return "0 د.ع";

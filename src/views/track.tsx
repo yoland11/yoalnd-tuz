@@ -6,7 +6,10 @@ import {
   useTrackOrdersByPhone, getTrackOrdersByPhoneQueryKey,
 } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
-import { Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock } from "lucide-react";
+import {
+  Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
+  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Truck,
+} from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
@@ -163,6 +166,20 @@ const STATUS_TONES: Record<string, string> = {
   cancelled: "text-red-300 border-red-500/30 bg-red-500/10",
 };
 
+function StatusIcon({ status, className }: { status: string; className?: string }) {
+  const icons: Record<string, typeof CircleDot> = {
+    pending: CircleDot,
+    confirmed: ClipboardCheck,
+    processing: Sparkles,
+    shipped: Truck,
+    delivered: PackageCheck,
+    completed: PackageCheck,
+    cancelled: XCircle,
+  };
+  const Icon = icons[status] ?? CheckCircle;
+  return <Icon className={className} />;
+}
+
 function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: string }) {
   const stages = getStagesFor(tracking.serviceType, tracking.kind);
   const currentIdx = getStageIndex(stages, tracking.status);
@@ -185,7 +202,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
             <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
           </div>
           <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${STATUS_TONES[tracking.status] ?? "text-primary border-border/30 bg-background"}`}>
-            <CheckCircle className="w-4 h-4" />
+            <StatusIcon status={tracking.status} className="w-4 h-4" />
             <span className="text-sm font-medium">{getStageLabel(stages, tracking.status)}</span>
           </div>
         </div>
@@ -280,17 +297,20 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
               const active = i === currentIdx;
               return (
                 <div key={step.id} className="flex items-start gap-3">
-                  <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-colors shrink-0 ${done ? "border-primary bg-primary" : "border-border/40 bg-background"}`}>
+                  <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
+                    done ? "border-primary bg-primary text-primary-foreground" : "border-border/40 bg-background text-muted-foreground"
+                  } ${active ? "ring-4 ring-primary/20 shadow-[0_0_18px_rgba(201,168,76,0.35)]" : ""}`}>
                     {done ? (
-                      <CheckCircle className="w-4 h-4 text-primary-foreground" />
+                      <StatusIcon status={step.id} className="w-4 h-4" />
                     ) : (
-                      <span className="w-2 h-2 rounded-full bg-border/40" />
+                      <StatusIcon status={step.id} className="w-4 h-4 opacity-60" />
                     )}
                   </div>
-                  <div className="flex-1 pt-0.5">
+                  <div className="flex-1 pt-1">
                     <span className={`text-sm ${active ? "text-primary font-bold" : done ? "text-foreground" : "text-muted-foreground"}`}>
                       {step.label}
                     </span>
+                    {active && <p className="text-[11px] text-primary/80 mt-0.5">الحالة الحالية</p>}
                   </div>
                 </div>
               );

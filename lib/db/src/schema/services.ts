@@ -38,6 +38,7 @@ export const serviceOrdersTable = pgTable("service_orders", {
   confirmationNote: text("confirmation_note"),
   confirmationAt: timestamp("confirmation_at"),
   preRescheduleStatus: varchar("pre_reschedule_status", { length: 30 }),
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

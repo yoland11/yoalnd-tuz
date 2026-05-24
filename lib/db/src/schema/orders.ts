@@ -25,6 +25,7 @@ export const ordersTable = pgTable("orders", {
   attachments: jsonb("attachments").$type<string[]>().notNull().default([]),
   notes: text("notes"),
   internalNotes: text("internal_notes"),
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
