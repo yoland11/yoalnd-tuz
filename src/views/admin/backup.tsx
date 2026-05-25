@@ -13,6 +13,7 @@ const ENTITIES: EntityDef[] = [
   { id: "products", label: "المنتجات (المخزون)" },
   { id: "categories", label: "الأقسام" },
   { id: "customers", label: "العملاء" },
+  { id: "customer_reward_history", label: "سجل نقاط العملاء" },
   { id: "services", label: "الخدمات" },
   { id: "delivery_zones", label: "مناطق التوصيل" },
   { id: "gallery_items", label: "المعرض" },

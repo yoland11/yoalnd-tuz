@@ -18,6 +18,7 @@ import {
   crewsTable,
   customerAddressesTable,
   customerPreferencesTable,
+  customerRewardHistoryTable,
   customersTable,
   deliveryZonesTable,
   expenseCategoriesTable,
@@ -154,6 +155,7 @@ let orderReviewsTablePromise: Promise<void> | null = null;
 let staffActivityColumnPromise: Promise<void> | null = null;
 let imageMetadataColumnsPromise: Promise<void> | null = null;
 let productColorColumnsPromise: Promise<void> | null = null;
+let customerRewardsPromise: Promise<void> | null = null;
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -847,6 +849,31 @@ async function ensureOrderReviewsTable(): Promise<void> {
   await orderReviewsTablePromise;
 }
 
+async function ensureCustomerRewards(): Promise<void> {
+  if (!customerRewardsPromise) {
+    customerRewardsPromise = db.execute(sql`alter table "customers" add column if not exists "reward_points" integer not null default 0`)
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "reward_level" varchar(20) not null default 'bronze'`))
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "reward_points_awarded" integer not null default 0`))
+      .then(() => db.execute(sql`alter table "service_orders" add column if not exists "reward_points_awarded" integer not null default 0`))
+      .then(() => db.execute(sql`
+        create table if not exists "customer_reward_history" (
+          "id" serial primary key,
+          "customer_id" integer not null references "customers" ("id"),
+          "order_id" integer references "orders" ("id"),
+          "service_order_id" integer references "service_orders" ("id"),
+          "points" integer not null,
+          "reason" varchar(120) not null default 'order_reward',
+          "note" text,
+          "created_at" timestamp not null default now()
+        )
+      `))
+      .then(() => db.execute(sql`create index if not exists "customer_reward_history_customer_created_idx" on "customer_reward_history" ("customer_id", "created_at")`))
+      .then(() => db.execute(sql`create index if not exists "customers_reward_points_idx" on "customers" ("reward_points")`))
+      .then(() => undefined);
+  }
+  await customerRewardsPromise;
+}
+
 async function ensureImageMetadataColumns(): Promise<void> {
   if (!imageMetadataColumnsPromise) {
     imageMetadataColumnsPromise = db.execute(sql`
@@ -947,9 +974,93 @@ function publicCustomer(customer: any) {
     address: customer.address ?? "",
     city: customer.city ?? "",
     role: customer.role,
+    rewardPoints: Number(customer.rewardPoints ?? 0),
+    rewardLevel: customer.rewardLevel ?? rewardLevelForPoints(Number(customer.rewardPoints ?? 0)),
     createdAt: customer.createdAt?.toISOString?.() ?? customer.createdAt,
     updatedAt: customer.updatedAt?.toISOString?.() ?? customer.updatedAt ?? null,
   };
+}
+
+function rewardLevelForPoints(points: number): "bronze" | "silver" | "gold" | "vip" {
+  if (points >= 4000) return "vip";
+  if (points >= 1500) return "gold";
+  if (points >= 500) return "silver";
+  return "bronze";
+}
+
+function rewardLabel(level?: string | null): string {
+  if (level === "vip") return "VIP";
+  if (level === "gold") return "ذهبي";
+  if (level === "silver") return "فضي";
+  return "برونزي";
+}
+
+function rewardPointsForAmount(value: unknown): number {
+  const total = Math.max(0, money(value));
+  if (total <= 0) return 0;
+  return Math.max(1, Math.floor(total / 10000));
+}
+
+async function addCustomerReward(customerId: number, points: number, values: { orderId?: number | null; serviceOrderId?: number | null; reason?: string; note?: string | null }) {
+  await ensureCustomerRewards();
+  if (!Number.isFinite(points) || points === 0) return null;
+  const [updated] = await db
+    .update(customersTable)
+    .set({
+      rewardPoints: sql`greatest(${customersTable.rewardPoints} + ${points}, 0)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(customersTable.id, customerId))
+    .returning();
+  if (!updated) return null;
+  const nextLevel = rewardLevelForPoints(Number(updated.rewardPoints ?? 0));
+  if (updated.rewardLevel !== nextLevel) {
+    await db.update(customersTable).set({ rewardLevel: nextLevel, updatedAt: new Date() }).where(eq(customersTable.id, customerId));
+  }
+  await db.insert(customerRewardHistoryTable).values({
+    customerId,
+    orderId: values.orderId ?? null,
+    serviceOrderId: values.serviceOrderId ?? null,
+    points,
+    reason: values.reason ?? "order_reward",
+    note: values.note ?? null,
+  });
+  return { ...updated, rewardLevel: nextLevel };
+}
+
+async function awardProductOrderPoints(order: any) {
+  await ensureCustomerRewards();
+  if (!order || Number(order.rewardPointsAwarded ?? 0) > 0) return;
+  if (!["delivered", "completed"].includes(String(order.status)) && order.paymentStatus !== "paid") return;
+  const customer =
+    order.customerId
+      ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, order.customerId) })
+      : await findCustomerByPhone(order.customerPhone);
+  if (!customer) return;
+  const points = rewardPointsForAmount(order.total);
+  if (points <= 0) return;
+  await addCustomerReward(customer.id, points, {
+    orderId: order.id,
+    reason: "product_order",
+    note: `نقاط الطلب ${order.trackingCode}`,
+  });
+  await db.update(ordersTable).set({ rewardPointsAwarded: points }).where(eq(ordersTable.id, order.id));
+}
+
+async function awardServiceOrderPoints(order: any) {
+  await ensureCustomerRewards();
+  if (!order || Number(order.rewardPointsAwarded ?? 0) > 0) return;
+  if (!["delivered", "completed"].includes(String(order.status)) && order.paymentStatus !== "paid") return;
+  const customer = await findCustomerByPhone(order.phone);
+  if (!customer) return;
+  const points = rewardPointsForAmount(order.totalAmount);
+  if (points <= 0) return;
+  await addCustomerReward(customer.id, points, {
+    serviceOrderId: order.id,
+    reason: "service_booking",
+    note: `نقاط الحجز ${order.trackingCode ?? order.id}`,
+  });
+  await db.update(serviceOrdersTable).set({ rewardPointsAwarded: points }).where(eq(serviceOrdersTable.id, order.id));
 }
 
 async function buildCart(sessionId: string) {
@@ -1012,6 +1123,7 @@ async function formatOrder(order: any) {
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
+    rewardPointsAwarded: Number(order.rewardPointsAwarded ?? 0),
     archivedAt: order.archivedAt ? order.archivedAt.toISOString() : null,
     governorate: order.governorate ?? null,
     address: order.address ?? null,
@@ -1059,6 +1171,7 @@ async function buildTracking(order: any) {
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
+    rewardPointsAwarded: Number(order.rewardPointsAwarded ?? 0),
     archivedAt: order.archivedAt ? order.archivedAt.toISOString() : null,
     items: items.map((i) => ({
       id: i.id,
@@ -1118,6 +1231,7 @@ async function buildServiceTracking(so: any) {
     depositAmount: Number.parseFloat(so.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(so.remainingAmount ?? "0"),
     paymentStatus: so.paymentStatus ?? "unpaid",
+    rewardPointsAwarded: Number(so.rewardPointsAwarded ?? 0),
     archivedAt: so.archivedAt ? so.archivedAt.toISOString() : null,
     items: [],
     statusHistory,
@@ -1690,8 +1804,16 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         customerName: booking.customerName,
         customerPhone: booking.phone,
         serviceName: serviceMap.get(booking.serviceId)?.nameAr ?? serviceMap.get(booking.serviceId)?.name ?? "حجز خدمة",
+        serviceType: serviceMap.get(booking.serviceId)?.type ?? null,
+        serviceImage: serviceMap.get(booking.serviceId)?.image ?? null,
         status: booking.status,
-        total: 0,
+        total: Number.parseFloat(booking.totalAmount ?? "0"),
+        depositAmount: Number.parseFloat(booking.depositAmount ?? "0"),
+        remainingAmount: Number.parseFloat(booking.remainingAmount ?? "0"),
+        paymentStatus: booking.paymentStatus ?? "unpaid",
+        rewardPointsAwarded: Number(booking.rewardPointsAwarded ?? 0),
+        eventDate: booking.eventDate ?? null,
+        eventLocation: booking.eventLocation ?? null,
         createdAt: booking.createdAt.toISOString(),
       })),
     ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1892,6 +2014,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       status,
       notes: notes ?? null,
     });
+    await awardProductOrderPoints(order);
     const event = eventForStatus(status);
     if (event) {
       void fireOrderEvent(event, {
@@ -2316,6 +2439,57 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
         .returning();
       return json({ defaultPaymentMethod: pref.defaultPaymentMethod });
     }
+  }
+
+  if (section === "rewards" && method === "GET") {
+    await ensureCustomerRewards();
+    const phoneVariants = iraqiPhoneVariants(customer.phone);
+    if (phoneVariants.length > 0) {
+      const [eligibleOrders, eligibleBookings] = await Promise.all([
+        db.query.ordersTable.findMany({
+          where: and(
+            inArray(ordersTable.customerPhone, phoneVariants),
+            eq(ordersTable.rewardPointsAwarded, 0),
+            or(inArray(ordersTable.status, ["delivered", "completed"]), eq(ordersTable.paymentStatus, "paid")),
+          ),
+          limit: 20,
+        }),
+        db.query.serviceOrdersTable.findMany({
+          where: and(
+            inArray(serviceOrdersTable.phone, phoneVariants),
+            eq(serviceOrdersTable.rewardPointsAwarded, 0),
+            or(inArray(serviceOrdersTable.status, ["delivered", "completed"]), eq(serviceOrdersTable.paymentStatus, "paid")),
+          ),
+          limit: 20,
+        }),
+      ]);
+      await Promise.all([
+        ...eligibleOrders.map(awardProductOrderPoints),
+        ...eligibleBookings.map(awardServiceOrderPoints),
+      ]);
+    }
+    const fresh = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+    const history = await db.query.customerRewardHistoryTable.findMany({
+      where: eq(customerRewardHistoryTable.customerId, customerId),
+      orderBy: [desc(customerRewardHistoryTable.createdAt)],
+      limit: 20,
+    });
+    const points = Number(fresh?.rewardPoints ?? 0);
+    const level = fresh?.rewardLevel ?? rewardLevelForPoints(points);
+    return json({
+      points,
+      level,
+      levelLabel: rewardLabel(level),
+      history: history.map((row) => ({
+        id: row.id,
+        points: row.points,
+        reason: row.reason,
+        note: row.note ?? "",
+        orderId: row.orderId ?? null,
+        serviceOrderId: row.serviceOrderId ?? null,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    });
   }
 
   if (section === "reviews") {
@@ -2994,6 +3168,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         name: c.name,
         phone: c.phone,
         role: c.role,
+        rewardPoints: Number(c.rewardPoints ?? 0),
+        rewardLevel: c.rewardLevel ?? rewardLevelForPoints(Number(c.rewardPoints ?? 0)),
+        rewardLevelLabel: rewardLabel(c.rewardLevel),
         createdAt: c.createdAt.toISOString(),
         orderCount: phoneMap.get(normalizeIraqiPhone(c.phone) ?? c.phone)?.count ?? 0,
         totalSpent: phoneMap.get(normalizeIraqiPhone(c.phone) ?? c.phone)?.total ?? 0,
@@ -3030,6 +3207,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         name: customer.name,
         phone: customer.phone,
         role: customer.role,
+        rewardPoints: Number(customer.rewardPoints ?? 0),
+        rewardLevel: customer.rewardLevel ?? rewardLevelForPoints(Number(customer.rewardPoints ?? 0)),
+        rewardLevelLabel: rewardLabel(customer.rewardLevel),
         createdAt: customer.createdAt.toISOString(),
         orders: orders.map((o) => ({
           id: o.id,
@@ -3044,6 +3224,26 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           status: s.status,
           createdAt: s.createdAt.toISOString(),
         })),
+      });
+    }
+    if (method === "PATCH" && parts[2] && parts[3] === "rewards") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const data = await body(req);
+      const points = Number.parseInt(String(data?.pointsDelta ?? data?.points ?? "0"), 10);
+      const note = String(data?.note ?? "تعديل من الإدارة").trim().slice(0, 240);
+      if (!Number.isFinite(points) || points === 0) return error("أدخل عدد نقاط صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
+      if (!customer) return error("غير موجود", 404);
+      const updated = await addCustomerReward(customer.id, points, {
+        reason: "admin_adjustment",
+        note,
+      });
+      void logAdminActivity(req, "customer_rewards_adjusted", "customer", id, { points });
+      return json({
+        rewardPoints: Number(updated?.rewardPoints ?? customer.rewardPoints ?? 0),
+        rewardLevel: updated?.rewardLevel ?? rewardLevelForPoints(Number(updated?.rewardPoints ?? customer.rewardPoints ?? 0)),
+        rewardLevelLabel: rewardLabel(updated?.rewardLevel),
       });
     }
   }
@@ -3283,6 +3483,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           });
         }
       }
+      await awardServiceOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -3399,6 +3600,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      await awardProductOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -3998,6 +4200,7 @@ const BACKUP_ENTITIES = {
   receipt_vouchers: receiptVouchersTable,
   payment_vouchers: paymentVouchersTable,
   expenses: expensesTable,
+  customer_reward_history: customerRewardHistoryTable,
 } as const;
 type BackupEntity = keyof typeof BACKUP_ENTITIES;
 
@@ -4076,6 +4279,7 @@ async function handleBackup(req: NextRequest, parts: string[], section: string |
       "order_status_history",
       "service_orders",
       "service_order_status_history",
+      "customer_reward_history",
       "receipt_vouchers",
       "payment_vouchers",
       "expenses",
@@ -4125,6 +4329,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     }
     if (root === "cart" || root === "orders" || root === "products" || root === "admin" || root === "customer" || root === "dashboard") {
       await ensureProductColorColumns();
+    }
+    if (root === "customer" || root === "orders" || root === "service-orders" || root === "admin" || root === "auth") {
+      await ensureCustomerRewards();
     }
     if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
       await ensureTrackingColumns();

@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus } from "lucide-react";
 import { ColorDot } from "@/components/product-colors";
 import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/colors";
+import { ModelViewerCard } from "@/components/interactive/model-viewer";
+import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +42,10 @@ export default function ProductDetail() {
     : ["/placeholder-product.jpg"];
   const imageMetadata = product?.imageMetadata ?? [];
   const colors = useMemo(() => normalizeColors(product?.colors ?? []), [product?.colors]);
+  const productModelUrl = useMemo(() => {
+    const metadata = imageMetadata.find((entry: any) => entry?.modelUrl);
+    return metadata?.modelUrl ? String(metadata.modelUrl) : "";
+  }, [imageMetadata]);
 
   function handleAddToCart() {
     if (!product) return;
@@ -245,6 +251,11 @@ export default function ProductDetail() {
               {addedToCart ? "تمت الإضافة!" : addToCart.isPending ? "جاري الإضافة..." : colors.length > 0 && !selectedColor ? "اختر اللون أولاً" : "أضف إلى السلة"}
             </Button>
           </div>
+        </div>
+
+        <div className="mt-10 space-y-6">
+          <ModelViewerCard modelUrl={productModelUrl || null} title="معاينة المنتج ثلاثية الأبعاد" />
+          <SmartSuggestions title="منتجات وخدمات مناسبة" />
         </div>
 
         {/* Reviews Section */}

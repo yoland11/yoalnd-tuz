@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useListGallery, useListGalleryCategories } from "@workspace/api-client-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { X, ChevronLeft, ChevronRight, Play, Image } from "lucide-react";
+import { BeforeAfterSection } from "@/components/interactive/before-after-slider";
 
 export default function Gallery() {
   const [activeCategory, setActiveCategory] = useState<string | undefined>(undefined);
@@ -75,6 +76,9 @@ export default function Gallery() {
 
       {/* Gallery Grid */}
       <div className="container mx-auto px-4 py-8">
+        <div className="mb-8">
+          <BeforeAfterSection items={allItems as any[]} title="مقارنات قبل / بعد" />
+        </div>
         {isLoading ? (
           <div className="columns-2 md:columns-3 lg:columns-4 gap-4 space-y-4">
             {Array.from({ length: 8 }).map((_, i) => (

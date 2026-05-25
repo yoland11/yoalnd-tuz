@@ -23,6 +23,7 @@ import {
   ShoppingBag,
   Star,
   Trash2,
+  Trophy,
   User,
   Wallet,
 } from "lucide-react";
@@ -34,11 +35,14 @@ import { getCartSessionId } from "@/lib/api-session";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { CelebrationEffect } from "@/components/interactive/celebration-effect";
+import { EventCountdown } from "@/components/interactive/event-countdown";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
   confirmed: "مؤكد",
   processing: "قيد التجهيز",
+  en_route: "الكادر بالطريق",
   shipped: "في الطريق",
   delivered: "تم التوصيل",
   cancelled: "ملغي",
@@ -56,6 +60,8 @@ type Customer = {
   avatarMetadata?: ImageMetadata;
   address?: string;
   city?: string;
+  rewardPoints?: number;
+  rewardLevel?: string;
 };
 
 type CustomerAddress = {
@@ -83,6 +89,13 @@ type OrderReview = {
 type Recommendations = {
   products: any[];
   services: any[];
+};
+
+type Rewards = {
+  points: number;
+  level: string;
+  levelLabel: string;
+  history: { id: number; points: number; note: string; createdAt: string }[];
 };
 
 const emptyAddressForm: AddressForm = {
@@ -175,6 +188,7 @@ export default function Profile() {
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [reviews, setReviews] = useState<OrderReview[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendations>({ products: [], services: [] });
+  const [rewards, setRewards] = useState<Rewards | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "card">("cash");
   const [loading, setLoading] = useState(true);
   const [trackCode, setTrackCode] = useState("");
@@ -193,6 +207,7 @@ export default function Profile() {
   const [savingAddress, setSavingAddress] = useState(false);
   const [addressError, setAddressError] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
+  const [loginCelebration, setLoginCelebration] = useState(false);
   const { data: settings } = usePublicSettings();
 
   useEffect(() => {
@@ -205,8 +220,9 @@ export default function Profile() {
       fetchJson<{ defaultPaymentMethod: "cash" | "card" }>("/api/customer/preferences").catch(() => ({ defaultPaymentMethod: "cash" as const })),
       fetchJson<OrderReview[]>("/api/customer/reviews").catch(() => []),
       fetchJson<Recommendations>("/api/customer/recommendations").catch(() => ({ products: [], services: [] })),
+      fetchJson<Rewards>("/api/customer/rewards").catch(() => null),
     ])
-      .then(([me, myOrders, myCart, savedAddresses, preferences, savedReviews, suggested]) => {
+      .then(([me, myOrders, myCart, savedAddresses, preferences, savedReviews, suggested, rewardInfo]) => {
         if (!mounted) return;
         setCustomer(me);
         setProfileForm({
@@ -223,6 +239,11 @@ export default function Profile() {
         setPaymentMethod(preferences.defaultPaymentMethod);
         setReviews(savedReviews);
         setRecommendations(suggested);
+        setRewards(rewardInfo);
+        if (window.sessionStorage.getItem("ajn-profile-login-celebration")) {
+          window.sessionStorage.removeItem("ajn-profile-login-celebration");
+          setLoginCelebration(true);
+        }
       })
       .catch(() => navigate("/login"))
       .finally(() => mounted && setLoading(false));
@@ -233,6 +254,10 @@ export default function Profile() {
 
   const productOrders = useMemo(() => orders.filter((order) => order.kind !== "service"), [orders]);
   const serviceOrders = useMemo(() => orders.filter((order) => order.kind === "service"), [orders]);
+  const latestCompletedOrder = useMemo(
+    () => orders.find((order) => ["delivered", "completed"].includes(order.status)),
+    [orders],
+  );
   const ajnWhatsApp = buildWhatsAppLink(settings?.whatsapp || settings?.phone || "07701234567", "مرحباً، أحتاج مساعدة بخصوص حسابي");
 
   async function logout() {
@@ -389,6 +414,16 @@ export default function Profile() {
 
   return (
     <div className="container mx-auto px-4 py-10 min-h-screen" dir="rtl">
+      <CelebrationEffect
+        active={!!latestCompletedOrder}
+        storageKey={latestCompletedOrder ? `ajn-profile-complete-${latestCompletedOrder.kind ?? "order"}-${latestCompletedOrder.id}` : undefined}
+        message="شكراً لك، اكتمل طلبك بنجاح"
+      />
+      <CelebrationEffect
+        active={loginCelebration}
+        storageKey={`ajn-profile-login-${customer.id}`}
+        message="أهلاً بك في حسابك"
+      />
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="bg-card rounded-2xl border border-border/30 p-6 flex flex-col md:flex-row md:items-center gap-5">
           <div className="relative w-20 h-20 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center overflow-hidden">
@@ -532,6 +567,31 @@ export default function Profile() {
                 <p className="font-bold text-primary">{Number(cart?.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
               </div>
               <Link href="/cart" className="mt-4 inline-flex text-sm text-primary font-medium">فتح السلة</Link>
+            </Section>
+
+            <Section title="نقاطي ومكافآتي" icon={Trophy}>
+              <div className="rounded-xl border border-primary/25 bg-primary/5 p-4">
+                <p className="text-xs text-muted-foreground mb-1">المستوى الحالي</p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-lg font-bold text-primary">{rewards?.levelLabel ?? "برونزي"}</p>
+                  <p className="text-2xl font-bold text-foreground">{Number(rewards?.points ?? customer.rewardPoints ?? 0).toLocaleString("ar-IQ")}</p>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">النقاط تظهر بعد اكتمال الطلب أو الحجز.</p>
+              </div>
+              <div className="mt-3 space-y-2">
+                {rewards?.history?.length ? rewards.history.slice(0, 3).map((entry) => (
+                  <div key={entry.id} className="flex items-center justify-between rounded-xl border border-border/25 bg-background/60 p-3 text-xs">
+                    <span className="text-muted-foreground">{entry.note || "تحديث نقاط"}</span>
+                    <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-red-300 font-semibold"}>
+                      {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ")}
+                    </span>
+                  </div>
+                )) : (
+                  <div className="rounded-xl border border-border/25 bg-background/60 p-3 text-sm text-muted-foreground">
+                    لا يوجد سجل نقاط بعد.
+                  </div>
+                )}
+              </div>
             </Section>
 
             <Section title="المفضلة" icon={Heart}>
@@ -769,6 +829,9 @@ function OrderList({
               </Link>
             </div>
           </div>
+          {order.kind === "service" && order.eventDate && (
+            <EventCountdown targetDate={order.eventDate} compact className="mt-4" />
+          )}
           {["delivered", "completed"].includes(order.status) && (
             <ReviewBox
               review={reviews.find((review) => review.orderKind === (order.kind === "service" ? "service" : "product") && review.orderId === order.id)}

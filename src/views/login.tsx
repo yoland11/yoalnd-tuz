@@ -61,6 +61,7 @@ export default function Login() {
     setLoading(true);
     try {
       await postJson("/api/auth/whatsapp/verify-otp", { phone: normalized, otp: code });
+      window.sessionStorage.setItem("ajn-profile-login-celebration", "1");
       navigate("/profile");
     } catch (err: any) {
       setError(err?.message || "رمز التحقق غير صحيح");

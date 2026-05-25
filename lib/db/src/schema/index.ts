@@ -17,3 +17,4 @@ export * from "./accounting";
 export * from "./whatsapp";
 export * from "./order-reviews";
 export * from "./admin-activity";
+export * from "./rewards";

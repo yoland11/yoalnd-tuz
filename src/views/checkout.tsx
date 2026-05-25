@@ -11,6 +11,9 @@ import { Button } from "@/components/ui/button";
 import { CheckCircle, Package, MapPin, ExternalLink } from "lucide-react";
 import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { CelebrationEffect } from "@/components/interactive/celebration-effect";
+import { LocationMapCard } from "@/components/interactive/location-map-card";
+import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 
 export default function Checkout() {
   const [, navigate] = useLocation();
@@ -109,6 +112,7 @@ export default function Checkout() {
   if (completedOrder) {
     return (
       <div className="container mx-auto px-4 py-20 text-center" dir="rtl">
+        <CelebrationEffect active storageKey={`ajn-checkout-${completedOrder.trackingCode}`} message="تم إنشاء طلبك بنجاح" />
         <div className="max-w-md mx-auto bg-card rounded-2xl border border-border/30 p-10">
           <CheckCircle className="w-16 h-16 text-green-400 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-foreground mb-2">تم إنشاء طلبك بنجاح!</h2>
@@ -252,6 +256,7 @@ export default function Checkout() {
               {geoError && (
                 <p className="text-xs text-amber-400 mt-1.5">{geoError}</p>
               )}
+              <LocationMapCard mapUrl={form.mapsUrl || null} address={form.address || null} title="موقع التوصيل" compact className="mt-3" />
             </div>
             <div>
               <label className="block text-sm text-muted-foreground mb-1.5">ملاحظات</label>
@@ -319,9 +324,17 @@ export default function Checkout() {
                 <span className="text-foreground">الإجمالي</span>
                 <span className="text-primary">{total.toLocaleString('ar-IQ')} د.ع</span>
               </div>
+              {total > 0 && (
+                <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
+                  بعد اكتمال الطلب تُضاف تقريباً <span className="font-semibold text-primary">{Math.max(1, Math.floor(total / 10000)).toLocaleString("ar-IQ")}</span> نقطة إلى حسابك.
+                </div>
+              )}
             </div>
           </div>
         </div>
+      </div>
+      <div className="mt-8">
+        <SmartSuggestions title="اقتراحات قبل تأكيد الطلب" />
       </div>
     </div>
   );

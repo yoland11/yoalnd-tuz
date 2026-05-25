@@ -1,4 +1,4 @@
-import { jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -13,6 +13,8 @@ export const customersTable = pgTable("customers", {
   address: text("address"),
   city: text("city"),
   role: varchar("role", { length: 20 }).notNull().default("customer"),
+  rewardPoints: integer("reward_points").notNull().default(0),
+  rewardLevel: varchar("reward_level", { length: 20 }).notNull().default("bronze"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Search, X, ShoppingBag, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Search, X, ShoppingBag, Sparkles, Trophy } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -9,6 +9,7 @@ import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 type Customer = {
   id: number; name: string; phone: string; role: string;
   createdAt: string; orderCount: number; totalSpent: number;
+  rewardPoints?: number; rewardLevelLabel?: string;
 };
 
 type CustomerDetail = Customer & {
@@ -17,8 +18,11 @@ type CustomerDetail = Customer & {
 };
 
 export default function CustomersPage() {
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [pointsDelta, setPointsDelta] = useState("");
+  const [pointsNote, setPointsNote] = useState("");
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "customers", search],
@@ -29,6 +33,16 @@ export default function CustomersPage() {
     queryKey: ["admin", "customer", selectedId],
     queryFn: () => adminFetch<CustomerDetail>(`/admin/customers/${selectedId}`),
     enabled: selectedId !== null,
+  });
+  const updateRewards = useMutation({
+    mutationFn: (body: { pointsDelta: number; note: string }) =>
+      adminFetch(`/admin/customers/${selectedId}/rewards`, { method: "PATCH", body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customer", selectedId] });
+      setPointsDelta("");
+      setPointsNote("");
+    },
   });
 
   return (
@@ -52,6 +66,7 @@ export default function CustomersPage() {
                 <th className="text-right p-3 font-medium">الهاتف</th>
                 <th className="text-right p-3 font-medium">عدد الطلبات</th>
                 <th className="text-right p-3 font-medium">الإنفاق الإجمالي</th>
+                <th className="text-right p-3 font-medium">النقاط</th>
                 <th className="text-right p-3 font-medium"></th>
               </tr>
             </thead>
@@ -62,6 +77,7 @@ export default function CustomersPage() {
                   <td className="p-3 text-muted-foreground" dir="ltr">{formatIraqiPhone(c.phone)}</td>
                   <td className="p-3"><span className="text-primary font-semibold">{c.orderCount}</span></td>
                   <td className="p-3 text-primary">{formatCurrency(c.totalSpent)}</td>
+                  <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ")} نقطة</td>
                   <td className="p-3 text-xs text-primary">عرض ←</td>
                 </tr>
               ))}
@@ -84,6 +100,36 @@ export default function CustomersPage() {
                   <Info label="الهاتف" value={formatIraqiPhone(detail.phone)} ltr />
                   <Info label="منذ" value={new Date(detail.createdAt).toLocaleDateString("ar-IQ")} />
                   <Info label="النوع" value={detail.role} />
+                  <Info label="المستوى" value={`${detail.rewardLevelLabel ?? "برونزي"} · ${(detail.rewardPoints ?? 0).toLocaleString("ar-IQ")} نقطة`} />
+                </div>
+
+                <div className="rounded-xl bg-background/40 border border-border/25 p-4">
+                  <h4 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                    <Trophy className="w-4 h-4 text-primary" /> إدارة النقاط
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-[120px_1fr_auto] gap-2">
+                    <input
+                      value={pointsDelta}
+                      onChange={(e) => setPointsDelta(e.target.value.replace(/[^\d-]/g, ""))}
+                      inputMode="numeric"
+                      placeholder="+50"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    />
+                    <input
+                      value={pointsNote}
+                      onChange={(e) => setPointsNote(e.target.value)}
+                      placeholder="سبب التعديل"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    />
+                    <button
+                      type="button"
+                      disabled={updateRewards.isPending || !Number(pointsDelta)}
+                      onClick={() => updateRewards.mutate({ pointsDelta: Number(pointsDelta), note: pointsNote || "تعديل من الإدارة" })}
+                      className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-primary hover:bg-primary/20 disabled:opacity-60"
+                    >
+                      حفظ
+                    </button>
+                  </div>
                 </div>
 
                 <div>

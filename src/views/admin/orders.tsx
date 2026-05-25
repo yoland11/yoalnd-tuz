@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useListOrders, getListOrdersQueryKey } from "@workspace/api-client-react";
 import { useSearch } from "wouter";
-import { Archive, MessageCircle, Printer, Trash2, Plus, Search, X, History, Check, Edit2 } from "lucide-react";
+import { Archive, MessageCircle, Printer, Trash2, Plus, Search, X, History, Check, Edit2, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ServiceDetailFields } from "@/components/service-detail-fields";
@@ -19,6 +19,7 @@ import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalize
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { EventCountdown } from "@/components/interactive/event-countdown";
 
 type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -476,6 +477,7 @@ export default function OrdersPage() {
                       <p className="text-sm text-muted-foreground">{o.customerName} — {formatIraqiPhone(o.phone)}</p>
                       <p className="text-xs text-primary">{o.serviceName}</p>
                       {o.eventDate && <p className="text-xs text-muted-foreground">📅 {o.eventDate} {o.eventLocation ? `• ${o.eventLocation}` : ""}</p>}
+                      {o.eventDate && <EventCountdown targetDate={o.eventDate} compact className="mt-2 max-w-xs" />}
                       {!isReschedulePending && o.customerConfirmation === "confirmed" && (
                         <span className="inline-flex items-center gap-1 text-[11px] mt-1.5 px-2 py-0.5 rounded-full bg-green-600/10 text-green-300 border border-green-600/30">
                           ✓ الزبون أكد الموعد
@@ -531,6 +533,15 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Edit2 className="w-3.5 h-3.5" /> تعديل التفاصيل
                     </button>
+                    {o.eventLocation && (
+                      <a
+                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.eventLocation)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
+                        <MapPin className="w-3.5 h-3.5" /> الموقع
+                      </a>
+                    )}
                     {canArchive && (
                       <button
                         onClick={() => confirm("أرشفة الحجز؟") && archiveService.mutate(o.id)}

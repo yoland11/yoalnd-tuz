@@ -13,6 +13,7 @@ export const PRODUCT_STAGES: Stage[] = [
 export const PHOTO_STAGES: Stage[] = [
   { id: "pending",    label: "تم الحجز" },
   { id: "following",  label: "جاري المتابعة" },
+  { id: "en_route",   label: "الكادر بالطريق" },
   { id: "shooting",   label: "أثناء التصوير" },
   { id: "editing",    label: "قيد المونتاج" },
   { id: "ready",      label: "جاهز للتسليم" },
@@ -23,6 +24,7 @@ export const KOSHA_STAGES: Stage[] = [
   { id: "pending",    label: "تم الحجز" },
   { id: "following",  label: "قيد المتابعة" },
   { id: "preparing",  label: "جارِ التجهيز" },
+  { id: "en_route",   label: "الكادر بالطريق" },
   { id: "installing", label: "جاري التنصيب" },
   { id: "completed",  label: "مكتمل" },
 ];
@@ -41,6 +43,7 @@ export const RESEARCH_STAGES: Stage[] = [
 export const GRADUATION_STAGES: Stage[] = [
   { id: "pending",      label: "تم استلام الحجز" },
   { id: "coordinating", label: "جاري المتابعة والتنسيق" },
+  { id: "en_route",     label: "الكادر بالطريق" },
   { id: "sewing",       label: "جاري الخياطة والتجهيز" },
   { id: "printing",     label: "أثناء الطباعة والتغليف" },
   { id: "completed",    label: "تم اكتمال الطلب" },

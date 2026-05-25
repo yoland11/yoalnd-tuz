@@ -18,6 +18,7 @@ export const ordersTable = pgTable("orders", {
   depositAmount: numeric("deposit_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   remainingAmount: numeric("remaining_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
+  rewardPointsAwarded: integer("reward_points_awarded").notNull().default(0),
   governorate: text("governorate"),
   area: text("area"),
   address: text("address"),

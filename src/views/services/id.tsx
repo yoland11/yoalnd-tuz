@@ -13,6 +13,10 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { ServiceDetailFields } from "@/components/service-detail-fields";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BeforeAfterSection } from "@/components/interactive/before-after-slider";
+import { LocationMapCard } from "@/components/interactive/location-map-card";
+import { ModelViewerCard } from "@/components/interactive/model-viewer";
+import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import {
   type CrewOption,
   defaultServiceDetails,
@@ -74,6 +78,11 @@ export default function ServiceRequest() {
       notes: "",
     },
   });
+  const serviceModelUrl =
+    service?.imageMetadata && typeof service.imageMetadata === "object"
+      ? String((service.imageMetadata as Record<string, unknown>).modelUrl ?? "")
+      : "";
+  const requestLocation = primaryLocationFromDetails(serviceType, serviceDetails);
 
   useEffect(() => {
     setServiceDetails(defaultServiceDetails(serviceType));
@@ -170,6 +179,11 @@ export default function ServiceRequest() {
         </div>
       )}
 
+      <div className="mb-6 space-y-6">
+        <BeforeAfterSection items={galleryItems as any[]} title="قبل / بعد من أعمالنا" />
+        <ModelViewerCard modelUrl={serviceModelUrl || null} title="معاينة الخدمة ثلاثية الأبعاد" />
+      </div>
+
       <Card className="bg-card border-border shadow-lg">
         <CardHeader className="border-b border-border/50 bg-muted/20">
           <CardTitle className="text-xl">تفاصيل الطلب</CardTitle>
@@ -249,6 +263,7 @@ export default function ServiceRequest() {
                 grid={false}
                 density="form"
               />
+              <LocationMapCard address={requestLocation || null} title="موقع المناسبة" compact />
 
               <FormField
                 control={form.control}
@@ -279,6 +294,10 @@ export default function ServiceRequest() {
           </Form>
         </CardContent>
       </Card>
+
+      <div className="mt-6">
+        <SmartSuggestions contextServiceType={serviceType} title="خدمات تكمل حجزك" />
+      </div>
     </div>
   );
 }

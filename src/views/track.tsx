@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,6 +15,10 @@ import { serviceDetailsToRows } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
 import { usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { CelebrationEffect } from "@/components/interactive/celebration-effect";
+import { EventCountdown } from "@/components/interactive/event-countdown";
+import { LocationMapCard } from "@/components/interactive/location-map-card";
+import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 
 type Mode = "code" | "phone";
 
@@ -161,6 +165,7 @@ const STATUS_TONES: Record<string, string> = {
   pending: "text-amber-300 border-amber-500/30 bg-amber-500/10",
   confirmed: "text-blue-300 border-blue-500/30 bg-blue-500/10",
   processing: "text-primary border-primary/30 bg-primary/10",
+  en_route: "text-cyan-300 border-cyan-500/30 bg-cyan-500/10",
   shipped: "text-cyan-300 border-cyan-500/30 bg-cyan-500/10",
   delivered: "text-green-300 border-green-600/30 bg-green-600/10",
   completed: "text-green-300 border-green-600/30 bg-green-600/10",
@@ -172,6 +177,7 @@ function StatusIcon({ status, className }: { status: string; className?: string 
     pending: CircleDot,
     confirmed: ClipboardCheck,
     processing: Sparkles,
+    en_route: Truck,
     shipped: Truck,
     delivered: PackageCheck,
     completed: PackageCheck,
@@ -190,6 +196,8 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
   const progress = stages.length > 1 ? Math.max(0, Math.min(100, (currentIdx / (stages.length - 1)) * 100)) : 0;
   const heroImage = tracking.kind === "service" ? tracking.serviceImage : tracking.items?.[0]?.image;
   const lastUpdate = tracking.statusHistory?.[0]?.createdAt ?? tracking.createdAt;
+  const previousStatus = useRef<string | null>(null);
+  const [liveNotice, setLiveNotice] = useState("");
   const { data: recommendations } = useQuery({
     queryKey: ["track", "recommendations"],
     queryFn: async () => {
@@ -203,8 +211,32 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
   const waMsg = `استفسار عن الطلب ${tracking.trackingCode}`;
   const waLink = buildWhatsAppLink(contactPhone || "07701234567", waMsg);
 
+  useEffect(() => {
+    if (!previousStatus.current) {
+      previousStatus.current = tracking.status;
+      return undefined;
+    }
+    if (previousStatus.current !== tracking.status) {
+      previousStatus.current = tracking.status;
+      setLiveNotice("تم تحديث حالة الطلب الآن");
+      const timer = window.setTimeout(() => setLiveNotice(""), 3500);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [tracking.status]);
+
   return (
     <div className="space-y-6">
+      <CelebrationEffect
+        active={["delivered", "completed"].includes(tracking.status) || tracking.paymentStatus === "paid"}
+        storageKey={`ajn-track-celebration-${tracking.kind ?? "order"}-${tracking.id}-${tracking.status}-${tracking.paymentStatus}`}
+        message={tracking.paymentStatus === "paid" ? "تم تسجيل الدفع بنجاح" : "اكتمل طلبك بنجاح"}
+      />
+      {liveNotice && (
+        <div className="rounded-2xl border border-primary/30 bg-primary/10 p-3 text-sm text-primary">
+          {liveNotice}
+        </div>
+      )}
       {isBooking && !isCancelled && <BookingResponseCard tracking={tracking} />}
       {/* Status Header */}
       <div className="bg-card rounded-2xl border border-border/30 p-6">
@@ -273,6 +305,10 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
         </div>
       </div>
 
+      {isBooking && tracking.eventDate && (
+        <EventCountdown targetDate={tracking.eventDate} title="متبقي على موعد الحجز" />
+      )}
+
       {isBooking && (tracking.eventDate || tracking.eventLocation || tracking.notes || detailRows.length > 0) && (
         <div className="bg-card rounded-2xl border border-border/30 p-6">
           <h3 className="text-sm font-semibold text-foreground mb-5">تفاصيل الخدمة</h3>
@@ -304,6 +340,12 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
           </div>
         </div>
       )}
+
+      <LocationMapCard
+        mapUrl={tracking.mapsUrl}
+        address={tracking.eventLocation || [tracking.governorate, tracking.area, tracking.address].filter(Boolean).join(" / ")}
+        title={isBooking ? "موقع المناسبة" : "موقع التوصيل"}
+      />
 
       {/* Progress Steps */}
       {!isCancelled && (
@@ -403,7 +445,12 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
         <TrackingReviewBox tracking={tracking} />
       )}
 
-      <TrackSuggestions products={recommendations?.products ?? []} services={recommendations?.services ?? []} />
+      <SmartSuggestions
+        contextServiceType={tracking.serviceType}
+        products={recommendations?.products ?? []}
+        services={recommendations?.services ?? []}
+        title="اقتراحات تناسب طلبك"
+      />
     </div>
   );
 }
