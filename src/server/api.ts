@@ -156,6 +156,7 @@ let staffActivityColumnPromise: Promise<void> | null = null;
 let imageMetadataColumnsPromise: Promise<void> | null = null;
 let productColorColumnsPromise: Promise<void> | null = null;
 let customerRewardsPromise: Promise<void> | null = null;
+let performanceIndexesPromise: Promise<void> | null = null;
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -571,6 +572,77 @@ function selectedColorName(value: unknown, fallback?: string | null): string | n
   return color?.name ?? fallback ?? null;
 }
 
+function cartMergeKey(item: {
+  productId: number;
+  selectedColor?: string | null;
+  selectedColorData?: unknown;
+  customization?: string | null;
+}) {
+  const color = selectedColorPayload(item.selectedColorData, item.selectedColor);
+  return [
+    item.productId,
+    color ? colorKey(color) : "",
+    (item.customization ?? "").trim(),
+  ].join("|");
+}
+
+async function normalizeCartRows(sessionId: string) {
+  const rows = await db.query.cartItemsTable.findMany({
+    where: eq(cartItemsTable.sessionId, sessionId),
+    orderBy: (item, { asc }) => [asc(item.id)],
+  });
+  const grouped = new Map<string, typeof rows[number]>();
+  const duplicates: number[] = [];
+
+  for (const row of rows) {
+    const key = cartMergeKey(row);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, row);
+      continue;
+    }
+    existing.quantity += row.quantity;
+    duplicates.push(row.id);
+  }
+
+  if (duplicates.length > 0) {
+    await Promise.all(
+      Array.from(grouped.values()).map((row) =>
+        db.update(cartItemsTable).set({ quantity: row.quantity }).where(eq(cartItemsTable.id, row.id)),
+      ),
+    );
+    await db.delete(cartItemsTable).where(inArray(cartItemsTable.id, duplicates));
+  }
+
+  return Array.from(grouped.values());
+}
+
+function mergeOrderItems(items: any[]) {
+  const merged = new Map<string, any>();
+  for (const item of Array.isArray(items) ? items : []) {
+    const quantity = Number(item?.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    const name = String(item?.productName ?? "").trim();
+    const nameAr = String(item?.productNameAr ?? name).trim();
+    if (!name && !nameAr) continue;
+    const color = selectedColorPayload(item?.selectedColorData, item?.selectedColor);
+    const key = [
+      String(item?.productId ?? ""),
+      name.toLowerCase(),
+      nameAr.toLowerCase(),
+      String(item?.price ?? 0),
+      color ? colorKey(color) : String(item?.selectedColor ?? ""),
+    ].join("|");
+    const existing = merged.get(key);
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      merged.set(key, { ...item, productName: name, productNameAr: nameAr, quantity });
+    }
+  }
+  return Array.from(merged.values());
+}
+
 function formatZone(z: any) {
   return {
     id: z.id,
@@ -896,6 +968,29 @@ async function ensureProductColorColumns(): Promise<void> {
   await productColorColumnsPromise;
 }
 
+async function ensurePerformanceIndexes(): Promise<void> {
+  if (!performanceIndexesPromise) {
+    performanceIndexesPromise = Promise.all([
+      db.execute(sql`create index if not exists "orders_tracking_code_perf_idx" on "orders" ("tracking_code")`),
+      db.execute(sql`create index if not exists "orders_customer_phone_perf_idx" on "orders" ("customer_phone")`),
+      db.execute(sql`create index if not exists "orders_phone_last4_perf_idx" on "orders" ("phone_last4")`),
+      db.execute(sql`create index if not exists "orders_status_archived_perf_idx" on "orders" ("status", "archived_at")`),
+      db.execute(sql`create index if not exists "service_orders_tracking_code_perf_idx" on "service_orders" ("tracking_code")`),
+      db.execute(sql`create index if not exists "service_orders_phone_perf_idx" on "service_orders" ("phone")`),
+      db.execute(sql`create index if not exists "service_orders_phone_last4_perf_idx" on "service_orders" ("phone_last4")`),
+      db.execute(sql`create index if not exists "service_orders_status_archived_perf_idx" on "service_orders" ("status", "archived_at")`),
+      db.execute(sql`create index if not exists "products_category_active_perf_idx" on "products" ("category", "is_active")`),
+      db.execute(sql`create index if not exists "products_active_created_perf_idx" on "products" ("is_active", "created_at")`),
+      db.execute(sql`create index if not exists "staff_username_perf_idx" on "staff" ("username")`),
+      db.execute(sql`create index if not exists "customers_phone_perf_idx" on "customers" ("phone")`),
+    ]).then(() => undefined).catch((err) => {
+      performanceIndexesPromise = null;
+      throw err;
+    });
+  }
+  await performanceIndexesPromise;
+}
+
 async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
   try {
     await ensureActivityTables();
@@ -1064,40 +1159,40 @@ async function awardServiceOrderPoints(order: any) {
 }
 
 async function buildCart(sessionId: string) {
-  const items = await db.query.cartItemsTable.findMany({
-    where: eq(cartItemsTable.sessionId, sessionId),
+  const items = await normalizeCartRows(sessionId);
+  const productIds = Array.from(new Set(items.map((item) => item.productId))).filter((id) => Number.isFinite(id));
+  const products =
+    productIds.length > 0
+      ? await db.select().from(productsTable).where(inArray(productsTable.id, productIds))
+      : [];
+  const productMap = new Map(products.map((product) => [product.id, product]));
+  const enriched = items.map((item) => {
+    const product = productMap.get(item.productId);
+    return {
+      id: item.id,
+      productId: item.productId,
+      product: product
+        ? {
+            id: product.id,
+            name: product.name,
+            nameAr: product.nameAr,
+            price: Number.parseFloat(product.price),
+            images: product.images ?? [],
+            stock: product.stock,
+            colors: normalizeColors(product.colors ?? []),
+            isFeatured: product.isFeatured,
+            rating: null,
+            reviewCount: 0,
+            createdAt: product.createdAt.toISOString(),
+          }
+        : null,
+      quantity: item.quantity,
+      price: Number.parseFloat(item.price),
+      selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+      selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
+      customization: item.customization ?? null,
+    };
   });
-  const enriched = await Promise.all(
-    items.map(async (item) => {
-      const product = await db.query.productsTable.findFirst({
-        where: eq(productsTable.id, item.productId),
-      });
-      return {
-        id: item.id,
-        productId: item.productId,
-        product: product
-          ? {
-              id: product.id,
-              name: product.name,
-              nameAr: product.nameAr,
-              price: Number.parseFloat(product.price),
-              images: product.images ?? [],
-              stock: product.stock,
-              colors: normalizeColors(product.colors ?? []),
-              isFeatured: product.isFeatured,
-              rating: null,
-              reviewCount: 0,
-              createdAt: product.createdAt.toISOString(),
-            }
-          : null,
-        quantity: item.quantity,
-        price: Number.parseFloat(item.price),
-        selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
-        selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
-        customization: item.customization ?? null,
-      };
-    }),
-  );
   return {
     items: enriched,
     total: enriched.reduce((sum, i) => sum + i.price * i.quantity, 0),
@@ -1442,6 +1537,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   if (method === "GET" && parts.length === 1) {
     const params = ListProductsQueryParams.safeParse(query(req));
     const { category, search, inStock } = params.success ? params.data : {};
+    const limit = Math.min(Math.max(Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "80", 10) || 80, 1), 120);
+    const offset = Math.max(Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0, 0);
     const products = await db.query.productsTable.findMany({
       where: and(
         category ? eq(productsTable.category, category) : undefined,
@@ -1449,6 +1546,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         inStock ? sql`${productsTable.stock} > 0` : undefined,
       ),
       orderBy: (p, { desc }) => [desc(p.createdAt)],
+      limit,
+      offset,
     });
     return json(products.map((p) => formatProduct(p)));
   }
@@ -1610,7 +1709,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       serviceId: data.serviceId,
       customerName: data.customerName,
       phone,
-      eventDate: data.eventDate,
+      eventDate: data.eventDate ?? "",
       eventLocation,
       notes: data.notes,
       customFields,
@@ -1708,9 +1807,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
     });
     if (!product) return error("المنتج غير موجود", 404);
     const pickedColor = selectedColorPayload(selectedColorData, selectedColor);
-    const existingItems = await db.query.cartItemsTable.findMany({
-      where: and(eq(cartItemsTable.sessionId, sessionId), eq(cartItemsTable.productId, productId)),
-    });
+    const existingItems = (await normalizeCartRows(sessionId)).filter((item) => item.productId === productId);
     const pickedKey = pickedColor ? colorKey(pickedColor) : "";
     const existing = existingItems.find((item) => {
       const itemColor = selectedColorPayload(item.selectedColorData, item.selectedColor);
@@ -1883,11 +1980,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     const params = ListOrdersQueryParams.safeParse(query(req));
     const { status } = params.success ? params.data : {};
+    const limit = Math.min(Math.max(Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "120", 10) || 120, 1), 250);
+    const offset = Math.max(Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0, 0);
     const orders = await db.query.ordersTable.findMany({
       where: status
         ? and(eq(ordersTable.status, status), sql`${ordersTable.archivedAt} is null`)
         : sql`${ordersTable.archivedAt} is null`,
       orderBy: [desc(ordersTable.createdAt)],
+      limit,
+      offset,
     });
     return json(await Promise.all(orders.map(formatOrder)));
   }
@@ -1898,9 +1999,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const sessionId = getSessionId(req);
     const customerId = getCurrentCustomerId(req);
     const data = parsed.data;
-    const cartItems = await db.query.cartItemsTable.findMany({
-      where: eq(cartItemsTable.sessionId, sessionId),
-    });
+    const cartItems = await normalizeCartRows(sessionId);
     if (cartItems.length === 0) return error("السلة فارغة", 400);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
     if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -3253,9 +3352,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
 
     if (method === "GET" && !parts[2]) {
+      const limit = Math.min(Math.max(Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "120", 10) || 120, 1), 250);
+      const offset = Math.max(Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0, 0);
       const rows = await db.query.serviceOrdersTable.findMany({
         where: sql`${serviceOrdersTable.archivedAt} is null`,
         orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit,
+        offset,
       });
       const services = await db.query.servicesTable.findMany();
       const sMap = new Map(services.map((s) => [s.id, s]));
@@ -3315,7 +3418,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         serviceId: data.serviceId,
         customerName: data.customerName,
         phone,
-        eventDate: data.eventDate,
+        eventDate: data.eventDate ?? "",
         eventLocation,
         notes: data.notes,
         internalNotes: typeof rawBody?.internalNotes === "string" ? rawBody.internalNotes : null,
@@ -3503,11 +3606,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     if (method === "POST" && !parts[2]) {
       const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus } = await body(req);
-      if (!customerName || !customerPhone || !Array.isArray(items) || items.length === 0) return error("بيانات ناقصة", 400);
+      const orderItems = mergeOrderItems(items);
+      if (!customerName || !customerPhone || orderItems.length === 0) return error("بيانات ناقصة", 400);
       if (paymentMethod !== undefined && normalizePayment(paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
       const normalizedPhone = normalizeIraqiPhone(customerPhone);
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
-      const total = items.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
+      const total = orderItems.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
       const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined));
           const [order] = await db
             .insert(ordersTable)
@@ -3531,7 +3635,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             })
             .returning();
           await Promise.all(
-            items.map((it: any) =>
+            orderItems.map((it: any) =>
               db.insert(orderItemsTable).values({
                 orderId: order.id,
                 productId: it.productId ?? 0,
@@ -4317,26 +4421,28 @@ async function handleBackup(req: NextRequest, parts: string[], section: string |
 export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const parts = rawParts.map((p) => decodeURIComponent(p)).filter(Boolean);
   const root = parts[0];
+  const isAdminAuth = root === "admin" && parts[1] === "auth";
 
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
-    if (root === "auth" || root === "orders" || root === "admin" || root === "dashboard" || root === "customer") {
+    if (root === "auth" || root === "orders" || (!isAdminAuth && root === "admin") || root === "dashboard" || root === "customer") {
       await ensureCustomerProfileColumns();
     }
-    if (root === "products" || root === "services" || root === "gallery" || root === "admin" || root === "auth" || root === "customer" || root === "settings") {
+    if (root === "products" || root === "services" || root === "gallery" || (!isAdminAuth && root === "admin") || root === "auth" || root === "customer" || root === "settings") {
       await ensureImageMetadataColumns();
     }
-    if (root === "cart" || root === "orders" || root === "products" || root === "admin" || root === "customer" || root === "dashboard") {
+    if (root === "cart" || root === "orders" || root === "products" || (!isAdminAuth && root === "admin") || root === "customer" || root === "dashboard") {
       await ensureProductColorColumns();
     }
-    if (root === "customer" || root === "orders" || root === "service-orders" || root === "admin" || root === "auth") {
+    if (root === "customer" || root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "auth") {
       await ensureCustomerRewards();
     }
-    if (root === "orders" || root === "service-orders" || root === "admin" || root === "dashboard") {
+    if (root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "dashboard") {
       await ensureTrackingColumns();
       await ensurePaymentWorkflowColumns();
       await ensureArchiveColumns();
+      await ensurePerformanceIndexes();
     }
     if (root === "admin") {
       await ensureStaffActivityColumn();

@@ -36,7 +36,7 @@ const blank: ProductForm = {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
-  const { data: products, isLoading } = useListProducts({});
+  const { data: products, isLoading } = useListProducts({ limit: 250 });
   const { data: categories } = useQuery({
     queryKey: ["admin", "categories"],
     queryFn: () => adminFetch<Category[]>("/admin/categories"),

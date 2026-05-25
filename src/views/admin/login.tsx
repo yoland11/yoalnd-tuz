@@ -8,7 +8,6 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 export default function AdminLogin() {
   const [, setLocation] = useLocation();
-  const [checking, setChecking] = useState(true);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -22,9 +21,7 @@ export default function AdminLogin() {
       if (me) {
         const first = ADMIN_NAV.find(n => hasPerm(me, n.perm));
         setLocation(first?.href ?? "/admin/dashboard");
-        return;
       }
-      setChecking(false);
     });
     return () => { alive = false; };
   }, [setLocation]);
@@ -42,14 +39,6 @@ export default function AdminLogin() {
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (checking) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center" dir="rtl">
-        <Loader2 className="w-8 h-8 text-primary animate-spin" />
-      </div>
-    );
   }
 
   return (

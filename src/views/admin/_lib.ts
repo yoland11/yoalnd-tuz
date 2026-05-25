@@ -33,6 +33,9 @@ export type AdminMe = {
   isActive: boolean;
 };
 
+let adminMeCache: AdminMe | null | undefined;
+let adminMePromise: Promise<AdminMe | null> | null = null;
+
 function apiPath(path: string): string {
   return `/api${path.startsWith("/") ? path : `/${path}`}`;
 }
@@ -58,22 +61,38 @@ export async function loginAdmin(username: string, password: string): Promise<Ad
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
+  adminMeCache = r.user;
+  adminMePromise = null;
   return r.user;
 }
 
 export async function logoutAdmin(): Promise<void> {
   try { await adminFetch("/admin/auth/logout", { method: "POST" }); }
   catch { /* swallow */ }
+  adminMeCache = null;
+  adminMePromise = null;
 }
 
-export async function fetchAdminMe(): Promise<AdminMe | null> {
-  try {
-    const r = await adminFetch<{ user: AdminMe }>("/admin/auth/me");
-    return r.user;
-  } catch (e: any) {
-    if (e?.status === 401 || e?.status === 403) return null;
-    return null;
-  }
+export async function fetchAdminMe(options: { force?: boolean } = {}): Promise<AdminMe | null> {
+  if (!options.force && adminMeCache !== undefined) return adminMeCache;
+  if (!options.force && adminMePromise) return adminMePromise;
+  adminMePromise = adminFetch<{ user: AdminMe }>("/admin/auth/me")
+    .then((r) => {
+      adminMeCache = r.user;
+      return r.user;
+    })
+    .catch((e: any) => {
+      if (e?.status === 401 || e?.status === 403) {
+        adminMeCache = null;
+        return null;
+      }
+      adminMeCache = null;
+      return null;
+    })
+    .finally(() => {
+      adminMePromise = null;
+    });
+  return adminMePromise;
 }
 
 export function hasPerm(user: AdminMe | null, perm: Permission | null): boolean {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Switch, Route, useLocation, Redirect } from "wouter";
 import { Loader2 } from "lucide-react";
 import {
@@ -7,25 +7,34 @@ import {
 } from "./_lib";
 import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
 import AdminLogin from "./login";
-import DashboardPage from "./dashboard";
-import OrdersPage from "./orders";
-import ArchivePage from "./archive";
-import ServicesPage from "./services";
-import ProductsPage from "./products";
-import CategoriesPage from "./categories";
-import GalleryPage from "./gallery";
-import DeliveryPage from "./delivery";
-import CustomersPage from "./customers";
-import CrewsPage from "./crews";
-import StaffPage from "./staff";
-import AccountingPage from "./accounting";
-import WhatsappPage from "./whatsapp";
-import BackupPage from "./backup";
-import SettingsPage from "./settings";
+
+const DashboardPage = lazy(() => import("./dashboard"));
+const OrdersPage = lazy(() => import("./orders"));
+const ArchivePage = lazy(() => import("./archive"));
+const ServicesPage = lazy(() => import("./services"));
+const ProductsPage = lazy(() => import("./products"));
+const CategoriesPage = lazy(() => import("./categories"));
+const GalleryPage = lazy(() => import("./gallery"));
+const DeliveryPage = lazy(() => import("./delivery"));
+const CustomersPage = lazy(() => import("./customers"));
+const CrewsPage = lazy(() => import("./crews"));
+const StaffPage = lazy(() => import("./staff"));
+const AccountingPage = lazy(() => import("./accounting"));
+const WhatsappPage = lazy(() => import("./whatsapp"));
+const BackupPage = lazy(() => import("./backup"));
+const SettingsPage = lazy(() => import("./settings"));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
   return <>{children}</>;
+}
+
+function AdminPageLoader() {
+  return (
+    <div className="min-h-[320px] flex items-center justify-center" dir="rtl">
+      <Loader2 className="w-7 h-7 text-primary animate-spin" />
+    </div>
+  );
 }
 
 export default function Admin() {
@@ -69,24 +78,26 @@ export default function Admin() {
 
   return (
     <AdminLayout me={me} onLogout={handleLogout}>
-      <Switch>
-        <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
-        <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
-        <Route path="/admin/archive"   >{() => <Guard me={me} perm="orders"   ><ArchivePage    /></Guard>}</Route>
-        <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
-        <Route path="/admin/products"  >{() => <Guard me={me} perm="products" ><ProductsPage   /></Guard>}</Route>
-        <Route path="/admin/categories">{() => <Guard me={me} perm="products" ><CategoriesPage /></Guard>}</Route>
-        <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"  ><GalleryPage    /></Guard>}</Route>
-        <Route path="/admin/delivery"  >{() => <Guard me={me} perm="delivery" ><DeliveryPage   /></Guard>}</Route>
-        <Route path="/admin/customers" >{() => <Guard me={me} perm="customers"><CustomersPage  /></Guard>}</Route>
-        <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>
-        <Route path="/admin/staff"     >{() => <Guard me={me} perm="staff"    ><StaffPage      /></Guard>}</Route>
-        <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
-        <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
-        <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
-        <Route path="/admin/settings"  >{() => <Guard me={me} perm="settings" ><SettingsPage   /></Guard>}</Route>
-        <Route>{() => <NoPermission />}</Route>
-      </Switch>
+      <Suspense fallback={<AdminPageLoader />}>
+        <Switch>
+          <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
+          <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
+          <Route path="/admin/archive"   >{() => <Guard me={me} perm="orders"   ><ArchivePage    /></Guard>}</Route>
+          <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
+          <Route path="/admin/products"  >{() => <Guard me={me} perm="products" ><ProductsPage   /></Guard>}</Route>
+          <Route path="/admin/categories">{() => <Guard me={me} perm="products" ><CategoriesPage /></Guard>}</Route>
+          <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"  ><GalleryPage    /></Guard>}</Route>
+          <Route path="/admin/delivery"  >{() => <Guard me={me} perm="delivery" ><DeliveryPage   /></Guard>}</Route>
+          <Route path="/admin/customers" >{() => <Guard me={me} perm="customers"><CustomersPage  /></Guard>}</Route>
+          <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>
+          <Route path="/admin/staff"     >{() => <Guard me={me} perm="staff"    ><StaffPage      /></Guard>}</Route>
+          <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
+          <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
+          <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
+          <Route path="/admin/settings"  >{() => <Guard me={me} perm="settings" ><SettingsPage   /></Guard>}</Route>
+          <Route>{() => <NoPermission />}</Route>
+        </Switch>
+      </Suspense>
     </AdminLayout>
   );
 }

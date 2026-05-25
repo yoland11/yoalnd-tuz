@@ -171,7 +171,6 @@ export function validateServiceDetails(serviceType: string | null | undefined, d
     if (field.dependsOn && details[field.dependsOn.key] !== field.dependsOn.value) continue;
     const value = details[field.key];
     const empty = value == null || value === "" || (Array.isArray(value) && value.length === 0);
-    if (field.required && empty) errors[field.key] = "هذا الحقل مطلوب";
     if (!empty && field.type === "number") {
       const n = Number(value);
       if (!Number.isFinite(n)) errors[field.key] = "قيمة غير صحيحة";

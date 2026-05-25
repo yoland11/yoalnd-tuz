@@ -127,7 +127,7 @@ export interface ServiceOrderInput {
   serviceId: number;
   customerName: string;
   phone: string;
-  eventDate: string;
+  eventDate?: string;
   eventLocation?: string;
   notes?: string;
   customFields?: ServiceOrderInputCustomFields;
@@ -415,11 +415,15 @@ export type ListProductsParams = {
   category?: string;
   search?: string;
   inStock?: boolean;
+  limit?: number;
+  offset?: number;
 };
 
 export type ListOrdersParams = {
   status?: string;
   customerId?: number;
+  limit?: number;
+  offset?: number;
 };
 
 export type ListGalleryParams = {

@@ -65,7 +65,7 @@ function ServiceDetailInput({
   density: "admin" | "form";
   onChange: (value: any) => void;
 }) {
-  const label = `${field.label}${field.required ? " *" : ""}`;
+  const label = field.label;
   const currentValue = value == null ? "" : String(value);
   const crewOptions = field.source === "crews" ? activeCrewOptions(crews, currentValue) : [];
   const selectedCrew = field.source === "crews" ? crewOptions.find((crew) => crew.name === currentValue) : undefined;

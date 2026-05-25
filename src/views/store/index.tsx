@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useDeferredValue, useState } from "react";
 import { Link } from "wouter";
 import { useListProducts, useListProductCategories } from "@workspace/api-client-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,10 +18,11 @@ import {
 export default function Store() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("");
+  const deferredSearch = useDeferredValue(search.trim());
   
   const { data: products, isLoading } = useListProducts(
-    { search, category: category !== "all" ? category : undefined },
-    { query: { enabled: true, queryKey: ['/api/products', search, category] } }
+    { search: deferredSearch || undefined, category: category !== "all" ? category : undefined, limit: 80 },
+    { query: { enabled: true, queryKey: ['/api/products', deferredSearch, category], staleTime: 2 * 60_000 } }
   );
 
   const { data: categories } = useListProductCategories();

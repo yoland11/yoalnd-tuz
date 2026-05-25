@@ -99,10 +99,10 @@ export default function OrdersPage() {
     }
   }, [routeSearch]);
 
-  const { data: productOrders, isLoading: loadingP } = useListOrders({});
+  const { data: productOrders, isLoading: loadingP } = useListOrders({ limit: 200 });
   const { data: serviceOrders, isLoading: loadingS } = useQuery({
     queryKey: ["admin", "service-orders"],
-    queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders"),
+    queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=200"),
   });
 
   function invalidateAll() {
@@ -778,6 +778,27 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
     setForm(f => ({ ...f, items: f.items.map((it, idx) => idx === i ? { ...it, [key]: value } : it) }));
   }
 
+  function mergeManualItems(items: any[]) {
+    const merged = new Map<string, any>();
+    for (const item of items) {
+      if (!item.productName || Number(item.quantity) <= 0) continue;
+      const key = [
+        String(item.productId ?? ""),
+        String(item.productNameAr || item.productName).trim().toLowerCase(),
+        String(item.productName || "").trim().toLowerCase(),
+        String(item.price ?? 0),
+        String(item.selectedColor ?? ""),
+      ].join("|");
+      const previous = merged.get(key);
+      if (previous) {
+        previous.quantity = Number(previous.quantity) + Number(item.quantity);
+      } else {
+        merged.set(key, { ...item, quantity: Number(item.quantity) || 1 });
+      }
+    }
+    return Array.from(merged.values());
+  }
+
   function submitProduct() {
     const customerPhone = normalizeIraqiPhone(form.customerPhone);
     if (!customerPhone) {
@@ -790,7 +811,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
       deliveryFee: parseFloat(form.deliveryFee) || 0,
       depositAmount: parseFloat(form.depositAmount) || 0,
       paymentStatus: form.paymentStatus,
-      items: form.items.filter(it => it.productName && it.quantity > 0),
+      items: mergeManualItems(form.items),
     });
   }
 
@@ -929,7 +950,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 </div>
                 <Input label="اسم الزبون *" value={serviceForm.customerName} onChange={v => setServiceForm(f => ({ ...f, customerName: v }))} required />
                 <Input label="رقم الهاتف *" value={serviceForm.phone} onChange={v => setServiceForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
-                <Input label="تاريخ الحجز *" type="date" value={serviceForm.eventDate} onChange={v => setServiceForm(f => ({ ...f, eventDate: v }))} required />
+                <Input label="تاريخ الحجز" type="date" value={serviceForm.eventDate} onChange={v => setServiceForm(f => ({ ...f, eventDate: v }))} />
                 <Input label="السعر الكلي" type="number" value={serviceForm.totalAmount} onChange={v => setServiceForm(f => ({ ...f, totalAmount: v }))} />
                 <Input label="العربون" type="number" value={serviceForm.depositAmount} onChange={v => setServiceForm(f => ({ ...f, depositAmount: v }))} />
                 <div>
@@ -1040,7 +1061,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Input label="اسم الزبون *" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} required />
             <Input label="رقم الهاتف *" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
-            <Input label="تاريخ الحجز *" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} required />
+            <Input label="تاريخ الحجز" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} />
             <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
             <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
             <div>

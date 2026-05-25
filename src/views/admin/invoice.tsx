@@ -5,6 +5,7 @@ import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { downloadElementPdf } from "@/lib/pdf";
 
 type InvoiceData = any;
 
@@ -63,21 +64,10 @@ export default function Invoice() {
     if (!sheetRef.current || !data) return;
     setDownloading(true);
     try {
-      const html2pdf: any = (await import("html2pdf.js")).default;
       const filename = `${data.kind === "booking" ? "booking" : "invoice"}-${data.trackingCode ?? data.id}.pdf`;
-      await html2pdf()
-        .set({
-          margin:       10,
-          filename,
-          image:        { type: "jpeg", quality: 0.98 },
-          html2canvas:  { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
-          jsPDF:        { unit: "mm", format: "a4", orientation: "portrait" },
-        })
-        .from(sheetRef.current)
-        .save();
+      await downloadElementPdf(sheetRef.current, filename);
     } catch (e) {
-      console.error("PDF export failed", e);
-      alert("تعذر تحميل PDF");
+      alert(e instanceof Error ? e.message : "تعذر تحميل PDF، جرّب الطباعة أو إعادة المحاولة.");
     } finally {
       setDownloading(false);
     }

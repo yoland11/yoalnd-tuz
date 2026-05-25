@@ -71,6 +71,8 @@ export const ListProductsQueryParams = zod.object({
   category: zod.coerce.string().optional(),
   search: zod.coerce.string().optional(),
   inStock: zod.coerce.boolean().optional(),
+  limit: zod.coerce.number().optional(),
+  offset: zod.coerce.number().optional(),
 });
 
 export const ListProductsResponseItem = zod.object({
@@ -275,7 +277,7 @@ export const CreateServiceOrderBody = zod.object({
   serviceId: zod.number(),
   customerName: zod.string(),
   phone: zod.string(),
-  eventDate: zod.string(),
+  eventDate: zod.string().optional(),
   eventLocation: zod.string().optional(),
   notes: zod.string().optional(),
   customFields: zod.object({}).passthrough().optional(),
@@ -533,6 +535,8 @@ export const RemoveCartItemResponse = zod.object({
 export const ListOrdersQueryParams = zod.object({
   status: zod.coerce.string().optional(),
   customerId: zod.coerce.number().optional(),
+  limit: zod.coerce.number().optional(),
+  offset: zod.coerce.number().optional(),
 });
 
 export const ListOrdersResponseItem = zod.object({

@@ -30,7 +30,7 @@ import { CalendarIcon, PhoneIcon, UserIcon } from "lucide-react";
 const formSchema = z.object({
   customerName: z.string().min(2, "الاسم يجب أن يكون حرفين على الأقل"),
   phone: z.string().min(10, "رقم الهاتف غير صالح"),
-  eventDate: z.string().min(1, "تاريخ الحجز مطلوب"),
+  eventDate: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -112,7 +112,7 @@ export default function ServiceRequest() {
         serviceId: id,
         customerName: data.customerName,
         phone,
-        eventDate: data.eventDate,
+        eventDate: data.eventDate || "",
         eventLocation: primaryLocationFromDetails(serviceType, details),
         notes: data.notes,
         customFields: details,
@@ -187,7 +187,7 @@ export default function ServiceRequest() {
       <Card className="bg-card border-border shadow-lg">
         <CardHeader className="border-b border-border/50 bg-muted/20">
           <CardTitle className="text-xl">تفاصيل الطلب</CardTitle>
-          <CardDescription>جميع الحقول المميزة بنجمة (*) مطلوبة</CardDescription>
+          <CardDescription>الاسم ورقم الهاتف مطلوبان، وباقي التفاصيل يمكن إكمالها لاحقاً</CardDescription>
         </CardHeader>
         <CardContent className="p-6">
           <Form {...form}>
@@ -239,7 +239,7 @@ export default function ServiceRequest() {
                 name="eventDate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>تاريخ الحجز *</FormLabel>
+                    <FormLabel>تاريخ الحجز</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <CalendarIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
