@@ -160,7 +160,7 @@ export default function CrewsPage() {
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل كادر" : "كادر جديد"}</h3>
               <button type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
             </div>
-            <Field label="اسم الكادر *" value={editing.name} onChange={v => setEditing(current => ({ ...current!, name: v }))} required />
+            <Field label="اسم الكادر" value={editing.name} onChange={v => setEditing(current => ({ ...current!, name: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">حالة الكادر</label>
               <select value={editing.status} onChange={e => setEditing(current => ({ ...current!, status: e.target.value, isActive: e.target.value !== "inactive" }))}
@@ -189,11 +189,11 @@ export default function CrewsPage() {
   );
 }
 
-function Field({ label, value, onChange, required = false }: { label: string; value: string; onChange: (v: string) => void; required?: boolean }) {
+function Field({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input value={value} onChange={e => onChange(e.target.value)} required={required}
+      <input value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
   );

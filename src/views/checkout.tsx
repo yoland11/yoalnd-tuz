@@ -151,23 +151,21 @@ export default function Checkout() {
             <h2 className="text-lg font-semibold text-foreground mb-2">بيانات التواصل</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-muted-foreground mb-1.5">الاسم الكامل *</label>
+                <label className="block text-sm text-muted-foreground mb-1.5">الاسم الكامل</label>
                 <input
                   name="customerName"
                   value={form.customerName}
                   onChange={handleChange}
-                  required
                   className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
                   placeholder="محمد أحمد"
                 />
               </div>
               <div>
-                <label className="block text-sm text-muted-foreground mb-1.5">رقم الهاتف *</label>
+                <label className="block text-sm text-muted-foreground mb-1.5">رقم الهاتف</label>
                 <input
                   name="customerPhone"
                   value={form.customerPhone}
                   onChange={handleChange}
-                  required
                   type="tel"
                   inputMode="numeric"
                   className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
@@ -180,12 +178,11 @@ export default function Checkout() {
           <div className="bg-card rounded-xl border border-border/30 p-6 space-y-4">
             <h2 className="text-lg font-semibold text-foreground mb-2">بيانات التوصيل</h2>
             <div>
-              <label className="block text-sm text-muted-foreground mb-1.5">المحافظة *</label>
+              <label className="block text-sm text-muted-foreground mb-1.5">المحافظة</label>
               <select
                 name="deliveryZoneId"
                 value={form.deliveryZoneId}
                 onChange={handleChange}
-                required
                 className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus:outline-none focus:border-primary/50 transition-colors"
               >
                 <option value={0}>اختر المحافظة</option>
@@ -247,7 +244,7 @@ export default function Checkout() {
                 name="mapsUrl"
                 value={form.mapsUrl}
                 onChange={handleChange}
-                type="url"
+                type="text"
                 inputMode="url"
                 dir="ltr"
                 className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors text-sm"

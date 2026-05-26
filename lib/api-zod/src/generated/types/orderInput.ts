@@ -1,9 +1,9 @@
 import type { OrderInputPaymentMethod } from "./orderInputPaymentMethod";
 
 export interface OrderInput {
-  customerName: string;
+  customerName?: string;
   customerPhone: string;
-  governorate: string;
+  governorate?: string;
   area?: string;
   address?: string;
   notes?: string;

@@ -259,7 +259,6 @@ export default function Account() {
                   }}
                   type="tel"
                   inputMode="numeric"
-                  required
                   placeholder="07700000000"
                   className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-lg font-mono placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
                 />
@@ -281,7 +280,6 @@ export default function Account() {
                 <input
                   value={otp}
                   onChange={e => setOtp(normalizePhoneDigits(e.target.value).slice(0, 6))}
-                  required
                   placeholder="123456"
                   maxLength={6}
                   className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-2xl font-mono tracking-widest text-center placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"

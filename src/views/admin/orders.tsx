@@ -871,8 +871,8 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
           {mode === "product" ? (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Input label="اسم الزبون *" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} required />
-                <Input label="رقم الهاتف *" value={form.customerPhone} onChange={v => setForm(f => ({ ...f, customerPhone: formatIraqiPhoneInput(v) }))} required />
+                <Input label="اسم الزبون" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} />
+                <Input label="رقم الهاتف" value={form.customerPhone} onChange={v => setForm(f => ({ ...f, customerPhone: formatIraqiPhoneInput(v) }))} />
                 <Input label="المحافظة" value={form.governorate} onChange={v => setForm(f => ({ ...f, governorate: v }))} />
                 <Input label="المنطقة" value={form.area} onChange={v => setForm(f => ({ ...f, area: v }))} />
                 <Input label="العنوان" value={form.address} onChange={v => setForm(f => ({ ...f, address: v }))} />
@@ -927,7 +927,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-muted-foreground mb-1">نوع الخدمة *</label>
+                  <label className="block text-xs text-muted-foreground mb-1">نوع الخدمة</label>
                   <select
                     value={serviceForm.serviceId}
                     onChange={(e) => {
@@ -941,15 +941,14 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                       setServiceErrors({});
                     }}
                     className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
-                    required
                   >
                     {services.map((svc) => (
                       <option key={svc.id} value={svc.id}>{svc.nameAr || svc.name}</option>
                     ))}
                   </select>
                 </div>
-                <Input label="اسم الزبون *" value={serviceForm.customerName} onChange={v => setServiceForm(f => ({ ...f, customerName: v }))} required />
-                <Input label="رقم الهاتف *" value={serviceForm.phone} onChange={v => setServiceForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
+                <Input label="اسم الزبون" value={serviceForm.customerName} onChange={v => setServiceForm(f => ({ ...f, customerName: v }))} />
+                <Input label="رقم الهاتف" value={serviceForm.phone} onChange={v => setServiceForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} />
                 <Input label="تاريخ الحجز" type="date" value={serviceForm.eventDate} onChange={v => setServiceForm(f => ({ ...f, eventDate: v }))} />
                 <Input label="السعر الكلي" type="number" value={serviceForm.totalAmount} onChange={v => setServiceForm(f => ({ ...f, totalAmount: v }))} />
                 <Input label="العربون" type="number" value={serviceForm.depositAmount} onChange={v => setServiceForm(f => ({ ...f, depositAmount: v }))} />
@@ -1059,8 +1058,8 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
         </div>
         <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="p-6 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input label="اسم الزبون *" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} required />
-            <Input label="رقم الهاتف *" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} required />
+            <Input label="اسم الزبون" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} />
+            <Input label="رقم الهاتف" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} />
             <Input label="تاريخ الحجز" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} />
             <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
             <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
@@ -1095,11 +1094,11 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
   );
 }
 
-function Input({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean }) {
+function Input({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} required={required}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
   );

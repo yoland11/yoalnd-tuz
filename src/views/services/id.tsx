@@ -28,8 +28,8 @@ import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { CalendarIcon, PhoneIcon, UserIcon } from "lucide-react";
 
 const formSchema = z.object({
-  customerName: z.string().min(2, "الاسم يجب أن يكون حرفين على الأقل"),
-  phone: z.string().min(10, "رقم الهاتف غير صالح"),
+  customerName: z.string().optional(),
+  phone: z.string().optional(),
   eventDate: z.string().optional(),
   notes: z.string().optional(),
 });
@@ -90,7 +90,7 @@ export default function ServiceRequest() {
   }, [serviceType]);
 
   function onSubmit(data: FormValues) {
-    const phone = normalizeIraqiPhone(data.phone);
+    const phone = normalizeIraqiPhone(data.phone ?? "");
     if (!phone) {
       form.setError("phone", { message: "أدخل رقم عراقي صحيح مثل 07700000000" });
       return;
@@ -100,8 +100,8 @@ export default function ServiceRequest() {
     setDetailErrors(errors);
     if (Object.keys(errors).length > 0) {
       toast({
-        title: "أكمل تفاصيل الخدمة",
-        description: "يرجى مراجعة الحقول المطلوبة قبل إرسال الطلب.",
+        title: "راجع تفاصيل الخدمة",
+        description: "يرجى مراجعة القيم غير الصحيحة قبل إرسال الطلب.",
         variant: "destructive",
       });
       return;
@@ -110,7 +110,7 @@ export default function ServiceRequest() {
     createOrder.mutate({
       data: {
         serviceId: id,
-        customerName: data.customerName,
+        customerName: data.customerName ?? "",
         phone,
         eventDate: data.eventDate || "",
         eventLocation: primaryLocationFromDetails(serviceType, details),
@@ -187,7 +187,7 @@ export default function ServiceRequest() {
       <Card className="bg-card border-border shadow-lg">
         <CardHeader className="border-b border-border/50 bg-muted/20">
           <CardTitle className="text-xl">تفاصيل الطلب</CardTitle>
-          <CardDescription>الاسم ورقم الهاتف مطلوبان، وباقي التفاصيل يمكن إكمالها لاحقاً</CardDescription>
+          <CardDescription>رقم الهاتف ضروري للتواصل، وباقي التفاصيل يمكن إكمالها لاحقاً</CardDescription>
         </CardHeader>
         <CardContent className="p-6">
           <Form {...form}>
@@ -198,7 +198,7 @@ export default function ServiceRequest() {
                 name="customerName"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>الاسم الكامل *</FormLabel>
+                    <FormLabel>الاسم الكامل</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <UserIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -215,7 +215,7 @@ export default function ServiceRequest() {
                 name="phone"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>رقم الهاتف *</FormLabel>
+                    <FormLabel>رقم الهاتف</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <PhoneIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />

@@ -100,13 +100,13 @@ export const ListProductsResponse = zod.array(ListProductsResponseItem);
  * @summary Create product (admin)
  */
 export const CreateProductBody = zod.object({
-  name: zod.string(),
-  nameAr: zod.string(),
+  name: zod.string().optional(),
+  nameAr: zod.string().optional(),
   description: zod.string().optional(),
   descriptionAr: zod.string().optional(),
-  price: zod.number(),
+  price: zod.number().optional(),
   originalPrice: zod.number().optional(),
-  stock: zod.number(),
+  stock: zod.number().optional(),
   category: zod.string().optional(),
   subcategory: zod.string().optional(),
   images: zod.array(zod.string()).optional(),
@@ -275,7 +275,7 @@ export const GetServiceResponse = zod.object({
  */
 export const CreateServiceOrderBody = zod.object({
   serviceId: zod.number(),
-  customerName: zod.string(),
+  customerName: zod.string().optional(),
   phone: zod.string(),
   eventDate: zod.string().optional(),
   eventLocation: zod.string().optional(),
@@ -580,9 +580,9 @@ export const ListOrdersResponse = zod.array(ListOrdersResponseItem);
  * @summary Create order from cart
  */
 export const CreateOrderBody = zod.object({
-  customerName: zod.string(),
+  customerName: zod.string().optional(),
   customerPhone: zod.string(),
-  governorate: zod.string(),
+  governorate: zod.string().optional(),
   area: zod.string().optional(),
   address: zod.string().optional(),
   notes: zod.string().optional(),
@@ -920,7 +920,7 @@ export const ListReviewsResponse = zod.array(ListReviewsResponseItem);
  */
 export const CreateReviewBody = zod.object({
   productId: zod.number(),
-  customerName: zod.string(),
+  customerName: zod.string().optional(),
   rating: zod.number(),
   comment: zod.string().optional(),
 });
@@ -945,11 +945,11 @@ export const ListDeliveryZonesResponse = zod.array(
  * @summary Create delivery zone (admin)
  */
 export const CreateDeliveryZoneBody = zod.object({
-  governorate: zod.string(),
-  governorateAr: zod.string(),
+  governorate: zod.string().optional(),
+  governorateAr: zod.string().optional(),
   areas: zod.array(zod.string()).optional(),
-  price: zod.number(),
-  estimatedDays: zod.number(),
+  price: zod.number().optional(),
+  estimatedDays: zod.number().optional(),
   isActive: zod.boolean().optional(),
 });
 

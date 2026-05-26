@@ -139,9 +139,9 @@ export default function StaffPage() {
               <button type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
             </div>
             <Field label="الاسم الكامل" value={editing.fullName} onChange={v => setEditing(s => ({ ...s!, fullName: v }))} />
-            {!editing.id && <Field label="اسم المستخدم *" value={editing.username} onChange={v => setEditing(s => ({ ...s!, username: v }))} required />}
-            <Field label={editing.id ? "كلمة مرور جديدة (اتركه فارغ للإبقاء)" : "كلمة المرور *"} type="password"
-              value={editing.password} onChange={v => setEditing(s => ({ ...s!, password: v }))} required={!editing.id} />
+            {!editing.id && <Field label="اسم المستخدم" value={editing.username} onChange={v => setEditing(s => ({ ...s!, username: v }))} />}
+            <Field label={editing.id ? "كلمة مرور جديدة (اتركه فارغ للإبقاء)" : "كلمة المرور"} type="password"
+              value={editing.password} onChange={v => setEditing(s => ({ ...s!, password: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">الدور</label>
               <select
@@ -188,11 +188,11 @@ export default function StaffPage() {
   );
 }
 
-function Field({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean }) {
+function Field({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} required={required}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
   );

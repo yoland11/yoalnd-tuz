@@ -101,9 +101,9 @@ export default function CategoriesPage() {
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل" : "جديد"} {editing.parentId ? "(فرعي)" : ""}</h3>
               <button type="button" onClick={() => setEditing(null)}><X className="w-5 h-5 text-muted-foreground" /></button>
             </div>
-            <Field label="الاسم بالعربي *" value={editing.nameAr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameAr: v }))} required />
-            <Field label="الاسم بالإنجليزي *" value={editing.name ?? ""} onChange={v => setEditing(s => ({ ...s!, name: v }))} required />
-            <Field label="السلاج (slug فريد) *" value={editing.slug ?? ""} onChange={v => setEditing(s => ({ ...s!, slug: v }))} required />
+            <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameAr: v }))} />
+            <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(s => ({ ...s!, name: v }))} />
+            <Field label="السلاج (slug فريد)" value={editing.slug ?? ""} onChange={v => setEditing(s => ({ ...s!, slug: v }))} />
             <Field label="الترتيب" type="number" value={String(editing.sortOrder ?? 0)} onChange={v => setEditing(s => ({ ...s!, sortOrder: parseInt(v) || 0 }))} />
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={editing.isActive ?? true} onChange={e => setEditing(s => ({ ...s!, isActive: e.target.checked }))} className="accent-primary" />
@@ -117,11 +117,11 @@ export default function CategoriesPage() {
   );
 }
 
-function Field({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean }) {
+function Field({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} required={required}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
   );

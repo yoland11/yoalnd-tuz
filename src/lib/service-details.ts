@@ -15,7 +15,6 @@ export type ServiceDetailField = {
   key: string;
   label: string;
   type: DetailInputType;
-  required?: boolean;
   options?: { value: string; label: string }[];
   source?: "crews";
   accept?: string;
@@ -55,75 +54,75 @@ export function getServiceDetailFields(serviceType?: string | null): ServiceDeta
   switch (normalizeServiceType(serviceType)) {
     case "kosha":
       return [
-        { key: "koshaType", label: "نوع الكوشة", type: "select", required: true, options: [{ value: "اعتيادي", label: "اعتيادي" }, { value: "ملكي VIP", label: "ملكي VIP" }] },
-        { key: "governorate", label: "المحافظة", type: "text", required: true },
-        { key: "address", label: "العنوان", type: "text", required: true },
-        { key: "bookingTime", label: "وقت الحجز", type: "time", required: true },
-        { key: "chairsCount", label: "عدد الكراسي", type: "number", required: true, min: 0 },
-        { key: "locationType", label: "داخلي / خارجي", type: "select", required: true, options: IN_OUT },
-        { key: "transport", label: "النقل", type: "select", required: true, options: YES_NO },
+        { key: "koshaType", label: "نوع الكوشة", type: "select", options: [{ value: "اعتيادي", label: "اعتيادي" }, { value: "ملكي VIP", label: "ملكي VIP" }] },
+        { key: "governorate", label: "المحافظة", type: "text" },
+        { key: "address", label: "العنوان", type: "text" },
+        { key: "bookingTime", label: "وقت الحجز", type: "time" },
+        { key: "chairsCount", label: "عدد الكراسي", type: "number", min: 0 },
+        { key: "locationType", label: "داخلي / خارجي", type: "select", options: IN_OUT },
+        { key: "transport", label: "النقل", type: "select", options: YES_NO },
         { key: "referenceImage", label: "صورة مرجعية", type: "file", accept: "image/*" },
       ];
     case "photography":
       return [
-        { key: "crewName", label: "كادر التصوير", type: "select", source: "crews", required: true },
-        { key: "sessionTime", label: "وقت الجلسة", type: "time", required: true },
-        { key: "shootingLocation", label: "موقع التصوير", type: "text", required: true },
-        { key: "sessionType", label: "نوع الجلسة", type: "select", required: true, options: IN_OUT },
-        { key: "peopleCount", label: "عدد الأشخاص", type: "number", required: true, min: 1 },
-        { key: "video", label: "الفيديو", type: "select", required: true, options: YES_NO },
+        { key: "crewName", label: "كادر التصوير", type: "select", source: "crews" },
+        { key: "sessionTime", label: "وقت الجلسة", type: "time" },
+        { key: "shootingLocation", label: "موقع التصوير", type: "text" },
+        { key: "sessionType", label: "نوع الجلسة", type: "select", options: IN_OUT },
+        { key: "peopleCount", label: "عدد الأشخاص", type: "number", min: 1 },
+        { key: "video", label: "الفيديو", type: "select", options: YES_NO },
         { key: "referenceImage", label: "صورة مرجعية", type: "file", accept: "image/*" },
       ];
     case "albums":
       return [
-        { key: "crewName", label: "اسم الكادر", type: "select", source: "crews", required: true },
-        { key: "sessionType", label: "نوع الجلسة", type: "select", required: true, options: IN_OUT },
-        { key: "albumType", label: "نوع الألبوم", type: "text", required: true },
-        { key: "pagesCount", label: "عدد الصفحات", type: "number", required: true, min: 1 },
-        { key: "size", label: "المقاس", type: "text", required: true },
-        { key: "coverType", label: "نوع الغلاف", type: "text", required: true },
+        { key: "crewName", label: "اسم الكادر", type: "select", source: "crews" },
+        { key: "sessionType", label: "نوع الجلسة", type: "select", options: IN_OUT },
+        { key: "albumType", label: "نوع الألبوم", type: "text" },
+        { key: "pagesCount", label: "عدد الصفحات", type: "number", min: 1 },
+        { key: "size", label: "المقاس", type: "text" },
+        { key: "coverType", label: "نوع الغلاف", type: "text" },
         { key: "coverName", label: "الاسم على الغلاف", type: "text" },
         { key: "albumFiles", label: "رفع صور الألبوم", type: "file", accept: "image/*", multiple: true },
       ];
     case "research":
       return [
-        { key: "researchTitle", label: "عنوان البحث", type: "text", required: true },
-        { key: "studentNames", label: "أسماء الطلبة", type: "textarea", required: true },
+        { key: "researchTitle", label: "عنوان البحث", type: "text" },
+        { key: "studentNames", label: "أسماء الطلبة", type: "textarea" },
         { key: "supervisorName", label: "اسم المشرف", type: "text" },
-        { key: "university", label: "الجامعة", type: "text", required: true },
-        { key: "college", label: "الكلية", type: "text", required: true },
-        { key: "department", label: "القسم", type: "text", required: true },
-        { key: "deliveryDate", label: "موعد التسليم", type: "date", required: true },
-        { key: "printing", label: "الطباعة", type: "select", required: true, options: PRINT_OPTIONS },
-        { key: "copiesCount", label: "عدد النسخ", type: "number", required: true, min: 1, max: 6, dependsOn: { key: "printing", value: "طبع" } },
-        { key: "binding", label: "التجليد", type: "select", required: true, options: [{ value: "تجليد", label: "تجليد" }, { value: "تغليف", label: "تغليف" }] },
+        { key: "university", label: "الجامعة", type: "text" },
+        { key: "college", label: "الكلية", type: "text" },
+        { key: "department", label: "القسم", type: "text" },
+        { key: "deliveryDate", label: "موعد التسليم", type: "date" },
+        { key: "printing", label: "الطباعة", type: "select", options: PRINT_OPTIONS },
+        { key: "copiesCount", label: "عدد النسخ", type: "number", min: 1, max: 6, dependsOn: { key: "printing", value: "طبع" } },
+        { key: "binding", label: "التجليد", type: "select", options: [{ value: "تجليد", label: "تجليد" }, { value: "تغليف", label: "تغليف" }] },
         { key: "researchFiles", label: "رفع ملفات PDF أو Word", type: "file", accept: ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document", multiple: true },
       ];
     case "graduation":
       return [
-        { key: "governorate", label: "المحافظة", type: "text", required: true },
-        { key: "address", label: "العنوان", type: "text", required: true },
-        { key: "bookingTime", label: "وقت الحجز", type: "time", required: true },
-        { key: "setupType", label: "نوع التجهيز", type: "select", required: true, options: [{ value: "الاعتيادي", label: "الاعتيادي" }, { value: "الملكي", label: "الملكي" }, { value: "الأمريكي", label: "الأمريكي" }] },
-        { key: "sashType", label: "نوع الوشاح", type: "select", required: true, options: [{ value: "عادي", label: "عادي" }, { value: "ملكي", label: "ملكي" }, { value: "أمريكي", label: "أمريكي" }] },
-        { key: "robeType", label: "نوع الروب", type: "select", required: true, options: [{ value: "عادي", label: "عادي" }, { value: "إنكليزي", label: "إنكليزي" }] },
-        { key: "writingType", label: "نوع الكتابة", type: "select", required: true, options: [{ value: "طبع", label: "طبع" }, { value: "تطريز", label: "تطريز" }] },
+        { key: "governorate", label: "المحافظة", type: "text" },
+        { key: "address", label: "العنوان", type: "text" },
+        { key: "bookingTime", label: "وقت الحجز", type: "time" },
+        { key: "setupType", label: "نوع التجهيز", type: "select", options: [{ value: "الاعتيادي", label: "الاعتيادي" }, { value: "الملكي", label: "الملكي" }, { value: "الأمريكي", label: "الأمريكي" }] },
+        { key: "sashType", label: "نوع الوشاح", type: "select", options: [{ value: "عادي", label: "عادي" }, { value: "ملكي", label: "ملكي" }, { value: "أمريكي", label: "أمريكي" }] },
+        { key: "robeType", label: "نوع الروب", type: "select", options: [{ value: "عادي", label: "عادي" }, { value: "إنكليزي", label: "إنكليزي" }] },
+        { key: "writingType", label: "نوع الكتابة", type: "select", options: [{ value: "طبع", label: "طبع" }, { value: "تطريز", label: "تطريز" }] },
         { key: "sashLength", label: "طول الوشاح", type: "text" },
         { key: "shoulder", label: "الكتف", type: "text" },
         { key: "robeLength", label: "طول الروب", type: "text" },
         { key: "sleeve", label: "اليد", type: "text" },
-        { key: "cap", label: "القبعة", type: "select", required: true, options: [{ value: "مضافة", label: "مضافة" }, { value: "غير مضافة", label: "غير مضافة" }] },
+        { key: "cap", label: "القبعة", type: "select", options: [{ value: "مضافة", label: "مضافة" }, { value: "غير مضافة", label: "غير مضافة" }] },
         { key: "referenceImage", label: "صورة مرجعية", type: "file", accept: "image/*" },
       ];
     case "gifts":
       return [
-        { key: "governorate", label: "المحافظة", type: "text", required: true },
-        { key: "address", label: "العنوان", type: "text", required: true },
-        { key: "giftType", label: "نوع الهدية", type: "text", required: true },
-        { key: "recipientName", label: "اسم المستلم", type: "text", required: true },
-        { key: "occasionDate", label: "تاريخ المناسبة", type: "date", required: true },
+        { key: "governorate", label: "المحافظة", type: "text" },
+        { key: "address", label: "العنوان", type: "text" },
+        { key: "giftType", label: "نوع الهدية", type: "text" },
+        { key: "recipientName", label: "اسم المستلم", type: "text" },
+        { key: "occasionDate", label: "تاريخ المناسبة", type: "date" },
         { key: "giftMessage", label: "رسالة الهدية", type: "textarea" },
-        { key: "wrapping", label: "التغليف", type: "select", required: true, options: [{ value: "بدون تغليف", label: "بدون تغليف" }, { value: "تغليف", label: "تغليف" }] },
+        { key: "wrapping", label: "التغليف", type: "select", options: [{ value: "بدون تغليف", label: "بدون تغليف" }, { value: "تغليف", label: "تغليف" }] },
         { key: "referenceImage", label: "صورة مرجعية", type: "file", accept: "image/*" },
       ];
     default:

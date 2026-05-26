@@ -2,7 +2,7 @@ import type { ServiceOrderInputCustomFields } from "./serviceOrderInputCustomFie
 
 export interface ServiceOrderInput {
   serviceId: number;
-  customerName: string;
+  customerName?: string;
   phone: string;
   eventDate?: string;
   eventLocation?: string;

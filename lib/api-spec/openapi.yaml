@@ -904,7 +904,6 @@ components:
 
     ProductInput:
       type: object
-      required: [name, nameAr, price, stock]
       properties:
         name:
           type: string
@@ -993,7 +992,7 @@ components:
 
     ServiceOrderInput:
       type: object
-      required: [serviceId, customerName, phone, eventDate]
+      required: [serviceId, phone]
       properties:
         serviceId:
           type: integer
@@ -1160,7 +1159,7 @@ components:
 
     OrderInput:
       type: object
-      required: [customerName, customerPhone, governorate]
+      required: [customerPhone]
       properties:
         customerName:
           type: string
@@ -1325,7 +1324,7 @@ components:
 
     ReviewInput:
       type: object
-      required: [productId, customerName, rating]
+      required: [productId, rating]
       properties:
         productId:
           type: integer
@@ -1360,7 +1359,6 @@ components:
 
     DeliveryZoneInput:
       type: object
-      required: [governorate, governorateAr, price, estimatedDays]
       properties:
         governorate:
           type: string

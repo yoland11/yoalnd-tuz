@@ -71,7 +71,7 @@ export default function DeliveryPage() {
         <section className="bg-card rounded-xl border border-primary/30 p-6 space-y-3">
           <h2 className="font-semibold text-foreground">منطقة جديدة</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <input placeholder="المحافظة (عربي) *" value={newZone.governorateAr}
+            <input placeholder="المحافظة (عربي)" value={newZone.governorateAr}
               onChange={e => setNewZone(z => ({ ...z, governorateAr: e.target.value, governorate: z.governorate || e.target.value }))}
               className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
             <input placeholder="Governorate (en)" value={newZone.governorate}

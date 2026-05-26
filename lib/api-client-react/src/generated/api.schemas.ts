@@ -73,13 +73,13 @@ export interface Product {
 }
 
 export interface ProductInput {
-  name: string;
-  nameAr: string;
+  name?: string;
+  nameAr?: string;
   description?: string;
   descriptionAr?: string;
-  price: number;
+  price?: number;
   originalPrice?: number;
-  stock: number;
+  stock?: number;
   category?: string;
   subcategory?: string;
   images?: string[];
@@ -125,7 +125,7 @@ export type ServiceOrderInputCustomFields = { [key: string]: unknown };
 
 export interface ServiceOrderInput {
   serviceId: number;
-  customerName: string;
+  customerName?: string;
   phone: string;
   eventDate?: string;
   eventLocation?: string;
@@ -245,9 +245,9 @@ export const OrderInputPaymentMethod = {
 } as const;
 
 export interface OrderInput {
-  customerName: string;
+  customerName?: string;
   customerPhone: string;
-  governorate: string;
+  governorate?: string;
   area?: string;
   address?: string;
   notes?: string;
@@ -360,7 +360,7 @@ export interface Review {
 
 export interface ReviewInput {
   productId: number;
-  customerName: string;
+  customerName?: string;
   rating: number;
   comment?: string;
 }
@@ -376,11 +376,11 @@ export interface DeliveryZone {
 }
 
 export interface DeliveryZoneInput {
-  governorate: string;
-  governorateAr: string;
+  governorate?: string;
+  governorateAr?: string;
   areas?: string[];
-  price: number;
-  estimatedDays: number;
+  price?: number;
+  estimatedDays?: number;
   isActive?: boolean;
 }
 

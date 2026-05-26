@@ -1,13 +1,13 @@
 import type { ProductColor } from "./productColor";
 
 export interface ProductInput {
-  name: string;
-  nameAr: string;
+  name?: string;
+  nameAr?: string;
   description?: string;
   descriptionAr?: string;
-  price: number;
+  price?: number;
   originalPrice?: number;
-  stock: number;
+  stock?: number;
   category?: string;
   subcategory?: string;
   images?: string[];

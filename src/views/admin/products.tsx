@@ -330,11 +330,11 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Inp label="الاسم بالعربي *" value={form.nameAr} onChange={v => onChange({ ...form, nameAr: v })} required />
-          <Inp label="الاسم بالإنجليزي *" value={form.name} onChange={v => onChange({ ...form, name: v })} required />
-          <Inp label="السعر *" type="number" value={form.price} onChange={v => onChange({ ...form, price: v })} required />
+          <Inp label="الاسم بالعربي" value={form.nameAr} onChange={v => onChange({ ...form, nameAr: v })} />
+          <Inp label="الاسم بالإنجليزي" value={form.name} onChange={v => onChange({ ...form, name: v })} />
+          <Inp label="السعر" type="number" value={form.price} onChange={v => onChange({ ...form, price: v })} />
           <Inp label="السعر الأصلي (اختياري)" type="number" value={form.originalPrice ?? ""} onChange={v => onChange({ ...form, originalPrice: v })} />
-          <Inp label="المخزون *" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} required />
+          <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
             <select value={form.category ?? ""} onChange={e => onChange({ ...form, category: e.target.value, subcategory: "" })}
@@ -454,11 +454,11 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   );
 }
 
-function Inp({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean }) {
+function Inp({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} required={required}
+      <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
   );

@@ -290,7 +290,6 @@ export default function ProductDetail() {
                 value={reviewerName}
                 onChange={e => setReviewerName(e.target.value)}
                 placeholder="اسمك"
-                required
                 className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50"
               />
               <div className="flex gap-1">

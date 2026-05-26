@@ -268,6 +268,24 @@ function money(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function textFallback(...values: unknown[]): string {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function slugFallback(value: unknown, fallback = "item"): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
 function paymentSummary(totalValue: unknown, depositValue: unknown, preferredStatus?: unknown) {
   const total = money(totalValue);
   const requestedDeposit = money(depositValue);
@@ -1573,16 +1591,18 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const parsed = CreateProductBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const data = parsed.data as any;
+    const productNameAr = textFallback(data.nameAr, data.name, "منتج جديد");
+    const productName = textFallback(data.name, data.nameAr, `product-${Date.now().toString(36)}`);
     const [product] = await db
       .insert(productsTable)
       .values({
-        name: data.name,
-        nameAr: data.nameAr,
+        name: productName,
+        nameAr: productNameAr,
         description: data.description,
         descriptionAr: data.descriptionAr,
-        price: data.price.toString(),
+        price: String(money(data.price)),
         originalPrice: data.originalPrice?.toString(),
-        stock: data.stock,
+        stock: Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
         category: data.category,
         images: data.images ?? [],
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
@@ -1621,7 +1641,10 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "sortOrder",
       "stock",
     ]) {
-      if (data[k] !== undefined) update[k] = k === "colors" ? normalizeColors(data[k]) : data[k];
+      if (data[k] !== undefined) {
+        if ((k === "name" || k === "nameAr") && !String(data[k] ?? "").trim()) continue;
+        update[k] = k === "colors" ? normalizeColors(data[k]) : data[k];
+      }
     }
     if (data.price !== undefined) update.price = data.price.toString();
     if (data.originalPrice !== undefined) update.originalPrice = data.originalPrice.toString();
@@ -1704,10 +1727,11 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       "";
     const phone = normalizeIraqiPhone(data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const safeCustomerName = textFallback(data.customerName, formatIraqiPhone(phone), "زبون");
     await ensureTrackingColumns();
     const order = await insertServiceOrderWithTracking({
       serviceId: data.serviceId,
-      customerName: data.customerName,
+      customerName: safeCustomerName,
       phone,
       eventDate: data.eventDate ?? "",
       eventLocation,
@@ -2003,6 +2027,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (cartItems.length === 0) return error("السلة فارغة", 400);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
     if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const safeCustomerName = textFallback(data.customerName, formatIraqiPhone(customerPhone), "زبون");
     let deliveryFee = 0;
     if (data.deliveryZoneId) {
       const zone = await db.query.deliveryZonesTable.findFirst({
@@ -2020,7 +2045,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         trackingCode: trackingCodeForPhone(customerPhone),
         phoneLast4: phoneLast4(customerPhone),
         customerId: customerId ?? undefined,
-        customerName: data.customerName,
+        customerName: safeCustomerName,
         customerPhone,
         status: "pending",
         total: total.toString(),
@@ -2029,10 +2054,10 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         depositAmount: String(payment.deposit),
         remainingAmount: String(payment.remaining),
         paymentStatus: payment.status,
-        governorate: data.governorate,
+        governorate: data.governorate ?? "",
         area: data.area ?? null,
-        address: data.address,
-        notes: data.notes,
+        address: data.address ?? "",
+        notes: data.notes ?? null,
         mapsUrl: data.mapsUrl ?? null,
       })
       .returning();
@@ -2223,7 +2248,10 @@ async function handleReviews(req: NextRequest, parts: string[]) {
   if (method === "POST" && parts.length === 1) {
     const parsed = CreateReviewBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
-    const [review] = await db.insert(reviewsTable).values(parsed.data).returning();
+    const [review] = await db.insert(reviewsTable).values({
+      ...parsed.data,
+      customerName: textFallback(parsed.data.customerName, "زبون"),
+    }).returning();
     return json(
       {
         id: review.id,
@@ -2257,14 +2285,16 @@ async function handleDelivery(req: NextRequest, parts: string[]) {
     const parsed = CreateDeliveryZoneBody.safeParse(await body(req));
     if (!parsed.success) return error("بيانات غير صحيحة", 400);
     const data = parsed.data as any;
+    const governorateAr = textFallback(data.governorateAr, data.governorate, "محافظة جديدة");
+    const governorate = textFallback(data.governorate, data.governorateAr, governorateAr);
     const [zone] = await db
       .insert(deliveryZonesTable)
       .values({
-        governorate: data.governorate,
-        governorateAr: data.governorateAr,
+        governorate,
+        governorateAr,
         areas: data.areas ?? [],
-        price: data.price.toString(),
-        estimatedDays: data.estimatedDays,
+        price: String(money(data.price)),
+        estimatedDays: Number.isFinite(Number(data.estimatedDays)) ? Number(data.estimatedDays) : 1,
         isActive: data.isActive ?? true,
       })
       .returning();
@@ -2476,9 +2506,6 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
         values = await normalizeAddressBody(data, customer);
       } catch (err: any) {
         return error(err?.message ?? "بيانات العنوان غير صحيحة", 400);
-      }
-      if (!values.fullName || !values.phone || !values.governorate || !values.city || !values.address) {
-        return error("أكمل حقول العنوان الأساسية", 400);
       }
       if (values.isDefault) {
         await db.update(customerAddressesTable).set({ isDefault: false, updatedAt: new Date() }).where(eq(customerAddressesTable.customerId, customerId));
@@ -2949,11 +2976,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
     if (method === "POST") {
       const { name, nameAr, slug, parentId, sortOrder, isActive } = await body(req);
-      if (!name || !nameAr || !slug) return error("بيانات ناقصة", 400);
+      const categoryNameAr = textFallback(nameAr, name, "تصنيف جديد");
+      const categoryName = textFallback(name, nameAr, `category-${Date.now().toString(36)}`);
+      const categorySlug = textFallback(slug, `${slugFallback(categoryNameAr || categoryName, "category")}-${Date.now().toString(36)}`);
       try {
         const [row] = await db
           .insert(categoriesTable)
-          .values({ name, nameAr, slug, parentId: parentId ?? null, sortOrder: sortOrder ?? 0, isActive: isActive ?? true })
+          .values({ name: categoryName, nameAr: categoryNameAr, slug: categorySlug, parentId: parentId ?? null, sortOrder: sortOrder ?? 0, isActive: isActive ?? true })
           .returning();
         return json(row, 201);
       } catch (err: any) {
@@ -2968,6 +2997,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const update: any = {};
       for (const k of ["name", "nameAr", "slug", "parentId", "sortOrder", "isActive"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
+      }
+      if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
+      if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
+      if (update.slug !== undefined && !String(update.slug ?? "").trim()) {
+        update.slug = `${slugFallback(b?.nameAr ?? b?.name, "category")}-${Date.now().toString(36)}`;
       }
       const [row] = await db.update(categoriesTable).set(update).where(eq(categoriesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
@@ -3094,8 +3128,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
     if (method === "POST") {
       const b = await body(req);
-      const name = typeof b?.name === "string" ? b.name.trim() : "";
-      if (!name) return error("اسم الكادر مطلوب", 400);
+      const name = textFallback(b?.name, `كادر ${Date.now().toString(36)}`);
       const [row] = await db
         .insert(crewsTable)
         .values({
@@ -3120,8 +3153,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const update: any = { updatedAt: new Date() };
       if (b?.name !== undefined) {
         const name = typeof b.name === "string" ? b.name.trim() : "";
-        if (!name) return error("اسم الكادر مطلوب", 400);
-        update.name = name;
+        if (name) update.name = name;
       }
       if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
       if (b?.status !== undefined || b?.isActive !== undefined) update.status = normalizeCrewStatus(b?.status ?? existing.status, b?.isActive ?? update.isActive ?? existing.isActive);
@@ -3414,9 +3446,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         "";
       const phone = normalizeIraqiPhone(data.phone);
       if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+      const safeCustomerName = textFallback(data.customerName, formatIraqiPhone(phone), "زبون");
       const order = await insertServiceOrderWithTracking({
         serviceId: data.serviceId,
-        customerName: data.customerName,
+        customerName: safeCustomerName,
         phone,
         eventDate: data.eventDate ?? "",
         eventLocation,
@@ -3534,6 +3567,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const prev = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
       if (!prev) return error("غير موجود", 404);
+      if (update.customerName !== undefined && !String(update.customerName ?? "").trim()) {
+        delete update.customerName;
+      }
       if (update.phone !== undefined) {
         const phone = normalizeIraqiPhone(String(update.phone));
         if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -3607,10 +3643,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "POST" && !parts[2]) {
       const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus } = await body(req);
       const orderItems = mergeOrderItems(items);
-      if (!customerName || !customerPhone || orderItems.length === 0) return error("بيانات ناقصة", 400);
+      if (!customerPhone || orderItems.length === 0) return error("رقم الهاتف والمنتجات مطلوبة", 400);
       if (paymentMethod !== undefined && normalizePayment(paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
       const normalizedPhone = normalizeIraqiPhone(customerPhone);
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
+      const safeCustomerName = textFallback(customerName, formatIraqiPhone(normalizedPhone), "زبون");
       const total = orderItems.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
       const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined));
           const [order] = await db
@@ -3618,11 +3655,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             .values({
               trackingCode: trackingCodeForPhone(normalizedPhone),
               phoneLast4: phoneLast4(normalizedPhone),
-              customerName,
+              customerName: safeCustomerName,
               customerPhone: normalizedPhone,
-              governorate,
-              address,
-              notes,
+              governorate: governorate ?? "",
+              address: address ?? "",
+              notes: notes ?? null,
               internalNotes: internalNotes ?? null,
               area: area ?? null,
               mapsUrl: mapsUrl ?? null,
@@ -3729,15 +3766,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
     if (method === "POST" && !parts[2]) {
       const { name, nameAr, description, descriptionAr, type, icon, image, imageMetadata, isActive, sortOrder } = await body(req);
-      if (!name || !nameAr || !type) return error("بيانات ناقصة", 400);
+      const serviceNameAr = textFallback(nameAr, name, "خدمة جديدة");
+      const serviceName = textFallback(name, nameAr, `service-${Date.now().toString(36)}`);
+      const serviceType = textFallback(type, "other");
       const [row] = await db
         .insert(servicesTable)
         .values({
-          name,
-          nameAr,
+          name: serviceName,
+          nameAr: serviceNameAr,
           description: description ?? null,
           descriptionAr: descriptionAr ?? null,
-          type,
+          type: serviceType,
           icon: icon ?? null,
           image: image ?? null,
           imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
@@ -3755,6 +3794,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       for (const k of ["name", "nameAr", "description", "descriptionAr", "type", "icon", "image", "imageMetadata", "isActive", "sortOrder"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
+      if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
+      if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
+      if (update.type !== undefined && !String(update.type ?? "").trim()) update.type = "other";
       const [row] = await db.update(servicesTable).set(update).where(eq(servicesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
       return json(row);
@@ -3993,8 +4035,9 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     }
     if (method === "POST") {
       const { name, nameAr, isActive } = await body(req);
-      if (!name || !nameAr) return error("بيانات ناقصة", 400);
-      const [row] = await db.insert(expenseCategoriesTable).values({ name, nameAr, isActive: isActive === false ? 0 : 1 }).returning();
+      const finalNameAr = textFallback(nameAr, name, "تصنيف مصروف جديد");
+      const finalName = textFallback(name, nameAr, `expense-${Date.now().toString(36)}`);
+      const [row] = await db.insert(expenseCategoriesTable).values({ name: finalName, nameAr: finalNameAr, isActive: isActive === false ? 0 : 1 }).returning();
       return json(row, 201);
     }
     if (method === "PATCH" && parts[2]) {
@@ -4005,6 +4048,8 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       if (b?.name !== undefined) update.name = b.name;
       if (b?.nameAr !== undefined) update.nameAr = b.nameAr;
       if (b?.isActive !== undefined) update.isActive = b.isActive ? 1 : 0;
+      if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
+      if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
       const [row] = await db.update(expenseCategoriesTable).set(update).where(eq(expenseCategoriesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
       return json(row);
@@ -4041,7 +4086,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const b = await body(req);
       let customerId = b?.customerId ?? null;
       const amt = parseAmount(b?.amount);
-      if (!b?.payerName || amt === null) return error("بيانات ناقصة", 400);
+      if (amt === null) return error("المبلغ غير صحيح", 400);
       if (!customerId && typeof b?.customerPhone === "string" && b.customerPhone.trim()) {
         const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -4055,7 +4100,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           voucherNo: `TMP-${randomUUID()}`,
           date: b?.date || new Date().toISOString().slice(0, 10),
           amount: String(amt),
-          payerName: b.payerName,
+          payerName: textFallback(b?.payerName, "زبون"),
           customerId: customerId ?? null,
           orderId: b?.orderId ?? null,
           bookingId: b?.bookingId ?? null,
@@ -4100,7 +4145,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     if (method === "POST") {
       const b = await body(req);
       const amt = parseAmount(b?.amount);
-      if (!b?.payeeName || amt === null) return error("بيانات ناقصة", 400);
+      if (amt === null) return error("المبلغ غير صحيح", 400);
       const a = actor(auth);
       const [row] = await db
         .insert(paymentVouchersTable)
@@ -4108,7 +4153,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           voucherNo: `TMP-${randomUUID()}`,
           date: b?.date || new Date().toISOString().slice(0, 10),
           amount: String(amt),
-          payeeName: b.payeeName,
+          payeeName: textFallback(b?.payeeName, "مستلم"),
           reference: b?.reference ?? null,
           method: normMethod(b?.method),
           notes: b?.notes ?? null,

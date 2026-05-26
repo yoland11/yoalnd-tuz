@@ -607,12 +607,11 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
           className="space-y-3"
         >
           <div>
-            <label className="block text-xs text-muted-foreground mb-1">الموعد الجديد المقترح *</label>
+            <label className="block text-xs text-muted-foreground mb-1">الموعد الجديد المقترح</label>
             <input
               type="datetime-local"
               value={requestedDate}
               onChange={(e) => setRequestedDate(e.target.value)}
-              required
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
             />
           </div>

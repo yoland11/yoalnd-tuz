@@ -39,6 +39,32 @@ function preparePdfClone(doc: Document) {
     }
   `;
   doc.head.appendChild(style);
+
+  const win = doc.defaultView;
+  if (!win?.getComputedStyle || !doc.body) return;
+
+  const unsupportedColor = /(oklab|lab|oklch|lch|color)\(/i;
+  const safeColor = (value: string, fallback: string) => {
+    const color = value?.trim();
+    if (!color || color === "transparent" || color === "rgba(0, 0, 0, 0)") return color || fallback;
+    return unsupportedColor.test(color) ? fallback : color;
+  };
+
+  const all = [doc.body, ...Array.from(doc.body.querySelectorAll<HTMLElement>("*"))];
+  for (const el of all) {
+    const computed = win.getComputedStyle(el);
+    el.style.color = safeColor(computed.color, "#111827");
+    el.style.backgroundColor = safeColor(computed.backgroundColor, el === doc.body ? "#ffffff" : "transparent");
+    el.style.borderTopColor = safeColor(computed.borderTopColor, "#d1d5db");
+    el.style.borderRightColor = safeColor(computed.borderRightColor, "#d1d5db");
+    el.style.borderBottomColor = safeColor(computed.borderBottomColor, "#d1d5db");
+    el.style.borderLeftColor = safeColor(computed.borderLeftColor, "#d1d5db");
+    el.style.outlineColor = safeColor(computed.outlineColor, "#d1d5db");
+    el.style.setProperty("fill", safeColor(computed.fill, "#111827"));
+    el.style.setProperty("stroke", safeColor(computed.stroke, "#111827"));
+    el.style.boxShadow = "none";
+    el.style.textShadow = "none";
+  }
 }
 
 export async function downloadElementPdf(element: HTMLElement | null, filename: string) {

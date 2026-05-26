@@ -122,10 +122,10 @@ export default function ServicesPage() {
               <h3 className="font-bold text-foreground">{editing.id ? "تعديل خدمة" : "خدمة جديدة"}</h3>
               <button type="button" onClick={() => setEditing(null)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
             </div>
-            <Field label="الاسم بالعربي *" value={editing.nameAr ?? ""} onChange={v => setEditing(e => ({ ...e!, nameAr: v }))} required />
-            <Field label="الاسم بالإنجليزي *" value={editing.name ?? ""} onChange={v => setEditing(e => ({ ...e!, name: v }))} required />
+            <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(e => ({ ...e!, nameAr: v }))} />
+            <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(e => ({ ...e!, name: v }))} />
             <div>
-              <label className="block text-xs text-muted-foreground mb-1">النوع *</label>
+              <label className="block text-xs text-muted-foreground mb-1">النوع</label>
               <select value={editing.type ?? "kosha"} onChange={e => setEditing(s => ({ ...s!, type: e.target.value }))}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
                 {SERVICE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -162,15 +162,15 @@ export default function ServicesPage() {
   );
 }
 
-function Field({ label, value, onChange, required = false, textarea = false }: { label: string; value: string; onChange: (v: string) => void; required?: boolean; textarea?: boolean }) {
+function Field({ label, value, onChange, textarea = false }: { label: string; value: string; onChange: (v: string) => void; textarea?: boolean }) {
   return (
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       {textarea ? (
-        <textarea value={value} onChange={e => onChange(e.target.value)} required={required} rows={3}
+        <textarea value={value} onChange={e => onChange(e.target.value)} rows={3}
           className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
       ) : (
-        <input value={value} onChange={e => onChange(e.target.value)} required={required}
+        <input value={value} onChange={e => onChange(e.target.value)}
           className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
       )}
     </div>
