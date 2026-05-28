@@ -69,25 +69,35 @@ export default function ProductsPage() {
   }
 
   async function save(form: ProductForm) {
+    const price = parseFloat(form.price) || 0;
+    const parsedOriginalPrice = form.originalPrice ? parseFloat(form.originalPrice) : undefined;
+
     const body = {
-      name: form.name, nameAr: form.nameAr,
-      description: form.description ?? null, descriptionAr: form.descriptionAr ?? null,
-      price: parseFloat(form.price) || 0,
-      originalPrice: form.originalPrice ? parseFloat(form.originalPrice) : null,
+      name: form.name.trim(),
+      nameAr: form.nameAr.trim(),
+      description: form.description?.trim() || "",
+      descriptionAr: form.descriptionAr?.trim() || "",
+      price,
+      ...(parsedOriginalPrice && parsedOriginalPrice > price ? { originalPrice: parsedOriginalPrice } : {}),
       stock: parseInt(form.stock) || 0,
-      category: form.category || null, subcategory: form.subcategory || null,
-      images: form.images, imageMetadata: form.imageMetadata ?? [], colors: normalizeColors(form.colors),
+      ...(form.category ? { category: form.category } : {}),
+      ...(form.subcategory ? { subcategory: form.subcategory } : {}),
+      images: form.images ?? [],
+      imageMetadata: form.imageMetadata ?? [],
+      colors: normalizeColors(form.colors ?? []),
       isFeatured: form.isFeatured,
       ...(form.isActive !== undefined ? { isActive: form.isActive } : {}),
     } as any;
 
     if (form.id) {
       await update.mutateAsync({ id: form.id, data: body });
+      invalidate();
+      setEditing(null);
     } else {
       await create.mutateAsync({ data: body });
+      invalidate();
+      setEditing({ ...blank });
     }
-    invalidate();
-    setEditing(null);
   }
 
   return (
@@ -318,9 +328,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl">
       <form
-        onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSave(form); } finally { setBusy(false); } }}
+        onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSave(form); } catch (error: any) { alert(error?.message || "تعذر حفظ المنتج"); } finally { setBusy(false); } }}
         onClick={e => e.stopPropagation()}
         className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4"
       >
