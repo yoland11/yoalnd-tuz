@@ -14,6 +14,7 @@ const ArchivePage = lazy(() => import("./archive"));
 const ServicesPage = lazy(() => import("./services"));
 const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
+const POSPage   = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
 const ReportsPage = lazy(() => import("./reports"));
@@ -90,6 +91,7 @@ export default function Admin() {
           <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
           <Route path="/admin/products"  >{() => <Guard me={me} perm="products"   ><ProductsPage   /></Guard>}</Route>
           <Route path="/admin/categories">{() => <Guard me={me} perm="products"  ><CategoriesPage /></Guard>}</Route>
+          <Route path="/admin/pos"       >{() => <Guard me={me} perm="invoices"  ><POSPage        /></Guard>}</Route>
           <Route path="/admin/sales"     >{() => <Guard me={me} perm="invoices"  ><SalesPage      /></Guard>}</Route>
           <Route path="/admin/purchases" >{() => <Guard me={me} perm="accounting"><PurchasesPage  /></Guard>}</Route>
           <Route path="/admin/reports"   >{() => <Guard me={me} perm="accounting"><ReportsPage    /></Guard>}</Route>
