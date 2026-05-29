@@ -342,8 +342,9 @@ export default function POSPage() {
   // ── Data fetching ──────────────────────────────────────────────────────────
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
-    queryFn: () => adminFetch("/admin/products?limit=2000"),
-    staleTime: 5 * 60 * 1000,
+    queryFn: () => adminFetch("/admin/products?limit=500"),
+    staleTime: 3 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
   });
 
   const { data: categories = [] } = useQuery<Category[]>({

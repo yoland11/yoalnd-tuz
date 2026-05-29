@@ -95,6 +95,8 @@ export async function fetchAdminMe(options: { force?: boolean } = {}): Promise<A
   return adminMePromise;
 }
 
+export function getCachedAdminMe(): AdminMe | null | undefined { return adminMeCache; }
+
 export function hasPerm(user: AdminMe | null, perm: Permission | null): boolean {
   if (!user || !user.isActive) return false;
   if (user.role === "admin") return true;

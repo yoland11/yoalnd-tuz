@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { Switch, Route, useLocation, Redirect } from "wouter";
 import { Loader2 } from "lucide-react";
 import {
-  fetchAdminMe, logoutAdmin, hasPerm,
+  fetchAdminMe, logoutAdmin, hasPerm, getCachedAdminMe,
   type AdminMe, type Permission,
 } from "./_lib";
 import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
@@ -44,11 +44,14 @@ function AdminPageLoader() {
 
 export default function Admin() {
   const [location] = useLocation();
-  const [me, setMe] = useState<AdminMe | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = getCachedAdminMe();
+  const [me, setMe] = useState<AdminMe | null>(() => (cached !== undefined ? cached : null));
+  const [loading, setLoading] = useState(() => cached === undefined);
   const [, setLocation] = useLocation();
 
   useEffect(() => {
+    // If we already have a cached result, skip the network round-trip on mount
+    if (getCachedAdminMe() !== undefined) return;
     let alive = true;
     fetchAdminMe().then(u => {
       if (!alive) return;

@@ -63,8 +63,9 @@ export default function PurchasesPage() {
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
-    queryFn: () => adminFetch("/admin/products?limit=1000"),
-    staleTime: 5 * 60 * 1000,
+    queryFn: () => adminFetch("/admin/products?limit=500"),
+    staleTime: 3 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
   });
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({

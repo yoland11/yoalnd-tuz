@@ -46,14 +46,16 @@ export default function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "dashboard"],
     queryFn: () => adminFetch<DashboardData>("/admin/dashboard"),
-    refetchInterval: 20000,
-    refetchOnWindowFocus: true,
+    refetchInterval: 60000,
+    refetchOnWindowFocus: false,
+    staleTime: 30000,
   });
   const { data: recent } = useQuery({
     queryKey: ["admin", "recent-orders"],
     queryFn: () => adminFetch<RecentOrder[]>("/dashboard/recent-orders"),
-    refetchInterval: 15000,
-    refetchOnWindowFocus: true,
+    refetchInterval: 60000,
+    refetchOnWindowFocus: false,
+    staleTime: 30000,
   });
 
   if (isLoading || !data) {

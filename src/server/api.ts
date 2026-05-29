@@ -1015,6 +1015,18 @@ async function ensurePerformanceIndexes(): Promise<void> {
   await performanceIndexesPromise;
 }
 
+let adminProductsColumnsPromise: Promise<void> | null = null;
+async function ensureAdminProductsColumns(): Promise<void> {
+  if (!adminProductsColumnsPromise) {
+    adminProductsColumnsPromise = db.execute(sql`
+      alter table "products" add column if not exists "barcode" varchar(100);
+      alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
+      create index if not exists "products_barcode_idx" on "products" ("barcode") where "barcode" is not null;
+    `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
+  }
+  await adminProductsColumnsPromise;
+}
+
 async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
   try {
     await ensureActivityTables();
@@ -2978,7 +2990,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const rows = await db.query.categoriesTable.findMany({
         orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.id)],
       });
-      return json(rows);
+      const catRes = json(rows);
+      catRes.headers.set("Cache-Control", "private, max-age=120, stale-while-revalidate=300");
+      return catRes;
     }
     if (method === "POST") {
       const { name, nameAr, slug, parentId, sortOrder, isActive } = await body(req);
@@ -3018,6 +3032,51 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       await db.delete(categoriesTable).where(eq(categoriesTable.id, id));
       return json({ message: "تم الحذف" });
+    }
+  }
+
+  if (section === "products") {
+    const auth = await requirePermission(req, "invoices");
+    if (isResponse(auth)) return auth;
+    if (method === "GET") {
+      await ensureAdminProductsColumns();
+      const limitParam = Math.min(parseInt(req.nextUrl.searchParams.get("limit") ?? "500", 10) || 500, 2000);
+      const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
+      const rows = await db.query.productsTable.findMany({
+        where: search
+          ? or(ilike(productsTable.nameAr, `%${search}%`), ilike(productsTable.name, `%${search}%`), ilike((productsTable as any).barcode, `%${search}%`))
+          : undefined,
+        orderBy: (p, { asc, desc: d }) => [asc(p.sortOrder), d(p.createdAt)],
+        limit: limitParam,
+      }) as any[];
+      const res = json(rows.map(p => ({
+        id: p.id,
+        name: p.name,
+        nameAr: p.nameAr,
+        price: String(p.price),
+        costPrice: String(p.costPrice ?? p.cost_price ?? "0"),
+        stock: String(p.stock),
+        category: p.category ?? "",
+        images: p.images ?? [],
+        barcode: p.barcode ?? p.bar_code ?? "",
+        isActive: p.isActive ?? p.is_active ?? true,
+      })));
+      res.headers.set("Cache-Control", "private, max-age=30, stale-while-revalidate=60");
+      return res;
+    }
+    if (method === "PATCH" && parts[2]) {
+      const auth2 = await requirePermission(req, "products");
+      if (isResponse(auth2)) return auth2;
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const b = await body(req);
+      const update: any = {};
+      if (b?.barcode !== undefined) update.barcode = b.barcode || null;
+      if (b?.costPrice !== undefined) update.costPrice = String(money(b.costPrice));
+      if (!Object.keys(update).length) return error("لا يوجد ما يُحدَّث", 400);
+      const [row] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
+      if (!row) return error("غير موجود", 404);
+      return json(row);
     }
   }
 
@@ -5059,27 +5118,23 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
-    if (root === "auth" || root === "orders" || (!isAdminAuth && root === "admin") || root === "dashboard" || root === "customer") {
-      await ensureCustomerProfileColumns();
-    }
-    if (root === "products" || root === "services" || root === "gallery" || (!isAdminAuth && root === "admin") || root === "auth" || root === "customer" || root === "settings") {
-      await ensureImageMetadataColumns();
-    }
-    if (root === "cart" || root === "orders" || root === "products" || (!isAdminAuth && root === "admin") || root === "customer" || root === "dashboard") {
-      await ensureProductColorColumns();
-    }
-    if (root === "customer" || root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "auth") {
-      await ensureCustomerRewards();
-    }
-    if (root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "dashboard") {
-      await ensureTrackingColumns();
-      await ensurePaymentWorkflowColumns();
-      await ensureArchiveColumns();
-      await ensurePerformanceIndexes();
-    }
-    if (root === "admin") {
-      await ensureStaffActivityColumn();
-    }
+
+    // Run all schema ensures in parallel — they are singleton-promise guarded, so
+    // after first resolution each subsequent await is a microtask (effectively free).
+    await Promise.all([
+      (root === "auth" || root === "orders" || (!isAdminAuth && root === "admin") || root === "dashboard" || root === "customer")
+        ? ensureCustomerProfileColumns() : undefined,
+      (root === "products" || root === "services" || root === "gallery" || (!isAdminAuth && root === "admin") || root === "auth" || root === "customer" || root === "settings")
+        ? ensureImageMetadataColumns() : undefined,
+      (root === "cart" || root === "orders" || root === "products" || (!isAdminAuth && root === "admin") || root === "customer" || root === "dashboard")
+        ? ensureProductColorColumns() : undefined,
+      (root === "customer" || root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "auth")
+        ? ensureCustomerRewards() : undefined,
+      (root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "dashboard")
+        ? Promise.all([ensureTrackingColumns(), ensurePaymentWorkflowColumns(), ensureArchiveColumns(), ensurePerformanceIndexes()]) : undefined,
+      (root === "admin") ? ensureStaffActivityColumn() : undefined,
+      (root === "admin") ? ensureAdminProductsColumns() : undefined,
+    ].filter(Boolean));
 
     const route =
       root === "auth"
