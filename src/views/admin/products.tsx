@@ -7,6 +7,7 @@ import {
 import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
@@ -36,6 +37,7 @@ const blank: ProductForm = {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: products, isLoading } = useListProducts({ limit: 250 });
   const { data: categories } = useQuery({
     queryKey: ["admin", "categories"],
@@ -92,10 +94,12 @@ export default function ProductsPage() {
     if (form.id) {
       await update.mutateAsync({ id: form.id, data: body });
       invalidate();
+      toast({ title: "تم تحديث المنتج بنجاح", description: form.nameAr || form.name });
       setEditing(null);
     } else {
       await create.mutateAsync({ data: body });
       invalidate();
+      toast({ title: "تم إضافة المنتج بنجاح", description: form.nameAr || form.name });
       setEditing({ ...blank });
     }
   }
@@ -328,7 +332,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl">
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={e => e.stopPropagation()}>
       <form
         onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSave(form); } catch (error: any) { alert(error?.message || "تعذر حفظ المنتج"); } finally { setBusy(false); } }}
         onClick={e => e.stopPropagation()}

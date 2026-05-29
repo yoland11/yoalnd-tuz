@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
+  Receipt, ShoppingCart, BarChart3,
 } from "lucide-react";
 import { hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -10,21 +11,24 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 type NavItem = { href: string; label: string; icon: any; perm: Permission };
 
 const NAV: NavItem[] = [
-  { href: "/admin/dashboard",  label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
-  { href: "/admin/orders",     label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
-  { href: "/admin/archive",    label: "الأرشيف",           icon: Archive,        perm: "orders" },
-  { href: "/admin/services",   label: "الخدمات",            icon: Sparkles,        perm: "services" },
-  { href: "/admin/products",   label: "المتجر",             icon: Package,         perm: "products" },
-  { href: "/admin/categories", label: "التصنيفات",          icon: Tag,             perm: "products" },
-  { href: "/admin/gallery",    label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
-  { href: "/admin/delivery",   label: "التوصيل",            icon: Truck,           perm: "delivery" },
-  { href: "/admin/customers",  label: "العملاء",            icon: Users,           perm: "customers" },
-  { href: "/admin/crews",      label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
-  { href: "/admin/staff",      label: "الموظفون",           icon: UserCog,         perm: "staff" },
-  { href: "/admin/accounting", label: "الحسابات",            icon: Wallet,          perm: "accounting" },
-  { href: "/admin/whatsapp",   label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
-  { href: "/admin/backup",     label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
-  { href: "/admin/settings",   label: "الإعدادات",          icon: Settings,        perm: "settings" },
+  { href: "/admin/dashboard",      label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
+  { href: "/admin/orders",         label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
+  { href: "/admin/archive",        label: "الأرشيف",           icon: Archive,        perm: "orders" },
+  { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
+  { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
+  { href: "/admin/categories",     label: "التصنيفات",          icon: Tag,             perm: "products" },
+  { href: "/admin/sales",          label: "فواتير المبيعات",   icon: Receipt,         perm: "invoices" },
+  { href: "/admin/purchases",      label: "فواتير الشراء",      icon: ShoppingCart,    perm: "accounting" },
+  { href: "/admin/reports",        label: "التقارير",           icon: BarChart3,       perm: "accounting" },
+  { href: "/admin/gallery",        label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
+  { href: "/admin/delivery",       label: "التوصيل",            icon: Truck,           perm: "delivery" },
+  { href: "/admin/customers",      label: "العملاء",            icon: Users,           perm: "customers" },
+  { href: "/admin/crews",          label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
+  { href: "/admin/staff",          label: "الموظفون",           icon: UserCog,         perm: "staff" },
+  { href: "/admin/accounting",     label: "الحسابات",            icon: Wallet,          perm: "accounting" },
+  { href: "/admin/whatsapp",       label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
+  { href: "/admin/backup",         label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
+  { href: "/admin/settings",       label: "الإعدادات",          icon: Settings,        perm: "settings" },
 ];
 
 export function AdminLayout({

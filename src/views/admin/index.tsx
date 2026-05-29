@@ -14,6 +14,9 @@ const ArchivePage = lazy(() => import("./archive"));
 const ServicesPage = lazy(() => import("./services"));
 const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
+const SalesPage = lazy(() => import("./sales"));
+const PurchasesPage = lazy(() => import("./purchases"));
+const ReportsPage = lazy(() => import("./reports"));
 const GalleryPage = lazy(() => import("./gallery"));
 const DeliveryPage = lazy(() => import("./delivery"));
 const CustomersPage = lazy(() => import("./customers"));
@@ -84,9 +87,12 @@ export default function Admin() {
           <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
           <Route path="/admin/archive"   >{() => <Guard me={me} perm="orders"   ><ArchivePage    /></Guard>}</Route>
           <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
-          <Route path="/admin/products"  >{() => <Guard me={me} perm="products" ><ProductsPage   /></Guard>}</Route>
-          <Route path="/admin/categories">{() => <Guard me={me} perm="products" ><CategoriesPage /></Guard>}</Route>
-          <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"  ><GalleryPage    /></Guard>}</Route>
+          <Route path="/admin/products"  >{() => <Guard me={me} perm="products"   ><ProductsPage   /></Guard>}</Route>
+          <Route path="/admin/categories">{() => <Guard me={me} perm="products"  ><CategoriesPage /></Guard>}</Route>
+          <Route path="/admin/sales"     >{() => <Guard me={me} perm="invoices"  ><SalesPage      /></Guard>}</Route>
+          <Route path="/admin/purchases" >{() => <Guard me={me} perm="accounting"><PurchasesPage  /></Guard>}</Route>
+          <Route path="/admin/reports"   >{() => <Guard me={me} perm="accounting"><ReportsPage    /></Guard>}</Route>
+          <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"   ><GalleryPage    /></Guard>}</Route>
           <Route path="/admin/delivery"  >{() => <Guard me={me} perm="delivery" ><DeliveryPage   /></Guard>}</Route>
           <Route path="/admin/customers" >{() => <Guard me={me} perm="customers"><CustomersPage  /></Guard>}</Route>
           <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>

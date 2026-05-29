@@ -39,6 +39,12 @@ import {
   settingsTable,
   staffTable,
   whatsappLogTable,
+  suppliersTable,
+  salesInvoicesTable,
+  salesInvoiceItemsTable,
+  purchaseInvoicesTable,
+  purchaseInvoiceItemsTable,
+  printTemplatesTable,
   db,
 } from "@workspace/db";
 import {
@@ -3983,8 +3989,590 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const accounting = await handleAccounting(req, parts, section);
   if (accounting) return accounting;
 
+  const salesResult = await handleSalesInvoices(req, parts, section);
+  if (salesResult) return salesResult;
+
+  const purchasesResult = await handlePurchaseInvoices(req, parts, section);
+  if (purchasesResult) return purchasesResult;
+
+  const suppliersResult = await handleSuppliers(req, parts, section);
+  if (suppliersResult) return suppliersResult;
+
+  const reportsResult = await handleReports(req, parts, section);
+  if (reportsResult) return reportsResult;
+
+  const printResult = await handlePrintTemplates(req, parts, section);
+  if (printResult) return printResult;
+
   const backup = await handleBackup(req, parts, section);
   if (backup) return backup;
+
+  return null;
+}
+
+// ─── Sales Invoices ──────────────────────────────────────────────────────────
+
+let salesInvoicesMigrated = false;
+async function ensureSalesInvoicesTables() {
+  if (salesInvoicesMigrated) return;
+  try {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS sales_invoices (
+        id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
+        customer_name TEXT NOT NULL DEFAULT '', customer_phone VARCHAR(30), customer_id INTEGER REFERENCES customers(id),
+        subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, total NUMERIC(14,2) NOT NULL DEFAULT 0,
+        paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0, remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        payment_method VARCHAR(20) NOT NULL DEFAULT 'cash', payment_status VARCHAR(20) NOT NULL DEFAULT 'paid',
+        status VARCHAR(20) NOT NULL DEFAULT 'active', is_internal INTEGER NOT NULL DEFAULT 0,
+        notes TEXT, created_by INTEGER REFERENCES staff(id), created_by_name TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS sales_invoice_items (
+        id SERIAL PRIMARY KEY, invoice_id INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id), product_name TEXT NOT NULL, barcode VARCHAR(100),
+        quantity NUMERIC(12,3) NOT NULL DEFAULT 1, unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+        discount NUMERIC(14,2) NOT NULL DEFAULT 0, discount_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+        total NUMERIC(14,2) NOT NULL DEFAULT 0, cost_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
+      CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
+    `);
+    salesInvoicesMigrated = true;
+  } catch { salesInvoicesMigrated = true; }
+}
+
+let purchasesMigrated = false;
+async function ensurePurchasesTables() {
+  if (purchasesMigrated) return;
+  try {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS suppliers (
+        id SERIAL PRIMARY KEY, name TEXT NOT NULL, phone VARCHAR(30), email TEXT, address TEXT,
+        notes TEXT, balance TEXT NOT NULL DEFAULT '0', is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS purchase_invoices (
+        id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
+        supplier_name TEXT NOT NULL DEFAULT '', supplier_id INTEGER REFERENCES suppliers(id),
+        subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, shipping_cost NUMERIC(14,2) NOT NULL DEFAULT 0,
+        total NUMERIC(14,2) NOT NULL DEFAULT 0, paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0, payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
+        payment_status VARCHAR(20) NOT NULL DEFAULT 'paid', status VARCHAR(20) NOT NULL DEFAULT 'active',
+        notes TEXT, created_by INTEGER REFERENCES staff(id), created_by_name TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS purchase_invoice_items (
+        id SERIAL PRIMARY KEY, invoice_id INTEGER NOT NULL REFERENCES purchase_invoices(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id), product_name TEXT NOT NULL, barcode VARCHAR(100),
+        quantity NUMERIC(12,3) NOT NULL DEFAULT 1, cost_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+        sale_price NUMERIC(14,2) NOT NULL DEFAULT 0, discount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        total NUMERIC(14,2) NOT NULL DEFAULT 0, created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_purchase_invoices_date ON purchase_invoices(date);
+      CREATE INDEX IF NOT EXISTS idx_purchase_invoice_items_invoice ON purchase_invoice_items(invoice_id);
+    `);
+    purchasesMigrated = true;
+  } catch { purchasesMigrated = true; }
+}
+
+let printTemplatesMigrated = false;
+async function ensurePrintTemplatesTables() {
+  if (printTemplatesMigrated) return;
+  try {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS print_templates (
+        id SERIAL PRIMARY KEY, name TEXT NOT NULL, type VARCHAR(30) NOT NULL DEFAULT 'sales',
+        paper_size VARCHAR(20) NOT NULL DEFAULT 'a4', is_default INTEGER NOT NULL DEFAULT 0,
+        config TEXT NOT NULL DEFAULT '{}', created_by INTEGER REFERENCES staff(id),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+    `);
+    printTemplatesMigrated = true;
+  } catch { printTemplatesMigrated = true; }
+}
+
+function fmtInvoiceNo(prefix: string, id: number, date: Date): string {
+  const y = date.getFullYear().toString().slice(-2);
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${prefix}-${y}${m}-${String(id).padStart(5, "0")}`;
+}
+
+async function handleSalesInvoices(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "sales-invoices") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensureSalesInvoicesTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const from = req.nextUrl.searchParams.get("from") ?? undefined;
+    const to = req.nextUrl.searchParams.get("to") ?? undefined;
+    const status = req.nextUrl.searchParams.get("status") ?? undefined;
+    const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
+    const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
+    const conds: any[] = [sql`${salesInvoicesTable.status} != 'deleted'`];
+    if (from) conds.push(gte(salesInvoicesTable.date, from));
+    if (to) conds.push(lte(salesInvoicesTable.date, to));
+    if (status) conds.push(eq(salesInvoicesTable.status, status));
+    const rows = await db.select().from(salesInvoicesTable)
+      .where(and(...conds) as any)
+      .orderBy(desc(salesInvoicesTable.date), desc(salesInvoicesTable.id))
+      .limit(limitQ).offset(offsetQ);
+    const [countRow] = await db.select({ c: sql<number>`count(*)::int` }).from(salesInvoicesTable).where(and(...conds) as any);
+    return json({ data: rows, total: countRow?.c ?? 0 });
+  }
+
+  if (method === "GET" && id) {
+    const inv = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    if (!inv) return error("الفاتورة غير موجودة", 404);
+    const items = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+    return json({ ...inv, items });
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    const a = actor(auth);
+    const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
+    const subtotal = parseFloat(b.subtotal ?? "0") || 0;
+    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
+    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0;
+    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
+    const remainingAmount = total - paidAmount;
+    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    const [inv] = await db.insert(salesInvoicesTable).values({
+      invoiceNo: `SI-TEMP`,
+      date: dateVal,
+      customerName: b.customerName ?? "",
+      customerPhone: b.customerPhone ?? null,
+      customerId: b.customerId ?? null,
+      subtotal: String(subtotal),
+      discountAmount: String(discountAmount),
+      taxAmount: String(taxAmount),
+      total: String(total),
+      paidAmount: String(paidAmount),
+      remainingAmount: String(remainingAmount),
+      paymentMethod: b.paymentMethod ?? "cash",
+      paymentStatus,
+      status: "active",
+      isInternal: b.isInternal ? 1 : 0,
+      notes: b.notes ?? null,
+      createdBy: a.id,
+      createdByName: a.name,
+    } as any).returning();
+
+    const invoiceNo = fmtInvoiceNo("SI", inv.id, new Date(inv.createdAt));
+    await db.update(salesInvoicesTable).set({ invoiceNo }).where(eq(salesInvoicesTable.id, inv.id));
+
+    const items: any[] = b.items ?? [];
+    if (items.length > 0) {
+      await db.insert(salesInvoiceItemsTable).values(
+        items.map((item: any) => ({
+          invoiceId: inv.id,
+          productId: item.productId ?? null,
+          productName: item.productName ?? "",
+          barcode: item.barcode ?? null,
+          quantity: String(item.quantity ?? 1),
+          unitPrice: String(item.unitPrice ?? 0),
+          discount: String(item.discount ?? 0),
+          discountPct: String(item.discountPct ?? 0),
+          total: String(item.total ?? 0),
+          costPrice: String(item.costPrice ?? 0),
+        }))
+      );
+      // Update product stock
+      for (const item of items) {
+        if (item.productId && parseFloat(item.quantity ?? "1") > 0) {
+          await db.execute(sql`
+            UPDATE products SET stock = GREATEST(0, stock - ${parseFloat(item.quantity ?? "1")})
+            WHERE id = ${item.productId}
+          `);
+        }
+      }
+    }
+
+    const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, inv.id) });
+    const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
+    return json({ ...final, items: finalItems }, 201);
+  }
+
+  if (method === "PUT" && id) {
+    const b = await body(req);
+    const existing = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    if (!existing) return error("الفاتورة غير موجودة", 404);
+    const subtotal = parseFloat(b.subtotal ?? String(existing.subtotal)) || 0;
+    const discountAmount = parseFloat(b.discountAmount ?? String(existing.discountAmount)) || 0;
+    const taxAmount = parseFloat(b.taxAmount ?? String(existing.taxAmount)) || 0;
+    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0;
+    const paidAmount = parseFloat(b.paidAmount ?? String(existing.paidAmount)) || 0;
+    const remainingAmount = total - paidAmount;
+    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    await db.update(salesInvoicesTable).set({
+      customerName: b.customerName ?? existing.customerName,
+      customerPhone: b.customerPhone ?? existing.customerPhone,
+      subtotal: String(subtotal), discountAmount: String(discountAmount),
+      taxAmount: String(taxAmount), total: String(total),
+      paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
+      paymentMethod: b.paymentMethod ?? existing.paymentMethod,
+      paymentStatus, notes: b.notes ?? existing.notes,
+      isInternal: b.isInternal !== undefined ? (b.isInternal ? 1 : 0) : existing.isInternal,
+      updatedAt: new Date(),
+    } as any).where(eq(salesInvoicesTable.id, id));
+
+    if (b.items !== undefined) {
+      await db.delete(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+      if (b.items.length > 0) {
+        await db.insert(salesInvoiceItemsTable).values(
+          b.items.map((item: any) => ({
+            invoiceId: id, productId: item.productId ?? null, productName: item.productName ?? "",
+            barcode: item.barcode ?? null, quantity: String(item.quantity ?? 1),
+            unitPrice: String(item.unitPrice ?? 0), discount: String(item.discount ?? 0),
+            discountPct: String(item.discountPct ?? 0), total: String(item.total ?? 0),
+            costPrice: String(item.costPrice ?? 0),
+          }))
+        );
+      }
+    }
+    const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+    return json({ ...final, items: finalItems });
+  }
+
+  if (method === "DELETE" && id) {
+    await db.update(salesInvoicesTable).set({ status: "deleted" } as any).where(eq(salesInvoicesTable.id, id));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+async function handlePurchaseInvoices(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "purchase-invoices") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensurePurchasesTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const from = req.nextUrl.searchParams.get("from") ?? undefined;
+    const to = req.nextUrl.searchParams.get("to") ?? undefined;
+    const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
+    const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
+    const conds: any[] = [sql`${purchaseInvoicesTable.status} != 'deleted'`];
+    if (from) conds.push(gte(purchaseInvoicesTable.date, from));
+    if (to) conds.push(lte(purchaseInvoicesTable.date, to));
+    const rows = await db.select().from(purchaseInvoicesTable)
+      .where(and(...conds) as any)
+      .orderBy(desc(purchaseInvoicesTable.date), desc(purchaseInvoicesTable.id))
+      .limit(limitQ).offset(offsetQ);
+    const [countRow] = await db.select({ c: sql<number>`count(*)::int` }).from(purchaseInvoicesTable).where(and(...conds) as any);
+    return json({ data: rows, total: countRow?.c ?? 0 });
+  }
+
+  if (method === "GET" && id) {
+    const inv = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, id) });
+    if (!inv) return error("الفاتورة غير موجودة", 404);
+    const items = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+    return json({ ...inv, items });
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    const a = actor(auth);
+    const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
+    const subtotal = parseFloat(b.subtotal ?? "0") || 0;
+    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
+    const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
+    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount + shippingCost)) || 0;
+    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
+    const remainingAmount = total - paidAmount;
+    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    const [inv] = await db.insert(purchaseInvoicesTable).values({
+      invoiceNo: `PI-TEMP`,
+      date: dateVal,
+      supplierName: b.supplierName ?? "",
+      supplierId: b.supplierId ?? null,
+      subtotal: String(subtotal), discountAmount: String(discountAmount),
+      taxAmount: String(taxAmount), shippingCost: String(shippingCost),
+      total: String(total), paidAmount: String(paidAmount),
+      remainingAmount: String(remainingAmount),
+      paymentMethod: b.paymentMethod ?? "cash",
+      paymentStatus, status: "active",
+      notes: b.notes ?? null,
+      createdBy: a.id, createdByName: a.name,
+    } as any).returning();
+
+    const invoiceNo = fmtInvoiceNo("PI", inv.id, new Date(inv.createdAt));
+    await db.update(purchaseInvoicesTable).set({ invoiceNo } as any).where(eq(purchaseInvoicesTable.id, inv.id));
+
+    const items: any[] = b.items ?? [];
+    if (items.length > 0) {
+      await db.insert(purchaseInvoiceItemsTable).values(
+        items.map((item: any) => ({
+          invoiceId: inv.id,
+          productId: item.productId ?? null, productName: item.productName ?? "",
+          barcode: item.barcode ?? null, quantity: String(item.quantity ?? 1),
+          costPrice: String(item.costPrice ?? 0), salePrice: String(item.salePrice ?? 0),
+          discount: String(item.discount ?? 0), total: String(item.total ?? 0),
+        }))
+      );
+      // Update product stock on purchase
+      for (const item of items) {
+        if (item.productId && parseFloat(item.quantity ?? "1") > 0) {
+          const updateVals: any = { stock: sql`stock + ${parseFloat(item.quantity)}` };
+          if (item.salePrice && parseFloat(item.salePrice) > 0) {
+            updateVals.price = String(parseFloat(item.salePrice));
+          }
+          await db.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
+        }
+      }
+    }
+
+    const final = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, inv.id) });
+    const finalItems = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, inv.id));
+    return json({ ...final, items: finalItems }, 201);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.update(purchaseInvoicesTable).set({ status: "deleted" } as any).where(eq(purchaseInvoicesTable.id, id));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+async function handleSuppliers(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "suppliers") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensurePurchasesTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const rows = await db.select().from(suppliersTable)
+      .where(eq(suppliersTable.isActive, 1))
+      .orderBy(suppliersTable.name);
+    return json(rows);
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    if (!b.name?.trim()) return error("اسم المورد مطلوب", 400);
+    const [row] = await db.insert(suppliersTable).values({
+      name: b.name.trim(), phone: b.phone ?? null,
+      email: b.email ?? null, address: b.address ?? null, notes: b.notes ?? null,
+    } as any).returning();
+    return json(row, 201);
+  }
+
+  if (method === "PUT" && id) {
+    const b = await body(req);
+    const update: any = {};
+    if (b.name !== undefined) update.name = b.name.trim();
+    if (b.phone !== undefined) update.phone = b.phone;
+    if (b.email !== undefined) update.email = b.email;
+    if (b.address !== undefined) update.address = b.address;
+    if (b.notes !== undefined) update.notes = b.notes;
+    update.updatedAt = new Date();
+    const [row] = await db.update(suppliersTable).set(update).where(eq(suppliersTable.id, id!)).returning();
+    if (!row) return error("غير موجود", 404);
+    return json(row);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.update(suppliersTable).set({ isActive: 0, updatedAt: new Date() } as any).where(eq(suppliersTable.id, id!));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+async function handleReports(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "reports") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensureSalesInvoicesTables();
+  await ensurePurchasesTables();
+  const method = req.method;
+  const reportType = parts[2];
+
+  if (method !== "GET") return null;
+
+  const from = req.nextUrl.searchParams.get("from") ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const to = req.nextUrl.searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
+
+  if (reportType === "sales-summary") {
+    const salesConds: any[] = [
+      sql`${salesInvoicesTable.status} = 'active'`,
+      gte(salesInvoicesTable.date, from),
+      lte(salesInvoicesTable.date, to),
+    ];
+    const [salesRow] = await db.select({
+      total: sql<string>`COALESCE(SUM(total)::text, '0')`,
+      paid: sql<string>`COALESCE(SUM(paid_amount)::text, '0')`,
+      remaining: sql<string>`COALESCE(SUM(remaining_amount)::text, '0')`,
+      count: sql<number>`count(*)::int`,
+      discount: sql<string>`COALESCE(SUM(discount_amount)::text, '0')`,
+    }).from(salesInvoicesTable).where(and(...salesConds) as any);
+
+    const purchaseConds: any[] = [
+      sql`${purchaseInvoicesTable.status} = 'active'`,
+      gte(purchaseInvoicesTable.date, from),
+      lte(purchaseInvoicesTable.date, to),
+    ];
+    const [purchaseRow] = await db.select({
+      total: sql<string>`COALESCE(SUM(total)::text, '0')`,
+      count: sql<number>`count(*)::int`,
+    }).from(purchaseInvoicesTable).where(and(...purchaseConds) as any);
+
+    const expenseConds: any[] = [gte(expensesTable.date, from), lte(expensesTable.date, to)];
+    const [expenseRow] = await db.select({
+      total: sql<string>`COALESCE(SUM(amount)::text, '0')`,
+    }).from(expensesTable).where(and(...expenseConds) as any);
+
+    const orderConds: any[] = [gte(ordersTable.createdAt, new Date(from)), lte(ordersTable.createdAt, new Date(to + "T23:59:59"))];
+    const [orderRow] = await db.select({
+      total: sql<string>`COALESCE(SUM(total)::text, '0')`,
+      count: sql<number>`count(*)::int`,
+    }).from(ordersTable).where(and(...orderConds) as any);
+
+    const salesTotal = parseFloat(salesRow?.total ?? "0");
+    const purchaseTotal = parseFloat(purchaseRow?.total ?? "0");
+    const expenseTotal = parseFloat(expenseRow?.total ?? "0");
+    const ordersTotal = parseFloat(orderRow?.total ?? "0");
+    const grossProfit = salesTotal + ordersTotal - purchaseTotal;
+    const netProfit = grossProfit - expenseTotal;
+
+    return json({
+      from, to,
+      sales: { total: salesTotal, paid: parseFloat(salesRow?.paid ?? "0"), remaining: parseFloat(salesRow?.remaining ?? "0"), count: salesRow?.count ?? 0, discount: parseFloat(salesRow?.discount ?? "0") },
+      purchases: { total: purchaseTotal, count: purchaseRow?.count ?? 0 },
+      orders: { total: ordersTotal, count: orderRow?.count ?? 0 },
+      expenses: { total: expenseTotal },
+      grossProfit, netProfit,
+    });
+  }
+
+  if (reportType === "sales-by-day") {
+    const rows = await db.execute(sql`
+      SELECT date::text as date, COUNT(*)::int as count, SUM(total)::text as total, SUM(paid_amount)::text as paid
+      FROM sales_invoices
+      WHERE status = 'active' AND date >= ${from} AND date <= ${to}
+      GROUP BY date ORDER BY date
+    `);
+    return json(rows.rows ?? []);
+  }
+
+  if (reportType === "sales-by-product") {
+    const rows = await db.execute(sql`
+      SELECT sii.product_name, sii.product_id,
+        SUM(sii.quantity)::text as qty_sold, SUM(sii.total)::text as total_revenue,
+        SUM(sii.total - sii.cost_price * sii.quantity)::text as gross_profit
+      FROM sales_invoice_items sii
+      JOIN sales_invoices si ON si.id = sii.invoice_id
+      WHERE si.status = 'active' AND si.date >= ${from} AND si.date <= ${to}
+      GROUP BY sii.product_name, sii.product_id
+      ORDER BY SUM(sii.total) DESC LIMIT 50
+    `);
+    return json(rows.rows ?? []);
+  }
+
+  if (reportType === "profit-by-invoice") {
+    const rows = await db.execute(sql`
+      SELECT si.id, si.invoice_no, si.date, si.customer_name, si.total,
+        COALESCE((SELECT SUM(sii.cost_price * sii.quantity) FROM sales_invoice_items sii WHERE sii.invoice_id = si.id), 0)::text as total_cost,
+        (si.total - COALESCE((SELECT SUM(sii.cost_price * sii.quantity) FROM sales_invoice_items sii WHERE sii.invoice_id = si.id), 0))::text as profit
+      FROM sales_invoices si
+      WHERE si.status = 'active' AND si.date >= ${from} AND si.date <= ${to}
+      ORDER BY si.date DESC, si.id DESC LIMIT 100
+    `);
+    return json(rows.rows ?? []);
+  }
+
+  if (reportType === "orders-revenue") {
+    const rows = await db.execute(sql`
+      SELECT DATE(created_at)::text as date, COUNT(*)::int as count, SUM(total)::text as total
+      FROM orders
+      WHERE created_at >= ${from}::timestamp AND created_at <= (${to}::date + interval '1 day')::timestamp
+      GROUP BY DATE(created_at) ORDER BY DATE(created_at)
+    `);
+    return json(rows.rows ?? []);
+  }
+
+  return null;
+}
+
+async function handlePrintTemplates(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "print-templates") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensurePrintTemplatesTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const typeFilter = req.nextUrl.searchParams.get("type") ?? undefined;
+    const rows = await db.select().from(printTemplatesTable)
+      .where(typeFilter ? eq(printTemplatesTable.type, typeFilter) : undefined)
+      .orderBy(desc(printTemplatesTable.isDefault), printTemplatesTable.name);
+    return json(rows);
+  }
+
+  if (method === "GET" && id) {
+    const row = await db.query.printTemplatesTable.findFirst({ where: eq(printTemplatesTable.id, id) });
+    if (!row) return error("القالب غير موجود", 404);
+    return json(row);
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    const a = actor(auth);
+    if (!b.name?.trim()) return error("اسم القالب مطلوب", 400);
+    const [row] = await db.insert(printTemplatesTable).values({
+      name: b.name.trim(),
+      type: b.type ?? "sales",
+      paperSize: b.paperSize ?? "a4",
+      isDefault: b.isDefault ? 1 : 0,
+      config: typeof b.config === "string" ? b.config : JSON.stringify(b.config ?? {}),
+      createdBy: a.id,
+    } as any).returning();
+    if (b.isDefault) {
+      await db.execute(sql`UPDATE print_templates SET is_default = 0 WHERE type = ${b.type ?? "sales"} AND id != ${row.id}`);
+    }
+    return json(row, 201);
+  }
+
+  if (method === "PUT" && id) {
+    const b = await body(req);
+    const update: any = { updatedAt: new Date() };
+    if (b.name !== undefined) update.name = b.name.trim();
+    if (b.type !== undefined) update.type = b.type;
+    if (b.paperSize !== undefined) update.paperSize = b.paperSize;
+    if (b.isDefault !== undefined) update.isDefault = b.isDefault ? 1 : 0;
+    if (b.config !== undefined) update.config = typeof b.config === "string" ? b.config : JSON.stringify(b.config);
+    const [row] = await db.update(printTemplatesTable).set(update).where(eq(printTemplatesTable.id, id!)).returning();
+    if (!row) return error("غير موجود", 404);
+    if (b.isDefault) {
+      await db.execute(sql`UPDATE print_templates SET is_default = 0 WHERE type = ${row.type} AND id != ${id}`);
+    }
+    return json(row);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id!));
+    return json({ message: "تم الحذف" });
+  }
 
   return null;
 }
