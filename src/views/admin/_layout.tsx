@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
-  Receipt, ShoppingCart, BarChart3,
+  Receipt, ShoppingCart, BarChart3, PenTool,
 } from "lucide-react";
 import { hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -28,6 +28,7 @@ const NAV: NavItem[] = [
   { href: "/admin/accounting",     label: "الحسابات",            icon: Wallet,          perm: "accounting" },
   { href: "/admin/whatsapp",       label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
   { href: "/admin/backup",         label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
+  { href: "/admin/invoice-designer",label: "مصمم الفاتورة",     icon: PenTool,         perm: "settings" },
   { href: "/admin/settings",       label: "الإعدادات",          icon: Settings,        perm: "settings" },
 ];
 

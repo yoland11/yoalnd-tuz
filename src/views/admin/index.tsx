@@ -26,6 +26,7 @@ const AccountingPage = lazy(() => import("./accounting"));
 const WhatsappPage = lazy(() => import("./whatsapp"));
 const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
+const InvoiceDesignerPage = lazy(() => import("./invoice-designer"));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
@@ -100,6 +101,7 @@ export default function Admin() {
           <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
           <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
           <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
+          <Route path="/admin/invoice-designer">{() => <Guard me={me} perm="settings"><InvoiceDesignerPage /></Guard>}</Route>
           <Route path="/admin/settings"  >{() => <Guard me={me} perm="settings" ><SettingsPage   /></Guard>}</Route>
           <Route>{() => <NoPermission />}</Route>
         </Switch>
