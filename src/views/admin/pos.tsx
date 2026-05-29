@@ -518,7 +518,7 @@ export default function POSPage() {
       const res = await adminFetch<{ invoice: { invoiceNo: string } }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
-      const invoiceNo = res.invoice.invoiceNo;
+      const invoiceNo = res?.invoice?.invoiceNo ?? "TEMP";
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       toast({ title: "✓ تم حفظ الفاتورة", description: invoiceNo });
       if (andPrint) {

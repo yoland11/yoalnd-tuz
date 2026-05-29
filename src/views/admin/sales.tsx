@@ -212,7 +212,7 @@ export default function SalesPage() {
       const res = await adminFetch<{ invoice: SalesInvoice }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
-      toast({ title: "تم حفظ الفاتورة", description: res.invoice.invoiceNo });
+      toast({ title: "تم حفظ الفاتورة", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       setCart([]);
       setForm(newInvoice());
