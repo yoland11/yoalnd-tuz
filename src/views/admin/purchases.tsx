@@ -155,7 +155,7 @@ export default function PurchasesPage() {
       const res = await adminFetch<{ invoice: PurchaseInvoice }>("/admin/purchase-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
-      toast({ title: "تم حفظ فاتورة الشراء", description: res.invoice.invoiceNo });
+      toast({ title: "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
       setItems([blankItem()]);
