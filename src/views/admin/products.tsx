@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
@@ -14,6 +14,7 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import type { ImageMetadata } from "@/lib/image-tools";
 import { ProductColorPicker, ProductColorDots } from "@/components/product-colors";
 import { normalizeColors, type ProductColor } from "@/lib/colors";
+import { useToast } from "@/hooks/use-toast";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -36,6 +37,7 @@ const blank: ProductForm = {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: products, isLoading } = useListProducts({ limit: 250 });
   const { data: categories } = useQuery({
     queryKey: ["admin", "categories"],
@@ -83,11 +85,15 @@ export default function ProductsPage() {
 
     if (form.id) {
       await update.mutateAsync({ id: form.id, data: body });
+      invalidate();
+      setEditing(null);
+      toast({ title: "تم التعديل", description: "تم تعديل المنتج بنجاح" });
     } else {
       await create.mutateAsync({ data: body });
+      invalidate();
+      setEditing({ ...blank });
+      toast({ title: "تمت الإضافة", description: "تم إضافة المنتج بنجاح ✓" });
     }
-    invalidate();
-    setEditing(null);
   }
 
   return (
@@ -255,6 +261,14 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const { data: publicSettings } = usePublicSettings();
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !previewImage) onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, previewImage]);
   const filteredSubs = subCats.filter(s => {
     const parent = parentCats.find(p => p.slug === form.category);
     return parent ? s.parentId === parent.id : true;
@@ -318,10 +332,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl">
       <form
         onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSave(form); } finally { setBusy(false); } }}
-        onClick={e => e.stopPropagation()}
         className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4"
       >
         <div className="flex items-center justify-between">

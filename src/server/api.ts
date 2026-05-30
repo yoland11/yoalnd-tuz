@@ -39,6 +39,11 @@ import {
   settingsTable,
   staffTable,
   whatsappLogTable,
+  salesInvoicesTable,
+  salesInvoiceItemsTable,
+  purchasesTable,
+  purchaseItemsTable,
+  printTemplatesTable,
   db,
 } from "@workspace/db";
 import {
@@ -3986,6 +3991,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const backup = await handleBackup(req, parts, section);
   if (backup) return backup;
 
+  const salesInvoices = await handleSalesInvoices(req, parts, section);
+  if (salesInvoices) return salesInvoices;
+
+  const purchases = await handlePurchases(req, parts, section);
+  if (purchases) return purchases;
+
+  const printTemplates = await handlePrintTemplates(req, parts, section);
+  if (printTemplates) return printTemplates;
+
+  const reports = await handleReports(req, parts, section);
+  if (reports) return reports;
+
   return null;
 }
 
@@ -4458,6 +4475,573 @@ async function handleBackup(req: NextRequest, parts: string[], section: string |
       report[name] = stats;
     }
     return json({ ok: true, report });
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sales Invoices
+// ─────────────────────────────────────────────────────────────────────────────
+let salesInvoiceTablesPromise: Promise<void> | null = null;
+async function ensureSalesInvoiceTables() {
+  if (salesInvoiceTablesPromise) return salesInvoiceTablesPromise;
+  salesInvoiceTablesPromise = (async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS sales_invoices (
+        id SERIAL PRIMARY KEY,
+        invoice_no VARCHAR(30) NOT NULL UNIQUE,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_phone VARCHAR(20),
+        is_internal INTEGER NOT NULL DEFAULT 0,
+        subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+        discount_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        tax_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        total NUMERIC(12,2) NOT NULL DEFAULT 0,
+        paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        remaining_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
+        payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+        notes TEXT,
+        created_by INTEGER,
+        created_by_name TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS sales_invoice_items (
+        id SERIAL PRIMARY KEY,
+        invoice_id INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
+        product_id INTEGER,
+        product_name TEXT NOT NULL DEFAULT '',
+        product_name_ar TEXT NOT NULL DEFAULT '',
+        quantity INTEGER NOT NULL DEFAULT 1,
+        unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        total NUMERIC(12,2) NOT NULL DEFAULT 0
+      )
+    `);
+  })();
+  return salesInvoiceTablesPromise;
+}
+
+function fmtInvoiceNo(prefix: string, id: number, createdAt: Date): string {
+  const y = createdAt.getFullYear().toString().slice(-2);
+  const m = String(createdAt.getMonth() + 1).padStart(2, "0");
+  return `${prefix}-${y}${m}-${String(id).padStart(4, "0")}`;
+}
+
+async function handleSalesInvoices(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "sales-invoices") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensureSalesInvoiceTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const from = req.nextUrl.searchParams.get("from") ?? undefined;
+    const to = req.nextUrl.searchParams.get("to") ?? undefined;
+    const conds: any[] = [];
+    if (from) conds.push(gte(salesInvoicesTable.date, from));
+    if (to) conds.push(lte(salesInvoicesTable.date, to));
+    const rows = await db.select().from(salesInvoicesTable)
+      .where(conds.length ? (and(...conds) as any) : undefined)
+      .orderBy(desc(salesInvoicesTable.createdAt));
+    return json(rows);
+  }
+
+  if (method === "GET" && id) {
+    const inv = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    if (!inv) return error("غير موجود", 404);
+    const items = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+    return json({ ...inv, items });
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    const a = actor(auth);
+    const rawItems: any[] = Array.isArray(b?.items) ? b.items : [];
+    if (rawItems.length === 0) return error("أضف منتجاً على الأقل", 400);
+
+    const subtotal = rawItems.reduce((s: number, i: any) => s + (parseFloat(i.unitPrice) || 0) * (parseInt(i.quantity) || 1), 0);
+    const totalDiscount = rawItems.reduce((s: number, i: any) => s + (parseFloat(i.discount) || 0), 0);
+    const total = Math.max(0, subtotal - totalDiscount);
+    const paidAmount = parseFloat(b?.paidAmount) || 0;
+    const remainingAmount = Math.max(0, total - paidAmount);
+    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    const [invRow] = await db.insert(salesInvoicesTable).values({
+      invoiceNo: `TMP-${randomUUID()}`,
+      date: b?.date || new Date().toISOString().slice(0, 10),
+      customerName: textFallback(b?.customerName, ""),
+      customerPhone: b?.customerPhone || null,
+      isInternal: b?.isInternal ? 1 : 0,
+      subtotal: String(subtotal),
+      discountAmount: String(totalDiscount),
+      taxAmount: "0",
+      total: String(total),
+      paidAmount: String(paidAmount),
+      remainingAmount: String(remainingAmount),
+      paymentMethod: normMethod(b?.paymentMethod),
+      paymentStatus: b?.paymentStatus || paymentStatus,
+      notes: b?.notes || null,
+      createdBy: a.id,
+      createdByName: a.name,
+    }).returning();
+
+    await db.update(salesInvoicesTable)
+      .set({ invoiceNo: fmtInvoiceNo("INV", invRow.id, invRow.createdAt) })
+      .where(eq(salesInvoicesTable.id, invRow.id));
+
+    await db.insert(salesInvoiceItemsTable).values(
+      rawItems.map((i: any) => ({
+        invoiceId: invRow.id,
+        productId: i.productId ? parseInt(i.productId) : null,
+        productName: String(i.productName || ""),
+        productNameAr: String(i.productNameAr || i.productName || ""),
+        quantity: parseInt(i.quantity) || 1,
+        unitPrice: String(parseFloat(i.unitPrice) || 0),
+        discount: String(parseFloat(i.discount) || 0),
+        total: String(Math.max(0, (parseFloat(i.unitPrice) || 0) * (parseInt(i.quantity) || 1) - (parseFloat(i.discount) || 0))),
+      }))
+    );
+
+    const finalInv = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invRow.id) });
+    return json(finalInv, 201);
+  }
+
+  if (method === "PATCH" && id) {
+    const b = await body(req);
+    const update: any = {};
+    if (b?.paymentStatus !== undefined) update.paymentStatus = b.paymentStatus;
+    if (b?.paidAmount !== undefined) update.paidAmount = String(parseFloat(b.paidAmount) || 0);
+    if (b?.notes !== undefined) update.notes = b.notes;
+    update.updatedAt = new Date();
+    const [row] = await db.update(salesInvoicesTable).set(update).where(eq(salesInvoicesTable.id, id)).returning();
+    if (!row) return error("غير موجود", 404);
+    return json(row);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.delete(salesInvoicesTable).where(eq(salesInvoicesTable.id, id));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Purchases
+// ─────────────────────────────────────────────────────────────────────────────
+let purchaseTablesPromise: Promise<void> | null = null;
+async function ensurePurchaseTables() {
+  if (purchaseTablesPromise) return purchaseTablesPromise;
+  purchaseTablesPromise = (async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS purchases (
+        id SERIAL PRIMARY KEY,
+        invoice_no VARCHAR(50),
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        supplier_name TEXT NOT NULL DEFAULT '',
+        supplier_phone VARCHAR(20),
+        subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+        discount_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        extra_costs NUMERIC(12,2) NOT NULL DEFAULT 0,
+        total NUMERIC(12,2) NOT NULL DEFAULT 0,
+        paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        remaining_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
+        payment_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+        notes TEXT,
+        created_by INTEGER,
+        created_by_name TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS purchase_items (
+        id SERIAL PRIMARY KEY,
+        purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+        product_id INTEGER,
+        product_name TEXT NOT NULL DEFAULT '',
+        product_name_ar TEXT NOT NULL DEFAULT '',
+        quantity INTEGER NOT NULL DEFAULT 1,
+        cost_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        sell_price NUMERIC(12,2),
+        discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        total NUMERIC(12,2) NOT NULL DEFAULT 0
+      )
+    `);
+  })();
+  return purchaseTablesPromise;
+}
+
+async function handlePurchases(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "purchases") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensurePurchaseTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const from = req.nextUrl.searchParams.get("from") ?? undefined;
+    const to = req.nextUrl.searchParams.get("to") ?? undefined;
+    const conds: any[] = [];
+    if (from) conds.push(gte(purchasesTable.date, from));
+    if (to) conds.push(lte(purchasesTable.date, to));
+    const rows = await db.select().from(purchasesTable)
+      .where(conds.length ? (and(...conds) as any) : undefined)
+      .orderBy(desc(purchasesTable.createdAt));
+    return json(rows);
+  }
+
+  if (method === "GET" && id) {
+    const purchase = await db.query.purchasesTable.findFirst({ where: eq(purchasesTable.id, id) });
+    if (!purchase) return error("غير موجود", 404);
+    const items = await db.select().from(purchaseItemsTable).where(eq(purchaseItemsTable.purchaseId, id));
+    return json({ ...purchase, items });
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    const a = actor(auth);
+    const rawItems: any[] = Array.isArray(b?.items) ? b.items : [];
+    if (rawItems.length === 0) return error("أضف منتجاً على الأقل", 400);
+
+    const subtotal = rawItems.reduce((s: number, i: any) => s + (parseFloat(i.costPrice) || 0) * (parseInt(i.quantity) || 1), 0);
+    const totalDiscount = rawItems.reduce((s: number, i: any) => s + (parseFloat(i.discount) || 0), 0);
+    const extraCosts = parseFloat(b?.extraCosts) || 0;
+    const total = Math.max(0, subtotal - totalDiscount + extraCosts);
+    const paidAmount = parseFloat(b?.paidAmount) || 0;
+    const remainingAmount = Math.max(0, total - paidAmount);
+
+    const [purchaseRow] = await db.insert(purchasesTable).values({
+      invoiceNo: b?.invoiceNo || null,
+      date: b?.date || new Date().toISOString().slice(0, 10),
+      supplierName: textFallback(b?.supplierName, ""),
+      supplierPhone: b?.supplierPhone || null,
+      subtotal: String(subtotal),
+      discountAmount: String(totalDiscount),
+      extraCosts: String(extraCosts),
+      total: String(total),
+      paidAmount: String(paidAmount),
+      remainingAmount: String(remainingAmount),
+      paymentMethod: normMethod(b?.paymentMethod),
+      paymentStatus: b?.paymentStatus || (paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid"),
+      notes: b?.notes || null,
+      createdBy: a.id,
+      createdByName: a.name,
+    }).returning();
+
+    await db.insert(purchaseItemsTable).values(
+      rawItems.map((i: any) => ({
+        purchaseId: purchaseRow.id,
+        productId: i.productId ? parseInt(i.productId) : null,
+        productName: String(i.productName || ""),
+        productNameAr: String(i.productNameAr || i.productName || ""),
+        quantity: parseInt(i.quantity) || 1,
+        costPrice: String(parseFloat(i.costPrice) || 0),
+        sellPrice: i.sellPrice ? String(parseFloat(i.sellPrice)) : null,
+        discount: String(parseFloat(i.discount) || 0),
+        total: String(Math.max(0, (parseFloat(i.costPrice) || 0) * (parseInt(i.quantity) || 1) - (parseFloat(i.discount) || 0))),
+      }))
+    );
+
+    // Update product stock for items linked to products
+    for (const i of rawItems) {
+      if (i.productId) {
+        const productId = parseInt(i.productId);
+        const qty = parseInt(i.quantity) || 1;
+        try {
+          await db.update(productsTable)
+            .set({ stock: sql`${productsTable.stock} + ${qty}` })
+            .where(eq(productsTable.id, productId));
+          // Also update sell price if provided
+          if (i.sellPrice && parseFloat(i.sellPrice) > 0) {
+            await db.update(productsTable)
+              .set({ price: String(parseFloat(i.sellPrice)) })
+              .where(eq(productsTable.id, productId));
+          }
+        } catch { /* skip if product doesn't exist */ }
+      }
+    }
+
+    return json(purchaseRow, 201);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.delete(purchasesTable).where(eq(purchasesTable.id, id));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Print Templates
+// ─────────────────────────────────────────────────────────────────────────────
+let printTemplateTablesPromise: Promise<void> | null = null;
+async function ensurePrintTemplateTables() {
+  if (printTemplateTablesPromise) return printTemplateTablesPromise;
+  printTemplateTablesPromise = (async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS print_templates (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        type VARCHAR(30) NOT NULL DEFAULT 'sales',
+        paper_size VARCHAR(20) NOT NULL DEFAULT 'a4',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        config JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+  })();
+  return printTemplateTablesPromise;
+}
+
+async function handlePrintTemplates(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "print-templates") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  await ensurePrintTemplateTables();
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const type = req.nextUrl.searchParams.get("type") ?? undefined;
+    const rows = await db.select().from(printTemplatesTable)
+      .where(type ? eq(printTemplatesTable.type, type) : undefined)
+      .orderBy(desc(printTemplatesTable.createdAt));
+    return json(rows);
+  }
+
+  if (method === "GET" && id) {
+    const t = await db.query.printTemplatesTable.findFirst({ where: eq(printTemplatesTable.id, id) });
+    if (!t) return error("غير موجود", 404);
+    return json(t);
+  }
+
+  if (method === "POST") {
+    const b = await body(req);
+    if (!b?.name?.trim()) return error("الاسم مطلوب", 400);
+    if (b?.isDefault) {
+      await db.update(printTemplatesTable).set({ isDefault: 0 }).where(eq(printTemplatesTable.type, b?.type || "sales"));
+    }
+    const [row] = await db.insert(printTemplatesTable).values({
+      name: String(b.name).trim(),
+      type: b?.type || "sales",
+      paperSize: b?.paperSize || "a4",
+      isDefault: b?.isDefault ? 1 : 0,
+      config: b?.config ?? {},
+    }).returning();
+    return json(row, 201);
+  }
+
+  if (method === "PATCH" && id) {
+    const b = await body(req);
+    const update: any = { updatedAt: new Date() };
+    if (b?.name !== undefined) update.name = String(b.name).trim();
+    if (b?.config !== undefined) update.config = b.config;
+    if (b?.isDefault !== undefined) {
+      update.isDefault = b.isDefault ? 1 : 0;
+      if (b.isDefault) {
+        const tmpl = await db.query.printTemplatesTable.findFirst({ where: eq(printTemplatesTable.id, id) });
+        if (tmpl) await db.update(printTemplatesTable).set({ isDefault: 0 }).where(eq(printTemplatesTable.type, tmpl.type));
+      }
+    }
+    const [row] = await db.update(printTemplatesTable).set(update).where(eq(printTemplatesTable.id, id)).returning();
+    if (!row) return error("غير موجود", 404);
+    return json(row);
+  }
+
+  if (method === "DELETE" && id) {
+    await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id));
+    return json({ message: "تم الحذف" });
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reports
+// ─────────────────────────────────────────────────────────────────────────────
+async function handleReports(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "reports") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  const method = req.method;
+  if (method !== "GET") return null;
+
+  const reportType = parts[2];
+  const from = req.nextUrl.searchParams.get("from") ?? undefined;
+  const to = req.nextUrl.searchParams.get("to") ?? undefined;
+  const cond = (table: any, dateCol: any) => {
+    const cs: any[] = [];
+    if (from) cs.push(gte(dateCol, from));
+    if (to) cs.push(lte(dateCol, to));
+    return cs.length ? (and(...cs) as any) : undefined;
+  };
+
+  if (reportType === "sales") {
+    await ensureSalesInvoiceTables();
+    const [totals] = await db.select({
+      totalInvoices: sql<number>`count(*)::int`,
+      totalRevenue: sql<number>`coalesce(sum(total::numeric),0)::float`,
+      totalPaid: sql<number>`coalesce(sum(paid_amount::numeric),0)::float`,
+      totalUnpaid: sql<number>`coalesce(sum(remaining_amount::numeric),0)::float`,
+    }).from(salesInvoicesTable).where(cond(salesInvoicesTable, salesInvoicesTable.date));
+
+    const byDay = await db.select({
+      date: salesInvoicesTable.date,
+      total: sql<number>`coalesce(sum(total::numeric),0)::float`,
+      count: sql<number>`count(*)::int`,
+    }).from(salesInvoicesTable)
+      .where(cond(salesInvoicesTable, salesInvoicesTable.date))
+      .groupBy(salesInvoicesTable.date)
+      .orderBy(salesInvoicesTable.date);
+
+    const byPaymentStatus = await db.select({
+      status: salesInvoicesTable.paymentStatus,
+      count: sql<number>`count(*)::int`,
+    }).from(salesInvoicesTable)
+      .where(cond(salesInvoicesTable, salesInvoicesTable.date))
+      .groupBy(salesInvoicesTable.paymentStatus);
+
+    const topProducts = await db.select({
+      productNameAr: salesInvoiceItemsTable.productNameAr,
+      productName: salesInvoiceItemsTable.productName,
+      totalQty: sql<number>`sum(quantity)::int`,
+      totalRevenue: sql<number>`coalesce(sum(total::numeric),0)::float`,
+    }).from(salesInvoiceItemsTable)
+      .innerJoin(salesInvoicesTable, eq(salesInvoiceItemsTable.invoiceId, salesInvoicesTable.id))
+      .where(cond(salesInvoicesTable, salesInvoicesTable.date))
+      .groupBy(salesInvoiceItemsTable.productNameAr, salesInvoiceItemsTable.productName)
+      .orderBy(desc(sql`sum(quantity)`))
+      .limit(10);
+
+    const invoices = await db.select().from(salesInvoicesTable)
+      .where(cond(salesInvoicesTable, salesInvoicesTable.date))
+      .orderBy(desc(salesInvoicesTable.date))
+      .limit(100);
+
+    return json({ ...totals, byDay, byPaymentStatus, topProducts, invoices });
+  }
+
+  if (reportType === "purchases") {
+    await ensurePurchaseTables();
+    const [totals] = await db.select({
+      totalPurchases: sql<number>`count(*)::int`,
+      totalCost: sql<number>`coalesce(sum(total::numeric),0)::float`,
+      totalPaid: sql<number>`coalesce(sum(paid_amount::numeric),0)::float`,
+      totalRemaining: sql<number>`coalesce(sum(remaining_amount::numeric),0)::float`,
+    }).from(purchasesTable).where(cond(purchasesTable, purchasesTable.date));
+
+    const byDay = await db.select({
+      date: purchasesTable.date,
+      total: sql<number>`coalesce(sum(total::numeric),0)::float`,
+    }).from(purchasesTable)
+      .where(cond(purchasesTable, purchasesTable.date))
+      .groupBy(purchasesTable.date)
+      .orderBy(purchasesTable.date);
+
+    return json({ ...totals, byDay });
+  }
+
+  if (reportType === "profit") {
+    await ensureSalesInvoiceTables();
+    const [salesRow] = await db.select({
+      totalRevenue: sql<number>`coalesce(sum(total::numeric),0)::float`,
+    }).from(salesInvoicesTable).where(cond(salesInvoicesTable, salesInvoicesTable.date));
+
+    const [expRow] = await db.select({
+      totalExpenses: sql<number>`coalesce(sum(amount::numeric),0)::float`,
+    }).from(expensesTable).where(
+      (() => { const cs: any[] = []; if (from) cs.push(gte(expensesTable.date, from)); if (to) cs.push(lte(expensesTable.date, to)); return cs.length ? (and(...cs) as any) : undefined; })()
+    );
+
+    const totalRevenue = salesRow?.totalRevenue ?? 0;
+    const totalExpenses = expRow?.totalExpenses ?? 0;
+    const netProfit = totalRevenue - totalExpenses;
+    const margin = totalRevenue > 0 ? Math.round((netProfit / totalRevenue) * 100) : 0;
+
+    const byMonth = await db.select({
+      month: sql<string>`to_char(created_at, 'YYYY-MM')`,
+      revenue: sql<number>`coalesce(sum(total::numeric),0)::float`,
+    }).from(salesInvoicesTable)
+      .where(cond(salesInvoicesTable, salesInvoicesTable.date))
+      .groupBy(sql`to_char(created_at, 'YYYY-MM')`)
+      .orderBy(sql`to_char(created_at, 'YYYY-MM')`);
+
+    const expByMonth = await db.select({
+      month: sql<string>`to_char(created_at, 'YYYY-MM')`,
+      expenses: sql<number>`coalesce(sum(amount::numeric),0)::float`,
+    }).from(expensesTable)
+      .where((() => { const cs: any[] = []; if (from) cs.push(gte(expensesTable.date, from)); if (to) cs.push(lte(expensesTable.date, to)); return cs.length ? (and(...cs) as any) : undefined; })())
+      .groupBy(sql`to_char(created_at, 'YYYY-MM')`)
+      .orderBy(sql`to_char(created_at, 'YYYY-MM')`);
+
+    const monthMap = new Map<string, { revenue: number; expenses: number }>();
+    byMonth.forEach(r => monthMap.set(r.month, { revenue: r.revenue, expenses: 0 }));
+    expByMonth.forEach(r => { const ex = monthMap.get(r.month); if (ex) ex.expenses = r.expenses; else monthMap.set(r.month, { revenue: 0, expenses: r.expenses }); });
+    const mergedByMonth = Array.from(monthMap.entries()).map(([month, v]) => ({ month, ...v })).sort((a, b) => a.month.localeCompare(b.month));
+
+    return json({ totalRevenue, totalExpenses, netProfit, margin, byMonth: mergedByMonth });
+  }
+
+  if (reportType === "products") {
+    const [countRow] = await db.select({ total: sql<number>`count(*)::int` }).from(productsTable);
+    const outOfStock = await db.select({ c: sql<number>`count(*)::int` }).from(productsTable).where(eq(productsTable.stock, 0));
+    const lowStock = await db.select({ c: sql<number>`count(*)::int` }).from(productsTable).where(and(gt(productsTable.stock, 0), lte(productsTable.stock, 5)));
+    const [stockVal] = await db.select({ v: sql<number>`coalesce(sum(price::numeric * stock),0)::float` }).from(productsTable);
+
+    const products = await db.select().from(productsTable).orderBy(desc(productsTable.stock)).limit(100);
+
+    return json({
+      totalProducts: countRow?.total ?? 0,
+      outOfStock: outOfStock[0]?.c ?? 0,
+      lowStock: lowStock[0]?.c ?? 0,
+      stockValue: stockVal?.v ?? 0,
+      products,
+    });
+  }
+
+  if (reportType === "accounts") {
+    const receiptCond = (() => { const cs: any[] = []; if (from) cs.push(gte(receiptVouchersTable.date, from)); if (to) cs.push(lte(receiptVouchersTable.date, to)); return cs.length ? (and(...cs) as any) : undefined; })();
+    const paymentCond = (() => { const cs: any[] = []; if (from) cs.push(gte(paymentVouchersTable.date, from)); if (to) cs.push(lte(paymentVouchersTable.date, to)); return cs.length ? (and(...cs) as any) : undefined; })();
+    const expCond = (() => { const cs: any[] = []; if (from) cs.push(gte(expensesTable.date, from)); if (to) cs.push(lte(expensesTable.date, to)); return cs.length ? (and(...cs) as any) : undefined; })();
+
+    const [rcpt] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric),0)::float` }).from(receiptVouchersTable).where(receiptCond);
+    const [pmnt] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric),0)::float` }).from(paymentVouchersTable).where(paymentCond);
+    const [exp] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric),0)::float` }).from(expensesTable).where(expCond);
+
+    const totalReceipts = rcpt?.total ?? 0;
+    const totalPayments = pmnt?.total ?? 0;
+    const totalExpenses = exp?.total ?? 0;
+    const balance = totalReceipts - totalPayments - totalExpenses;
+
+    const receiptsByDay = await db.select({
+      date: receiptVouchersTable.date,
+      receipts: sql<number>`coalesce(sum(amount::numeric),0)::float`,
+    }).from(receiptVouchersTable).where(receiptCond)
+      .groupBy(receiptVouchersTable.date).orderBy(receiptVouchersTable.date);
+
+    const paymentsByDay = await db.select({
+      date: paymentVouchersTable.date,
+      payments: sql<number>`coalesce(sum(amount::numeric),0)::float`,
+    }).from(paymentVouchersTable).where(paymentCond)
+      .groupBy(paymentVouchersTable.date).orderBy(paymentVouchersTable.date);
+
+    const dayMap = new Map<string, { receipts: number; payments: number }>();
+    receiptsByDay.forEach(r => dayMap.set(r.date, { receipts: r.receipts, payments: 0 }));
+    paymentsByDay.forEach(r => { const ex = dayMap.get(r.date); if (ex) ex.payments = r.payments; else dayMap.set(r.date, { receipts: 0, payments: r.payments }); });
+    const mergedByDay = Array.from(dayMap.entries()).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+
+    return json({ totalReceipts, totalPayments, totalExpenses, balance, receiptsByDay: mergedByDay });
   }
 
   return null;

@@ -2,7 +2,8 @@ import { type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
-  Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
+  Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle,
+  Database, Archive, BarChart3, Receipt, TrendingUp, Printer, ShoppingCart,
 } from "lucide-react";
 import { hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -10,21 +11,25 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 type NavItem = { href: string; label: string; icon: any; perm: Permission };
 
 const NAV: NavItem[] = [
-  { href: "/admin/dashboard",  label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
-  { href: "/admin/orders",     label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
-  { href: "/admin/archive",    label: "الأرشيف",           icon: Archive,        perm: "orders" },
-  { href: "/admin/services",   label: "الخدمات",            icon: Sparkles,        perm: "services" },
-  { href: "/admin/products",   label: "المتجر",             icon: Package,         perm: "products" },
-  { href: "/admin/categories", label: "التصنيفات",          icon: Tag,             perm: "products" },
-  { href: "/admin/gallery",    label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
-  { href: "/admin/delivery",   label: "التوصيل",            icon: Truck,           perm: "delivery" },
-  { href: "/admin/customers",  label: "العملاء",            icon: Users,           perm: "customers" },
-  { href: "/admin/crews",      label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
-  { href: "/admin/staff",      label: "الموظفون",           icon: UserCog,         perm: "staff" },
-  { href: "/admin/accounting", label: "الحسابات",            icon: Wallet,          perm: "accounting" },
-  { href: "/admin/whatsapp",   label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
-  { href: "/admin/backup",     label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
-  { href: "/admin/settings",   label: "الإعدادات",          icon: Settings,        perm: "settings" },
+  { href: "/admin/dashboard",       label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
+  { href: "/admin/orders",          label: "الطلبات والحجوزات", icon: ShoppingBag,     perm: "orders" },
+  { href: "/admin/archive",         label: "الأرشيف",           icon: Archive,         perm: "orders" },
+  { href: "/admin/sales",           label: "المبيعات",           icon: Receipt,         perm: "accounting" },
+  { href: "/admin/purchases",       label: "المشتريات",          icon: ShoppingCart,    perm: "accounting" },
+  { href: "/admin/accounting",      label: "الحسابات",           icon: Wallet,          perm: "accounting" },
+  { href: "/admin/reports",         label: "التقارير",           icon: BarChart3,       perm: "accounting" },
+  { href: "/admin/print-designer",  label: "مصمم الطباعة",       icon: Printer,         perm: "accounting" },
+  { href: "/admin/services",        label: "الخدمات",            icon: Sparkles,        perm: "services" },
+  { href: "/admin/products",        label: "المتجر",             icon: Package,         perm: "products" },
+  { href: "/admin/categories",      label: "التصنيفات",          icon: Tag,             perm: "products" },
+  { href: "/admin/gallery",         label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
+  { href: "/admin/delivery",        label: "التوصيل",            icon: Truck,           perm: "delivery" },
+  { href: "/admin/customers",       label: "العملاء",            icon: Users,           perm: "customers" },
+  { href: "/admin/crews",           label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
+  { href: "/admin/staff",           label: "الموظفون",           icon: UserCog,         perm: "staff" },
+  { href: "/admin/whatsapp",        label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
+  { href: "/admin/backup",          label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
+  { href: "/admin/settings",        label: "الإعدادات",          icon: Settings,        perm: "settings" },
 ];
 
 export function AdminLayout({

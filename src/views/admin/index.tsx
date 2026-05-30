@@ -23,6 +23,10 @@ const AccountingPage = lazy(() => import("./accounting"));
 const WhatsappPage = lazy(() => import("./whatsapp"));
 const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
+const SalesPage = lazy(() => import("./sales"));
+const PurchasesPage = lazy(() => import("./purchases"));
+const ReportsPage = lazy(() => import("./reports"));
+const PrintDesignerPage = lazy(() => import("./print-designer"));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
@@ -91,10 +95,14 @@ export default function Admin() {
           <Route path="/admin/customers" >{() => <Guard me={me} perm="customers"><CustomersPage  /></Guard>}</Route>
           <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>
           <Route path="/admin/staff"     >{() => <Guard me={me} perm="staff"    ><StaffPage      /></Guard>}</Route>
-          <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
-          <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
-          <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
-          <Route path="/admin/settings"  >{() => <Guard me={me} perm="settings" ><SettingsPage   /></Guard>}</Route>
+          <Route path="/admin/accounting"     >{() => <Guard me={me} perm="accounting"><AccountingPage    /></Guard>}</Route>
+          <Route path="/admin/sales"          >{() => <Guard me={me} perm="accounting"><SalesPage         /></Guard>}</Route>
+          <Route path="/admin/purchases"      >{() => <Guard me={me} perm="accounting"><PurchasesPage     /></Guard>}</Route>
+          <Route path="/admin/reports"        >{() => <Guard me={me} perm="accounting"><ReportsPage       /></Guard>}</Route>
+          <Route path="/admin/print-designer" >{() => <Guard me={me} perm="accounting"><PrintDesignerPage /></Guard>}</Route>
+          <Route path="/admin/whatsapp"       >{() => <Guard me={me} perm="whatsapp"  ><WhatsappPage      /></Guard>}</Route>
+          <Route path="/admin/backup"         >{() => <Guard me={me} perm="backup"    ><BackupPage        /></Guard>}</Route>
+          <Route path="/admin/settings"       >{() => <Guard me={me} perm="settings"  ><SettingsPage      /></Guard>}</Route>
           <Route>{() => <NoPermission />}</Route>
         </Switch>
       </Suspense>

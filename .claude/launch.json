@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ajn-platform-next (dev)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000
+    },
+    {
+      "name": "ruwad-sports (dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/yoland/Desktop/rwad"],
+      "port": 3001
+    }
+  ]
+}

@@ -18,3 +18,6 @@ export * from "./whatsapp";
 export * from "./order-reviews";
 export * from "./admin-activity";
 export * from "./rewards";
+export * from "./sales-invoices";
+export * from "./purchases";
+export * from "./print-templates";
