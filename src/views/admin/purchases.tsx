@@ -158,6 +158,8 @@ export default function PurchasesPage() {
       toast({ title: "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setItems([blankItem()]);
       setForm(newForm());
     } catch (e: any) {

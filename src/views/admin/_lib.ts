@@ -46,7 +46,16 @@ export async function adminFetch<T = any>(path: string, init: RequestInit = {}):
   const res = await fetch(apiPath(path), { ...init, headers, credentials: "include" });
   if (!res.ok) {
     let msg = res.statusText;
-    try { const j = await res.json(); msg = j?.error ?? msg; } catch { /* ignore */ }
+    try {
+      const j = await res.json();
+      const details = Array.isArray(j?.details)
+        ? j.details
+            .slice(0, 4)
+            .map((item: any) => `${item?.field ?? "body"}: ${item?.message ?? "قيمة غير صحيحة"}`)
+            .join("، ")
+        : "";
+      msg = j?.error ?? (details || msg);
+    } catch { /* ignore */ }
     const err = new Error(`HTTP ${res.status}: ${msg}`) as Error & { status?: number };
     (err as any).status = res.status;
     throw err;

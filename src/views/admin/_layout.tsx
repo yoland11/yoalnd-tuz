@@ -1,11 +1,13 @@
 import { type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
-  Receipt, ShoppingCart, BarChart3, PenTool, Monitor,
+  Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer,
+  Percent, Trophy, AlertTriangle,
 } from "lucide-react";
-import { hasPerm, type AdminMe, type Permission } from "./_lib";
+import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type NavItem = { href: string; label: string; icon: any; perm: Permission };
@@ -17,19 +19,25 @@ const NAV: NavItem[] = [
   { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
   { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
   { href: "/admin/categories",     label: "التصنيفات",          icon: Tag,             perm: "products" },
+  { href: "/admin/barcodes",       label: "طباعة الباركود",     icon: Barcode,         perm: "products" },
+  { href: "/admin/inventory-alerts",label: "تنبيهات المخزون",   icon: AlertTriangle,   perm: "products" },
   { href: "/admin/pos",             label: "نقطة البيع POS",    icon: Monitor,         perm: "invoices" },
   { href: "/admin/sales",          label: "فواتير المبيعات",   icon: Receipt,         perm: "invoices" },
   { href: "/admin/purchases",      label: "فواتير الشراء",      icon: ShoppingCart,    perm: "accounting" },
   { href: "/admin/reports",        label: "التقارير",           icon: BarChart3,       perm: "accounting" },
+  { href: "/admin/coupons",        label: "الكوبونات",          icon: Percent,         perm: "accounting" },
   { href: "/admin/gallery",        label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
   { href: "/admin/delivery",       label: "التوصيل",            icon: Truck,           perm: "delivery" },
   { href: "/admin/customers",      label: "العملاء",            icon: Users,           perm: "customers" },
+  { href: "/admin/loyalty",        label: "نقاط الولاء",        icon: Trophy,          perm: "customers" },
   { href: "/admin/crews",          label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
   { href: "/admin/staff",          label: "الموظفون",           icon: UserCog,         perm: "staff" },
+  { href: "/admin/activity-log",   label: "سجل النشاط",         icon: History,         perm: "staff" },
   { href: "/admin/accounting",     label: "الحسابات",            icon: Wallet,          perm: "accounting" },
   { href: "/admin/whatsapp",       label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
   { href: "/admin/backup",         label: "النسخ الاحتياطي",     icon: Database,        perm: "backup" },
   { href: "/admin/invoice-designer",label: "مصمم الفاتورة",     icon: PenTool,         perm: "settings" },
+  { href: "/admin/settings/printer",label: "إعدادات الطابعة",   icon: Printer,         perm: "settings" },
   { href: "/admin/settings",       label: "الإعدادات",          icon: Settings,        perm: "settings" },
 ];
 
@@ -44,8 +52,15 @@ export function AdminLayout({
 }) {
   const [location] = useLocation();
   const { data: settings } = usePublicSettings();
+  const { data: inventoryAlertCount } = useQuery({
+    queryKey: ["admin", "inventory-alert-count"],
+    queryFn: () => adminFetch<{ count: number }>("/admin/inventory-alerts?count=1"),
+    enabled: hasPerm(me, "products"),
+    staleTime: 60_000,
+  });
 
   const visibleNav = NAV.filter(item => hasPerm(me, item.perm));
+  const lowStockCount = inventoryAlertCount?.count ?? 0;
 
   return (
     <div className="min-h-screen bg-background flex" dir="rtl">
@@ -63,15 +78,20 @@ export function AdminLayout({
           {visibleNav.map(item => {
             const active = location === item.href || location.startsWith(item.href + "/");
             return (
-              <Link key={item.href} href={item.href}>
-                <a
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                    active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  <item.icon className="w-4 h-4" />
-                  {item.label}
-                </a>
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                  active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <item.icon className="w-4 h-4" />
+                {item.label}
+                {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
+                  <span className="mr-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
+                    {lowStockCount.toLocaleString("ar-IQ")}
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -101,11 +121,20 @@ export function AdminLayout({
           {visibleNav.map(item => {
             const active = location === item.href || location.startsWith(item.href + "/");
             return (
-              <Link key={item.href} href={item.href}>
-                <a className={`shrink-0 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${active ? "bg-primary/10 text-primary" : "bg-background/60 text-muted-foreground"}`}>
-                  <item.icon className="w-3.5 h-3.5" />
-                  {item.label}
-                </a>
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`shrink-0 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${
+                  active ? "bg-primary/10 text-primary" : "bg-background/60 text-muted-foreground"
+                }`}
+              >
+                <item.icon className="w-3.5 h-3.5" />
+                {item.label}
+                {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
+                  <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
+                    {lowStockCount.toLocaleString("ar-IQ")}
+                  </span>
+                )}
               </Link>
             );
           })}

@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone } from "@/lib/phone";
+import { useToast } from "@/hooks/use-toast";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار", confirmed: "مؤكد", processing: "قيد التجهيز",
@@ -23,6 +24,7 @@ type ZoneDraft = {
 
 export default function DeliveryPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: zones, isLoading: zLoading } = useListDeliveryZones();
   const { data: orders, isLoading: oLoading } = useListOrders({});
   const updateZone = useUpdateDeliveryZone();
@@ -48,14 +50,19 @@ export default function DeliveryPage() {
   }
   async function saveDraft(id: number) {
     const d = getDraft(id);
-    await updateZone.mutateAsync({ id, data: {
-      price: parseFloat(d.price) || 0,
-      estimatedDays: parseInt(d.estimatedDays) || 1,
-      isActive: d.isActive,
-      areas: d.areas,
-    }});
-    qc.invalidateQueries({ queryKey: getListDeliveryZonesQueryKey() });
-    setDrafts(rest => { const c = { ...rest }; delete c[id]; return c; });
+    try {
+      await updateZone.mutateAsync({ id, data: {
+        price: parseFloat(d.price) || 0,
+        estimatedDays: parseInt(d.estimatedDays) || 1,
+        isActive: d.isActive,
+        areas: d.areas,
+      }});
+      qc.invalidateQueries({ queryKey: getListDeliveryZonesQueryKey() });
+      setDrafts(rest => { const c = { ...rest }; delete c[id]; return c; });
+      toast({ title: "تم حفظ منطقة التوصيل" });
+    } catch (err: any) {
+      toast({ title: "تعذر حفظ منطقة التوصيل", description: err?.message, variant: "destructive" });
+    }
   }
 
   return (
@@ -94,17 +101,22 @@ export default function DeliveryPage() {
           <div className="flex gap-2">
             <Button size="sm" onClick={async () => {
               if (!newZone.governorateAr) return;
-              await createZone.mutateAsync({ data: {
-                governorate: newZone.governorate || newZone.governorateAr,
-                governorateAr: newZone.governorateAr,
-                price: parseFloat(newZone.price) || 0,
-                estimatedDays: parseInt(newZone.estimatedDays) || 1,
-                areas: newZone.areas,
-                isActive: true,
-              }});
-              qc.invalidateQueries({ queryKey: getListDeliveryZonesQueryKey() });
-              setShowCreate(false);
-              setNewZone({ governorateAr: "", governorate: "", price: "5000", estimatedDays: "2", areas: [], newArea: "" });
+              try {
+                await createZone.mutateAsync({ data: {
+                  governorate: newZone.governorate || newZone.governorateAr,
+                  governorateAr: newZone.governorateAr,
+                  price: parseFloat(newZone.price) || 0,
+                  estimatedDays: parseInt(newZone.estimatedDays) || 1,
+                  areas: newZone.areas,
+                  isActive: true,
+                }});
+                qc.invalidateQueries({ queryKey: getListDeliveryZonesQueryKey() });
+                setShowCreate(false);
+                setNewZone({ governorateAr: "", governorate: "", price: "5000", estimatedDays: "2", areas: [], newArea: "" });
+                toast({ title: "تمت إضافة منطقة التوصيل" });
+              } catch (err: any) {
+                toast({ title: "تعذر إضافة منطقة التوصيل", description: err?.message, variant: "destructive" });
+              }
             }}>حفظ</Button>
             <Button size="sm" variant="outline" onClick={() => setShowCreate(false)}>إلغاء</Button>
           </div>

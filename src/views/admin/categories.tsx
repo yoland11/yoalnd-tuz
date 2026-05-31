@@ -5,11 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
+import { useToast } from "@/hooks/use-toast";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
 export default function CategoriesPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "categories"],
     queryFn: () => adminFetch<Category[]>("/admin/categories"),
@@ -20,11 +22,13 @@ export default function CategoriesPage() {
     mutationFn: (c: Partial<Category>) => c.id
       ? adminFetch(`/admin/categories/${c.id}`, { method: "PATCH", body: JSON.stringify(c) })
       : adminFetch("/admin/categories", { method: "POST", body: JSON.stringify(c) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "categories"] }); setEditing(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "categories"] }); setEditing(null); toast({ title: "تم حفظ التصنيف" }); },
+    onError: (err: any) => toast({ title: "تعذر حفظ التصنيف", description: err?.message, variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/categories/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "categories"] }),
+    onError: (err: any) => toast({ title: "تعذر حذف التصنيف", description: err?.message, variant: "destructive" }),
   });
 
   const parents = data?.filter(c => !c.parentId) ?? [];

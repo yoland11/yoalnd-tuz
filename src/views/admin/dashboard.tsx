@@ -105,11 +105,13 @@ export default function DashboardPage() {
       <div className="bg-card rounded-xl border border-border/30 p-4">
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
           {shortcuts.map((item) => (
-            <Link key={item.label} href={item.href}>
-              <a className="inline-flex items-center justify-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2.5 text-xs text-foreground hover:border-primary/40 hover:text-primary transition-colors">
-                <item.icon className="w-4 h-4" />
-                <span className="truncate">{item.label}</span>
-              </a>
+            <Link
+              key={item.label}
+              href={item.href}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2.5 text-xs text-foreground hover:border-primary/40 hover:text-primary transition-colors"
+            >
+              <item.icon className="w-4 h-4" />
+              <span className="truncate">{item.label}</span>
             </Link>
           ))}
         </div>

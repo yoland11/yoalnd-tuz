@@ -12,6 +12,8 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   customerId: integer("customer_id").references(() => customersTable.id),
   subtotal: numeric("subtotal", { precision: 14, scale: 2 }).notNull().default("0"),
   discountAmount: numeric("discount_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  couponCode: varchar("coupon_code", { length: 60 }),
+  couponDiscountAmount: numeric("coupon_discount_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   taxAmount: numeric("tax_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   total: numeric("total", { precision: 14, scale: 2 }).notNull().default("0"),
   paidAmount: numeric("paid_amount", { precision: 14, scale: 2 }).notNull().default("0"),

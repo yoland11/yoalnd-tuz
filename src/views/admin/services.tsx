@@ -8,6 +8,7 @@ import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { useToast } from "@/hooks/use-toast";
 
 type Service = {
   id: number; name: string; nameAr: string;
@@ -29,6 +30,7 @@ const SERVICE_TYPES = [
 
 export default function ServicesPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [editing, setEditing] = useState<Partial<Service> | null>(null);
   const { data: publicSettings } = usePublicSettings();
 
@@ -47,18 +49,21 @@ export default function ServicesPage() {
       svc.id
         ? adminFetch(`/admin/services/${svc.id}`, { method: "PATCH", body: JSON.stringify(svc) })
         : adminFetch("/admin/services", { method: "POST", body: JSON.stringify(svc) }),
-    onSuccess: () => { invalidate(); setEditing(null); },
+    onSuccess: () => { invalidate(); setEditing(null); toast({ title: "تم حفظ الخدمة" }); },
+    onError: (err: any) => toast({ title: "تعذر حفظ الخدمة", description: err?.message, variant: "destructive" }),
   });
 
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/services/${id}`, { method: "DELETE" }),
     onSuccess: invalidate,
+    onError: (err: any) => toast({ title: "تعذر حذف الخدمة", description: err?.message, variant: "destructive" }),
   });
 
   const toggleActive = useMutation({
     mutationFn: (s: Service) =>
       adminFetch(`/admin/services/${s.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !s.isActive }) }),
     onSuccess: invalidate,
+    onError: (err: any) => toast({ title: "تعذر تحديث الخدمة", description: err?.message, variant: "destructive" }),
   });
 
   function handleImageResult(results: ImageEditResult[]) {

@@ -22,8 +22,8 @@ type ProductForm = {
   id?: number;
   name: string; nameAr: string;
   description?: string; descriptionAr?: string;
-  price: string; originalPrice?: string;
-  stock: string;
+  price: string; originalPrice?: string; costPrice?: string;
+  stock: string; minStock?: string; barcode?: string;
   category?: string; subcategory?: string;
   images: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
@@ -31,7 +31,7 @@ type ProductForm = {
 };
 
 const blank: ProductForm = {
-  name: "", nameAr: "", price: "0", stock: "0",
+  name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
   images: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
@@ -68,6 +68,9 @@ export default function ProductsPage() {
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: getListProductsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
   }
 
   async function save(form: ProductForm) {
@@ -80,10 +83,13 @@ export default function ProductsPage() {
       description: form.description?.trim() || "",
       descriptionAr: form.descriptionAr?.trim() || "",
       price,
-      ...(parsedOriginalPrice && parsedOriginalPrice > price ? { originalPrice: parsedOriginalPrice } : {}),
+      originalPrice: parsedOriginalPrice && parsedOriginalPrice > price ? parsedOriginalPrice : 0,
+      costPrice: parseFloat(form.costPrice ?? "0") || 0,
       stock: parseInt(form.stock) || 0,
-      ...(form.category ? { category: form.category } : {}),
-      ...(form.subcategory ? { subcategory: form.subcategory } : {}),
+      minStock: parseInt(form.minStock ?? "0") || 0,
+      barcode: form.barcode?.trim() ?? "",
+      category: form.category ?? "",
+      subcategory: form.subcategory ?? "",
       images: form.images ?? [],
       imageMetadata: form.imageMetadata ?? [],
       colors: normalizeColors(form.colors ?? []),
@@ -215,6 +221,7 @@ export default function ProductsPage() {
                           <div>
                             <p className="font-medium text-foreground">{p.nameAr}</p>
                             <p className="text-xs text-muted-foreground">{p.name}</p>
+                            {p.barcode && <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">{p.barcode}</p>}
                             <ProductColorDots colors={p.colors} max={4} />
                             {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
                           </div>
@@ -234,7 +241,8 @@ export default function ProductsPage() {
                           id: p.id, name: p.name, nameAr: p.nameAr,
                           description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
-                          stock: String(p.stock),
+                          costPrice: p.costPrice ? String(p.costPrice) : "0",
+                          stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
                           images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
                           isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
@@ -348,7 +356,10 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="الاسم بالإنجليزي" value={form.name} onChange={v => onChange({ ...form, name: v })} />
           <Inp label="السعر" type="number" value={form.price} onChange={v => onChange({ ...form, price: v })} />
           <Inp label="السعر الأصلي (اختياري)" type="number" value={form.originalPrice ?? ""} onChange={v => onChange({ ...form, originalPrice: v })} />
+          <Inp label="سعر الشراء" type="number" value={form.costPrice ?? "0"} onChange={v => onChange({ ...form, costPrice: v })} />
           <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
+          <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />
+          <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
             <select value={form.category ?? ""} onChange={e => onChange({ ...form, category: e.target.value, subcategory: "" })}

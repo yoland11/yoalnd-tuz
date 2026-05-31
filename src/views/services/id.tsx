@@ -125,10 +125,10 @@ export default function ServiceRequest() {
         });
         setLocation(order.trackingCode ? `/track?code=${order.trackingCode}` : "/track");
       },
-      onError: () => {
+      onError: (err: any) => {
         toast({
-          title: "حدث خطأ",
-          description: "يرجى المحاولة مرة أخرى لاحقاً.",
+          title: "تعذر إرسال الطلب",
+          description: err?.message ?? "يرجى المحاولة مرة أخرى لاحقاً.",
           variant: "destructive"
         });
       }

@@ -341,17 +341,27 @@ export default function Profile() {
   }
 
   async function deleteAddress(id: number) {
-    await fetchJson(`/api/customer/addresses/${id}`, { method: "DELETE" });
-    setAddresses((rows) => rows.filter((row) => row.id !== id));
+    setAddressError("");
+    try {
+      await fetchJson(`/api/customer/addresses/${id}`, { method: "DELETE" });
+      setAddresses((rows) => rows.filter((row) => row.id !== id));
+    } catch (err: any) {
+      setAddressError(err?.message || "تعذر حذف العنوان");
+    }
   }
 
   async function makeDefaultAddress(address: CustomerAddress) {
-    const saved = await fetchJson<CustomerAddress>(`/api/customer/addresses/${address.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isDefault: true }),
-    });
-    setAddresses((rows) => rows.map((row) => ({ ...row, isDefault: row.id === saved.id })));
+    setAddressError("");
+    try {
+      const saved = await fetchJson<CustomerAddress>(`/api/customer/addresses/${address.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isDefault: true }),
+      });
+      setAddresses((rows) => rows.map((row) => ({ ...row, isDefault: row.id === saved.id })));
+    } catch (err: any) {
+      setAddressError(err?.message || "تعذر تعيين العنوان الافتراضي");
+    }
   }
 
   async function savePaymentPreference(method: "cash" | "card") {
@@ -363,6 +373,8 @@ export default function Profile() {
         body: JSON.stringify({ defaultPaymentMethod: method }),
       });
       setPaymentMethod(saved.defaultPaymentMethod);
+    } catch (err: any) {
+      alert(err?.message || "تعذر حفظ طريقة الدفع");
     } finally {
       setSavingPayment(false);
     }

@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
+import { useToast } from "@/hooks/use-toast";
 
 type Customer = {
   id: number; name: string; phone: string; role: string;
@@ -19,6 +20,7 @@ type CustomerDetail = Customer & {
 
 export default function CustomersPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [pointsDelta, setPointsDelta] = useState("");
@@ -42,7 +44,9 @@ export default function CustomersPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "customer", selectedId] });
       setPointsDelta("");
       setPointsNote("");
+      toast({ title: "تم تحديث نقاط الزبون" });
     },
+    onError: (err: any) => toast({ title: "تعذر تحديث النقاط", description: err?.message, variant: "destructive" }),
   });
 
   return (

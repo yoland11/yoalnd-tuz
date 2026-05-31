@@ -57,7 +57,11 @@ export interface Product {
   price: number;
   /** @nullable */
   originalPrice?: number | null;
+  costPrice?: number;
   stock: number;
+  minStock?: number;
+  /** @nullable */
+  barcode?: string | null;
   /** @nullable */
   category?: string | null;
   /** @nullable */
@@ -66,6 +70,8 @@ export interface Product {
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
+  isActive?: boolean;
+  sortOrder?: number;
   /** @nullable */
   rating?: number | null;
   reviewCount?: number;
@@ -79,13 +85,18 @@ export interface ProductInput {
   descriptionAr?: string;
   price?: number;
   originalPrice?: number;
+  costPrice?: number;
   stock?: number;
+  minStock?: number;
+  barcode?: string;
   category?: string;
   subcategory?: string;
   images?: string[];
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
+  isActive?: boolean;
+  sortOrder?: number;
 }
 
 export interface ProductUpdate {
@@ -95,13 +106,18 @@ export interface ProductUpdate {
   descriptionAr?: string;
   price?: number;
   originalPrice?: number;
+  costPrice?: number;
   stock?: number;
+  minStock?: number;
+  barcode?: string;
   category?: string;
   subcategory?: string;
   images?: string[];
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
+  isActive?: boolean;
+  sortOrder?: number;
 }
 
 export interface Service {
@@ -253,6 +269,8 @@ export interface OrderInput {
   notes?: string;
   paymentMethod?: OrderInputPaymentMethod;
   deliveryZoneId?: number;
+  couponCode?: string;
+  redeemPoints?: number;
   /** Google Maps URL (from geolocation or manual entry) */
   mapsUrl?: string;
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import {
   useGetCart,
@@ -14,10 +14,12 @@ import { SelectedColorLabel } from "@/components/product-colors";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
 import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
+import { useToast } from "@/hooks/use-toast";
 
 export default function Checkout() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: cart } = useGetCart();
   const { data: zones } = useListDeliveryZones();
   const createOrder = useCreateOrder();
@@ -36,6 +38,21 @@ export default function Checkout() {
   const [completedOrder, setCompletedOrder] = useState<{ trackingCode: string; total: number } | null>(null);
   const [geoState, setGeoState] = useState<"idle" | "loading" | "ok" | "denied">("idle");
   const [geoError, setGeoError] = useState<string>("");
+  const [couponCode, setCouponCode] = useState("");
+  const [coupon, setCoupon] = useState<{ code: string; discountAmount: number; message: string } | null>(null);
+  const [couponError, setCouponError] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [rewards, setRewards] = useState<{ points: number; redeemValue: number } | null>(null);
+  const [redeemPoints, setRedeemPoints] = useState("0");
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/customer/rewards", { credentials: "include" })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (alive && data) setRewards({ points: Number(data.points) || 0, redeemValue: Number(data.redeemValue) || 1000 }); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
 
   function detectLocation() {
     if (!navigator.geolocation) {
@@ -67,7 +84,11 @@ export default function Checkout() {
   const selectedZone = zones?.find(z => z.id === form.deliveryZoneId);
   const deliveryFee = selectedZone ? selectedZone.price : 0;
   const subtotal = Number(cart?.total ?? 0);
-  const total = subtotal + Number(deliveryFee);
+  const couponDiscount = coupon?.discountAmount ?? 0;
+  const maxRedeemPoints = rewards ? Math.min(rewards.points, Math.floor(Math.max(subtotal + Number(deliveryFee) - couponDiscount, 0) / rewards.redeemValue)) : 0;
+  const safeRedeemPoints = Math.min(Math.max(Number.parseInt(redeemPoints, 10) || 0, 0), maxRedeemPoints);
+  const redeemDiscount = rewards ? safeRedeemPoints * rewards.redeemValue : 0;
+  const total = Math.max(subtotal + Number(deliveryFee) - couponDiscount - redeemDiscount, 0);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
     const { name, value } = e.target;
@@ -97,6 +118,8 @@ export default function Checkout() {
           notes: form.notes,
           paymentMethod: form.paymentMethod as "cod" | "transfer" | "paid",
           deliveryZoneId: form.deliveryZoneId || undefined,
+          couponCode: coupon?.code,
+          redeemPoints: safeRedeemPoints || undefined,
           mapsUrl: form.mapsUrl.trim() || undefined,
         },
       },
@@ -105,8 +128,34 @@ export default function Checkout() {
           queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() });
           setCompletedOrder({ trackingCode: order.trackingCode, total: Number(order.total) });
         },
+        onError: (err: any) => toast({ title: "تعذر إنشاء الطلب", description: err?.message, variant: "destructive" }),
       }
     );
+  }
+
+  async function applyCoupon() {
+    setCouponError("");
+    setCoupon(null);
+    if (!couponCode.trim()) {
+      setCouponError("أدخل كود الخصم");
+      return;
+    }
+    setCouponLoading(true);
+    try {
+      const res = await fetch("/api/coupons/apply", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: couponCode, subtotal, deliveryFee }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "تعذر تطبيق الكوبون");
+      setCoupon({ code: data.code, discountAmount: Number(data.discountAmount) || 0, message: data.message ?? "تم تطبيق الكوبون" });
+      setCouponCode(data.code);
+    } catch (err: any) {
+      setCouponError(err?.message ?? "تعذر تطبيق الكوبون");
+    } finally {
+      setCouponLoading(false);
+    }
   }
 
   if (completedOrder) {
@@ -316,6 +365,57 @@ export default function Checkout() {
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">التوصيل</span>
                 <span>{Number(deliveryFee).toLocaleString('ar-IQ')} د.ع</span>
+              </div>
+              {coupon && (
+                <div className="flex justify-between text-sm text-green-400">
+                  <span>كوبون {coupon.code}</span>
+                  <span>- {coupon.discountAmount.toLocaleString("ar-IQ")} د.ع</span>
+                </div>
+              )}
+              {rewards && rewards.points > 0 && (
+                <div className="rounded-lg border border-border/30 bg-background/50 p-2 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>نقاطك: {rewards.points.toLocaleString("ar-IQ")}</span>
+                    <span>أقصى صرف: {maxRedeemPoints.toLocaleString("ar-IQ")}</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={maxRedeemPoints}
+                    value={redeemPoints}
+                    onChange={(e) => setRedeemPoints(e.target.value)}
+                    className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    dir="ltr"
+                    placeholder="نقاط للصرف"
+                  />
+                  {redeemDiscount > 0 && (
+                    <div className="flex justify-between text-sm text-primary">
+                      <span>خصم النقاط</span>
+                      <span>- {redeemDiscount.toLocaleString("ar-IQ")} د.ع</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="rounded-lg border border-border/30 bg-background/50 p-2 space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={couponCode}
+                    onChange={(e) => { setCouponCode(e.target.value.toUpperCase().replace(/\s+/g, "")); setCoupon(null); setCouponError(""); }}
+                    placeholder="كود الخصم"
+                    className="flex-1 bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    dir="ltr"
+                  />
+                  <button
+                    type="button"
+                    onClick={applyCoupon}
+                    disabled={couponLoading || subtotal <= 0}
+                    className="rounded-lg border border-primary/40 px-3 py-2 text-xs text-primary hover:bg-primary/10 disabled:opacity-50"
+                  >
+                    {couponLoading ? "..." : "تطبيق"}
+                  </button>
+                </div>
+                {couponError && <p className="text-xs text-red-400">{couponError}</p>}
+                {coupon && <p className="text-xs text-green-400">{coupon.message}</p>}
               </div>
               <div className="flex justify-between font-bold text-lg border-t border-border/30 pt-2 mt-2">
                 <span className="text-foreground">الإجمالي</span>

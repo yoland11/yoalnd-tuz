@@ -67,6 +67,49 @@ function preparePdfClone(doc: Document) {
   }
 }
 
+function safeCssColor(value: string, fallback: string) {
+  const color = value?.trim();
+  if (!color || color === "transparent" || color === "rgba(0, 0, 0, 0)") return color || fallback;
+  return /(oklab|lab|oklch|lch|color)\(/i.test(color) ? fallback : color;
+}
+
+function createPdfSnapshot(element: HTMLElement) {
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "fixed";
+  wrapper.style.top = "0";
+  wrapper.style.left = "-100000px";
+  wrapper.style.width = `${Math.max(element.scrollWidth, element.offsetWidth, 1)}px`;
+  wrapper.style.backgroundColor = "#ffffff";
+  wrapper.style.pointerEvents = "none";
+  wrapper.style.zIndex = "-1";
+
+  const clone = element.cloneNode(true) as HTMLElement;
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
+
+  const sourceNodes = [element, ...Array.from(element.querySelectorAll<HTMLElement>("*"))];
+  const cloneNodes = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>("*"))];
+  for (let index = 0; index < cloneNodes.length; index++) {
+    const source = sourceNodes[index];
+    const target = cloneNodes[index];
+    if (!source || !target) continue;
+    const computed = window.getComputedStyle(source);
+    target.style.color = safeCssColor(computed.color, "#111827");
+    target.style.backgroundColor = safeCssColor(computed.backgroundColor, "transparent");
+    target.style.borderTopColor = safeCssColor(computed.borderTopColor, "#d1d5db");
+    target.style.borderRightColor = safeCssColor(computed.borderRightColor, "#d1d5db");
+    target.style.borderBottomColor = safeCssColor(computed.borderBottomColor, "#d1d5db");
+    target.style.borderLeftColor = safeCssColor(computed.borderLeftColor, "#d1d5db");
+    target.style.outlineColor = safeCssColor(computed.outlineColor, "#d1d5db");
+    target.style.setProperty("fill", safeCssColor(computed.fill, "#111827"));
+    target.style.setProperty("stroke", safeCssColor(computed.stroke, "#111827"));
+    target.style.boxShadow = "none";
+    target.style.textShadow = "none";
+  }
+
+  return { snapshot: clone, cleanup: () => wrapper.remove() };
+}
+
 export async function downloadElementPdf(element: HTMLElement | null, filename: string) {
   if (!element || typeof window === "undefined") {
     throw new Error("العنصر غير جاهز للتصدير");
@@ -78,22 +121,27 @@ export async function downloadElementPdf(element: HTMLElement | null, filename: 
     throw new Error("مكتبة PDF غير جاهزة");
   }
 
-  await factory()
-    .set({
-      margin: [8, 8, 8, 8],
-      filename,
-      image: { type: "jpeg", quality: 0.96 },
-      html2canvas: {
-        scale: Math.min(2, window.devicePixelRatio || 1.5),
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: "#ffffff",
-        imageTimeout: 15000,
-        onclone: preparePdfClone,
-      },
-      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-      pagebreak: { mode: ["avoid-all", "css", "legacy"] },
-    })
-    .from(element)
-    .save();
+  const { snapshot, cleanup } = createPdfSnapshot(element);
+  try {
+    await factory()
+      .set({
+        margin: [8, 8, 8, 8],
+        filename,
+        image: { type: "jpeg", quality: 0.96 },
+        html2canvas: {
+          scale: Math.min(2, window.devicePixelRatio || 1.5),
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: "#ffffff",
+          imageTimeout: 15000,
+          onclone: preparePdfClone,
+        },
+        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+      })
+      .from(snapshot)
+      .save();
+  } finally {
+    cleanup();
+  }
 }

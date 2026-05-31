@@ -11,7 +11,11 @@ export interface Product {
   price: number;
   /** @nullable */
   originalPrice?: number | null;
+  costPrice?: number;
   stock: number;
+  minStock?: number;
+  /** @nullable */
+  barcode?: string | null;
   /** @nullable */
   category?: string | null;
   /** @nullable */
@@ -20,6 +24,8 @@ export interface Product {
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
+  isActive?: boolean;
+  sortOrder?: number;
   /** @nullable */
   rating?: number | null;
   reviewCount?: number;

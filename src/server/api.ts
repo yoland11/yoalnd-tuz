@@ -15,6 +15,8 @@ import {
   adminActivityLogsTable,
   cartItemsTable,
   categoriesTable,
+  couponUsagesTable,
+  couponsTable,
   crewsTable,
   customerAddressesTable,
   customerPreferencesTable,
@@ -24,6 +26,7 @@ import {
   expenseCategoriesTable,
   expensesTable,
   galleryItemsTable,
+  loyaltyPointsTable,
   orderItemsTable,
   orderReviewsTable,
   ordersTable,
@@ -163,6 +166,7 @@ let imageMetadataColumnsPromise: Promise<void> | null = null;
 let productColorColumnsPromise: Promise<void> | null = null;
 let customerRewardsPromise: Promise<void> | null = null;
 let performanceIndexesPromise: Promise<void> | null = null;
+let couponsTablesPromise: Promise<void> | null = null;
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -177,6 +181,21 @@ function text(data: string, status = 200, headers?: HeadersInit): NextResponse {
 
 function error(message: string, status = 400): NextResponse {
   return json({ error: message }, status);
+}
+
+type ValidationIssue = { field: string; message: string };
+
+function validationError(scope: string, parsed: { error: { issues: Array<{ path: PropertyKey[]; message: string }> } }): NextResponse {
+  const details: ValidationIssue[] = parsed.error.issues.map((issue) => ({
+    field: issue.path.map(String).join(".") || "body",
+    message: issue.message,
+  }));
+  console.warn("API validation failed", { scope, details });
+  const summary = details
+    .slice(0, 4)
+    .map((issue) => `${issue.field}: ${issue.message}`)
+    .join("، ");
+  return json({ error: summary ? `تحقق من البيانات: ${summary}` : "بيانات غير صحيحة", details }, 400);
 }
 
 async function body(req: NextRequest): Promise<any> {
@@ -282,6 +301,11 @@ function textFallback(...values: unknown[]): string {
   return "";
 }
 
+function nullableText(value: unknown): string | null {
+  const normalized = String(value ?? "").trim();
+  return normalized || null;
+}
+
 function slugFallback(value: unknown, fallback = "item"): string {
   const normalized = String(value ?? "")
     .trim()
@@ -290,6 +314,24 @@ function slugFallback(value: unknown, fallback = "item"): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
   return normalized || fallback;
+}
+
+function normalizeProductBarcode(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .slice(0, 100);
+}
+
+function generatedProductBarcode(id: number): string {
+  return `AJN${String(id).padStart(8, "0")}`;
+}
+
+async function productBarcodeExists(barcode: string, ignoreId?: number): Promise<boolean> {
+  if (!barcode) return false;
+  const existing = await db.query.productsTable.findFirst({ where: eq(productsTable.barcode, barcode) });
+  return !!existing && existing.id !== ignoreId;
 }
 
 function paymentSummary(totalValue: unknown, depositValue: unknown, preferredStatus?: unknown) {
@@ -526,6 +568,13 @@ async function requirePermission(req: NextRequest, perm: Permission): Promise<Ad
   return user;
 }
 
+async function requireAnyPermission(req: NextRequest, perms: Permission[]): Promise<AdminUser | NextResponse> {
+  const user = await getAdminUser(req);
+  if (!user) return error("غير مخول", 401);
+  if (!perms.some((perm) => hasPermission(user, perm))) return error("ليس لديك صلاحية", 403);
+  return user;
+}
+
 function isResponse(value: unknown): value is NextResponse {
   return value instanceof NextResponse;
 }
@@ -573,6 +622,9 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     price: Number.parseFloat(p.price),
     originalPrice: p.originalPrice ? Number.parseFloat(p.originalPrice) : null,
     stock: p.stock,
+    minStock: Number(p.minStock ?? p.min_stock ?? 0),
+    barcode: p.barcode ?? null,
+    costPrice: Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     category: p.category ?? null,
     images: p.images ?? [],
     imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
@@ -661,7 +713,15 @@ function mergeOrderItems(items: any[]) {
     if (existing) {
       existing.quantity += quantity;
     } else {
-      merged.set(key, { ...item, productName: name, productNameAr: nameAr, quantity });
+      const productId = Number.parseInt(String(item?.productId ?? "0"), 10);
+      merged.set(key, {
+        ...item,
+        productId: Number.isFinite(productId) && productId > 0 ? productId : 0,
+        productName: name,
+        productNameAr: nameAr,
+        price: money(item?.price),
+        quantity,
+      });
     }
   }
   return Array.from(merged.values());
@@ -911,15 +971,26 @@ async function ensureActivityTables(): Promise<void> {
       create table if not exists "admin_activity_logs" (
         "id" serial primary key,
         "staff_id" integer references "staff" ("id"),
+        "user_name" text not null default '',
         "action" varchar(80) not null,
         "entity_type" varchar(80),
         "entity_id" integer,
         "metadata" jsonb not null default '{}'::jsonb,
+        "ip_address" varchar(80),
+        "user_agent" text,
         "created_at" timestamp not null default now()
       )
     `)
+      .then(() => db.execute(sql`
+        alter table "admin_activity_logs"
+          add column if not exists "user_name" text not null default '',
+          add column if not exists "ip_address" varchar(80),
+          add column if not exists "user_agent" text
+      `))
       .then(() => db.execute(sql`create index if not exists "admin_activity_staff_created_idx" on "admin_activity_logs" ("staff_id", "created_at")`))
       .then(() => db.execute(sql`create index if not exists "admin_activity_action_created_idx" on "admin_activity_logs" ("action", "created_at")`))
+      .then(() => db.execute(sql`create index if not exists "admin_activity_user_created_idx" on "admin_activity_logs" ("user_name", "created_at")`))
+      .then(() => db.execute(sql`create index if not exists "admin_activity_entity_created_idx" on "admin_activity_logs" ("entity_type", "created_at")`))
       .then(() => undefined);
   }
   await activityTablesPromise;
@@ -950,6 +1021,8 @@ async function ensureCustomerRewards(): Promise<void> {
     customerRewardsPromise = db.execute(sql`alter table "customers" add column if not exists "reward_points" integer not null default 0`)
       .then(() => db.execute(sql`alter table "customers" add column if not exists "reward_level" varchar(20) not null default 'bronze'`))
       .then(() => db.execute(sql`alter table "orders" add column if not exists "reward_points_awarded" integer not null default 0`))
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "loyalty_points_redeemed" integer not null default 0`))
+      .then(() => db.execute(sql`alter table "orders" add column if not exists "loyalty_discount_amount" numeric(10,2) not null default 0`))
       .then(() => db.execute(sql`alter table "service_orders" add column if not exists "reward_points_awarded" integer not null default 0`))
       .then(() => db.execute(sql`
         create table if not exists "customer_reward_history" (
@@ -963,7 +1036,20 @@ async function ensureCustomerRewards(): Promise<void> {
           "created_at" timestamp not null default now()
         )
       `))
+      .then(() => db.execute(sql`
+        create table if not exists "loyalty_points" (
+          "id" serial primary key,
+          "customer_id" integer not null references "customers" ("id"),
+          "order_id" integer references "orders" ("id"),
+          "service_order_id" integer references "service_orders" ("id"),
+          "points" integer not null,
+          "reason" varchar(120) not null default 'order_reward',
+          "note" text,
+          "created_at" timestamp not null default now()
+        )
+      `))
       .then(() => db.execute(sql`create index if not exists "customer_reward_history_customer_created_idx" on "customer_reward_history" ("customer_id", "created_at")`))
+      .then(() => db.execute(sql`create index if not exists "loyalty_points_customer_created_idx" on "loyalty_points" ("customer_id", "created_at")`))
       .then(() => db.execute(sql`create index if not exists "customers_reward_points_idx" on "customers" ("reward_points")`))
       .then(() => undefined);
   }
@@ -1021,10 +1107,130 @@ async function ensureAdminProductsColumns(): Promise<void> {
     adminProductsColumnsPromise = db.execute(sql`
       alter table "products" add column if not exists "barcode" varchar(100);
       alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
+      alter table "products" add column if not exists "min_stock" integer not null default 0;
+      update "products"
+      set "barcode" = 'AJN' || lpad("id"::text, 8, '0')
+      where "barcode" is null or "barcode" = '';
       create index if not exists "products_barcode_idx" on "products" ("barcode") where "barcode" is not null;
+      create index if not exists "products_stock_min_stock_idx" on "products" ("stock", "min_stock");
     `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
   }
   await adminProductsColumnsPromise;
+}
+
+async function ensureCouponsTables(): Promise<void> {
+  if (!couponsTablesPromise) {
+    couponsTablesPromise = db.execute(sql`
+      create table if not exists "coupons" (
+        "id" serial primary key,
+        "code" varchar(60) not null unique,
+        "title" text not null default '',
+        "type" varchar(20) not null default 'fixed',
+        "value" numeric(14,2) not null default 0,
+        "min_order_amount" numeric(14,2) not null default 0,
+        "usage_limit" integer,
+        "used_count" integer not null default 0,
+        "expires_at" timestamp,
+        "is_active" boolean not null default true,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "coupon_usages" (
+        "id" serial primary key,
+        "coupon_id" integer not null references "coupons" ("id"),
+        "customer_phone" varchar(30),
+        "order_id" integer references "orders" ("id"),
+        "sales_invoice_id" integer references "sales_invoices" ("id"),
+        "discount_amount" numeric(14,2) not null default 0,
+        "created_at" timestamp not null default now()
+      );
+      alter table "orders"
+        add column if not exists "coupon_code" varchar(60),
+        add column if not exists "coupon_discount_amount" numeric(10,2) not null default 0;
+      alter table "sales_invoices"
+        add column if not exists "coupon_code" varchar(60),
+        add column if not exists "coupon_discount_amount" numeric(14,2) not null default 0;
+      create index if not exists "coupons_code_idx" on "coupons" ("code");
+      create index if not exists "coupon_usages_coupon_created_idx" on "coupon_usages" ("coupon_id", "created_at");
+    `).then(() => undefined).catch((err) => {
+      couponsTablesPromise = null;
+      throw err;
+    });
+  }
+  await couponsTablesPromise;
+}
+
+function normalizeCouponCode(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase().replace(/\s+/g, "");
+}
+
+function normalizeCouponType(value: unknown): "percentage" | "fixed" | "free_shipping" {
+  const raw = String(value ?? "").trim();
+  return raw === "percentage" || raw === "free_shipping" ? raw : "fixed";
+}
+
+function couponToJson(coupon: any) {
+  return {
+    id: coupon.id,
+    code: coupon.code,
+    title: coupon.title ?? "",
+    type: normalizeCouponType(coupon.type),
+    value: Number.parseFloat(String(coupon.value ?? "0")) || 0,
+    minOrderAmount: Number.parseFloat(String(coupon.minOrderAmount ?? coupon.min_order_amount ?? "0")) || 0,
+    usageLimit: coupon.usageLimit ?? coupon.usage_limit ?? null,
+    usedCount: coupon.usedCount ?? coupon.used_count ?? 0,
+    expiresAt: coupon.expiresAt ? new Date(coupon.expiresAt).toISOString() : null,
+    isActive: coupon.isActive ?? coupon.is_active ?? true,
+    createdAt: coupon.createdAt ? new Date(coupon.createdAt).toISOString() : null,
+  };
+}
+
+async function calculateCouponDiscount(codeInput: unknown, subtotalInput: unknown, deliveryFeeInput: unknown) {
+  await ensureCouponsTables();
+  const code = normalizeCouponCode(codeInput);
+  if (!code) return { ok: false as const, status: 400, message: "أدخل كود الخصم" };
+  const coupon = await db.query.couponsTable.findFirst({ where: eq(couponsTable.code, code) });
+  if (!coupon || !coupon.isActive) return { ok: false as const, status: 404, message: "الكوبون غير صالح" };
+  if (coupon.expiresAt && coupon.expiresAt.getTime() < Date.now()) return { ok: false as const, status: 400, message: "انتهت صلاحية الكوبون" };
+  if (coupon.usageLimit !== null && coupon.usageLimit !== undefined && coupon.usedCount >= coupon.usageLimit) {
+    return { ok: false as const, status: 400, message: "تم استهلاك حد استخدام الكوبون" };
+  }
+  const subtotal = money(subtotalInput);
+  const deliveryFee = money(deliveryFeeInput);
+  const minOrder = Number.parseFloat(String(coupon.minOrderAmount ?? "0")) || 0;
+  if (subtotal < minOrder) {
+    return { ok: false as const, status: 400, message: `الحد الأدنى للكوبون ${minOrder.toLocaleString("ar-IQ")} د.ع` };
+  }
+  const value = Number.parseFloat(String(coupon.value ?? "0")) || 0;
+  const baseTotal = subtotal + deliveryFee;
+  const discountAmount = coupon.type === "percentage"
+    ? Math.min(baseTotal, Math.max(0, subtotal * Math.min(value, 100) / 100))
+    : coupon.type === "free_shipping"
+      ? Math.min(baseTotal, deliveryFee)
+      : Math.min(baseTotal, value);
+  return {
+    ok: true as const,
+    coupon,
+    discountAmount: Math.round(discountAmount),
+    subtotal,
+    deliveryFee,
+    finalTotal: Math.max(baseTotal - Math.round(discountAmount), 0),
+  };
+}
+
+async function recordCouponUsage(coupon: any, data: { customerPhone?: string | null; orderId?: number | null; salesInvoiceId?: number | null; discountAmount: number }) {
+  if (!coupon?.id || data.discountAmount <= 0) return;
+  await ensureCouponsTables();
+  await db.insert(couponUsagesTable).values({
+    couponId: coupon.id,
+    customerPhone: data.customerPhone ?? null,
+    orderId: data.orderId ?? null,
+    salesInvoiceId: data.salesInvoiceId ?? null,
+    discountAmount: String(data.discountAmount),
+  });
+  await db.update(couponsTable)
+    .set({ usedCount: sql`${couponsTable.usedCount} + 1`, updatedAt: new Date() } as any)
+    .where(eq(couponsTable.id, coupon.id));
 }
 
 async function logAdminActivity(req: NextRequest, action: string, entityType?: string, entityId?: number, metadata: Record<string, unknown> = {}) {
@@ -1037,10 +1243,13 @@ async function logAdminActivity(req: NextRequest, action: string, entityType?: s
     }
     await db.insert(adminActivityLogsTable).values({
       staffId,
+      userName: user?.fullName || user?.username || "النظام",
       action,
       entityType: entityType ?? null,
       entityId: entityId ?? null,
       metadata,
+      ipAddress: ip(req),
+      userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
     });
   } catch (err) {
     console.warn("admin activity log failed", { action, entityType, entityId, err });
@@ -1126,10 +1335,97 @@ function rewardLabel(level?: string | null): string {
   return "برونزي";
 }
 
+type LoyaltySettings = {
+  enabled: boolean;
+  amountPerPoint: number;
+  pointsPerUnit: number;
+  redeemValue: number;
+};
+
+const DEFAULT_LOYALTY_SETTINGS: LoyaltySettings = {
+  enabled: true,
+  amountPerPoint: 10000,
+  pointsPerUnit: 1,
+  redeemValue: 1000,
+};
+
+type PrinterSettings = {
+  defaultPaperSize: "80mm" | "58mm" | "a4";
+  autoPrint: boolean;
+  copies: number;
+  showLogo: boolean;
+};
+
+const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
+  defaultPaperSize: "80mm",
+  autoPrint: false,
+  copies: 1,
+  showLogo: true,
+};
+
+function normalizePrinterSettings(value: unknown): PrinterSettings {
+  const raw = value && typeof value === "object" ? value as Partial<PrinterSettings> : {};
+  const defaultPaperSize = raw.defaultPaperSize === "58mm" || raw.defaultPaperSize === "a4" ? raw.defaultPaperSize : "80mm";
+  return {
+    defaultPaperSize,
+    autoPrint: raw.autoPrint === true,
+    copies: Math.min(Math.max(Number(raw.copies ?? DEFAULT_PRINTER_SETTINGS.copies) || 1, 1), 5),
+    showLogo: raw.showLogo !== false,
+  };
+}
+
+async function getPrinterSettings(): Promise<PrinterSettings> {
+  const row = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "printerSettings") });
+  return normalizePrinterSettings(row?.value ?? DEFAULT_PRINTER_SETTINGS);
+}
+
+async function savePrinterSettings(input: unknown): Promise<PrinterSettings> {
+  const settings = normalizePrinterSettings(input);
+  await db
+    .insert(settingsTable)
+    .values({ key: "printerSettings", value: settings as any })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value: settings as any, updatedAt: new Date() } });
+  return settings;
+}
+
+async function getLoyaltySettings(): Promise<LoyaltySettings> {
+  const row = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "loyaltySettings") });
+  const value = row?.value && typeof row.value === "object" ? row.value as Partial<LoyaltySettings> : {};
+  return {
+    enabled: value.enabled !== false,
+    amountPerPoint: Math.max(1, Number(value.amountPerPoint ?? DEFAULT_LOYALTY_SETTINGS.amountPerPoint) || DEFAULT_LOYALTY_SETTINGS.amountPerPoint),
+    pointsPerUnit: Math.max(1, Number(value.pointsPerUnit ?? DEFAULT_LOYALTY_SETTINGS.pointsPerUnit) || DEFAULT_LOYALTY_SETTINGS.pointsPerUnit),
+    redeemValue: Math.max(1, Number(value.redeemValue ?? DEFAULT_LOYALTY_SETTINGS.redeemValue) || DEFAULT_LOYALTY_SETTINGS.redeemValue),
+  };
+}
+
+async function saveLoyaltySettings(input: Partial<LoyaltySettings>): Promise<LoyaltySettings> {
+  const current = await getLoyaltySettings();
+  const next: LoyaltySettings = {
+    enabled: input.enabled ?? current.enabled,
+    amountPerPoint: Math.max(1, Number(input.amountPerPoint ?? current.amountPerPoint) || current.amountPerPoint),
+    pointsPerUnit: Math.max(1, Number(input.pointsPerUnit ?? current.pointsPerUnit) || current.pointsPerUnit),
+    redeemValue: Math.max(1, Number(input.redeemValue ?? current.redeemValue) || current.redeemValue),
+  };
+  await db
+    .insert(settingsTable)
+    .values({ key: "loyaltySettings", value: next as any })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value: next as any, updatedAt: new Date() } });
+  return next;
+}
+
 function rewardPointsForAmount(value: unknown): number {
   const total = Math.max(0, money(value));
   if (total <= 0) return 0;
   return Math.max(1, Math.floor(total / 10000));
+}
+
+async function rewardPointsForAmountConfigured(value: unknown): Promise<number> {
+  const settings = await getLoyaltySettings();
+  if (!settings.enabled) return 0;
+  const total = Math.max(0, money(value));
+  if (total <= 0) return 0;
+  return Math.max(1, Math.floor(total / settings.amountPerPoint) * settings.pointsPerUnit);
 }
 
 async function addCustomerReward(customerId: number, points: number, values: { orderId?: number | null; serviceOrderId?: number | null; reason?: string; note?: string | null }) {
@@ -1156,6 +1452,14 @@ async function addCustomerReward(customerId: number, points: number, values: { o
     reason: values.reason ?? "order_reward",
     note: values.note ?? null,
   });
+  await db.insert(loyaltyPointsTable).values({
+    customerId,
+    orderId: values.orderId ?? null,
+    serviceOrderId: values.serviceOrderId ?? null,
+    points,
+    reason: values.reason ?? "order_reward",
+    note: values.note ?? null,
+  }).catch(() => undefined);
   return { ...updated, rewardLevel: nextLevel };
 }
 
@@ -1168,7 +1472,7 @@ async function awardProductOrderPoints(order: any) {
       ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, order.customerId) })
       : await findCustomerByPhone(order.customerPhone);
   if (!customer) return;
-  const points = rewardPointsForAmount(order.total);
+  const points = await rewardPointsForAmountConfigured(order.total);
   if (points <= 0) return;
   await addCustomerReward(customer.id, points, {
     orderId: order.id,
@@ -1184,7 +1488,7 @@ async function awardServiceOrderPoints(order: any) {
   if (!["delivered", "completed"].includes(String(order.status)) && order.paymentStatus !== "paid") return;
   const customer = await findCustomerByPhone(order.phone);
   if (!customer) return;
-  const points = rewardPointsForAmount(order.totalAmount);
+  const points = await rewardPointsForAmountConfigured(order.totalAmount);
   if (points <= 0) return;
   await addCustomerReward(customer.id, points, {
     serviceOrderId: order.id,
@@ -1251,6 +1555,10 @@ async function formatOrder(order: any) {
     serviceType: order.serviceType ?? null,
     total: Number.parseFloat(order.total),
     deliveryFee: Number.parseFloat(order.deliveryFee),
+    couponCode: order.couponCode ?? null,
+    couponDiscountAmount: Number.parseFloat(order.couponDiscountAmount ?? "0"),
+    loyaltyPointsRedeemed: Number(order.loyaltyPointsRedeemed ?? 0),
+    loyaltyDiscountAmount: Number.parseFloat(order.loyaltyDiscountAmount ?? "0"),
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
@@ -1299,6 +1607,10 @@ async function buildTracking(order: any) {
     serviceType: order.serviceType ?? null,
     kind: "product",
     total: Number.parseFloat(order.total),
+    couponCode: order.couponCode ?? null,
+    couponDiscountAmount: Number.parseFloat(order.couponDiscountAmount ?? "0"),
+    loyaltyPointsRedeemed: Number(order.loyaltyPointsRedeemed ?? 0),
+    loyaltyDiscountAmount: Number.parseFloat(order.loyaltyDiscountAmount ?? "0"),
     depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
     remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
     paymentStatus: order.paymentStatus ?? "unpaid",
@@ -1418,7 +1730,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && (parts[1] === "request-otp" || isWhatsAppRequest)) {
     const parsed = RequestOtpBody.safeParse(await body(req));
-    if (!parsed.success) return error("رقم الهاتف مطلوب", 400);
+    if (!parsed.success) return validationError("auth.request-otp", parsed);
     const phone = normalizeIraqiPhone(parsed.data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const reqIp = ip(req);
@@ -1463,10 +1775,10 @@ async function handleAuth(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && (parts[1] === "verify-otp" || isWhatsAppVerify)) {
     const parsed = VerifyOtpBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("auth.verify-otp", parsed);
     const phone = normalizeIraqiPhone(parsed.data.phone);
     const otp = normalizePhoneDigits(parsed.data.otp).slice(0, 6);
-    if (!phone || otp.length !== 6) return error("بيانات غير صحيحة", 400);
+    if (!phone || otp.length !== 6) return error("أدخل رقم هاتف عراقي صحيح ورمزاً من 6 أرقام", 400);
     if (!checkRateLimit(otpVerifyByPhone, phone, 5, 10 * 60 * 1000)) {
       return error("تجاوزت عدد المحاولات، حاول لاحقاً", 429);
     }
@@ -1552,6 +1864,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
 
 async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
+  await ensureAdminProductsColumns();
 
   if (method === "GET" && parts[1] === "featured") {
     const products = await db.query.productsTable.findMany({
@@ -1607,11 +1920,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
     const parsed = CreateProductBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("products.create", parsed);
     const data = parsed.data as any;
     const productNameAr = textFallback(data.nameAr, data.name, "منتج جديد");
     const productName = textFallback(data.name, data.nameAr, `product-${Date.now().toString(36)}`);
-    const [product] = await db
+    const requestedBarcode = normalizeProductBarcode(data.barcode);
+    if (requestedBarcode && await productBarcodeExists(requestedBarcode)) return error("الباركود مستخدم مسبقاً", 409);
+    let [product] = await db
       .insert(productsTable)
       .values({
         name: productName,
@@ -1619,18 +1934,26 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         description: data.description,
         descriptionAr: data.descriptionAr,
         price: String(money(data.price)),
-        originalPrice: data.originalPrice?.toString(),
+        originalPrice: money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null,
+        costPrice: String(money(data.costPrice)),
         stock: Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
-        category: data.category,
+        minStock: Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0,
+        barcode: requestedBarcode || null,
+        category: nullableText(data.category),
         images: data.images ?? [],
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
-        subcategory: data.subcategory ?? null,
+        subcategory: nullableText(data.subcategory),
         isActive: data.isActive ?? true,
         sortOrder: data.sortOrder ?? 0,
       })
       .returning();
+    if (!requestedBarcode) {
+      const barcode = generatedProductBarcode(product.id);
+      const [updated] = await db.update(productsTable).set({ barcode, updatedAt: new Date() }).where(eq(productsTable.id, product.id)).returning();
+      product = updated ?? product;
+    }
     void logAdminActivity(req, "product_created", "product", product.id, { name: product.nameAr });
     return json(formatProduct(product), 201);
   }
@@ -1641,7 +1964,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     const parsed = UpdateProductBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
     const update: any = { updatedAt: new Date() };
     for (const k of [
@@ -1658,14 +1981,27 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "isActive",
       "sortOrder",
       "stock",
+      "minStock",
+      "barcode",
     ]) {
       if (data[k] !== undefined) {
         if ((k === "name" || k === "nameAr") && !String(data[k] ?? "").trim()) continue;
-        update[k] = k === "colors" ? normalizeColors(data[k]) : data[k];
+        if (k === "barcode") {
+          const barcode = normalizeProductBarcode(data[k]);
+          if (barcode && await productBarcodeExists(barcode, id)) return error("الباركود مستخدم مسبقاً", 409);
+          update[k] = barcode || null;
+        } else {
+          update[k] = k === "colors"
+            ? normalizeColors(data[k])
+            : k === "category" || k === "subcategory"
+              ? nullableText(data[k])
+              : data[k];
+        }
       }
     }
     if (data.price !== undefined) update.price = data.price.toString();
-    if (data.originalPrice !== undefined) update.originalPrice = data.originalPrice.toString();
+    if (data.originalPrice !== undefined) update.originalPrice = money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null;
+    if (data.costPrice !== undefined) update.costPrice = String(money(data.costPrice));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
     void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
@@ -1682,6 +2018,23 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     return json({ message: "تم حذف المنتج" });
   }
 
+  return null;
+}
+
+async function handleCoupons(req: NextRequest, parts: string[]) {
+  if (req.method === "POST" && parts[1] === "apply") {
+    const b = await body(req);
+    const preview = await calculateCouponDiscount(b?.code, b?.subtotal, b?.deliveryFee);
+    if (!preview.ok) return error(preview.message, preview.status);
+    return json({
+      code: preview.coupon.code,
+      title: preview.coupon.title ?? "",
+      type: preview.coupon.type,
+      discountAmount: preview.discountAmount,
+      finalTotal: preview.finalTotal,
+      message: "تم تطبيق الكوبون",
+    });
+  }
   return null;
 }
 
@@ -1732,7 +2085,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && parts.length === 1) {
     const parsed = CreateServiceOrderBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("service-orders.create", parsed);
     const data = parsed.data;
     const service = await db.query.servicesTable.findFirst({
       where: eq(servicesTable.id, data.serviceId),
@@ -1793,7 +2146,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       return error("محاولات كثيرة، حاول لاحقاً", 429);
     }
     const parsed = RespondToBookingBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("service-orders.respond", parsed);
     const { action, requestedDate, note } = parsed.data;
     const bookingId = int(req.nextUrl.searchParams.get("id") ?? undefined);
     const trackingCode = normalizeTrackingCode(parts[2]);
@@ -1842,7 +2195,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && parts.length === 1) {
     const parsed = AddToCartBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("cart.add", parsed);
     const { productId, quantity, selectedColor, customization, selectedColorData } = parsed.data as any;
     const product = await db.query.productsTable.findFirst({
       where: eq(productsTable.id, productId),
@@ -1879,7 +2232,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
     const itemId = int(parts[1]);
     if (!itemId) return error("معرف غير صحيح", 400);
     const parsed = UpdateCartItemBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("cart.update", parsed);
     const { quantity } = parsed.data;
     if (quantity <= 0) {
       await db
@@ -2037,7 +2390,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && parts.length === 1) {
     const parsed = CreateOrderBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("orders.create", parsed);
     const sessionId = getSessionId(req);
     const customerId = getCurrentCustomerId(req);
     const data = parsed.data;
@@ -2054,7 +2407,26 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       if (zone) deliveryFee = Number.parseFloat(zone.price);
     }
     const subtotal = cartItems.reduce((sum, i) => sum + Number.parseFloat(i.price) * i.quantity, 0);
-    const total = subtotal + deliveryFee;
+    const couponPreview = data.couponCode
+      ? await calculateCouponDiscount(data.couponCode, subtotal, deliveryFee)
+      : null;
+    if (couponPreview && !couponPreview.ok) return error(couponPreview.message, couponPreview.status);
+    const couponDiscountAmount = couponPreview?.ok ? couponPreview.discountAmount : 0;
+    const couponCode = couponPreview?.ok ? couponPreview.coupon.code : null;
+    let loyaltyPointsRedeemed = Math.max(0, Number.parseInt(String((data as any).redeemPoints ?? "0"), 10) || 0);
+    let loyaltyDiscountAmount = 0;
+    if (loyaltyPointsRedeemed > 0) {
+      if (!customerId) return error("سجل الدخول لصرف النقاط", 401);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+      if (!customer) return error("حساب الزبون غير موجود", 404);
+      loyaltyPointsRedeemed = Math.min(loyaltyPointsRedeemed, Number(customer.rewardPoints ?? 0));
+      const loyaltySettings = await getLoyaltySettings();
+      loyaltyDiscountAmount = Math.min(
+        Math.max(subtotal + deliveryFee - couponDiscountAmount, 0),
+        loyaltyPointsRedeemed * loyaltySettings.redeemValue,
+      );
+    }
+    const total = Math.max(subtotal + deliveryFee - couponDiscountAmount - loyaltyDiscountAmount, 0);
     const paymentMethod = data.paymentMethod && ["cod", "transfer", "paid"].includes(data.paymentMethod) ? data.paymentMethod : "cod";
     const payment = paymentSummary(total, paymentMethod === "paid" ? total : 0, paymentMethod === "paid" ? "paid" : "unpaid");
     const [order] = await db
@@ -2068,6 +2440,10 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         status: "pending",
         total: total.toString(),
         deliveryFee: deliveryFee.toString(),
+        couponCode,
+        couponDiscountAmount: String(couponDiscountAmount),
+        loyaltyPointsRedeemed,
+        loyaltyDiscountAmount: String(loyaltyDiscountAmount),
         paymentMethod,
         depositAmount: String(payment.deposit),
         remainingAmount: String(payment.remaining),
@@ -2104,6 +2480,20 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         }
       }),
     );
+    if (couponPreview?.ok) {
+      await recordCouponUsage(couponPreview.coupon, {
+        customerPhone,
+        orderId: order.id,
+        discountAmount: couponDiscountAmount,
+      });
+    }
+    if (customerId && loyaltyPointsRedeemed > 0 && loyaltyDiscountAmount > 0) {
+      await addCustomerReward(customerId, -loyaltyPointsRedeemed, {
+        orderId: order.id,
+        reason: "points_redeemed",
+        note: `صرف نقاط للطلب ${order.trackingCode}`,
+      });
+    }
     await db.insert(orderStatusHistoryTable).values({
       orderId: order.id,
       status: "pending",
@@ -2143,7 +2533,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     const parsed = UpdateOrderStatusBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("orders.update-status", parsed);
     const { status, notes } = parsed.data;
     const [order] = await db
       .update(ordersTable)
@@ -2209,7 +2599,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "gallery");
     if (isResponse(auth)) return auth;
     const parsed = CreateGalleryItemBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("gallery.create", parsed);
     const [item] = await db.insert(galleryItemsTable).values(parsed.data).returning();
     void logAdminActivity(req, "gallery_created", "gallery", item.id, { mediaType: item.mediaType });
     return json(
@@ -2265,7 +2655,7 @@ async function handleReviews(req: NextRequest, parts: string[]) {
 
   if (method === "POST" && parts.length === 1) {
     const parsed = CreateReviewBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("reviews.create", parsed);
     const [review] = await db.insert(reviewsTable).values({
       ...parsed.data,
       customerName: textFallback(parsed.data.customerName, "زبون"),
@@ -2301,7 +2691,7 @@ async function handleDelivery(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "delivery");
     if (isResponse(auth)) return auth;
     const parsed = CreateDeliveryZoneBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("delivery-zones.create", parsed);
     const data = parsed.data as any;
     const governorateAr = textFallback(data.governorateAr, data.governorate, "محافظة جديدة");
     const governorate = textFallback(data.governorate, data.governorateAr, governorateAr);
@@ -2325,7 +2715,7 @@ async function handleDelivery(req: NextRequest, parts: string[]) {
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     const parsed = UpdateDeliveryZoneBody.safeParse(await body(req));
-    if (!parsed.success) return error("بيانات غير صحيحة", 400);
+    if (!parsed.success) return validationError("delivery-zones.update", parsed);
     const data = parsed.data as any;
     const update: any = {};
     if (data.price !== undefined) update.price = data.price.toString();
@@ -2620,10 +3010,14 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
     });
     const points = Number(fresh?.rewardPoints ?? 0);
     const level = fresh?.rewardLevel ?? rewardLevelForPoints(points);
+    const loyaltySettings = await getLoyaltySettings();
     return json({
       points,
       level,
       levelLabel: rewardLabel(level),
+      redeemValue: loyaltySettings.redeemValue,
+      amountPerPoint: loyaltySettings.amountPerPoint,
+      pointsPerUnit: loyaltySettings.pointsPerUnit,
       history: history.map((row) => ({
         id: row.id,
         points: row.points,
@@ -2779,6 +3173,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
     if (method === "POST" && parts[2] === "logout") {
       const token = readAdminToken(req);
+      void logAdminActivity(req, "admin_logout", "staff");
       if (token) await destroySession(token);
       return clearSessionCookie(json({ message: "تم الخروج" }));
     }
@@ -2788,6 +3183,93 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!user) return error("غير مخول", 401);
       return json({ user: publicUser(user), allPermissions: ALL_PERMISSIONS });
     }
+  }
+
+  if (section === "activity-log" && method === "GET") {
+    const auth = await requirePermission(req, "staff");
+    if (isResponse(auth)) return auth;
+    await ensureActivityTables();
+
+    const params = req.nextUrl.searchParams;
+    const page = Math.max(Number.parseInt(params.get("page") ?? "1", 10) || 1, 1);
+    const limit = Math.min(Math.max(Number.parseInt(params.get("limit") ?? "25", 10) || 25, 10), 100);
+    const offset = (page - 1) * limit;
+    const filters: any[] = [];
+
+    const from = params.get("from");
+    const to = params.get("to");
+    const userId = params.get("userId");
+    const action = params.get("action")?.trim();
+    const search = params.get("search")?.trim();
+
+    if (from) {
+      const date = new Date(`${from}T00:00:00`);
+      if (!Number.isNaN(date.getTime())) filters.push(gte(adminActivityLogsTable.createdAt, date));
+    }
+    if (to) {
+      const date = new Date(`${to}T23:59:59.999`);
+      if (!Number.isNaN(date.getTime())) filters.push(lte(adminActivityLogsTable.createdAt, date));
+    }
+    const parsedUserId = userId ? Number.parseInt(userId, 10) : null;
+    if (parsedUserId && Number.isFinite(parsedUserId)) filters.push(eq(adminActivityLogsTable.staffId, parsedUserId));
+    if (action) filters.push(eq(adminActivityLogsTable.action, action));
+    if (search) {
+      filters.push(or(
+        ilike(adminActivityLogsTable.userName, `%${search}%`),
+        ilike(adminActivityLogsTable.action, `%${search}%`),
+        ilike(adminActivityLogsTable.entityType, `%${search}%`),
+        sql`${adminActivityLogsTable.metadata}::text ilike ${`%${search}%`}`,
+      ));
+    }
+
+    const whereClause = filters.length ? and(...filters) : undefined;
+    const rowsQuery = db
+      .select({
+        id: adminActivityLogsTable.id,
+        staffId: adminActivityLogsTable.staffId,
+        userName: adminActivityLogsTable.userName,
+        staffName: staffTable.fullName,
+        username: staffTable.username,
+        action: adminActivityLogsTable.action,
+        entityType: adminActivityLogsTable.entityType,
+        entityId: adminActivityLogsTable.entityId,
+        metadata: adminActivityLogsTable.metadata,
+        ipAddress: adminActivityLogsTable.ipAddress,
+        createdAt: adminActivityLogsTable.createdAt,
+      })
+      .from(adminActivityLogsTable)
+      .leftJoin(staffTable, eq(adminActivityLogsTable.staffId, staffTable.id));
+    const countQuery = db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(adminActivityLogsTable);
+
+    const [rows, countRows, staffRows] = await Promise.all([
+      (whereClause ? rowsQuery.where(whereClause) : rowsQuery)
+        .orderBy(desc(adminActivityLogsTable.createdAt))
+        .limit(limit)
+        .offset(offset),
+      (whereClause ? countQuery.where(whereClause) : countQuery),
+      db
+        .select({ id: staffTable.id, username: staffTable.username, fullName: staffTable.fullName })
+        .from(staffTable)
+        .orderBy(staffTable.id),
+    ]);
+
+    return json({
+      data: rows.map((row) => ({
+        ...row,
+        userName: row.userName || row.staffName || row.username || "النظام",
+        createdAt: row.createdAt.toISOString(),
+      })),
+      users: staffRows.map((row) => ({
+        id: row.id,
+        name: row.fullName || row.username,
+        username: row.username,
+      })),
+      total: countRows[0]?.count ?? 0,
+      page,
+      limit,
+    });
   }
 
   if (section === "dashboard" && method === "GET") {
@@ -3036,7 +3518,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "products") {
-    const auth = await requirePermission(req, "invoices");
+    const auth = method === "GET"
+      ? await requireAnyPermission(req, ["products", "invoices"])
+      : await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
     if (method === "GET") {
       await ensureAdminProductsColumns();
@@ -3056,6 +3540,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         price: String(p.price),
         costPrice: String(p.costPrice ?? p.cost_price ?? "0"),
         stock: String(p.stock),
+        minStock: String(p.minStock ?? p.min_stock ?? "0"),
         category: p.category ?? "",
         images: p.images ?? [],
         barcode: p.barcode ?? p.bar_code ?? "",
@@ -3071,8 +3556,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
       const update: any = {};
-      if (b?.barcode !== undefined) update.barcode = b.barcode || null;
+      if (b?.barcode !== undefined) {
+        const barcode = normalizeProductBarcode(b.barcode);
+        if (barcode && await productBarcodeExists(barcode, id)) return error("الباركود مستخدم مسبقاً", 409);
+        update.barcode = barcode || null;
+      }
       if (b?.costPrice !== undefined) update.costPrice = String(money(b.costPrice));
+      if (b?.minStock !== undefined) update.minStock = Number.isFinite(Number(b.minStock)) ? Number(b.minStock) : 0;
       if (!Object.keys(update).length) return error("لا يوجد ما يُحدَّث", 400);
       const [row] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
@@ -3080,9 +3570,191 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  if (section === "coupons") {
+    const auth = await requirePermission(req, "accounting");
+    if (isResponse(auth)) return auth;
+    await ensureCouponsTables();
+    const id = parts[2] ? int(parts[2]) : null;
+
+    if (method === "GET" && !id) {
+      const search = req.nextUrl.searchParams.get("search")?.trim().toUpperCase();
+      const rows = await db.query.couponsTable.findMany({
+        where: search ? ilike(couponsTable.code, `%${search}%`) : undefined,
+        orderBy: (coupon, { desc }) => [desc(coupon.createdAt)],
+        limit: 300,
+      });
+      return json(rows.map(couponToJson));
+    }
+
+    if (method === "POST") {
+      const b = await body(req);
+      const code = normalizeCouponCode(b?.code);
+      if (!code) return error("كود الكوبون مطلوب", 400);
+      const type = normalizeCouponType(b?.type);
+      const usageLimit = b?.usageLimit === "" || b?.usageLimit === null || b?.usageLimit === undefined
+        ? null
+        : Math.max(Number.parseInt(String(b.usageLimit), 10) || 0, 0);
+      try {
+        const [row] = await db.insert(couponsTable).values({
+          code,
+          title: String(b?.title ?? "").trim(),
+          type,
+          value: String(money(b?.value)),
+          minOrderAmount: String(money(b?.minOrderAmount)),
+          usageLimit: usageLimit && usageLimit > 0 ? usageLimit : null,
+          expiresAt: b?.expiresAt ? new Date(b.expiresAt) : null,
+          isActive: b?.isActive !== false,
+        }).returning();
+        void logAdminActivity(req, "coupon_created", "coupon", row.id, { code });
+        return json(couponToJson(row), 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("كود الكوبون مستخدم مسبقاً", 409);
+        throw err;
+      }
+    }
+
+    if ((method === "PATCH" || method === "PUT") && id) {
+      const b = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (b?.code !== undefined) {
+        const code = normalizeCouponCode(b.code);
+        if (!code) return error("كود الكوبون مطلوب", 400);
+        update.code = code;
+      }
+      if (b?.title !== undefined) update.title = String(b.title ?? "").trim();
+      if (b?.type !== undefined) update.type = normalizeCouponType(b.type);
+      if (b?.value !== undefined) update.value = String(money(b.value));
+      if (b?.minOrderAmount !== undefined) update.minOrderAmount = String(money(b.minOrderAmount));
+      if (b?.usageLimit !== undefined) {
+        const n = Number.parseInt(String(b.usageLimit), 10);
+        update.usageLimit = Number.isFinite(n) && n > 0 ? n : null;
+      }
+      if (b?.expiresAt !== undefined) update.expiresAt = b.expiresAt ? new Date(b.expiresAt) : null;
+      if (b?.isActive !== undefined) update.isActive = !!b.isActive;
+      const [row] = await db.update(couponsTable).set(update).where(eq(couponsTable.id, id)).returning();
+      if (!row) return error("الكوبون غير موجود", 404);
+      void logAdminActivity(req, "coupon_updated", "coupon", row.id, { fields: Object.keys(update) });
+      return json(couponToJson(row));
+    }
+
+    if (method === "DELETE" && id) {
+      const [row] = await db.update(couponsTable)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(couponsTable.id, id))
+        .returning();
+      if (!row) return error("الكوبون غير موجود", 404);
+      void logAdminActivity(req, "coupon_disabled", "coupon", id);
+      return json({ message: "تم تعطيل الكوبون" });
+    }
+  }
+
+  if (section === "inventory-alerts" && method === "GET") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    await ensureAdminProductsColumns();
+    const rows = await db.query.productsTable.findMany({
+      where: sql`(("stock" <= "min_stock" and "min_stock" > 0) or "stock" <= 0)`,
+      orderBy: (product, { asc }) => [asc(product.stock), asc(product.nameAr)],
+      limit: 500,
+    }) as any[];
+    const mapped = rows.map((product) => ({
+      id: product.id,
+      name: product.name,
+      nameAr: product.nameAr,
+      stock: Number(product.stock ?? 0),
+      minStock: Number(product.minStock ?? product.min_stock ?? 0),
+      barcode: product.barcode ?? "",
+      category: product.category ?? "",
+      images: product.images ?? [],
+    }));
+    if (req.nextUrl.searchParams.get("count") === "1") {
+      return json({ count: mapped.length });
+    }
+    return json({ data: mapped, count: mapped.length, emailEnabled: Boolean(process.env.RESEND_API_KEY || process.env.SMTP_HOST) });
+  }
+
+  if (section === "loyalty") {
+    const auth = await requirePermission(req, "customers");
+    if (isResponse(auth)) return auth;
+    await ensureCustomerRewards();
+
+    if (method === "GET") {
+      const [settings, customers, history] = await Promise.all([
+        getLoyaltySettings(),
+        db.query.customersTable.findMany({
+          orderBy: (customer, { desc }) => [desc(customer.rewardPoints), desc(customer.id)],
+          limit: 300,
+        }),
+        db.query.customerRewardHistoryTable.findMany({
+          orderBy: [desc(customerRewardHistoryTable.createdAt)],
+          limit: 80,
+        }),
+      ]);
+      return json({
+        settings,
+        customers: customers.map((customer) => ({
+          id: customer.id,
+          name: customer.fullName || customer.name || formatIraqiPhone(customer.phone),
+          phone: customer.phone,
+          rewardPoints: Number(customer.rewardPoints ?? 0),
+          rewardLevel: customer.rewardLevel ?? rewardLevelForPoints(Number(customer.rewardPoints ?? 0)),
+          rewardLevelLabel: rewardLabel(customer.rewardLevel),
+        })),
+        history: history.map((row) => ({
+          id: row.id,
+          customerId: row.customerId,
+          points: row.points,
+          reason: row.reason,
+          note: row.note ?? "",
+          createdAt: row.createdAt.toISOString(),
+        })),
+      });
+    }
+
+    if (method === "PATCH") {
+      const b = await body(req);
+      const settings = await saveLoyaltySettings({
+        enabled: b?.enabled !== false,
+        amountPerPoint: Number(b?.amountPerPoint),
+        pointsPerUnit: Number(b?.pointsPerUnit),
+        redeemValue: Number(b?.redeemValue),
+      });
+      void logAdminActivity(req, "loyalty_settings_updated", "settings", undefined, settings as any);
+      return json(settings);
+    }
+
+    if (method === "POST" && parts[2] === "adjust") {
+      const b = await body(req);
+      const customerId = Number.parseInt(String(b?.customerId ?? ""), 10);
+      const points = Number.parseInt(String(b?.pointsDelta ?? b?.points ?? "0"), 10);
+      if (!Number.isFinite(customerId) || customerId <= 0) return error("اختر الزبون", 400);
+      if (!Number.isFinite(points) || points === 0) return error("أدخل عدد نقاط صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+      if (!customer) return error("الزبون غير موجود", 404);
+      const updated = await addCustomerReward(customerId, points, {
+        reason: "loyalty_admin_adjustment",
+        note: String(b?.note ?? "تعديل من نظام الولاء").trim().slice(0, 240),
+      });
+      void logAdminActivity(req, "loyalty_points_adjusted", "customer", customerId, { points });
+      return json({
+        rewardPoints: Number(updated?.rewardPoints ?? customer.rewardPoints ?? 0),
+        rewardLevel: updated?.rewardLevel ?? rewardLevelForPoints(Number(updated?.rewardPoints ?? customer.rewardPoints ?? 0)),
+        rewardLevelLabel: rewardLabel(updated?.rewardLevel),
+      });
+    }
+  }
+
   if (section === "settings") {
     const auth = await requirePermission(req, "settings");
     if (isResponse(auth)) return auth;
+    if (parts[2] === "printer") {
+      if (method === "GET") return json(await getPrinterSettings());
+      if (method === "PATCH" || method === "PUT") {
+        const settings = await savePrinterSettings(await body(req));
+        void logAdminActivity(req, "printer_settings_updated", "settings", undefined, settings as any);
+        return json(settings);
+      }
+    }
     if (method === "GET") {
       return json(await loadSiteSettings());
     }
@@ -3102,6 +3774,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           .onConflictDoUpdate({ target: settingsTable.key, set: { value: logoMetadata as any, updatedAt: new Date() } }),
       ]);
       revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
+      void logAdminActivity(req, "site_logo_updated", "settings");
       return json({ logoUrl, logo_url: logoUrl, logoMetadata });
     }
     if (method === "PUT" || method === "PATCH") {
@@ -3116,6 +3789,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         }),
       );
       revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
+      void logAdminActivity(req, "site_settings_updated", "settings", undefined, { fields: entries.map(([key]) => key) });
       return json({ message: "تم الحفظ" });
     }
   }
@@ -3497,7 +4171,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "POST" && !parts[2]) {
       const rawBody = await body(req);
       const parsed = CreateServiceOrderBody.safeParse(rawBody);
-      if (!parsed.success) return error("بيانات غير صحيحة", 400);
+      if (!parsed.success) return validationError("admin.service-orders.create", parsed);
       const data = parsed.data;
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, data.serviceId),
@@ -3531,6 +4205,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         status: order.status,
         notes: "إضافة من الإدارة",
       });
+      void logAdminActivity(req, "booking_created", "service_order", order.id, { tracking: order.trackingCode });
       void fireOrderEvent("booking_placed", {
         name: order.customerName,
         phone: order.phone,
@@ -3713,7 +4388,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const normalizedPhone = normalizeIraqiPhone(customerPhone);
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const safeCustomerName = textFallback(customerName, formatIraqiPhone(normalizedPhone), "زبون");
-      const total = orderItems.reduce((s: number, it: any) => s + Number(it.price) * Number(it.quantity), 0) + Number(deliveryFee ?? 0);
+      const total = orderItems.reduce((s: number, it: any) => s + money(it.price) * Number(it.quantity), 0) + money(deliveryFee);
       const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined));
           const [order] = await db
             .insert(ordersTable)
@@ -3732,7 +4407,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               depositAmount: String(payment.deposit),
               remainingAmount: String(payment.remaining),
               paymentStatus: payment.status,
-              deliveryFee: String(deliveryFee ?? 0),
+              deliveryFee: String(money(deliveryFee)),
               total: String(total),
             })
             .returning();
@@ -3749,6 +4424,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
                 selectedColorData: selectedColorPayload(it.selectedColorData, it.selectedColor),
               }),
             ),
+          );
+          await Promise.all(
+            orderItems
+              .filter((it: any) => Number(it.productId) > 0)
+              .map((it: any) =>
+                db.execute(sql`
+                  UPDATE products
+                  SET stock = GREATEST(0, stock - ${Number(it.quantity)})
+                  WHERE id = ${Number(it.productId)}
+                `),
+              ),
           );
           await db.insert(orderStatusHistoryTable).values({ orderId: order.id, status: "pending", notes: "إضافة من الإدارة" });
           void fireOrderEvent("placed", {
@@ -3839,16 +4525,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .values({
           name: serviceName,
           nameAr: serviceNameAr,
-          description: description ?? null,
-          descriptionAr: descriptionAr ?? null,
+          description: nullableText(description),
+          descriptionAr: nullableText(descriptionAr),
           type: serviceType,
-          icon: icon ?? null,
-          image: image ?? null,
+          icon: nullableText(icon),
+          image: nullableText(image),
           imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
           isActive: isActive ?? true,
           sortOrder: sortOrder ?? 0,
         })
         .returning();
+      void logAdminActivity(req, "service_created", "service", row.id, { name: row.nameAr });
       return json(row, 201);
     }
     if (method === "PATCH" && parts[2]) {
@@ -3862,14 +4549,26 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
       if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
       if (update.type !== undefined && !String(update.type ?? "").trim()) update.type = "other";
+      for (const k of ["description", "descriptionAr", "icon", "image"]) {
+        if (update[k] !== undefined) update[k] = nullableText(update[k]);
+      }
+      if (update.imageMetadata !== undefined && (!update.imageMetadata || typeof update.imageMetadata !== "object")) update.imageMetadata = {};
       const [row] = await db.update(servicesTable).set(update).where(eq(servicesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      void logAdminActivity(req, "service_updated", "service", row.id, { fields: Object.keys(update) });
       return json(row);
     }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(serviceOrdersTable).where(eq(serviceOrdersTable.serviceId, id));
+      if ((count ?? 0) > 0) {
+        await db.update(servicesTable).set({ isActive: false }).where(eq(servicesTable.id, id));
+        void logAdminActivity(req, "service_disabled", "service", id, { reason: "has_orders" });
+        return json({ message: "تم تعطيل الخدمة للحفاظ على الحجوزات القديمة" });
+      }
       await db.delete(servicesTable).where(eq(servicesTable.id, id));
+      void logAdminActivity(req, "service_deleted", "service", id);
       return json({ message: "تم الحذف" });
     }
   }
@@ -3981,6 +4680,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       if (typeof b.automationEnabled === "boolean") patch.automationEnabled = b.automationEnabled;
       const updated = await updateWaSettings(patch);
+      void logAdminActivity(req, "whatsapp_settings_updated", "settings", undefined, { fields: Object.keys(patch) });
       return json({ ok: true, automationEnabled: updated.automationEnabled });
     }
     if (method === "GET" && parts[2] === "log") {
@@ -4080,6 +4780,7 @@ async function ensureSalesInvoicesTables() {
         id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
         customer_name TEXT NOT NULL DEFAULT '', customer_phone VARCHAR(30), customer_id INTEGER REFERENCES customers(id),
         subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        coupon_code VARCHAR(60), coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
         tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, total NUMERIC(14,2) NOT NULL DEFAULT 0,
         paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0, remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
         payment_method VARCHAR(20) NOT NULL DEFAULT 'cash', payment_status VARCHAR(20) NOT NULL DEFAULT 'paid',
@@ -4095,6 +4796,9 @@ async function ensureSalesInvoicesTables() {
         total NUMERIC(14,2) NOT NULL DEFAULT 0, cost_price NUMERIC(14,2) NOT NULL DEFAULT 0,
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE sales_invoices
+        ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(60),
+        ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
       CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
@@ -4160,6 +4864,51 @@ function fmtInvoiceNo(prefix: string, id: number, date: Date): string {
   return `${prefix}-${y}${m}-${String(id).padStart(5, "0")}`;
 }
 
+function salesInvoiceItems(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item: any) => {
+      const quantity = Math.max(Number.parseFloat(String(item?.quantity ?? "0")) || 0, 0);
+      const unitPrice = money(item?.unitPrice);
+      const discount = money(item?.discount);
+      const productName = textFallback(item?.productName, item?.productNameAr);
+      return {
+        productId: Number.isFinite(Number(item?.productId)) && Number(item.productId) > 0 ? Number(item.productId) : null,
+        productName,
+        barcode: normalizeProductBarcode(item?.barcode) || null,
+        quantity,
+        unitPrice,
+        discount,
+        discountPct: money(item?.discountPct),
+        total: Math.max(quantity * unitPrice - discount, 0),
+        costPrice: money(item?.costPrice),
+      };
+    })
+    .filter((item) => item.productName && item.quantity > 0);
+}
+
+function purchaseInvoiceItems(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item: any) => {
+      const quantity = Math.max(Number.parseFloat(String(item?.quantity ?? "0")) || 0, 0);
+      const costPrice = money(item?.costPrice);
+      const discount = money(item?.discount);
+      const productName = textFallback(item?.productName, item?.productNameAr);
+      return {
+        productId: Number.isFinite(Number(item?.productId)) && Number(item.productId) > 0 ? Number(item.productId) : null,
+        productName,
+        barcode: normalizeProductBarcode(item?.barcode) || null,
+        quantity,
+        costPrice,
+        salePrice: money(item?.salePrice),
+        discount,
+        total: Math.max(quantity * costPrice - discount, 0),
+      };
+    })
+    .filter((item) => item.productName && item.quantity > 0);
+}
+
 async function handleSalesInvoices(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "sales-invoices") return null;
   const auth = await requirePermission(req, "accounting");
@@ -4196,23 +4945,36 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
   if (method === "POST") {
     const b = await body(req);
     const a = actor(auth);
+    const items = salesInvoiceItems(b?.items);
+    if (items.length === 0) return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
     const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
-    const subtotal = parseFloat(b.subtotal ?? "0") || 0;
-    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+    let discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    const couponPreview = b.couponCode
+      ? await calculateCouponDiscount(b.couponCode, subtotal, 0)
+      : null;
+    if (couponPreview && !couponPreview.ok) return error(couponPreview.message, couponPreview.status);
+    const couponDiscountAmount = couponPreview?.ok ? couponPreview.discountAmount : 0;
+    if (couponDiscountAmount > discountAmount) discountAmount = couponDiscountAmount;
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
-    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0;
+    const total = Math.max(subtotal - discountAmount + taxAmount, 0);
     const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
-    const remainingAmount = total - paidAmount;
+    const remainingAmount = Math.max(total - paidAmount, 0);
     const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const rawPhone = textFallback(b.customerPhone);
+    const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
+    if (rawPhone && !customerPhone) return error("رقم هاتف الزبون العراقي غير صحيح", 400);
 
     const [inv] = await db.insert(salesInvoicesTable).values({
-      invoiceNo: `SI-TEMP`,
+      invoiceNo: `SI-TEMP-${randomBytes(8).toString("hex")}`,
       date: dateVal,
       customerName: b.customerName ?? "",
-      customerPhone: b.customerPhone ?? null,
+      customerPhone,
       customerId: b.customerId ?? null,
       subtotal: String(subtotal),
       discountAmount: String(discountAmount),
+      couponCode: couponPreview?.ok ? couponPreview.coupon.code : null,
+      couponDiscountAmount: String(couponDiscountAmount),
       taxAmount: String(taxAmount),
       total: String(total),
       paidAmount: String(paidAmount),
@@ -4229,7 +4991,6 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const invoiceNo = fmtInvoiceNo("SI", inv.id, new Date(inv.createdAt));
     await db.update(salesInvoicesTable).set({ invoiceNo }).where(eq(salesInvoicesTable.id, inv.id));
 
-    const items: any[] = b.items ?? [];
     if (items.length > 0) {
       await db.insert(salesInvoiceItemsTable).values(
         items.map((item: any) => ({
@@ -4237,28 +4998,37 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
           productId: item.productId ?? null,
           productName: item.productName ?? "",
           barcode: item.barcode ?? null,
-          quantity: String(item.quantity ?? 1),
-          unitPrice: String(item.unitPrice ?? 0),
-          discount: String(item.discount ?? 0),
-          discountPct: String(item.discountPct ?? 0),
-          total: String(item.total ?? 0),
-          costPrice: String(item.costPrice ?? 0),
+          quantity: String(item.quantity),
+          unitPrice: String(item.unitPrice),
+          discount: String(item.discount),
+          discountPct: String(item.discountPct),
+          total: String(item.total),
+          costPrice: String(item.costPrice),
         }))
       );
       // Update product stock
       for (const item of items) {
-        if (item.productId && parseFloat(item.quantity ?? "1") > 0) {
+        if (item.productId && item.quantity > 0) {
           await db.execute(sql`
-            UPDATE products SET stock = GREATEST(0, stock - ${parseFloat(item.quantity ?? "1")})
+            UPDATE products SET stock = GREATEST(0, stock - ${item.quantity})
             WHERE id = ${item.productId}
           `);
         }
       }
     }
 
+    if (couponPreview?.ok) {
+      await recordCouponUsage(couponPreview.coupon, {
+        customerPhone,
+        salesInvoiceId: inv.id,
+        discountAmount: couponDiscountAmount,
+      });
+    }
+
     const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, inv.id) });
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
-    return json({ ...final, items: finalItems }, 201);
+    void logAdminActivity(req, "sales_invoice_created", "sales_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
+    return json({ ...final, items: finalItems, invoice: final }, 201);
   }
 
   if (method === "PUT" && id) {
@@ -4346,18 +5116,20 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
   if (method === "POST") {
     const b = await body(req);
     const a = actor(auth);
+    const items = purchaseInvoiceItems(b?.items);
+    if (items.length === 0) return error("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء", 400);
     const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
-    const subtotal = parseFloat(b.subtotal ?? "0") || 0;
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.costPrice, 0);
     const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
     const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
-    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount + shippingCost)) || 0;
+    const total = Math.max(subtotal - discountAmount + taxAmount + shippingCost, 0);
     const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
-    const remainingAmount = total - paidAmount;
+    const remainingAmount = Math.max(total - paidAmount, 0);
     const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
     const [inv] = await db.insert(purchaseInvoicesTable).values({
-      invoiceNo: `PI-TEMP`,
+      invoiceNo: `PI-TEMP-${randomBytes(8).toString("hex")}`,
       date: dateVal,
       supplierName: b.supplierName ?? "",
       supplierId: b.supplierId ?? null,
@@ -4374,23 +5146,22 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     const invoiceNo = fmtInvoiceNo("PI", inv.id, new Date(inv.createdAt));
     await db.update(purchaseInvoicesTable).set({ invoiceNo } as any).where(eq(purchaseInvoicesTable.id, inv.id));
 
-    const items: any[] = b.items ?? [];
     if (items.length > 0) {
       await db.insert(purchaseInvoiceItemsTable).values(
         items.map((item: any) => ({
           invoiceId: inv.id,
           productId: item.productId ?? null, productName: item.productName ?? "",
-          barcode: item.barcode ?? null, quantity: String(item.quantity ?? 1),
-          costPrice: String(item.costPrice ?? 0), salePrice: String(item.salePrice ?? 0),
-          discount: String(item.discount ?? 0), total: String(item.total ?? 0),
+          barcode: item.barcode, quantity: String(item.quantity),
+          costPrice: String(item.costPrice), salePrice: String(item.salePrice),
+          discount: String(item.discount), total: String(item.total),
         }))
       );
       // Update product stock on purchase
       for (const item of items) {
-        if (item.productId && parseFloat(item.quantity ?? "1") > 0) {
-          const updateVals: any = { stock: sql`stock + ${parseFloat(item.quantity)}` };
-          if (item.salePrice && parseFloat(item.salePrice) > 0) {
-            updateVals.price = String(parseFloat(item.salePrice));
+        if (item.productId && item.quantity > 0) {
+          const updateVals: any = { stock: sql`stock + ${item.quantity}`, costPrice: String(item.costPrice) };
+          if (item.salePrice > 0) {
+            updateVals.price = String(item.salePrice);
           }
           await db.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
         }
@@ -4399,7 +5170,8 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
 
     const final = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, inv.id) });
     const finalItems = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, inv.id));
-    return json({ ...final, items: finalItems }, 201);
+    void logAdminActivity(req, "purchase_invoice_created", "purchase_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
+    return json({ ...final, items: finalItems, invoice: final }, 201);
   }
 
   if (method === "DELETE" && id) {
@@ -4427,30 +5199,33 @@ async function handleSuppliers(req: NextRequest, parts: string[], section: strin
 
   if (method === "POST") {
     const b = await body(req);
-    if (!b.name?.trim()) return error("اسم المورد مطلوب", 400);
+    const supplierName = textFallback(b?.name, `مورد ${Date.now().toString(36)}`);
     const [row] = await db.insert(suppliersTable).values({
-      name: b.name.trim(), phone: b.phone ?? null,
-      email: b.email ?? null, address: b.address ?? null, notes: b.notes ?? null,
+      name: supplierName, phone: nullableText(b?.phone),
+      email: nullableText(b?.email), address: nullableText(b?.address), notes: nullableText(b?.notes),
     } as any).returning();
+    void logAdminActivity(req, "supplier_created", "supplier", row.id, { name: row.name });
     return json(row, 201);
   }
 
   if (method === "PUT" && id) {
     const b = await body(req);
     const update: any = {};
-    if (b.name !== undefined) update.name = b.name.trim();
-    if (b.phone !== undefined) update.phone = b.phone;
-    if (b.email !== undefined) update.email = b.email;
-    if (b.address !== undefined) update.address = b.address;
-    if (b.notes !== undefined) update.notes = b.notes;
+    if (b.name !== undefined && nullableText(b.name)) update.name = nullableText(b.name);
+    if (b.phone !== undefined) update.phone = nullableText(b.phone);
+    if (b.email !== undefined) update.email = nullableText(b.email);
+    if (b.address !== undefined) update.address = nullableText(b.address);
+    if (b.notes !== undefined) update.notes = nullableText(b.notes);
     update.updatedAt = new Date();
     const [row] = await db.update(suppliersTable).set(update).where(eq(suppliersTable.id, id!)).returning();
     if (!row) return error("غير موجود", 404);
+    void logAdminActivity(req, "supplier_updated", "supplier", row.id, { fields: Object.keys(update) });
     return json(row);
   }
 
   if (method === "DELETE" && id) {
     await db.update(suppliersTable).set({ isActive: 0, updatedAt: new Date() } as any).where(eq(suppliersTable.id, id!));
+    void logAdminActivity(req, "supplier_disabled", "supplier", id!);
     return json({ message: "تم الحذف" });
   }
 
@@ -4598,17 +5373,20 @@ async function handlePrintTemplates(req: NextRequest, parts: string[], section: 
     const b = await body(req);
     const a = actor(auth);
     if (!b.name?.trim()) return error("اسم القالب مطلوب", 400);
+    const config = normalizePrintTemplateConfig(b.config);
+    if (!config) return error("إعدادات القالب غير صالحة. تأكد أن JSON صحيح.", 400);
     const [row] = await db.insert(printTemplatesTable).values({
       name: b.name.trim(),
       type: b.type ?? "sales",
       paperSize: b.paperSize ?? "a4",
       isDefault: b.isDefault ? 1 : 0,
-      config: typeof b.config === "string" ? b.config : JSON.stringify(b.config ?? {}),
+      config,
       createdBy: a.id,
     } as any).returning();
     if (b.isDefault) {
       await db.execute(sql`UPDATE print_templates SET is_default = 0 WHERE type = ${b.type ?? "sales"} AND id != ${row.id}`);
     }
+    void logAdminActivity(req, "print_template_created", "print_template", row.id, { name: row.name, type: row.type });
     return json(row, 201);
   }
 
@@ -4619,21 +5397,37 @@ async function handlePrintTemplates(req: NextRequest, parts: string[], section: 
     if (b.type !== undefined) update.type = b.type;
     if (b.paperSize !== undefined) update.paperSize = b.paperSize;
     if (b.isDefault !== undefined) update.isDefault = b.isDefault ? 1 : 0;
-    if (b.config !== undefined) update.config = typeof b.config === "string" ? b.config : JSON.stringify(b.config);
+    if (b.config !== undefined) {
+      const config = normalizePrintTemplateConfig(b.config);
+      if (!config) return error("إعدادات القالب غير صالحة. تأكد أن JSON صحيح.", 400);
+      update.config = config;
+    }
     const [row] = await db.update(printTemplatesTable).set(update).where(eq(printTemplatesTable.id, id!)).returning();
     if (!row) return error("غير موجود", 404);
     if (b.isDefault) {
       await db.execute(sql`UPDATE print_templates SET is_default = 0 WHERE type = ${row.type} AND id != ${id}`);
     }
+    void logAdminActivity(req, "print_template_updated", "print_template", row.id, { fields: Object.keys(update) });
     return json(row);
   }
 
   if (method === "DELETE" && id) {
     await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id!));
+    void logAdminActivity(req, "print_template_deleted", "print_template", id!);
     return json({ message: "تم الحذف" });
   }
 
   return null;
+}
+
+function normalizePrintTemplateConfig(value: unknown): string | null {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value ?? {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return JSON.stringify(parsed);
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_EXPENSE_CATEGORIES: { name: string; nameAr: string }[] = [
@@ -4763,6 +5557,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
         .where(eq(receiptVouchersTable.id, row.id))
         .returning();
+      void logAdminActivity(req, "receipt_voucher_created", "receipt_voucher", updated.id, { voucherNo: updated.voucherNo });
       return json(updated, 201);
     }
     if (method === "DELETE" && parts[2]) {
@@ -4813,6 +5608,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .set({ voucherNo: fmtVoucherNo("PAY", row.id, row.createdAt) })
         .where(eq(paymentVouchersTable.id, row.id))
         .returning();
+      void logAdminActivity(req, "payment_voucher_created", "payment_voucher", updated.id, { voucherNo: updated.voucherNo });
       return json(updated, 201);
     }
     if (method === "DELETE" && parts[2]) {
@@ -4861,6 +5657,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           createdByName: a.name,
         })
         .returning();
+      void logAdminActivity(req, "expense_created", "expense", row.id);
       return json(row, 201);
     }
     if (method === "DELETE" && parts[2]) {
@@ -5134,6 +5931,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         ? Promise.all([ensureTrackingColumns(), ensurePaymentWorkflowColumns(), ensureArchiveColumns(), ensurePerformanceIndexes()]) : undefined,
       (root === "admin") ? ensureStaffActivityColumn() : undefined,
       (root === "admin") ? ensureAdminProductsColumns() : undefined,
+      (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
     ].filter(Boolean));
 
     const route =
@@ -5145,6 +5943,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
             ? await handleCustomer(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
+          : root === "coupons"
+            ? await handleCoupons(req, parts)
           : root === "services"
             ? await handleServices(req, parts)
             : root === "crews"
@@ -5169,7 +5969,11 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
-    console.error("API route failed:", err);
-    return error("خطأ داخلي في الخادم", 500);
+    console.error("API route failed", {
+      method: req.method,
+      path: req.nextUrl.pathname,
+      error: err instanceof Error ? err.message : "unknown",
+    });
+    return error("تعذر إكمال العملية. حاول مرة أخرى، وإذا استمرت المشكلة راجع سجل الخادم.", 500);
   }
 }

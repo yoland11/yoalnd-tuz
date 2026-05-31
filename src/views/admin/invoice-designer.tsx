@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { useToast } from "@/hooks/use-toast";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -306,6 +307,7 @@ type Tab = "templates" | "fields" | "style" | "layout";
 
 export default function InvoiceDesignerPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: settings } = usePublicSettings();
 
   const [activeTab, setActiveTab] = useState<Tab>("templates");
@@ -364,7 +366,9 @@ export default function InvoiceDesignerPage() {
       setActiveId(res.id);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      toast({ title: "تم حفظ قالب الفاتورة" });
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ القالب", description: err?.message, variant: "destructive" }),
   });
 
   // ─── Delete mutation ─────────────────────────────────────────────────────
@@ -376,6 +380,7 @@ export default function InvoiceDesignerPage() {
       setConfig(DEFAULT_CONFIG);
       setTemplateName("قالب جديد");
     },
+    onError: (err: any) => toast({ title: "تعذر حذف القالب", description: err?.message, variant: "destructive" }),
   });
 
   // ─── Export JSON ─────────────────────────────────────────────────────────
@@ -403,7 +408,9 @@ export default function InvoiceDesignerPage() {
           if (parsed.name) setTemplateName(parsed.name);
           setActiveId(null);
         }
-      } catch { /* ignore */ }
+      } catch {
+        toast({ title: "تعذر استيراد القالب", description: "ملف JSON غير صالح أو لا يحتوي إعدادات قالب.", variant: "destructive" });
+      }
     };
     reader.readAsText(file);
     e.target.value = "";

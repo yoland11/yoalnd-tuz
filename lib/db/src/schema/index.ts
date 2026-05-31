@@ -22,3 +22,5 @@ export * from "./suppliers";
 export * from "./sales-invoices";
 export * from "./purchase-invoices";
 export * from "./print-templates";
+export * from "./coupons";
+export * from "./loyalty";

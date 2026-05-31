@@ -45,7 +45,7 @@ function newInvoice() {
   return {
     customerName: "", customerPhone: "", notes: "",
     paymentMethod: "cash", paymentStatus: "paid",
-    paidAmount: "", taxPct: "0", discountAmount: "0",
+    paidAmount: "", taxPct: "0", discountAmount: "0", couponCode: "", couponDiscountAmount: "0",
     isInternal: false, date: new Date().toISOString().slice(0, 10),
   };
 }
@@ -151,7 +151,8 @@ export default function SalesPage() {
 
   // ── Totals ───────────────────────────────────────────────────────────────
   const subtotal = cart.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
-  const totalDiscount = cart.reduce((s, i) => s + i.discount, 0) + parseFloat(form.discountAmount || "0");
+  const couponDiscount = parseFloat(form.couponDiscountAmount || "0");
+  const totalDiscount = cart.reduce((s, i) => s + i.discount, 0) + parseFloat(form.discountAmount || "0") + couponDiscount;
   const taxPct = parseFloat(form.taxPct || "0");
   const taxAmount = +((subtotal - totalDiscount) * taxPct / 100).toFixed(2);
   const grandTotal = +(subtotal - totalDiscount + taxAmount).toFixed(2);
@@ -198,6 +199,7 @@ export default function SalesPage() {
         customerName: form.customerName,
         customerPhone: form.customerPhone,
         subtotal, discountAmount: totalDiscount, taxAmount, total: grandTotal,
+        couponCode: form.couponCode || undefined,
         paidAmount: paidAmt, remainingAmount: remaining,
         paymentMethod: form.paymentMethod,
         paymentStatus: autoStatus,
@@ -214,12 +216,36 @@ export default function SalesPage() {
       });
       toast({ title: "تم حفظ الفاتورة", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setCart([]);
       setForm(newInvoice());
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function applyCoupon() {
+    if (!form.couponCode.trim()) {
+      toast({ title: "أدخل كود الخصم", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await fetch("/api/coupons/apply", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: form.couponCode, subtotal, deliveryFee: 0 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "تعذر تطبيق الكوبون");
+      setForm((f) => ({ ...f, couponCode: data.code, couponDiscountAmount: String(data.discountAmount ?? 0) }));
+      toast({ title: "تم تطبيق الكوبون", description: data.code });
+    } catch (err: any) {
+      setForm((f) => ({ ...f, couponDiscountAmount: "0" }));
+      toast({ title: "تعذر تطبيق الكوبون", description: err?.message, variant: "destructive" });
     }
   }
 
@@ -494,6 +520,27 @@ export default function SalesPage() {
                 dir="ltr"
               />
             </div>
+            <div className="flex items-center justify-between text-sm gap-2">
+              <span className="text-muted-foreground">كوبون</span>
+              <div className="flex gap-2">
+                <input
+                  value={form.couponCode}
+                  onChange={e => setForm(f => ({ ...f, couponCode: e.target.value.toUpperCase().replace(/\s+/g, ""), couponDiscountAmount: "0" }))}
+                  className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                  dir="ltr"
+                  placeholder="CODE"
+                />
+                <button type="button" onClick={applyCoupon} className="rounded border border-primary/40 px-3 py-1 text-xs text-primary hover:bg-primary/10">
+                  تطبيق
+                </button>
+              </div>
+            </div>
+            {couponDiscount > 0 && (
+              <div className="flex justify-between text-sm text-green-400">
+                <span>خصم الكوبون</span>
+                <span>- {formatCurrency(couponDiscount)}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between text-sm gap-2">
               <span className="text-muted-foreground">ضريبة %</span>
               <input

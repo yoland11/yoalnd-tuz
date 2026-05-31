@@ -11,9 +11,11 @@ import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { useToast } from "@/hooks/use-toast";
 
 export default function GalleryPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data: items, isLoading } = useListGallery({});
   const create = useCreateGalleryItem();
   const del = useDeleteGalleryItem();
@@ -38,7 +40,8 @@ export default function GalleryPage() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     create.mutate({ data: form }, {
-      onSuccess: () => { invalidate(); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); },
+      onSuccess: () => { invalidate(); setShowForm(false); setForm({ mediaUrl: "", mediaType: "image", titleAr: "", category: "عام", imageMetadata: {} }); toast({ title: "تمت إضافة الوسائط" }); },
+      onError: (err: any) => toast({ title: "تعذر إضافة الوسائط", description: err?.message, variant: "destructive" }),
     });
   }
 
@@ -61,7 +64,7 @@ export default function GalleryPage() {
                 <button onClick={() => setPreview(item.mediaUrl)} className="p-2 rounded-full bg-primary/20 text-primary hover:bg-primary/30">
                   <Eye className="w-4 h-4" />
                 </button>
-                <button onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate)}
+                <button onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate).catch((err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }))}
                   className="p-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30">
                   <Trash2 className="w-4 h-4" />
                 </button>

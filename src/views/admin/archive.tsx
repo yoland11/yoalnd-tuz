@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import { useToast } from "@/hooks/use-toast";
 
 type ArchiveRow = {
   id: number;
@@ -45,6 +46,7 @@ const PAYMENT_LABELS: Record<string, string> = {
 
 export default function ArchivePage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
@@ -72,7 +74,9 @@ export default function ArchivePage() {
       qc.invalidateQueries({ queryKey: ["admin", "service-orders"] });
       qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       qc.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      toast({ title: "تم استرجاع الطلب من الأرشيف" });
     },
+    onError: (err: any) => toast({ title: "تعذر استرجاع الطلب", description: err?.message, variant: "destructive" }),
   });
 
   const rows = data ?? [];

@@ -9,6 +9,8 @@ export interface OrderInput {
   notes?: string;
   paymentMethod?: OrderInputPaymentMethod;
   deliveryZoneId?: number;
+  couponCode?: string;
+  redeemPoints?: number;
   /** Google Maps URL (from geolocation or manual entry) */
   mapsUrl?: string;
 }

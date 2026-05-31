@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, fileToDataUrl } from "./_lib";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { useToast } from "@/hooks/use-toast";
 
 type Settings = {
   siteName: string;
@@ -45,6 +46,7 @@ const defaultImageSettings: Settings["imageSettings"] = {
 
 export default function SettingsPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "settings"],
     queryFn: () => adminFetch<Settings>("/admin/settings"),
@@ -64,18 +66,24 @@ export default function SettingsPage() {
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ الإعدادات", description: err?.message, variant: "destructive" }),
   });
 
   async function handleLogoResult(results: ImageEditResult[]) {
     const result = results[0];
     if (!result) return;
-    const res = await adminFetch<{ logoUrl: string; logoMetadata?: ImageMetadata }>("/admin/settings/logo", {
-      method: "POST",
-      body: JSON.stringify({ logoUrl: result.dataUrl, logoMetadata: result.metadata }),
-    });
-    setForm(f => ({ ...f!, logoUrl: res.logoUrl, logoMetadata: res.logoMetadata ?? result.metadata }));
-    qc.invalidateQueries({ queryKey: ["admin", "settings"] });
-    qc.invalidateQueries({ queryKey: ["settings", "public"] });
+    try {
+      const res = await adminFetch<{ logoUrl: string; logoMetadata?: ImageMetadata }>("/admin/settings/logo", {
+        method: "POST",
+        body: JSON.stringify({ logoUrl: result.dataUrl, logoMetadata: result.metadata }),
+      });
+      setForm(f => ({ ...f!, logoUrl: res.logoUrl, logoMetadata: res.logoMetadata ?? result.metadata }));
+      qc.invalidateQueries({ queryKey: ["admin", "settings"] });
+      qc.invalidateQueries({ queryKey: ["settings", "public"] });
+      toast({ title: "تم تحديث الشعار" });
+    } catch (err: any) {
+      toast({ title: "تعذر رفع الشعار", description: err?.message, variant: "destructive" });
+    }
   }
   async function handleQrUpload(file: File) {
     const dataUrl = await fileToDataUrl(file);

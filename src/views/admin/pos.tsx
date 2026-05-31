@@ -37,6 +37,13 @@ type Customer = {
 };
 
 type PrintSize = "80mm" | "58mm" | "a4" | "pdf";
+type PrinterSettings = {
+  defaultPaperSize: "80mm" | "58mm" | "a4";
+  autoPrint: boolean;
+  copies: number;
+  showLogo: boolean;
+};
+type Totals = { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -51,6 +58,7 @@ function newForm() {
   return {
     customerName: "", customerPhone: "", customerAddress: "", notes: "",
     paymentMethod: "cash", paidAmount: "", taxPct: "0", discountAmount: "0",
+    couponCode: "", couponDiscountAmount: "0",
     date: new Date().toISOString().slice(0, 10),
   };
 }
@@ -232,12 +240,13 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
 function openPrintWindow(
   cart: CartItem[],
   form: ReturnType<typeof newForm>,
-  totals: { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number },
+  totals: Totals,
   invoiceNo: string,
   size: PrintSize,
   settings: any,
+  options: { showLogo?: boolean } = {},
 ) {
-  const logo = logoSrc(settings);
+  const logo = options.showLogo === false ? "" : logoSrc(settings);
   const companyName = settings?.site_name ?? "مجموعة علي جان";
   const companyPhone = settings?.phones?.[0] ?? "";
   const companyAddress = settings?.address ?? "";
@@ -322,6 +331,8 @@ export default function POSPage() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [lastInvoiceNo, setLastInvoiceNo] = useState("");
   const [lastSavedCart, setLastSavedCart] = useState<CartItem[]>([]);
+  const [lastSavedForm, setLastSavedForm] = useState<ReturnType<typeof newForm> | null>(null);
+  const [lastSavedTotals, setLastSavedTotals] = useState<Totals | null>(null);
 
   // Hold/retrieve
   const [held, setHeld] = useState<HeldInvoice[]>(() => {
@@ -359,6 +370,12 @@ export default function POSPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const { data: printerSettings } = useQuery<PrinterSettings>({
+    queryKey: ["admin", "printer-settings"],
+    queryFn: () => adminFetch("/admin/settings/printer"),
+    staleTime: 5 * 60 * 1000,
+  });
+
   // ── Filtered products ──────────────────────────────────────────────────────
   const q = searchQ.trim().toLowerCase();
   const visibleProducts = products.filter(p => {
@@ -371,7 +388,8 @@ export default function POSPage() {
   const subtotal   = cart.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
   const itemDisc   = cart.reduce((s, i) => s + i.discount, 0);
   const extraDisc  = parseFloat(form.discountAmount || "0");
-  const totalDisc  = itemDisc + extraDisc;
+  const couponDisc = parseFloat(form.couponDiscountAmount || "0");
+  const totalDisc  = itemDisc + extraDisc + couponDisc;
   const taxPct     = parseFloat(form.taxPct || "0");
   const taxAmount  = +((subtotal - totalDisc) * taxPct / 100).toFixed(2);
   const grandTotal = +(subtotal - totalDisc + taxAmount).toFixed(2);
@@ -450,6 +468,27 @@ export default function POSPage() {
     if (filtered.length === 1) addToCart(filtered[0]);
   }
 
+  async function applyCoupon() {
+    if (!form.couponCode.trim()) {
+      toast({ title: "أدخل كود الخصم", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await fetch("/api/coupons/apply", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: form.couponCode, subtotal, deliveryFee: 0 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "تعذر تطبيق الكوبون");
+      setForm((f) => ({ ...f, couponCode: data.code, couponDiscountAmount: String(data.discountAmount ?? 0) }));
+      toast({ title: "تم تطبيق الكوبون", description: data.code });
+    } catch (err: any) {
+      setForm((f) => ({ ...f, couponDiscountAmount: "0" }));
+      toast({ title: "تعذر تطبيق الكوبون", description: err?.message, variant: "destructive" });
+    }
+  }
+
   // ── Hold / Retrieve ────────────────────────────────────────────────────────
   function holdInvoice() {
     if (cart.length === 0) return;
@@ -506,6 +545,7 @@ export default function POSPage() {
         date: form.date,
         customerName: form.customerName, customerPhone: form.customerPhone,
         subtotal, discountAmount: totalDisc, taxAmount, total: grandTotal,
+        couponCode: form.couponCode || undefined,
         paidAmount: paidAmt, remainingAmount: remaining,
         paymentMethod: form.paymentMethod, paymentStatus: autoStatus,
         isInternal: 0, notes: form.notes,
@@ -518,14 +558,24 @@ export default function POSPage() {
       const res = await adminFetch<{ invoice: { invoiceNo: string } }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
-      const invoiceNo = res?.invoice?.invoiceNo ?? "TEMP";
+      const invoiceNo = res?.invoice?.invoiceNo;
+      if (!invoiceNo) throw new Error("تم حفظ الفاتورة لكن لم يرجع رقمها من الخادم");
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       toast({ title: "✓ تم حفظ الفاتورة", description: invoiceNo });
-      if (andPrint) {
-        openPrintWindow(cart, form, totals, invoiceNo, andPrint, settings);
+      const printSize = andPrint ?? (printerSettings?.autoPrint ? printerSettings.defaultPaperSize : undefined);
+      if (printSize) {
+        const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
+        for (let index = 0; index < copies; index++) {
+          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false });
+        }
       }
       setLastInvoiceNo(invoiceNo);
       setLastSavedCart([...cart]);
+      setLastSavedForm({ ...form });
+      setLastSavedTotals({ ...totals });
       setCart([]); setForm(newForm()); setCustomerStats(null);
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
@@ -640,7 +690,15 @@ export default function POSPage() {
                     if (cart.length > 0) {
                       saveInvoice(size);
                     } else if (lastInvoiceNo && lastSavedCart.length > 0) {
-                      openPrintWindow(lastSavedCart, form, totals, lastInvoiceNo, size, settings);
+                      openPrintWindow(
+                        lastSavedCart,
+                        lastSavedForm ?? form,
+                        lastSavedTotals ?? totals,
+                        lastInvoiceNo,
+                        size,
+                        settings,
+                        { showLogo: printerSettings?.showLogo !== false },
+                      );
                     }
                   }}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-border/30 hover:border-primary/50 hover:bg-primary/5 transition-colors text-right"
@@ -878,6 +936,12 @@ export default function POSPage() {
                 <span>− {formatCurrency(totalDisc)}</span>
               </div>
             )}
+            {couponDisc > 0 && (
+              <div className="flex justify-between text-xs text-green-400">
+                <span>كوبون {form.couponCode}</span>
+                <span>− {formatCurrency(couponDisc)}</span>
+              </div>
+            )}
             {taxAmount > 0 && (
               <div className="flex justify-between text-sm text-muted-foreground">
                 <span>ضريبة {taxPct}%</span>
@@ -904,6 +968,23 @@ export default function POSPage() {
                   dir="ltr"
                 />
               </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <input
+                value={form.couponCode}
+                onChange={e => setForm(f => ({ ...f, couponCode: e.target.value.toUpperCase().replace(/\s+/g, ""), couponDiscountAmount: "0" }))}
+                placeholder="كوبون"
+                className="flex-1 bg-background border border-border/30 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                dir="ltr"
+              />
+              <button
+                type="button"
+                onClick={applyCoupon}
+                disabled={subtotal <= 0}
+                className="rounded border border-primary/40 px-3 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-50"
+              >
+                تطبيق
+              </button>
             </div>
             <div className="flex justify-between text-lg font-bold pt-1 border-t border-border/30">
               <span>الإجمالي</span>

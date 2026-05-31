@@ -7,6 +7,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
+import { useToast } from "@/hooks/use-toast";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "pnl";
 
@@ -82,6 +83,7 @@ export default function AccountingPage() {
 // ───── Receipts ─────
 function ReceiptsTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
     date: string; amount: string; payerName: string; customerPhone: string; reference: string;
     method: string; notes: string;
@@ -98,6 +100,7 @@ function ReceiptsTab() {
       setEditing(null);
       printReceipt(row);
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ سند القبض", description: err?.message, variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/receipt-vouchers/${id}`, { method: "DELETE" }),
@@ -150,7 +153,7 @@ function ReceiptsTab() {
           </div>
           <div className="flex justify-end gap-2 pt-3">
             <Button variant="outline" onClick={() => setEditing(null)}>إلغاء</Button>
-            <Button disabled={create.isPending || !editing.amount || !editing.payerName}
+            <Button disabled={create.isPending || !editing.amount}
               onClick={() => create.mutate({
                 date: editing.date,
                 amount: editing.amount,
@@ -170,6 +173,7 @@ function ReceiptsTab() {
 // ───── Payments ─────
 function PaymentsTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
     date: string; amount: string; payeeName: string; reference: string; method: string; notes: string;
   }>(null);
@@ -185,6 +189,7 @@ function PaymentsTab() {
       setEditing(null);
       printPayment(row);
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ سند الصرف", description: err?.message, variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/payment-vouchers/${id}`, { method: "DELETE" }),
@@ -236,7 +241,7 @@ function PaymentsTab() {
           </div>
           <div className="flex justify-end gap-2 pt-3">
             <Button variant="outline" onClick={() => setEditing(null)}>إلغاء</Button>
-            <Button disabled={create.isPending || !editing.amount || !editing.payeeName}
+            <Button disabled={create.isPending || !editing.amount}
               onClick={() => create.mutate({
                 date: editing.date,
                 amount: editing.amount,
@@ -255,6 +260,7 @@ function PaymentsTab() {
 // ───── Expenses ─────
 function ExpensesTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const cats = useQuery({
     queryKey: ["admin", "expense-categories"],
     queryFn: () => adminFetch<Category[]>("/admin/expense-categories"),
@@ -267,6 +273,7 @@ function ExpensesTab() {
   const create = useMutation({
     mutationFn: (b: any) => adminFetch("/admin/expenses", { method: "POST", body: JSON.stringify(b) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "expenses"] }); setEditing(null); },
+    onError: (err: any) => toast({ title: "تعذر حفظ المصروف", description: err?.message, variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/expenses/${id}`, { method: "DELETE" }),
@@ -335,6 +342,7 @@ function ExpensesTab() {
 // ───── Categories ─────
 function CategoriesTab() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "expense-categories"],
     queryFn: () => adminFetch<Category[]>("/admin/expense-categories"),
@@ -345,6 +353,7 @@ function CategoriesTab() {
       ? adminFetch(`/admin/expense-categories/${b.id}`, { method: "PATCH", body: JSON.stringify(b) })
       : adminFetch("/admin/expense-categories", { method: "POST", body: JSON.stringify(b) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "expense-categories"] }); setEditing(null); },
+    onError: (err: any) => toast({ title: "تعذر حفظ نوع المصروف", description: err?.message, variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/expense-categories/${id}`, { method: "DELETE" }),
@@ -392,7 +401,7 @@ function CategoriesTab() {
           </div>
           <div className="flex justify-end gap-2 pt-3">
             <Button variant="outline" onClick={() => setEditing(null)}>إلغاء</Button>
-            <Button disabled={save.isPending || !editing.name || !editing.nameAr} onClick={() => save.mutate(editing)}>
+            <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </div>

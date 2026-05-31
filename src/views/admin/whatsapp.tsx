@@ -80,6 +80,7 @@ export default function WhatsappPage() {
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
     },
+    onError: (e: any) => setTestResult("✗ " + (e?.message ?? "تعذر حفظ إعدادات واتساب")),
   });
 
   const sendTest = useMutation({

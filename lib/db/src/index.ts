@@ -14,7 +14,19 @@ export function getPool(): pg.Pool {
         "DATABASE_URL must be set. Did you forget to provision a database?",
       );
     }
-    poolInstance = new Pool({ connectionString: process.env.DATABASE_URL });
+    poolInstance = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: Number.parseInt(process.env.DB_POOL_MAX ?? "5", 10) || 5,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+      allowExitOnIdle: true,
+    });
+    poolInstance.on("error", (err) => {
+      console.error("Database idle client error", {
+        code: (err as NodeJS.ErrnoException).code ?? "unknown",
+        message: err.message,
+      });
+    });
   }
   return poolInstance;
 }

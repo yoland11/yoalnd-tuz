@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
+import { useToast } from "@/hooks/use-toast";
 
 type Crew = {
   id: number;
@@ -42,6 +43,7 @@ const STATUS_TONES: Record<string, string> = {
 
 export default function CrewsPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [editing, setEditing] = useState<Editing | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const { data, isLoading } = useQuery({
@@ -60,7 +62,9 @@ export default function CrewsPage() {
       qc.invalidateQueries({ queryKey: ["admin", "crews"] });
       qc.invalidateQueries({ queryKey: ["crews"] });
       setEditing(null);
+      toast({ title: "تم حفظ الكادر" });
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ الكادر", description: err?.message, variant: "destructive" }),
   });
 
   const del = useMutation({
@@ -69,6 +73,7 @@ export default function CrewsPage() {
       qc.invalidateQueries({ queryKey: ["admin", "crews"] });
       qc.invalidateQueries({ queryKey: ["crews"] });
     },
+    onError: (err: any) => toast({ title: "تعذر حذف الكادر", description: err?.message, variant: "destructive" }),
   });
 
   const toggle = useMutation({
@@ -78,6 +83,7 @@ export default function CrewsPage() {
       qc.invalidateQueries({ queryKey: ["admin", "crews"] });
       qc.invalidateQueries({ queryKey: ["crews"] });
     },
+    onError: (err: any) => toast({ title: "تعذر تحديث الكادر", description: err?.message, variant: "destructive" }),
   });
 
   return (

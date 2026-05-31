@@ -20,6 +20,7 @@ import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { EventCountdown } from "@/components/interactive/event-countdown";
+import { useToast } from "@/hooks/use-toast";
 
 type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -76,6 +77,8 @@ const STATUS_FILTERS = [
 
 export default function OrdersPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const showMutationError = (err: any) => toast({ title: "تعذر تنفيذ العملية", description: err?.message, variant: "destructive" });
   const routeSearch = useSearch();
   const [tab, setTab] = useState<"products" | "services">("products");
   const [search, setSearch] = useState("");
@@ -115,37 +118,45 @@ export default function OrdersPage() {
     mutationFn: (vars: { id: number; status: string }) =>
       adminFetch(`/orders/${vars.id}`, { method: "PATCH", body: JSON.stringify({ status: vars.status }) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const updateProductPayment = useMutation({
     mutationFn: (vars: { id: number; paymentMethod?: string; depositAmount?: number; paymentStatus?: string; internalNotes?: string }) =>
       adminFetch(`/admin/orders/${vars.id}`, { method: "PATCH", body: JSON.stringify(vars) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const updateServicePayment = useMutation({
     mutationFn: (vars: { id: number; totalAmount?: number; depositAmount?: number; paymentStatus?: string; internalNotes?: string }) =>
       adminFetch(`/admin/service-orders/${vars.id}`, { method: "PATCH", body: JSON.stringify(vars) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const updateServiceStatus = useMutation({
     mutationFn: (vars: { id: number; status: string }) =>
       adminFetch(`/admin/service-orders/${vars.id}`, { method: "PATCH", body: JSON.stringify({ status: vars.status }) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const deleteProduct = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/orders/${id}`, { method: "DELETE" }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const deleteService = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/service-orders/${id}`, { method: "DELETE" }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const archiveProduct = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/orders/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const archiveService = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/service-orders/${id}`, { method: "PATCH", body: JSON.stringify({ archived: true }) }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
   const rescheduleAction = useMutation({
     mutationFn: (vars: { id: number; action: "accept" | "reject" }) =>
@@ -154,6 +165,7 @@ export default function OrdersPage() {
         body: JSON.stringify({ action: vars.action }),
       }),
     onSuccess: invalidateAll,
+    onError: showMutationError,
   });
 
   const filteredProducts = useMemo(() => {
@@ -712,6 +724,7 @@ function BookingHistory({ bookingId, serviceType }: { bookingId: number; service
 
 function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "service"; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [mode, setMode] = useState<"product" | "service">(initialMode);
   const [form, setForm] = useState({
     customerName: "", customerPhone: "", governorate: "", area: "", address: "", notes: "",
@@ -764,6 +777,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
       queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       onClose();
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ الطلب", description: err?.message, variant: "destructive" }),
   });
   const createServiceOrder = useMutation({
     mutationFn: (body: any) => adminFetch("/admin/service-orders", { method: "POST", body: JSON.stringify(body) }),
@@ -772,6 +786,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
       queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       onClose();
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ الحجز", description: err?.message, variant: "destructive" }),
   });
 
   function updateItem(i: number, key: string, value: any) {
@@ -988,6 +1003,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
 
 function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [form, setForm] = useState({
     customerName: order.customerName,
     phone: formatIraqiPhone(order.phone),
@@ -1020,6 +1036,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       onClose();
     },
+    onError: (err: any) => toast({ title: "تعذر حفظ تعديل الحجز", description: err?.message, variant: "destructive" }),
   });
 
   function submit() {

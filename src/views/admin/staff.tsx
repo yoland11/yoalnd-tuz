@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
 import { EmptyState } from "./_layout";
+import { useToast } from "@/hooks/use-toast";
 
 type Staff = {
   id: number; username: string; fullName: string; role: string;
@@ -39,6 +40,7 @@ const blank: Editing = { username: "", password: "", fullName: "", role: "bookin
 
 export default function StaffPage() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "staff"],
     queryFn: () => adminFetch<Staff[]>("/admin/staff"),
@@ -53,17 +55,20 @@ export default function StaffPage() {
       body.username = e.username;
       return adminFetch("/admin/staff", { method: "POST", body: JSON.stringify(body) });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "staff"] }); setEditing(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "staff"] }); setEditing(null); toast({ title: "تم حفظ الموظف" }); },
+    onError: (err: any) => toast({ title: "تعذر حفظ الموظف", description: err?.message, variant: "destructive" }),
   });
 
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/staff/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "staff"] }),
+    onError: (err: any) => toast({ title: "تعذر حذف الموظف", description: err?.message, variant: "destructive" }),
   });
 
   const toggle = useMutation({
     mutationFn: (s: Staff) => adminFetch(`/admin/staff/${s.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !s.isActive }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "staff"] }),
+    onError: (err: any) => toast({ title: "تعذر تحديث الموظف", description: err?.message, variant: "destructive" }),
   });
 
   return (
