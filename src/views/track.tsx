@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
-  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck,
+  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode,
 } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
@@ -19,6 +19,7 @@ import { CelebrationEffect } from "@/components/interactive/celebration-effect";
 import { EventCountdown } from "@/components/interactive/event-countdown";
 import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
+import { logCustomerActivity } from "@/lib/customer-activity";
 
 type Mode = "code" | "phone";
 
@@ -212,6 +213,15 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
   const waLink = buildWhatsAppLink(contactPhone || "07701234567", waMsg);
 
   useEffect(() => {
+    logCustomerActivity({
+      action: "track_page",
+      entityType: tracking.kind === "service" ? "service_order" : "order",
+      entityId: Number(tracking.id) || undefined,
+      entityLabel: tracking.trackingCode,
+    });
+  }, [tracking.id, tracking.kind, tracking.trackingCode]);
+
+  useEffect(() => {
     if (!previousStatus.current) {
       previousStatus.current = tracking.status;
       return undefined;
@@ -303,6 +313,24 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
             </a>
           )}
         </div>
+        {tracking.qrDataUrl && (
+          <div className="mt-4 flex items-center gap-3 rounded-xl border border-border/30 bg-background/50 p-3">
+            <div className="w-20 h-20 rounded-lg bg-white p-1.5 shrink-0">
+              <img src={tracking.qrDataUrl} alt="QR" className="w-full h-full object-contain" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-primary" /> رمز QR للتتبع
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">يفتح صفحة التتبع لهذا الطلب مباشرة.</p>
+              {tracking.qrScanUrl && (
+                <a href={tracking.qrScanUrl} className="text-xs text-primary mt-2 inline-block" target="_blank" rel="noreferrer">
+                  فتح رابط QR
+                </a>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {isBooking && tracking.eventDate && (

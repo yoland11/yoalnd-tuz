@@ -9,15 +9,18 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { and, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
+import QRCode from "qrcode";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
   adminActivityLogsTable,
+  attendanceRecordsTable,
   cartItemsTable,
   categoriesTable,
   couponUsagesTable,
   couponsTable,
   crewsTable,
+  customerActivityLogsTable,
   customerAddressesTable,
   customerPreferencesTable,
   customerRewardHistoryTable,
@@ -27,6 +30,8 @@ import {
   expensesTable,
   galleryItemsTable,
   loyaltyPointsTable,
+  messageRepliesTable,
+  messageThreadsTable,
   orderItemsTable,
   orderReviewsTable,
   ordersTable,
@@ -48,7 +53,10 @@ import {
   purchaseInvoicesTable,
   purchaseInvoiceItemsTable,
   printTemplatesTable,
+  qrTokensTable,
   db,
+  taskCommentsTable,
+  tasksTable,
 } from "@workspace/db";
 import {
   primaryLocationFromDetails,
@@ -127,6 +135,7 @@ export const ALL_PERMISSIONS = [
   "whatsapp",
   "accounting",
   "backup",
+  "tasks",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -168,6 +177,7 @@ let customerRewardsPromise: Promise<void> | null = null;
 let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
 let storeCategoryColumnsPromise: Promise<void> | null = null;
+let adminExtensionsTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<string, { expiresAt: number; payload: any[] }>();
 const STORE_CATEGORIES_TTL_MS = 60_000;
 
@@ -600,6 +610,138 @@ function publicUser(u: AdminUser) {
     permissions: u.permissions,
     isActive: u.isActive,
   };
+}
+
+function safeDate(value: unknown): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function idList(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.map((item) => Number.parseInt(String(item), 10)).filter((item) => Number.isFinite(item) && item > 0)
+    : [];
+}
+
+function taskStatus(value: unknown): string {
+  const status = String(value ?? "new");
+  return ["new", "in_progress", "review", "completed", "cancelled"].includes(status) ? status : "new";
+}
+
+function taskPriority(value: unknown): string {
+  const priority = String(value ?? "medium");
+  return ["low", "medium", "high", "urgent"].includes(priority) ? priority : "medium";
+}
+
+function messageStatus(value: unknown): string {
+  const status = String(value ?? "new");
+  return ["new", "read", "replied", "closed"].includes(status) ? status : "new";
+}
+
+function attendanceStatus(value: unknown): string {
+  const status = String(value ?? "present");
+  return ["present", "out", "late", "absent"].includes(status) ? status : "present";
+}
+
+function formatTask(row: any, staffById = new Map<number, any>()) {
+  const assigned = Array.isArray(row.assignedStaffIds) ? row.assignedStaffIds : row.assigned_staff_ids ?? [];
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description ?? "",
+    status: row.status,
+    priority: row.priority,
+    dueAt: row.dueAt?.toISOString?.() ?? row.due_at?.toISOString?.() ?? null,
+    assignedStaffIds: assigned,
+    assignedStaff: assigned.map((id: number) => staffById.get(id)).filter(Boolean),
+    relatedType: row.relatedType ?? row.related_type ?? null,
+    relatedId: row.relatedId ?? row.related_id ?? null,
+    notes: row.notes ?? "",
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
+    createdBy: row.createdBy ?? row.created_by ?? null,
+    archivedAt: row.archivedAt?.toISOString?.() ?? row.archived_at?.toISOString?.() ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updated_at?.toISOString?.() ?? null,
+  };
+}
+
+function formatMessageThread(row: any, replies: any[] = []) {
+  return {
+    id: row.id,
+    customerId: row.customerId ?? row.customer_id ?? null,
+    phone: row.phone ?? null,
+    customerName: row.customerName ?? row.customer_name ?? "",
+    subject: row.subject ?? "",
+    status: row.status,
+    relatedType: row.relatedType ?? row.related_type ?? null,
+    relatedId: row.relatedId ?? row.related_id ?? null,
+    lastMessageAt: row.lastMessageAt?.toISOString?.() ?? row.last_message_at?.toISOString?.() ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updated_at?.toISOString?.() ?? null,
+    replies: replies.map((reply) => ({
+      id: reply.id,
+      threadId: reply.threadId ?? reply.thread_id,
+      senderType: reply.senderType ?? reply.sender_type,
+      staffId: reply.staffId ?? reply.staff_id ?? null,
+      body: reply.body,
+      createdAt: reply.createdAt?.toISOString?.() ?? reply.created_at?.toISOString?.() ?? null,
+    })),
+  };
+}
+
+function formatAttendance(row: any, staff?: any) {
+  const inAt = row.checkInAt ?? row.check_in_at;
+  const outAt = row.checkOutAt ?? row.check_out_at;
+  const hours = inAt && outAt ? Math.max(0, (new Date(outAt).getTime() - new Date(inAt).getTime()) / 36e5) : 0;
+  return {
+    id: row.id,
+    staffId: row.staffId ?? row.staff_id,
+    staffName: staff?.fullName || staff?.username || "",
+    checkInAt: inAt?.toISOString?.() ?? inAt ?? null,
+    checkOutAt: outAt?.toISOString?.() ?? outAt ?? null,
+    status: row.status,
+    notes: row.notes ?? "",
+    hours: Number(hours.toFixed(2)),
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updated_at?.toISOString?.() ?? null,
+  };
+}
+
+function baseUrlFromReq(req: NextRequest): string {
+  return process.env.APP_BASE_URL?.replace(/\/$/, "") || req.nextUrl.origin;
+}
+
+function publicQrTarget(entityType: string, entity: any, req: NextRequest): string {
+  const base = baseUrlFromReq(req);
+  if (entityType === "order" || entityType === "service_order") {
+    const code = entity.trackingCode ?? entity.tracking_code;
+    return `${base}/track?code=${encodeURIComponent(String(code ?? ""))}`;
+  }
+  if (entityType === "invoice") {
+    return `${base}/admin/sales?invoice=${encodeURIComponent(String(entity.id))}`;
+  }
+  return `${base}/`;
+}
+
+async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice", entity: any, req: NextRequest) {
+  await ensureAdminExtensionsTables();
+  const existing = await db.query.qrTokensTable.findFirst({
+    where: and(eq(qrTokensTable.entityType, entityType), eq(qrTokensTable.entityId, entity.id)),
+  });
+  const token = existing?.token || randomBytes(24).toString("hex");
+  const targetUrl = existing?.targetUrl || publicQrTarget(entityType, entity, req);
+  if (!existing) {
+    await db.insert(qrTokensTable).values({ entityType, entityId: entity.id, token, targetUrl });
+  }
+  if (!entity.qrToken) {
+    if (entityType === "order") await db.update(ordersTable).set({ qrToken: token }).where(eq(ordersTable.id, entity.id));
+    if (entityType === "service_order") await db.update(serviceOrdersTable).set({ qrToken: token }).where(eq(serviceOrdersTable.id, entity.id));
+    if (entityType === "invoice") await db.update(salesInvoicesTable).set({ qrToken: token }).where(eq(salesInvoicesTable.id, entity.id));
+  }
+  const scanUrl = `${baseUrlFromReq(req)}/api/qr/${token}`;
+  const dataUrl = await QRCode.toDataURL(scanUrl, { margin: 1, width: 240 });
+  return { token, targetUrl, scanUrl, dataUrl };
 }
 
 function withSessionCookie(res: NextResponse, token: string): NextResponse {
@@ -1226,6 +1368,119 @@ async function ensureCouponsTables(): Promise<void> {
   await couponsTablesPromise;
 }
 
+async function ensureAdminExtensionsTables(): Promise<void> {
+  if (!adminExtensionsTablesPromise) {
+    adminExtensionsTablesPromise = db.execute(sql`
+      alter table "orders" add column if not exists "qr_token" varchar(80);
+      alter table "service_orders" add column if not exists "qr_token" varchar(80);
+      alter table "sales_invoices" add column if not exists "qr_token" varchar(80);
+
+      create table if not exists "tasks" (
+        "id" serial primary key,
+        "title" text not null,
+        "description" text,
+        "status" varchar(30) not null default 'new',
+        "priority" varchar(20) not null default 'medium',
+        "due_at" timestamp,
+        "assigned_staff_ids" jsonb not null default '[]'::jsonb,
+        "related_type" varchar(30),
+        "related_id" integer,
+        "notes" text,
+        "attachments" jsonb not null default '[]'::jsonb,
+        "created_by" integer references "staff" ("id"),
+        "archived_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "task_comments" (
+        "id" serial primary key,
+        "task_id" integer not null references "tasks" ("id"),
+        "staff_id" integer references "staff" ("id"),
+        "body" text not null,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "task_attachments" (
+        "id" serial primary key,
+        "task_id" integer not null references "tasks" ("id"),
+        "file_url" text not null,
+        "file_name" text,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "message_threads" (
+        "id" serial primary key,
+        "customer_id" integer references "customers" ("id"),
+        "phone" varchar(30),
+        "customer_name" text not null default '',
+        "subject" text not null default 'رسالة زبون',
+        "status" varchar(20) not null default 'new',
+        "related_type" varchar(30),
+        "related_id" integer,
+        "last_message_at" timestamp not null default now(),
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "message_replies" (
+        "id" serial primary key,
+        "thread_id" integer not null references "message_threads" ("id"),
+        "sender_type" varchar(20) not null default 'customer',
+        "staff_id" integer references "staff" ("id"),
+        "body" text not null,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "customer_activity_logs" (
+        "id" serial primary key,
+        "customer_id" integer references "customers" ("id"),
+        "session_id" varchar(80),
+        "phone" varchar(30),
+        "action" varchar(60) not null,
+        "entity_type" varchar(40),
+        "entity_id" integer,
+        "entity_label" text,
+        "metadata" jsonb not null default '{}'::jsonb,
+        "ip_address" varchar(80),
+        "user_agent" text,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "attendance_records" (
+        "id" serial primary key,
+        "staff_id" integer not null references "staff" ("id"),
+        "check_in_at" timestamp not null default now(),
+        "check_out_at" timestamp,
+        "status" varchar(20) not null default 'present',
+        "notes" text,
+        "edited_by" integer references "staff" ("id"),
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "qr_tokens" (
+        "id" serial primary key,
+        "entity_type" varchar(30) not null,
+        "entity_id" integer not null,
+        "token" varchar(80) not null unique,
+        "target_url" text not null,
+        "scan_count" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "last_scanned_at" timestamp
+      );
+      create index if not exists "tasks_assigned_staff_ids_gin_idx" on "tasks" using gin ("assigned_staff_ids");
+      create index if not exists "tasks_status_due_idx" on "tasks" ("status", "due_at");
+      create index if not exists "message_threads_status_idx" on "message_threads" ("status", "last_message_at");
+      create index if not exists "message_replies_thread_idx" on "message_replies" ("thread_id", "created_at");
+      create index if not exists "customer_activity_created_idx" on "customer_activity_logs" ("created_at");
+      create index if not exists "customer_activity_customer_idx" on "customer_activity_logs" ("customer_id", "created_at");
+      create index if not exists "attendance_staff_day_idx" on "attendance_records" ("staff_id", "check_in_at");
+      create unique index if not exists "qr_tokens_entity_unique_idx" on "qr_tokens" ("entity_type", "entity_id");
+      create index if not exists "orders_qr_token_idx" on "orders" ("qr_token");
+      create index if not exists "service_orders_qr_token_idx" on "service_orders" ("qr_token");
+      create index if not exists "sales_invoices_qr_token_idx" on "sales_invoices" ("qr_token");
+    `).then(() => undefined).catch((err) => {
+      adminExtensionsTablesPromise = null;
+      throw err;
+    });
+  }
+  await adminExtensionsTablesPromise;
+}
+
 function normalizeCouponCode(value: unknown): string {
   return String(value ?? "").trim().toUpperCase().replace(/\s+/g, "");
 }
@@ -1613,6 +1868,7 @@ async function formatOrder(order: any) {
   return {
     id: order.id,
     trackingCode: order.trackingCode,
+    qrToken: order.qrToken ?? null,
     phoneLast4: order.phoneLast4 ?? phoneLast4(order.customerPhone),
     customerId: order.customerId ?? null,
     customerName: order.customerName,
@@ -1663,8 +1919,13 @@ async function buildTracking(order: any) {
     where: eq(orderStatusHistoryTable.orderId, order.id),
     orderBy: [desc(orderStatusHistoryTable.createdAt)],
   });
+  const qrScanUrl = order.qrToken ? `${process.env.APP_BASE_URL?.replace(/\/$/, "") || ""}/api/qr/${order.qrToken}` : null;
+  const qrDataUrl = qrScanUrl ? await QRCode.toDataURL(qrScanUrl, { margin: 1, width: 180 }) : null;
   return {
     trackingCode: order.trackingCode,
+    qrToken: order.qrToken ?? null,
+    qrScanUrl,
+    qrDataUrl,
     id: order.id,
     phoneLast4: order.phoneLast4 ?? phoneLast4(order.customerPhone),
     status: order.status,
@@ -1725,8 +1986,13 @@ async function buildServiceTracking(so: any) {
           createdAt: h.createdAt.toISOString(),
         }))
       : [{ status: so.status, notes: null, createdAt: so.createdAt.toISOString() }];
+  const qrScanUrl = so.qrToken ? `${process.env.APP_BASE_URL?.replace(/\/$/, "") || ""}/api/qr/${so.qrToken}` : null;
+  const qrDataUrl = qrScanUrl ? await QRCode.toDataURL(qrScanUrl, { margin: 1, width: 180 }) : null;
   return {
     trackingCode: so.trackingCode ?? `SRV-${so.id}`,
+    qrToken: so.qrToken ?? null,
+    qrScanUrl,
+    qrDataUrl,
     id: so.id,
     phoneLast4: so.phoneLast4 ?? phoneLast4(so.phone),
     status: so.status,
@@ -1768,6 +2034,26 @@ function maskName(name: string): string {
 
 function stripPii<T extends { customerName: string; customerPhone: string | null }>(t: T) {
   return { ...t, customerName: maskName(t.customerName), customerPhone: null };
+}
+
+async function findBookingConflict(input: {
+  serviceId: number;
+  eventDate?: string | null;
+  customFields?: Record<string, unknown> | null;
+  excludeId?: number;
+}) {
+  const day = String(input.eventDate ?? "").slice(0, 10);
+  if (!day) return null;
+  const crewName = String((input.customFields as any)?.crewName ?? "").trim();
+  const rows = await db.query.serviceOrdersTable.findMany({
+    where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered') and ${serviceOrdersTable.eventDate} like ${`${day}%`}`,
+    limit: 80,
+  });
+  return rows.find((row) => {
+    if (input.excludeId && row.id === input.excludeId) return false;
+    const rowCrew = String((row.customFields as any)?.crewName ?? "").trim();
+    return row.serviceId === input.serviceId || (crewName && rowCrew && rowCrew === crewName);
+  }) ?? null;
 }
 
 async function insertServiceOrderWithTracking(values: Omit<typeof serviceOrdersTable.$inferInsert, "trackingCode" | "phoneLast4">) {
@@ -2261,6 +2547,8 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const safeCustomerName = textFallback(data.customerName, formatIraqiPhone(phone), "زبون");
     await ensureTrackingColumns();
+    const conflict = await findBookingConflict({ serviceId: data.serviceId, eventDate: data.eventDate ?? "", customFields });
+    if (conflict) return error("يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.", 409);
     const order = await insertServiceOrderWithTracking({
       serviceId: data.serviceId,
       customerName: safeCustomerName,
@@ -2270,6 +2558,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       notes: data.notes,
       customFields,
     });
+    await ensureQrForEntity("service_order", order, req);
     await db.insert(serviceOrderStatusHistoryTable).values({
       serviceOrderId: order.id,
       status: order.status,
@@ -2616,6 +2905,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         mapsUrl: data.mapsUrl ?? null,
       })
       .returning();
+    await ensureQrForEntity("order", order, req);
     await Promise.all(
       cartItems.map(async (item) => {
         const product = await db.query.productsTable.findFirst({
@@ -2971,11 +3261,11 @@ function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
 }
 
 const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
-  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting"],
-  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp"],
-  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp"],
-  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting"],
-  staff: ["dashboard"],
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks"],
+  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
+  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
+  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
+  staff: ["dashboard", "tasks"],
 };
 
 function normalizeStaffRole(role: unknown): string {
@@ -3290,6 +3580,90 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
   return null;
 }
 
+async function handlePublicMessages(req: NextRequest, parts: string[]) {
+  if (req.method !== "POST" || parts.length !== 1) return null;
+  await ensureAdminExtensionsTables();
+  const data = await body(req);
+  const message = String(data?.message ?? data?.body ?? "").trim().slice(0, 2000);
+  if (!message) return error("اكتب الرسالة أولاً", 400);
+  const phone = normalizeIraqiPhone(data?.phone ?? "") ?? normalizePhoneDigits(String(data?.phone ?? "")).slice(0, 20);
+  const customerId = getCurrentCustomerId(req);
+  const customer = customerId
+    ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) })
+    : phone
+      ? await db.query.customersTable.findFirst({ where: inArray(customersTable.phone, iraqiPhoneVariants(phone)) })
+      : null;
+  const customerName = String(data?.name ?? customer?.name ?? customer?.fullName ?? "").trim().slice(0, 160);
+  const subject = String(data?.subject ?? "رسالة زبون").trim().slice(0, 180) || "رسالة زبون";
+  const [thread] = await db
+    .insert(messageThreadsTable)
+    .values({
+      customerId: customer?.id ?? customerId ?? null,
+      phone: phone || customer?.phone || null,
+      customerName,
+      subject,
+      status: "new",
+      relatedType: typeof data?.relatedType === "string" ? data.relatedType.slice(0, 30) : null,
+      relatedId: Number.isFinite(Number(data?.relatedId)) ? Number(data.relatedId) : null,
+    })
+    .returning();
+  await db.insert(messageRepliesTable).values({
+    threadId: thread.id,
+    senderType: "customer",
+    body: message,
+  });
+  await db.insert(customerActivityLogsTable).values({
+    customerId: customer?.id ?? customerId ?? null,
+    sessionId: String(data?.sessionId ?? getSessionId(req)).slice(0, 80),
+    phone: phone || null,
+    action: "message_sent",
+    entityType: "message_thread",
+    entityId: thread.id,
+    entityLabel: subject,
+    metadata: {},
+    ipAddress: ip(req),
+    userAgent: req.headers.get("user-agent") ?? null,
+  });
+  return json({ message: "تم إرسال الرسالة", threadId: thread.id }, 201);
+}
+
+async function handleCustomerActivity(req: NextRequest, parts: string[]) {
+  if (req.method !== "POST" || parts.length !== 1) return null;
+  await ensureAdminExtensionsTables();
+  const data = await body(req);
+  const action = String(data?.action ?? "").trim().slice(0, 60);
+  if (!action) return error("نوع النشاط غير صحيح", 400);
+  const customerId = getCurrentCustomerId(req);
+  const phone = normalizeIraqiPhone(data?.phone ?? "") ?? null;
+  await db.insert(customerActivityLogsTable).values({
+    customerId,
+    sessionId: String(data?.sessionId ?? getSessionId(req)).slice(0, 80),
+    phone,
+    action,
+    entityType: typeof data?.entityType === "string" ? data.entityType.slice(0, 40) : null,
+    entityId: Number.isFinite(Number(data?.entityId)) ? Number(data.entityId) : null,
+    entityLabel: typeof data?.entityLabel === "string" ? data.entityLabel.slice(0, 220) : null,
+    metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : {},
+    ipAddress: ip(req),
+    userAgent: req.headers.get("user-agent") ?? null,
+  });
+  return json({ ok: true }, 201);
+}
+
+async function handleQr(req: NextRequest, parts: string[]) {
+  if (req.method !== "GET" || !parts[1]) return null;
+  await ensureAdminExtensionsTables();
+  const token = String(parts[1] ?? "").trim();
+  if (!/^[a-f0-9]{32,80}$/i.test(token)) return error("رمز QR غير صالح", 400);
+  const row = await db.query.qrTokensTable.findFirst({ where: eq(qrTokensTable.token, token) });
+  if (!row) return error("رمز QR غير موجود", 404);
+  await db
+    .update(qrTokensTable)
+    .set({ scanCount: (row.scanCount ?? 0) + 1, lastScannedAt: new Date() })
+    .where(eq(qrTokensTable.id, row.id));
+  return NextResponse.redirect(row.targetUrl);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
@@ -3433,10 +3807,386 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     });
   }
 
+  if (section === "tasks") {
+    const auth = await requirePermission(req, "tasks");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    const canManageAll = auth.role === "admin" || hasPermission(auth, "staff");
+
+    if (method === "GET" && !parts[2]) {
+      const params = req.nextUrl.searchParams;
+      const filters: any[] = [sql`${tasksTable.archivedAt} is null`];
+      const status = params.get("status")?.trim();
+      const priority = params.get("priority")?.trim();
+      const staffId = Number.parseInt(params.get("staffId") ?? "", 10);
+      const date = params.get("date");
+      const q = params.get("q")?.trim();
+      if (status) filters.push(eq(tasksTable.status, taskStatus(status)));
+      if (priority) filters.push(eq(tasksTable.priority, taskPriority(priority)));
+      if (Number.isFinite(staffId) && staffId > 0) filters.push(sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([staffId])}::jsonb`);
+      if (date) {
+        const from = new Date(`${date}T00:00:00`);
+        const to = new Date(`${date}T23:59:59.999`);
+        if (!Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime())) filters.push(and(gte(tasksTable.dueAt, from), lte(tasksTable.dueAt, to)));
+      }
+      if (q) filters.push(or(ilike(tasksTable.title, `%${q}%`), ilike(tasksTable.description, `%${q}%`), ilike(tasksTable.notes, `%${q}%`)));
+      if (!canManageAll) filters.push(sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`);
+      const [rows, staffRows] = await Promise.all([
+        db.query.tasksTable.findMany({
+          where: filters.length ? and(...filters) : undefined,
+          orderBy: [desc(tasksTable.updatedAt), desc(tasksTable.createdAt)],
+          limit: 200,
+        }),
+        db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
+      ]);
+      const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      return json({
+        data: rows.map((row) => formatTask(row, staffById)),
+        staff: staffRows.map(formatStaff),
+      });
+    }
+
+    if (method === "POST" && !parts[2]) {
+      if (!canManageAll && !hasPermission(auth, "tasks")) return error("ليس لديك صلاحية إنشاء المهام", 403);
+      const b = await body(req);
+      const title = textFallback(b?.title, "مهمة جديدة");
+      const assignedStaffIds = idList(b?.assignedStaffIds ?? b?.staffIds);
+      const dueAt = safeDate(b?.dueAt);
+      const [row] = await db
+        .insert(tasksTable)
+        .values({
+          title,
+          description: nullableText(b?.description),
+          status: taskStatus(b?.status),
+          priority: taskPriority(b?.priority),
+          dueAt,
+          assignedStaffIds,
+          relatedType: typeof b?.relatedType === "string" ? b.relatedType.slice(0, 30) : null,
+          relatedId: Number.isFinite(Number(b?.relatedId)) ? Number(b.relatedId) : null,
+          notes: nullableText(b?.notes),
+          attachments: Array.isArray(b?.attachments) ? b.attachments.filter((item: unknown) => typeof item === "string") : [],
+          createdBy: auth.id,
+        })
+        .returning();
+      void logAdminActivity(req, "task_created", "task", row.id, { assignedStaffIds, title });
+      return json(formatTask(row), 201);
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "comments") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: eq(tasksTable.id, id) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!canManageAll && !(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية على هذه المهمة", 403);
+      const b = await body(req);
+      const comment = String(b?.body ?? b?.comment ?? "").trim().slice(0, 1000);
+      if (!comment) return error("اكتب التعليق أولاً", 400);
+      const [row] = await db.insert(taskCommentsTable).values({ taskId: id, staffId: auth.id, body: comment }).returning();
+      await db.update(tasksTable).set({ updatedAt: new Date() }).where(eq(tasksTable.id, id));
+      return json({ id: row.id, body: row.body, createdAt: row.createdAt.toISOString() }, 201);
+    }
+
+    if ((method === "PATCH" || method === "DELETE") && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const existing = await db.query.tasksTable.findFirst({ where: eq(tasksTable.id, id) });
+      if (!existing) return error("المهمة غير موجودة", 404);
+      if (!canManageAll && !(existing.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية على هذه المهمة", 403);
+      if (method === "DELETE") {
+        const [row] = await db.update(tasksTable).set({ archivedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, id)).returning();
+        void logAdminActivity(req, "task_archived", "task", id);
+        return json(formatTask(row));
+      }
+      const b = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (b?.title !== undefined) update.title = textFallback(b.title, existing.title, "مهمة");
+      if (b?.description !== undefined) update.description = nullableText(b.description);
+      if (b?.status !== undefined) update.status = taskStatus(b.status);
+      if (b?.priority !== undefined) update.priority = taskPriority(b.priority);
+      if (b?.dueAt !== undefined) update.dueAt = safeDate(b.dueAt);
+      if (b?.assignedStaffIds !== undefined || b?.staffIds !== undefined) update.assignedStaffIds = idList(b.assignedStaffIds ?? b.staffIds);
+      if (b?.relatedType !== undefined) update.relatedType = typeof b.relatedType === "string" ? b.relatedType.slice(0, 30) : null;
+      if (b?.relatedId !== undefined) update.relatedId = Number.isFinite(Number(b.relatedId)) ? Number(b.relatedId) : null;
+      if (b?.notes !== undefined) update.notes = nullableText(b.notes);
+      if (b?.attachments !== undefined) update.attachments = Array.isArray(b.attachments) ? b.attachments.filter((item: unknown) => typeof item === "string") : [];
+      const [row] = await db.update(tasksTable).set(update).where(eq(tasksTable.id, id)).returning();
+      void logAdminActivity(req, "task_updated", "task", id, { fields: Object.keys(update) });
+      return json(formatTask(row));
+    }
+  }
+
+  if (section === "calendar" && method === "GET") {
+    const auth = await requirePermission(req, "orders");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    const params = req.nextUrl.searchParams;
+    const fromText = params.get("from") || new Date().toISOString().slice(0, 10);
+    const toText = params.get("to") || fromText;
+    const serviceId = Number.parseInt(params.get("serviceId") ?? "", 10);
+    const crew = params.get("crew")?.trim();
+    const status = params.get("status")?.trim();
+    const [bookings, productOrders, services] = await Promise.all([
+      db.query.serviceOrdersTable.findMany({
+        where: and(sql`${serviceOrdersTable.archivedAt} is null`, status ? eq(serviceOrdersTable.status, status) : undefined),
+        orderBy: [asc(serviceOrdersTable.eventDate), desc(serviceOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.ordersTable.findMany({
+        where: and(sql`${ordersTable.archivedAt} is null`, gte(ordersTable.createdAt, new Date(`${fromText}T00:00:00`)), lte(ordersTable.createdAt, new Date(`${toText}T23:59:59.999`))),
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 100,
+      }),
+      db.query.servicesTable.findMany(),
+    ]);
+    const serviceMap = new Map(services.map((service) => [service.id, service]));
+    const inRange = (dateValue: string | null | undefined) => {
+      if (!dateValue) return false;
+      const day = dateValue.slice(0, 10);
+      return day >= fromText && day <= toText;
+    };
+    const serviceEvents = bookings
+      .filter((booking) => inRange(booking.eventDate))
+      .filter((booking) => !Number.isFinite(serviceId) || serviceId <= 0 || booking.serviceId === serviceId)
+      .filter((booking) => !crew || String((booking.customFields as any)?.crewName ?? "").includes(crew))
+      .map((booking) => ({
+        id: booking.id,
+        kind: "service",
+        title: serviceMap.get(booking.serviceId)?.nameAr ?? serviceMap.get(booking.serviceId)?.name ?? "حجز خدمة",
+        customerName: booking.customerName,
+        trackingCode: booking.trackingCode,
+        status: booking.status,
+        serviceId: booking.serviceId,
+        serviceType: serviceMap.get(booking.serviceId)?.type ?? null,
+        crewName: String((booking.customFields as any)?.crewName ?? ""),
+        date: booking.eventDate,
+        location: booking.eventLocation ?? "",
+      }));
+    const orderEvents = productOrders.map((order) => ({
+      id: order.id,
+      kind: "order",
+      title: "طلب متجر",
+      customerName: order.customerName,
+      trackingCode: order.trackingCode,
+      status: order.status,
+      date: order.createdAt.toISOString().slice(0, 10),
+      location: [order.governorate, order.area, order.address].filter(Boolean).join(" / "),
+    }));
+    return json({ events: [...serviceEvents, ...orderEvents], services: services.map(formatService) });
+  }
+
+  if (section === "messages") {
+    const auth = await requirePermission(req, "customers");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    if (method === "GET" && req.nextUrl.searchParams.get("count") === "1") {
+      const countRows = await db.select({ c: sql<number>`count(*)::int` }).from(messageThreadsTable).where(eq(messageThreadsTable.status, "new"));
+      return json({ count: countRows[0]?.c ?? 0 });
+    }
+    if (method === "GET" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const thread = await db.query.messageThreadsTable.findFirst({ where: eq(messageThreadsTable.id, id) });
+      if (!thread) return error("المحادثة غير موجودة", 404);
+      const replies = await db.query.messageRepliesTable.findMany({
+        where: eq(messageRepliesTable.threadId, id),
+        orderBy: [asc(messageRepliesTable.createdAt)],
+      });
+      if (thread.status === "new") {
+        await db.update(messageThreadsTable).set({ status: "read", updatedAt: new Date() }).where(eq(messageThreadsTable.id, id));
+        thread.status = "read";
+      }
+      return json(formatMessageThread(thread, replies));
+    }
+    if (method === "GET") {
+      const params = req.nextUrl.searchParams;
+      const status = params.get("status")?.trim();
+      const q = params.get("q")?.trim();
+      const filters: any[] = [];
+      if (status) filters.push(eq(messageThreadsTable.status, messageStatus(status)));
+      if (q) filters.push(or(ilike(messageThreadsTable.customerName, `%${q}%`), ilike(messageThreadsTable.phone, `%${q}%`), ilike(messageThreadsTable.subject, `%${q}%`)));
+      const rows = await db.query.messageThreadsTable.findMany({
+        where: filters.length ? and(...filters) : undefined,
+        orderBy: [desc(messageThreadsTable.lastMessageAt), desc(messageThreadsTable.id)],
+        limit: 100,
+      });
+      const ids = rows.map((row) => row.id);
+      const replies = ids.length
+        ? await db.query.messageRepliesTable.findMany({
+            where: inArray(messageRepliesTable.threadId, ids),
+            orderBy: [desc(messageRepliesTable.createdAt)],
+          })
+        : [];
+      return json(rows.map((row) => formatMessageThread(row, replies.filter((reply) => reply.threadId === row.id))));
+    }
+    if (method === "POST" && parts[2] && parts[3] === "replies") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const thread = await db.query.messageThreadsTable.findFirst({ where: eq(messageThreadsTable.id, id) });
+      if (!thread) return error("المحادثة غير موجودة", 404);
+      const b = await body(req);
+      const replyBody = String(b?.body ?? b?.message ?? "").trim().slice(0, 2000);
+      if (!replyBody) return error("اكتب الرد أولاً", 400);
+      const [reply] = await db.insert(messageRepliesTable).values({ threadId: id, senderType: "admin", staffId: auth.id, body: replyBody }).returning();
+      const [updated] = await db
+        .update(messageThreadsTable)
+        .set({ status: "replied", lastMessageAt: new Date(), updatedAt: new Date() })
+        .where(eq(messageThreadsTable.id, id))
+        .returning();
+      void logAdminActivity(req, "message_replied", "message_thread", id);
+      return json(formatMessageThread(updated, [reply]));
+    }
+    if (method === "PATCH" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const b = await body(req);
+      const [row] = await db
+        .update(messageThreadsTable)
+        .set({ status: messageStatus(b?.status), updatedAt: new Date() })
+        .where(eq(messageThreadsTable.id, id))
+        .returning();
+      if (!row) return error("المحادثة غير موجودة", 404);
+      return json(formatMessageThread(row));
+    }
+  }
+
+  if (section === "customer-activity" && method === "GET") {
+    const auth = await requirePermission(req, "customers");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    const params = req.nextUrl.searchParams;
+    const filters: any[] = [];
+    const action = params.get("action")?.trim();
+    const customerId = Number.parseInt(params.get("customerId") ?? "", 10);
+    const sessionId = params.get("sessionId")?.trim();
+    const from = params.get("from");
+    const to = params.get("to");
+    if (action) filters.push(eq(customerActivityLogsTable.action, action));
+    if (Number.isFinite(customerId) && customerId > 0) filters.push(eq(customerActivityLogsTable.customerId, customerId));
+    if (sessionId) filters.push(eq(customerActivityLogsTable.sessionId, sessionId));
+    if (from) filters.push(gte(customerActivityLogsTable.createdAt, new Date(`${from}T00:00:00`)));
+    if (to) filters.push(lte(customerActivityLogsTable.createdAt, new Date(`${to}T23:59:59.999`)));
+    const rows = await db.query.customerActivityLogsTable.findMany({
+      where: filters.length ? and(...filters) : undefined,
+      orderBy: [desc(customerActivityLogsTable.createdAt)],
+      limit: 200,
+    });
+    return json(rows.map((row) => ({
+      id: row.id,
+      customerId: row.customerId ?? null,
+      sessionId: row.sessionId ?? "",
+      phone: row.phone ?? "",
+      action: row.action,
+      entityType: row.entityType ?? "",
+      entityId: row.entityId ?? null,
+      entityLabel: row.entityLabel ?? "",
+      metadata: row.metadata ?? {},
+      createdAt: row.createdAt.toISOString(),
+    })));
+  }
+
+  if (section === "attendance") {
+    const auth = await requireAnyPermission(req, ["staff", "tasks"]);
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    const canManageAll = auth.role === "admin" || hasPermission(auth, "staff");
+    if (method === "GET") {
+      const params = req.nextUrl.searchParams;
+      const filters: any[] = [];
+      const staffId = Number.parseInt(params.get("staffId") ?? "", 10);
+      const from = params.get("from");
+      const to = params.get("to");
+      if (canManageAll && Number.isFinite(staffId) && staffId > 0) filters.push(eq(attendanceRecordsTable.staffId, staffId));
+      if (!canManageAll) filters.push(eq(attendanceRecordsTable.staffId, auth.id));
+      if (from) filters.push(gte(attendanceRecordsTable.checkInAt, new Date(`${from}T00:00:00`)));
+      if (to) filters.push(lte(attendanceRecordsTable.checkInAt, new Date(`${to}T23:59:59.999`)));
+      const [rows, staffRows] = await Promise.all([
+        db.query.attendanceRecordsTable.findMany({
+          where: filters.length ? and(...filters) : undefined,
+          orderBy: [desc(attendanceRecordsTable.checkInAt)],
+          limit: 200,
+        }),
+        db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
+      ]);
+      const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      return json({
+        data: rows.map((row) => formatAttendance(row, staffById.get(row.staffId))),
+        staff: staffRows.map(formatStaff),
+      });
+    }
+    if (method === "POST") {
+      const action = parts[2] || String((await body(req))?.action ?? "check-in");
+      if (action === "check-out") {
+        const open = await db.query.attendanceRecordsTable.findFirst({
+          where: and(eq(attendanceRecordsTable.staffId, auth.id), sql`${attendanceRecordsTable.checkOutAt} is null`),
+          orderBy: [desc(attendanceRecordsTable.checkInAt)],
+        });
+        if (!open) return error("لا يوجد حضور مفتوح لتسجيل الانصراف", 409);
+        const [row] = await db
+          .update(attendanceRecordsTable)
+          .set({ checkOutAt: new Date(), status: "out", updatedAt: new Date() })
+          .where(eq(attendanceRecordsTable.id, open.id))
+          .returning();
+        void logAdminActivity(req, "attendance_checkout", "attendance", row.id);
+        return json(formatAttendance(row));
+      }
+      const open = await db.query.attendanceRecordsTable.findFirst({
+        where: and(eq(attendanceRecordsTable.staffId, auth.id), sql`${attendanceRecordsTable.checkOutAt} is null`),
+      });
+      if (open) return error("لديك تسجيل حضور مفتوح بالفعل", 409);
+      const [row] = await db.insert(attendanceRecordsTable).values({ staffId: auth.id, status: "present" }).returning();
+      void logAdminActivity(req, "attendance_checkin", "attendance", row.id);
+      return json(formatAttendance(row), 201);
+    }
+    if (method === "PATCH" && parts[2]) {
+      if (!canManageAll) return error("ليس لديك صلاحية تعديل الحضور", 403);
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const b = await body(req);
+      const update: any = { updatedAt: new Date(), editedBy: auth.id };
+      if (b?.staffId !== undefined) update.staffId = Number(b.staffId);
+      if (b?.checkInAt !== undefined) update.checkInAt = safeDate(b.checkInAt);
+      if (b?.checkOutAt !== undefined) update.checkOutAt = safeDate(b.checkOutAt);
+      if (b?.status !== undefined) update.status = attendanceStatus(b.status);
+      if (b?.notes !== undefined) update.notes = nullableText(b.notes);
+      const [row] = await db.update(attendanceRecordsTable).set(update).where(eq(attendanceRecordsTable.id, id)).returning();
+      if (!row) return error("السجل غير موجود", 404);
+      void logAdminActivity(req, "attendance_updated", "attendance", id, { fields: Object.keys(update) });
+      return json(formatAttendance(row));
+    }
+  }
+
+  if (section === "qr-orders" && method === "GET") {
+    const auth = await requirePermission(req, "orders");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+    const limit = Math.min(Math.max(Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "40", 10) || 40, 1), 80);
+    const [orders, bookings, invoices] = await Promise.all([
+      db.query.ordersTable.findMany({ where: sql`${ordersTable.archivedAt} is null`, orderBy: [desc(ordersTable.createdAt)], limit }),
+      db.query.serviceOrdersTable.findMany({ where: sql`${serviceOrdersTable.archivedAt} is null`, orderBy: [desc(serviceOrdersTable.createdAt)], limit }),
+      db.query.salesInvoicesTable.findMany({ orderBy: [desc(salesInvoicesTable.createdAt)], limit }),
+    ]);
+    const rows = await Promise.all([
+      ...orders.map(async (order) => {
+        const qr = await ensureQrForEntity("order", order, req);
+        return { id: order.id, kind: "order", label: order.trackingCode, customerName: order.customerName, date: order.createdAt.toISOString(), qr };
+      }),
+      ...bookings.map(async (booking) => {
+        const qr = await ensureQrForEntity("service_order", booking, req);
+        return { id: booking.id, kind: "service_order", label: booking.trackingCode ?? `#${booking.id}`, customerName: booking.customerName, date: booking.createdAt.toISOString(), qr };
+      }),
+      ...invoices.map(async (invoice) => {
+        const qr = await ensureQrForEntity("invoice", invoice, req);
+        return { id: invoice.id, kind: "invoice", label: invoice.invoiceNo, customerName: invoice.customerName, date: invoice.createdAt.toISOString(), qr };
+      }),
+    ]);
+    rows.sort((a, b) => b.date.localeCompare(a.date));
+    return json(rows.slice(0, limit));
+  }
+
   if (section === "dashboard" && method === "GET") {
     const auth = await requirePermission(req, "dashboard");
     if (isResponse(auth)) return auth;
-    await ensurePaymentWorkflowColumns();
+    await Promise.all([ensurePaymentWorkflowColumns(), ensureAdminExtensionsTables()]);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
@@ -3446,6 +4196,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     lateCutoff.setDate(lateCutoff.getDate() - 3);
     const last30 = new Date();
     last30.setDate(last30.getDate() - 30);
+    const taskScope = auth.role === "admin" || hasPermission(auth, "staff")
+      ? sql`true`
+      : sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`;
     const [
       totalOrders,
       totalProducts,
@@ -3469,6 +4222,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       upcomingBookingsRaw,
       lateProductOrders,
       whatsappFailures,
+      todayTaskCount,
+      newMessageCount,
+      presentStaffCount,
+      recentCustomerActivity,
     ] = await Promise.all([
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
       db.select({ c: sql<number>`count(*)::int` }).from(productsTable),
@@ -3555,6 +4312,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         limit: 8,
       }),
       db.select({ c: sql<number>`count(*)::int` }).from(whatsappLogTable).where(sql`${whatsappLogTable.status} not in ('sent','success','ok')`),
+      db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(tasksTable)
+        .where(sql`${tasksTable.archivedAt} is null and ${tasksTable.status} not in ('completed','cancelled') and ${tasksTable.dueAt} >= ${today} and ${tasksTable.dueAt} < ${tomorrow} and ${taskScope}`),
+      db.select({ c: sql<number>`count(*)::int` }).from(messageThreadsTable).where(eq(messageThreadsTable.status, "new")),
+      db.select({ c: sql<number>`count(*)::int` }).from(attendanceRecordsTable).where(sql`${attendanceRecordsTable.checkOutAt} is null and ${attendanceRecordsTable.checkInAt} >= ${today}`),
+      db.query.customerActivityLogsTable.findMany({ orderBy: [desc(customerActivityLogsTable.createdAt)], limit: 6 }),
     ]);
     const services = await db.query.servicesTable.findMany();
     const serviceMap = new Map(services.map((s) => [s.id, s]));
@@ -3588,6 +4352,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       { key: "late-orders", label: "طلبات متأخرة", count: lateProductOrders.length + lateBookings },
       { key: "payment-followup", label: "مدفوع جزئياً أو غير مدفوع", count: (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0) },
       { key: "whatsapp-failed", label: "رسائل واتساب تحتاج مراجعة", count: whatsappFailures[0]?.c ?? 0 },
+      { key: "messages", label: "رسائل زبائن جديدة", count: newMessageCount[0]?.c ?? 0 },
+      { key: "tasks", label: "مهام اليوم", count: todayTaskCount[0]?.c ?? 0 },
     ].filter((item) => item.count > 0);
     return json({
       totalOrders: totalOrders[0].c,
@@ -3621,6 +4387,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         bookings: todayBookings,
         late: lateProductOrders.length + lateBookings,
         paymentFollowups: (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0),
+        internalTasks: todayTaskCount[0]?.c ?? 0,
+      },
+      adminOperations: {
+        todayTasks: todayTaskCount[0]?.c ?? 0,
+        newMessages: newMessageCount[0]?.c ?? 0,
+        todayBookings,
+        presentStaffNow: presentStaffCount[0]?.c ?? 0,
+        ordersNeedingFollowup: lateProductOrders.length + lateBookings + (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0),
+        recentCustomerActivity: recentCustomerActivity.map((row) => ({
+          id: row.id,
+          action: row.action,
+          entityLabel: row.entityLabel ?? "",
+          phone: row.phone ?? "",
+          createdAt: row.createdAt.toISOString(),
+        })),
       },
       alerts,
     });
@@ -4296,7 +5077,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
       if (!customer) return error("غير موجود", 404);
       const phoneVariants = iraqiPhoneVariants(customer.phone);
-      const [orders, serviceOrders] = await Promise.all([
+      const [orders, serviceOrders, activity] = await Promise.all([
         db.query.ordersTable.findMany({
           where: inArray(ordersTable.customerPhone, phoneVariants),
           orderBy: [desc(ordersTable.createdAt)],
@@ -4304,6 +5085,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.serviceOrdersTable.findMany({
           where: inArray(serviceOrdersTable.phone, phoneVariants),
           orderBy: [desc(serviceOrdersTable.createdAt)],
+        }),
+        db.query.customerActivityLogsTable.findMany({
+          where: or(eq(customerActivityLogsTable.customerId, id), inArray(customerActivityLogsTable.phone, phoneVariants)),
+          orderBy: [desc(customerActivityLogsTable.createdAt)],
+          limit: 20,
         }),
       ]);
       return json({
@@ -4327,6 +5113,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           trackingCode: s.trackingCode,
           status: s.status,
           createdAt: s.createdAt.toISOString(),
+        })),
+        activity: activity.map((row) => ({
+          id: row.id,
+          action: row.action,
+          entityLabel: row.entityLabel ?? "",
+          entityType: row.entityType ?? "",
+          createdAt: row.createdAt.toISOString(),
         })),
       });
     }
@@ -4420,6 +5213,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const phone = normalizeIraqiPhone(data.phone);
       if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const safeCustomerName = textFallback(data.customerName, formatIraqiPhone(phone), "زبون");
+      const conflict = await findBookingConflict({ serviceId: data.serviceId, eventDate: data.eventDate ?? "", customFields });
+      if (conflict) return error("يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.", 409);
       const order = await insertServiceOrderWithTracking({
         serviceId: data.serviceId,
         customerName: safeCustomerName,
@@ -4434,6 +5229,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         paymentStatus: payment.status,
         customFields,
       });
+      await ensureQrForEntity("service_order", order, req);
       await db.insert(serviceOrderStatusHistoryTable).values({
         serviceOrderId: order.id,
         status: order.status,
@@ -4557,6 +5353,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           update.eventLocation = primaryLocationFromDetails(service?.type, update.customFields) || prev.eventLocation;
         }
       }
+      if (update.eventDate !== undefined || update.customFields !== undefined) {
+        const conflict = await findBookingConflict({
+          serviceId: prev.serviceId,
+          eventDate: update.eventDate ?? prev.eventDate,
+          customFields: update.customFields ?? (prev.customFields as any),
+          excludeId: id,
+        });
+        if (conflict) return error("يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.", 409);
+      }
       if (b?.totalAmount !== undefined || b?.depositAmount !== undefined || b?.paymentStatus !== undefined) {
         if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
         const totalAmount = b?.totalAmount ?? prev.totalAmount;
@@ -4645,6 +5450,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               total: String(total),
             })
             .returning();
+          await ensureQrForEntity("order", order, req);
           await Promise.all(
             orderItems.map((it: any) =>
               db.insert(orderItemsTable).values({
@@ -5260,9 +6066,10 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     }
 
     const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, inv.id) });
+    const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
     void logAdminActivity(req, "sales_invoice_created", "sales_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
-    return json({ ...final, items: finalItems, invoice: final }, 201);
+    return json({ ...final, qr, items: finalItems, invoice: final ? { ...final, qr } : final }, 201);
   }
 
   if (method === "PUT" && id) {
@@ -6167,6 +6974,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "admin") ? ensureAdminProductsColumns() : undefined,
       (root === "products" || (!isAdminAuth && root === "admin")) ? ensureStoreCategoryColumns() : undefined,
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
+      (root === "messages" || root === "activity" || root === "qr" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
     ].filter(Boolean));
 
     const route =
@@ -6176,6 +6984,12 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
           ? await handlePublicSettings(req, parts)
           : root === "customer"
             ? await handleCustomer(req, parts)
+        : root === "messages"
+          ? await handlePublicMessages(req, parts)
+          : root === "activity"
+            ? await handleCustomerActivity(req, parts)
+            : root === "qr"
+              ? await handleQr(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
           : root === "coupons"

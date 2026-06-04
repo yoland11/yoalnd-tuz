@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   AlertTriangle, Bell, CalendarDays, CreditCard, ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
-  CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle,
+  CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle, UserCheck, Activity,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -26,7 +26,15 @@ type DashboardData = {
   topCrews: { crewName: string; count: number }[];
   upcomingBookings: { id: number; trackingCode: string | null; customerName: string; serviceName: string; eventDate: string | null; status: string }[];
   lateOrders: { id: number; trackingCode: string; customerName: string; status: string; createdAt: string }[];
-  todayTasks: { bookings: number; late: number; paymentFollowups: number };
+  todayTasks: { bookings: number; late: number; paymentFollowups: number; internalTasks?: number };
+  adminOperations?: {
+    todayTasks: number;
+    newMessages: number;
+    todayBookings: number;
+    presentStaffNow: number;
+    ordersNeedingFollowup: number;
+    recentCustomerActivity: { id: number; action: string; entityLabel: string; phone: string; createdAt: string }[];
+  };
   alerts: { key: string; label: string; count: number }[];
 };
 
@@ -117,6 +125,24 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {[
+          { label: "مهامي اليوم", value: data.adminOperations?.todayTasks ?? data.todayTasks?.internalTasks ?? 0, icon: Clock },
+          { label: "رسائل جديدة", value: data.adminOperations?.newMessages ?? 0, icon: MessageCircle },
+          { label: "حجوزات اليوم", value: data.adminOperations?.todayBookings ?? data.todayTasks?.bookings ?? 0, icon: CalendarDays },
+          { label: "حاضرون الآن", value: data.adminOperations?.presentStaffNow ?? 0, icon: UserCheck },
+          { label: "تحتاج متابعة", value: data.adminOperations?.ordersNeedingFollowup ?? 0, icon: Activity },
+        ].map((item) => (
+          <div key={item.label} className="bg-card rounded-xl border border-border/30 p-4">
+            <div className="flex items-center gap-2 text-primary mb-2">
+              <item.icon className="w-4 h-4" />
+              <span className="text-xs text-muted-foreground">{item.label}</span>
+            </div>
+            <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ")}</p>
+          </div>
+        ))}
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {cards.map(c => (
           <div key={c.label} className="bg-card rounded-xl border border-border/30 p-5">
@@ -179,6 +205,25 @@ export default function DashboardPage() {
             </ul>
           )}
         </div>
+      </div>
+
+      <div className="bg-card rounded-xl border border-border/30 p-5">
+        <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+          <Activity className="w-4 h-4 text-primary" /> آخر نشاط الزبائن
+        </h3>
+        {!data.adminOperations?.recentCustomerActivity?.length ? <EmptyState message="لا يوجد نشاط حديث" /> : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {data.adminOperations.recentCustomerActivity.map((item) => (
+              <div key={item.id} className="rounded-lg bg-background/60 border border-border/25 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-foreground">{item.entityLabel || item.action}</span>
+                  <span className="text-[11px] text-muted-foreground">{new Date(item.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">{item.phone || "زائر"}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

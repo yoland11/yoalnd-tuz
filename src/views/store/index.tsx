@@ -1,4 +1,4 @@
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useRoute } from "wouter";
 import { useListProducts, type Product } from "@workspace/api-client-react";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ShoppingCart, Search, Filter, Grid3X3, ChevronLeft } from "lucide-react";
 import { ProductColorDots } from "@/components/product-colors";
+import { logCustomerActivity } from "@/lib/customer-activity";
 
 type StoreCategory = {
   id: number;
@@ -76,6 +77,14 @@ export default function Store() {
     : categorySlug
       ? "اختر القسم الفرعي المناسب"
       : "اختر القسم الرئيسي للمتجر";
+
+  useEffect(() => {
+    logCustomerActivity({
+      action: categorySlug ? "category_open" : "visit",
+      entityType: subcategorySlug ? "subcategory" : categorySlug ? "category" : "store",
+      entityLabel: title,
+    });
+  }, [categorySlug, subcategorySlug, title]);
 
   return (
     <div className="container mx-auto px-4 py-8">

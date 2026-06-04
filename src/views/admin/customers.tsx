@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, X, ShoppingBag, Sparkles, Trophy } from "lucide-react";
+import { Activity, Search, X, ShoppingBag, Sparkles, Trophy } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -16,6 +16,18 @@ type Customer = {
 type CustomerDetail = Customer & {
   orders: { id: number; trackingCode: string; status: string; total: number; createdAt: string }[];
   serviceOrders: { id: number; trackingCode: string | null; status: string; createdAt: string }[];
+  activity?: { id: number; action: string; entityLabel: string; entityType: string; createdAt: string }[];
+};
+
+const ACTIVITY_LABELS: Record<string, string> = {
+  visit: "زيارة",
+  product_open: "فتح منتج",
+  category_open: "فتح قسم",
+  add_cart: "إضافة للسلة",
+  remove_cart: "إزالة من السلة",
+  checkout: "الدفع",
+  message_sent: "إرسال رسالة",
+  track_page: "فتح التتبع",
 };
 
 export default function CustomersPage() {
@@ -167,6 +179,23 @@ export default function CustomersPage() {
                             <p className="text-xs text-muted-foreground">{new Date(o.createdAt).toLocaleDateString("ar-IQ")}</p>
                           </div>
                           <p className="text-xs text-muted-foreground">{o.status}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2"><Activity className="w-4 h-4 text-primary" /> سجل النشاط</h4>
+                  {!detail.activity?.length ? <p className="text-xs text-muted-foreground">لا يوجد نشاط حديث</p> : (
+                    <div className="space-y-2">
+                      {detail.activity.slice(0, 8).map((item) => (
+                        <div key={item.id} className="flex items-center justify-between bg-background/40 rounded-lg p-3">
+                          <div>
+                            <p className="text-sm text-foreground">{item.entityLabel || item.entityType || ACTIVITY_LABELS[item.action] || item.action}</p>
+                            <p className="text-xs text-muted-foreground">{ACTIVITY_LABELS[item.action] || item.action}</p>
+                          </div>
+                          <p className="text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString("ar-IQ", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
                         </div>
                       ))}
                     </div>

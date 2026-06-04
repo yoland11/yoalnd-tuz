@@ -6,6 +6,7 @@ import {
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
+  CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -18,6 +19,7 @@ type NavGroup = { id: string; label: string; icon: any; items: NavEntry[] };
 const NAV: NavItem[] = [
   { href: "/admin/dashboard",      label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
   { href: "/admin/orders",         label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
+  { href: "/admin/calendar",       label: "تقويم الحجوزات",     icon: CalendarDays,   perm: "orders" },
   { href: "/admin/archive",        label: "الأرشيف",           icon: Archive,        perm: "orders" },
   { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
   { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
@@ -36,6 +38,11 @@ const NAV: NavItem[] = [
   { href: "/admin/crews",          label: "إدارة الكادر",       icon: UserCog,         perm: "staff" },
   { href: "/admin/staff",          label: "الموظفون",           icon: UserCog,         perm: "staff" },
   { href: "/admin/activity-log",   label: "سجل النشاط",         icon: History,         perm: "staff" },
+  { href: "/admin/tasks",          label: "المهام الداخلية",    icon: CheckSquare,     perm: "tasks" },
+  { href: "/admin/attendance",     label: "الحضور والانصراف",   icon: UserCheck,       perm: "tasks" },
+  { href: "/admin/messages",       label: "رسائل الزبائن",      icon: Inbox,           perm: "customers" },
+  { href: "/admin/customer-activity",label: "نشاط الزبائن",     icon: Activity,        perm: "customers" },
+  { href: "/admin/qr-orders",      label: "QR الطلبات",         icon: QrCode,          perm: "orders" },
   { href: "/admin/accounting",     label: "الحسابات",            icon: Wallet,          perm: "accounting" },
   { href: "/admin/whatsapp",       label: "الواتساب",           icon: MessageCircle,   perm: "whatsapp" },
   { href: "/admin/backup",         label: "النسخ الاحتياطي",     icon: Database,        perm: "backup", adminOnly: true },
@@ -65,6 +72,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingBag,
     items: [
       navItem("/admin/orders"),
+      navItem("/admin/calendar"),
+      navItem("/admin/qr-orders"),
       navItem("/admin/archive"),
       navItem("/admin/services"),
       navItem("/admin/products"),
@@ -102,6 +111,8 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/crews"),
       navItem("/admin/staff"),
       navItem("/admin/activity-log"),
+      navItem("/admin/tasks"),
+      navItem("/admin/attendance"),
     ],
   },
   {
@@ -119,6 +130,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Megaphone,
     items: [
       navItem("/admin/loyalty"),
+      navItem("/admin/messages"),
+      navItem("/admin/customer-activity"),
       navItem("/admin/whatsapp"),
     ],
   },
@@ -201,8 +214,15 @@ export function AdminLayout({
     enabled: hasPerm(me, "products"),
     staleTime: 60_000,
   });
+  const { data: messageCount } = useQuery({
+    queryKey: ["admin", "messages-count"],
+    queryFn: () => adminFetch<{ count: number }>("/admin/messages?count=1"),
+    enabled: hasPerm(me, "customers"),
+    staleTime: 30_000,
+  });
 
   const lowStockCount = inventoryAlertCount?.count ?? 0;
+  const newMessageCount = messageCount?.count ?? 0;
 
   return (
     <div className="min-h-screen bg-background flex" dir="rtl">
@@ -221,6 +241,7 @@ export function AdminLayout({
           me={me}
           location={location}
           lowStockCount={lowStockCount}
+          newMessageCount={newMessageCount}
           onLogout={onLogout}
           className="flex-1 overflow-y-auto pr-0.5 pl-1"
         />
@@ -243,6 +264,7 @@ export function AdminLayout({
           me={me}
           location={location}
           lowStockCount={lowStockCount}
+          newMessageCount={newMessageCount}
           onLogout={onLogout}
           className="max-h-[44vh] overflow-y-auto px-3 pb-3"
           compact
@@ -258,6 +280,7 @@ function AdminSidebarNav({
   me,
   location,
   lowStockCount,
+  newMessageCount,
   onLogout,
   className = "",
   compact = false,
@@ -266,6 +289,7 @@ function AdminSidebarNav({
   me: AdminMe;
   location: string;
   lowStockCount: number;
+  newMessageCount: number;
   onLogout: () => void;
   className?: string;
   compact?: boolean;
@@ -335,6 +359,7 @@ function AdminSidebarNav({
                       item={item}
                       location={location}
                       lowStockCount={lowStockCount}
+                      newMessageCount={newMessageCount}
                       onLogout={onLogout}
                       compact={compact}
                     />
@@ -353,12 +378,14 @@ function AdminSidebarEntry({
   item,
   location,
   lowStockCount,
+  newMessageCount,
   onLogout,
   compact,
 }: {
   item: NavEntry;
   location: string;
   lowStockCount: number;
+  newMessageCount: number;
   onLogout: () => void;
   compact: boolean;
 }) {
@@ -387,6 +414,11 @@ function AdminSidebarEntry({
       {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
         <span className="mr-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
           {lowStockCount.toLocaleString("ar-IQ")}
+        </span>
+      )}
+      {item.href === "/admin/messages" && newMessageCount > 0 && (
+        <span className="mr-auto rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+          {newMessageCount.toLocaleString("ar-IQ")}
         </span>
       )}
     </>

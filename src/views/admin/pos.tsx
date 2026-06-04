@@ -244,7 +244,7 @@ function openPrintWindow(
   invoiceNo: string,
   size: PrintSize,
   settings: any,
-  options: { showLogo?: boolean } = {},
+  options: { showLogo?: boolean; qrDataUrl?: string } = {},
 ) {
   const logo = options.showLogo === false ? "" : logoSrc(settings);
   const companyName = settings?.site_name ?? "مجموعة علي جان";
@@ -283,6 +283,8 @@ function openPrintWindow(
     .totals tr td:last-child { text-align: left; }
     .grand { font-size: 1.15em; font-weight: 700; }
     .footer { text-align: center; margin-top: 8px; padding-top: 6px; border-top: 1px dashed #999; font-size: 0.85em; color: #555; }
+    .qr { text-align: center; margin-top: 8px; }
+    .qr img { width: ${isNarrow ? "80px" : "110px"}; height: ${isNarrow ? "80px" : "110px"}; object-fit: contain; }
   </style></head><body>
   <div class="header">
     ${logo ? `<img src="${logo}" class="logo" />` : ""}
@@ -306,6 +308,7 @@ function openPrintWindow(
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${totals.remaining.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
   </table>
   ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${form.notes}</div>` : ""}
+  ${options.qrDataUrl ? `<div class="qr"><img src="${options.qrDataUrl}" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
   <div class="footer">شكراً لتعاملكم معنا</div>
   <script>window.onload = function() { window.print(); setTimeout(function(){ window.close(); }, 500); }</script>
   </body></html>`;
@@ -555,10 +558,11 @@ export default function POSPage() {
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),
       };
-      const res = await adminFetch<{ invoice: { invoiceNo: string } }>("/admin/sales-invoices", {
+      const res = await adminFetch<{ invoice: { invoiceNo: string; qr?: { dataUrl?: string } } }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
       const invoiceNo = res?.invoice?.invoiceNo;
+      const qrDataUrl = res?.invoice?.qr?.dataUrl;
       if (!invoiceNo) throw new Error("تم حفظ الفاتورة لكن لم يرجع رقمها من الخادم");
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
@@ -569,7 +573,7 @@ export default function POSPage() {
       if (printSize) {
         const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
         for (let index = 0; index < copies; index++) {
-          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false });
+          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl });
         }
       }
       setLastInvoiceNo(invoiceNo);

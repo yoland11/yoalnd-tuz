@@ -29,11 +29,11 @@ type Editing = {
 };
 
 const ROLE_PRESETS: Record<string, string[]> = {
-  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting"],
-  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp"],
-  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp"],
-  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting"],
-  staff: ["dashboard"],
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks"],
+  booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
+  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
+  accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
+  staff: ["dashboard", "tasks"],
 };
 
 const blank: Editing = { username: "", password: "", fullName: "", role: "booking_staff", permissions: ROLE_PRESETS.booking_staff, isActive: true };

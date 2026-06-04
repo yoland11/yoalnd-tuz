@@ -6,6 +6,7 @@ import { productsTable } from "./products";
 export const salesInvoicesTable = pgTable("sales_invoices", {
   id: serial("id").primaryKey(),
   invoiceNo: varchar("invoice_no", { length: 40 }).notNull().unique(),
+  qrToken: varchar("qr_token", { length: 80 }),
   date: date("date").notNull(),
   customerName: text("customer_name").notNull().default(""),
   customerPhone: varchar("customer_phone", { length: 30 }),

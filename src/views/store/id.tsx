@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useGetProduct, useListReviews, useCreateReview, useAddToCart, getGetCartQueryKey, getGetProductQueryKey, getListReviewsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import { ColorDot } from "@/components/product-colors";
 import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/colors";
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
+import { logCustomerActivity } from "@/lib/customer-activity";
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -47,6 +48,16 @@ export default function ProductDetail() {
     return metadata?.modelUrl ? String(metadata.modelUrl) : "";
   }, [imageMetadata]);
 
+  useEffect(() => {
+    if (!product) return;
+    logCustomerActivity({
+      action: "product_open",
+      entityType: "product",
+      entityId: product.id,
+      entityLabel: product.nameAr || product.name,
+    });
+  }, [product]);
+
   function handleAddToCart() {
     if (!product) return;
     if (colors.length > 0 && !selectedColor) return;
@@ -54,6 +65,13 @@ export default function ProductDetail() {
       { data: { productId: product.id, quantity, selectedColor: selectedColor?.name, selectedColorData: selectedColor ?? undefined } },
       {
         onSuccess: () => {
+          logCustomerActivity({
+            action: "add_cart",
+            entityType: "product",
+            entityId: product.id,
+            entityLabel: product.nameAr || product.name,
+            metadata: { quantity, color: selectedColor?.name ?? "" },
+          });
           queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() });
           setAddedToCart(true);
           setTimeout(() => setAddedToCart(false), 2000);

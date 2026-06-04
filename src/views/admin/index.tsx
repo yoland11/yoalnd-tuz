@@ -10,6 +10,8 @@ import AdminLogin from "./login";
 
 const DashboardPage = lazy(() => import("./dashboard"));
 const OrdersPage = lazy(() => import("./orders"));
+const CalendarPage = lazy(() => import("./calendar"));
+const QrOrdersPage = lazy(() => import("./qr-orders"));
 const ArchivePage = lazy(() => import("./archive"));
 const ServicesPage = lazy(() => import("./services"));
 const ProductsPage = lazy(() => import("./products"));
@@ -28,6 +30,10 @@ const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
+const TasksPage = lazy(() => import("./tasks"));
+const AttendancePage = lazy(() => import("./attendance"));
+const MessagesPage = lazy(() => import("./messages"));
+const CustomerActivityPage = lazy(() => import("./customer-activity"));
 const AccountingPage = lazy(() => import("./accounting"));
 const WhatsappPage = lazy(() => import("./whatsapp"));
 const BackupPage = lazy(() => import("./backup"));
@@ -96,6 +102,8 @@ export default function Admin() {
         <Switch>
           <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
           <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
+          <Route path="/admin/calendar"  >{() => <Guard me={me} perm="orders"   ><CalendarPage   /></Guard>}</Route>
+          <Route path="/admin/qr-orders" >{() => <Guard me={me} perm="orders"   ><QrOrdersPage   /></Guard>}</Route>
           <Route path="/admin/archive"   >{() => <Guard me={me} perm="orders"   ><ArchivePage    /></Guard>}</Route>
           <Route path="/admin/services"  >{() => <Guard me={me} perm="services" ><ServicesPage   /></Guard>}</Route>
           <Route path="/admin/products"  >{() => <Guard me={me} perm="products"   ><ProductsPage   /></Guard>}</Route>
@@ -114,6 +122,10 @@ export default function Admin() {
           <Route path="/admin/crews"     >{() => <Guard me={me} perm="staff"    ><CrewsPage      /></Guard>}</Route>
           <Route path="/admin/staff"     >{() => <Guard me={me} perm="staff"    ><StaffPage      /></Guard>}</Route>
           <Route path="/admin/activity-log">{() => <Guard me={me} perm="staff"  ><ActivityLogPage /></Guard>}</Route>
+          <Route path="/admin/tasks"     >{() => <Guard me={me} perm="tasks"    ><TasksPage      /></Guard>}</Route>
+          <Route path="/admin/attendance">{() => <Guard me={me} perm="tasks"    ><AttendancePage /></Guard>}</Route>
+          <Route path="/admin/messages"  >{() => <Guard me={me} perm="customers"><MessagesPage   /></Guard>}</Route>
+          <Route path="/admin/customer-activity">{() => <Guard me={me} perm="customers"><CustomerActivityPage /></Guard>}</Route>
           <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
           <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
           <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
