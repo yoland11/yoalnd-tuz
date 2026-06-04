@@ -24,6 +24,7 @@ type ProductForm = {
   description?: string; descriptionAr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
+  categoryId?: number | null; subcategoryId?: number | null;
   category?: string; subcategory?: string;
   images: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
@@ -88,6 +89,8 @@ export default function ProductsPage() {
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
       barcode: form.barcode?.trim() ?? "",
+      categoryId: form.categoryId ?? null,
+      subcategoryId: form.subcategoryId ?? null,
       category: form.category ?? "",
       subcategory: form.subcategory ?? "",
       images: form.images ?? [],
@@ -243,6 +246,7 @@ export default function ProductsPage() {
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                           costPrice: p.costPrice ? String(p.costPrice) : "0",
                           stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
+                          categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
                           images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
                           isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
@@ -277,9 +281,14 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const { data: publicSettings } = usePublicSettings();
+  const selectedParent = form.categoryId
+    ? parentCats.find(p => p.id === form.categoryId)
+    : parentCats.find(p => p.slug === form.category);
+  const selectedSubcategory = form.subcategoryId
+    ? subCats.find(s => s.id === form.subcategoryId)
+    : subCats.find(s => s.slug === form.subcategory);
   const filteredSubs = subCats.filter(s => {
-    const parent = parentCats.find(p => p.slug === form.category);
-    return parent ? s.parentId === parent.id : true;
+    return selectedParent ? s.parentId === selectedParent.id : true;
   });
 
   function addImages(results: ImageEditResult[]) {
@@ -362,18 +371,41 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
-            <select value={form.category ?? ""} onChange={e => onChange({ ...form, category: e.target.value, subcategory: "" })}
+            <select
+              value={selectedParent ? String(selectedParent.id) : ""}
+              onChange={e => {
+                const next = parentCats.find(c => c.id === Number(e.target.value));
+                onChange({
+                  ...form,
+                  categoryId: next?.id ?? null,
+                  category: next?.slug ?? "",
+                  subcategoryId: null,
+                  subcategory: "",
+                });
+              }}
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
               <option value="">—</option>
-              {parentCats.map(c => <option key={c.id} value={c.slug}>{c.nameAr}</option>)}
+              {parentCats.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الفرعي</label>
-            <select value={form.subcategory ?? ""} onChange={e => onChange({ ...form, subcategory: e.target.value })}
+            <select
+              value={selectedSubcategory ? String(selectedSubcategory.id) : ""}
+              onChange={e => {
+                const next = subCats.find(c => c.id === Number(e.target.value));
+                const parent = next?.parentId ? parentCats.find(c => c.id === next.parentId) : selectedParent;
+                onChange({
+                  ...form,
+                  categoryId: parent?.id ?? form.categoryId ?? null,
+                  category: parent?.slug ?? form.category ?? "",
+                  subcategoryId: next?.id ?? null,
+                  subcategory: next?.slug ?? "",
+                });
+              }}
               className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
               <option value="">—</option>
-              {filteredSubs.map(c => <option key={c.id} value={c.slug}>{c.nameAr}</option>)}
+              {filteredSubs.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
             </select>
           </div>
         </div>

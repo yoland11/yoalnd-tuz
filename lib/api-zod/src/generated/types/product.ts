@@ -17,6 +17,14 @@ export interface Product {
   /** @nullable */
   barcode?: string | null;
   /** @nullable */
+  categoryId?: number | null;
+  /** @nullable */
+  subcategoryId?: number | null;
+  /** @nullable */
+  categoryName?: string | null;
+  /** @nullable */
+  subcategoryName?: string | null;
+  /** @nullable */
   category?: string | null;
   /** @nullable */
   subcategory?: string | null;

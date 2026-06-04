@@ -167,6 +167,13 @@ let productColorColumnsPromise: Promise<void> | null = null;
 let customerRewardsPromise: Promise<void> | null = null;
 let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
+let storeCategoryColumnsPromise: Promise<void> | null = null;
+const storeCategoriesCache = new Map<string, { expiresAt: number; payload: any[] }>();
+const STORE_CATEGORIES_TTL_MS = 60_000;
+
+function clearStoreCategoriesCache() {
+  storeCategoriesCache.clear();
+}
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
@@ -314,6 +321,11 @@ function slugFallback(value: unknown, fallback = "item"): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
   return normalized || fallback;
+}
+
+function numberId(value: unknown): number | null {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function normalizeProductBarcode(value: unknown): string {
@@ -625,6 +637,10 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     minStock: Number(p.minStock ?? p.min_stock ?? 0),
     barcode: p.barcode ?? null,
     costPrice: Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
+    categoryId: p.categoryId ?? p.category_id ?? null,
+    subcategoryId: p.subcategoryId ?? p.subcategory_id ?? null,
+    categoryName: p.categoryName ?? p.category_name ?? null,
+    subcategoryName: p.subcategoryName ?? p.subcategory_name ?? null,
     category: p.category ?? null,
     images: p.images ?? [],
     imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
@@ -636,6 +652,23 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     rating: avgRating ?? null,
     reviewCount: reviewCount ?? 0,
     createdAt: p.createdAt.toISOString(),
+  };
+}
+
+function formatCategory(row: any, productCount = 0) {
+  return {
+    id: row.id,
+    name: row.name,
+    nameAr: row.nameAr ?? row.name_ar,
+    slug: row.slug,
+    parentId: row.parentId ?? row.parent_id ?? null,
+    imageUrl: row.imageUrl ?? row.image_url ?? null,
+    imageMetadata: row.imageMetadata ?? row.image_metadata ?? {},
+    sortOrder: row.sortOrder ?? row.sort_order ?? 0,
+    isActive: row.isActive ?? row.is_active ?? true,
+    productCount,
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updated_at?.toISOString?.() ?? null,
   };
 }
 
@@ -1116,6 +1149,39 @@ async function ensureAdminProductsColumns(): Promise<void> {
     `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
   }
   await adminProductsColumnsPromise;
+}
+
+async function ensureStoreCategoryColumns(): Promise<void> {
+  if (!storeCategoryColumnsPromise) {
+    storeCategoryColumnsPromise = db.execute(sql`
+      alter table "categories" add column if not exists "image_url" text;
+      alter table "categories" add column if not exists "image_metadata" jsonb not null default '{}'::jsonb;
+      alter table "categories" add column if not exists "updated_at" timestamp not null default now();
+      alter table "products" add column if not exists "category_id" integer references "categories" ("id");
+      alter table "products" add column if not exists "subcategory_id" integer references "categories" ("id");
+      update "products" p
+      set "category_id" = c."id"
+      from "categories" c
+      where p."category_id" is null
+        and p."category" is not null
+        and p."category" = c."slug"
+        and c."parent_id" is null;
+      update "products" p
+      set "subcategory_id" = c."id"
+      from "categories" c
+      where p."subcategory_id" is null
+        and p."subcategory" is not null
+        and p."subcategory" = c."slug"
+        and c."parent_id" is not null;
+      create index if not exists "categories_parent_active_sort_idx" on "categories" ("parent_id", "is_active", "sort_order");
+      create index if not exists "products_category_id_active_idx" on "products" ("category_id", "is_active");
+      create index if not exists "products_subcategory_id_active_idx" on "products" ("subcategory_id", "is_active");
+    `).then(() => undefined).catch((err) => {
+      storeCategoryColumnsPromise = null;
+      throw err;
+    });
+  }
+  await storeCategoryColumnsPromise;
 }
 
 async function ensureCouponsTables(): Promise<void> {
@@ -1865,13 +1931,58 @@ async function handleAuth(req: NextRequest, parts: string[]) {
 async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureAdminProductsColumns();
+  await ensureStoreCategoryColumns();
 
   if (method === "GET" && parts[1] === "featured") {
     const products = await db.query.productsTable.findMany({
-      where: eq(productsTable.isFeatured, true),
+      where: and(eq(productsTable.isFeatured, true), eq(productsTable.isActive, true)),
       limit: 8,
     });
     return json(products.map((p) => formatProduct(p)));
+  }
+
+  if (method === "GET" && parts[1] === "store-categories") {
+    const parentParam = req.nextUrl.searchParams.get("parent")?.trim();
+    const cacheKey = parentParam || "__root__";
+    const cached = storeCategoriesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      const cachedRes = json(cached.payload);
+      cachedRes.headers.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
+      return cachedRes;
+    }
+    const categories = await db.query.categoriesTable.findMany({
+      where: eq(categoriesTable.isActive, true),
+      orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.id)],
+    }) as any[];
+    const products = await db
+      .select({
+        id: productsTable.id,
+        categoryId: productsTable.categoryId,
+        subcategoryId: productsTable.subcategoryId,
+        category: productsTable.category,
+        subcategory: productsTable.subcategory,
+      })
+      .from(productsTable)
+      .where(eq(productsTable.isActive, true)) as any[];
+    const parent = parentParam
+      ? categories.find((item) => String(item.id) === parentParam || item.slug === parentParam)
+      : null;
+    if (parentParam && !parent) {
+      storeCategoriesCache.set(cacheKey, { expiresAt: Date.now() + STORE_CATEGORIES_TTL_MS, payload: [] });
+      return json([]);
+    }
+    const rows = categories.filter((item) => parent ? item.parentId === parent.id : !item.parentId);
+    const countFor = (category: any) => products.filter((product) => {
+      if (category.parentId) {
+        return product.subcategoryId === category.id || product.subcategory === category.slug;
+      }
+      return product.categoryId === category.id || product.category === category.slug;
+    }).length;
+    const payload = rows.map((category) => formatCategory(category, countFor(category)));
+    storeCategoriesCache.set(cacheKey, { expiresAt: Date.now() + STORE_CATEGORIES_TTL_MS, payload });
+    const res = json(payload);
+    res.headers.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
+    return res;
   }
 
   if (method === "GET" && parts[1] === "categories") {
@@ -1885,12 +1996,16 @@ async function handleProducts(req: NextRequest, parts: string[]) {
 
   if (method === "GET" && parts.length === 1) {
     const params = ListProductsQueryParams.safeParse(query(req));
-    const { category, search, inStock } = params.success ? params.data : {};
+    const { category, subcategory, categoryId, subcategoryId, search, inStock } = params.success ? params.data : {};
     const limit = Math.min(Math.max(Number.parseInt(req.nextUrl.searchParams.get("limit") ?? "80", 10) || 80, 1), 120);
     const offset = Math.max(Number.parseInt(req.nextUrl.searchParams.get("offset") ?? "0", 10) || 0, 0);
     const products = await db.query.productsTable.findMany({
       where: and(
-        category ? eq(productsTable.category, category) : undefined,
+        eq(productsTable.isActive, true),
+        categoryId ? eq(productsTable.categoryId, categoryId) : undefined,
+        subcategoryId ? eq(productsTable.subcategoryId, subcategoryId) : undefined,
+        category ? or(eq(productsTable.category, category), sql`${productsTable.categoryId} in (select id from categories where slug = ${category})`) : undefined,
+        subcategory ? or(eq(productsTable.subcategory, subcategory), sql`${productsTable.subcategoryId} in (select id from categories where slug = ${subcategory})`) : undefined,
         search ? ilike(productsTable.nameAr, `%${search}%`) : undefined,
         inStock ? sql`${productsTable.stock} > 0` : undefined,
       ),
@@ -1926,6 +2041,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const productName = textFallback(data.name, data.nameAr, `product-${Date.now().toString(36)}`);
     const requestedBarcode = normalizeProductBarcode(data.barcode);
     if (requestedBarcode && await productBarcodeExists(requestedBarcode)) return error("الباركود مستخدم مسبقاً", 409);
+    const productCategories = await resolveProductCategories(data);
     let [product] = await db
       .insert(productsTable)
       .values({
@@ -1939,12 +2055,14 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         stock: Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
         minStock: Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0,
         barcode: requestedBarcode || null,
-        category: nullableText(data.category),
+        categoryId: productCategories.categoryId,
+        subcategoryId: productCategories.subcategoryId,
+        category: productCategories.category,
         images: data.images ?? [],
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
-        subcategory: nullableText(data.subcategory),
+        subcategory: productCategories.subcategory,
         isActive: data.isActive ?? true,
         sortOrder: data.sortOrder ?? 0,
       })
@@ -1955,6 +2073,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       product = updated ?? product;
     }
     void logAdminActivity(req, "product_created", "product", product.id, { name: product.nameAr });
+    clearStoreCategoriesCache();
     return json(formatProduct(product), 201);
   }
 
@@ -1983,6 +2102,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "stock",
       "minStock",
       "barcode",
+      "categoryId",
+      "subcategoryId",
     ]) {
       if (data[k] !== undefined) {
         if ((k === "name" || k === "nameAr") && !String(data[k] ?? "").trim()) continue;
@@ -1990,6 +2111,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           const barcode = normalizeProductBarcode(data[k]);
           if (barcode && await productBarcodeExists(barcode, id)) return error("الباركود مستخدم مسبقاً", 409);
           update[k] = barcode || null;
+        } else if (k === "categoryId" || k === "subcategoryId") {
+          update[k] = numberId(data[k]);
         } else {
           update[k] = k === "colors"
             ? normalizeColors(data[k])
@@ -1999,12 +2122,20 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         }
       }
     }
+    if (data.category !== undefined || data.subcategory !== undefined || data.categoryId !== undefined || data.subcategoryId !== undefined) {
+      const productCategories = await resolveProductCategories(data);
+      update.categoryId = productCategories.categoryId;
+      update.subcategoryId = productCategories.subcategoryId;
+      update.category = productCategories.category;
+      update.subcategory = productCategories.subcategory;
+    }
     if (data.price !== undefined) update.price = data.price.toString();
     if (data.originalPrice !== undefined) update.originalPrice = money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null;
     if (data.costPrice !== undefined) update.costPrice = String(money(data.costPrice));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
     void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
+    clearStoreCategoriesCache();
     return json(formatProduct(product));
   }
 
@@ -2015,10 +2146,40 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (!id) return error("معرف غير صحيح", 400);
     await db.delete(productsTable).where(eq(productsTable.id, id));
     void logAdminActivity(req, "product_deleted", "product", id);
+    clearStoreCategoriesCache();
     return json({ message: "تم حذف المنتج" });
   }
 
   return null;
+}
+
+async function resolveProductCategories(data: any) {
+  const requestedCategoryId = numberId(data?.categoryId);
+  const requestedSubcategoryId = numberId(data?.subcategoryId);
+  const categorySlug = nullableText(data?.category);
+  const subcategorySlug = nullableText(data?.subcategory);
+
+  const category = requestedCategoryId
+    ? await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, requestedCategoryId) })
+    : categorySlug
+      ? await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.slug, categorySlug) })
+      : null;
+  const subcategory = requestedSubcategoryId
+    ? await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, requestedSubcategoryId) })
+    : subcategorySlug
+      ? await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.slug, subcategorySlug) })
+      : null;
+  const parentFromSubcategory = subcategory?.parentId
+    ? await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, subcategory.parentId) })
+    : null;
+  const finalCategory = category ?? parentFromSubcategory ?? null;
+  const finalSubcategory = subcategory?.parentId ? subcategory : null;
+  return {
+    categoryId: finalCategory?.id ?? null,
+    subcategoryId: finalSubcategory?.id ?? null,
+    category: finalCategory?.slug ?? categorySlug,
+    subcategory: finalSubcategory?.slug ?? subcategorySlug,
+  };
 }
 
 async function handleCoupons(req: NextRequest, parts: string[]) {
@@ -3468,25 +3629,55 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "categories") {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
+    await ensureStoreCategoryColumns();
     if (method === "GET") {
-      const rows = await db.query.categoriesTable.findMany({
-        orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.id)],
-      });
-      const catRes = json(rows);
+      const [rows, products] = await Promise.all([
+        db.query.categoriesTable.findMany({
+          orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.id)],
+        }) as Promise<any[]>,
+        db
+          .select({
+            categoryId: productsTable.categoryId,
+            subcategoryId: productsTable.subcategoryId,
+            category: productsTable.category,
+            subcategory: productsTable.subcategory,
+          })
+          .from(productsTable) as Promise<any[]>,
+      ]);
+      const countFor = (category: any) => products.filter((product) => {
+        if ((category.parentId ?? category.parent_id) != null) {
+          return product.subcategoryId === category.id || product.subcategory === category.slug;
+        }
+        return product.categoryId === category.id || product.category === category.slug;
+      }).length;
+      const payload = rows.map((row) => formatCategory(row, countFor(row)));
+      const catRes = json(payload);
       catRes.headers.set("Cache-Control", "private, max-age=120, stale-while-revalidate=300");
       return catRes;
     }
     if (method === "POST") {
-      const { name, nameAr, slug, parentId, sortOrder, isActive } = await body(req);
+      const { name, nameAr, slug, parentId, sortOrder, isActive, imageUrl, imageMetadata } = await body(req);
       const categoryNameAr = textFallback(nameAr, name, "تصنيف جديد");
       const categoryName = textFallback(name, nameAr, `category-${Date.now().toString(36)}`);
       const categorySlug = textFallback(slug, `${slugFallback(categoryNameAr || categoryName, "category")}-${Date.now().toString(36)}`);
+      const parentValue = numberId(parentId);
       try {
         const [row] = await db
           .insert(categoriesTable)
-          .values({ name: categoryName, nameAr: categoryNameAr, slug: categorySlug, parentId: parentId ?? null, sortOrder: sortOrder ?? 0, isActive: isActive ?? true })
+          .values({
+            name: categoryName,
+            nameAr: categoryNameAr,
+            slug: categorySlug,
+            parentId: parentValue,
+            sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : 0,
+            isActive: isActive ?? true,
+            imageUrl: cleanPublicUrl(imageUrl ?? "") || null,
+            imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
+          })
           .returning();
-        return json(row, 201);
+        void logAdminActivity(req, "category_created", "category", row.id, { name: row.nameAr, parentId: row.parentId });
+        clearStoreCategoriesCache();
+        return json(formatCategory(row), 201);
       } catch (err: any) {
         if (err?.code === "23505") return error("السلاج مكرر", 409);
         throw err;
@@ -3495,24 +3686,67 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "PATCH" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const current = await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, id) }) as any;
+      if (!current) return error("غير موجود", 404);
       const b = await body(req);
-      const update: any = {};
-      for (const k of ["name", "nameAr", "slug", "parentId", "sortOrder", "isActive"]) {
+      const update: any = { updatedAt: new Date() };
+      for (const k of ["name", "nameAr", "slug", "sortOrder", "isActive"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
+      if (b?.parentId !== undefined) {
+        const parentValue = numberId(b.parentId);
+        update.parentId = parentValue && parentValue !== id ? parentValue : null;
+      }
+      if (b?.imageUrl !== undefined) update.imageUrl = cleanPublicUrl(b.imageUrl) || null;
+      if (b?.imageMetadata !== undefined) update.imageMetadata = b.imageMetadata && typeof b.imageMetadata === "object" ? b.imageMetadata : {};
       if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
       if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
       if (update.slug !== undefined && !String(update.slug ?? "").trim()) {
-        update.slug = `${slugFallback(b?.nameAr ?? b?.name, "category")}-${Date.now().toString(36)}`;
+        update.slug = `${slugFallback(b?.nameAr ?? b?.name ?? current.nameAr ?? current.name, "category")}-${Date.now().toString(36)}`;
       }
-      const [row] = await db.update(categoriesTable).set(update).where(eq(categoriesTable.id, id)).returning();
-      if (!row) return error("غير موجود", 404);
-      return json(row);
+      if (update.sortOrder !== undefined) update.sortOrder = Number.isFinite(Number(update.sortOrder)) ? Number(update.sortOrder) : 0;
+      try {
+        const [row] = await db.update(categoriesTable).set(update).where(eq(categoriesTable.id, id)).returning();
+        if (!row) return error("غير موجود", 404);
+        if (update.slug !== undefined && update.slug !== current.slug) {
+          const legacyColumn = row.parentId ? productsTable.subcategory : productsTable.category;
+          const idColumn = row.parentId ? productsTable.subcategoryId : productsTable.categoryId;
+          await db.update(productsTable).set({ [row.parentId ? "subcategory" : "category"]: row.slug }).where(or(eq(idColumn, row.id), eq(legacyColumn, current.slug)));
+        }
+        void logAdminActivity(req, "category_updated", "category", row.id, { fields: Object.keys(update) });
+        clearStoreCategoriesCache();
+        return json(formatCategory(row));
+      } catch (err: any) {
+        if (err?.code === "23505") return error("السلاج مكرر", 409);
+        throw err;
+      }
     }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const current = await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, id) }) as any;
+      if (!current) return error("غير موجود", 404);
+      const [children, productUsage] = await Promise.all([
+        db.select({ c: sql<number>`count(*)::int` }).from(categoriesTable).where(eq(categoriesTable.parentId, id)),
+        db
+          .select({ c: sql<number>`count(*)::int` })
+          .from(productsTable)
+          .where(or(
+            eq(productsTable.categoryId, id),
+            eq(productsTable.subcategoryId, id),
+            eq(productsTable.category, current.slug),
+            eq(productsTable.subcategory, current.slug),
+          )),
+      ]);
+      if ((children[0]?.c ?? 0) > 0 || (productUsage[0]?.c ?? 0) > 0) {
+        await db.update(categoriesTable).set({ isActive: false, updatedAt: new Date() }).where(eq(categoriesTable.id, id));
+        void logAdminActivity(req, "category_hidden", "category", id, { reason: "in_use" });
+        clearStoreCategoriesCache();
+        return json({ message: "تم إخفاء القسم لأنه مرتبط ببيانات موجودة" });
+      }
       await db.delete(categoriesTable).where(eq(categoriesTable.id, id));
+      void logAdminActivity(req, "category_deleted", "category", id);
+      clearStoreCategoriesCache();
       return json({ message: "تم الحذف" });
     }
   }
@@ -5931,6 +6165,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         ? Promise.all([ensureTrackingColumns(), ensurePaymentWorkflowColumns(), ensureArchiveColumns(), ensurePerformanceIndexes()]) : undefined,
       (root === "admin") ? ensureStaffActivityColumn() : undefined,
       (root === "admin") ? ensureAdminProductsColumns() : undefined,
+      (root === "products" || (!isAdminAuth && root === "admin")) ? ensureStoreCategoryColumns() : undefined,
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
     ].filter(Boolean));
 

@@ -63,6 +63,14 @@ export interface Product {
   /** @nullable */
   barcode?: string | null;
   /** @nullable */
+  categoryId?: number | null;
+  /** @nullable */
+  subcategoryId?: number | null;
+  /** @nullable */
+  categoryName?: string | null;
+  /** @nullable */
+  subcategoryName?: string | null;
+  /** @nullable */
   category?: string | null;
   /** @nullable */
   subcategory?: string | null;
@@ -89,6 +97,8 @@ export interface ProductInput {
   stock?: number;
   minStock?: number;
   barcode?: string;
+  categoryId?: number | null;
+  subcategoryId?: number | null;
   category?: string;
   subcategory?: string;
   images?: string[];
@@ -110,6 +120,8 @@ export interface ProductUpdate {
   stock?: number;
   minStock?: number;
   barcode?: string;
+  categoryId?: number | null;
+  subcategoryId?: number | null;
   category?: string;
   subcategory?: string;
   images?: string[];
@@ -431,6 +443,9 @@ export type CartSessionIdParameter = string;
 
 export type ListProductsParams = {
   category?: string;
+  subcategory?: string;
+  categoryId?: number;
+  subcategoryId?: number;
   search?: string;
   inStock?: boolean;
   limit?: number;

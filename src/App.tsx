@@ -67,6 +67,8 @@ function Router() {
             <Route path="/services" component={Services} />
             <Route path="/services/:id" component={ServiceRequest} />
             <Route path="/store" component={Store} />
+            <Route path="/store/category/:categorySlug/:subcategorySlug" component={Store} />
+            <Route path="/store/category/:categorySlug" component={Store} />
             <Route path="/store/:id" component={ProductDetail} />
             <Route path="/cart" component={Cart} />
             <Route path="/checkout" component={Checkout} />

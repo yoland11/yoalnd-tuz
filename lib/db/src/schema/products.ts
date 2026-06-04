@@ -1,6 +1,7 @@
 import { pgTable, serial, text, numeric, integer, boolean, timestamp, varchar, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+import { categoriesTable } from "./categories";
 
 export const productsTable = pgTable("products", {
   id: serial("id").primaryKey(),
@@ -14,6 +15,8 @@ export const productsTable = pgTable("products", {
   stock: integer("stock").notNull().default(0),
   minStock: integer("min_stock").notNull().default(0),
   barcode: varchar("barcode", { length: 100 }),
+  categoryId: integer("category_id").references(() => categoriesTable.id),
+  subcategoryId: integer("subcategory_id").references(() => categoriesTable.id),
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
   images: jsonb("images").$type<string[]>().notNull().default([]),

@@ -11,6 +11,8 @@ export interface ProductInput {
   stock?: number;
   minStock?: number;
   barcode?: string;
+  categoryId?: number | null;
+  subcategoryId?: number | null;
   category?: string;
   subcategory?: string;
   images?: string[];
