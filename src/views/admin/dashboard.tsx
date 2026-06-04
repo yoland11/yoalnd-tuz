@@ -30,6 +30,7 @@ type DashboardData = {
   adminOperations?: {
     todayTasks: number;
     newMessages: number;
+    newNotifications: number;
     todayBookings: number;
     presentStaffNow: number;
     ordersNeedingFollowup: number;
@@ -125,10 +126,11 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         {[
           { label: "مهامي اليوم", value: data.adminOperations?.todayTasks ?? data.todayTasks?.internalTasks ?? 0, icon: Clock },
           { label: "رسائل جديدة", value: data.adminOperations?.newMessages ?? 0, icon: MessageCircle },
+          { label: "إشعارات جديدة", value: data.adminOperations?.newNotifications ?? 0, icon: Bell },
           { label: "حجوزات اليوم", value: data.adminOperations?.todayBookings ?? data.todayTasks?.bookings ?? 0, icon: CalendarDays },
           { label: "حاضرون الآن", value: data.adminOperations?.presentStaffNow ?? 0, icon: UserCheck },
           { label: "تحتاج متابعة", value: data.adminOperations?.ordersNeedingFollowup ?? 0, icon: Activity },

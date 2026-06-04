@@ -10,6 +10,7 @@ import {
 } from "node:crypto";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
+import webpush from "web-push";
 import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
@@ -32,6 +33,9 @@ import {
   loyaltyPointsTable,
   messageRepliesTable,
   messageThreadsTable,
+  notificationSettingsTable,
+  notificationSubscriptionsTable,
+  notificationsTable,
   orderItemsTable,
   orderReviewsTable,
   ordersTable,
@@ -742,6 +746,176 @@ async function ensureQrForEntity(entityType: "order" | "service_order" | "invoic
   const scanUrl = `${baseUrlFromReq(req)}/api/qr/${token}`;
   const dataUrl = await QRCode.toDataURL(scanUrl, { margin: 1, width: 240 });
   return { token, targetUrl, scanUrl, dataUrl };
+}
+
+let webPushConfigured = false;
+
+function boolFromDb(value: unknown, fallback = true) {
+  if (value === null || value === undefined) return fallback;
+  return Number(value) !== 0 && value !== false;
+}
+
+function notificationSettingsToJson(row: any = {}) {
+  return {
+    pushEnabled: boolFromDb(row.pushEnabled ?? row.push_enabled, true),
+    ordersEnabled: boolFromDb(row.ordersEnabled ?? row.orders_enabled, true),
+    messagesEnabled: boolFromDb(row.messagesEnabled ?? row.messages_enabled, true),
+    tasksEnabled: boolFromDb(row.tasksEnabled ?? row.tasks_enabled, true),
+    inventoryEnabled: boolFromDb(row.inventoryEnabled ?? row.inventory_enabled, true),
+    customerEnabled: boolFromDb(row.customerEnabled ?? row.customer_enabled, true),
+  };
+}
+
+async function getGlobalNotificationSettings() {
+  await ensureAdminExtensionsTables();
+  const row = await db.query.notificationSettingsTable.findFirst({
+    where: and(eq(notificationSettingsTable.ownerType, "global"), sql`${notificationSettingsTable.ownerId} is null`),
+  });
+  return notificationSettingsToJson(row);
+}
+
+function notificationTypeEnabled(settings: ReturnType<typeof notificationSettingsToJson>, type: string, audienceType: string) {
+  if (!settings.pushEnabled) return false;
+  if (audienceType === "customer" && !settings.customerEnabled) return false;
+  if (type.includes("order") || type.includes("booking")) return settings.ordersEnabled;
+  if (type.includes("message")) return settings.messagesEnabled;
+  if (type.includes("task")) return settings.tasksEnabled;
+  if (type.includes("inventory")) return settings.inventoryEnabled;
+  return true;
+}
+
+function getVapidPublicKey() {
+  return process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
+}
+
+function configureWebPush() {
+  const publicKey = getVapidPublicKey();
+  const privateKey = process.env.VAPID_PRIVATE_KEY || "";
+  if (!publicKey || !privateKey) return false;
+  if (!webPushConfigured) {
+    const subject = process.env.VAPID_SUBJECT || process.env.APP_BASE_URL || "mailto:admin@ajn.local";
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    webPushConfigured = true;
+  }
+  return true;
+}
+
+async function sendPushToSubscriptions(subscriptions: any[], payload: Record<string, unknown>) {
+  if (!configureWebPush() || subscriptions.length === 0) return;
+  await Promise.allSettled(
+    subscriptions.map(async (sub) => {
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: sub.endpoint,
+            keys: { p256dh: sub.p256dh, auth: sub.auth },
+          },
+          JSON.stringify(payload),
+        );
+      } catch (err: any) {
+        const status = Number(err?.statusCode ?? err?.status);
+        if (status === 404 || status === 410) {
+          await db
+            .update(notificationSubscriptionsTable)
+            .set({ isActive: 0, updatedAt: new Date() })
+            .where(eq(notificationSubscriptionsTable.id, sub.id));
+        } else {
+          console.error("push notification failed", { status, message: err?.message });
+        }
+      }
+    }),
+  );
+}
+
+async function createNotification(input: {
+  audienceType?: "admin" | "customer";
+  staffId?: number | null;
+  customerId?: number | null;
+  type: string;
+  title: string;
+  body?: string;
+  entityType?: string | null;
+  entityId?: number | null;
+  href?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  await ensureAdminExtensionsTables();
+  const audienceType = input.audienceType ?? "admin";
+  const settings = await getGlobalNotificationSettings();
+  const [row] = await db
+    .insert(notificationsTable)
+    .values({
+      audienceType,
+      staffId: input.staffId ?? null,
+      customerId: input.customerId ?? null,
+      type: input.type,
+      title: input.title,
+      body: input.body ?? "",
+      entityType: input.entityType ?? null,
+      entityId: input.entityId ?? null,
+      href: input.href ?? null,
+      metadata: input.metadata ?? {},
+    })
+    .returning();
+  if (notificationTypeEnabled(settings, input.type, audienceType)) {
+    let subscriptions: any[] = [];
+    if (audienceType === "customer" && input.customerId) {
+      subscriptions = await db.query.notificationSubscriptionsTable.findMany({
+        where: and(eq(notificationSubscriptionsTable.ownerType, "customer"), eq(notificationSubscriptionsTable.customerId, input.customerId), eq(notificationSubscriptionsTable.isActive, 1)),
+      });
+    } else {
+      const managerRows = await db.query.staffTable.findMany({
+        where: and(eq(staffTable.isActive, true), sql`${staffTable.role} in ('admin','manager')`),
+      });
+      const staffIds = input.staffId ? [input.staffId] : managerRows.map((staff) => staff.id);
+      subscriptions = staffIds.length
+        ? await db.query.notificationSubscriptionsTable.findMany({
+            where: and(eq(notificationSubscriptionsTable.ownerType, "staff"), inArray(notificationSubscriptionsTable.staffId, staffIds), eq(notificationSubscriptionsTable.isActive, 1)),
+          })
+        : [];
+    }
+    await sendPushToSubscriptions(subscriptions, {
+      id: row.id,
+      title: row.title,
+      body: row.body,
+      type: row.type,
+      href: row.href,
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      tag: `${row.type}-${row.entityType ?? "item"}-${row.entityId ?? row.id}`,
+    });
+  }
+  return row;
+}
+
+async function customerIdForPhone(phone: string | null | undefined) {
+  const normalized = normalizeIraqiPhone(phone ?? "");
+  if (!normalized) return null;
+  const customer = await db.query.customersTable.findFirst({ where: inArray(customersTable.phone, iraqiPhoneVariants(normalized)) });
+  return customer?.id ?? null;
+}
+
+async function createCustomerNotificationByPhone(phone: string | null | undefined, input: Omit<Parameters<typeof createNotification>[0], "audienceType" | "customerId">) {
+  const customerId = await customerIdForPhone(phone);
+  if (!customerId) return null;
+  return createNotification({ ...input, audienceType: "customer", customerId });
+}
+
+async function notifyLowStockForProductIds(productIds: number[]) {
+  const ids = [...new Set(productIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return;
+  const rows = await db.query.productsTable.findMany({
+    where: and(inArray(productsTable.id, ids), sql`${productsTable.stock} <= ${productsTable.minStock}`),
+    limit: 20,
+  });
+  await Promise.all(rows.map((product) => createNotification({
+    type: "inventory_low",
+    title: "انخفاض المخزون",
+    body: `${product.nameAr || product.name} وصل إلى ${product.stock}`,
+    entityType: "product",
+    entityId: product.id,
+    href: "/admin/inventory-alerts",
+  })));
 }
 
 function withSessionCookie(res: NextResponse, token: string): NextResponse {
@@ -1462,6 +1636,48 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "created_at" timestamp not null default now(),
         "last_scanned_at" timestamp
       );
+      create table if not exists "notifications" (
+        "id" serial primary key,
+        "audience_type" varchar(20) not null default 'admin',
+        "staff_id" integer references "staff" ("id"),
+        "customer_id" integer references "customers" ("id"),
+        "type" varchar(60) not null default 'general',
+        "title" text not null,
+        "body" text not null default '',
+        "entity_type" varchar(40),
+        "entity_id" integer,
+        "href" text,
+        "metadata" jsonb not null default '{}'::jsonb,
+        "read_at" timestamp,
+        "archived_at" timestamp,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "notification_subscriptions" (
+        "id" serial primary key,
+        "owner_type" varchar(20) not null default 'staff',
+        "staff_id" integer references "staff" ("id"),
+        "customer_id" integer references "customers" ("id"),
+        "endpoint" text not null unique,
+        "p256dh" text not null,
+        "auth" text not null,
+        "user_agent" text,
+        "is_active" integer not null default 1,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "notification_settings" (
+        "id" serial primary key,
+        "owner_type" varchar(20) not null default 'global',
+        "owner_id" integer,
+        "push_enabled" integer not null default 1,
+        "orders_enabled" integer not null default 1,
+        "messages_enabled" integer not null default 1,
+        "tasks_enabled" integer not null default 1,
+        "inventory_enabled" integer not null default 1,
+        "customer_enabled" integer not null default 1,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
       create index if not exists "tasks_assigned_staff_ids_gin_idx" on "tasks" using gin ("assigned_staff_ids");
       create index if not exists "tasks_status_due_idx" on "tasks" ("status", "due_at");
       create index if not exists "message_threads_status_idx" on "message_threads" ("status", "last_message_at");
@@ -1473,6 +1689,12 @@ async function ensureAdminExtensionsTables(): Promise<void> {
       create index if not exists "orders_qr_token_idx" on "orders" ("qr_token");
       create index if not exists "service_orders_qr_token_idx" on "service_orders" ("qr_token");
       create index if not exists "sales_invoices_qr_token_idx" on "sales_invoices" ("qr_token");
+      create index if not exists "notifications_audience_created_idx" on "notifications" ("audience_type", "created_at");
+      create index if not exists "notifications_staff_read_idx" on "notifications" ("staff_id", "read_at");
+      create index if not exists "notifications_customer_read_idx" on "notifications" ("customer_id", "read_at");
+      create index if not exists "notification_subscriptions_staff_idx" on "notification_subscriptions" ("staff_id", "is_active");
+      create index if not exists "notification_subscriptions_customer_idx" on "notification_subscriptions" ("customer_id", "is_active");
+      create unique index if not exists "notification_settings_owner_unique_idx" on "notification_settings" ("owner_type", coalesce("owner_id", 0));
     `).then(() => undefined).catch((err) => {
       adminExtensionsTablesPromise = null;
       throw err;
@@ -2571,6 +2793,22 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       status: order.status,
       service: service?.nameAr ?? service?.name ?? "",
     });
+    void createNotification({
+      type: "booking_new",
+      title: "حجز جديد",
+      body: `${order.customerName} - ${service?.nameAr ?? service?.name ?? "خدمة"}`,
+      entityType: "service_order",
+      entityId: order.id,
+      href: "/admin/orders",
+    });
+    void createCustomerNotificationByPhone(order.phone, {
+      type: "booking_created",
+      title: "تم إنشاء الحجز",
+      body: `رمز التتبع ${order.trackingCode ?? ""}`,
+      entityType: "service_order",
+      entityId: order.id,
+      href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
+    });
     return json(
       {
         id: order.id,
@@ -2945,6 +3183,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         note: `صرف نقاط للطلب ${order.trackingCode}`,
       });
     }
+    void notifyLowStockForProductIds(cartItems.map((item) => Number(item.productId)));
     await db.insert(orderStatusHistoryTable).values({
       orderId: order.id,
       status: "pending",
@@ -2959,6 +3198,26 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       total: formatted.total,
       status: order.status,
     });
+    void createNotification({
+      type: "order_new",
+      title: "طلب جديد",
+      body: `${order.customerName} - ${order.trackingCode}`,
+      entityType: "order",
+      entityId: order.id,
+      href: "/admin/orders",
+    });
+    if (customerId) {
+      void createNotification({
+        audienceType: "customer",
+        customerId,
+        type: "order_created",
+        title: "تم إنشاء طلبك",
+        body: `رمز التتبع ${order.trackingCode}`,
+        entityType: "order",
+        entityId: order.id,
+        href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
+      });
+    }
     void logAdminActivity(req, "customer_order_created", "order", order.id, { tracking: order.trackingCode });
     return json(formatted, 201);
   }
@@ -3006,6 +3265,24 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         tracking: order.trackingCode,
         total: Number.parseFloat(order.total),
         status,
+      });
+    }
+    void createCustomerNotificationByPhone(order.customerPhone, {
+      type: `order_status_${status}`,
+      title: status === "confirmed" ? "تم تأكيد طلبك" : status === "processing" ? "طلبك قيد التجهيز" : status === "shipped" ? "طلبك في الطريق" : status === "delivered" ? "تم تسليم طلبك" : status === "cancelled" ? "تم إلغاء الطلب" : "تحديث حالة الطلب",
+      body: `طلب ${order.trackingCode}`,
+      entityType: "order",
+      entityId: order.id,
+      href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
+    });
+    if (status === "cancelled") {
+      void createNotification({
+        type: "order_cancelled",
+        title: "تم إلغاء طلب",
+        body: `${order.customerName} - ${order.trackingCode}`,
+        entityType: "order",
+        entityId: order.id,
+        href: "/admin/orders",
       });
     }
     return json(await formatOrder(order));
@@ -3624,6 +3901,14 @@ async function handlePublicMessages(req: NextRequest, parts: string[]) {
     ipAddress: ip(req),
     userAgent: req.headers.get("user-agent") ?? null,
   });
+  void createNotification({
+    type: "message_new",
+    title: "رسالة زبون جديدة",
+    body: `${customerName || "زبون"}: ${message.slice(0, 120)}`,
+    entityType: "message_thread",
+    entityId: thread.id,
+    href: "/admin/messages",
+  });
   return json({ message: "تم إرسال الرسالة", threadId: thread.id }, 201);
 }
 
@@ -3662,6 +3947,102 @@ async function handleQr(req: NextRequest, parts: string[]) {
     .set({ scanCount: (row.scanCount ?? 0) + 1, lastScannedAt: new Date() })
     .where(eq(qrTokensTable.id, row.id));
   return NextResponse.redirect(row.targetUrl);
+}
+
+function formatNotification(row: any) {
+  return {
+    id: row.id,
+    audienceType: row.audienceType ?? row.audience_type,
+    staffId: row.staffId ?? row.staff_id ?? null,
+    customerId: row.customerId ?? row.customer_id ?? null,
+    type: row.type,
+    title: row.title,
+    body: row.body ?? "",
+    entityType: row.entityType ?? row.entity_type ?? null,
+    entityId: row.entityId ?? row.entity_id ?? null,
+    href: row.href ?? null,
+    metadata: row.metadata ?? {},
+    readAt: row.readAt?.toISOString?.() ?? row.read_at?.toISOString?.() ?? null,
+    archivedAt: row.archivedAt?.toISOString?.() ?? row.archived_at?.toISOString?.() ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+  };
+}
+
+function pushSubscriptionFromBody(input: any) {
+  const sub = input?.subscription ?? input;
+  const endpoint = typeof sub?.endpoint === "string" ? sub.endpoint : "";
+  const p256dh = typeof sub?.keys?.p256dh === "string" ? sub.keys.p256dh : "";
+  const auth = typeof sub?.keys?.auth === "string" ? sub.keys.auth : "";
+  return endpoint && p256dh && auth ? { endpoint, p256dh, auth } : null;
+}
+
+async function handleNotifications(req: NextRequest, parts: string[]) {
+  const method = req.method;
+
+  if (method === "GET" && parts[1] === "vapid-public-key") {
+    return json({ publicKey: getVapidPublicKey(), enabled: Boolean(getVapidPublicKey() && process.env.VAPID_PRIVATE_KEY) });
+  }
+
+  await ensureAdminExtensionsTables();
+
+  if (method === "POST" && parts[1] === "subscribe") {
+    const parsed = pushSubscriptionFromBody(await body(req));
+    if (!parsed) return error("اشتراك الإشعارات غير صالح", 400);
+    const adminUser = await getAdminUser(req);
+    const customerId = getCurrentCustomerId(req);
+    if (!adminUser && !customerId) return error("سجل الدخول لتفعيل الإشعارات", 401);
+    const ownerType = adminUser ? "staff" : "customer";
+    const [row] = await db
+      .insert(notificationSubscriptionsTable)
+      .values({
+        ownerType,
+        staffId: adminUser?.id ?? null,
+        customerId: customerId ?? null,
+        endpoint: parsed.endpoint,
+        p256dh: parsed.p256dh,
+        auth: parsed.auth,
+        userAgent: req.headers.get("user-agent") ?? null,
+        isActive: 1,
+      })
+      .onConflictDoUpdate({
+        target: notificationSubscriptionsTable.endpoint,
+        set: {
+          ownerType,
+          staffId: adminUser?.id ?? null,
+          customerId: customerId ?? null,
+          p256dh: parsed.p256dh,
+          auth: parsed.auth,
+          userAgent: req.headers.get("user-agent") ?? null,
+          isActive: 1,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return json({ id: row.id, message: "تم تفعيل الإشعارات" });
+  }
+
+  if (method === "DELETE" && parts[1] === "subscribe") {
+    const parsed = pushSubscriptionFromBody(await body(req));
+    if (!parsed) return error("اشتراك الإشعارات غير صالح", 400);
+    await db
+      .update(notificationSubscriptionsTable)
+      .set({ isActive: 0, updatedAt: new Date() })
+      .where(eq(notificationSubscriptionsTable.endpoint, parsed.endpoint));
+    return json({ message: "تم تعطيل الإشعارات" });
+  }
+
+  if (method === "GET" && parts[1] === "customer") {
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("غير مخول", 401);
+    const rows = await db.query.notificationsTable.findMany({
+      where: and(eq(notificationsTable.audienceType, "customer"), eq(notificationsTable.customerId, customerId), sql`${notificationsTable.archivedAt} is null`),
+      orderBy: [desc(notificationsTable.createdAt)],
+      limit: 50,
+    });
+    return json(rows.map(formatNotification));
+  }
+
+  return null;
 }
 
 async function handleAdmin(req: NextRequest, parts: string[]) {
@@ -3807,6 +4188,106 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     });
   }
 
+  if (section === "notifications") {
+    const auth = await requirePermission(req, "dashboard");
+    if (isResponse(auth)) return auth;
+    await ensureAdminExtensionsTables();
+
+    if (parts[2] === "settings") {
+      const settingsAuth = await requirePermission(req, "settings");
+      if (isResponse(settingsAuth)) return settingsAuth;
+      if (method === "GET") return json(await getGlobalNotificationSettings());
+      if (method === "PATCH" || method === "PUT") {
+        const b = await body(req);
+        const values = {
+          pushEnabled: b?.pushEnabled === false ? 0 : 1,
+          ordersEnabled: b?.ordersEnabled === false ? 0 : 1,
+          messagesEnabled: b?.messagesEnabled === false ? 0 : 1,
+          tasksEnabled: b?.tasksEnabled === false ? 0 : 1,
+          inventoryEnabled: b?.inventoryEnabled === false ? 0 : 1,
+          customerEnabled: b?.customerEnabled === false ? 0 : 1,
+          updatedAt: new Date(),
+        };
+        const existing = await db.query.notificationSettingsTable.findFirst({
+          where: and(eq(notificationSettingsTable.ownerType, "global"), sql`${notificationSettingsTable.ownerId} is null`),
+        });
+        const [row] = existing
+          ? await db.update(notificationSettingsTable).set(values).where(eq(notificationSettingsTable.id, existing.id)).returning()
+          : await db.insert(notificationSettingsTable).values({ ownerType: "global", ownerId: null, ...values }).returning();
+        void logAdminActivity(req, "notification_settings_updated", "settings");
+        return json(notificationSettingsToJson(row));
+      }
+    }
+
+    if (method === "GET") {
+      const params = req.nextUrl.searchParams;
+      const filters: any[] = [
+        eq(notificationsTable.audienceType, "admin"),
+        sql`${notificationsTable.archivedAt} is null`,
+        or(sql`${notificationsTable.staffId} is null`, eq(notificationsTable.staffId, auth.id)),
+      ];
+      const status = params.get("status")?.trim();
+      const type = params.get("type")?.trim();
+      const q = params.get("q")?.trim();
+      if (status === "unread") filters.push(sql`${notificationsTable.readAt} is null`);
+      if (status === "read") filters.push(sql`${notificationsTable.readAt} is not null`);
+      if (type) filters.push(eq(notificationsTable.type, type));
+      if (q) filters.push(or(ilike(notificationsTable.title, `%${q}%`), ilike(notificationsTable.body, `%${q}%`)));
+      const whereClause = and(...filters);
+      const [rows, unreadRows] = await Promise.all([
+        db.query.notificationsTable.findMany({
+          where: whereClause,
+          orderBy: [desc(notificationsTable.createdAt)],
+          limit: Math.min(Math.max(Number.parseInt(params.get("limit") ?? "80", 10) || 80, 1), 150),
+        }),
+        db
+          .select({ c: sql<number>`count(*)::int` })
+          .from(notificationsTable)
+          .where(and(
+            eq(notificationsTable.audienceType, "admin"),
+            sql`${notificationsTable.archivedAt} is null`,
+            sql`${notificationsTable.readAt} is null`,
+            or(sql`${notificationsTable.staffId} is null`, eq(notificationsTable.staffId, auth.id)),
+          )),
+      ]);
+      return json({ data: rows.map(formatNotification), unreadCount: unreadRows[0]?.c ?? 0 });
+    }
+
+    if (method === "PATCH" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const b = await body(req);
+      const update: any = {};
+      if (b?.read !== undefined) update.readAt = b.read ? new Date() : null;
+      if (b?.archived !== undefined) update.archivedAt = b.archived ? new Date() : null;
+      if (Object.keys(update).length === 0) update.readAt = new Date();
+      const [row] = await db
+        .update(notificationsTable)
+        .set(update)
+        .where(and(eq(notificationsTable.id, id), eq(notificationsTable.audienceType, "admin"), or(sql`${notificationsTable.staffId} is null`, eq(notificationsTable.staffId, auth.id))))
+        .returning();
+      if (!row) return error("الإشعار غير موجود", 404);
+      return json(formatNotification(row));
+    }
+
+    if (method === "POST" && parts[2] === "mark-all-read") {
+      await db
+        .update(notificationsTable)
+        .set({ readAt: new Date() })
+        .where(and(eq(notificationsTable.audienceType, "admin"), sql`${notificationsTable.archivedAt} is null`, sql`${notificationsTable.readAt} is null`, or(sql`${notificationsTable.staffId} is null`, eq(notificationsTable.staffId, auth.id))));
+      return json({ message: "تم تحديد الكل كمقروء" });
+    }
+
+    if (method === "DELETE" && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      await db
+        .delete(notificationsTable)
+        .where(and(eq(notificationsTable.id, id), eq(notificationsTable.audienceType, "admin"), or(sql`${notificationsTable.staffId} is null`, eq(notificationsTable.staffId, auth.id))));
+      return json({ message: "تم حذف الإشعار" });
+    }
+  }
+
   if (section === "tasks") {
     const auth = await requirePermission(req, "tasks");
     if (isResponse(auth)) return auth;
@@ -3868,6 +4349,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           createdBy: auth.id,
         })
         .returning();
+      await Promise.all((assignedStaffIds.length ? assignedStaffIds : [null]).map((staffId) => createNotification({
+        type: "task_assigned",
+        title: "مهمة جديدة",
+        body: title,
+        staffId,
+        entityType: "task",
+        entityId: row.id,
+        href: "/admin/tasks",
+      })));
       void logAdminActivity(req, "task_created", "task", row.id, { assignedStaffIds, title });
       return json(formatTask(row), 201);
     }
@@ -4032,6 +4522,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .set({ status: "replied", lastMessageAt: new Date(), updatedAt: new Date() })
         .where(eq(messageThreadsTable.id, id))
         .returning();
+      if (updated.customerId) {
+        void createNotification({
+          audienceType: "customer",
+          customerId: updated.customerId,
+          type: "message_reply",
+          title: "رد جديد من الإدارة",
+          body: replyBody.slice(0, 140),
+          entityType: "message_thread",
+          entityId: id,
+          href: "/profile",
+        });
+      }
       void logAdminActivity(req, "message_replied", "message_thread", id);
       return json(formatMessageThread(updated, [reply]));
     }
@@ -4224,6 +4726,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       whatsappFailures,
       todayTaskCount,
       newMessageCount,
+      unreadNotificationCount,
       presentStaffCount,
       recentCustomerActivity,
     ] = await Promise.all([
@@ -4317,6 +4820,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .from(tasksTable)
         .where(sql`${tasksTable.archivedAt} is null and ${tasksTable.status} not in ('completed','cancelled') and ${tasksTable.dueAt} >= ${today} and ${tasksTable.dueAt} < ${tomorrow} and ${taskScope}`),
       db.select({ c: sql<number>`count(*)::int` }).from(messageThreadsTable).where(eq(messageThreadsTable.status, "new")),
+      db.select({ c: sql<number>`count(*)::int` }).from(notificationsTable).where(and(eq(notificationsTable.audienceType, "admin"), sql`${notificationsTable.readAt} is null`, sql`${notificationsTable.archivedAt} is null`)),
       db.select({ c: sql<number>`count(*)::int` }).from(attendanceRecordsTable).where(sql`${attendanceRecordsTable.checkOutAt} is null and ${attendanceRecordsTable.checkInAt} >= ${today}`),
       db.query.customerActivityLogsTable.findMany({ orderBy: [desc(customerActivityLogsTable.createdAt)], limit: 6 }),
     ]);
@@ -4392,6 +4896,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       adminOperations: {
         todayTasks: todayTaskCount[0]?.c ?? 0,
         newMessages: newMessageCount[0]?.c ?? 0,
+        newNotifications: unreadNotificationCount[0]?.c ?? 0,
         todayBookings,
         presentStaffNow: presentStaffCount[0]?.c ?? 0,
         ordersNeedingFollowup: lateProductOrders.length + lateBookings + (partialOrders[0]?.c ?? 0) + (unpaidOrders[0]?.c ?? 0),
@@ -5243,6 +5748,22 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         status: order.status,
         service: service.nameAr ?? service.name ?? "",
       });
+      void createNotification({
+        type: "booking_new",
+        title: "حجز جديد",
+        body: `${order.customerName} - ${service.nameAr ?? service.name ?? "خدمة"}`,
+        entityType: "service_order",
+        entityId: order.id,
+        href: "/admin/orders",
+      });
+      void createCustomerNotificationByPhone(order.phone, {
+        type: "booking_created",
+        title: "تم إنشاء الحجز",
+        body: `رمز التتبع ${order.trackingCode ?? ""}`,
+        entityType: "service_order",
+        entityId: order.id,
+        href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
+      });
       return json(
         {
           id: order.id,
@@ -5400,6 +5921,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             service: service?.nameAr ?? service?.name ?? "",
           });
         }
+        void createCustomerNotificationByPhone(row.phone, {
+          type: `booking_status_${update.status}`,
+          title: update.status === "confirmed" ? "تم تأكيد الحجز" : update.status === "processing" ? "حجزك قيد التجهيز" : update.status === "completed" || update.status === "delivered" ? "اكتمل الحجز" : update.status === "cancelled" ? "تم إلغاء الحجز" : "تحديث الحجز",
+          body: `الحجز ${row.trackingCode ?? `#${row.id}`}`,
+          entityType: "service_order",
+          entityId: row.id,
+          href: `/track?code=${encodeURIComponent(row.trackingCode ?? "")}`,
+        });
       }
       await awardServiceOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
@@ -5484,6 +6013,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             total: Number(order.total),
             status: "pending",
           });
+          void createNotification({
+            type: "order_new",
+            title: "طلب جديد",
+            body: `${order.customerName} - ${order.trackingCode}`,
+            entityType: "order",
+            entityId: order.id,
+            href: "/admin/orders",
+          });
+          void createCustomerNotificationByPhone(order.customerPhone, {
+            type: "order_created",
+            title: "تم إنشاء طلبك",
+            body: `رمز التتبع ${order.trackingCode}`,
+            entityType: "order",
+            entityId: order.id,
+            href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
+          });
+          void notifyLowStockForProductIds(orderItems.map((it: any) => Number(it.productId)));
           void logAdminActivity(req, "order_created", "order", order.id, { tracking: order.trackingCode });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
     }
@@ -6055,6 +6601,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
           `);
         }
       }
+      void notifyLowStockForProductIds(items.map((item) => Number(item.productId)));
     }
 
     if (couponPreview?.ok) {
@@ -6974,7 +7521,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "admin") ? ensureAdminProductsColumns() : undefined,
       (root === "products" || (!isAdminAuth && root === "admin")) ? ensureStoreCategoryColumns() : undefined,
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
-      (root === "messages" || root === "activity" || root === "qr" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
+      (root === "messages" || root === "activity" || root === "qr" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
     ].filter(Boolean));
 
     const route =
@@ -6990,6 +7537,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
             ? await handleCustomerActivity(req, parts)
             : root === "qr"
               ? await handleQr(req, parts)
+              : root === "notifications"
+                ? await handleNotifications(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
           : root === "coupons"

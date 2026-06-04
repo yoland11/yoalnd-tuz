@@ -97,9 +97,57 @@ export const qrTokensTable = pgTable("qr_tokens", {
   lastScannedAt: timestamp("last_scanned_at"),
 });
 
+export const notificationsTable = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  audienceType: varchar("audience_type", { length: 20 }).notNull().default("admin"),
+  staffId: integer("staff_id").references(() => staffTable.id),
+  customerId: integer("customer_id").references(() => customersTable.id),
+  type: varchar("type", { length: 60 }).notNull().default("general"),
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  entityType: varchar("entity_type", { length: 40 }),
+  entityId: integer("entity_id"),
+  href: text("href"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  readAt: timestamp("read_at"),
+  archivedAt: timestamp("archived_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const notificationSubscriptionsTable = pgTable("notification_subscriptions", {
+  id: serial("id").primaryKey(),
+  ownerType: varchar("owner_type", { length: 20 }).notNull().default("staff"),
+  staffId: integer("staff_id").references(() => staffTable.id),
+  customerId: integer("customer_id").references(() => customersTable.id),
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  userAgent: text("user_agent"),
+  isActive: integer("is_active").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const notificationSettingsTable = pgTable("notification_settings", {
+  id: serial("id").primaryKey(),
+  ownerType: varchar("owner_type", { length: 20 }).notNull().default("global"),
+  ownerId: integer("owner_id"),
+  pushEnabled: integer("push_enabled").notNull().default(1),
+  ordersEnabled: integer("orders_enabled").notNull().default(1),
+  messagesEnabled: integer("messages_enabled").notNull().default(1),
+  tasksEnabled: integer("tasks_enabled").notNull().default(1),
+  inventoryEnabled: integer("inventory_enabled").notNull().default(1),
+  customerEnabled: integer("customer_enabled").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type Task = typeof tasksTable.$inferSelect;
 export type MessageThread = typeof messageThreadsTable.$inferSelect;
 export type MessageReply = typeof messageRepliesTable.$inferSelect;
 export type CustomerActivityLog = typeof customerActivityLogsTable.$inferSelect;
 export type AttendanceRecord = typeof attendanceRecordsTable.$inferSelect;
 export type QrToken = typeof qrTokensTable.$inferSelect;
+export type Notification = typeof notificationsTable.$inferSelect;
+export type NotificationSubscription = typeof notificationSubscriptionsTable.$inferSelect;
+export type NotificationSettings = typeof notificationSettingsTable.$inferSelect;

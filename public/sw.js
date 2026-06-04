@@ -1,50 +1,110 @@
-// AJN Service Worker — app shell + offline fallback. Versioned cache so deploys evict cleanly.
-const VERSION = "ajn-v1";
-const APP_SHELL = ["./", "./offline.html", "./manifest.webmanifest", "./favicon.svg"];
+// AJN Service Worker — PWA shell, offline fallback, and Web Push.
+const VERSION = "ajn-pwa-v2";
+const APP_SHELL = [
+  "/",
+  "/store",
+  "/track",
+  "/login",
+  "/offline.html",
+  "/manifest.webmanifest",
+  "/favicon.svg",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(VERSION).then((c) => c.addAll(APP_SHELL)).then(() => self.skipWaiting()),
+    caches.open(VERSION)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting()),
   );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim()),
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((key) => key !== VERSION).map((key) => caches.delete(key))))
+      .then(() => self.clients.claim()),
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
-  // Never cache API responses, admin pages, or HMR. Strip SW scope so checks work
-  // whether the app is served at the root or under a BASE_URL subpath like /app/.
-  const scopePath = new URL(self.registration.scope).pathname.replace(/\/$/, "");
-  const rel = scopePath && url.pathname.startsWith(scopePath + "/")
-    ? url.pathname.slice(scopePath.length)
-    : url.pathname;
-  if (rel.startsWith("/api/") || rel.startsWith("/admin")) return;
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
 
-  // Navigation requests: network-first with offline fallback.
-  if (req.mode === "navigate") {
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/admin")) return;
+
+  if (request.mode === "navigate") {
     event.respondWith(
-      fetch(req).catch(() => caches.match("./offline.html").then((r) => r || new Response("offline", { status: 503 }))),
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match("/offline.html"))),
     );
     return;
   }
-  // Static assets: stale-while-revalidate.
+
   event.respondWith(
-    caches.match(req).then((cached) => {
-      const fetched = fetch(req).then((res) => {
-        if (res && res.status === 200 && res.type === "basic") {
-          const clone = res.clone();
-          caches.open(VERSION).then((c) => c.put(req, clone)).catch(() => {});
-        }
-        return res;
-      }).catch(() => cached);
+    caches.match(request).then((cached) => {
+      const fetched = fetch(request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === "basic") {
+            const copy = response.clone();
+            caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
+          }
+          return response;
+        })
+        .catch(() => cached);
       return cached || fetched;
+    }),
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "AJN", body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title || "AJN";
+  const options = {
+    body: data.body || "",
+    icon: data.icon || "/icons/icon-192.png",
+    badge: data.badge || "/icons/icon-192.png",
+    tag: data.tag || `ajn-${Date.now()}`,
+    dir: "rtl",
+    lang: "ar",
+    data: {
+      href: data.href || "/",
+      notificationId: data.id || null,
+      type: data.type || "general",
+    },
+    vibrate: [120, 60, 120],
+    requireInteraction: Boolean(data.requireInteraction),
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = new URL(event.notification.data && event.notification.data.href ? event.notification.data.href : "/", self.location.origin).href;
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ("focus" in client && client.url === targetUrl) return client.focus();
+      }
+      return clients.openWindow(targetUrl);
     }),
   );
 });

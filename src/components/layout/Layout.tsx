@@ -5,6 +5,7 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { MessageCircle } from "lucide-react";
 import { CustomerMessageWidget } from "@/components/customer-message-widget";
+import { PwaInstallPrompt } from "@/components/pwa-install-prompt";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { data: settings } = usePublicSettings();
@@ -27,6 +28,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </a>
       )}
       <CustomerMessageWidget />
+      <PwaInstallPrompt />
       <MobileNav />
       <footer className="border-t border-border/40 py-6 text-center text-sm text-muted-foreground mt-auto" dir="rtl">
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">

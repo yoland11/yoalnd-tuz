@@ -33,6 +33,15 @@ type Settings = {
   };
 };
 
+type NotificationSettings = {
+  pushEnabled: boolean;
+  ordersEnabled: boolean;
+  messagesEnabled: boolean;
+  tasksEnabled: boolean;
+  inventoryEnabled: boolean;
+  customerEnabled: boolean;
+};
+
 const defaultImageSettings: Settings["imageSettings"] = {
   productMaxSize: 1600,
   serviceMaxSize: 1600,
@@ -53,6 +62,10 @@ export default function SettingsPage() {
   });
   const [form, setForm] = useState<Settings | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const { data: notificationSettings, isLoading: notificationsLoading } = useQuery({
+    queryKey: ["admin", "notification-settings"],
+    queryFn: () => adminFetch<NotificationSettings>("/admin/notifications/settings"),
+  });
 
   useEffect(() => {
     if (data && !form) setForm({ ...data, imageSettings: { ...defaultImageSettings, ...(data.imageSettings ?? {}) } });
@@ -67,6 +80,15 @@ export default function SettingsPage() {
       setTimeout(() => setSavedFlash(false), 2000);
     },
     onError: (err: any) => toast({ title: "تعذر حفظ الإعدادات", description: err?.message, variant: "destructive" }),
+  });
+
+  const saveNotificationSettings = useMutation({
+    mutationFn: (settings: NotificationSettings) => adminFetch<NotificationSettings>("/admin/notifications/settings", { method: "PATCH", body: JSON.stringify(settings) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "notification-settings"] });
+      toast({ title: "تم حفظ إعدادات الإشعارات" });
+    },
+    onError: (err: any) => toast({ title: "تعذر حفظ إعدادات الإشعارات", description: err?.message, variant: "destructive" }),
   });
 
   async function handleLogoResult(results: ImageEditResult[]) {
@@ -201,7 +223,62 @@ export default function SettingsPage() {
           </div>
         </div>
       </Section>
+
+      <NotificationSettingsSection
+        settings={notificationSettings}
+        isLoading={notificationsLoading}
+        isSaving={saveNotificationSettings.isPending}
+        onSave={(settings) => saveNotificationSettings.mutate(settings)}
+      />
     </form>
+  );
+}
+
+function NotificationSettingsSection({
+  settings,
+  isLoading,
+  isSaving,
+  onSave,
+}: {
+  settings?: NotificationSettings;
+  isLoading: boolean;
+  isSaving: boolean;
+  onSave: (settings: NotificationSettings) => void;
+}) {
+  const [draft, setDraft] = useState<NotificationSettings | null>(null);
+
+  useEffect(() => {
+    if (settings) setDraft(settings);
+  }, [settings]);
+
+  const current = draft ?? settings;
+
+  return (
+    <Section title="إعدادات الإشعارات">
+      {isLoading || !current ? (
+        <div className="space-y-2">
+          <Skeleton className="h-10 rounded-lg" />
+          <Skeleton className="h-10 rounded-lg" />
+          <Skeleton className="h-10 rounded-lg" />
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <ToggleField label="تفعيل Push Notifications" checked={current.pushEnabled} onChange={(value) => setDraft({ ...current, pushEnabled: value })} />
+            <ToggleField label="إشعارات الطلبات والحجوزات" checked={current.ordersEnabled} onChange={(value) => setDraft({ ...current, ordersEnabled: value })} />
+            <ToggleField label="إشعارات الرسائل" checked={current.messagesEnabled} onChange={(value) => setDraft({ ...current, messagesEnabled: value })} />
+            <ToggleField label="إشعارات المهام" checked={current.tasksEnabled} onChange={(value) => setDraft({ ...current, tasksEnabled: value })} />
+            <ToggleField label="إشعارات المخزون" checked={current.inventoryEnabled} onChange={(value) => setDraft({ ...current, inventoryEnabled: value })} />
+            <ToggleField label="إشعارات الزبائن" checked={current.customerEnabled} onChange={(value) => setDraft({ ...current, customerEnabled: value })} />
+          </div>
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" disabled={isSaving} onClick={() => onSave(current)}>
+              {isSaving ? "جاري الحفظ..." : "حفظ إعدادات الإشعارات"}
+            </Button>
+          </div>
+        </>
+      )}
+    </Section>
   );
 }
 
@@ -221,6 +298,15 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
+  );
+}
+
+function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-lg border border-border/25 bg-background/40 px-3 py-2 text-sm">
+      <span className="text-foreground">{label}</span>
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} className="accent-primary" />
+    </label>
   );
 }
 

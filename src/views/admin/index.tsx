@@ -9,6 +9,7 @@ import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
 import AdminLogin from "./login";
 
 const DashboardPage = lazy(() => import("./dashboard"));
+const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
 const CalendarPage = lazy(() => import("./calendar"));
 const QrOrdersPage = lazy(() => import("./qr-orders"));
@@ -101,6 +102,7 @@ export default function Admin() {
       <Suspense fallback={<AdminPageLoader />}>
         <Switch>
           <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
+          <Route path="/admin/notifications">{() => <Guard me={me} perm="dashboard"><NotificationsPage /></Guard>}</Route>
           <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
           <Route path="/admin/calendar"  >{() => <Guard me={me} perm="orders"   ><CalendarPage   /></Guard>}</Route>
           <Route path="/admin/qr-orders" >{() => <Guard me={me} perm="orders"   ><QrOrdersPage   /></Guard>}</Route>

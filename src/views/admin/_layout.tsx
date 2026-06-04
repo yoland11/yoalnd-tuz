@@ -7,9 +7,11 @@ import {
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
+  Bell,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { AdminNotificationsBell } from "./notifications-bell";
 
 type NavItem = { href: string; label: string; icon: any; perm: Permission | null; adminOnly?: boolean; external?: boolean };
 type NavAction = { label: string; icon: any; action: "logout" };
@@ -18,6 +20,7 @@ type NavGroup = { id: string; label: string; icon: any; items: NavEntry[] };
 
 const NAV: NavItem[] = [
   { href: "/admin/dashboard",      label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
+  { href: "/admin/notifications",  label: "الإشعارات",         icon: Bell,            perm: "dashboard" },
   { href: "/admin/orders",         label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
   { href: "/admin/calendar",       label: "تقويم الحجوزات",     icon: CalendarDays,   perm: "orders" },
   { href: "/admin/archive",        label: "الأرشيف",           icon: Archive,        perm: "orders" },
@@ -64,7 +67,7 @@ const NAV_GROUPS: NavGroup[] = [
     id: "home",
     label: "الرئيسية",
     icon: Home,
-    items: [navItem("/admin/dashboard")],
+    items: [navItem("/admin/dashboard"), navItem("/admin/notifications")],
   },
   {
     id: "store",
@@ -246,6 +249,9 @@ export function AdminLayout({
           className="flex-1 overflow-y-auto pr-0.5 pl-1"
         />
       </aside>
+      <div className="hidden md:block fixed left-6 top-6 z-20">
+        <AdminNotificationsBell />
+      </div>
       <div className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur" dir="rtl">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
@@ -255,9 +261,12 @@ export function AdminLayout({
               <p className="text-sm font-semibold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</p>
             </div>
           </div>
-          <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-destructive">
-            <LogOut className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <AdminNotificationsBell />
+            <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-destructive">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
         </div>
         <AdminSidebarNav
           groups={NAV_GROUPS}

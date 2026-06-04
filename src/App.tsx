@@ -18,6 +18,7 @@ import Track from "@/views/track";
 import Gallery from "@/views/gallery";
 import Login from "@/views/login";
 import Profile from "@/views/profile";
+import { registerServiceWorker } from "@/lib/pwa";
 
 const Admin = lazy(() => import("@/views/admin/index"));
 const Invoice = lazy(() => import("@/views/admin/invoice"));
@@ -87,9 +88,9 @@ function Router() {
 
 function App() {
   useEffect(() => {
-    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+    if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {
+        registerServiceWorker().catch(() => {
           /* SW registration is non-fatal */
         });
       });

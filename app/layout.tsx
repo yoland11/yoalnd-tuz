@@ -1,10 +1,36 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "@/index.css";
 import { getCachedPublicSettings } from "@/server/public-settings";
 
 export const metadata: Metadata = {
   title: "مجموعة علي جان",
   description: "منصة مجموعة علي جان للخدمات والمتجر والتتبع",
+  applicationName: "AJN",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "AJN",
+  },
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/icons/icon-180.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+    "apple-mobile-web-app-capable": "yes",
+    "apple-mobile-web-app-status-bar-style": "black-translucent",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#C9A84C",
 };
 
 const FALLBACK_LOGO_URL = "/images/logo-fallback.svg";
@@ -26,6 +52,7 @@ export default async function RootLayout({
     <html lang="ar" dir="rtl">
       <head>
         {shouldPreloadLogo && <link rel="preload" as="image" href={logoUrl} fetchPriority="high" />}
+        <link rel="apple-touch-icon" href="/icons/icon-180.png" />
       </head>
       <body>
         <script

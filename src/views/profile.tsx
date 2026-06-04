@@ -38,6 +38,7 @@ import { SelectedColorLabel } from "@/components/product-colors";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
 import { EventCountdown } from "@/components/interactive/event-countdown";
 import { downloadElementPdf } from "@/lib/pdf";
+import { subscribeToPushNotifications } from "@/lib/pwa";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -97,6 +98,14 @@ type Rewards = {
   level: string;
   levelLabel: string;
   history: { id: number; points: number; note: string; createdAt: string }[];
+};
+
+type CustomerNotification = {
+  id: number;
+  title: string;
+  body: string;
+  readAt: string | null;
+  createdAt: string;
 };
 
 const emptyAddressForm: AddressForm = {
@@ -191,6 +200,7 @@ export default function Profile() {
   const [reviews, setReviews] = useState<OrderReview[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendations>({ products: [], services: [] });
   const [rewards, setRewards] = useState<Rewards | null>(null);
+  const [notifications, setNotifications] = useState<CustomerNotification[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "card">("cash");
   const [loading, setLoading] = useState(true);
   const [trackCode, setTrackCode] = useState("");
@@ -210,6 +220,8 @@ export default function Profile() {
   const [addressError, setAddressError] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
   const [profilePdfLoading, setProfilePdfLoading] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushMessage, setPushMessage] = useState("");
   const [loginCelebration, setLoginCelebration] = useState(false);
   const { data: settings } = usePublicSettings();
 
@@ -224,8 +236,9 @@ export default function Profile() {
       fetchJson<OrderReview[]>("/api/customer/reviews").catch(() => []),
       fetchJson<Recommendations>("/api/customer/recommendations").catch(() => ({ products: [], services: [] })),
       fetchJson<Rewards>("/api/customer/rewards").catch(() => null),
+      fetchJson<CustomerNotification[]>("/api/notifications/customer").catch(() => []),
     ])
-      .then(([me, myOrders, myCart, savedAddresses, preferences, savedReviews, suggested, rewardInfo]) => {
+      .then(([me, myOrders, myCart, savedAddresses, preferences, savedReviews, suggested, rewardInfo, customerNotifications]) => {
         if (!mounted) return;
         setCustomer(me);
         setProfileForm({
@@ -243,6 +256,7 @@ export default function Profile() {
         setReviews(savedReviews);
         setRecommendations(suggested);
         setRewards(rewardInfo);
+        setNotifications(customerNotifications);
         if (window.sessionStorage.getItem("ajn-profile-login-celebration")) {
           window.sessionStorage.removeItem("ajn-profile-login-celebration");
           setLoginCelebration(true);
@@ -422,6 +436,19 @@ export default function Profile() {
       alert(err instanceof Error ? err.message : "تعذر تحميل PDF، جرّب الطباعة أو إعادة المحاولة.");
     } finally {
       setProfilePdfLoading(false);
+    }
+  }
+
+  async function enableCustomerPush() {
+    setPushLoading(true);
+    setPushMessage("");
+    try {
+      await subscribeToPushNotifications();
+      setPushMessage("تم تفعيل الإشعارات على هذا الجهاز");
+    } catch (err: any) {
+      setPushMessage(err?.message || "تعذر تفعيل الإشعارات");
+    } finally {
+      setPushLoading(false);
     }
   }
 
@@ -738,10 +765,27 @@ export default function Profile() {
             </Section>
 
             <Section title="الإشعارات" icon={Bell}>
-              <div className="space-y-2 text-sm text-foreground">
-                <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> تحديث حالة الطلب</label>
-                <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> العروض والخصومات</label>
-                <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> رسائل الإدارة</label>
+              <div className="space-y-3 text-sm text-foreground">
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> تحديث حالة الطلب</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> العروض والخصومات</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" defaultChecked /> رسائل الإدارة</label>
+                </div>
+                <Button type="button" variant="outline" className="w-full gap-2" onClick={enableCustomerPush} disabled={pushLoading}>
+                  {pushLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bell className="w-4 h-4" />}
+                  تفعيل إشعارات الجهاز
+                </Button>
+                {pushMessage && <p className="rounded-xl border border-border/25 bg-background/60 p-3 text-xs text-muted-foreground">{pushMessage}</p>}
+                {notifications.length > 0 && (
+                  <div className="space-y-2">
+                    {notifications.slice(0, 3).map((item) => (
+                      <div key={item.id} className={`rounded-xl border p-3 ${item.readAt ? "border-border/25 bg-background/60" : "border-primary/25 bg-primary/10"}`}>
+                        <p className="text-sm font-semibold text-foreground">{item.title}</p>
+                        {item.body && <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.body}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </Section>
 
