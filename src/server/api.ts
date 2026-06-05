@@ -23,6 +23,7 @@ import {
   crewsTable,
   customerActivityLogsTable,
   customerAddressesTable,
+  customerNotesTable,
   customerPreferencesTable,
   customerRewardHistoryTable,
   customersTable,
@@ -1147,6 +1148,8 @@ async function upgradeStoredMedia(kind: string, id: number | string, value: unkn
       await db.update(galleryItemsTable).set({ mediaUrl: stored }).where(eq(galleryItemsTable.id, id));
     } else if (kind === "order-item" && typeof id === "number") {
       await db.update(orderItemsTable).set({ image: stored }).where(eq(orderItemsTable.id, id));
+    } else if (kind === "customer-avatar" && typeof id === "number") {
+      await db.update(customersTable).set({ avatarUrl: stored, updatedAt: new Date() }).where(eq(customersTable.id, id));
     } else if (kind === "settings") {
       await db
         .insert(settingsTable)
@@ -1348,6 +1351,23 @@ function formatCrew(c: any) {
     internalNotes: c.internalNotes ?? "",
     createdAt: c.createdAt?.toISOString?.() ?? null,
     updatedAt: c.updatedAt?.toISOString?.() ?? null,
+  };
+}
+
+function formatAddress(row: any) {
+  return {
+    id: row.id,
+    type: row.type ?? "home",
+    fullName: row.fullName ?? row.full_name ?? "",
+    phone: row.phone ?? "",
+    governorate: row.governorate ?? "",
+    city: row.city ?? "",
+    address: row.address ?? "",
+    landmark: row.landmark ?? "",
+    notes: row.notes ?? "",
+    isDefault: Boolean(row.isDefault ?? row.is_default),
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? row.updated_at?.toISOString?.() ?? null,
   };
 }
 
@@ -1889,6 +1909,15 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "user_agent" text,
         "created_at" timestamp not null default now()
       );
+      create table if not exists "customer_notes" (
+        "id" serial primary key,
+        "customer_id" integer not null references "customers" ("id"),
+        "staff_id" integer references "staff" ("id"),
+        "body" text not null,
+        "priority" varchar(20) not null default 'normal',
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
       create table if not exists "attendance_records" (
         "id" serial primary key,
         "staff_id" integer not null references "staff" ("id"),
@@ -1958,6 +1987,7 @@ async function ensureAdminExtensionsTables(): Promise<void> {
       create index if not exists "message_replies_thread_idx" on "message_replies" ("thread_id", "created_at");
       create index if not exists "customer_activity_created_idx" on "customer_activity_logs" ("created_at");
       create index if not exists "customer_activity_customer_idx" on "customer_activity_logs" ("customer_id", "created_at");
+      create index if not exists "customer_notes_customer_created_idx" on "customer_notes" ("customer_id", "created_at");
       create index if not exists "attendance_staff_day_idx" on "attendance_records" ("staff_id", "check_in_at");
       create unique index if not exists "qr_tokens_entity_unique_idx" on "qr_tokens" ("entity_type", "entity_id");
       create index if not exists "orders_qr_token_idx" on "orders" ("qr_token");
@@ -2995,6 +3025,11 @@ async function handleMedia(req: NextRequest, parts: string[]) {
   if (kind === "order-item") {
     const item = await db.query.orderItemsTable.findFirst({ where: eq(orderItemsTable.id, id) }) as any;
     return mediaResponseFromValue(req, await upgradeStoredMedia("order-item", id, item?.image));
+  }
+
+  if (kind === "customer-avatar") {
+    const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("customer-avatar", id, customer?.avatarUrl ?? customer?.avatar_url));
   }
 
   return error("نوع الصورة غير معروف", 404);
@@ -6136,6 +6171,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "customers") {
     const auth = await requirePermission(req, "customers");
     if (isResponse(auth)) return auth;
+    await Promise.all([ensureCustomerAddressTables(), ensureAdminExtensionsTables(), ensureCustomerRewards()]);
     if (method === "GET" && !parts[2]) {
       const search = req.nextUrl.searchParams.get("search")?.trim();
       const customers = await db.query.customersTable.findMany({
@@ -6180,7 +6216,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
       if (!customer) return error("غير موجود", 404);
       const phoneVariants = iraqiPhoneVariants(customer.phone);
-      const [orders, serviceOrders, activity] = await Promise.all([
+      const [orders, serviceOrders, activity, addresses, rewardHistory, notes, whatsappLogs, messageThreads, invoices] = await Promise.all([
         db.query.ordersTable.findMany({
           where: inArray(ordersTable.customerPhone, phoneVariants),
           orderBy: [desc(ordersTable.createdAt)],
@@ -6194,28 +6230,127 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orderBy: [desc(customerActivityLogsTable.createdAt)],
           limit: 20,
         }),
+        db.query.customerAddressesTable.findMany({
+          where: eq(customerAddressesTable.customerId, id),
+          orderBy: [desc(customerAddressesTable.isDefault), desc(customerAddressesTable.updatedAt)],
+          limit: 8,
+        }),
+        db.query.customerRewardHistoryTable.findMany({
+          where: eq(customerRewardHistoryTable.customerId, id),
+          orderBy: [desc(customerRewardHistoryTable.createdAt)],
+          limit: 12,
+        }),
+        db.query.customerNotesTable.findMany({
+          where: eq(customerNotesTable.customerId, id),
+          orderBy: [desc(customerNotesTable.createdAt)],
+          limit: 20,
+        }),
+        db.query.whatsappLogTable.findMany({
+          where: inArray(whatsappLogTable.phone, phoneVariants),
+          orderBy: [desc(whatsappLogTable.sentAt)],
+          limit: 10,
+        }),
+        db.query.messageThreadsTable.findMany({
+          where: or(eq(messageThreadsTable.customerId, id), inArray(messageThreadsTable.phone, phoneVariants)),
+          orderBy: [desc(messageThreadsTable.lastMessageAt), desc(messageThreadsTable.id)],
+          limit: 8,
+        }),
+        db.query.salesInvoicesTable.findMany({
+          where: or(eq(salesInvoicesTable.customerId, id), inArray(salesInvoicesTable.customerPhone, phoneVariants)),
+          orderBy: [desc(salesInvoicesTable.createdAt)],
+          limit: 20,
+        }),
       ]);
+      const productTotal = orders.reduce((sum, row) => sum + money(row.total), 0);
+      const serviceTotal = serviceOrders.reduce((sum, row) => sum + money(row.totalAmount), 0);
+      const invoiceTotal = invoices.reduce((sum, row) => sum + money(row.total), 0);
+      const remainingTotal =
+        orders.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
+        serviceOrders.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
+        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0);
+      const unpaidCount =
+        orders.filter((row) => row.paymentStatus !== "paid" && money(row.remainingAmount) > 0).length +
+        serviceOrders.filter((row) => row.paymentStatus !== "paid" && money(row.remainingAmount) > 0).length +
+        invoices.filter((row) => row.paymentStatus !== "paid" && money(row.remainingAmount) > 0).length;
       return json({
         id: customer.id,
         name: customer.name,
+        fullName: customer.fullName ?? customer.name,
+        email: customer.email ?? "",
+        avatarUrl: publicMediaValue("customer-avatar", customer, customer.avatarUrl),
+        address: customer.address ?? "",
+        city: customer.city ?? "",
         phone: customer.phone,
         role: customer.role,
         rewardPoints: Number(customer.rewardPoints ?? 0),
         rewardLevel: customer.rewardLevel ?? rewardLevelForPoints(Number(customer.rewardPoints ?? 0)),
         rewardLevelLabel: rewardLabel(customer.rewardLevel),
         createdAt: customer.createdAt.toISOString(),
+        summary: {
+          productOrders: orders.length,
+          serviceOrders: serviceOrders.length,
+          invoices: invoices.length,
+          totalSpent: productTotal + serviceTotal + invoiceTotal,
+          remainingTotal,
+          unpaidCount,
+          lastWhatsappAt: whatsappLogs[0]?.sentAt?.toISOString?.() ?? null,
+          lastActivityAt: activity[0]?.createdAt?.toISOString?.() ?? null,
+        },
         orders: orders.map((o) => ({
           id: o.id,
           trackingCode: o.trackingCode,
           status: o.status,
           total: Number.parseFloat(o.total),
+          remainingAmount: Number.parseFloat(o.remainingAmount ?? "0"),
+          paymentStatus: o.paymentStatus ?? "unpaid",
           createdAt: o.createdAt.toISOString(),
         })),
         serviceOrders: serviceOrders.map((s) => ({
           id: s.id,
           trackingCode: s.trackingCode,
           status: s.status,
+          total: Number.parseFloat(s.totalAmount ?? "0"),
+          remainingAmount: Number.parseFloat(s.remainingAmount ?? "0"),
+          paymentStatus: s.paymentStatus ?? "unpaid",
+          eventDate: s.eventDate ?? null,
+          eventLocation: s.eventLocation ?? null,
           createdAt: s.createdAt.toISOString(),
+        })),
+        invoices: invoices.map((invoice) => ({
+          id: invoice.id,
+          invoiceNo: invoice.invoiceNo,
+          total: Number.parseFloat(invoice.total ?? "0"),
+          paidAmount: Number.parseFloat(invoice.paidAmount ?? "0"),
+          remainingAmount: Number.parseFloat(invoice.remainingAmount ?? "0"),
+          paymentStatus: invoice.paymentStatus,
+          createdAt: invoice.createdAt.toISOString(),
+        })),
+        addresses: addresses.map(formatAddress),
+        rewardHistory: rewardHistory.map((row) => ({
+          id: row.id,
+          points: row.points,
+          reason: row.reason,
+          note: row.note ?? "",
+          createdAt: row.createdAt.toISOString(),
+        })),
+        notes: notes.map((row) => ({
+          id: row.id,
+          body: row.body,
+          priority: row.priority,
+          createdAt: row.createdAt.toISOString(),
+        })),
+        whatsappLogs: whatsappLogs.map((row) => ({
+          id: row.id,
+          event: row.event,
+          status: row.status,
+          provider: row.provider ?? "",
+          sentAt: row.sentAt.toISOString(),
+        })),
+        messageThreads: messageThreads.map((row) => ({
+          id: row.id,
+          subject: row.subject,
+          status: row.status,
+          lastMessageAt: row.lastMessageAt?.toISOString?.() ?? null,
         })),
         activity: activity.map((row) => ({
           id: row.id,
@@ -6225,6 +6360,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           createdAt: row.createdAt.toISOString(),
         })),
       });
+    }
+    if (method === "POST" && parts[2] && parts[3] === "notes") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
+      if (!customer) return error("غير موجود", 404);
+      const data = await body(req);
+      const noteBody = String(data?.body ?? data?.note ?? "").trim().slice(0, 1200);
+      if (!noteBody) return error("اكتب الملاحظة أولاً", 400);
+      const priority = ["normal", "important", "urgent"].includes(String(data?.priority)) ? String(data.priority) : "normal";
+      const [row] = await db
+        .insert(customerNotesTable)
+        .values({ customerId: id, staffId: auth.id, body: noteBody, priority })
+        .returning();
+      void logAdminActivity(req, "customer_note_created", "customer", id, { priority });
+      return json({ id: row.id, body: row.body, priority: row.priority, createdAt: row.createdAt.toISOString() }, 201);
+    }
+    if (method === "DELETE" && parts[2] && parts[3] === "notes" && parts[4]) {
+      const id = int(parts[2]);
+      const noteId = int(parts[4]);
+      if (!id || !noteId) return error("معرف غير صحيح", 400);
+      await db.delete(customerNotesTable).where(and(eq(customerNotesTable.id, noteId), eq(customerNotesTable.customerId, id)));
+      void logAdminActivity(req, "customer_note_deleted", "customer", id, { noteId });
+      return json({ message: "تم حذف الملاحظة" });
     }
     if (method === "PATCH" && parts[2] && parts[3] === "rewards") {
       const id = int(parts[2]);

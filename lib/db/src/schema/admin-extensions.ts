@@ -74,6 +74,16 @@ export const customerActivityLogsTable = pgTable("customer_activity_logs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const customerNotesTable = pgTable("customer_notes", {
+  id: serial("id").primaryKey(),
+  customerId: integer("customer_id").notNull().references(() => customersTable.id),
+  staffId: integer("staff_id").references(() => staffTable.id),
+  body: text("body").notNull(),
+  priority: varchar("priority", { length: 20 }).notNull().default("normal"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const attendanceRecordsTable = pgTable("attendance_records", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id").notNull().references(() => staffTable.id),
@@ -146,6 +156,7 @@ export type Task = typeof tasksTable.$inferSelect;
 export type MessageThread = typeof messageThreadsTable.$inferSelect;
 export type MessageReply = typeof messageRepliesTable.$inferSelect;
 export type CustomerActivityLog = typeof customerActivityLogsTable.$inferSelect;
+export type CustomerNote = typeof customerNotesTable.$inferSelect;
 export type AttendanceRecord = typeof attendanceRecordsTable.$inferSelect;
 export type QrToken = typeof qrTokensTable.$inferSelect;
 export type Notification = typeof notificationsTable.$inferSelect;
