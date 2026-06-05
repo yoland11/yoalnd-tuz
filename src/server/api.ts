@@ -175,6 +175,7 @@ let archiveColumnsPromise: Promise<void> | null = null;
 let activityTablesPromise: Promise<void> | null = null;
 let orderReviewsTablePromise: Promise<void> | null = null;
 let staffActivityColumnPromise: Promise<void> | null = null;
+let staffTableShapePromise: Promise<void> | null = null;
 let imageMetadataColumnsPromise: Promise<void> | null = null;
 let productColorColumnsPromise: Promise<void> | null = null;
 let customerRewardsPromise: Promise<void> | null = null;
@@ -517,6 +518,7 @@ async function pruneExpiredSessions(): Promise<void> {
 
 async function seedAdminUser(): Promise<void> {
   try {
+    await ensureStaffTableShape();
     const username = process.env.ADMIN_USERNAME?.trim() || "alijan";
     const password = process.env.ADMIN_PASSWORD?.trim();
     const fullName = process.env.ADMIN_FULL_NAME?.trim() || "المدير الرئيسي";
@@ -1357,7 +1359,58 @@ async function ensureArchiveColumns(): Promise<void> {
   await archiveColumnsPromise;
 }
 
+async function ensureStaffTableShape(): Promise<void> {
+  if (!staffTableShapePromise) {
+    staffTableShapePromise = db.execute(sql`
+      create table if not exists "staff" (
+        "id" serial primary key,
+        "username" varchar(50) not null unique,
+        "password_hash" text not null,
+        "full_name" text not null default '',
+        "role" varchar(30) not null default 'employee',
+        "permissions" jsonb not null default '[]'::jsonb,
+        "is_active" boolean not null default true,
+        "last_activity_at" timestamp,
+        "created_at" timestamp not null default now()
+      )
+    `)
+      .then(() => db.execute(sql`
+        alter table "staff"
+          add column if not exists "username" varchar(50),
+          add column if not exists "password_hash" text,
+          add column if not exists "full_name" text not null default '',
+          add column if not exists "role" varchar(30) not null default 'employee',
+          add column if not exists "is_active" boolean not null default true,
+          add column if not exists "last_activity_at" timestamp,
+          add column if not exists "created_at" timestamp not null default now()
+      `))
+      .then(() => db.execute(sql`
+        do $$
+        begin
+          if exists (
+            select 1
+            from information_schema.columns
+            where table_schema = current_schema()
+              and table_name = 'staff'
+              and column_name = 'permissions'
+              and udt_name <> 'jsonb'
+          ) then
+            alter table "staff" rename column "permissions" to "permissions_legacy";
+            alter table "staff" add column "permissions" jsonb not null default '[]'::jsonb;
+          end if;
+        end $$;
+      `))
+      .then(() => db.execute(sql`alter table "staff" add column if not exists "permissions" jsonb not null default '[]'::jsonb`))
+      .then(() => db.execute(sql`alter table "staff" alter column "permissions" set default '[]'::jsonb`))
+      .then(() => db.execute(sql`create unique index if not exists "staff_username_unique_idx" on "staff" ("username")`))
+      .then(() => db.execute(sql`create index if not exists "staff_username_lower_idx" on "staff" (lower("username"))`))
+      .then(() => undefined);
+  }
+  await staffTableShapePromise;
+}
+
 async function ensureStaffActivityColumn(): Promise<void> {
+  await ensureStaffTableShape();
   if (!staffActivityColumnPromise) {
     staffActivityColumnPromise = db.execute(sql`alter table "staff" add column if not exists "last_activity_at" timestamp`)
       .then(() => undefined);
@@ -3608,16 +3661,31 @@ function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
 }
 
 const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
+  admin: [...ALL_PERMISSIONS],
   manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks"],
   booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
   photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
   accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
+  employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
 };
 
+const STAFF_ROLE_ALIASES: Record<string, string> = {
+  "أدمن": "admin",
+  "ادمن": "admin",
+  "مدير رئيسي": "admin",
+  "مدير": "manager",
+  "موظف": "employee",
+  "موظف عام": "employee",
+  "موظف حجوزات": "booking_staff",
+  "موظف تصوير": "photographer",
+  "محاسب": "accountant",
+};
+
 function normalizeStaffRole(role: unknown): string {
-  const value = String(role ?? "staff");
-  return ["manager", "booking_staff", "photographer", "accountant", "staff"].includes(value) ? value : "staff";
+  const value = String(role ?? "employee").trim();
+  const mapped = STAFF_ROLE_ALIASES[value] ?? value;
+  return ["admin", "manager", "booking_staff", "photographer", "accountant", "employee", "staff"].includes(mapped) ? mapped : "employee";
 }
 
 function normalizeCrewStatus(status: unknown, isActive = true): "available" | "busy" | "vacation" | "inactive" {
@@ -3631,6 +3699,35 @@ function permissionsForRole(role: string, permissions?: unknown): Permission[] {
     return permissions.filter((p): p is Permission => (ALL_PERMISSIONS as readonly string[]).includes(String(p)));
   }
   return ROLE_PERMISSION_PRESETS[role] ?? ROLE_PERMISSION_PRESETS.staff;
+}
+
+function validateStaffPermissions(permissions: unknown): Permission[] | null {
+  if (permissions === undefined || permissions === null) return null;
+  if (!Array.isArray(permissions)) return null;
+  const cleaned = permissions
+    .map((p) => String(p).trim())
+    .filter(Boolean);
+  if (cleaned.some((p) => !(ALL_PERMISSIONS as readonly string[]).includes(p))) return null;
+  return Array.from(new Set(cleaned)) as Permission[];
+}
+
+function staffUsername(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function isUniqueViolation(err: any, constraint?: string): boolean {
+  return err?.code === "23505" && (!constraint || String(err?.constraint ?? "").includes(constraint));
+}
+
+function logStaffApiFailure(action: string, err: unknown, meta: Record<string, unknown> = {}) {
+  const e = err as any;
+  console.warn("staff api failed", {
+    action,
+    code: e?.code,
+    constraint: e?.constraint,
+    message: e?.message,
+    ...meta,
+  });
 }
 
 function normalizeCustomerPayment(v: unknown): "cash" | "card" {
@@ -5438,30 +5535,44 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "staff") {
     const auth = await requirePermission(req, "staff");
     if (isResponse(auth)) return auth;
+    await ensureStaffTableShape();
     if (method === "GET") {
       const rows = await db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] });
       return json(rows.map(formatStaff));
     }
     if (method === "POST") {
-      const { username, password, fullName, role, permissions, isActive } = await body(req);
-      if (!username || !password) return error("بيانات ناقصة", 400);
-      const normalizedRole = normalizeStaffRole(role);
+      const payload = await body(req);
+      const username = staffUsername(payload?.username);
+      const password = String(payload?.password ?? "");
+      if (!username) return error("اسم المستخدم مطلوب", 400);
+      if (!password.trim()) return error("كلمة المرور مطلوبة", 400);
+      if (username.length > 50) return error("اسم المستخدم طويل جداً", 400);
+      const cleanPassword = password.trim();
+      const normalizedRole = normalizeStaffRole(payload?.role);
+      const explicitPermissions = validateStaffPermissions(payload?.permissions);
+      if (payload?.permissions !== undefined && explicitPermissions === null) return error("صلاحيات غير صحيحة", 400);
       try {
+        const duplicate = await db.query.staffTable.findFirst({
+          where: sql`lower(${staffTable.username}) = ${username.toLowerCase()}`,
+        });
+        if (duplicate) return error("اسم المستخدم مستخدم مسبقاً", 409);
         const [row] = await db
           .insert(staffTable)
           .values({
             username,
-            passwordHash: hashPassword(password),
-            fullName: fullName ?? "",
+            passwordHash: hashPassword(cleanPassword),
+            fullName: String(payload?.fullName ?? ""),
             role: normalizedRole,
-            permissions: permissionsForRole(normalizedRole, permissions),
-            isActive: isActive ?? true,
+            permissions: permissionsForRole(normalizedRole, explicitPermissions ?? payload?.permissions),
+            isActive: payload?.isActive === false ? false : true,
           })
           .returning();
+        void logAdminActivity(req, "staff_created", "staff", row.id, { username, role: normalizedRole });
         return json(formatStaff(row), 201);
       } catch (err: any) {
-        if (err?.code === "23505") return error("اسم المستخدم مأخوذ", 409);
-        throw err;
+        logStaffApiFailure("create", err, { username, role: normalizedRole });
+        if (isUniqueViolation(err, "username")) return error("اسم المستخدم مستخدم مسبقاً", 409);
+        return error("فشل الاتصال بالخادم أثناء حفظ الموظف", 500);
       }
     }
     if ((method === "PATCH" || method === "DELETE") && parts[2]) {
@@ -5471,28 +5582,53 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!existing) return error("غير موجود", 404);
       if (method === "DELETE") {
         if (existing.role === "admin") return error("لا يمكن حذف المدير الرئيسي", 403);
-        await db.delete(staffTable).where(eq(staffTable.id, id));
-        return json({ message: "تم الحذف" });
+        try {
+          await db.delete(staffTable).where(eq(staffTable.id, id));
+          void logAdminActivity(req, "staff_deleted", "staff", id, { username: existing.username });
+          return json({ message: "تم الحذف" });
+        } catch (err) {
+          logStaffApiFailure("delete", err, { id });
+          return error("فشل الاتصال بالخادم أثناء حذف الموظف", 500);
+        }
       }
       const b = await body(req);
       const update: any = {};
-      for (const k of ["fullName", "isActive"]) {
-        if (b?.[k] !== undefined) update[k] = b[k];
+      if (b?.fullName !== undefined) update.fullName = String(b.fullName ?? "");
+      if (b?.isActive !== undefined) update.isActive = b.isActive === true;
+      if (b?.username !== undefined) {
+        const nextUsername = staffUsername(b.username);
+        if (!nextUsername) return error("اسم المستخدم مطلوب", 400);
+        if (nextUsername.length > 50) return error("اسم المستخدم طويل جداً", 400);
+        const duplicate = await db.query.staffTable.findFirst({
+          where: and(sql`lower(${staffTable.username}) = ${nextUsername.toLowerCase()}`, sql`${staffTable.id} <> ${id}`),
+        });
+        if (duplicate) return error("اسم المستخدم مستخدم مسبقاً", 409);
+        update.username = nextUsername;
       }
       if (existing.role !== "admin") {
         const nextRole = b?.role !== undefined ? normalizeStaffRole(b.role) : existing.role;
         if (b?.role !== undefined) update.role = nextRole;
         if (b?.permissions !== undefined || b?.role !== undefined) {
-          update.permissions = permissionsForRole(nextRole, b?.permissions);
+          const explicitPermissions = validateStaffPermissions(b?.permissions);
+          if (b?.permissions !== undefined && explicitPermissions === null) return error("صلاحيات غير صحيحة", 400);
+          update.permissions = permissionsForRole(nextRole, explicitPermissions ?? b?.permissions);
         }
       }
       if (existing.role === "admin") {
         delete update.isActive;
         delete update.permissions;
       }
-      if (b?.password) update.passwordHash = hashPassword(b.password);
-      const [row] = await db.update(staffTable).set(update).where(eq(staffTable.id, id)).returning();
-      return json(formatStaff(row));
+      const nextPassword = String(b?.password ?? "").trim();
+      if (nextPassword) update.passwordHash = hashPassword(nextPassword);
+      try {
+        const [row] = await db.update(staffTable).set(update).where(eq(staffTable.id, id)).returning();
+        void logAdminActivity(req, "staff_updated", "staff", id, { fields: Object.keys(update) });
+        return json(formatStaff(row));
+      } catch (err: any) {
+        logStaffApiFailure("update", err, { id });
+        if (isUniqueViolation(err, "username")) return error("اسم المستخدم مستخدم مسبقاً", 409);
+        return error("فشل الاتصال بالخادم أثناء حفظ الموظف", 500);
+      }
     }
   }
 

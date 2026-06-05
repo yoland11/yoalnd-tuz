@@ -7,7 +7,7 @@ export const staffTable = pgTable("staff", {
   username: varchar("username", { length: 50 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   fullName: text("full_name").notNull().default(""),
-  role: varchar("role", { length: 30 }).notNull().default("staff"),
+  role: varchar("role", { length: 30 }).notNull().default("employee"),
   permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
   isActive: boolean("is_active").notNull().default(true),
   lastActivityAt: timestamp("last_activity_at"),

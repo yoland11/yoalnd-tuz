@@ -20,7 +20,7 @@ const ROLES = [
   { value: "booking_staff", label: "موظف حجوزات" },
   { value: "photographer", label: "موظف تصوير" },
   { value: "accountant", label: "محاسب" },
-  { value: "staff", label: "موظف عام" },
+  { value: "employee", label: "موظف عام" },
 ];
 
 type Editing = {
@@ -33,10 +33,20 @@ const ROLE_PRESETS: Record<string, string[]> = {
   booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
   photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
   accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
+  employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
 };
 
 const blank: Editing = { username: "", password: "", fullName: "", role: "booking_staff", permissions: ROLE_PRESETS.booking_staff, isActive: true };
+
+function roleLabel(role: string): string {
+  if (role === "staff") return "موظف عام";
+  return ROLES.find(r => r.value === role)?.label ?? role;
+}
+
+function cleanErrorMessage(err: any): string {
+  return String(err?.message ?? "فشل الاتصال بالخادم").replace(/^HTTP\s+\d+:\s*/, "");
+}
 
 export default function StaffPage() {
   const qc = useQueryClient();
@@ -49,26 +59,28 @@ export default function StaffPage() {
 
   const save = useMutation({
     mutationFn: (e: Editing) => {
-      const body: any = { fullName: e.fullName, role: e.role, permissions: e.permissions, isActive: e.isActive };
+      const body: any = { fullName: e.fullName ?? "", role: e.role, permissions: e.permissions ?? [], isActive: e.isActive };
       if (e.password) body.password = e.password;
       if (e.id) return adminFetch(`/admin/staff/${e.id}`, { method: "PATCH", body: JSON.stringify(body) });
-      body.username = e.username;
+      if (!e.username.trim()) throw new Error("اسم المستخدم مطلوب");
+      if (!e.password.trim()) throw new Error("كلمة المرور مطلوبة");
+      body.username = e.username.trim();
       return adminFetch("/admin/staff", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "staff"] }); setEditing(null); toast({ title: "تم حفظ الموظف" }); },
-    onError: (err: any) => toast({ title: "تعذر حفظ الموظف", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => toast({ title: "تعذر حفظ الموظف", description: cleanErrorMessage(err), variant: "destructive" }),
   });
 
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/staff/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "staff"] }),
-    onError: (err: any) => toast({ title: "تعذر حذف الموظف", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => toast({ title: "تعذر حذف الموظف", description: cleanErrorMessage(err), variant: "destructive" }),
   });
 
   const toggle = useMutation({
     mutationFn: (s: Staff) => adminFetch(`/admin/staff/${s.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !s.isActive }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "staff"] }),
-    onError: (err: any) => toast({ title: "تعذر تحديث الموظف", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => toast({ title: "تعذر تحديث الموظف", description: cleanErrorMessage(err), variant: "destructive" }),
   });
 
   return (
@@ -92,7 +104,7 @@ export default function StaffPage() {
                   </div>
                   <div>
                     <p className="font-semibold text-foreground">{s.fullName || s.username}</p>
-                    <p className="text-xs text-muted-foreground">@{s.username} • {ROLES.find(r => r.value === s.role)?.label ?? s.role}</p>
+                    <p className="text-xs text-muted-foreground">@{s.username} • {roleLabel(s.role)}</p>
                     <p className="text-[11px] text-muted-foreground mt-1">
                       آخر نشاط: {s.lastActivityAt ? new Date(s.lastActivityAt).toLocaleString("ar-IQ") : "لا يوجد"}
                     </p>
@@ -119,7 +131,7 @@ export default function StaffPage() {
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <button onClick={() => setEditing({ id: s.id, username: s.username, password: "", fullName: s.fullName, role: s.role, permissions: s.permissions, isActive: s.isActive })}
+                <button onClick={() => setEditing({ id: s.id, username: s.username, password: "", fullName: s.fullName, role: s.role === "staff" ? "employee" : s.role, permissions: s.permissions, isActive: s.isActive })}
                   className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
                 </button>
