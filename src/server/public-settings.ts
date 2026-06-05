@@ -58,6 +58,7 @@ export async function loadSiteSettings(): Promise<Record<string, any>> {
 export function publicSettingsPayload(settings: Record<string, any>) {
   const phone = String(settings.phones?.[0] ?? settings.phone ?? "").trim();
   const social = settings.social && typeof settings.social === "object" ? settings.social : {};
+  const logoUrl = cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? "");
   return {
     site_name: String(settings.siteName ?? DEFAULT_SITE_SETTINGS.siteName),
     phone,
@@ -70,7 +71,7 @@ export function publicSettingsPayload(settings: Record<string, any>) {
       facebook: cleanPublicUrl(social.facebook),
       whatsapp: String(social.whatsapp || ""),
     },
-    logo_url: cleanPublicUrl(settings.logoUrl ?? settings.logo_url ?? ""),
+    logo_url: logoUrl.startsWith("data:image/") ? "/api/media/settings/logo" : logoUrl,
     logo_metadata: settings.logoMetadata && typeof settings.logoMetadata === "object" ? settings.logoMetadata : {},
     image_settings: {
       ...DEFAULT_SITE_SETTINGS.imageSettings,

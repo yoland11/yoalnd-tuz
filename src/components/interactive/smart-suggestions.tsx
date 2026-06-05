@@ -26,6 +26,15 @@ type SuggestionItem = {
   meta?: string | null;
 };
 
+type ReadyPackage = {
+  id: string;
+  title: string;
+  description?: string | null;
+  image?: string | null;
+  href: string;
+  totalLabel?: string | null;
+};
+
 const SERVICE_SUGGESTIONS: Record<string, string[]> = {
   kosha: ["photography", "album", "gifts"],
   photography: ["album", "setup"],
@@ -55,6 +64,7 @@ export function SmartSuggestions({
   max?: number;
 }) {
   const [loaded, setLoaded] = useState<{ products: ProductSuggestion[]; services: ServiceSuggestion[] }>({ products: [], services: [] });
+  const [packages, setPackages] = useState<ReadyPackage[]>([]);
 
   useEffect(() => {
     if (products || services) return undefined;
@@ -74,6 +84,24 @@ export function SmartSuggestions({
     };
   }, [products, services]);
 
+  useEffect(() => {
+    let mounted = true;
+    const params = new URLSearchParams();
+    if (contextServiceType) params.set("context", contextServiceType);
+    fetch(`/api/offers/packages${params.toString() ? `?${params.toString()}` : ""}`)
+      .then((res) => res.ok ? res.json() : { packages: [] })
+      .then((payload) => {
+        if (!mounted) return;
+        setPackages(Array.isArray(payload?.packages) ? payload.packages.slice(0, 2) : []);
+      })
+      .catch(() => {
+        if (mounted) setPackages([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [contextServiceType]);
+
   const items = useMemo<SuggestionItem[]>(() => {
     const sourceProducts = products ?? loaded.products;
     const sourceServices = services ?? loaded.services;
@@ -82,6 +110,13 @@ export function SmartSuggestions({
       .sort((a, b) => serviceScore(contextServiceType, b.type) - serviceScore(contextServiceType, a.type));
 
     return [
+      ...packages.map((item) => ({
+        key: `pkg-${item.id}`,
+        title: item.title,
+        image: item.image,
+        href: item.href,
+        meta: item.totalLabel || item.description || "باقة جاهزة",
+      })),
       ...rankedServices.map((service) => ({
         key: `s-${service.id}`,
         title: service.nameAr || service.name || "خدمة",
@@ -97,7 +132,7 @@ export function SmartSuggestions({
         meta: product.price ? `${Number(product.price).toLocaleString("ar-IQ")} د.ع` : "منتج مقترح",
       })),
     ].slice(0, max);
-  }, [contextServiceType, loaded.products, loaded.services, max, products, services]);
+  }, [contextServiceType, loaded.products, loaded.services, max, packages, products, services]);
 
   if (items.length === 0) return null;
 

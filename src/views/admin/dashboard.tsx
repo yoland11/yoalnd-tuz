@@ -103,6 +103,29 @@ export default function DashboardPage() {
     { label: "إضافة منتج", href: "/admin/products", icon: Package },
     { label: "إضافة صورة للمعرض", href: "/admin/gallery", icon: ImagePlus },
   ];
+  const todayWorkItems = [
+    ...(data.upcomingBookings ?? []).slice(0, 3).map((booking) => ({
+      key: `booking-${booking.id}`,
+      title: booking.customerName || "حجز",
+      meta: `${booking.serviceName || "خدمة"} • ${booking.eventDate || "اليوم"}`,
+      href: "/admin/calendar",
+      tone: "text-primary",
+    })),
+    ...(data.lateOrders ?? []).slice(0, 3).map((order) => ({
+      key: `late-${order.id}`,
+      title: order.customerName || order.trackingCode,
+      meta: `طلب متأخر • ${order.trackingCode}`,
+      href: "/admin/orders",
+      tone: "text-amber-400",
+    })),
+    ...((data.todayTasks?.paymentFollowups ?? 0) > 0 ? [{
+      key: "payment-followups",
+      title: "متابعة المدفوعات",
+      meta: `${data.todayTasks.paymentFollowups} طلب يحتاج متابعة دفع`,
+      href: "/admin/orders",
+      tone: "text-green-400",
+    }] : []),
+  ].slice(0, 7);
 
   return (
     <div className="space-y-6">
@@ -143,6 +166,22 @@ export default function DashboardPage() {
             <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ")}</p>
           </div>
         ))}
+      </div>
+
+      <div className="bg-card rounded-xl border border-border/30 p-5">
+        <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+          <Clock className="w-4 h-4 text-primary" /> قائمة عمل اليوم
+        </h3>
+        {todayWorkItems.length === 0 ? <EmptyState message="لا توجد مهام عاجلة اليوم" /> : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {todayWorkItems.map((item) => (
+              <Link key={item.key} href={item.href} className="rounded-lg bg-background/60 border border-border/25 px-3 py-2 text-sm transition-colors hover:border-primary/40">
+                <p className={`font-semibold ${item.tone}`}>{item.title}</p>
+                <p className="mt-1 truncate text-xs text-muted-foreground">{item.meta}</p>
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

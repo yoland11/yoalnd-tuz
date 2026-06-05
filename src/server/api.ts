@@ -994,6 +994,172 @@ function clearSessionCookie(res: NextResponse): NextResponse {
   return res;
 }
 
+const MEDIA_CACHE_HEADER = "public, max-age=31536000, immutable";
+const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || process.env.SUPABASE_BUCKET || "ajn-assets";
+const STORAGE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const STORAGE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
+
+function isDataUrl(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("data:");
+}
+
+function parseDataUrl(value: string): { mime: string; bytes: Buffer } | null {
+  const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(value);
+  if (!match) return null;
+  const mime = match[1] || "application/octet-stream";
+  const payload = match[3] || "";
+  try {
+    const bytes = match[2] ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
+    return { mime, bytes };
+  } catch {
+    return null;
+  }
+}
+
+function bodyFromBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function mediaVersion(row: any): string {
+  const value = row?.updatedAt ?? row?.updated_at ?? row?.createdAt ?? row?.created_at ?? "";
+  if (value instanceof Date) return String(value.getTime());
+  return value ? String(value).replace(/[^0-9a-z]/gi, "").slice(0, 24) : "1";
+}
+
+function mediaRoute(kind: string, id: number | string, index?: number, version?: string) {
+  const suffix = typeof index === "number" ? `/${index}` : "";
+  const qs = version ? `?v=${encodeURIComponent(version)}` : "";
+  return `/api/media/${kind}/${id}${suffix}${qs}`;
+}
+
+function publicMediaValue(kind: string, row: any, value: unknown, index?: number) {
+  if (!value || typeof value !== "string") return null;
+  if (isDataUrl(value)) return mediaRoute(kind, row.id, index, mediaVersion(row));
+  return value;
+}
+
+function publicMediaList(kind: string, row: any, images: unknown) {
+  if (!Array.isArray(images)) return [];
+  return images
+    .map((value, index) => publicMediaValue(kind, row, value, index))
+    .filter((value): value is string => Boolean(value));
+}
+
+function storageExtension(mime: string) {
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("png")) return "png";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.includes("gif")) return "gif";
+  if (mime.includes("svg")) return "svg";
+  if (mime.includes("mp4")) return "mp4";
+  return "bin";
+}
+
+async function persistDataUrlToStorage(value: string, folder: string): Promise<string> {
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY) return value;
+  const parsed = parseDataUrl(value);
+  if (!parsed) return value;
+  const path = `${folder}/${new Date().toISOString().slice(0, 10)}/${Date.now()}-${randomUUID()}.${storageExtension(parsed.mime)}`;
+  try {
+    const upload = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: STORAGE_SERVICE_KEY,
+        authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+        "content-type": parsed.mime,
+        "x-upsert": "true",
+      },
+      body: bodyFromBuffer(parsed.bytes),
+    });
+    if (!upload.ok) {
+      console.warn("Supabase storage upload failed", { folder, status: upload.status });
+      return value;
+    }
+    return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+  } catch (err) {
+    console.warn("Supabase storage upload failed", { folder, error: err instanceof Error ? err.message : "unknown" });
+    return value;
+  }
+}
+
+async function persistMediaValue(value: unknown, folder: string): Promise<string | null> {
+  const cleaned = cleanPublicUrl(value ?? "");
+  if (!cleaned) return null;
+  return isDataUrl(cleaned) ? persistDataUrlToStorage(cleaned, folder) : cleaned;
+}
+
+async function persistMediaList(images: unknown, folder: string): Promise<string[]> {
+  if (!Array.isArray(images)) return [];
+  const stored: string[] = [];
+  for (const image of images) {
+    const value = await persistMediaValue(image, folder);
+    if (value) stored.push(value);
+  }
+  return stored;
+}
+
+function localMediaReference(value: unknown) {
+  if (typeof value !== "string") return null;
+  const match = /^\/api\/media\/([^/?#]+)\/(\d+)(?:\/(\d+))?/.exec(value);
+  if (!match) return null;
+  return {
+    kind: match[1],
+    id: Number.parseInt(match[2] ?? "0", 10),
+    index: match[3] !== undefined ? Number.parseInt(match[3], 10) : undefined,
+  };
+}
+
+async function resolveProductImageInputs(productId: number, images: unknown): Promise<string[]> {
+  if (!Array.isArray(images)) return [];
+  let currentImages: string[] | null = null;
+  const resolved: unknown[] = [];
+  for (const image of images) {
+    const ref = localMediaReference(image);
+    if (ref?.kind === "product" && ref.id === productId && typeof ref.index === "number") {
+      if (!currentImages) {
+        const current = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }) as any;
+        currentImages = Array.isArray(current?.images) ? current.images : [];
+      }
+      resolved.push((currentImages ?? [])[ref.index] ?? "");
+    } else {
+      resolved.push(image);
+    }
+  }
+  return persistMediaList(resolved, "products");
+}
+
+async function upgradeStoredMedia(kind: string, id: number | string, value: unknown, index?: number): Promise<unknown> {
+  if (!isDataUrl(value)) return value;
+  const stored = await persistDataUrlToStorage(String(value), kind === "settings" ? "settings/logo" : kind);
+  if (stored === value) return value;
+  try {
+    if (kind === "product" && typeof id === "number" && typeof index === "number") {
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+      const images = Array.isArray(product?.images) ? [...product.images] : [];
+      images[index] = stored;
+      await db.update(productsTable).set({ images, updatedAt: new Date() }).where(eq(productsTable.id, id));
+    } else if (kind === "category" && typeof id === "number") {
+      await db.update(categoriesTable).set({ imageUrl: stored, updatedAt: new Date() }).where(eq(categoriesTable.id, id));
+      clearStoreCategoriesCache();
+    } else if (kind === "service" && typeof id === "number") {
+      await db.update(servicesTable).set({ image: stored }).where(eq(servicesTable.id, id));
+    } else if (kind === "gallery" && typeof id === "number") {
+      await db.update(galleryItemsTable).set({ mediaUrl: stored }).where(eq(galleryItemsTable.id, id));
+    } else if (kind === "order-item" && typeof id === "number") {
+      await db.update(orderItemsTable).set({ image: stored }).where(eq(orderItemsTable.id, id));
+    } else if (kind === "settings") {
+      await db
+        .insert(settingsTable)
+        .values({ key: "logoUrl", value: stored as any })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: stored as any, updatedAt: new Date() } });
+      revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
+    }
+  } catch (err) {
+    console.warn("Stored media upgrade failed", { kind, id, error: err instanceof Error ? err.message : "unknown" });
+  }
+  return stored;
+}
+
 function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
   return {
     id: p.id,
@@ -1012,7 +1178,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     categoryName: p.categoryName ?? p.category_name ?? null,
     subcategoryName: p.subcategoryName ?? p.subcategory_name ?? null,
     category: p.category ?? null,
-    images: p.images ?? [],
+    images: publicMediaList("product", p, p.images),
     imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
     colors: normalizeColors(p.colors ?? []),
     subcategory: p.subcategory ?? null,
@@ -1032,7 +1198,7 @@ function formatCategory(row: any, productCount = 0) {
     nameAr: row.nameAr ?? row.name_ar,
     slug: row.slug,
     parentId: row.parentId ?? row.parent_id ?? null,
-    imageUrl: row.imageUrl ?? row.image_url ?? null,
+    imageUrl: publicMediaValue("category", row, row.imageUrl ?? row.image_url ?? null),
     imageMetadata: row.imageMetadata ?? row.image_metadata ?? {},
     sortOrder: row.sortOrder ?? row.sort_order ?? 0,
     isActive: row.isActive ?? row.is_active ?? true,
@@ -1151,9 +1317,12 @@ function formatService(s: any) {
     descriptionAr: s.descriptionAr ?? null,
     type: s.type,
     icon: s.icon ?? null,
-    image: s.image ?? null,
+    image: publicMediaValue("service", s, s.image ?? null),
     imageMetadata: s.imageMetadata ?? {},
     isActive: s.isActive,
+    sortOrder: s.sortOrder ?? 0,
+    createdAt: s.createdAt?.toISOString?.() ?? null,
+    updatedAt: s.updatedAt?.toISOString?.() ?? null,
   };
 }
 
@@ -2231,7 +2400,7 @@ async function formatOrder(order: any) {
       selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
       selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
-      image: i.image ?? null,
+      image: publicMediaValue("order-item", i, i.image),
     })),
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
@@ -2280,7 +2449,7 @@ async function buildTracking(order: any) {
       selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
       selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
-      image: i.image ?? null,
+      image: publicMediaValue("order-item", i, i.image),
     })),
     statusHistory: history.map((h) => ({
       status: h.status,
@@ -2327,7 +2496,7 @@ async function buildServiceTracking(so: any) {
     customerPhone: so.phone ?? null,
     serviceType: service?.type ?? null,
     serviceName: service?.nameAr ?? service?.name ?? null,
-    serviceImage: service?.image ?? null,
+    serviceImage: publicMediaValue("service", service, service?.image),
     kind: "service",
     total: Number.parseFloat(so.totalAmount ?? "0"),
     depositAmount: Number.parseFloat(so.depositAmount ?? "0"),
@@ -2512,7 +2681,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const email = String(data?.email ?? "").trim().slice(0, 180);
     const address = String(data?.address ?? "").trim().slice(0, 500);
     const city = String(data?.city ?? "").trim().slice(0, 120);
-    const avatarUrl = cleanPublicUrl(data?.avatarUrl ?? "");
+    const avatarUrl = await persistMediaValue(data?.avatarUrl ?? "", "avatars");
     const avatarMetadata = data?.avatarMetadata && typeof data.avatarMetadata === "object" ? data.avatarMetadata : {};
     const [customer] = await db
       .update(customersTable)
@@ -2655,6 +2824,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const requestedBarcode = normalizeProductBarcode(data.barcode);
     if (requestedBarcode && await productBarcodeExists(requestedBarcode)) return error("الباركود مستخدم مسبقاً", 409);
     const productCategories = await resolveProductCategories(data);
+    const storedImages = await persistMediaList(data.images ?? [], "products");
     let [product] = await db
       .insert(productsTable)
       .values({
@@ -2671,7 +2841,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         categoryId: productCategories.categoryId,
         subcategoryId: productCategories.subcategoryId,
         category: productCategories.category,
-        images: data.images ?? [],
+        images: storedImages,
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
@@ -2698,6 +2868,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const parsed = UpdateProductBody.safeParse(await body(req));
     if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
+    if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
     const update: any = { updatedAt: new Date() };
     for (const k of [
       "name",
@@ -2766,6 +2937,69 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   return null;
 }
 
+async function mediaResponseFromValue(req: NextRequest, value: unknown) {
+  if (!value || typeof value !== "string") return error("الصورة غير موجودة", 404);
+  const mediaValue = value;
+  if (isDataUrl(mediaValue)) {
+    const parsed = parseDataUrl(mediaValue);
+    if (!parsed) return error("صيغة الصورة غير صالحة", 415);
+    return new NextResponse(bodyFromBuffer(parsed.bytes), {
+      headers: {
+        "Content-Type": parsed.mime,
+        "Cache-Control": MEDIA_CACHE_HEADER,
+      },
+    });
+  }
+  if (mediaValue.startsWith("http://") || mediaValue.startsWith("https://")) {
+    return NextResponse.redirect(mediaValue, 302);
+  }
+  if (mediaValue.startsWith("/")) {
+    return NextResponse.redirect(new URL(mediaValue, req.nextUrl.origin), 302);
+  }
+  return error("الصورة غير موجودة", 404);
+}
+
+async function handleMedia(req: NextRequest, parts: string[]) {
+  if (req.method !== "GET") return null;
+  const kind = parts[1];
+  if (kind === "settings" && parts[2] === "logo") {
+    const settings = await loadSiteSettings();
+    const value = settings.logoUrl ?? settings.logo_url;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("settings", "logo", value));
+  }
+  const id = int(parts[2]);
+  const index = parts[3] !== undefined ? int(parts[3]) : 0;
+  if (!kind || !id) return error("معرف الصورة غير صحيح", 400);
+
+  if (kind === "product") {
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+    const images = Array.isArray(product?.images) ? product.images : [];
+    return mediaResponseFromValue(req, await upgradeStoredMedia("product", id, images[index ?? 0], index ?? 0));
+  }
+
+  if (kind === "category") {
+    const category = await db.query.categoriesTable.findFirst({ where: eq(categoriesTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("category", id, category?.imageUrl ?? category?.image_url));
+  }
+
+  if (kind === "service") {
+    const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("service", id, service?.image));
+  }
+
+  if (kind === "gallery") {
+    const item = await db.query.galleryItemsTable.findFirst({ where: eq(galleryItemsTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("gallery", id, item?.mediaUrl ?? item?.media_url));
+  }
+
+  if (kind === "order-item") {
+    const item = await db.query.orderItemsTable.findFirst({ where: eq(orderItemsTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("order-item", id, item?.image));
+  }
+
+  return error("نوع الصورة غير معروف", 404);
+}
+
 async function resolveProductCategories(data: any) {
   const requestedCategoryId = numberId(data?.categoryId);
   const requestedSubcategoryId = numberId(data?.subcategoryId);
@@ -2810,6 +3044,98 @@ async function handleCoupons(req: NextRequest, parts: string[]) {
     });
   }
   return null;
+}
+
+function includesAny(value: unknown, terms: string[]) {
+  const text = String(value ?? "").toLowerCase();
+  return terms.some((term) => text.includes(term.toLowerCase()));
+}
+
+function serviceMatches(service: any, terms: string[]) {
+  return includesAny(service.type, terms)
+    || includesAny(service.nameAr, terms)
+    || includesAny(service.name, terms)
+    || includesAny(service.descriptionAr, terms)
+    || includesAny(service.description, terms);
+}
+
+function productMatches(product: any, terms: string[]) {
+  return includesAny(product.category, terms)
+    || includesAny(product.subcategory, terms)
+    || includesAny(product.nameAr, terms)
+    || includesAny(product.name, terms)
+    || includesAny(product.descriptionAr, terms)
+    || includesAny(product.description, terms);
+}
+
+function packageTitle(items: { title: string }[]) {
+  if (items.length === 1) return items[0].title;
+  return `باقة ${items.slice(0, 2).map((item) => item.title).join(" + ")}`;
+}
+
+async function handleOffers(req: NextRequest, parts: string[]) {
+  if (req.method !== "GET" || parts[1] !== "packages") return null;
+  const context = String(req.nextUrl.searchParams.get("context") ?? req.nextUrl.searchParams.get("serviceType") ?? "").trim();
+  const [services, products] = await Promise.all([
+    db.query.servicesTable.findMany({
+      where: eq(servicesTable.isActive, true),
+      orderBy: (s, { asc }) => [asc(s.sortOrder), asc(s.id)],
+      limit: 80,
+    }) as Promise<any[]>,
+    db.query.productsTable.findMany({
+      where: eq(productsTable.isActive, true),
+      orderBy: (p, { desc }) => [desc(p.isFeatured), desc(p.createdAt)],
+      limit: 80,
+    }) as Promise<any[]>,
+  ]);
+
+  const preferred: Record<string, string[]> = {
+    kosha: ["photography", "تصوير", "album", "ألبوم", "gifts", "هدية", "هدايا"],
+    photography: ["album", "ألبوم", "video", "فيديو", "setup", "تخرج", "تجهيز"],
+    album: ["photography", "تصوير", "gifts", "هدايا"],
+    setup: ["photography", "تصوير", "album", "ألبوم", "gifts", "هدايا"],
+    gifts: ["kosha", "كوشة", "photography", "تصوير"],
+  };
+  const terms = preferred[context] ?? ["photography", "تصوير", "album", "ألبوم", "gifts", "هدايا", "تجهيز"];
+  const candidates = [
+    ...services
+      .filter((service) => !context || service.type !== context)
+      .filter((service) => serviceMatches(service, terms))
+      .map((service) => ({
+        kind: "service" as const,
+        id: service.id,
+        title: service.nameAr || service.name || "خدمة",
+        image: publicMediaValue("service", service, service.image),
+        href: `/services/${service.id}`,
+        price: null as number | null,
+      })),
+    ...products
+      .filter((product) => productMatches(product, terms) || product.isFeatured)
+      .map((product) => ({
+        kind: "product" as const,
+        id: product.id,
+        title: product.nameAr || product.name || "منتج",
+        image: publicMediaList("product", product, product.images)[0] ?? null,
+        href: `/store/${product.id}`,
+        price: Number.parseFloat(String(product.price ?? "0")) || null,
+      })),
+  ].slice(0, 8);
+
+  const packages = candidates.slice(0, 6).map((item, index) => {
+    const pair = candidates[index + 1] ? [item, candidates[index + 1]] : [item];
+    const total = pair.reduce((sum, entry) => sum + (entry.price ?? 0), 0);
+    return {
+      id: `${pair.map((entry) => `${entry.kind}-${entry.id}`).join("-")}`,
+      title: packageTitle(pair),
+      description: pair.map((entry) => entry.title).join("، "),
+      image: pair.find((entry) => entry.image)?.image ?? null,
+      href: pair[0].href,
+      items: pair.map((entry) => ({ kind: entry.kind, id: entry.id, title: entry.title, href: entry.href })),
+      totalLabel: total > 0 ? `${total.toLocaleString("ar-IQ")} د.ع` : "حسب تفاصيل الطلب",
+    };
+  });
+
+  return json({ packages });
 }
 
 async function handleServices(req: NextRequest, parts: string[]) {
@@ -3099,7 +3425,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         customerPhone: booking.phone,
         serviceName: serviceMap.get(booking.serviceId)?.nameAr ?? serviceMap.get(booking.serviceId)?.name ?? "حجز خدمة",
         serviceType: serviceMap.get(booking.serviceId)?.type ?? null,
-        serviceImage: serviceMap.get(booking.serviceId)?.image ?? null,
+        serviceImage: publicMediaValue("service", serviceMap.get(booking.serviceId), serviceMap.get(booking.serviceId)?.image),
         status: booking.status,
         total: Number.parseFloat(booking.totalAmount ?? "0"),
         depositAmount: Number.parseFloat(booking.depositAmount ?? "0"),
@@ -3273,7 +3599,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
           selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
           customization: item.customization,
-          image: product?.images?.[0] ?? null,
+          image: product ? publicMediaValue("product", product, product.images?.[0], 0) : null,
         });
         if (product) {
           await db
@@ -3435,7 +3761,7 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     return json(
       items.map((i) => ({
         id: i.id,
-        mediaUrl: i.mediaUrl,
+        mediaUrl: publicMediaValue("gallery", i, i.mediaUrl),
         mediaType: i.mediaType,
         imageMetadata: i.imageMetadata ?? {},
         title: i.title ?? null,
@@ -3451,12 +3777,18 @@ async function handleGallery(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     const parsed = CreateGalleryItemBody.safeParse(await body(req));
     if (!parsed.success) return validationError("gallery.create", parsed);
-    const [item] = await db.insert(galleryItemsTable).values(parsed.data).returning();
+    const values: any = { ...parsed.data };
+    if (typeof values.mediaUrl === "string" && values.mediaUrl.startsWith("data:")) {
+      values.mediaUrl = await persistDataUrlToStorage(values.mediaUrl, "gallery");
+    } else if (values.mediaUrl !== undefined) {
+      values.mediaUrl = await persistMediaValue(values.mediaUrl, "gallery");
+    }
+    const [item] = await db.insert(galleryItemsTable).values(values).returning();
     void logAdminActivity(req, "gallery_created", "gallery", item.id, { mediaType: item.mediaType });
     return json(
       {
         id: item.id,
-        mediaUrl: item.mediaUrl,
+        mediaUrl: publicMediaValue("gallery", item, item.mediaUrl),
         mediaType: item.mediaType,
         imageMetadata: item.imageMetadata ?? {},
         title: item.title ?? null,
@@ -5175,7 +5507,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             parentId: parentValue,
             sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : 0,
             isActive: isActive ?? true,
-            imageUrl: cleanPublicUrl(imageUrl ?? "") || null,
+            imageUrl: await persistMediaValue(imageUrl ?? "", "categories"),
             imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
           })
           .returning();
@@ -5201,7 +5533,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const parentValue = numberId(b.parentId);
         update.parentId = parentValue && parentValue !== id ? parentValue : null;
       }
-      if (b?.imageUrl !== undefined) update.imageUrl = cleanPublicUrl(b.imageUrl) || null;
+      if (b?.imageUrl !== undefined) {
+        const ref = localMediaReference(b.imageUrl);
+        update.imageUrl = ref?.kind === "category" && ref.id === id
+          ? (current.imageUrl ?? current.image_url ?? null)
+          : await persistMediaValue(b.imageUrl, "categories");
+      }
       if (b?.imageMetadata !== undefined) update.imageMetadata = b.imageMetadata && typeof b.imageMetadata === "object" ? b.imageMetadata : {};
       if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
       if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
@@ -5280,7 +5617,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         stock: String(p.stock),
         minStock: String(p.minStock ?? p.min_stock ?? "0"),
         category: p.category ?? "",
-        images: p.images ?? [],
+        images: publicMediaList("product", p, p.images),
         barcode: p.barcode ?? p.bar_code ?? "",
         isActive: p.isActive ?? p.is_active ?? true,
       })));
@@ -5403,7 +5740,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       minStock: Number(product.minStock ?? product.min_stock ?? 0),
       barcode: product.barcode ?? "",
       category: product.category ?? "",
-      images: product.images ?? [],
+      images: publicMediaList("product", product, product.images),
     }));
     if (req.nextUrl.searchParams.get("count") === "1") {
       return json({ count: mapped.length });
@@ -5498,7 +5835,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
     if (method === "POST" && parts[2] === "logo") {
       const data = await body(req);
-      const logoUrl = cleanPublicUrl(data?.logoUrl ?? data?.url ?? "");
+      const logoUrl = await persistMediaValue(data?.logoUrl ?? data?.url ?? "", "settings/logo");
       const logoMetadata = data?.logoMetadata && typeof data.logoMetadata === "object" ? data.logoMetadata : {};
       if (!logoUrl) return error("رابط الشعار غير صالح", 400);
       await Promise.all([
@@ -5519,7 +5856,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const entries = Object.entries(await body(req));
       await Promise.all(
         entries.map(async ([key, value]) => {
-          const storedValue = key === "logoUrl" || key === "mapUrl" ? cleanPublicUrl(value) : value;
+          const storedValue = key === "logoUrl"
+            ? await persistMediaValue(value, "settings/logo")
+            : key === "mapUrl"
+              ? cleanPublicUrl(value)
+              : value;
           await db
             .insert(settingsTable)
             .values({ key, value: storedValue as any })
@@ -6330,6 +6671,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
+      if (b?.status !== undefined) {
+        const nextStatus = String(b.status ?? "").trim();
+        if (!nextStatus) return error("حالة الطلب غير صالحة", 400);
+        update.status = nextStatus;
+      }
       if (update.customerPhone !== undefined) {
         const normalizedPhone = normalizeIraqiPhone(update.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -6339,7 +6685,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
       if (b?.attachments !== undefined) update.attachments = b.attachments;
       let current: typeof ordersTable.$inferSelect | null = null;
-      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined || b?.archived !== undefined) {
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined || b?.archived !== undefined || b?.status !== undefined) {
         current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) ?? null;
         if (!current) return error("غير موجود", 404);
       }
@@ -6375,6 +6721,31 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           reason: "payment",
         });
       }
+      if (update.status !== undefined && current?.status !== row.status) {
+        await db.insert(orderStatusHistoryTable).values({
+          orderId: row.id,
+          status: row.status,
+          notes: typeof b?.statusNotes === "string" ? b.statusNotes.slice(0, 500) : "تحديث من الإدارة",
+        });
+        const event = eventForStatus(row.status);
+        if (event) {
+          void fireOrderEvent(event, {
+            name: row.customerName,
+            phone: row.customerPhone,
+            tracking: row.trackingCode,
+            total: Number.parseFloat(row.total),
+            status: row.status,
+          });
+        }
+        void createCustomerNotificationByPhone(row.customerPhone, {
+          type: `order_status_${row.status}`,
+          title: row.status === "confirmed" ? "تم تأكيد طلبك" : row.status === "processing" ? "طلبك قيد التجهيز" : row.status === "shipped" ? "طلبك في الطريق" : row.status === "delivered" ? "تم تسليم طلبك" : row.status === "cancelled" ? "تم إلغاء الطلب" : "تحديث حالة الطلب",
+          body: `طلب ${row.trackingCode}`,
+          entityType: "order",
+          entityId: row.id,
+          href: `/track?code=${encodeURIComponent(row.trackingCode)}`,
+        });
+      }
       await awardProductOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
@@ -6396,7 +6767,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     if (method === "GET" && !parts[2]) {
       const rows = await db.query.servicesTable.findMany({ orderBy: (s, { asc }) => [asc(s.sortOrder), asc(s.id)] });
-      return json(rows);
+      return json(rows.map(formatService));
     }
     if (method === "POST" && !parts[2]) {
       const { name, nameAr, description, descriptionAr, type, icon, image, imageMetadata, isActive, sortOrder } = await body(req);
@@ -6412,14 +6783,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           descriptionAr: nullableText(descriptionAr),
           type: serviceType,
           icon: nullableText(icon),
-          image: nullableText(image),
+          image: await persistMediaValue(image, "services"),
           imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
           isActive: isActive ?? true,
           sortOrder: sortOrder ?? 0,
         })
         .returning();
       void logAdminActivity(req, "service_created", "service", row.id, { name: row.nameAr });
-      return json(row, 201);
+      return json(formatService(row), 201);
     }
     if (method === "PATCH" && parts[2]) {
       const id = int(parts[2]);
@@ -6435,11 +6806,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       for (const k of ["description", "descriptionAr", "icon", "image"]) {
         if (update[k] !== undefined) update[k] = nullableText(update[k]);
       }
+      if (b?.image !== undefined) {
+        const ref = localMediaReference(b.image);
+        update.image = ref?.kind === "service" && ref.id === id
+          ? (await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, id) }) as any)?.image ?? null
+          : await persistMediaValue(b.image, "services");
+      }
       if (update.imageMetadata !== undefined && (!update.imageMetadata || typeof update.imageMetadata !== "object")) update.imageMetadata = {};
       const [row] = await db.update(servicesTable).set(update).where(eq(servicesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
       void logAdminActivity(req, "service_updated", "service", row.id, { fields: Object.keys(update) });
-      return json(row);
+      return json(formatService(row));
     }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
@@ -6615,17 +6992,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const { dataUrl, titleAr, category, imageMetadata } = await body(req);
     if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return error("صيغة غير صحيحة", 400);
     if (dataUrl.length > 5_000_000) return error("الملف كبير جداً (الحد الأقصى ~3.5 ميغا)", 413);
+    const mediaUrl = await persistDataUrlToStorage(dataUrl, "gallery");
     const [row] = await db
       .insert(galleryItemsTable)
       .values({
-        mediaUrl: dataUrl,
+        mediaUrl,
         mediaType: dataUrl.startsWith("data:video/") ? "video" : "image",
         imageMetadata: imageMetadata && typeof imageMetadata === "object" ? imageMetadata : {},
         titleAr: titleAr ?? null,
         category: category ?? "uploads",
       })
       .returning();
-    return json({ id: row.id, url: row.mediaUrl }, 201);
+    return json({ id: row.id, url: publicMediaValue("gallery", row, row.mediaUrl) }, 201);
   }
 
   const accounting = await handleAccounting(req, parts, section);
@@ -7824,6 +8202,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     const route =
       root === "auth"
         ? await handleAuth(req, parts)
+        : root === "media"
+          ? await handleMedia(req, parts)
         : root === "settings"
           ? await handlePublicSettings(req, parts)
           : root === "customer"
@@ -7838,6 +8218,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
                 ? await handleNotifications(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
+          : root === "offers"
+            ? await handleOffers(req, parts)
           : root === "coupons"
             ? await handleCoupons(req, parts)
           : root === "services"

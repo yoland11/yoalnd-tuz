@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, Clock, ExternalLink, Filter } from "lucide-react";
+import { AlertTriangle, CalendarDays, Clock, ExternalLink, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch } from "./_lib";
@@ -52,6 +52,13 @@ function addDays(date: string, days: number) {
   return next.toISOString().slice(0, 10);
 }
 
+function conflictKey(event: CalendarEvent) {
+  if (event.kind !== "service" || ["cancelled", "completed", "delivered"].includes(event.status)) return "";
+  const dateKey = (event.date ?? "").slice(0, 16) || (event.date ?? "").slice(0, 10);
+  const resource = (event.crewName || event.location || `service-${event.serviceId ?? "general"}`).trim();
+  return dateKey && resource ? `${dateKey}::${resource}` : "";
+}
+
 export default function CalendarPage() {
   const [view, setView] = useState<"day" | "week" | "month">("week");
   const [from, setFrom] = useState(todayIso());
@@ -86,6 +93,19 @@ export default function CalendarPage() {
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [data?.events]);
+
+  const conflicts = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    for (const event of data?.events ?? []) {
+      const key = conflictKey(event);
+      if (!key) continue;
+      map.set(key, [...(map.get(key) ?? []), event]);
+    }
+    return Array.from(map.entries())
+      .filter(([, events]) => events.length > 1)
+      .map(([key, events]) => ({ key, events }));
+  }, [data?.events]);
+  const conflictIds = useMemo(() => new Set(conflicts.flatMap((item) => item.events.map((event) => `${event.kind}-${event.id}`))), [conflicts]);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -131,6 +151,27 @@ export default function CalendarPage() {
         <EmptyState message="لا توجد حجوزات ضمن الفترة" />
       ) : (
         <div className="space-y-3">
+          {conflicts.length > 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-300">
+                <AlertTriangle className="h-4 w-4" />
+                تنبيهات تعارض محتملة
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {conflicts.slice(0, 4).map(({ key, events }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSelected(events[0])}
+                    className="rounded-lg border border-amber-500/25 bg-background/45 px-3 py-2 text-right text-xs text-foreground transition-colors hover:border-amber-400/60"
+                  >
+                    <p className="font-semibold">{events.length} حجوزات بنفس المورد/الموعد</p>
+                    <p className="mt-1 truncate text-muted-foreground">{events.map((event) => event.customerName).join("، ")}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {grouped.map(([day, events]) => (
             <div key={day} className="bg-card rounded-xl border border-border/30 p-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-foreground mb-3">
@@ -145,7 +186,12 @@ export default function CalendarPage() {
                     onClick={() => setSelected(event)}
                     className={`text-right rounded-xl border p-3 transition-colors hover:border-primary/40 ${STATUS_TONES[event.status] ?? "border-border/30 bg-background/50 text-foreground"}`}
                   >
-                    <p className="font-semibold text-sm">{event.title}</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-semibold text-sm">{event.title}</p>
+                      {conflictIds.has(`${event.kind}-${event.id}`) && (
+                        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">تعارض</span>
+                      )}
+                    </div>
                     <p className="text-xs opacity-80 mt-1">{event.customerName}</p>
                     <div className="mt-2 flex items-center justify-between gap-2 text-[11px] opacity-80">
                       <span>{STATUS_LABELS[event.status] ?? event.status}</span>
