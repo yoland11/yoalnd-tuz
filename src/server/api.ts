@@ -1,5 +1,5 @@
 import { revalidateTag } from "next/cache";
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import {
   createHmac,
   randomBytes,
@@ -202,6 +202,16 @@ function text(data: string, status = 200, headers?: HeadersInit): NextResponse {
 
 function error(message: string, status = 400): NextResponse {
   return json({ error: message }, status);
+}
+
+function runAfter(label: string, task: () => Promise<unknown>) {
+  after(async () => {
+    try {
+      await task();
+    } catch (err: any) {
+      console.error("background task failed", { label, message: err?.message });
+    }
+  });
 }
 
 type ValidationIssue = { field: string; message: string };
@@ -886,6 +896,48 @@ async function createNotification(input: {
     });
   }
   return row;
+}
+
+async function createNotificationOnce(input: Parameters<typeof createNotification>[0]) {
+  await ensureAdminExtensionsTables();
+  const audienceType = input.audienceType ?? "admin";
+  if (input.entityType && input.entityId) {
+    const existing = await db.query.notificationsTable.findFirst({
+      where: and(
+        eq(notificationsTable.audienceType, audienceType),
+        eq(notificationsTable.type, input.type),
+        eq(notificationsTable.entityType, input.entityType),
+        eq(notificationsTable.entityId, input.entityId),
+        sql`${notificationsTable.archivedAt} is null`,
+      ),
+    });
+    if (existing) return existing;
+  }
+  return createNotification(input);
+}
+
+async function notifyOrderNeedsFollowup(input: {
+  kind: "order" | "service_order";
+  id: number;
+  trackingCode?: string | null;
+  customerName?: string | null;
+  paymentStatus?: string | null;
+  remainingAmount?: string | number | null;
+  reason?: "payment" | "late";
+}) {
+  const remaining = money(input.remainingAmount ?? 0);
+  const isLate = input.reason === "late";
+  const paymentStatus = String(input.paymentStatus ?? "unpaid");
+  if (!isLate && paymentStatus === "paid" && remaining <= 0) return null;
+  return createNotificationOnce({
+    type: "order_followup",
+    title: isLate ? "طلب يحتاج متابعة" : "طلب يحتاج متابعة مالية",
+    body: `${input.customerName || "زبون"} - ${input.trackingCode || `#${input.id}`}${remaining > 0 ? ` - المتبقي ${remaining.toLocaleString("ar-IQ")} د.ع` : ""}`,
+    entityType: input.kind,
+    entityId: input.id,
+    href: "/admin/orders",
+    metadata: { reason: input.reason ?? "payment", paymentStatus, remainingAmount: remaining },
+  });
 }
 
 async function customerIdForPhone(phone: string | null | undefined) {
@@ -2809,6 +2861,15 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       entityId: order.id,
       href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
     });
+    void notifyOrderNeedsFollowup({
+      kind: "service_order",
+      id: order.id,
+      trackingCode: order.trackingCode,
+      customerName: order.customerName,
+      paymentStatus: order.paymentStatus,
+      remainingAmount: order.remainingAmount,
+      reason: "payment",
+    });
     return json(
       {
         id: order.id,
@@ -3205,6 +3266,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       entityType: "order",
       entityId: order.id,
       href: "/admin/orders",
+    });
+    void notifyOrderNeedsFollowup({
+      kind: "order",
+      id: order.id,
+      trackingCode: order.trackingCode,
+      customerName: order.customerName,
+      paymentStatus: order.paymentStatus,
+      remainingAmount: order.remainingAmount,
+      reason: "payment",
     });
     if (customerId) {
       void createNotification({
@@ -4723,6 +4793,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       topCrews,
       upcomingBookingsRaw,
       lateProductOrders,
+      paymentFollowupOrders,
+      servicePaymentFollowups,
       whatsappFailures,
       todayTaskCount,
       newMessageCount,
@@ -4814,6 +4886,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         orderBy: [desc(ordersTable.createdAt)],
         limit: 8,
       }),
+      db.query.ordersTable.findMany({
+        where: and(inArray(ordersTable.paymentStatus, ["partial", "unpaid"]), sql`${ordersTable.archivedAt} is null`),
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 8,
+      }),
+      db.query.serviceOrdersTable.findMany({
+        where: and(inArray(serviceOrdersTable.paymentStatus, ["partial", "unpaid"]), sql`${serviceOrdersTable.archivedAt} is null`),
+        orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit: 8,
+      }),
       db.select({ c: sql<number>`count(*)::int` }).from(whatsappLogTable).where(sql`${whatsappLogTable.status} not in ('sent','success','ok')`),
       db
         .select({ c: sql<number>`count(*)::int` })
@@ -4846,10 +4928,49 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const timestamp = booking.eventDate ? Date.parse(`${booking.eventDate}T00:00:00`) : NaN;
       return Number.isFinite(timestamp) && timestamp >= today.getTime() && timestamp < tomorrow.getTime();
     }).length;
-    const lateBookings = upcomingBookingsRaw.filter((booking) => {
+    const lateBookingRows = upcomingBookingsRaw.filter((booking) => {
       const timestamp = booking.eventDate ? Date.parse(`${booking.eventDate}T00:00:00`) : NaN;
       return Number.isFinite(timestamp) && timestamp < today.getTime() && booking.status !== "cancelled";
-    }).length;
+    });
+    const lateBookings = lateBookingRows.length;
+    runAfter("order-followup-sync", () => Promise.allSettled([
+      ...lateProductOrders.map((order) => notifyOrderNeedsFollowup({
+        kind: "order",
+        id: order.id,
+        trackingCode: order.trackingCode,
+        customerName: order.customerName,
+        paymentStatus: order.paymentStatus,
+        remainingAmount: order.remainingAmount,
+        reason: "late",
+      })),
+      ...lateBookingRows.slice(0, 8).map((booking) => notifyOrderNeedsFollowup({
+        kind: "service_order",
+        id: booking.id,
+        trackingCode: booking.trackingCode,
+        customerName: booking.customerName,
+        paymentStatus: booking.paymentStatus,
+        remainingAmount: booking.remainingAmount,
+        reason: "late",
+      })),
+      ...paymentFollowupOrders.map((order) => notifyOrderNeedsFollowup({
+        kind: "order",
+        id: order.id,
+        trackingCode: order.trackingCode,
+        customerName: order.customerName,
+        paymentStatus: order.paymentStatus,
+        remainingAmount: order.remainingAmount,
+        reason: "payment",
+      })),
+      ...servicePaymentFollowups.map((booking) => notifyOrderNeedsFollowup({
+        kind: "service_order",
+        id: booking.id,
+        trackingCode: booking.trackingCode,
+        customerName: booking.customerName,
+        paymentStatus: booking.paymentStatus,
+        remainingAmount: booking.remainingAmount,
+        reason: "payment",
+      })),
+    ]));
     const alerts = [
       { key: "new-orders", label: "طلبات بانتظار المراجعة", count: statusBreakdown.find((s) => s.status === "pending")?.count ?? 0 },
       { key: "bookings-today", label: "حجوزات اليوم", count: todayBookings },
@@ -5764,6 +5885,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         entityId: order.id,
         href: `/track?code=${encodeURIComponent(order.trackingCode ?? "")}`,
       });
+      void notifyOrderNeedsFollowup({
+        kind: "service_order",
+        id: order.id,
+        trackingCode: order.trackingCode,
+        customerName: order.customerName,
+        paymentStatus: order.paymentStatus,
+        remainingAmount: order.remainingAmount,
+        reason: "payment",
+      });
       return json(
         {
           id: order.id,
@@ -5930,6 +6060,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           href: `/track?code=${encodeURIComponent(row.trackingCode ?? "")}`,
         });
       }
+      if (update.paymentStatus !== undefined || update.remainingAmount !== undefined) {
+        void notifyOrderNeedsFollowup({
+          kind: "service_order",
+          id: row.id,
+          trackingCode: row.trackingCode,
+          customerName: row.customerName,
+          paymentStatus: row.paymentStatus,
+          remainingAmount: row.remainingAmount,
+          reason: "payment",
+        });
+      }
       await awardServiceOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
@@ -6021,6 +6162,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             entityId: order.id,
             href: "/admin/orders",
           });
+          void notifyOrderNeedsFollowup({
+            kind: "order",
+            id: order.id,
+            trackingCode: order.trackingCode,
+            customerName: order.customerName,
+            paymentStatus: order.paymentStatus,
+            remainingAmount: order.remainingAmount,
+            reason: "payment",
+          });
           void createCustomerNotificationByPhone(order.customerPhone, {
             type: "order_created",
             title: "تم إنشاء طلبك",
@@ -6078,6 +6228,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      if (update.paymentStatus !== undefined || update.remainingAmount !== undefined) {
+        void notifyOrderNeedsFollowup({
+          kind: "order",
+          id: row.id,
+          trackingCode: row.trackingCode,
+          customerName: row.customerName,
+          paymentStatus: row.paymentStatus,
+          remainingAmount: row.remainingAmount,
+          reason: "payment",
+        });
+      }
       await awardProductOrderPoints(row);
       void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
