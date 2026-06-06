@@ -5283,15 +5283,45 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const rows = await Promise.all([
       ...orders.map(async (order) => {
         const qr = await ensureQrForEntity("order", order, req);
-        return { id: order.id, kind: "order", label: order.trackingCode, customerName: order.customerName, date: order.createdAt.toISOString(), qr };
+        return {
+          id: order.id,
+          kind: "order",
+          label: order.trackingCode,
+          customerName: order.customerName,
+          amount: Number.parseFloat(order.total ?? "0"),
+          status: order.status,
+          paymentStatus: order.paymentStatus ?? "unpaid",
+          date: order.createdAt.toISOString(),
+          qr,
+        };
       }),
       ...bookings.map(async (booking) => {
         const qr = await ensureQrForEntity("service_order", booking, req);
-        return { id: booking.id, kind: "service_order", label: booking.trackingCode ?? `#${booking.id}`, customerName: booking.customerName, date: booking.createdAt.toISOString(), qr };
+        return {
+          id: booking.id,
+          kind: "service_order",
+          label: booking.trackingCode ?? `#${booking.id}`,
+          customerName: booking.customerName,
+          amount: Number.parseFloat(booking.totalAmount ?? "0"),
+          status: booking.status,
+          paymentStatus: booking.paymentStatus ?? "unpaid",
+          date: booking.createdAt.toISOString(),
+          qr,
+        };
       }),
       ...invoices.map(async (invoice) => {
         const qr = await ensureQrForEntity("invoice", invoice, req);
-        return { id: invoice.id, kind: "invoice", label: invoice.invoiceNo, customerName: invoice.customerName, date: invoice.createdAt.toISOString(), qr };
+        return {
+          id: invoice.id,
+          kind: "invoice",
+          label: invoice.invoiceNo,
+          customerName: invoice.customerName,
+          amount: Number.parseFloat(invoice.total ?? "0"),
+          status: invoice.status,
+          paymentStatus: invoice.paymentStatus ?? "unpaid",
+          date: invoice.createdAt.toISOString(),
+          qr,
+        };
       }),
     ]);
     rows.sort((a, b) => b.date.localeCompare(a.date));
