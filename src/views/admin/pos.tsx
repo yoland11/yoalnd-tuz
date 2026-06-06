@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { printWhenImagesReadyScript, thermalBaseCss } from "./print-helpers";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -266,25 +267,24 @@ function openPrintWindow(
 
   const html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
+    ${thermalBaseCss(size, fontSize)}
     @page { size: ${pageWidth} auto; margin: ${margin}; }
-    * { box-sizing: border-box; }
-    body { font-family: Cairo, sans-serif; font-size: ${fontSize}; color: #111; margin: 0; padding: 0; }
-    .header { text-align: center; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px dashed #999; }
+    body { font-size: ${fontSize}; }
+    .header { text-align: center; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px dashed #000; }
     .logo { height: 40px; object-fit: contain; margin-bottom: 4px; }
     .company-name { font-size: 1.2em; font-weight: 700; }
-    .meta { font-size: 0.9em; color: #444; }
-    .divider { border: none; border-top: 1px dashed #aaa; margin: 6px 0; }
+    .meta { font-size: 0.9em; color: #000 !important; }
+    .divider { border: none; border-top: 1px dashed #000; margin: 6px 0; }
     table { width: 100%; border-collapse: collapse; }
-    th { background: #f0f0f0; padding: 3px 4px; text-align: right; font-weight: 600; }
-    td { padding: 3px 4px; border-bottom: 1px dotted #ddd; }
+    th { background: #fff !important; padding: 3px 4px; text-align: right; font-weight: 700; border: 1px solid #000 !important; }
+    td { padding: 3px 4px; border-bottom: 1px dotted #000 !important; }
     .totals { margin-top: 6px; }
     .totals tr td:first-child { font-weight: 600; }
     .totals tr td:last-child { text-align: left; }
     .grand { font-size: 1.15em; font-weight: 700; }
-    .footer { text-align: center; margin-top: 8px; padding-top: 6px; border-top: 1px dashed #999; font-size: 0.85em; color: #555; }
+    .footer { text-align: center; margin-top: 8px; padding-top: 6px; border-top: 1px dashed #000; font-size: 0.85em; color: #000 !important; }
     .qr { text-align: center; margin-top: 8px; }
-    .qr img { width: ${isNarrow ? "80px" : "110px"}; height: ${isNarrow ? "80px" : "110px"}; object-fit: contain; }
+    .qr img.qr-code { width: 120px !important; height: 120px !important; object-fit: contain; image-rendering: pixelated; }
   </style></head><body>
   <div class="header">
     ${logo ? `<img src="${logo}" class="logo" />` : ""}
@@ -308,9 +308,9 @@ function openPrintWindow(
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${totals.remaining.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
   </table>
   ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${form.notes}</div>` : ""}
-  ${options.qrDataUrl ? `<div class="qr"><img src="${options.qrDataUrl}" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
+  ${options.qrDataUrl ? `<div class="qr"><img class="qr-code" src="${options.qrDataUrl}" alt="QR" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
   <div class="footer">شكراً لتعاملكم معنا</div>
-  <script>window.onload = function() { window.print(); setTimeout(function(){ window.close(); }, 500); }</script>
+  ${printWhenImagesReadyScript()}
   </body></html>`;
 
   const w = window.open("", "_blank", "width=600,height=700");
@@ -571,6 +571,13 @@ export default function POSPage() {
       toast({ title: "✓ تم حفظ الفاتورة", description: invoiceNo });
       const printSize = andPrint ?? (printerSettings?.autoPrint ? printerSettings.defaultPaperSize : undefined);
       if (printSize) {
+        if (!qrDataUrl) {
+          toast({
+            title: "تنبيه QR",
+            description: "تم حفظ الفاتورة، لكن تعذر تجهيز QR للطباعة.",
+            variant: "destructive",
+          });
+        }
         const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
         for (let index = 0; index < copies; index++) {
           openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl });

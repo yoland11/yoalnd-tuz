@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoute, useSearch } from "wouter";
-import { Printer, ArrowRight, Download } from "lucide-react";
+import { Printer, ArrowRight, Download, QrCode } from "lucide-react";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { downloadElementPdf } from "@/lib/pdf";
+import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 
 type InvoiceData = any;
 
@@ -73,6 +74,35 @@ export default function Invoice() {
     }
   }
 
+  function invoiceAmount() {
+    if (!data) return 0;
+    return data.kind === "booking" ? Number(data.price ?? 0) : Number(data.total ?? 0);
+  }
+
+  function printQrOnly() {
+    if (!data) return;
+    try {
+      openQrPrintWindow({
+        qrDataUrl: data.qr?.dataUrl,
+        customerName: data.customerName,
+        amount: invoiceAmount(),
+        title: data.kind === "booking" ? "QR الحجز" : "QR الطلب",
+        paperSize: "80mm",
+      });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "تعذر طباعة QR");
+    }
+  }
+
+  function downloadQrImage() {
+    if (!data) return;
+    try {
+      downloadDataUrl(data.qr?.dataUrl, `qr-${data.trackingCode ?? data.id}.png`);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "تعذر تحميل QR");
+    }
+  }
+
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-muted-foreground" dir="rtl">جاري التحميل...</div>;
   }
@@ -90,6 +120,18 @@ export default function Invoice() {
           <ArrowRight className="w-4 h-4" /> العودة للوحة
         </a>
         <div className="flex items-center gap-2">
+          <button
+            onClick={printQrOnly}
+            className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors"
+          >
+            <QrCode className="w-4 h-4" /> طباعة QR
+          </button>
+          <button
+            onClick={downloadQrImage}
+            className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors"
+          >
+            <Download className="w-4 h-4" /> تحميل QR
+          </button>
           <button
             onClick={downloadPdf}
             disabled={downloading}
@@ -273,6 +315,20 @@ export default function Invoice() {
           </div>
         )}
 
+        {data.qr?.dataUrl && (
+          <div className="mb-6 text-center">
+            <img
+              src={data.qr.dataUrl}
+              alt="QR"
+              className="qr-code mx-auto h-[120px] w-[120px] object-contain"
+              width={120}
+              height={120}
+              decoding="async"
+            />
+            <p className="text-xs text-neutral-500 mt-2">امسح الرمز لفتح التتبع</p>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="border-t-2 border-amber-500 pt-4 mt-8 text-center text-xs text-neutral-600">
           <p>شكراً لاختياركم مجموعة علي جان</p>
@@ -284,6 +340,27 @@ export default function Invoice() {
         @media print {
           @page { size: A4; margin: 12mm; }
           body { background: white !important; }
+          .invoice-sheet, .invoice-sheet * {
+            color: #000 !important;
+            text-shadow: none !important;
+            box-shadow: none !important;
+          }
+          .invoice-sheet table,
+          .invoice-sheet th,
+          .invoice-sheet td {
+            border-color: #000 !important;
+          }
+          .invoice-sheet th,
+          .invoice-sheet .font-bold,
+          .invoice-sheet .font-semibold {
+            font-weight: 700 !important;
+          }
+          img.qr-code {
+            display: block !important;
+            width: 120px !important;
+            height: 120px !important;
+            image-rendering: pixelated;
+          }
         }
       `}</style>
     </div>

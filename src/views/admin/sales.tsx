@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Plus, Trash2, Search, Printer, FileText, Save, RefreshCw,
+  Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
-  CheckCircle2, Clock, AlertCircle,
+  CheckCircle2, Clock, AlertCircle, QrCode, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
+import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -25,6 +26,7 @@ type SalesInvoice = {
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   items?: CartItem[];
+  qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
 };
 type HeldInvoice = { id: string; customerName: string; items: CartItem[]; createdAt: string };
 
@@ -73,6 +75,16 @@ export default function SalesPage() {
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const invoiceId = Number(new URLSearchParams(window.location.search).get("invoice"));
+    if (Number.isFinite(invoiceId) && invoiceId > 0) {
+      setListMode(true);
+      setSelectedInvoiceId(invoiceId);
+    }
+  }, []);
 
   // Product search
   const { data: products = [] } = useQuery<Product[]>({
@@ -86,7 +98,7 @@ export default function SalesPage() {
   const { data: invoicesList } = useQuery({
     queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo],
     queryFn: () => adminFetch<{ data: SalesInvoice[]; total: number }>(
-      `/admin/sales-invoices?page=${listPage}&limit=20${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
+      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
     ),
     enabled: listMode,
   });
@@ -263,14 +275,25 @@ export default function SalesPage() {
 
   // ── View: Invoice List ───────────────────────────────────────────────────
   if (listMode) {
-    return <InvoiceListView
-      invoices={invoicesList?.data ?? []}
-      total={invoicesList?.total ?? 0}
-      page={listPage} onPage={setListPage}
-      from={listFrom} to={listTo}
-      onFrom={setListFrom} onTo={setListTo}
-      onBack={() => setListMode(false)}
-    />;
+    return (
+      <>
+        <InvoiceListView
+          invoices={invoicesList?.data ?? []}
+          total={invoicesList?.total ?? 0}
+          page={listPage} onPage={setListPage}
+          from={listFrom} to={listTo}
+          onFrom={setListFrom} onTo={setListTo}
+          onBack={() => setListMode(false)}
+          onOpen={setSelectedInvoiceId}
+        />
+        {selectedInvoiceId && (
+          <SalesInvoiceDetailModal
+            invoiceId={selectedInvoiceId}
+            onClose={() => setSelectedInvoiceId(null)}
+          />
+        )}
+      </>
+    );
   }
 
   // ── View: POS ────────────────────────────────────────────────────────────
@@ -638,11 +661,11 @@ export default function SalesPage() {
 
 // ── Invoice List Sub-View ──────────────────────────────────────────────────
 function InvoiceListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, onBack,
+  invoices, total, page, onPage, from, to, onFrom, onTo, onBack, onOpen,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
-  onBack: () => void;
+  onBack: () => void; onOpen: (id: number) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
@@ -682,11 +705,12 @@ function InvoiceListView({
                 <th className="px-4 py-3 text-center">الحالة</th>
                 <th className="px-4 py-3 text-center">الدفع</th>
                 <th className="px-4 py-3 text-center">النوع</th>
+                <th className="px-4 py-3 text-center">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
               {invoices.length === 0
-                ? <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
+                ? <tr><td colSpan={8} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}</td>
@@ -705,6 +729,11 @@ function InvoiceListView({
                           : <span className="text-xs bg-muted/30 text-muted-foreground px-2 py-0.5 rounded-full">عادية</span>
                         }
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
+                          تفاصيل
+                        </Button>
+                      </td>
                     </tr>
                   ))
               }
@@ -722,6 +751,425 @@ function InvoiceListView({
             <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>
               <ChevronLeft className="w-4 h-4" />
             </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function toNumber(value: unknown) {
+  const n = typeof value === "number" ? value : Number.parseFloat(String(value ?? "0"));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState({
+    date: "",
+    customerName: "",
+    customerPhone: "",
+    discountAmount: "0",
+    taxAmount: "0",
+    paidAmount: "0",
+    paymentMethod: "cash",
+    notes: "",
+    isInternal: false,
+  });
+  const [items, setItems] = useState<CartItem[]>([]);
+
+  const { data: invoice, isLoading, error } = useQuery<SalesInvoice>({
+    queryKey: ["admin", "sales-invoice", invoiceId],
+    queryFn: () => adminFetch(`/admin/sales-invoices/${invoiceId}`),
+    enabled: invoiceId > 0,
+  });
+
+  useEffect(() => {
+    if (!invoice) return;
+    setDraft({
+      date: invoice.date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+      customerName: invoice.customerName || "",
+      customerPhone: invoice.customerPhone || "",
+      discountAmount: String(invoice.discountAmount ?? "0"),
+      taxAmount: String(invoice.taxAmount ?? "0"),
+      paidAmount: String(invoice.paidAmount ?? "0"),
+      paymentMethod: invoice.paymentMethod || "cash",
+      notes: invoice.notes || "",
+      isInternal: Number(invoice.isInternal) === 1,
+    });
+    setItems((invoice.items ?? []).map((item: any) => {
+      const quantity = toNumber(item.quantity);
+      const unitPrice = toNumber(item.unitPrice);
+      const discount = toNumber(item.discount);
+      return {
+        productId: Number(item.productId ?? 0),
+        productName: item.productName ?? "",
+        barcode: item.barcode ?? "",
+        quantity,
+        unitPrice,
+        discount,
+        discountPct: toNumber(item.discountPct),
+        total: toNumber(item.total) || Math.max(quantity * unitPrice - discount, 0),
+        costPrice: toNumber(item.costPrice),
+      };
+    }));
+  }, [invoice]);
+
+  function updateDraft(key: keyof typeof draft, value: string | boolean) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateDetailItem(idx: number, field: keyof CartItem, raw: string) {
+    setItems((current) => {
+      const next = [...current];
+      const item = { ...next[idx] } as any;
+      if (field === "productName" || field === "barcode") {
+        item[field] = raw;
+      } else {
+        item[field] = Number.parseFloat(raw) || 0;
+      }
+      if (field === "discountPct") {
+        item.discount = +(item.unitPrice * item.quantity * item.discountPct / 100).toFixed(2);
+      } else if (field === "discount") {
+        const gross = item.unitPrice * item.quantity;
+        item.discountPct = gross > 0 ? +(item.discount / gross * 100).toFixed(2) : 0;
+      }
+      item.total = +(item.quantity * item.unitPrice - item.discount).toFixed(2);
+      next[idx] = item;
+      return next;
+    });
+  }
+
+  function addDetailItem() {
+    setItems((current) => [...current, {
+      productId: 0,
+      productName: "",
+      barcode: "",
+      quantity: 1,
+      unitPrice: 0,
+      discount: 0,
+      discountPct: 0,
+      total: 0,
+      costPrice: 0,
+    }]);
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  const discountAmount = toNumber(draft.discountAmount);
+  const taxAmount = toNumber(draft.taxAmount);
+  const total = Math.max(subtotal - discountAmount + taxAmount, 0);
+  const paidAmount = toNumber(draft.paidAmount);
+  const remainingAmount = Math.max(total - paidAmount, 0);
+  const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+  async function saveChanges() {
+    const validItems = items.filter((item) => item.productName.trim() && item.quantity > 0);
+    if (validItems.length === 0) {
+      toast({ title: "الفاتورة فارغة", description: "أضف منتجاً واحداً على الأقل.", variant: "destructive" });
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminFetch(`/admin/sales-invoices/${invoiceId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          date: draft.date,
+          customerName: draft.customerName,
+          customerPhone: draft.customerPhone,
+          subtotal,
+          discountAmount,
+          taxAmount,
+          total,
+          paidAmount,
+          remainingAmount,
+          paymentMethod: draft.paymentMethod,
+          paymentStatus,
+          isInternal: draft.isInternal ? 1 : 0,
+          notes: draft.notes,
+          items: validItems.map((item) => ({
+            productId: item.productId > 0 ? item.productId : null,
+            productName: item.productName,
+            barcode: item.barcode,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            discount: item.discount,
+            discountPct: item.discountPct,
+            total: item.total,
+            costPrice: item.costPrice,
+          })),
+        }),
+      });
+      toast({ title: "تم حفظ تعديل الفاتورة", description: invoice?.invoiceNo ?? "" });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
+    } catch (e: any) {
+      toast({ title: "تعذر حفظ الفاتورة", description: e?.message ?? "حدث خطأ غير متوقع", variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function printQr() {
+    try {
+      openQrPrintWindow({
+        qrDataUrl: invoice?.qr?.dataUrl,
+        customerName: draft.customerName || invoice?.customerName,
+        amount: total || invoice?.total,
+        title: "QR الفاتورة",
+        paperSize: "80mm",
+      });
+    } catch (e: any) {
+      toast({ title: "تعذر طباعة QR", description: e?.message ?? "لم يتم توليد QR", variant: "destructive" });
+    }
+  }
+
+  function downloadQr() {
+    try {
+      downloadDataUrl(invoice?.qr?.dataUrl, `qr-${invoice?.invoiceNo ?? invoiceId}.png`);
+    } catch (e: any) {
+      toast({ title: "تعذر تحميل QR", description: e?.message ?? "لم يتم توليد QR", variant: "destructive" });
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
+      <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92vh] overflow-hidden shadow-xl">
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border/30">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">تفاصيل الفاتورة</h2>
+            <p className="text-xs text-muted-foreground">{invoice?.invoiceNo ?? "جاري التحميل..."}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
+              <QrCode className="w-4 h-4 ml-1" />
+              طباعة QR
+            </Button>
+            <Button variant="outline" size="sm" onClick={downloadQr} disabled={!invoice?.qr?.dataUrl}>
+              <Download className="w-4 h-4 ml-1" />
+              تحميل QR
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="py-20 text-center text-muted-foreground">جاري تحميل تفاصيل الفاتورة...</div>
+        ) : error || !invoice ? (
+          <div className="py-20 text-center text-muted-foreground">تعذر تحميل الفاتورة</div>
+        ) : (
+          <div className="overflow-y-auto max-h-[calc(92vh-76px)] p-5 space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-3">
+                <h3 className="font-semibold text-sm">بيانات العميل</h3>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">التاريخ</label>
+                  <input
+                    type="date"
+                    value={draft.date}
+                    onChange={(e) => updateDraft("date", e.target.value)}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">اسم العميل</label>
+                  <input
+                    value={draft.customerName}
+                    onChange={(e) => updateDraft("customerName", e.target.value)}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">رقم الهاتف</label>
+                  <input
+                    value={draft.customerPhone}
+                    onChange={(e) => updateDraft("customerPhone", e.target.value)}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    dir="ltr"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-3">
+                <h3 className="font-semibold text-sm">الدفع</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {PAYMENT_METHODS.map((method) => (
+                    <button
+                      type="button"
+                      key={method.value}
+                      onClick={() => updateDraft("paymentMethod", method.value)}
+                      className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
+                        draft.paymentMethod === method.value
+                          ? "bg-primary text-black border-primary"
+                          : "border-border/40 text-muted-foreground hover:border-primary/50"
+                      }`}
+                    >
+                      {method.label}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">المدفوع</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={draft.paidAmount}
+                    onChange={(e) => updateDraft("paidAmount", e.target.value)}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    dir="ltr"
+                  />
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">حالة الدفع</span>
+                  <PayStatusBadge status={paymentStatus} />
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    checked={draft.isInternal}
+                    onChange={(e) => updateDraft("isInternal", e.target.checked)}
+                    className="accent-primary"
+                  />
+                  <span className="text-xs text-muted-foreground">فاتورة داخلية بدون تتبع</span>
+                </div>
+              </div>
+
+              <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-2">
+                <h3 className="font-semibold text-sm mb-2">الإجماليات</h3>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">المجموع</span>
+                  <span>{formatCurrency(subtotal)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">إجمالي الخصم</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={draft.discountAmount}
+                    onChange={(e) => updateDraft("discountAmount", e.target.value)}
+                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                    dir="ltr"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">الضريبة</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={draft.taxAmount}
+                    onChange={(e) => updateDraft("taxAmount", e.target.value)}
+                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                    dir="ltr"
+                  />
+                </div>
+                <div className="flex justify-between font-bold border-t border-border/30 pt-2">
+                  <span>الإجمالي</span>
+                  <span className="text-primary">{formatCurrency(total)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">المتبقي</span>
+                  <span>{formatCurrency(remainingAmount)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-background/40 rounded-xl border border-border/30 overflow-hidden">
+              <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between">
+                <span className="font-semibold text-sm">منتجات الفاتورة</span>
+                <Button variant="ghost" size="sm" onClick={addDetailItem}>
+                  <Plus className="w-4 h-4 ml-1" />
+                  إضافة منتج
+                </Button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/30 text-muted-foreground text-xs">
+                      <th className="px-3 py-2 text-right">المنتج</th>
+                      <th className="px-3 py-2 text-center">الكمية</th>
+                      <th className="px-3 py-2 text-center">السعر</th>
+                      <th className="px-3 py-2 text-center">خصم</th>
+                      <th className="px-3 py-2 text-center">الإجمالي</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/20">
+                    {items.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-muted/10">
+                        <td className="px-3 py-2 min-w-[180px]">
+                          <input
+                            value={item.productName}
+                            onChange={(e) => updateDetailItem(idx, "productName", e.target.value)}
+                            className="bg-transparent w-full focus:outline-none focus:ring-1 focus:ring-primary rounded px-1"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="0.001"
+                            value={item.quantity}
+                            onChange={(e) => updateDetailItem(idx, "quantity", e.target.value)}
+                            className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            min="0"
+                            value={item.unitPrice}
+                            onChange={(e) => updateDetailItem(idx, "unitPrice", e.target.value)}
+                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            min="0"
+                            value={item.discount}
+                            onChange={(e) => updateDetailItem(idx, "discount", e.target.value)}
+                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center font-medium text-primary">{formatCurrency(item.total)}</td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => setItems((current) => current.filter((_, itemIndex) => itemIndex !== idx))}
+                            className="text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-background/40 rounded-xl border border-border/30 p-4">
+              <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
+              <textarea
+                value={draft.notes}
+                onChange={(e) => updateDraft("notes", e.target.value)}
+                rows={3}
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button variant="outline" onClick={onClose}>إلغاء</Button>
+              <Button onClick={saveChanges} disabled={saving} className="bg-primary text-black hover:bg-primary/90 font-bold">
+                {saving ? <><RefreshCw className="w-4 h-4 ml-2 animate-spin" />جاري الحفظ...</> : <><Save className="w-4 h-4 ml-2" />حفظ التعديل</>}
+              </Button>
+            </div>
           </div>
         )}
       </div>

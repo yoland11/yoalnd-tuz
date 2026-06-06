@@ -7,7 +7,7 @@ import {
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
-  Bell,
+  Bell, Menu, X,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -169,6 +169,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const ADMIN_NAV_ACCORDION_STORAGE_KEY = "ajn-admin-sidebar-open-groups";
+const ADMIN_SIDEBAR_COLLAPSED_STORAGE_KEY = "ajn-admin-sidebar-hidden";
 
 function isNavItem(item: NavEntry): item is NavItem {
   return "href" in item;
@@ -226,10 +227,31 @@ export function AdminLayout({
 
   const lowStockCount = inventoryAlertCount?.count ?? 0;
   const newMessageCount = messageCount?.count ?? 0;
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarHidden, setSidebarHidden] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setSidebarHidden(window.localStorage.getItem(ADMIN_SIDEBAR_COLLAPSED_STORAGE_KEY) === "1");
+  }, []);
+
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location]);
+
+  function toggleDesktopSidebar() {
+    setSidebarHidden((current) => {
+      const next = !current;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(ADMIN_SIDEBAR_COLLAPSED_STORAGE_KEY, next ? "1" : "0");
+      }
+      return next;
+    });
+  }
 
   return (
-    <div className="min-h-screen bg-background flex" dir="rtl">
-      <aside className="hidden md:flex w-60 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10">
+    <div className="min-h-screen bg-background flex overflow-x-hidden" dir="rtl">
+      <aside className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`}>
         <div className="px-3 mb-6">
           <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 object-contain mb-3" />
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
@@ -249,12 +271,30 @@ export function AdminLayout({
           className="flex-1 overflow-y-auto pr-0.5 pl-1"
         />
       </aside>
+      <button
+        type="button"
+        onClick={toggleDesktopSidebar}
+        className={`hidden md:inline-flex fixed top-6 z-30 h-10 w-10 items-center justify-center rounded-lg bg-card border border-border/40 text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all ${
+          sidebarHidden ? "right-6" : "right-[15.5rem]"
+        }`}
+        aria-label={sidebarHidden ? "إظهار القائمة" : "إخفاء القائمة"}
+      >
+        <Menu className="w-4 h-4" />
+      </button>
       <div className="hidden md:block fixed left-6 top-6 z-20">
         <AdminNotificationsBell />
       </div>
       <div className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur" dir="rtl">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
+              aria-label="فتح القائمة"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-9 object-contain" />
             <div>
               <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
@@ -268,18 +308,46 @@ export function AdminLayout({
             </button>
           </div>
         </div>
-        <AdminSidebarNav
-          groups={NAV_GROUPS}
-          me={me}
-          location={location}
-          lowStockCount={lowStockCount}
-          newMessageCount={newMessageCount}
-          onLogout={onLogout}
-          className="max-h-[44vh] overflow-y-auto px-3 pb-3"
-          compact
-        />
       </div>
-      <main className="flex-1 p-4 pt-28 md:pt-6 md:mr-60 md:p-6 max-w-[1400px] w-full">{children}</main>
+      {mobileSidebarOpen && (
+        <div className="md:hidden fixed inset-0 z-40" dir="rtl">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            aria-label="إغلاق القائمة"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+          <aside className="absolute right-0 top-0 h-full w-72 max-w-[86vw] bg-card border-l border-border/30 shadow-2xl flex flex-col py-5 px-3">
+            <div className="px-3 mb-4 flex items-start justify-between gap-3">
+              <div>
+                <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={44} decoding="async" className="h-11 w-24 object-contain mb-2" />
+                <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
+                <h2 className="text-base font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileSidebarOpen(false)}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
+                aria-label="إغلاق القائمة"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <AdminSidebarNav
+              groups={NAV_GROUPS}
+              me={me}
+              location={location}
+              lowStockCount={lowStockCount}
+              newMessageCount={newMessageCount}
+              onLogout={onLogout}
+              onNavigate={() => setMobileSidebarOpen(false)}
+              className="flex-1 overflow-y-auto pr-0.5 pl-1"
+              compact
+            />
+          </aside>
+        </div>
+      )}
+      <main className={`flex-1 p-4 pt-20 md:pt-6 md:p-6 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}>{children}</main>
     </div>
   );
 }
@@ -291,6 +359,7 @@ function AdminSidebarNav({
   lowStockCount,
   newMessageCount,
   onLogout,
+  onNavigate,
   className = "",
   compact = false,
 }: {
@@ -300,6 +369,7 @@ function AdminSidebarNav({
   lowStockCount: number;
   newMessageCount: number;
   onLogout: () => void;
+  onNavigate?: () => void;
   className?: string;
   compact?: boolean;
 }) {
@@ -370,6 +440,7 @@ function AdminSidebarNav({
                       lowStockCount={lowStockCount}
                       newMessageCount={newMessageCount}
                       onLogout={onLogout}
+                      onNavigate={onNavigate}
                       compact={compact}
                     />
                   ))}
@@ -389,6 +460,7 @@ function AdminSidebarEntry({
   lowStockCount,
   newMessageCount,
   onLogout,
+  onNavigate,
   compact,
 }: {
   item: NavEntry;
@@ -396,6 +468,7 @@ function AdminSidebarEntry({
   lowStockCount: number;
   newMessageCount: number;
   onLogout: () => void;
+  onNavigate?: () => void;
   compact: boolean;
 }) {
   const ItemIcon = item.icon;
@@ -406,7 +479,10 @@ function AdminSidebarEntry({
     return (
       <button
         type="button"
-        onClick={onLogout}
+        onClick={() => {
+          onNavigate?.();
+          onLogout();
+        }}
         className={`${baseClass} text-muted-foreground hover:text-destructive hover:bg-destructive/10`}
       >
         <ItemIcon className="w-4 h-4" />
@@ -435,7 +511,7 @@ function AdminSidebarEntry({
 
   if (item.external) {
     return (
-      <a href={item.href} className={`${baseClass} text-muted-foreground hover:bg-muted hover:text-foreground`}>
+      <a href={item.href} onClick={onNavigate} className={`${baseClass} text-muted-foreground hover:bg-muted hover:text-foreground`}>
         {content}
       </a>
     );
@@ -444,6 +520,7 @@ function AdminSidebarEntry({
   return (
     <Link
       href={item.href}
+      onClick={onNavigate}
       className={`${baseClass} ${active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
     >
       {content}

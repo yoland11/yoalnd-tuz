@@ -7013,6 +7013,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const price = num(booking.totalAmount) > 0 ? num(booking.totalAmount) : priceFromDetails;
       const deposit = num(booking.depositAmount) > 0 ? num(booking.depositAmount) : num(cf.deposit ?? cf.downPayment);
       const balance = price > 0 ? Math.max(price - deposit, 0) : num(booking.remainingAmount);
+      const qr = await ensureQrForEntity("service_order", booking, req);
       return json({
         kind: "booking",
         id: booking.id,
@@ -7031,12 +7032,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         balance,
         paymentStatus: booking.paymentStatus ?? "unpaid",
         customFields: cf,
+        qr,
         createdAt: booking.createdAt.toISOString(),
       });
     }
     const order = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) });
     if (!order) return error("الطلب غير موجود", 404);
     const items = await db.query.orderItemsTable.findMany({ where: eq(orderItemsTable.orderId, order.id) });
+    const qr = await ensureQrForEntity("order", order, req);
     return json({
       kind: "order",
       id: order.id,
@@ -7054,6 +7057,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       deliveryFee: Number.parseFloat(order.deliveryFee),
       total: Number.parseFloat(order.total),
       status: order.status,
+      qr,
       createdAt: order.createdAt.toISOString(),
       items: items.map((i) => ({
         id: i.id,
@@ -7359,7 +7363,8 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const inv = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
     if (!inv) return error("الفاتورة غير موجودة", 404);
     const items = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
-    return json({ ...inv, items });
+    const qr = await ensureQrForEntity("invoice", inv, req);
+    return json({ ...inv, items, qr });
   }
 
   if (method === "POST") {
@@ -7457,17 +7462,26 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const b = await body(req);
     const existing = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
     if (!existing) return error("الفاتورة غير موجودة", 404);
-    const subtotal = parseFloat(b.subtotal ?? String(existing.subtotal)) || 0;
+    const oldItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+    const parsedItems = b.items !== undefined ? salesInvoiceItems(b.items) : null;
+    if (parsedItems && parsedItems.length === 0) return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
+    const subtotal = parsedItems
+      ? parsedItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+      : parseFloat(b.subtotal ?? String(existing.subtotal)) || 0;
     const discountAmount = parseFloat(b.discountAmount ?? String(existing.discountAmount)) || 0;
     const taxAmount = parseFloat(b.taxAmount ?? String(existing.taxAmount)) || 0;
-    const total = parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0;
-    const paidAmount = parseFloat(b.paidAmount ?? String(existing.paidAmount)) || 0;
-    const remainingAmount = total - paidAmount;
+    const total = Math.max(parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0, 0);
+    const paidAmount = Math.max(parseFloat(b.paidAmount ?? String(existing.paidAmount)) || 0, 0);
+    const remainingAmount = Math.max(total - paidAmount, 0);
     const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const rawPhone = b.customerPhone !== undefined ? textFallback(b.customerPhone) : existing.customerPhone;
+    const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
+    if (rawPhone && !customerPhone) return error("رقم هاتف الزبون العراقي غير صحيح", 400);
 
     await db.update(salesInvoicesTable).set({
+      date: b.date ?? existing.date,
       customerName: b.customerName ?? existing.customerName,
-      customerPhone: b.customerPhone ?? existing.customerPhone,
+      customerPhone,
       subtotal: String(subtotal), discountAmount: String(discountAmount),
       taxAmount: String(taxAmount), total: String(total),
       paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
@@ -7477,11 +7491,18 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       updatedAt: new Date(),
     } as any).where(eq(salesInvoicesTable.id, id));
 
-    if (b.items !== undefined) {
+    if (parsedItems) {
+      for (const item of oldItems) {
+        const productId = Number(item.productId ?? 0);
+        const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
+        if (productId > 0 && quantity > 0) {
+          await db.execute(sql`UPDATE products SET stock = stock + ${quantity} WHERE id = ${productId}`);
+        }
+      }
       await db.delete(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
-      if (b.items.length > 0) {
+      if (parsedItems.length > 0) {
         await db.insert(salesInvoiceItemsTable).values(
-          b.items.map((item: any) => ({
+          parsedItems.map((item: any) => ({
             invoiceId: id, productId: item.productId ?? null, productName: item.productName ?? "",
             barcode: item.barcode ?? null, quantity: String(item.quantity ?? 1),
             unitPrice: String(item.unitPrice ?? 0), discount: String(item.discount ?? 0),
@@ -7489,11 +7510,27 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
             costPrice: String(item.costPrice ?? 0),
           }))
         );
+        for (const item of parsedItems) {
+          if (item.productId && item.quantity > 0) {
+            await db.execute(sql`
+              UPDATE products SET stock = GREATEST(0, stock - ${item.quantity})
+              WHERE id = ${item.productId}
+            `);
+          }
+        }
+        void notifyLowStockForProductIds(parsedItems.map((item) => Number(item.productId)));
       }
     }
     const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
-    return json({ ...final, items: finalItems });
+    const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
+    void logAdminActivity(req, "sales_invoice_updated", "sales_invoice", id, {
+      invoiceNo: final?.invoiceNo,
+      itemCount: finalItems.length,
+      oldItemCount: oldItems.length,
+      total,
+    });
+    return json({ ...final, items: finalItems, qr, invoice: final ? { ...final, qr } : final });
   }
 
   if (method === "DELETE" && id) {
@@ -7568,9 +7605,39 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     const invoiceNo = fmtInvoiceNo("PI", inv.id, new Date(inv.createdAt));
     await db.update(purchaseInvoicesTable).set({ invoiceNo } as any).where(eq(purchaseInvoicesTable.id, inv.id));
 
-    if (items.length > 0) {
+    const processedItems: typeof items = [];
+    for (const item of items) {
+      let productId = item.productId;
+      if (!productId) {
+        const existingProduct = item.barcode
+          ? await db.query.productsTable.findFirst({ where: eq(productsTable.barcode, item.barcode) })
+          : await db.query.productsTable.findFirst({
+              where: or(eq(productsTable.nameAr, item.productName), eq(productsTable.name, item.productName)),
+            });
+        if (existingProduct) {
+          productId = existingProduct.id;
+        } else {
+          const [createdProduct] = await db.insert(productsTable).values({
+            name: item.productName,
+            nameAr: item.productName,
+            price: String(item.salePrice > 0 ? item.salePrice : item.costPrice),
+            costPrice: String(item.costPrice),
+            stock: 0,
+            barcode: item.barcode || null,
+            category: "purchases",
+            images: [],
+            colors: [],
+            isActive: true,
+          } as any).returning();
+          productId = createdProduct.id;
+        }
+      }
+      processedItems.push({ ...item, productId });
+    }
+
+    if (processedItems.length > 0) {
       await db.insert(purchaseInvoiceItemsTable).values(
-        items.map((item: any) => ({
+        processedItems.map((item: any) => ({
           invoiceId: inv.id,
           productId: item.productId ?? null, productName: item.productName ?? "",
           barcode: item.barcode, quantity: String(item.quantity),
@@ -7579,7 +7646,7 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
         }))
       );
       // Update product stock on purchase
-      for (const item of items) {
+      for (const item of processedItems) {
         if (item.productId && item.quantity > 0) {
           const updateVals: any = { stock: sql`stock + ${item.quantity}`, costPrice: String(item.costPrice) };
           if (item.salePrice > 0) {

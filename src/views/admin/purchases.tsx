@@ -11,7 +11,7 @@ import { adminFetch, formatCurrency } from "./_lib";
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
-  stock: string; barcode?: string;
+  stock: string; barcode?: string; categoryName?: string; category?: string;
 };
 type Supplier = {
   id: number; name: string; phone?: string; email?: string; balance: string; isActive: number;
@@ -77,7 +77,7 @@ export default function PurchasesPage() {
   const { data: invoicesList } = useQuery({
     queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo],
     queryFn: () => adminFetch<{ data: PurchaseInvoice[]; total: number }>(
-      `/admin/purchase-invoices?page=${listPage}&limit=20${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
+      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
     ),
     enabled: listMode,
   });
@@ -258,15 +258,23 @@ export default function PurchasesPage() {
                             </button>
                           </div>
                           {showProductSearch === idx && filtered.length > 0 && (
-                            <div className="absolute top-full right-0 z-20 w-60 bg-card border border-border/40 rounded-lg shadow-lg overflow-hidden mt-1">
+                            <div className="absolute top-full right-0 z-20 w-72 bg-card border border-border/40 rounded-lg shadow-lg overflow-hidden mt-1">
                               {filtered.map(p => (
                                 <button
                                   key={p.id}
                                   onClick={() => selectProduct(idx, p)}
                                   className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-right"
                                 >
-                                  <span>{p.nameAr || p.name}</span>
-                                  <span className="text-xs text-muted-foreground">{formatCurrency(p.costPrice || "0")}</span>
+                                  <span>
+                                    <span className="block font-medium text-foreground">{p.nameAr || p.name}</span>
+                                    <span className="block text-[11px] text-muted-foreground">
+                                      {p.barcode ? `${p.barcode} · ` : ""}{p.categoryName || p.category || "بدون قسم"}
+                                    </span>
+                                  </span>
+                                  <span className="text-xs text-muted-foreground text-left">
+                                    <span className="block">{formatCurrency(p.costPrice || "0")}</span>
+                                    <span className="block">مخزون: {p.stock}</span>
+                                  </span>
                                 </button>
                               ))}
                             </div>
