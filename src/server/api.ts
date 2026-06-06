@@ -729,16 +729,9 @@ function baseUrlFromReq(req: NextRequest): string {
   return process.env.APP_BASE_URL?.replace(/\/$/, "") || req.nextUrl.origin;
 }
 
-function publicQrTarget(entityType: string, entity: any, req: NextRequest): string {
+function publicQrTarget(_entityType: string, _entity: any, req: NextRequest, token: string): string {
   const base = baseUrlFromReq(req);
-  if (entityType === "order" || entityType === "service_order") {
-    const code = entity.trackingCode ?? entity.tracking_code;
-    return `${base}/track?code=${encodeURIComponent(String(code ?? ""))}`;
-  }
-  if (entityType === "invoice") {
-    return `${base}/admin/sales?invoice=${encodeURIComponent(String(entity.id))}`;
-  }
-  return `${base}/`;
+  return `${base}/track/${encodeURIComponent(token)}`;
 }
 
 async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice", entity: any, req: NextRequest) {
@@ -746,10 +739,12 @@ async function ensureQrForEntity(entityType: "order" | "service_order" | "invoic
   const existing = await db.query.qrTokensTable.findFirst({
     where: and(eq(qrTokensTable.entityType, entityType), eq(qrTokensTable.entityId, entity.id)),
   });
-  const token = existing?.token || randomBytes(24).toString("hex");
-  const targetUrl = existing?.targetUrl || publicQrTarget(entityType, entity, req);
+  const token = existing?.token || randomBytes(32).toString("hex");
+  const targetUrl = publicQrTarget(entityType, entity, req, token);
   if (!existing) {
     await db.insert(qrTokensTable).values({ entityType, entityId: entity.id, token, targetUrl });
+  } else if (existing.targetUrl !== targetUrl || /\/admin(?:\/|$)|\/dashboard(?:\/|$)|\/orders(?:\/|$)|\/invoices(?:\/|$)/i.test(existing.targetUrl)) {
+    await db.update(qrTokensTable).set({ targetUrl }).where(eq(qrTokensTable.id, existing.id));
   }
   if (!entity.qrToken) {
     if (entityType === "order") await db.update(ordersTable).set({ qrToken: token }).where(eq(ordersTable.id, entity.id));
@@ -4476,11 +4471,95 @@ async function handleQr(req: NextRequest, parts: string[]) {
   if (!/^[a-f0-9]{32,80}$/i.test(token)) return error("رمز QR غير صالح", 400);
   const row = await db.query.qrTokensTable.findFirst({ where: eq(qrTokensTable.token, token) });
   if (!row) return error("رمز QR غير موجود", 404);
+  if (parts[2] === "status") {
+    try {
+      return json(await buildPublicQrStatus(row));
+    } catch (err: any) {
+      return error(err?.message ?? "تعذر قراءة حالة QR", Number(err?.status ?? 500));
+    }
+  }
   await db
     .update(qrTokensTable)
     .set({ scanCount: (row.scanCount ?? 0) + 1, lastScannedAt: new Date() })
     .where(eq(qrTokensTable.id, row.id));
-  return NextResponse.redirect(row.targetUrl);
+  const safeTarget = `${baseUrlFromReq(req)}/track/${encodeURIComponent(token)}`;
+  if (row.targetUrl !== safeTarget || /\/admin(?:\/|$)|\/dashboard(?:\/|$)|\/orders(?:\/|$)|\/invoices(?:\/|$)/i.test(row.targetUrl)) {
+    await db.update(qrTokensTable).set({ targetUrl: safeTarget }).where(eq(qrTokensTable.id, row.id));
+  }
+  return NextResponse.redirect(safeTarget);
+}
+
+async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
+  if (row.entityType === "order") {
+    const order = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, row.entityId) });
+    if (!order) throw Object.assign(new Error("لم يتم العثور على الطلب"), { status: 404 });
+    const history = await db.query.orderStatusHistoryTable.findMany({
+      where: eq(orderStatusHistoryTable.orderId, order.id),
+      orderBy: [desc(orderStatusHistoryTable.createdAt)],
+      limit: 12,
+    });
+    return {
+      kind: "order",
+      trackingCode: order.trackingCode,
+      customerName: order.customerName,
+      status: order.status,
+      paymentStatus: order.paymentStatus ?? "unpaid",
+      createdAt: order.createdAt.toISOString(),
+      updatedAt: order.createdAt.toISOString(),
+      statusHistory: history.map((item) => ({
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  if (row.entityType === "service_order") {
+    const order = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, row.entityId) });
+    if (!order) throw Object.assign(new Error("لم يتم العثور على الحجز"), { status: 404 });
+    const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, order.serviceId) });
+    const history = await db.query.serviceOrderStatusHistoryTable.findMany({
+      where: eq(serviceOrderStatusHistoryTable.serviceOrderId, order.id),
+      orderBy: [desc(serviceOrderStatusHistoryTable.createdAt)],
+      limit: 12,
+    });
+    return {
+      kind: "service",
+      trackingCode: order.trackingCode ?? `SRV-${order.id}`,
+      customerName: order.customerName,
+      serviceName: service?.nameAr ?? service?.name ?? "حجز خدمة",
+      serviceType: service?.type ?? null,
+      status: order.status,
+      paymentStatus: order.paymentStatus ?? "unpaid",
+      createdAt: order.createdAt.toISOString(),
+      updatedAt: order.createdAt.toISOString(),
+      statusHistory: (history.length ? history : [{ status: order.status, createdAt: order.createdAt }]).map((item: any) => ({
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  if (row.entityType === "invoice") {
+    const invoice = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, row.entityId) });
+    if (!invoice) throw Object.assign(new Error("لم يتم العثور على الفاتورة"), { status: 404 });
+    return {
+      kind: "invoice",
+      trackingCode: invoice.invoiceNo,
+      customerName: invoice.customerName || "عميل",
+      status: invoice.status === "active" ? "confirmed" : invoice.status,
+      paymentStatus: invoice.paymentStatus ?? "unpaid",
+      createdAt: invoice.createdAt.toISOString(),
+      updatedAt: invoice.updatedAt.toISOString(),
+      statusHistory: [
+        {
+          status: invoice.status === "active" ? "confirmed" : invoice.status,
+          createdAt: invoice.updatedAt.toISOString(),
+        },
+      ],
+    };
+  }
+
+  throw Object.assign(new Error("نوع QR غير مدعوم"), { status: 400 });
 }
 
 function formatNotification(row: any) {

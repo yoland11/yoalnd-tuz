@@ -73,6 +73,7 @@ function Router() {
             <Route path="/store/:id" component={ProductDetail} />
             <Route path="/cart" component={Cart} />
             <Route path="/checkout" component={Checkout} />
+            <Route path="/track/:token" component={Track} />
             <Route path="/track" component={Track} />
             <Route path="/gallery" component={Gallery} />
             <Route path="/login" component={Login} />

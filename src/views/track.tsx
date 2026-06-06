@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearch } from "wouter";
+import { useRoute, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useTrackOrder, getTrackOrderQueryKey,
@@ -25,6 +25,8 @@ type Mode = "code" | "phone";
 
 export default function Track() {
   const search = useSearch();
+  const [, tokenParams] = useRoute<{ token: string }>("/track/:token");
+  const secureToken = tokenParams?.token ?? "";
   const params = new URLSearchParams(search);
   const prefilledCode = params.get("code") ?? "";
 
@@ -34,6 +36,17 @@ export default function Track() {
   const [searchCode, setSearchCode] = useState(prefilledCode);
   const [searchPhone, setSearchPhone] = useState("");
   const { data: settings } = usePublicSettings();
+  const { data: secureTracking, isLoading: loadingSecure, error: errorSecure } = useQuery({
+    queryKey: ["track", "secure-token", secureToken],
+    queryFn: async () => {
+      const res = await fetch(`/api/qr/${encodeURIComponent(secureToken)}/status`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "رمز QR غير صالح");
+      return data;
+    },
+    enabled: !!secureToken,
+    refetchInterval: secureToken ? 30000 : false,
+  });
 
   const { data: order, isLoading: loadingCode, error: errorCode } = useTrackOrder(searchCode || "_", {
     query: { queryKey: getTrackOrderQueryKey(searchCode || "_"), enabled: !!searchCode, refetchInterval: searchCode ? 30000 : false },
@@ -58,6 +71,30 @@ export default function Track() {
       const last4 = normalizePhoneDigits(phone).slice(-4);
       if (last4.length === 4) setSearchPhone(last4);
     }
+  }
+
+  if (secureToken) {
+    return (
+      <div className="container mx-auto px-4 py-12 min-h-screen" dir="rtl">
+        <div className="max-w-2xl mx-auto">
+          <div className="text-center mb-10">
+            <Package className="w-12 h-12 text-primary mx-auto mb-3" />
+            <h1 className="text-3xl font-bold text-foreground mb-2">تتبع الطلب</h1>
+            <p className="text-muted-foreground">معلومات تتبع عامة وآمنة</p>
+          </div>
+          {loadingSecure && (
+            <div className="text-center py-12 text-muted-foreground animate-pulse">جاري فتح التتبع...</div>
+          )}
+          {errorSecure && (
+            <div className="text-center py-12 bg-card rounded-xl border border-border/30">
+              <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+              <p className="text-muted-foreground">{errorSecure instanceof Error ? errorSecure.message : "رمز QR غير صالح"}</p>
+            </div>
+          )}
+          {secureTracking && <SecureQrTrackingCard tracking={secureTracking} />}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -149,6 +186,74 @@ export default function Track() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SecureQrTrackingCard({ tracking }: { tracking: any }) {
+  const stages = getStagesFor(tracking.serviceType, tracking.kind);
+  const currentIdx = getStageIndex(stages, tracking.status);
+  const progress = stages.length > 1 ? Math.max(0, Math.min(100, (currentIdx / (stages.length - 1)) * 100)) : 0;
+  const lastUpdate = tracking.statusHistory?.[0]?.createdAt ?? tracking.updatedAt ?? tracking.createdAt;
+
+  return (
+    <div className="bg-card border border-border/40 rounded-2xl p-6 shadow-lg shadow-black/5 space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">رقم الطلب</p>
+          <p className="text-xl font-mono font-bold text-foreground tracking-widest">{tracking.trackingCode}</p>
+          {tracking.serviceName && (
+            <p className="text-sm text-muted-foreground mt-2">{tracking.serviceName}</p>
+          )}
+        </div>
+        <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border ${STATUS_TONES[tracking.status] ?? "text-primary border-border/30 bg-background"}`}>
+          <StatusIcon status={tracking.status} className="w-4 h-4" />
+          <span className="text-sm font-medium">{getStageLabel(stages, tracking.status)}</span>
+        </div>
+      </div>
+
+      <div className="h-2 bg-muted/40 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ${tracking.status === "cancelled" ? "bg-red-500" : "bg-primary"}`}
+          style={{ width: `${tracking.status === "cancelled" ? 100 : progress}%` }}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+          <p className="text-xs text-muted-foreground mb-1">اسم العميل</p>
+          <p className="text-foreground font-semibold">{tracking.customerName || "—"}</p>
+        </div>
+        <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+          <p className="text-xs text-muted-foreground mb-1">حالة الدفع</p>
+          <p className="text-foreground font-semibold">{paymentLabel(tracking.paymentStatus)}</p>
+        </div>
+        <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+          <p className="text-xs text-muted-foreground mb-1">تاريخ الطلب</p>
+          <p className="text-foreground font-semibold">{formatTrackDate(tracking.createdAt)}</p>
+        </div>
+        <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+          <p className="text-xs text-muted-foreground mb-1">آخر تحديث</p>
+          <p className="text-foreground font-semibold">{formatTrackDate(lastUpdate)}</p>
+        </div>
+      </div>
+
+      {tracking.statusHistory && tracking.statusHistory.length > 0 && (
+        <div className="border-t border-border/30 pt-5">
+          <h3 className="font-semibold text-foreground mb-4">سجل الحالة</h3>
+          <div className="space-y-3">
+            {tracking.statusHistory.map((item: any, idx: number) => (
+              <div key={`${item.status}-${idx}`} className="flex items-start gap-3">
+                <div className="mt-1 h-2.5 w-2.5 rounded-full bg-primary shrink-0" />
+                <div>
+                  <p className="text-sm text-foreground">{getStageLabel(stages, item.status)}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{formatTrackDate(item.createdAt)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
