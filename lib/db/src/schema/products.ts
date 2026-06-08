@@ -20,6 +20,7 @@ export const productsTable = pgTable("products", {
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
   images: jsonb("images").$type<string[]>().notNull().default([]),
+  videos: jsonb("videos").$type<string[]>().notNull().default([]),
   imageMetadata: jsonb("image_metadata").$type<Record<string, unknown>[]>().notNull().default([]),
   colors: jsonb("colors").$type<Array<string | { name: string; hex: string; image?: string | null; imageUrl?: string | null }>>().notNull().default([]),
   isFeatured: boolean("is_featured").notNull().default(false),

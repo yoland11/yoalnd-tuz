@@ -4,11 +4,11 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, fileToDataUrl, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
@@ -26,14 +26,14 @@ type ProductForm = {
   stock: string; minStock?: string; barcode?: string;
   categoryId?: number | null; subcategoryId?: number | null;
   category?: string; subcategory?: string;
-  images: string[]; colors: ProductColor[];
+  images: string[]; videos: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
   isFeatured: boolean; isActive?: boolean;
 };
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
-  images: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
+  images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
 export default function ProductsPage() {
@@ -94,6 +94,7 @@ export default function ProductsPage() {
       category: form.category ?? "",
       subcategory: form.subcategory ?? "",
       images: form.images ?? [],
+      videos: form.videos ?? [],
       imageMetadata: form.imageMetadata ?? [],
       colors: normalizeColors(form.colors ?? []),
       isFeatured: form.isFeatured,
@@ -248,7 +249,7 @@ export default function ProductsPage() {
                           stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
                           categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
-                          images: p.images ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
+                          images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
                           isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
                         })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                           <Edit2 className="w-4 h-4" />
@@ -278,7 +279,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 }) {
   const [busy, setBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
+  const [draggedVideo, setDraggedVideo] = useState<number | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const { data: publicSettings } = usePublicSettings();
   const selectedParent = form.categoryId
@@ -346,6 +349,34 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       imageMetadata: (form.imageMetadata ?? []).filter((_, idx) => idx !== index),
     });
     if (replaceIndex === index) setReplaceIndex(null);
+  }
+
+  async function addVideos(files: FileList | null) {
+    if (!files?.length) return;
+    const selected = Array.from(files).filter((file) => file.type.startsWith("video/"));
+    if (!selected.length) return;
+    const dataUrls = await Promise.all(selected.map((file) => fileToDataUrl(file)));
+    onChange({ ...form, videos: [...(form.videos ?? []), ...dataUrls] });
+  }
+
+  function dropVideo(targetIndex: number) {
+    if (draggedVideo == null || draggedVideo === targetIndex) return;
+    const videos = [...(form.videos ?? [])];
+    const [selected] = videos.splice(draggedVideo, 1);
+    videos.splice(targetIndex, 0, selected);
+    onChange({ ...form, videos });
+    setDraggedVideo(null);
+  }
+
+  function moveVideo(index: number) {
+    if (index <= 0) return;
+    const videos = [...(form.videos ?? [])];
+    [videos[index - 1], videos[index]] = [videos[index], videos[index - 1]];
+    onChange({ ...form, videos });
+  }
+
+  function removeVideo(index: number) {
+    onChange({ ...form, videos: (form.videos ?? []).filter((_, idx) => idx !== index) });
   }
 
   return (
@@ -489,6 +520,67 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <ProductColorPicker value={form.colors} onChange={(colors) => onChange({ ...form, colors })} />
         </div>
 
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs text-muted-foreground">فيديوهات المنتج</label>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/20">
+              <Video className="h-3.5 w-3.5" /> رفع فيديو
+              <input
+                type="file"
+                accept="video/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  void addVideos(event.target.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+          <div
+            className="rounded-xl border border-dashed border-border/35 bg-background/40 p-4 text-center text-xs text-muted-foreground"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              void addVideos(event.dataTransfer.files);
+            }}
+          >
+            اسحب الفيديوهات أو استخدم زر الرفع. تظهر في صفحة المنتج فقط عند توفرها.
+          </div>
+          {(form.videos ?? []).length > 0 && (
+            <div className="mt-3 flex gap-3 overflow-x-auto pb-2">
+              {form.videos.map((video, i) => (
+                <div
+                  key={`${video}-${i}`}
+                  draggable
+                  onDragStart={() => setDraggedVideo(i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => dropVideo(i)}
+                  className="relative w-36 shrink-0 overflow-hidden rounded-xl border border-border/30 bg-background transition-colors hover:border-primary/45"
+                >
+                  <button type="button" onClick={() => setPreviewVideo(video)} className="relative block h-24 w-full overflow-hidden bg-black">
+                    <video src={video} preload="metadata" muted className="h-full w-full object-cover" />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/25 text-white">
+                      <Play className="h-7 w-7" />
+                    </span>
+                  </button>
+                  <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
+                    <button type="button" title="معاينة" onClick={() => setPreviewVideo(video)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <Eye className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                      <ArrowRight className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                    <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                      <X className="w-3.5 h-3.5 mx-auto" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.isFeatured} onChange={e => onChange({ ...form, isFeatured: e.target.checked })} className="accent-primary" />
@@ -505,6 +597,11 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       {previewImage && (
         <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}>
           <img src={previewImage} alt="" className="max-h-[86vh] max-w-[92vw] rounded-xl object-contain border border-border/40 bg-card" />
+        </div>
+      )}
+      {previewVideo && (
+        <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewVideo(null); }}>
+          <video src={previewVideo} controls autoPlay className="max-h-[86vh] max-w-[92vw] rounded-xl border border-border/40 bg-black" onClick={(event) => event.stopPropagation()} />
         </div>
       )}
     </div>

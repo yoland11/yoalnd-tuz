@@ -10,6 +10,7 @@ import { adminFetch, formatCurrency } from "./_lib";
 // ── Types ──────────────────────────────────────────────────────────────────
 type SalesSummary = {
   totalSales: number; totalPurchases: number; totalOrders: number;
+  totalDelivery?: number; totalOrderGross?: number;
   grossProfit: number; netProfit: number;
   salesCount: number; purchasesCount: number; ordersCount: number;
 };
@@ -133,8 +134,20 @@ export default function ReportsPage() {
                     <StatCard
                       label="إيرادات الطلبات"
                       value={formatCurrency(summary.totalOrders)}
-                      sub={`${summary.ordersCount} طلب`}
+                      sub="بدون التوصيل"
                       icon={ShoppingBag} color="text-blue-400" bg="bg-blue-500/10"
+                    />
+                    <StatCard
+                      label="إجمالي التوصيل"
+                      value={formatCurrency(summary.totalDelivery ?? 0)}
+                      sub="مبلغ مستقل عن الصندوق"
+                      icon={Package} color="text-amber-300" bg="bg-amber-500/10"
+                    />
+                    <StatCard
+                      label="إجمالي الطلبات"
+                      value={formatCurrency(summary.totalOrderGross ?? summary.totalOrders)}
+                      sub={`${summary.ordersCount} طلب شامل التوصيل`}
+                      icon={ShoppingBag} color="text-blue-300" bg="bg-blue-500/10"
                     />
                     <StatCard
                       label="إجمالي الإيرادات"

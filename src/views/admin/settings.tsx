@@ -7,6 +7,7 @@ import { adminFetch, fileToDataUrl } from "./_lib";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
+import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
 
 type Settings = {
   siteName: string;
@@ -31,6 +32,7 @@ type Settings = {
     compression: boolean;
     watermark: boolean;
   };
+  appearanceSettings: AppearanceSettings;
 };
 
 type NotificationSettings = {
@@ -53,6 +55,20 @@ const defaultImageSettings: Settings["imageSettings"] = {
   watermark: false,
 };
 
+const appearanceFields: Array<{ key: keyof AppearanceSettings; label: string }> = [
+  { key: "background", label: "لون خلفية الموقع" },
+  { key: "header", label: "لون الهيدر" },
+  { key: "footer", label: "لون الفوتر" },
+  { key: "sidebar", label: "لون القائمة الجانبية" },
+  { key: "primaryButton", label: "لون الأزرار الأساسية" },
+  { key: "secondaryButton", label: "لون الأزرار الثانوية" },
+  { key: "headings", label: "لون العناوين" },
+  { key: "text", label: "لون النصوص" },
+  { key: "cards", label: "لون البطاقات" },
+  { key: "links", label: "لون الروابط" },
+  { key: "hover", label: "لون Hover" },
+];
+
 export default function SettingsPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -68,7 +84,11 @@ export default function SettingsPage() {
   });
 
   useEffect(() => {
-    if (data && !form) setForm({ ...data, imageSettings: { ...defaultImageSettings, ...(data.imageSettings ?? {}) } });
+    if (data && !form) setForm({
+      ...data,
+      imageSettings: { ...defaultImageSettings, ...(data.imageSettings ?? {}) },
+      appearanceSettings: normalizeAppearanceSettings(data.appearanceSettings),
+    });
   }, [data, form]);
 
   const save = useMutation({
@@ -188,6 +208,48 @@ export default function SettingsPage() {
         <Field label="مدة التوصيل" value={form.deliveryTime} onChange={v => setForm(f => ({ ...f!, deliveryTime: v }))} placeholder="مثلاً: 1-3 أيام" />
       </Section>
 
+      <Section title="مظهر الموقع">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {appearanceFields.map((field) => (
+            <ColorField
+              key={field.key}
+              label={field.label}
+              value={form.appearanceSettings[field.key]}
+              onChange={(value) => setForm(f => ({
+                ...f!,
+                appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, [field.key]: value }),
+              }))}
+            />
+          ))}
+        </div>
+        <div
+          className="rounded-xl border border-border/25 p-4 space-y-3"
+          style={{ backgroundColor: form.appearanceSettings.background, color: form.appearanceSettings.text }}
+        >
+          <div className="rounded-lg border border-border/25 px-3 py-2" style={{ backgroundColor: form.appearanceSettings.header }}>
+            <p className="text-sm font-semibold" style={{ color: form.appearanceSettings.headings }}>معاينة الهيدر والعناوين</p>
+          </div>
+          <div className="rounded-lg border border-border/25 p-3" style={{ backgroundColor: form.appearanceSettings.cards }}>
+            <p className="text-sm font-semibold mb-2" style={{ color: form.appearanceSettings.headings }}>بطاقة تجربة</p>
+            <p className="text-xs" style={{ color: form.appearanceSettings.text }}>هذه معاينة مباشرة للألوان قبل الحفظ.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-lg px-3 py-2 text-xs font-medium" style={{ backgroundColor: form.appearanceSettings.primaryButton, color: "#0A0A0A" }}>زر أساسي</span>
+              <span className="rounded-lg px-3 py-2 text-xs font-medium" style={{ backgroundColor: form.appearanceSettings.secondaryButton, color: form.appearanceSettings.text }}>زر ثانوي</span>
+              <span className="rounded-lg px-3 py-2 text-xs font-medium" style={{ color: form.appearanceSettings.links }}>رابط</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setForm(f => ({ ...f!, appearanceSettings: DEFAULT_APPEARANCE_SETTINGS }))}
+          >
+            استعادة الألوان الافتراضية
+          </Button>
+        </div>
+      </Section>
+
       <Section title="إعدادات الصور">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <SliderField label="حجم صور المنتجات" value={form.imageSettings?.productMaxSize ?? 1600} min={512} max={3200} step={32} suffix="px" onChange={v => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, productMaxSize: v } }))} />
@@ -297,6 +359,29 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+    </div>
+  );
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div>
+      <label className="block text-xs text-muted-foreground mb-1">{label}</label>
+      <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-background px-3 py-2">
+        <input
+          type="color"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="h-8 w-10 shrink-0 cursor-pointer rounded border border-border/30 bg-transparent p-0"
+          aria-label={label}
+        />
+        <input
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          dir="ltr"
+          className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none"
+        />
+      </div>
     </div>
   );
 }

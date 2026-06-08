@@ -1048,6 +1048,8 @@ function storageExtension(mime: string) {
   if (mime.includes("gif")) return "gif";
   if (mime.includes("svg")) return "svg";
   if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("quicktime")) return "mov";
   return "bin";
 }
 
@@ -1078,8 +1080,15 @@ async function persistDataUrlToStorage(value: string, folder: string): Promise<s
   }
 }
 
+function cleanMediaInput(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("data:image/") || raw.startsWith("data:video/")) return raw;
+  return cleanPublicUrl(raw);
+}
+
 async function persistMediaValue(value: unknown, folder: string): Promise<string | null> {
-  const cleaned = cleanPublicUrl(value ?? "");
+  const cleaned = cleanMediaInput(value ?? "");
   if (!cleaned) return null;
   return isDataUrl(cleaned) ? persistDataUrlToStorage(cleaned, folder) : cleaned;
 }
@@ -1134,6 +1143,11 @@ async function upgradeStoredMedia(kind: string, id: number | string, value: unkn
       const images = Array.isArray(product?.images) ? [...product.images] : [];
       images[index] = stored;
       await db.update(productsTable).set({ images, updatedAt: new Date() }).where(eq(productsTable.id, id));
+    } else if (kind === "product-video" && typeof id === "number" && typeof index === "number") {
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+      const videos = Array.isArray(product?.videos) ? [...product.videos] : [];
+      videos[index] = stored;
+      await db.update(productsTable).set({ videos, updatedAt: new Date() }).where(eq(productsTable.id, id));
     } else if (kind === "category" && typeof id === "number") {
       await db.update(categoriesTable).set({ imageUrl: stored, updatedAt: new Date() }).where(eq(categoriesTable.id, id));
       clearStoreCategoriesCache();
@@ -1177,6 +1191,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     subcategoryName: p.subcategoryName ?? p.subcategory_name ?? null,
     category: p.category ?? null,
     images: publicMediaList("product", p, p.images),
+    videos: publicMediaList("product-video", p, p.videos),
     imageMetadata: Array.isArray(p.imageMetadata) ? p.imageMetadata : [],
     colors: normalizeColors(p.colors ?? []),
     subcategory: p.subcategory ?? null,
@@ -1746,6 +1761,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "barcode" varchar(100);
       alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
       alter table "products" add column if not exists "min_stock" integer not null default 0;
+      alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
       update "products"
       set "barcode" = 'AJN' || lpad("id"::text, 8, '0')
       where "barcode" is null or "barcode" = '';
@@ -2850,6 +2866,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (requestedBarcode && await productBarcodeExists(requestedBarcode)) return error("الباركود مستخدم مسبقاً", 409);
     const productCategories = await resolveProductCategories(data);
     const storedImages = await persistMediaList(data.images ?? [], "products");
+    const storedVideos = await persistMediaList(data.videos ?? [], "products/videos");
     let [product] = await db
       .insert(productsTable)
       .values({
@@ -2867,6 +2884,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         subcategoryId: productCategories.subcategoryId,
         category: productCategories.category,
         images: storedImages,
+        videos: storedVideos,
         imageMetadata: Array.isArray(data.imageMetadata) ? data.imageMetadata : [],
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
@@ -2894,6 +2912,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
+    if (data.videos !== undefined) data.videos = await persistMediaList(data.videos, "products/videos");
     const update: any = { updatedAt: new Date() };
     for (const k of [
       "name",
@@ -2901,6 +2920,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "description",
       "category",
       "images",
+      "videos",
       "imageMetadata",
       "colors",
       "isFeatured",
@@ -3000,6 +3020,12 @@ async function handleMedia(req: NextRequest, parts: string[]) {
     const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
     const images = Array.isArray(product?.images) ? product.images : [];
     return mediaResponseFromValue(req, await upgradeStoredMedia("product", id, images[index ?? 0], index ?? 0));
+  }
+
+  if (kind === "product-video") {
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+    const videos = Array.isArray(product?.videos) ? product.videos : [];
+    return mediaResponseFromValue(req, await upgradeStoredMedia("product-video", id, videos[index ?? 0], index ?? 0));
   }
 
   if (kind === "category") {
@@ -3962,12 +3988,12 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
       todayRevenueResult,
     ] = await Promise.all([
       db.select({ count: sql<number>`count(*)::int` }).from(ordersTable),
-      db.select({ sum: sql<number>`coalesce(sum(total::numeric), 0)::float` }).from(ordersTable),
+      db.select({ sum: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)), 0)::float` }).from(ordersTable),
       db.select({ count: sql<number>`count(*)::int` }).from(productsTable),
       db.select({ count: sql<number>`count(*)::int` }).from(customersTable),
       db.select({ count: sql<number>`count(*)::int` }).from(ordersTable).where(eq(ordersTable.status, "pending")),
       db.select({ count: sql<number>`count(*)::int` }).from(ordersTable).where(gte(ordersTable.createdAt, today)),
-      db.select({ sum: sql<number>`coalesce(sum(total::numeric), 0)::float` }).from(ordersTable).where(gte(ordersTable.createdAt, today)),
+      db.select({ sum: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)), 0)::float` }).from(ordersTable).where(gte(ordersTable.createdAt, today)),
     ]);
     return json({
       totalOrders: totalOrdersResult[0]?.count ?? 0,
@@ -5378,16 +5404,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
       db.select({ c: sql<number>`count(*)::int` }).from(productsTable),
       db.select({ c: sql<number>`count(*)::int` }).from(customersTable),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
+      db.select({ s: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)),0)::float`, delivery: sql<number>`coalesce(sum(delivery_fee::numeric),0)::float`, gross: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(sql`${ordersTable.archivedAt} is null`),
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(sql`status in ('pending','confirmed','processing','shipped')`, sql`${ordersTable.archivedAt} is null`)),
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.status, "cancelled"), sql`${ordersTable.archivedAt} is null`)),
       db.select({ c: sql<number>`count(*)::int` }).from(ordersTable).where(and(eq(ordersTable.status, "delivered"), sql`${ordersTable.archivedAt} is null`)),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, today), sql`${ordersTable.archivedAt} is null`)),
+      db.select({ s: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, today), sql`${ordersTable.archivedAt} is null`)),
       db.select({ c: sql<number>`count(*)::int` }).from(serviceOrdersTable).where(sql`${serviceOrdersTable.archivedAt} is null`),
       db
         .select({
           day: sql<string>`to_char(created_at, 'YYYY-MM-DD')`,
-          total: sql<number>`coalesce(sum(total::numeric),0)::float`,
+          total: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)),0)::float`,
           orders: sql<number>`count(*)::int`,
         })
         .from(ordersTable)
@@ -5429,7 +5455,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .where(sql`${serviceOrdersTable.archivedAt} is null`)
         .groupBy(serviceOrdersTable.serviceId)
         .orderBy(sql`count(*) desc`),
-      db.select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, monthStart), sql`status <> 'cancelled'`, sql`${ordersTable.archivedAt} is null`)),
+      db.select({ s: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)),0)::float` }).from(ordersTable).where(and(gte(ordersTable.createdAt, monthStart), sql`status <> 'cancelled'`, sql`${ordersTable.archivedAt} is null`)),
       db
         .select({
           product: sql<number>`coalesce(sum(${ordersTable.remainingAmount}::numeric),0)::float`,
@@ -5562,6 +5588,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       totalProducts: totalProducts[0].c,
       totalCustomers: totalCustomers[0].c,
       totalRevenue: totalRevenue[0].s,
+      totalDeliveryRevenue: totalRevenue[0].delivery ?? 0,
+      totalGrossRevenue: totalRevenue[0].gross ?? totalRevenue[0].s,
       todayRevenue: todayRevenue[0].s,
       monthlyRevenue: monthlyRevenue[0].s,
       remainingTotal: (remainingTotals[0]?.product ?? 0) + (remainingTotals[0]?.bookings ?? 0),
@@ -5762,6 +5790,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         minStock: String(p.minStock ?? p.min_stock ?? "0"),
         category: p.category ?? "",
         images: publicMediaList("product", p, p.images),
+        videos: publicMediaList("product-video", p, p.videos),
         barcode: p.barcode ?? p.bar_code ?? "",
         isActive: p.isActive ?? p.is_active ?? true,
       })));
@@ -6959,7 +6988,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined) {
         const existingOrder = current!;
-        const total = money(existingOrder.total);
+        let total = money(existingOrder.total);
+        if (b?.deliveryFee !== undefined) {
+          const subtotalWithoutDelivery = Math.max(total - money(existingOrder.deliveryFee), 0);
+          total = subtotalWithoutDelivery + money(b.deliveryFee);
+          update.total = String(total);
+        }
         const payment = paymentSummary(total, b?.depositAmount ?? existingOrder.depositAmount, b?.paymentStatus ?? existingOrder.paymentStatus);
         update.depositAmount = String(payment.deposit);
         update.remainingAmount = String(payment.remaining);
@@ -7875,7 +7909,9 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
 
     const orderConds: any[] = [gte(ordersTable.createdAt, new Date(from)), lte(ordersTable.createdAt, new Date(to + "T23:59:59"))];
     const [orderRow] = await db.select({
-      total: sql<string>`COALESCE(SUM(total)::text, '0')`,
+      total: sql<string>`COALESCE(SUM((total::numeric - delivery_fee::numeric))::text, '0')`,
+      grossTotal: sql<string>`COALESCE(SUM(total)::text, '0')`,
+      deliveryTotal: sql<string>`COALESCE(SUM(delivery_fee)::text, '0')`,
       count: sql<number>`count(*)::int`,
     }).from(ordersTable).where(and(...orderConds) as any);
 
@@ -7883,16 +7919,27 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
     const purchaseTotal = parseFloat(purchaseRow?.total ?? "0");
     const expenseTotal = parseFloat(expenseRow?.total ?? "0");
     const ordersTotal = parseFloat(orderRow?.total ?? "0");
+    const ordersGrossTotal = parseFloat(orderRow?.grossTotal ?? "0");
+    const orderDeliveryTotal = parseFloat(orderRow?.deliveryTotal ?? "0");
     const grossProfit = salesTotal + ordersTotal - purchaseTotal;
     const netProfit = grossProfit - expenseTotal;
 
     return json({
       from, to,
+      totalSales: salesTotal,
+      totalPurchases: purchaseTotal,
+      totalOrders: ordersTotal,
+      totalOrderGross: ordersGrossTotal,
+      totalDelivery: orderDeliveryTotal,
+      grossProfit,
+      netProfit,
+      salesCount: salesRow?.count ?? 0,
+      purchasesCount: purchaseRow?.count ?? 0,
+      ordersCount: orderRow?.count ?? 0,
       sales: { total: salesTotal, paid: parseFloat(salesRow?.paid ?? "0"), remaining: parseFloat(salesRow?.remaining ?? "0"), count: salesRow?.count ?? 0, discount: parseFloat(salesRow?.discount ?? "0") },
       purchases: { total: purchaseTotal, count: purchaseRow?.count ?? 0 },
-      orders: { total: ordersTotal, count: orderRow?.count ?? 0 },
+      orders: { total: ordersTotal, grossTotal: ordersGrossTotal, deliveryTotal: orderDeliveryTotal, count: orderRow?.count ?? 0 },
       expenses: { total: expenseTotal },
-      grossProfit, netProfit,
     });
   }
 
@@ -8329,7 +8376,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const toDate = new Date(`${to}T23:59:59.999Z`);
       const [sales, receipts, payments, expensesByCat] = await Promise.all([
         db
-          .select({ s: sql<number>`coalesce(sum(total::numeric),0)::float` })
+          .select({ s: sql<number>`coalesce(sum((total::numeric - delivery_fee::numeric)),0)::float` })
           .from(ordersTable)
           .where(and(gte(ordersTable.createdAt, fromDate), lte(ordersTable.createdAt, toDate), sql`status <> 'cancelled'`)),
         db

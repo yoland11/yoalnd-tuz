@@ -41,6 +41,7 @@ export default function ProductDetail() {
   const images = product?.images?.length
     ? product.images
     : ["/placeholder-product.jpg"];
+  const videos = product?.videos?.filter(Boolean) ?? [];
   const imageMetadata = product?.imageMetadata ?? [];
   const colors = useMemo(() => normalizeColors(product?.colors ?? []), [product?.colors]);
   const productModelUrl = useMemo(() => {
@@ -272,6 +273,27 @@ export default function ProductDetail() {
         </div>
 
         <div className="mt-10 space-y-6">
+          {videos.length > 0 && (
+            <section className="rounded-2xl border border-border/30 bg-card p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-foreground">فيديوهات المنتج</h2>
+                  <p className="text-xs text-muted-foreground">معاينة سريعة قبل الإضافة للسلة</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {videos.map((video, index) => (
+                  <video
+                    key={`${video}-${index}`}
+                    src={video}
+                    controls
+                    preload="metadata"
+                    className="aspect-video w-full rounded-xl border border-border/30 bg-black object-contain"
+                  />
+                ))}
+              </div>
+            </section>
+          )}
           <ModelViewerCard modelUrl={productModelUrl || null} title="معاينة المنتج ثلاثية الأبعاد" />
           <SmartSuggestions title="منتجات وخدمات مناسبة" />
         </div>

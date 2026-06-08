@@ -1,5 +1,6 @@
 import { unstable_cache } from "next/cache";
 import { db, settingsTable } from "@workspace/db";
+import { DEFAULT_APPEARANCE_SETTINGS, normalizeAppearanceSettings } from "@/lib/appearance";
 
 export const PUBLIC_SETTINGS_TAG = "ajn-public-settings";
 export const PUBLIC_SETTINGS_REVALIDATE_SECONDS = 300;
@@ -27,6 +28,7 @@ export const DEFAULT_SITE_SETTINGS: Record<string, any> = {
     compression: true,
     watermark: false,
   },
+  appearanceSettings: DEFAULT_APPEARANCE_SETTINGS,
 };
 
 export function cleanPublicUrl(value: unknown): string {
@@ -46,9 +48,11 @@ export async function loadSiteSettings(): Promise<Record<string, any>> {
   const result: Record<string, any> = {
     ...DEFAULT_SITE_SETTINGS,
     social: { ...DEFAULT_SITE_SETTINGS.social },
+    appearanceSettings: { ...DEFAULT_APPEARANCE_SETTINGS },
   };
   for (const row of rows) result[row.key] = row.value;
   result.social = { ...DEFAULT_SITE_SETTINGS.social, ...(result.social ?? {}) };
+  result.appearanceSettings = normalizeAppearanceSettings(result.appearanceSettings);
   result.phones = Array.isArray(result.phones)
     ? result.phones
     : [String(result.phone ?? "")].filter(Boolean);
@@ -77,6 +81,7 @@ export function publicSettingsPayload(settings: Record<string, any>) {
       ...DEFAULT_SITE_SETTINGS.imageSettings,
       ...((settings.imageSettings && typeof settings.imageSettings === "object") ? settings.imageSettings : {}),
     },
+    appearance_settings: normalizeAppearanceSettings(settings.appearanceSettings),
   };
 }
 

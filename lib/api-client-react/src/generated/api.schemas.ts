@@ -75,6 +75,7 @@ export interface Product {
   /** @nullable */
   subcategory?: string | null;
   images: string[];
+  videos?: string[];
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
@@ -102,6 +103,7 @@ export interface ProductInput {
   category?: string;
   subcategory?: string;
   images?: string[];
+  videos?: string[];
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;
@@ -125,6 +127,7 @@ export interface ProductUpdate {
   category?: string;
   subcategory?: string;
   images?: string[];
+  videos?: string[];
   imageMetadata?: Record<string, unknown>[];
   colors?: ProductColor[];
   isFeatured?: boolean;

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
 
 export type PublicSettings = {
   site_name: string;
@@ -15,6 +16,7 @@ export type PublicSettings = {
   logo_url: string;
   logo_metadata?: Record<string, unknown>;
   image_settings: ImageSettings;
+  appearance_settings: AppearanceSettings;
 };
 
 export type ImageSettings = {
@@ -46,6 +48,7 @@ export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
   social_links: { instagram: "", facebook: "", whatsapp: "" },
   logo_url: "",
   logo_metadata: {},
+  appearance_settings: DEFAULT_APPEARANCE_SETTINGS,
   image_settings: {
     productMaxSize: 1600,
     serviceMaxSize: 1600,
@@ -67,6 +70,7 @@ export async function fetchPublicSettings(): Promise<PublicSettings> {
     ...data,
     social_links: { ...DEFAULT_PUBLIC_SETTINGS.social_links, ...(data.social_links ?? {}) },
     image_settings: { ...DEFAULT_PUBLIC_SETTINGS.image_settings, ...(data.image_settings ?? {}) },
+    appearance_settings: normalizeAppearanceSettings(data.appearance_settings),
   };
 }
 
@@ -77,6 +81,7 @@ export function initialPublicSettings(): PublicSettings {
         ...DEFAULT_PUBLIC_SETTINGS,
         ...window.__AJN_PUBLIC_SETTINGS__,
         image_settings: { ...DEFAULT_PUBLIC_SETTINGS.image_settings, ...(window.__AJN_PUBLIC_SETTINGS__.image_settings ?? {}) },
+        appearance_settings: normalizeAppearanceSettings(window.__AJN_PUBLIC_SETTINGS__.appearance_settings),
       }
     : DEFAULT_PUBLIC_SETTINGS;
 }

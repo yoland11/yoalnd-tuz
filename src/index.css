@@ -133,6 +133,11 @@
   --app-font-sans: 'Cairo', sans-serif;
   --app-font-serif: Georgia, serif;
   --app-font-mono: Menlo, monospace;
+  --ajn-header: 0 0% 4%;
+  --ajn-footer: 0 0% 4%;
+  --ajn-heading: 37 33% 94%;
+  --ajn-link: 46 65% 52%;
+  --ajn-hover: 46 65% 52%;
   --radius: 0.3rem; 
   
   --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00); 
@@ -153,6 +158,19 @@
   --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
   --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
   --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: hsl(var(--ajn-heading));
+}
+
+a:hover {
+  color: hsl(var(--ajn-hover));
 }
 
 .dark {

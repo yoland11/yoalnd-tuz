@@ -19,6 +19,7 @@ import Gallery from "@/views/gallery";
 import Login from "@/views/login";
 import Profile from "@/views/profile";
 import { registerServiceWorker } from "@/lib/pwa";
+import { ThemeVariables } from "@/components/theme-variables";
 
 const Admin = lazy(() => import("@/views/admin/index"));
 const Invoice = lazy(() => import("@/views/admin/invoice"));
@@ -100,6 +101,7 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <ThemeVariables />
       <TooltipProvider>
         <WouterRouter>
           <Router />
