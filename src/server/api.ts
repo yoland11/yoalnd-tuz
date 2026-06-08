@@ -1133,6 +1133,25 @@ async function resolveProductImageInputs(productId: number, images: unknown): Pr
   return persistMediaList(resolved, "products");
 }
 
+async function resolveProductVideoInputs(productId: number, videos: unknown): Promise<string[]> {
+  if (!Array.isArray(videos)) return [];
+  let currentVideos: string[] | null = null;
+  const resolved: unknown[] = [];
+  for (const video of videos) {
+    const ref = localMediaReference(video);
+    if (ref?.kind === "product-video" && ref.id === productId && typeof ref.index === "number") {
+      if (!currentVideos) {
+        const current = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }) as any;
+        currentVideos = Array.isArray(current?.videos) ? current.videos : [];
+      }
+      resolved.push((currentVideos ?? [])[ref.index] ?? "");
+    } else {
+      resolved.push(video);
+    }
+  }
+  return persistMediaList(resolved, "products/videos");
+}
+
 async function upgradeStoredMedia(kind: string, id: number | string, value: unknown, index?: number): Promise<unknown> {
   if (!isDataUrl(value)) return value;
   const stored = await persistDataUrlToStorage(String(value), kind === "settings" ? "settings/logo" : kind);
@@ -2912,7 +2931,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
-    if (data.videos !== undefined) data.videos = await persistMediaList(data.videos, "products/videos");
+    if (data.videos !== undefined) data.videos = await resolveProductVideoInputs(id, data.videos);
     const update: any = { updatedAt: new Date() };
     for (const k of [
       "name",

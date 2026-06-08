@@ -71,6 +71,7 @@ type Props = {
   label?: string;
   multiple?: boolean;
   accept?: string;
+  allowVideo?: boolean;
   currentImage?: string | null;
   currentMetadata?: ImageMetadata | null;
   settings?: Partial<ImageSettings>;
@@ -84,6 +85,7 @@ export function ImageUploadEditor({
   label = "رفع صورة",
   multiple = false,
   accept = "image/*",
+  allowVideo = false,
   currentImage,
   currentMetadata,
   settings,
@@ -118,13 +120,13 @@ export function ImageUploadEditor({
       setError("الصورة كبيرة جداً. الرجاء اختيار ملف أقل من 18MB.");
       return;
     }
-    const unsupported = picked.find((file) => !file.type.startsWith("image/") && !file.type.startsWith("video/"));
+    const unsupported = picked.find((file) => !file.type.startsWith("image/") && !(allowVideo && file.type.startsWith("video/")));
     if (unsupported) {
-      setError("نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG أو فيديو للمعرض.");
+      setError(allowVideo ? "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG أو فيديو." : "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG فقط.");
       return;
     }
 
-    const videos = picked.filter((file) => file.type.startsWith("video/"));
+    const videos = allowVideo ? picked.filter((file) => file.type.startsWith("video/")) : [];
     if (videos.length > 0) {
       setProgress(20);
       const results: ImageEditResult[] = [];

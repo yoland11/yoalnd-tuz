@@ -86,6 +86,7 @@ export default function GalleryPage() {
               kind="gallery"
               label="اختر صورة أو فيديو"
               accept="image/*,video/*"
+              allowVideo
               currentImage={form.mediaType === "image" ? form.mediaUrl : null}
               currentMetadata={form.imageMetadata}
               settings={publicSettings?.image_settings}
