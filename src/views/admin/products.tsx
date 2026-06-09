@@ -4,7 +4,7 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -12,7 +12,7 @@ import { adminFetch, fileToDataUrl, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
-import type { ImageMetadata } from "@/lib/image-tools";
+import { inspectImageFile, type ImageMetadata } from "@/lib/image-tools";
 import { ProductColorPicker, ProductColorDots } from "@/components/product-colors";
 import { normalizeColors, type ProductColor } from "@/lib/colors";
 
@@ -359,6 +359,34 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
     onChange({ ...form, videos: [...(form.videos ?? []), ...dataUrls] });
   }
 
+  async function addMediaFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const picked = Array.from(files);
+    const imageFiles = picked.filter((file) => file.type.startsWith("image/"));
+    const videoFiles = picked.filter((file) => file.type.startsWith("video/"));
+    const imageResults = await Promise.all(imageFiles.map((file) => inspectImageFile(file)));
+    const videoUrls = await Promise.all(videoFiles.map((file) => fileToDataUrl(file)));
+    if (!imageResults.length && !videoUrls.length) return;
+    onChange({
+      ...form,
+      images: [...form.images, ...imageResults.map((result) => result.dataUrl)],
+      imageMetadata: [
+        ...(form.imageMetadata ?? []),
+        ...imageResults.map((result) => ({
+          originalWidth: result.originalWidth,
+          originalHeight: result.originalHeight,
+          originalSize: result.originalSize,
+          originalType: result.originalType,
+          width: result.width,
+          height: result.height,
+          objectFit: "cover" as const,
+          updatedAt: new Date().toISOString(),
+        })),
+      ],
+      videos: [...(form.videos ?? []), ...videoUrls],
+    });
+  }
+
   function dropVideo(targetIndex: number) {
     if (draggedVideo == null || draggedVideo === targetIndex) return;
     const videos = [...(form.videos ?? [])];
@@ -522,61 +550,108 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs text-muted-foreground">فيديوهات المنتج</label>
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/20">
-              <Video className="h-3.5 w-3.5" /> رفع فيديو
-              <input
-                type="file"
-                accept="video/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  void addVideos(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
+            <label className="text-xs text-muted-foreground">صور وفيديوهات المنتج</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/20">
+                <ImagePlus className="h-3.5 w-3.5" /> رفع صورة
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void addMediaFiles(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/20">
+                <Video className="h-3.5 w-3.5" /> رفع فيديو
+                <input
+                  type="file"
+                  accept="video/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void addVideos(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+            </div>
           </div>
           <div
             className="rounded-xl border border-dashed border-border/35 bg-background/40 p-4 text-center text-xs text-muted-foreground"
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              void addVideos(event.dataTransfer.files);
+              void addMediaFiles(event.dataTransfer.files);
             }}
           >
-            اسحب الفيديوهات أو استخدم زر الرفع. تظهر في صفحة المنتج فقط عند توفرها.
+            اسحب الصور أو الفيديوهات هنا. الصور تضاف لمعرض المنتج، والفيديوهات تظهر عند توفرها.
           </div>
-          {(form.videos ?? []).length > 0 && (
-            <div className="mt-3 flex gap-3 overflow-x-auto pb-2">
-              {form.videos.map((video, i) => (
-                <div
-                  key={`${video}-${i}`}
-                  draggable
-                  onDragStart={() => setDraggedVideo(i)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => dropVideo(i)}
-                  className="relative w-36 shrink-0 overflow-hidden rounded-xl border border-border/30 bg-background transition-colors hover:border-primary/45"
-                >
-                  <button type="button" onClick={() => setPreviewVideo(video)} className="relative block h-24 w-full overflow-hidden bg-black">
-                    <video src={video} preload="metadata" muted className="h-full w-full object-cover" />
-                    <span className="absolute inset-0 flex items-center justify-center bg-black/25 text-white">
-                      <Play className="h-7 w-7" />
-                    </span>
-                  </button>
-                  <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
-                    <button type="button" title="معاينة" onClick={() => setPreviewVideo(video)} className="p-1.5 text-muted-foreground hover:text-foreground">
-                      <Eye className="w-3.5 h-3.5 mx-auto" />
+          {form.images.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-2 text-[11px] text-muted-foreground">صور المنتج</p>
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {form.images.map((img, i) => (
+                  <div
+                    key={`media-${img}-${i}`}
+                    className={`relative w-24 shrink-0 overflow-hidden rounded-xl border bg-background transition-colors hover:border-primary/45 ${i === 0 ? "border-primary/60" : "border-border/30"}`}
+                  >
+                    <button type="button" onClick={() => setPreviewImage(img)} className="block h-20 w-full">
+                      <img src={img} className="h-full w-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
                     </button>
-                    <button type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
-                      <ArrowRight className="w-3.5 h-3.5 mx-auto" />
-                    </button>
-                    <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
-                      <X className="w-3.5 h-3.5 mx-auto" />
-                    </button>
+                    {i === 0 && <span className="absolute top-1 right-1 rounded bg-primary px-1 py-0.5 text-[9px] text-primary-foreground">رئيسية</span>}
+                    <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
+                      <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                        <Eye className="mx-auto h-3.5 w-3.5" />
+                      </button>
+                      <button type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
+                        <Star className="mx-auto h-3.5 w-3.5" />
+                      </button>
+                      <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                        <X className="mx-auto h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+          )}
+          {(form.videos ?? []).length > 0 && (
+            <div className="mt-3">
+              <p className="mb-2 text-[11px] text-muted-foreground">فيديوهات المنتج</p>
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {form.videos.map((video, i) => (
+                  <div
+                    key={`${video}-${i}`}
+                    draggable
+                    onDragStart={() => setDraggedVideo(i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => dropVideo(i)}
+                    className="relative w-36 shrink-0 overflow-hidden rounded-xl border border-border/30 bg-background transition-colors hover:border-primary/45"
+                  >
+                    <button type="button" onClick={() => setPreviewVideo(video)} className="relative block h-24 w-full overflow-hidden bg-black">
+                      <video src={video} preload="metadata" muted className="h-full w-full object-cover" />
+                      <span className="absolute inset-0 flex items-center justify-center bg-black/25 text-white">
+                        <Play className="h-7 w-7" />
+                      </span>
+                    </button>
+                    <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
+                      <button type="button" title="معاينة" onClick={() => setPreviewVideo(video)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                        <Eye className="w-3.5 h-3.5 mx-auto" />
+                      </button>
+                      <button type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
+                        <ArrowRight className="w-3.5 h-3.5 mx-auto" />
+                      </button>
+                      <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                        <X className="w-3.5 h-3.5 mx-auto" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
