@@ -7,7 +7,13 @@ import { adminFetch, fileToDataUrl } from "./_lib";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
-import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
+import {
+  APPEARANCE_PRESETS,
+  DEFAULT_APPEARANCE_SETTINGS,
+  type AppearancePreset,
+  type AppearanceSettings,
+  normalizeAppearanceSettings,
+} from "@/lib/appearance";
 
 type Settings = {
   siteName: string;
@@ -132,7 +138,21 @@ export default function SettingsPage() {
     setForm(f => ({ ...f!, paymentQr: dataUrl }));
   }
 
+  function applyAppearancePreset(preset: AppearancePreset) {
+    if (!form || save.isPending) return;
+    const nextForm = {
+      ...form,
+      appearanceSettings: normalizeAppearanceSettings(preset.settings),
+    };
+    setForm(nextForm);
+    save.mutate(nextForm, {
+      onSuccess: () => toast({ title: `تم تطبيق ستايل ${preset.name}` }),
+    });
+  }
+
   if (isLoading || !form) return <div className="space-y-4">{[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>;
+
+  const activePresetId = APPEARANCE_PRESETS.find((preset) => appearanceEquals(form.appearanceSettings, preset.settings))?.id ?? "";
 
   return (
     <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
@@ -209,6 +229,24 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="مظهر الموقع">
+        <div className="space-y-3">
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium text-foreground">ستايلات جاهزة</p>
+            <p className="text-xs text-muted-foreground">اضغط على أي صورة ستايل لتطبيقها وحفظها مباشرة على الموقع.</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {APPEARANCE_PRESETS.map((preset, index) => (
+              <AppearancePresetCard
+                key={preset.id}
+                preset={preset}
+                index={index + 1}
+                selected={activePresetId === preset.id}
+                disabled={save.isPending}
+                onApply={() => applyAppearancePreset(preset)}
+              />
+            ))}
+          </div>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {appearanceFields.map((field) => (
             <ColorField
@@ -363,6 +401,79 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
   );
 }
 
+function AppearancePresetCard({
+  preset,
+  index,
+  selected,
+  disabled,
+  onApply,
+}: {
+  preset: AppearancePreset;
+  index: number;
+  selected: boolean;
+  disabled: boolean;
+  onApply: () => void;
+}) {
+  const s = preset.settings;
+  const palette = [s.background, s.cards, s.primaryButton, s.secondaryButton, s.headings];
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onApply}
+      className={`group overflow-hidden rounded-xl border bg-background text-right transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
+        selected ? "border-primary ring-1 ring-primary/40" : "border-border/30 hover:border-primary/45"
+      }`}
+      aria-pressed={selected}
+    >
+      <div
+        className="relative h-28 border-b border-border/20"
+        style={{
+          background: `linear-gradient(135deg, ${s.background} 0%, ${s.cards} 55%, ${s.secondaryButton} 100%)`,
+          color: s.text,
+        }}
+      >
+        <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 18% 20%, ${s.primaryButton} 0, transparent 26%), radial-gradient(circle at 85% 75%, ${s.hover} 0, transparent 24%)` }} />
+        <div className="relative flex h-full flex-col justify-between p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ backgroundColor: s.primaryButton, color: readablePreviewText(s.primaryButton) }}>
+              {String(index).padStart(2, "0")}
+            </span>
+            <div className="h-3 w-16 rounded-full" style={{ backgroundColor: s.header }} />
+          </div>
+          <div className="rounded-lg border p-2 shadow-sm" style={{ backgroundColor: s.cards, borderColor: `${s.primaryButton}55` }}>
+            <div className="mb-2 h-2 w-20 rounded-full" style={{ backgroundColor: s.headings }} />
+            <div className="mb-2 h-1.5 w-28 rounded-full opacity-70" style={{ backgroundColor: s.text }} />
+            <div className="h-5 w-16 rounded-md" style={{ backgroundColor: s.primaryButton }} />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-2 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-foreground">{preset.name}</p>
+            <p className="text-xs text-muted-foreground">{preset.description}</p>
+          </div>
+          {selected ? (
+            <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-medium text-primary">مطبق</span>
+          ) : null}
+        </div>
+        <div className="flex flex-row-reverse gap-1">
+          {palette.map((color) => (
+            <span
+              key={`${preset.id}-${color}`}
+              className="h-5 w-5 rounded-full border border-border/35"
+              style={{ backgroundColor: color }}
+              title={color}
+            />
+          ))}
+        </div>
+      </div>
+    </button>
+  );
+}
+
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div>
@@ -384,6 +495,20 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
       </div>
     </div>
   );
+}
+
+function appearanceEquals(a: AppearanceSettings, b: AppearanceSettings): boolean {
+  const left = normalizeAppearanceSettings(a);
+  const right = normalizeAppearanceSettings(b);
+  return appearanceFields.every((field) => left[field.key] === right[field.key]);
+}
+
+function readablePreviewText(hex: string): string {
+  const normalized = hex.replace("#", "");
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? "#101010" : "#FFFFFF";
 }
 
 function ToggleField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
