@@ -7897,6 +7897,409 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
   const from = req.nextUrl.searchParams.get("from") ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const to = req.nextUrl.searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
 
+  if (reportType === "options") {
+    const [customers, products, categories, paymentMethods] = await Promise.all([
+      db.execute(sql`
+        SELECT label, value FROM (
+          SELECT DISTINCT
+            COALESCE(NULLIF(customer_name, ''), customer_phone, 'زبون') AS label,
+            COALESCE(customer_phone, NULLIF(customer_name, ''), '') AS value
+          FROM sales_invoices
+          WHERE status = 'active'
+          UNION
+          SELECT DISTINCT
+            COALESCE(NULLIF(customer_name, ''), customer_phone, 'زبون') AS label,
+            COALESCE(customer_phone, NULLIF(customer_name, ''), '') AS value
+          FROM orders
+        ) opts
+        WHERE value <> ''
+        ORDER BY label
+        LIMIT 200
+      `),
+      db.execute(sql`
+        SELECT id::text AS value, COALESCE(NULLIF(name_ar, ''), name) AS label
+        FROM products
+        ORDER BY updated_at DESC NULLS LAST, id DESC
+        LIMIT 250
+      `),
+      db.execute(sql`
+        SELECT id::text AS value, COALESCE(NULLIF(name_ar, ''), name, slug) AS label
+        FROM categories
+        WHERE is_active = true
+        ORDER BY COALESCE(parent_id, 0), sort_order, name_ar
+        LIMIT 200
+      `),
+      db.execute(sql`
+        SELECT DISTINCT payment_method AS value, payment_method AS label
+        FROM (
+          SELECT payment_method FROM sales_invoices WHERE payment_method IS NOT NULL
+          UNION
+          SELECT payment_method FROM orders WHERE payment_method IS NOT NULL
+        ) methods
+        WHERE payment_method <> ''
+        ORDER BY payment_method
+      `),
+    ]);
+    return json({
+      customers: customers.rows ?? [],
+      products: products.rows ?? [],
+      categories: categories.rows ?? [],
+      paymentMethods: paymentMethods.rows ?? [],
+    });
+  }
+
+  if (reportType === "table") {
+    const type = (req.nextUrl.searchParams.get("type") ?? "invoice-sales").trim();
+    const customer = (req.nextUrl.searchParams.get("customer") ?? "").trim();
+    const product = (req.nextUrl.searchParams.get("product") ?? "").trim();
+    const category = (req.nextUrl.searchParams.get("category") ?? "").trim();
+    const paymentMethod = (req.nextUrl.searchParams.get("paymentMethod") ?? "").trim();
+    const customerLike = `%${customer}%`;
+    const productLike = `%${product}%`;
+    const categoryLike = `%${category}%`;
+    const fromTs = `${from}T00:00:00`;
+    const toTs = `${to}T23:59:59`;
+
+    if (type === "invoice-sales") {
+      const rows = await db.execute(sql`
+        SELECT
+          si.id,
+          si.invoice_no,
+          si.date::text AS date,
+          COALESCE(NULLIF(si.customer_name, ''), 'زبون') AS customer_name,
+          COALESCE(si.customer_phone, '') AS customer_phone,
+          COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد') AS staff_name,
+          COALESCE(si.payment_method, '') AS payment_method,
+          COALESCE(si.payment_status, '') AS payment_status,
+          COALESCE(item_stats.item_count, 0)::int AS item_count,
+          si.subtotal::text AS subtotal,
+          (COALESCE(si.discount_amount, 0) + COALESCE(si.coupon_discount_amount, 0))::text AS discount,
+          si.total::text AS net_total,
+          si.paid_amount::text AS paid_amount,
+          si.remaining_amount::text AS remaining_amount
+        FROM sales_invoices si
+        LEFT JOIN (
+          SELECT invoice_id, COUNT(*)::int AS item_count
+          FROM sales_invoice_items
+          GROUP BY invoice_id
+        ) item_stats ON item_stats.invoice_id = si.id
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii
+            WHERE sii.invoice_id = si.id
+              AND (sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1
+            FROM sales_invoice_items sii
+            LEFT JOIN products p ON p.id = sii.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            LEFT JOIN categories sc ON sc.id = p.subcategory_id
+            WHERE sii.invoice_id = si.id
+              AND (
+                p.category_id::text = ${category}
+                OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike}
+                OR COALESCE(sc.name_ar, sc.name, sc.slug, '') ILIKE ${categoryLike}
+              )
+          ))
+        ORDER BY si.date DESC, si.id DESC
+        LIMIT 1000
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "invoice-details") {
+      const rows = await db.execute(sql`
+        SELECT
+          si.invoice_no,
+          si.date::text AS date,
+          COALESCE(NULLIF(si.customer_name, ''), 'زبون') AS customer_name,
+          sii.product_name,
+          COALESCE(c.name_ar, c.name, p.category, 'غير مصنف') AS category_name,
+          sii.quantity::text AS quantity,
+          sii.unit_price::text AS unit_price,
+          sii.discount::text AS discount,
+          sii.total::text AS total,
+          (sii.total - (sii.cost_price * sii.quantity))::text AS profit
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        LEFT JOIN products p ON p.id = sii.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN categories sc ON sc.id = p.subcategory_id
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+            OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
+            OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike}
+            OR COALESCE(sc.name_ar, sc.name, sc.slug, '') ILIKE ${categoryLike})
+        ORDER BY si.date DESC, si.id DESC, sii.id
+        LIMIT 1500
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "customers") {
+      const rows = await db.execute(sql`
+        SELECT
+          COALESCE(NULLIF(si.customer_name, ''), 'زبون') AS customer_name,
+          COALESCE(si.customer_phone, '') AS customer_phone,
+          COUNT(*)::int AS invoice_count,
+          SUM(si.subtotal)::text AS gross_sales,
+          SUM(COALESCE(si.discount_amount, 0) + COALESCE(si.coupon_discount_amount, 0))::text AS discounts,
+          SUM(si.total)::text AS net_sales,
+          SUM(si.remaining_amount)::text AS remaining_amount
+        FROM sales_invoices si
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii
+            WHERE sii.invoice_id = si.id
+              AND (sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1
+            FROM sales_invoice_items sii
+            LEFT JOIN products p ON p.id = sii.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE sii.invoice_id = si.id
+              AND (p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike})
+          ))
+        GROUP BY COALESCE(NULLIF(si.customer_name, ''), 'زبون'), COALESCE(si.customer_phone, '')
+        ORDER BY SUM(si.total) DESC
+        LIMIT 500
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "products") {
+      const rows = await db.execute(sql`
+        SELECT
+          COALESCE(sii.product_id, 0)::int AS product_id,
+          sii.product_name,
+          COALESCE(c.name_ar, c.name, p.category, 'غير مصنف') AS category_name,
+          SUM(sii.quantity)::text AS total_qty,
+          SUM(sii.total)::text AS total_revenue,
+          SUM(sii.cost_price * sii.quantity)::text AS total_cost,
+          SUM(sii.total - (sii.cost_price * sii.quantity))::text AS profit
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        LEFT JOIN products p ON p.id = sii.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN categories sc ON sc.id = p.subcategory_id
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+            OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
+            OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike}
+            OR COALESCE(sc.name_ar, sc.name, sc.slug, '') ILIKE ${categoryLike})
+        GROUP BY COALESCE(sii.product_id, 0), sii.product_name, COALESCE(c.name_ar, c.name, p.category, 'غير مصنف')
+        ORDER BY SUM(sii.total) DESC
+        LIMIT 500
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "categories") {
+      const rows = await db.execute(sql`
+        SELECT
+          COALESCE(c.name_ar, c.name, p.category, 'غير مصنف') AS category_name,
+          COUNT(DISTINCT si.id)::int AS invoice_count,
+          SUM(sii.quantity)::text AS total_qty,
+          SUM(sii.total)::text AS total_revenue,
+          SUM(sii.total - (sii.cost_price * sii.quantity))::text AS profit
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        LEFT JOIN products p ON p.id = sii.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN categories sc ON sc.id = p.subcategory_id
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+            OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
+            OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike}
+            OR COALESCE(sc.name_ar, sc.name, sc.slug, '') ILIKE ${categoryLike})
+        GROUP BY COALESCE(c.name_ar, c.name, p.category, 'غير مصنف')
+        ORDER BY SUM(sii.total) DESC
+        LIMIT 300
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "staff") {
+      const rows = await db.execute(sql`
+        SELECT
+          COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد') AS staff_name,
+          COUNT(*)::int AS invoice_count,
+          SUM(si.total)::text AS total_revenue,
+          SUM(item_profit.profit)::text AS profit
+        FROM sales_invoices si
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(sii.total - (sii.cost_price * sii.quantity)), 0) AS profit
+          FROM sales_invoice_items sii
+          WHERE sii.invoice_id = si.id
+        ) item_profit ON true
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii
+            WHERE sii.invoice_id = si.id
+              AND (sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1
+            FROM sales_invoice_items sii
+            LEFT JOIN products p ON p.id = sii.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE sii.invoice_id = si.id
+              AND (p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike})
+          ))
+        GROUP BY COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد')
+        ORDER BY SUM(si.total) DESC
+        LIMIT 200
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "profit-daily" || type === "profit-monthly") {
+      const periodExpr = type === "profit-monthly"
+        ? sql`to_char(si.date, 'YYYY-MM')`
+        : sql`si.date::text`;
+      const rows = await db.execute(sql`
+        SELECT
+          ${periodExpr} AS period,
+          COUNT(*)::int AS invoice_count,
+          SUM(si.total)::text AS revenue,
+          SUM(item_profit.cost)::text AS cost,
+          SUM(item_profit.profit)::text AS profit
+        FROM sales_invoices si
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(SUM(sii.cost_price * sii.quantity), 0) AS cost,
+            COALESCE(SUM(sii.total - (sii.cost_price * sii.quantity)), 0) AS profit
+          FROM sales_invoice_items sii
+          WHERE sii.invoice_id = si.id
+        ) item_profit ON true
+        WHERE si.status = 'active'
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii
+            WHERE sii.invoice_id = si.id
+              AND (sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1
+            FROM sales_invoice_items sii
+            LEFT JOIN products p ON p.id = sii.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE sii.invoice_id = si.id
+              AND (p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike})
+          ))
+        GROUP BY ${periodExpr}
+        ORDER BY ${periodExpr}
+        LIMIT 500
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "delivery") {
+      const rows = await db.execute(sql`
+        SELECT
+          o.id,
+          o.tracking_code,
+          DATE(o.created_at)::text AS date,
+          COALESCE(NULLIF(o.customer_name, ''), 'زبون') AS customer_name,
+          COALESCE(o.customer_phone, '') AS customer_phone,
+          o.total::text AS gross_total,
+          o.delivery_fee::text AS delivery_fee,
+          (o.total - o.delivery_fee)::text AS order_total,
+          COALESCE(o.payment_method, '') AS payment_method,
+          COALESCE(o.payment_status, '') AS payment_status,
+          COALESCE(o.status, '') AS status
+        FROM orders o
+        WHERE o.created_at >= ${fromTs}::timestamp
+          AND o.created_at <= ${toTs}::timestamp
+          AND COALESCE(o.delivery_fee, 0) > 0
+          AND (${customer} = '' OR o.customer_name ILIKE ${customerLike} OR COALESCE(o.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR o.payment_method = ${paymentMethod})
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM order_items oi
+            WHERE oi.order_id = o.id
+              AND (oi.product_name ILIKE ${productLike} OR oi.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1
+            FROM order_items oi
+            LEFT JOIN products p ON p.id = oi.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE oi.order_id = o.id
+              AND (p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike})
+          ))
+        ORDER BY o.created_at DESC, o.id DESC
+        LIMIT 1000
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    if (type === "returns") {
+      const rows = await db.execute(sql`
+        SELECT
+          si.invoice_no,
+          si.date::text AS date,
+          COALESCE(NULLIF(si.customer_name, ''), 'زبون') AS customer_name,
+          COALESCE(si.customer_phone, '') AS customer_phone,
+          si.status,
+          si.total::text AS total
+        FROM sales_invoices si
+        WHERE si.status IN ('returned', 'refunded', 'return')
+          AND si.date >= ${from}
+          AND si.date <= ${to}
+          AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+        ORDER BY si.date DESC, si.id DESC
+        LIMIT 500
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
+
+    return error("نوع التقرير غير مدعوم", 400);
+  }
+
   if (reportType === "sales-summary") {
     const salesConds: any[] = [
       sql`${salesInvoicesTable.status} = 'active'`,
