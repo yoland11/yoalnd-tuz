@@ -237,6 +237,7 @@ function ProductsGrid({ isLoading, products, onClearSearch }: { isLoading: boole
 }
 
 function ProductCard({ product }: { product: Product }) {
+  const description = shortProductDescription(product);
   return (
     <Link href={`/store/${product.id}`}>
       <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
@@ -264,6 +265,11 @@ function ProductCard({ product }: { product: Product }) {
           <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
             {product.nameAr}
           </h3>
+          {description && (
+            <p className="mb-2 text-xs leading-5 text-muted-foreground line-clamp-2">
+              {description}
+            </p>
+          )}
           <ProductColorDots colors={product.colors} />
 
           <div className="mt-auto pt-4 flex items-center justify-between">
@@ -283,4 +289,11 @@ function ProductCard({ product }: { product: Product }) {
       </Card>
     </Link>
   );
+}
+
+function shortProductDescription(product: Product): string {
+  const raw = String(product.descriptionAr || product.description || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const max = 92;
+  return raw.length > max ? `${raw.slice(0, max).trim()}...` : raw;
 }

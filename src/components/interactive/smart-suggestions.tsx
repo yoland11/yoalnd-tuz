@@ -6,6 +6,8 @@ type ProductSuggestion = {
   id: number;
   nameAr?: string | null;
   name?: string | null;
+  description?: string | null;
+  descriptionAr?: string | null;
   images?: string[] | null;
   price?: number | string | null;
 };
@@ -21,6 +23,7 @@ type ServiceSuggestion = {
 type SuggestionItem = {
   key: string;
   title: string;
+  description?: string | null;
   image?: string | null;
   href: string;
   meta?: string | null;
@@ -127,6 +130,7 @@ export function SmartSuggestions({
       ...sourceProducts.map((product) => ({
         key: `p-${product.id}`,
         title: product.nameAr || product.name || "منتج",
+        description: shortSuggestionDescription(product.descriptionAr || product.description),
         image: product.images?.[0],
         href: `/store/${product.id}`,
         meta: product.price ? `${Number(product.price).toLocaleString("ar-IQ")} د.ع` : "منتج مقترح",
@@ -154,6 +158,7 @@ export function SmartSuggestions({
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">{item.title}</p>
+              {item.description && <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{item.description}</p>}
               {item.meta && <p className="mt-0.5 text-xs text-muted-foreground">{item.meta}</p>}
             </div>
           </Link>
@@ -161,4 +166,11 @@ export function SmartSuggestions({
       </div>
     </section>
   );
+}
+
+function shortSuggestionDescription(value: unknown): string {
+  const raw = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const max = 76;
+  return raw.length > max ? `${raw.slice(0, max).trim()}...` : raw;
 }
