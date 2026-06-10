@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Bell,
   CreditCard,
-  Download,
   Heart,
   HelpCircle,
   Home,
@@ -16,7 +15,6 @@ import {
   Pencil,
   Phone,
   Plus,
-  Printer,
   RefreshCcw,
   Search,
   Settings,
@@ -37,7 +35,6 @@ import type { ImageMetadata } from "@/lib/image-tools";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
 import { EventCountdown } from "@/components/interactive/event-countdown";
-import { downloadElementPdf } from "@/lib/pdf";
 import { subscribeToPushNotifications } from "@/lib/pwa";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
@@ -196,7 +193,6 @@ function AddressInput({
 export default function Profile() {
   const [, navigate] = useLocation();
   const t = useT();
-  const profileRef = useRef<HTMLDivElement>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [cart, setCart] = useState<any>(null);
@@ -223,7 +219,6 @@ export default function Profile() {
   const [savingAddress, setSavingAddress] = useState(false);
   const [addressError, setAddressError] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
-  const [profilePdfLoading, setProfilePdfLoading] = useState(false);
   const [pushLoading, setPushLoading] = useState(false);
   const [pushMessage, setPushMessage] = useState("");
   const [loginCelebration, setLoginCelebration] = useState(false);
@@ -432,17 +427,6 @@ export default function Profile() {
     navigate("/cart");
   }
 
-  async function downloadProfilePdf() {
-    setProfilePdfLoading(true);
-    try {
-      await downloadElementPdf(profileRef.current, `ajn-profile-${customer?.phone ?? "customer"}.pdf`);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : t("تعذر تحميل PDF، جرّب الطباعة أو إعادة المحاولة."));
-    } finally {
-      setProfilePdfLoading(false);
-    }
-  }
-
   async function enableCustomerPush() {
     setPushLoading(true);
     setPushMessage("");
@@ -481,7 +465,7 @@ export default function Profile() {
         storageKey={`ajn-profile-login-${customer.id}`}
         message={t("أهلاً بك في حسابك")}
       />
-      <div ref={profileRef} className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto space-y-6">
         <div className="bg-card rounded-2xl border border-border/30 p-6 flex flex-col md:flex-row md:items-center gap-5">
           <div className="relative w-20 h-20 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center overflow-hidden">
             {(avatarDraft || customer.avatarUrl) ? (
@@ -604,18 +588,6 @@ export default function Profile() {
               )}
             </Section>
 
-            <Section title={t("الفواتير")} icon={Download}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button variant="outline" className="gap-2" onClick={() => window.print()}>
-                  <Printer className="w-4 h-4" />
-                  {t("طباعة الفاتورة")}
-                </Button>
-                <Button variant="outline" className="gap-2" onClick={downloadProfilePdf} disabled={profilePdfLoading}>
-                  {profilePdfLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                  {profilePdfLoading ? t("جاري التحميل...") : t("تحميل الفاتورة PDF")}
-                </Button>
-              </div>
-            </Section>
           </div>
 
           <div className="space-y-6">
