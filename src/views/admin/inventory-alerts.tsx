@@ -44,7 +44,7 @@ export default function InventoryAlertsPage() {
           <h1 className="text-2xl font-bold text-foreground">تنبيهات المخزون</h1>
           <p className="text-sm text-muted-foreground mt-1">المنتجات التي وصلت إلى الحد الأدنى أو نفدت.</p>
         </div>
-        <div className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+        <div className="inline-flex items-center gap-2 rounded-lg border border-status-warning/30 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
           <AlertTriangle className="w-4 h-4" />
           {(data?.count ?? 0).toLocaleString("ar-IQ")} منتج
         </div>
@@ -57,7 +57,7 @@ export default function InventoryAlertsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="بحث باسم المنتج أو الباركود..."
-            className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
         {!data?.emailEnabled && (
@@ -97,7 +97,7 @@ export default function InventoryAlertsPage() {
                       </div>
                     </td>
                     <td className="p-3 text-muted-foreground font-mono" dir="ltr">{item.barcode || "—"}</td>
-                    <td className={`p-3 font-semibold ${item.stock <= 0 ? "text-red-400" : "text-amber-400"}`}>{item.stock.toLocaleString("ar-IQ")}</td>
+                    <td className={`p-3 font-semibold ${item.stock <= 0 ? "text-status-danger" : "text-status-warning"}`}>{item.stock.toLocaleString("ar-IQ")}</td>
                     <td className="p-3 text-muted-foreground">{item.minStock.toLocaleString("ar-IQ")}</td>
                     <td className="p-3">
                       <Button asChild variant="outline" size="sm">

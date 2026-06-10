@@ -103,7 +103,7 @@ export default function BarcodesPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="بحث بالاسم أو الباركود..."
-              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
 
@@ -142,7 +142,7 @@ export default function BarcodesPage() {
                 max={200}
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
-                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </label>
             <label className="text-xs text-muted-foreground">
@@ -150,7 +150,7 @@ export default function BarcodesPage() {
               <select
                 value={size}
                 onChange={(e) => setSize(e.target.value as BarcodeSize)}
-                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {Object.entries(SIZE_CONFIG).map(([value, item]) => (
                   <option key={value} value={value}>{item.label}</option>

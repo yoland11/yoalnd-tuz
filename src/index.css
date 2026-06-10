@@ -45,6 +45,10 @@
   --color-chart-4: hsl(var(--chart-4));
   --color-chart-5: hsl(var(--chart-5));
 
+  --color-status-success: hsl(var(--status-success));
+  --color-status-danger: hsl(var(--status-danger));
+  --color-status-warning: hsl(var(--status-warning));
+
   --color-sidebar: hsl(var(--sidebar));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-border: hsl(var(--sidebar-border));
@@ -56,7 +60,7 @@
   --color-sidebar-accent-border: var(--sidebar-accent-border);
   --color-sidebar-ring: hsl(var(--sidebar-ring));
 
-  --font-sans: "Cairo", sans-serif;
+  --font-sans: var(--font-cairo), sans-serif;
   --font-serif: Georgia, serif;
   --font-mono: Menlo, monospace;
 
@@ -64,6 +68,10 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  --animate-fade-up: ajn-fade-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-scale-in: ajn-scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in: ajn-slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* ALL LUXURY DARK MODE THEME */
@@ -130,15 +138,17 @@
   --chart-4: 0 0% 30%;
   --chart-5: 46 50% 40%;
 
-  --app-font-sans: 'Cairo', sans-serif;
-  --app-font-serif: Georgia, serif;
-  --app-font-mono: Menlo, monospace;
   --ajn-header: 0 0% 4%;
   --ajn-footer: 0 0% 4%;
   --ajn-heading: 37 33% 94%;
   --ajn-link: 46 65% 52%;
   --ajn-hover: 46 65% 52%;
-  --radius: 0.3rem; 
+  /* Semantic status colors — adapt per theme in appearanceCssVariables() */
+  --status-success: 142 72% 55%;
+  --status-danger: 0 84% 70%;
+  --status-warning: 38 90% 68%;
+
+  --radius: 0.3rem;
   
   --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00); 
   --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00); 
@@ -296,5 +306,31 @@ a:hover {
   .border.active-elevate-2:not(.no-active-interaction-elevate)::after,
   .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
     inset: -1px;
+  }
+}
+
+@keyframes ajn-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ajn-scale-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ajn-slide-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

@@ -106,7 +106,7 @@ export default function MessagesPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="بحث بالاسم أو الهاتف أو الموضوع..."
-              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
@@ -191,7 +191,7 @@ export default function MessagesPage() {
                   value={reply}
                   onChange={(e) => setReply(e.target.value)}
                   placeholder="اكتب ردك..."
-                  className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                  className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
                 <Button type="submit" disabled={!reply.trim() || sendReply.isPending} className="gap-2">
                   <Send className="w-4 h-4" /> إرسال

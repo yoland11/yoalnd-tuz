@@ -181,9 +181,9 @@ export default function Account() {
                     <div className="text-right">
                       <p className="text-primary font-bold">{Number(order.total).toLocaleString('ar-IQ')} د.ع</p>
                       <span className={`text-xs px-2 py-0.5 rounded-full border ${
-                        order.status === "delivered" ? "border-green-500/30 text-green-400" :
-                        order.status === "cancelled" ? "border-red-500/30 text-red-400" :
-                        "border-yellow-500/30 text-yellow-400"
+                        order.status === "delivered" ? "border-status-success/30 text-status-success" :
+                        order.status === "cancelled" ? "border-status-danger/30 text-status-danger" :
+                        "border-status-warning/30 text-status-warning"
                       }`}>
                         {STATUS_LABELS[order.status] ?? order.status}
                       </span>
@@ -216,7 +216,7 @@ export default function Account() {
                       <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{order.serviceName ?? "حجز خدمة"}</p>
                     </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full border border-yellow-500/30 text-yellow-400">
+                    <span className="text-xs px-2 py-0.5 rounded-full border border-status-warning/30 text-status-warning">
                       {STATUS_LABELS[order.status] ?? order.status}
                     </span>
                   </div>
@@ -260,10 +260,10 @@ export default function Account() {
                   type="tel"
                   inputMode="numeric"
                   placeholder="07700000000"
-                  className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-lg font-mono placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-lg font-mono placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 />
               </div>
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <p className="text-status-danger text-sm">{error}</p>}
               <Button type="submit" className="w-full py-5" disabled={requestOtp.isPending}>
                 {requestOtp.isPending ? "جاري الإرسال..." : "إرسال رمز التحقق"}
               </Button>
@@ -271,7 +271,7 @@ export default function Account() {
           ) : (
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="text-center mb-2">
-                <CheckCircle className="w-8 h-8 text-green-400 mx-auto mb-2" />
+                <CheckCircle className="w-8 h-8 text-status-success mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">تم إرسال رمز التحقق إلى</p>
                 <p className="font-mono text-foreground">{formatIraqiPhone(phone)}</p>
               </div>
@@ -282,10 +282,10 @@ export default function Account() {
                   onChange={e => setOtp(normalizePhoneDigits(e.target.value).slice(0, 6))}
                   placeholder="123456"
                   maxLength={6}
-                  className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-2xl font-mono tracking-widest text-center placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-2xl font-mono tracking-widest text-center placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 />
               </div>
-              {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+              {error && <p className="text-status-danger text-sm text-center">{error}</p>}
               <Button type="submit" className="w-full py-5" disabled={verifyOtp.isPending}>
                 {verifyOtp.isPending ? "جاري التحقق..." : "تأكيد الدخول"}
               </Button>

@@ -8,6 +8,7 @@ import { EmptyState } from "./_layout";
 import { useToast } from "@/hooks/use-toast";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import { AutoTranslateButton } from "./auto-translate-button";
 import type { ImageMetadata } from "@/lib/image-tools";
 
 type Category = {
@@ -89,7 +90,7 @@ export default function CategoriesPage() {
                     <p className="font-bold text-foreground">{p.nameAr}</p>
                     <p className="text-xs text-muted-foreground">{p.slug}{typeof p.productCount === "number" ? ` · ${p.productCount} منتج` : ""}</p>
                   </div>
-                  {!p.isActive && <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-400">مخفي</span>}
+                  {!p.isActive && <span className="text-xs px-2 py-0.5 rounded-full bg-status-danger/10 text-status-danger">مخفي</span>}
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => setEditing({ name: "", nameAr: "", slug: "", parentId: p.id, imageUrl: "", imageMetadata: {}, isActive: true, sortOrder: 0 })}
@@ -97,7 +98,7 @@ export default function CategoriesPage() {
                     <Plus className="w-3.5 h-3.5" /> فرعي
                   </button>
                   <button onClick={() => setEditing(p)} className="text-primary hover:bg-primary/10 p-2 rounded-lg"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => confirm("حذف القسم؟") && del.mutate(p.id)} className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                  <button onClick={() => confirm("حذف القسم؟") && del.mutate(p.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><Trash2 className="w-4 h-4" /></button>
                 </div>
               </div>
               <div className="p-3 space-y-1">
@@ -108,11 +109,11 @@ export default function CategoriesPage() {
                       <CategoryThumb category={c} size="sm" />
                       <span className="text-sm text-foreground">{c.nameAr}</span>
                       <span className="text-xs text-muted-foreground">{c.slug}{typeof c.productCount === "number" ? ` · ${c.productCount} منتج` : ""}</span>
-                      {!c.isActive && <span className="text-xs text-red-400">(مخفي)</span>}
+                      {!c.isActive && <span className="text-xs text-status-danger">(مخفي)</span>}
                     </div>
                     <div className="flex items-center gap-1">
                       <button onClick={() => setEditing(c)} className="text-primary hover:bg-primary/10 p-1.5 rounded"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => confirm("حذف؟") && del.mutate(c.id)} className="text-red-400 hover:bg-red-500/10 p-1.5 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => confirm("حذف؟") && del.mutate(c.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   </div>
                 ))}
@@ -135,11 +136,18 @@ export default function CategoriesPage() {
             <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(s => ({ ...s!, name: v }))} />
             <Field label="الاسم (كردي)" value={editing.nameKu ?? ""} onChange={v => setEditing(s => ({ ...s!, nameKu: v }))} />
             <Field label="الاسم (تركي)" value={editing.nameTr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameTr: v }))} />
+            <div className="flex justify-end">
+              <AutoTranslateButton
+                name={editing.nameAr ?? ""}
+                className="gap-1.5"
+                onResult={(r) => setEditing(s => ({ ...s!, nameKu: r.nameKu, nameTr: r.nameTr }))}
+              />
+            </div>
             {(editing.parentId != null || (editing.id && editing.parentId != null)) && (
               <div>
                 <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
                 <select value={editing.parentId ?? ""} onChange={e => setEditing(s => ({ ...s!, parentId: e.target.value ? Number(e.target.value) : null }))}
-                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                   <option value="">—</option>
                   {parents.filter(p => p.id !== editing.id).map(p => <option key={p.id} value={p.id}>{p.nameAr}</option>)}
                 </select>
@@ -200,7 +208,7 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }

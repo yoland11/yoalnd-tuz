@@ -108,7 +108,7 @@ export default function LoyaltyPage() {
           <div className="bg-card rounded-xl border border-border/30 p-4 space-y-3">
             <h2 className="text-sm font-semibold text-foreground">تعديل نقاط زبون</h2>
             <select value={selectedCustomerId} onChange={(e) => setSelectedCustomerId(e.target.value)}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <option value="">اختر الزبون</option>
               {customers.map((customer) => (
                 <option key={customer.id} value={customer.id}>{customer.name} — {customer.rewardPoints} نقطة</option>
@@ -116,9 +116,9 @@ export default function LoyaltyPage() {
             </select>
             <input value={pointsDelta} onChange={(e) => setPointsDelta(e.target.value.replace(/[^\d-]/g, ""))}
               placeholder="+50 أو -20" inputMode="numeric"
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="سبب التعديل"
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
             <Button onClick={() => adjustPoints.mutate()} disabled={adjustPoints.isPending || !selectedCustomerId || !Number(pointsDelta)} className="w-full">
               حفظ النقاط
             </Button>
@@ -129,7 +129,7 @@ export default function LoyaltyPage() {
           <div className="relative">
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث عن زبون..."
-              className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </div>
 
           {isLoading ? (
@@ -169,7 +169,7 @@ export default function LoyaltyPage() {
               {data?.history.length ? data.history.slice(0, 8).map((entry) => (
                 <div key={entry.id} className="flex items-center justify-between rounded-lg bg-background/50 border border-border/20 px-3 py-2 text-sm">
                   <span className="text-muted-foreground">{entry.note || entry.reason}</span>
-                  <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-red-400 font-semibold"}>
+                  <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-status-danger font-semibold"}>
                     {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ")}
                   </span>
                 </div>
@@ -187,7 +187,7 @@ function SettingInput({ label, value, onChange }: { label: string; value: number
     <label className="block text-xs text-muted-foreground">
       {label}
       <input type="number" min="1" value={value} onChange={(e) => onChange(Math.max(1, Number(e.target.value) || 1))}
-        className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" dir="ltr" />
+        className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" dir="ltr" />
     </label>
   );
 }

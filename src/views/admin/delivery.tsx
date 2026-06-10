@@ -149,7 +149,7 @@ export default function DeliveryPage() {
                       </label>
                       <label className="text-xs flex items-center gap-1.5 cursor-pointer">
                         <input type="checkbox" checked={d.isActive} onChange={e => patchDraft(z.id, { isActive: e.target.checked })} className="accent-primary" />
-                        <span className={d.isActive ? "text-green-400" : "text-red-400"}>{d.isActive ? "نشط" : "معطل"}</span>
+                        <span className={d.isActive ? "text-status-success" : "text-status-danger"}>{d.isActive ? "نشط" : "معطل"}</span>
                       </label>
                       {dirty && (
                         <Button size="sm" onClick={() => saveDraft(z.id)} className="gap-1.5"><Save className="w-3.5 h-3.5" /> حفظ</Button>
@@ -224,7 +224,7 @@ function AreaEditor({ areas, value, onChangeValue, onAdd, onRemove }: {
         <input value={value} onChange={e => onChangeValue(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onAdd(); } }}
           placeholder="أضف منطقة..."
-          className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary/50" />
+          className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         <button type="button" onClick={onAdd} className="px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs hover:bg-primary/20">+ إضافة</button>
       </div>
       {areas.length > 0 ? (
@@ -232,7 +232,7 @@ function AreaEditor({ areas, value, onChangeValue, onAdd, onRemove }: {
           {areas.map((a, i) => (
             <span key={i} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
               {a}
-              <button type="button" onClick={() => onRemove(i)} className="hover:text-red-400"><X className="w-3 h-3" /></button>
+              <button type="button" onClick={() => onRemove(i)} className="hover:text-status-danger"><X className="w-3 h-3" /></button>
             </span>
           ))}
         </div>

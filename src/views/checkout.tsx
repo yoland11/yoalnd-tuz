@@ -164,8 +164,8 @@ export default function Checkout() {
     return (
       <div className="container mx-auto px-4 py-20 text-center">
         <CelebrationEffect active storageKey={`ajn-checkout-${completedOrder.trackingCode}`} message={t("تم إنشاء طلبك بنجاح")} />
-        <div className="max-w-md mx-auto bg-card rounded-2xl border border-border/30 p-10">
-          <CheckCircle className="w-16 h-16 text-green-400 mx-auto mb-4" />
+        <div className="max-w-md mx-auto bg-card rounded-2xl border border-border/30 p-10 animate-scale-in">
+          <CheckCircle className="w-16 h-16 text-status-success mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-foreground mb-2">{t("تم إنشاء طلبك بنجاح!")}</h2>
           <p className="text-muted-foreground mb-6">{t("يمكنك تتبع طلبك برمز التتبع أدناه")}</p>
           <div className="bg-background rounded-xl border border-primary/30 px-6 py-4 mb-6">
@@ -207,7 +207,7 @@ export default function Checkout() {
                   name="customerName"
                   value={form.customerName}
                   onChange={handleChange}
-                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                   placeholder={t("محمد أحمد")}
                 />
               </div>
@@ -219,7 +219,7 @@ export default function Checkout() {
                   onChange={handleChange}
                   type="tel"
                   inputMode="numeric"
-                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                   placeholder="07700000000"
                 />
               </div>
@@ -234,7 +234,7 @@ export default function Checkout() {
                 name="deliveryZoneId"
                 value={form.deliveryZoneId}
                 onChange={handleChange}
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
               >
                 <option value={0}>{t("اختر المحافظة")}</option>
                 {zones?.filter(z => z.isActive).map(z => (
@@ -251,7 +251,7 @@ export default function Checkout() {
                   name="area"
                   value={form.area}
                   onChange={handleChange}
-                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 >
                   <option value="">{t("اختر المنطقة")}</option>
                   {selectedZone.areas.map(a => (
@@ -266,7 +266,7 @@ export default function Checkout() {
                 name="address"
                 value={form.address}
                 onChange={handleChange}
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 placeholder={t("الحي، الشارع، رقم المنزل")}
               />
             </div>
@@ -298,11 +298,11 @@ export default function Checkout() {
                 type="text"
                 inputMode="url"
                 dir="ltr"
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors text-sm"
+                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors text-sm"
                 placeholder="https://www.google.com/maps?q=..."
               />
               {geoError && (
-                <p className="text-xs text-amber-400 mt-1.5">{geoError}</p>
+                <p className="text-xs text-status-warning mt-1.5">{geoError}</p>
               )}
               <LocationMapCard mapUrl={form.mapsUrl || null} address={form.address || null} title={t("موقع التوصيل")} compact className="mt-3" />
             </div>
@@ -313,7 +313,7 @@ export default function Checkout() {
                 value={form.notes}
                 onChange={handleChange}
                 rows={3}
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors resize-none"
+                className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors resize-none"
                 placeholder={t("أي تعليمات خاصة...")}
               />
             </div>
@@ -369,7 +369,7 @@ export default function Checkout() {
                 <span>{Number(deliveryFee).toLocaleString('ar-IQ')} د.ع</span>
               </div>
               {coupon && (
-                <div className="flex justify-between text-sm text-green-400">
+                <div className="flex justify-between text-sm text-status-success">
                   <span>{t("كوبون")} {coupon.code}</span>
                   <span>- {coupon.discountAmount.toLocaleString("ar-IQ")} د.ع</span>
                 </div>
@@ -386,7 +386,7 @@ export default function Checkout() {
                     max={maxRedeemPoints}
                     value={redeemPoints}
                     onChange={(e) => setRedeemPoints(e.target.value)}
-                    className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                     placeholder={t("نقاط للصرف")}
                   />
@@ -404,7 +404,7 @@ export default function Checkout() {
                     value={couponCode}
                     onChange={(e) => { setCouponCode(e.target.value.toUpperCase().replace(/\s+/g, "")); setCoupon(null); setCouponError(""); }}
                     placeholder={t("كود الخصم")}
-                    className="flex-1 bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    className="flex-1 bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
                   <button
@@ -416,8 +416,8 @@ export default function Checkout() {
                     {couponLoading ? "..." : t("تطبيق")}
                   </button>
                 </div>
-                {couponError && <p className="text-xs text-red-400">{couponError}</p>}
-                {coupon && <p className="text-xs text-green-400">{coupon.message}</p>}
+                {couponError && <p className="text-xs text-status-danger">{couponError}</p>}
+                {coupon && <p className="text-xs text-status-success">{coupon.message}</p>}
               </div>
               <div className="flex justify-between font-bold text-lg border-t border-border/30 pt-2 mt-2">
                 <span className="text-foreground">{t("الإجمالي")}</span>

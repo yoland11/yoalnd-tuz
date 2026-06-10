@@ -99,7 +99,7 @@ export default function BackupPage() {
       </div>
 
       {error && (
-        <div className="flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-red-300 text-sm">
+        <div className="flex items-start gap-2 rounded-xl border border-status-danger/30 bg-status-danger/10 p-3 text-status-danger text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
         </div>
       )}
@@ -141,8 +141,8 @@ export default function BackupPage() {
         </div>
 
         {importReport && (
-          <div className="mt-4 rounded-xl border border-green-500/30 bg-green-500/10 p-4">
-            <div className="flex items-center gap-2 text-green-300 text-sm font-semibold mb-3">
+          <div className="mt-4 rounded-xl border border-status-success/30 bg-status-success/10 p-4">
+            <div className="flex items-center gap-2 text-status-success text-sm font-semibold mb-3">
               <CheckCircle2 className="w-4 h-4" /> تم الاستيراد بنجاح
             </div>
             <div className="grid gap-1 text-xs">
@@ -150,9 +150,9 @@ export default function BackupPage() {
                 <div key={k} className="flex items-center justify-between bg-background/30 rounded px-2 py-1.5">
                   <span className="text-foreground">{ENTITIES.find(e => e.id === k)?.label ?? k}</span>
                   <span className="text-muted-foreground">
-                    أُضيف: <span className="text-green-400">{v.inserted}</span> ·
+                    أُضيف: <span className="text-status-success">{v.inserted}</span> ·
                     تكرار: <span className="text-yellow-400">{v.skipped}</span> ·
-                    أخطاء: <span className="text-red-400">{v.errors}</span>
+                    أخطاء: <span className="text-status-danger">{v.errors}</span>
                   </span>
                 </div>
               ))}

@@ -234,7 +234,7 @@ export default function SettingsPage() {
           <div className="flex gap-2 items-center">
             <input value={form.logoUrl.startsWith("data:") ? "" : form.logoUrl} onChange={e => setForm(f => ({ ...f!, logoUrl: e.target.value }))}
               placeholder="أو رابط URL"
-              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 mt-2" />
+              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring mt-2" />
           </div>
         </div>
       </Section>
@@ -244,9 +244,9 @@ export default function SettingsPage() {
           {form.phones.map((p, i) => (
             <div key={i} className="flex gap-2">
               <input value={p} onChange={e => setForm(f => ({ ...f!, phones: f!.phones.map((x, idx) => idx === i ? e.target.value : x) }))}
-                className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
               <button type="button" onClick={() => setForm(f => ({ ...f!, phones: f!.phones.filter((_, idx) => idx !== i) }))}
-                className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg"><X className="w-4 h-4" /></button>
+                className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg"><X className="w-4 h-4" /></button>
             </div>
           ))}
           <button type="button" onClick={() => setForm(f => ({ ...f!, phones: [...f!.phones, ""] }))}
@@ -271,7 +271,7 @@ export default function SettingsPage() {
             </label>
             <input value={form.paymentQr.startsWith("data:") ? "" : form.paymentQr} onChange={e => setForm(f => ({ ...f!, paymentQr: e.target.value }))}
               placeholder="أو رابط URL"
-              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </div>
         </div>
         <Field label="سعر التغليف (د.ع)" type="number" value={String(form.packagingFee)} onChange={v => setForm(f => ({ ...f!, packagingFee: parseFloat(v) || 0 }))} />
@@ -415,28 +415,28 @@ export default function SettingsPage() {
                       value={season.label}
                       onChange={(e) => patchSeason(season.id, { label: e.target.value })}
                       placeholder="اسم الموسم"
-                      className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     {isActive && <span className="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[10px] text-primary">نشط</span>}
-                    <button type="button" onClick={() => removeSeason(season.id)} className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg" aria-label="حذف الموسم">
+                    <button type="button" onClick={() => removeSeason(season.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg" aria-label="حذف الموسم">
                       <X className="w-4 h-4" />
                     </button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">من تاريخ</label>
-                      <input type="date" value={season.start} onChange={(e) => patchSeason(season.id, { start: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                      <input type="date" value={season.start} onChange={(e) => patchSeason(season.id, { start: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">إلى تاريخ</label>
-                      <input type="date" value={season.end} onChange={(e) => patchSeason(season.id, { end: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                      <input type="date" value={season.end} onChange={(e) => patchSeason(season.id, { end: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">الثيم</label>
                       <select
                         value={selectedId}
                         onChange={(e) => { const p = allPresets.find((x) => x.id === e.target.value); if (p) patchSeason(season.id, { colors: normalizeAppearanceSettings(p.colors) }); }}
-                        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         {selectedId === "" && <option value="">مخصّص (الحالي)</option>}
                         {allPresets.map((p) => (<option key={p.id} value={p.id}>{p.label}</option>))}
@@ -474,7 +474,7 @@ export default function SettingsPage() {
           <div>
             <label className="block text-xs text-muted-foreground mb-1">نسبة القص</label>
             <select value={form.imageSettings?.cropRatio ?? "free"} onChange={e => setForm(f => ({ ...f!, imageSettings: { ...f!.imageSettings, cropRatio: e.target.value } }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <option value="free">بدون قص</option>
               <option value="1:1">مربع 1:1</option>
               <option value="4:3">4:3</option>
@@ -572,7 +572,7 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }
@@ -615,7 +615,7 @@ function ThemePresetCard({
           title="حذف الثيم المخصّص"
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onDelete(); } }}
-          className="absolute top-2 right-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground hover:text-red-400"
+          className="absolute top-2 right-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground hover:text-status-danger"
         >
           <X className="h-3 w-3" />
         </span>

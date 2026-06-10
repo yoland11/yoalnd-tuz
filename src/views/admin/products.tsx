@@ -15,6 +15,7 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import { inspectImageFile, type ImageMetadata } from "@/lib/image-tools";
 import { ProductColorPicker, ProductColorDots } from "@/components/product-colors";
 import { normalizeColors, type ProductColor } from "@/lib/colors";
+import { AutoTranslateButton } from "./auto-translate-button";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -143,10 +144,10 @@ export default function ProductsPage() {
         <div className="relative flex-1 min-w-[240px]">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث عن منتج..."
-            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
         <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
-          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           <option value="">كل التصنيفات</option>
           {parentCats.map(c => <option key={c.id} value={c.slug}>{c.nameAr}</option>)}
         </select>
@@ -184,7 +185,7 @@ export default function ProductsPage() {
                           <input type="number" min={0}
                             value={draft ?? String(p.stock)}
                             onChange={e => setStockDrafts(d => ({ ...d, [p.id]: e.target.value }))}
-                            className={`w-24 bg-background border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary/50 ${dirty ? "border-primary" : "border-border/40"} ${p.stock === 0 ? "text-red-400" : ""}`} />
+                            className={`w-24 bg-background border rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${dirty ? "border-primary" : "border-border/40"} ${p.stock === 0 ? "text-status-danger" : ""}`} />
                         </td>
                         <td className="p-3">
                           {dirty && (
@@ -238,10 +239,10 @@ export default function ProductsPage() {
                       </div>
                     </td>
                     <td className="p-3 text-primary font-semibold">{formatCurrency(p.price)}</td>
-                    <td className="p-3"><span className={p.stock === 0 ? "text-red-400" : "text-green-400"}>{p.stock}</span></td>
+                    <td className="p-3"><span className={p.stock === 0 ? "text-status-danger" : "text-status-success"}>{p.stock}</span></td>
                     <td className="p-3 text-muted-foreground">{p.category ?? "—"}</td>
                     <td className="p-3">
-                      <span className={`text-xs px-2 py-1 rounded-full ${p.isActive === false ? "bg-red-500/10 text-red-400" : "bg-green-500/10 text-green-400"}`}>
+                      <span className={`text-xs px-2 py-1 rounded-full ${p.isActive === false ? "bg-status-danger/10 text-status-danger" : "bg-status-success/10 text-status-success"}`}>
                         {p.isActive === false ? "مخفي" : "ظاهر"}
                       </span>
                     </td>
@@ -262,7 +263,7 @@ export default function ProductsPage() {
                         })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                           <Edit2 className="w-4 h-4" />
                         </button>
-                        <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg">
+                        <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -452,7 +453,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   subcategory: "",
                 });
               }}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <option value="">—</option>
               {parentCats.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
             </select>
@@ -472,29 +473,39 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   subcategory: next?.slug ?? "",
                 });
               }}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               <option value="">—</option>
               {filteredSubs.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
             </select>
           </div>
         </div>
 
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-border/30 bg-background/40 px-3 py-2">
+          <span className="text-xs text-muted-foreground">اكتب العربي ثم ترجم تلقائياً إلى الكردية والتركية</span>
+          <AutoTranslateButton
+            name={form.nameAr}
+            description={form.descriptionAr}
+            className="gap-1.5"
+            onResult={(r) => onChange({ ...form, nameKu: r.nameKu, nameTr: r.nameTr, descriptionKu: r.descriptionKu, descriptionTr: r.descriptionTr })}
+          />
+        </div>
+
         <div>
           <label className="block text-xs text-muted-foreground mb-1">الوصف (عربي)</label>
           <textarea value={form.descriptionAr ?? ""} onChange={e => onChange({ ...form, descriptionAr: e.target.value })} rows={3}
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-muted-foreground mb-1">الوصف (كردي)</label>
             <textarea value={form.descriptionKu ?? ""} onChange={e => onChange({ ...form, descriptionKu: e.target.value })} rows={3}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </div>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">الوصف (تركي)</label>
             <textarea value={form.descriptionTr ?? ""} onChange={e => onChange({ ...form, descriptionTr: e.target.value })} rows={3}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </div>
         </div>
 
@@ -542,7 +553,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     <button type="button" title="استبدال" onClick={() => setReplaceIndex(i)} className="p-1.5 text-muted-foreground hover:text-primary">
                       <Upload className="w-3.5 h-3.5 mx-auto" />
                     </button>
-                    <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                    <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                       <X className="w-3.5 h-3.5 mx-auto" />
                     </button>
                   </div>
@@ -633,7 +644,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                       <button type="button" title="صورة رئيسية" onClick={() => makeMain(i)} className="p-1.5 text-muted-foreground hover:text-primary">
                         <Star className="mx-auto h-3.5 w-3.5" />
                       </button>
-                      <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                      <button type="button" title="حذف" onClick={() => removeImage(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                         <X className="mx-auto h-3.5 w-3.5" />
                       </button>
                     </div>
@@ -668,7 +679,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                       <button type="button" title="تقديم الفيديو" onClick={() => moveVideo(i)} className="p-1.5 text-muted-foreground hover:text-foreground">
                         <ArrowRight className="w-3.5 h-3.5 mx-auto" />
                       </button>
-                      <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-red-400 hover:bg-red-500/10">
+                      <button type="button" title="حذف" onClick={() => removeVideo(i)} className="p-1.5 text-status-danger hover:bg-status-danger/10">
                         <X className="w-3.5 h-3.5 mx-auto" />
                       </button>
                     </div>
@@ -711,7 +722,7 @@ function Inp({ label, value, onChange, type = "text" }: { label: string; value: 
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }

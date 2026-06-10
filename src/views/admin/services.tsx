@@ -8,6 +8,7 @@ import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
+import { AutoTranslateButton } from "./auto-translate-button";
 import { useToast } from "@/hooks/use-toast";
 
 type Service = {
@@ -108,7 +109,7 @@ export default function ServicesPage() {
                   <button onClick={() => setEditing(s)} className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                     <Edit2 className="w-3.5 h-3.5" /> تعديل
                   </button>
-                  <button onClick={() => confirm("حذف الخدمة؟") && del.mutate(s.id)} className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
+                  <button onClick={() => confirm("حذف الخدمة؟") && del.mutate(s.id)} className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -136,11 +137,20 @@ export default function ServicesPage() {
             <div>
               <label className="block text-xs text-muted-foreground mb-1">النوع</label>
               <select value={editing.type ?? "kosha"} onChange={e => setEditing(s => ({ ...s!, type: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                 {SERVICE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
             <Field label="وصف عربي" textarea value={editing.descriptionAr ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionAr: v }))} />
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border/30 bg-background/40 px-3 py-2">
+              <span className="text-xs text-muted-foreground">اكتب العربي ثم ترجم تلقائياً</span>
+              <AutoTranslateButton
+                name={editing.nameAr ?? ""}
+                description={editing.descriptionAr ?? ""}
+                className="gap-1.5"
+                onResult={(r) => setEditing(e => ({ ...e!, nameKu: r.nameKu, nameTr: r.nameTr, descriptionKu: r.descriptionKu, descriptionTr: r.descriptionTr }))}
+              />
+            </div>
             <Field label="وصف (كردي)" textarea value={editing.descriptionKu ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionKu: v }))} />
             <Field label="وصف (تركي)" textarea value={editing.descriptionTr ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionTr: v }))} />
             <Field label="رمز الأيقونة (lucide)" value={editing.icon ?? ""} onChange={v => setEditing(e => ({ ...e!, icon: v }))} />
@@ -157,7 +167,7 @@ export default function ServicesPage() {
                 onRemove={() => setEditing(s => ({ ...s!, image: null, imageMetadata: null }))}
               />
               <input type="text" placeholder="أو ضع رابط URL" value={editing.image ?? ""} onChange={e => setEditing(s => ({ ...s!, image: e.target.value }))}
-                className="w-full mt-2 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                className="w-full mt-2 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={editing.isActive ?? true} onChange={e => setEditing(s => ({ ...s!, isActive: e.target.checked }))} className="accent-primary" />
@@ -179,10 +189,10 @@ function Field({ label, value, onChange, textarea = false }: { label: string; va
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       {textarea ? (
         <textarea value={value} onChange={e => onChange(e.target.value)} rows={3}
-          className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       ) : (
         <input value={value} onChange={e => onChange(e.target.value)}
-          className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       )}
     </div>
   );

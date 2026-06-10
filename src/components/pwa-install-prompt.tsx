@@ -53,7 +53,7 @@ export function PwaInstallPrompt() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 max-w-[calc(100vw-2rem)] rounded-xl border border-border/40 bg-card/95 p-3 shadow-xl backdrop-blur md:bottom-6" dir="rtl">
+    <div className="fixed bottom-20 right-4 z-50 max-w-[calc(100vw-2rem)] rounded-xl border border-border/40 bg-card/95 p-3 shadow-xl backdrop-blur md:bottom-6" dir="rtl">
       <div className="flex items-center gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">{updateReady ? "تحديث جديد متاح" : "إضافة التطبيق إلى الشاشة الرئيسية"}</p>

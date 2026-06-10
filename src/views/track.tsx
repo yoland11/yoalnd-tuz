@@ -89,11 +89,11 @@ export default function Track() {
           )}
           {errorSecure && (
             <div className="text-center py-12 bg-card rounded-xl border border-border/30">
-              <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+              <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
               <p className="text-muted-foreground">{errorSecure instanceof Error ? errorSecure.message : t("رمز QR غير صالح")}</p>
             </div>
           )}
-          {secureTracking && <SecureQrTrackingCard tracking={secureTracking} />}
+          {secureTracking && <div className="animate-scale-in"><SecureQrTrackingCard tracking={secureTracking} /></div>}
         </div>
       </div>
     );
@@ -102,7 +102,7 @@ export default function Track() {
   return (
     <div className="container mx-auto px-4 py-12 min-h-screen">
       <div className="max-w-2xl mx-auto">
-        <div className="text-center mb-10">
+        <div className="text-center mb-10 animate-fade-up">
           <Package className="w-12 h-12 text-primary mx-auto mb-3" />
           <h1 className="text-3xl font-bold text-foreground mb-2">{t("تتبع الطلب")}</h1>
           <p className="text-muted-foreground">{t("أدخل رمز التتبع أو آخر 4 أرقام من رقم هاتفك")}</p>
@@ -131,7 +131,7 @@ export default function Track() {
               value={code}
               onChange={e => setCode(e.target.value)}
               placeholder="AJN-2089"
-              className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg font-mono tracking-wider placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors uppercase"
+              className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg font-mono tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors uppercase"
             />
           ) : (
             <input
@@ -139,7 +139,7 @@ export default function Track() {
               onChange={e => setPhone(formatIraqiPhoneInput(e.target.value))}
               placeholder={t("آخر 4 أرقام من رقمك")}
               inputMode="numeric"
-              className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+              className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
           )}
           <Button type="submit" size="lg" className="px-6" disabled={loadingCode || loadingPhone}>
@@ -155,7 +155,7 @@ export default function Track() {
         {/* Code mode — single order */}
         {mode === "code" && errorCode && searchCode && (
           <div className="text-center py-12 bg-card rounded-xl border border-border/30">
-            <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+            <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
             <p className="text-muted-foreground">{t("لم يتم العثور على طلب برمز:")} <span className="text-foreground font-mono">{searchCode}</span></p>
           </div>
         )}
@@ -167,7 +167,9 @@ export default function Track() {
               </p>
             )}
             {codeResults.map((o: any, i: number) => (
-              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
+              <div key={`${o.kind ?? "order"}-${o.id ?? i}`} className="animate-scale-in" style={{ animationDelay: `${i * 80}ms` }}>
+                <OrderCard tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
+              </div>
             ))}
           </div>
         )}
@@ -175,7 +177,7 @@ export default function Track() {
         {/* Phone mode — list of orders */}
         {mode === "phone" && phoneResults && phoneResults.length === 0 && (
           <div className="text-center py-12 bg-card rounded-xl border border-border/30">
-            <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+            <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
             <p className="text-muted-foreground">{t("لا توجد طلبات مرتبطة بهذا الرقم")}</p>
           </div>
         )}
@@ -183,7 +185,9 @@ export default function Track() {
           <div className="space-y-6">
             <p className="text-sm text-muted-foreground text-center">{t("عدد الطلبات:")} {phoneResults.length}</p>
             {phoneResults.map((o: any, i: number) => (
-              <OrderCard key={`${o.kind ?? "order"}-${o.id ?? i}`} tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
+              <div key={`${o.kind ?? "order"}-${o.id ?? i}`} className="animate-scale-in" style={{ animationDelay: `${i * 80}ms` }}>
+                <OrderCard tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
+              </div>
             ))}
           </div>
         )}
@@ -217,7 +221,7 @@ function SecureQrTrackingCard({ tracking }: { tracking: any }) {
 
       <div className="h-2 bg-muted/40 rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-700 ${tracking.status === "cancelled" ? "bg-red-500" : "bg-primary"}`}
+          className={`h-full rounded-full transition-all duration-700 ${tracking.status === "cancelled" ? "bg-status-danger" : "bg-primary"}`}
           style={{ width: `${tracking.status === "cancelled" ? 100 : progress}%` }}
         />
       </div>
@@ -246,7 +250,7 @@ function SecureQrTrackingCard({ tracking }: { tracking: any }) {
           <h3 className="font-semibold text-foreground mb-4">{t("سجل الحالة")}</h3>
           <div className="space-y-3">
             {tracking.statusHistory.map((item: any, idx: number) => (
-              <div key={`${item.status}-${idx}`} className="flex items-start gap-3">
+              <div key={`${item.status}-${idx}`} className="flex items-start gap-3 animate-slide-in" style={{ animationDelay: `${idx * 50}ms` }}>
                 <div className="mt-1 h-2.5 w-2.5 rounded-full bg-primary shrink-0" />
                 <div>
                   <p className="text-sm text-foreground">{t(getStageLabel(stages, item.status))}</p>
@@ -271,14 +275,14 @@ function formatTrackDate(iso: string): string {
 }
 
 const STATUS_TONES: Record<string, string> = {
-  pending: "text-amber-300 border-amber-500/30 bg-amber-500/10",
-  confirmed: "text-blue-300 border-blue-500/30 bg-blue-500/10",
+  pending: "text-status-warning border-status-warning/30 bg-status-warning/10",
+  confirmed: "text-primary border-primary/30 bg-primary/10",
   processing: "text-primary border-primary/30 bg-primary/10",
-  en_route: "text-cyan-300 border-cyan-500/30 bg-cyan-500/10",
-  shipped: "text-cyan-300 border-cyan-500/30 bg-cyan-500/10",
-  delivered: "text-green-300 border-green-600/30 bg-green-600/10",
-  completed: "text-green-300 border-green-600/30 bg-green-600/10",
-  cancelled: "text-red-300 border-red-500/30 bg-red-500/10",
+  en_route: "text-primary border-primary/30 bg-primary/10",
+  shipped: "text-primary border-primary/30 bg-primary/10",
+  delivered: "text-status-success border-status-success/30 bg-status-success/10",
+  completed: "text-status-success border-status-success/30 bg-status-success/10",
+  cancelled: "text-status-danger border-status-danger/30 bg-status-danger/10",
 };
 
 function StatusIcon({ status, className }: { status: string; className?: string }) {
@@ -407,7 +411,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
             href={waLink}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center justify-center gap-2 bg-green-600/10 text-green-400 border border-green-600/30 hover:bg-green-600/20 transition-colors rounded-lg py-2.5 text-sm font-medium"
+            className="inline-flex items-center justify-center gap-2 bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <MessageCircle className="w-4 h-4" /> {t("تواصل عبر واتساب")}
           </a>
@@ -539,7 +543,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
 
       {/* Booking confirmation status (already responded) */}
       {isBooking && tracking.customerConfirmation && (
-        <div className={`rounded-2xl border p-4 ${tracking.customerConfirmation === "confirmed" ? "bg-green-600/10 border-green-600/30 text-green-300" : "bg-amber-500/10 border-amber-500/30 text-amber-300"}`}>
+        <div className={`rounded-2xl border p-4 ${tracking.customerConfirmation === "confirmed" ? "bg-status-success/10 border-status-success/30 text-status-success" : "bg-status-warning/10 border-status-warning/30 text-status-warning"}`}>
           <p className="text-sm font-semibold">
             {tracking.customerConfirmation === "confirmed"
               ? t("✅ شكراً، تم تأكيد موعدك")
@@ -636,7 +640,7 @@ function TrackingReviewBox({ tracking }: { tracking: any }) {
           </button>
         ))}
       </div>
-      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={t("اكتب ملاحظتك")} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={t("اكتب ملاحظتك")} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       {message && <p className="text-xs text-muted-foreground mt-2">{message}</p>}
       <Button type="submit" size="sm" className="mt-3" disabled={saving}>{saving ? t("جاري الحفظ...") : t("إرسال التقييم")}</Button>
     </form>
@@ -724,14 +728,14 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
             type="button"
             disabled={respond.isPending}
             onClick={() => respond.mutate({ action: "confirm" })}
-            className="inline-flex items-center justify-center gap-2 bg-green-600/10 text-green-300 border border-green-600/30 hover:bg-green-600/20 disabled:opacity-50 transition-colors rounded-lg py-2.5 text-sm font-medium"
+            className="inline-flex items-center justify-center gap-2 bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20 disabled:opacity-50 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <CheckCircle className="w-4 h-4" /> {t("تأكيد الموعد")}
           </button>
           <button
             type="button"
             onClick={() => setMode("reschedule")}
-            className="inline-flex items-center justify-center gap-2 bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-colors rounded-lg py-2.5 text-sm font-medium"
+            className="inline-flex items-center justify-center gap-2 bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 transition-colors rounded-lg py-2.5 text-sm font-medium"
           >
             <CalendarClock className="w-4 h-4" /> {t("طلب تغيير الموعد")}
           </button>
@@ -752,7 +756,7 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
               type="datetime-local"
               value={requestedDate}
               onChange={(e) => setRequestedDate(e.target.value)}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
           <div>
@@ -762,10 +766,10 @@ function BookingResponseCard({ tracking }: { tracking: any }) {
               onChange={(e) => setNote(e.target.value)}
               maxLength={500}
               rows={2}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-status-danger">{error}</p>}
           <div className="flex items-center gap-2">
             <Button type="submit" disabled={respond.isPending} size="sm">
               {respond.isPending ? t("جاري الإرسال...") : t("إرسال الطلب")}

@@ -378,7 +378,7 @@ function CategoriesTab() {
             c.nameAr,
             <span className="text-muted-foreground text-xs">{c.name}</span>,
             c.isActive === 1
-              ? <span className="text-emerald-500 text-xs">مفعّل</span>
+              ? <span className="text-status-success text-xs">مفعّل</span>
               : <span className="text-muted-foreground text-xs">معطّل</span>,
             <div className="flex gap-1 justify-end">
               <button onClick={() => setEditing({ id: c.id, name: c.name, nameAr: c.nameAr, isActive: c.isActive === 1 })} className="px-2 py-1 text-xs hover:bg-background/50 rounded text-muted-foreground hover:text-primary">تعديل</button>
@@ -489,7 +489,7 @@ function StatementTab() {
             <StatCard label="إجمالي المستحق" value={formatCurrency(data.totals.totalCharges)} />
             <StatCard label="إجمالي المدفوع" value={formatCurrency(data.totals.totalPayments)} />
             <StatCard label="الرصيد" value={formatCurrency(data.totals.balance)}
-              accent={data.totals.balance > 0 ? "text-amber-500" : "text-emerald-500"} />
+              accent={data.totals.balance > 0 ? "text-amber-500" : "text-status-success"} />
           </div>
 
           {data.entries.length === 0 ? <EmptyState message="لا توجد حركات لهذا الزبون" />
@@ -501,7 +501,7 @@ function StatementTab() {
                 <code className="text-xs text-primary">{e.ref}</code>,
                 e.description,
                 e.debit ? formatCurrency(e.debit) : "—",
-                e.credit ? <span className="text-emerald-500">{formatCurrency(e.credit)}</span> : "—",
+                e.credit ? <span className="text-status-success">{formatCurrency(e.credit)}</span> : "—",
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
             />
@@ -541,11 +541,11 @@ function PnLTab() {
         <>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <StatCard label="مبيعات المتجر" value={formatCurrency(data.totalSales)} />
-            <StatCard label="إجمالي القبض" value={formatCurrency(data.totalReceipts)} accent="text-emerald-500" />
+            <StatCard label="إجمالي القبض" value={formatCurrency(data.totalReceipts)} accent="text-status-success" />
             <StatCard label="إجمالي الصرف" value={formatCurrency(data.totalPayments)} accent="text-amber-500" />
             <StatCard label="إجمالي المصاريف" value={formatCurrency(data.totalExpenses)} accent="text-amber-500" />
             <StatCard label="صافي التدفق النقدي" value={formatCurrency(data.netProfit)}
-              accent={data.netProfit >= 0 ? "text-emerald-500" : "text-destructive"} />
+              accent={data.netProfit >= 0 ? "text-status-success" : "text-destructive"} />
           </div>
 
           <div className="bg-card rounded-xl border border-border/30 p-4">
@@ -575,7 +575,7 @@ function PnLTab() {
 }
 
 // ───── Helpers ─────
-const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
+const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
   return (

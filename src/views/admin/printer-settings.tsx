@@ -58,7 +58,7 @@ export default function PrinterSettingsPage() {
               <select
                 value={draft.defaultPaperSize}
                 onChange={(e) => setDraft((current) => current ? { ...current, defaultPaperSize: e.target.value as PrinterSettings["defaultPaperSize"] } : current)}
-                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <option value="80mm">Thermal 80mm</option>
                 <option value="58mm">Thermal 58mm</option>
@@ -73,7 +73,7 @@ export default function PrinterSettingsPage() {
                 max={5}
                 value={draft.copies}
                 onChange={(e) => setDraft((current) => current ? { ...current, copies: Math.min(Math.max(Number(e.target.value) || 1, 1), 5) } : current)}
-                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </label>

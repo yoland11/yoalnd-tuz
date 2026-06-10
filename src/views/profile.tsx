@@ -184,7 +184,7 @@ function AddressInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         inputMode={inputMode}
-        className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+        className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
       />
     </label>
   );
@@ -504,7 +504,7 @@ export default function Profile() {
                         <input
                           value={profileForm[key as keyof typeof profileForm]}
                           onChange={(e) => setProfileForm((form) => ({ ...form, [key]: e.target.value }))}
-                          className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                          className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                         />
                       </label>
                     ))}
@@ -520,7 +520,7 @@ export default function Profile() {
                       onRemove={() => { setAvatarDraft(""); setAvatarMetadata({}); }}
                     />
                   </div>
-                  {profileError && <p className="text-sm text-red-400">{profileError}</p>}
+                  {profileError && <p className="text-sm text-status-danger">{profileError}</p>}
                   <div className="flex flex-col sm:flex-row gap-3">
                     <Button type="submit" disabled={savingProfile} className="gap-2">
                       {savingProfile && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -563,14 +563,14 @@ export default function Profile() {
                   value={trackCode}
                   onChange={(e) => setTrackCode(e.target.value.toUpperCase())}
                   placeholder="AJN-2089"
-                  className="flex-1 bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground font-mono placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  className="flex-1 bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground font-mono placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 />
                 <Button type="submit" disabled={trackLoading} className="gap-2">
                   {trackLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                   {t("تتبع")}
                 </Button>
               </form>
-              {trackError && <p className="text-sm text-red-400 mt-3">{trackError}</p>}
+              {trackError && <p className="text-sm text-status-danger mt-3">{trackError}</p>}
               {trackResult && (
                 <div className="mt-4 space-y-3">
                   {(Array.isArray(trackResult) ? trackResult : [trackResult]).map((result: any, index: number) => (
@@ -612,7 +612,7 @@ export default function Profile() {
                 {rewards?.history?.length ? rewards.history.slice(0, 3).map((entry) => (
                   <div key={entry.id} className="flex items-center justify-between rounded-xl border border-border/25 bg-background/60 p-3 text-xs">
                     <span className="text-muted-foreground">{entry.note || t("تحديث نقاط")}</span>
-                    <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-red-300 font-semibold"}>
+                    <span className={entry.points >= 0 ? "text-primary font-semibold" : "text-status-danger font-semibold"}>
                       {entry.points > 0 ? "+" : ""}{entry.points.toLocaleString("ar-IQ")}
                     </span>
                   </div>
@@ -658,7 +658,7 @@ export default function Profile() {
                         <button type="button" onClick={() => startAddressEdit(address)} className="p-2 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10" title={t("تعديل")}>
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button type="button" onClick={() => deleteAddress(address.id)} className="p-2 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10" title={t("حذف")}>
+                        <button type="button" onClick={() => deleteAddress(address.id)} className="p-2 rounded-lg text-muted-foreground hover:text-status-danger hover:bg-status-danger/10" title={t("حذف")}>
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -670,7 +670,7 @@ export default function Profile() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <label className="block">
                         <span className="block text-xs text-muted-foreground mb-1">{t("نوع العنوان")}</span>
-                        <select value={addressForm.type} onChange={(e) => setAddressForm((form) => ({ ...form, type: e.target.value as AddressForm["type"] }))} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus:outline-none focus:border-primary/50">
+                        <select value={addressForm.type} onChange={(e) => setAddressForm((form) => ({ ...form, type: e.target.value as AddressForm["type"] }))} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                           <option value="home">{t("المنزل")}</option>
                           <option value="work">{t("العمل")}</option>
                           <option value="other">{t("عنوان آخر")}</option>
@@ -688,7 +688,7 @@ export default function Profile() {
                       <input type="checkbox" checked={addressForm.isDefault} onChange={(e) => setAddressForm((form) => ({ ...form, isDefault: e.target.checked }))} />
                       {t("عنوان افتراضي")}
                     </label>
-                    {addressError && <p className="text-sm text-red-400">{addressError}</p>}
+                    {addressError && <p className="text-sm text-status-danger">{addressError}</p>}
                     <div className="flex flex-col sm:flex-row gap-2">
                       <Button type="submit" disabled={savingAddress} className="gap-2">
                         {savingAddress && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -768,7 +768,7 @@ export default function Profile() {
 
             <Section title={t("الدعم والمساعدة")} icon={HelpCircle}>
               <div className="grid grid-cols-1 gap-3">
-                <a href={ajnWhatsApp} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-xl border border-green-600/30 bg-green-600/10 text-green-400 py-3 text-sm font-medium">
+                <a href={ajnWhatsApp} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-xl border border-status-success/30 bg-status-success/10 text-status-success py-3 text-sm font-medium">
                   <MessageCircle className="w-4 h-4" />
                   {t("تواصل واتساب")}
                 </a>
@@ -838,7 +838,7 @@ function OrderList({
                 {new Date(order.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}
               </p>
               {["delivered", "completed"].includes(order.status) && (
-                <p className="text-xs text-green-300 mt-1">{t("شكراً لك، اكتمل الطلب بنجاح.")}</p>
+                <p className="text-xs text-status-success mt-1">{t("شكراً لك، اكتمل الطلب بنجاح.")}</p>
               )}
               {order.kind !== "service" && order.items?.[0] && (
                 <SelectedColorLabel
@@ -869,7 +869,7 @@ function OrderList({
                   <RefreshCcw className="w-4 h-4" />
                 </button>
               )}
-              <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-green-600/30 bg-green-600/10 px-3 py-2 text-sm text-green-400 hover:bg-green-600/20 transition-colors">
+              <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
                 <MessageCircle className="w-4 h-4" />
               </a>
               <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
@@ -938,7 +938,7 @@ function ReviewBox({ review, onSubmit }: { review?: OrderReview; onSubmit: (rati
         </div>
         <Button type="submit" size="sm" disabled={saving}>{review ? t("تحديث التقييم") : t("إرسال التقييم")}</Button>
       </div>
-      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={t("ملاحظتك عن الطلب")} className="mt-3 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+      <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder={t("ملاحظتك عن الطلب")} className="mt-3 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </form>
   );
 }

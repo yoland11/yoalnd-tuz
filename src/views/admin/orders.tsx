@@ -59,9 +59,9 @@ const PAYMENT_STATUS_LABELS: Record<string, string> = {
   paid: "مدفوع",
 };
 const PAYMENT_COLORS: Record<string, string> = {
-  cod: "bg-amber-500/10 text-amber-400 border-amber-500/30",
+  cod: "bg-status-warning/10 text-status-warning border-status-warning/30",
   transfer: "bg-blue-500/10 text-blue-400 border-blue-500/30",
-  paid: "bg-green-500/10 text-green-400 border-green-500/30",
+  paid: "bg-status-success/10 text-status-success border-status-success/30",
 };
 
 const STATUS_FILTERS = [
@@ -274,13 +274,13 @@ export default function OrdersPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="بحث ذكي: اسم، هاتف، آخر 4 أرقام، تتبع، خدمة..."
-            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
         <select
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
-          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {STATUS_FILTERS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
@@ -288,12 +288,12 @@ export default function OrdersPage() {
           type="date"
           value={dateFilter}
           onChange={e => setDateFilter(e.target.value)}
-          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
         <select
           value={paymentFilter}
           onChange={e => setPaymentFilter(e.target.value)}
-          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">كل الدفع</option>
           <option value="unpaid">غير مدفوع</option>
@@ -303,7 +303,7 @@ export default function OrdersPage() {
         <select
           value={governorateFilter}
           onChange={e => setGovernorateFilter(e.target.value)}
-          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <option value="">كل المحافظات</option>
           {governorateOptions.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -313,7 +313,7 @@ export default function OrdersPage() {
             <select
               value={serviceFilter}
               onChange={e => setServiceFilter(e.target.value)}
-              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">كل الخدمات</option>
               {serviceOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -321,7 +321,7 @@ export default function OrdersPage() {
             <select
               value={crewFilter}
               onChange={e => setCrewFilter(e.target.value)}
-              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">كل الكادر</option>
               {crewOptions.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -377,7 +377,7 @@ export default function OrdersPage() {
                       <select
                         value={order.paymentMethod ?? "cod"}
                         onChange={e => updateProductPayment.mutate({ id: order.id, paymentMethod: e.target.value })}
-                        className="bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50"
+                        className="bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         title="طريقة الدفع"
                       >
                         <option value="cod">عند الاستلام</option>
@@ -387,7 +387,7 @@ export default function OrdersPage() {
                       <select
                         value={order.status}
                         onChange={e => updateProductStatus.mutate({ id: order.id, status: e.target.value })}
-                        className="bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary/50"
+                        className="bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         {stages.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                         <option value="cancelled">ملغي</option>
@@ -396,7 +396,7 @@ export default function OrdersPage() {
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <a href={buildWhatsAppLink(phone, waMsg)} target="_blank" rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-green-600/10 text-green-400 border border-green-600/30 hover:bg-green-600/20">
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20">
                       <MessageCircle className="w-3.5 h-3.5" /> واتساب
                     </a>
                     <a href={`/admin/invoice/${order.id}`} target="_blank" rel="noreferrer"
@@ -407,13 +407,13 @@ export default function OrdersPage() {
                       <button
                         onClick={() => confirm("أرشفة الطلب؟") && archiveProduct.mutate(order.id)}
                         disabled={archiveProduct.isPending}
-                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-60">
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 disabled:opacity-60">
                         <Archive className="w-3.5 h-3.5" /> أرشفة
                       </button>
                     )}
                     <button
                       onClick={() => confirm("حذف الطلب نهائياً؟") && deleteProduct.mutate(order.id)}
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                       <Trash2 className="w-3.5 h-3.5" /> حذف
                     </button>
                   </div>
@@ -455,7 +455,7 @@ export default function OrdersPage() {
               return (
                 <div key={o.id} className={`bg-card rounded-xl border p-4 ${isReschedulePending ? "border-amber-500/50 ring-1 ring-amber-500/30" : "border-border/30"}`}>
                   {isReschedulePending && (
-                    <div className="mb-3 rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
+                    <div className="mb-3 rounded-lg bg-status-warning/10 border border-status-warning/30 p-3">
                       <p className="text-sm text-amber-200 font-semibold mb-1">
                         📅 الزبون طلب تغيير الموعد
                       </p>
@@ -469,14 +469,14 @@ export default function OrdersPage() {
                         <button
                           onClick={() => rescheduleAction.mutate({ id: o.id, action: "accept" })}
                           disabled={rescheduleAction.isPending}
-                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-green-600/20 text-green-300 border border-green-600/40 hover:bg-green-600/30 disabled:opacity-50"
+                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-success/20 text-status-success border border-status-success/40 hover:bg-status-success/30 disabled:opacity-50"
                         >
                           <Check className="w-3.5 h-3.5" /> قبول الموعد الجديد
                         </button>
                         <button
                           onClick={() => rescheduleAction.mutate({ id: o.id, action: "reject" })}
                           disabled={rescheduleAction.isPending}
-                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/15 text-red-300 border border-red-500/40 hover:bg-red-500/25 disabled:opacity-50"
+                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/15 text-status-danger border border-status-danger/40 hover:bg-status-danger/25 disabled:opacity-50"
                         >
                           <X className="w-3.5 h-3.5" /> رفض الطلب
                         </button>
@@ -491,20 +491,20 @@ export default function OrdersPage() {
                       {o.eventDate && <p className="text-xs text-muted-foreground">📅 {o.eventDate} {o.eventLocation ? `• ${o.eventLocation}` : ""}</p>}
                       {o.eventDate && <EventCountdown targetDate={o.eventDate} compact className="mt-2 max-w-xs" />}
                       {!isReschedulePending && o.customerConfirmation === "confirmed" && (
-                        <span className="inline-flex items-center gap-1 text-[11px] mt-1.5 px-2 py-0.5 rounded-full bg-green-600/10 text-green-300 border border-green-600/30">
+                        <span className="inline-flex items-center gap-1 text-[11px] mt-1.5 px-2 py-0.5 rounded-full bg-status-success/10 text-status-success border border-status-success/30">
                           ✓ الزبون أكد الموعد
                         </span>
                       )}
                     </div>
                     {isReschedulePending ? (
-                      <span className="text-xs px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/40">
+                      <span className="text-xs px-3 py-1.5 rounded-lg bg-status-warning/15 text-status-warning border border-amber-500/40">
                         طلب تغيير موعد
                       </span>
                     ) : (
                       <select
                         value={o.status}
                         onChange={e => updateServiceStatus.mutate({ id: o.id, status: e.target.value })}
-                        className="bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-primary/50"
+                        className="bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         {stages.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                         <option value="cancelled">ملغي</option>
@@ -533,7 +533,7 @@ export default function OrdersPage() {
                   />
                   <div className="flex items-center gap-2 flex-wrap">
                     <a href={buildWhatsAppLink(o.phone, waMsg)} target="_blank" rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-green-600/10 text-green-400 border border-green-600/30 hover:bg-green-600/20">
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20">
                       <MessageCircle className="w-3.5 h-3.5" /> واتساب
                     </a>
                     <a href={`/admin/invoice/${o.id}?type=booking`} target="_blank" rel="noreferrer"
@@ -558,13 +558,13 @@ export default function OrdersPage() {
                       <button
                         onClick={() => confirm("أرشفة الحجز؟") && archiveService.mutate(o.id)}
                         disabled={archiveService.isPending}
-                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-60">
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-warning/10 text-status-warning border border-status-warning/30 hover:bg-status-warning/20 disabled:opacity-60">
                         <Archive className="w-3.5 h-3.5" /> أرشفة
                       </button>
                     )}
                     <button
                       onClick={() => confirm("حذف الحجز؟") && deleteService.mutate(o.id)}
-                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                       <Trash2 className="w-3.5 h-3.5" /> حذف
                     </button>
                   </div>
@@ -626,16 +626,16 @@ function PaymentPanel({
         {allowTotal && (
           <label className="block">
             <span className="block text-[11px] text-muted-foreground mb-1">السعر الكلي</span>
-            <input value={localTotal} onChange={(e) => setLocalTotal(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+            <input value={localTotal} onChange={(e) => setLocalTotal(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </label>
         )}
         <label className="block">
           <span className="block text-[11px] text-muted-foreground mb-1">العربون</span>
-          <input value={localDeposit} onChange={(e) => setLocalDeposit(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+          <input value={localDeposit} onChange={(e) => setLocalDeposit(e.target.value)} inputMode="numeric" className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </label>
         <label className="block">
           <span className="block text-[11px] text-muted-foreground mb-1">حالة الدفع</span>
-          <select value={localStatus} onChange={(e) => setLocalStatus(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50">
+          <select value={localStatus} onChange={(e) => setLocalStatus(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <option value="unpaid">غير مدفوع</option>
             <option value="partial">جزئي</option>
             <option value="paid">مدفوع</option>
@@ -649,7 +649,7 @@ function PaymentPanel({
         </div>
         <label className="block col-span-2 md:col-span-4">
           <span className="block text-[11px] text-muted-foreground mb-1">ملاحظات داخلية</span>
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-primary/50" />
+          <input value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </label>
       </div>
       <button
@@ -897,7 +897,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
                   <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value }))}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                     <option value="cod">عند الاستلام</option>
                     <option value="transfer">حوالة</option>
                     <option value="paid">مدفوع</option>
@@ -906,7 +906,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
                   <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                     <option value="unpaid">غير مدفوع</option>
                     <option value="partial">جزئي</option>
                     <option value="paid">مدفوع</option>
@@ -932,7 +932,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                       <input type="number" placeholder="السعر" value={it.price} onChange={e => updateItem(i, "price", parseFloat(e.target.value) || 0)}
                         className="col-span-3 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" />
                       <button type="button" onClick={() => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }))}
-                        className="col-span-1 text-red-400 hover:bg-red-500/10 rounded-lg"><X className="w-4 h-4 mx-auto" /></button>
+                        className="col-span-1 text-status-danger hover:bg-status-danger/10 rounded-lg"><X className="w-4 h-4 mx-auto" /></button>
                     </div>
                   ))}
                 </div>
@@ -955,7 +955,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                       }));
                       setServiceErrors({});
                     }}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {services.map((svc) => (
                       <option key={svc.id} value={svc.id}>{svc.nameAr || svc.name}</option>
@@ -970,7 +970,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
                   <select value={serviceForm.paymentStatus} onChange={e => setServiceForm(f => ({ ...f, paymentStatus: e.target.value }))}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                     <option value="unpaid">غير مدفوع</option>
                     <option value="partial">جزئي</option>
                     <option value="paid">مدفوع</option>
@@ -1083,7 +1083,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
             <div>
               <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
               <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                 <option value="unpaid">غير مدفوع</option>
                 <option value="partial">جزئي</option>
                 <option value="paid">مدفوع</option>
@@ -1116,7 +1116,7 @@ function Input({ label, value, onChange, type = "text" }: { label: string; value
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }

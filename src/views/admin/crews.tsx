@@ -35,10 +35,10 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_TONES: Record<string, string> = {
-  available: "bg-green-500/10 text-green-400 border-green-500/30",
-  busy: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+  available: "bg-status-success/10 text-status-success border-status-success/30",
+  busy: "bg-status-warning/10 text-status-warning border-status-warning/30",
   vacation: "bg-blue-500/10 text-blue-300 border-blue-500/30",
-  inactive: "bg-red-500/10 text-red-400 border-red-500/30",
+  inactive: "bg-status-danger/10 text-status-danger border-status-danger/30",
 };
 
 export default function CrewsPage() {
@@ -98,7 +98,7 @@ export default function CrewsPage() {
       <select
         value={statusFilter}
         onChange={(e) => setStatusFilter(e.target.value)}
-        className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+        className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <option value="">كل الحالات</option>
         <option value="available">متاح</option>
@@ -132,7 +132,7 @@ export default function CrewsPage() {
                 </div>
                 <label className="inline-flex items-center gap-1 cursor-pointer">
                   <input type="checkbox" checked={crew.isActive} onChange={() => toggle.mutate(crew)} className="accent-primary" />
-                  <span className={`text-xs ${crew.isActive ? "text-green-400" : "text-red-400"}`}>{crew.isActive ? "مفعّل" : "معطّل"}</span>
+                  <span className={`text-xs ${crew.isActive ? "text-status-success" : "text-status-danger"}`}>{crew.isActive ? "مفعّل" : "معطّل"}</span>
                 </label>
               </div>
               {crew.internalNotes && <p className="text-xs text-muted-foreground mb-3 rounded-lg bg-background/50 border border-border/20 p-2">{crew.internalNotes}</p>}
@@ -145,7 +145,7 @@ export default function CrewsPage() {
                 </button>
                 <button
                   onClick={() => confirm("حذف الكادر؟") && del.mutate(crew.id)}
-                  className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20"
+                  className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -170,7 +170,7 @@ export default function CrewsPage() {
             <div>
               <label className="block text-xs text-muted-foreground mb-1">حالة الكادر</label>
               <select value={editing.status} onChange={e => setEditing(current => ({ ...current!, status: e.target.value, isActive: e.target.value !== "inactive" }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                 <option value="available">متاح</option>
                 <option value="busy">مشغول</option>
                 <option value="vacation">إجازة</option>
@@ -181,7 +181,7 @@ export default function CrewsPage() {
               <label className="block text-xs text-muted-foreground mb-1">ملاحظات داخلية</label>
               <textarea value={editing.internalNotes} onChange={e => setEditing(current => ({ ...current!, internalNotes: e.target.value }))}
                 rows={3}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={editing.isActive} onChange={e => setEditing(current => ({ ...current!, isActive: e.target.checked }))} className="accent-primary" />
@@ -200,7 +200,7 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }

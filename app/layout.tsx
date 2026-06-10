@@ -1,6 +1,14 @@
 import type { Metadata, Viewport } from "next";
+import { Cairo } from "next/font/google";
 import "@/index.css";
 import { getCachedPublicSettings } from "@/server/public-settings";
+
+const cairo = Cairo({
+  subsets: ["arabic", "latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-cairo",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "مجموعة علي جان",
@@ -49,7 +57,7 @@ export default async function RootLayout({
   const shouldPreloadLogo = logoUrl.startsWith("/") || logoUrl.startsWith("http://") || logoUrl.startsWith("https://");
 
   return (
-    <html lang="ar" dir="rtl">
+    <html lang="ar" dir="rtl" className={cairo.variable}>
       <head>
         {shouldPreloadLogo && <link rel="preload" as="image" href={logoUrl} fetchPriority="high" />}
         <link rel="apple-touch-icon" href="/icons/icon-180.png" />

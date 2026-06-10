@@ -96,8 +96,8 @@ function NumPad({
               key={k}
               onClick={() => press(k)}
               className={`h-14 rounded-xl text-xl font-bold transition-all active:scale-95 ${
-                k === "C" ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                : k === "⌫" ? "bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+                k === "C" ? "bg-status-danger/20 text-status-danger hover:bg-status-danger/30"
+                : k === "⌫" ? "bg-status-warning/20 text-status-warning hover:bg-amber-500/30"
                 : "bg-muted/60 text-foreground hover:bg-primary/20 hover:text-primary"
               }`}
             >
@@ -152,7 +152,7 @@ function CustomerPanel({
             onFocus={() => setShowDropdown(true)}
             onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
             placeholder="اسم العميل (اختياري)"
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 pr-8 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 pr-8 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           {showDropdown && filtered.length > 0 && (
             <div className="absolute top-full right-0 left-0 z-30 mt-1 bg-card border border-border/30 rounded-lg shadow-xl overflow-hidden">
@@ -167,7 +167,7 @@ function CustomerPanel({
                     {c.phone && <p className="text-xs text-muted-foreground">{c.phone}</p>}
                   </div>
                   {(c.totalDebt ?? 0) > 0 && (
-                    <span className="text-xs text-red-400">{formatCurrency(c.totalDebt ?? 0)} دين</span>
+                    <span className="text-xs text-status-danger">{formatCurrency(c.totalDebt ?? 0)} دين</span>
                   )}
                 </button>
               ))}
@@ -179,17 +179,17 @@ function CustomerPanel({
           onChange={e => onPhone(e.target.value)}
           placeholder="07XX..."
           dir="ltr"
-          className="w-32 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          className="w-32 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       </div>
       {customerStats && (
         <div className="flex gap-3 mt-1.5 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><FileText className="w-3 h-3" />{customerStats.invoices} فاتورة</span>
           {customerStats.debt > 0 && (
-            <span className="flex items-center gap-1 text-red-400"><AlertCircle className="w-3 h-3" />دين: {formatCurrency(customerStats.debt)}</span>
+            <span className="flex items-center gap-1 text-status-danger"><AlertCircle className="w-3 h-3" />دين: {formatCurrency(customerStats.debt)}</span>
           )}
           {customerStats.debt <= 0 && customerStats.invoices > 0 && (
-            <span className="flex items-center gap-1 text-emerald-400"><CheckCircle2 className="w-3 h-3" />حساب نظيف</span>
+            <span className="flex items-center gap-1 text-status-success"><CheckCircle2 className="w-3 h-3" />حساب نظيف</span>
           )}
         </div>
       )}
@@ -223,7 +223,7 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
       <div className="p-2 flex-1 space-y-0.5">
         <p className="text-xs font-semibold text-foreground line-clamp-2 leading-tight">{product.nameAr || product.name}</p>
         <p className="text-sm font-bold text-primary">{formatCurrency(product.price)}</p>
-        <p className={`text-[10px] ${stock < 5 ? "text-amber-400" : "text-muted-foreground"}`}>
+        <p className={`text-[10px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>
           {outOfStock ? "نفذ المخزون" : `${stock} متبقي`}
         </p>
       </div>
@@ -734,7 +734,7 @@ export default function POSPage() {
             onChange={e => setSearchQ(e.target.value)}
             onKeyDown={handleBarcodeKey}
             placeholder="باركود أو اسم المنتج..."
-            className="w-full bg-card border border-primary/40 rounded-xl px-4 py-2.5 pr-9 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 shadow-sm"
+            className="w-full bg-card border border-primary/40 rounded-xl px-4 py-2.5 pr-9 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shadow-sm"
           />
           {searchQ && (
             <button onClick={() => { setSearchQ(""); barcodeRef.current?.focus(); }} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
@@ -764,7 +764,7 @@ export default function POSPage() {
         {/* Quick Action Buttons */}
         <div className="flex gap-2 flex-wrap">
           {held.length > 0 && (
-            <button onClick={() => setShowHeld(true)} className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors">
+            <button onClick={() => setShowHeld(true)} className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-status-warning/10 border border-status-warning/30 text-status-warning text-sm font-medium hover:bg-status-warning/20 transition-colors">
               <PlayCircle className="w-4 h-4" />معلقة
               <span className="absolute -top-1.5 -left-1.5 bg-amber-500 text-black text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold">{held.length}</span>
             </button>
@@ -849,7 +849,7 @@ export default function POSPage() {
                       </div>
                       <div className="text-left shrink-0">
                         <p className="text-sm font-bold text-primary">{formatCurrency(p.price)}</p>
-                        <p className={`text-[10px] ${stock < 5 ? "text-amber-400" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p>
+                        <p className={`text-[10px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p>
                       </div>
                     </button>
                   );
@@ -923,7 +923,7 @@ export default function POSPage() {
                           {/* Discount */}
                           <button
                             onClick={() => { setNumpadField({ idx, field: "discount" }); setNumpadVal(item.discount.toString()); }}
-                            className={`text-xs border border-transparent hover:border-primary/30 rounded px-1.5 py-0.5 transition-colors ${item.discount > 0 ? "text-red-400 hover:text-red-300" : "text-muted-foreground hover:text-primary"}`}
+                            className={`text-xs border border-transparent hover:border-primary/30 rounded px-1.5 py-0.5 transition-colors ${item.discount > 0 ? "text-status-danger hover:text-status-danger" : "text-muted-foreground hover:text-primary"}`}
                           >
                             {item.discount > 0 ? `-${formatCurrency(item.discount)}` : "خصم"}
                           </button>
@@ -942,13 +942,13 @@ export default function POSPage() {
               <span>{formatCurrency(subtotal)}</span>
             </div>
             {totalDisc > 0 && (
-              <div className="flex justify-between text-sm text-red-400">
+              <div className="flex justify-between text-sm text-status-danger">
                 <span>الخصم الكلي</span>
                 <span>− {formatCurrency(totalDisc)}</span>
               </div>
             )}
             {couponDisc > 0 && (
-              <div className="flex justify-between text-xs text-green-400">
+              <div className="flex justify-between text-xs text-status-success">
                 <span>كوبون {form.couponCode}</span>
                 <span>− {formatCurrency(couponDisc)}</span>
               </div>
@@ -966,7 +966,7 @@ export default function POSPage() {
                 <input
                   type="number" min="0" value={form.discountAmount}
                   onChange={e => setForm(f => ({ ...f, discountAmount: e.target.value }))}
-                  className="w-full bg-background border border-border/30 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="w-full bg-background border border-border/30 rounded px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   dir="ltr"
                 />
               </div>
@@ -975,7 +975,7 @@ export default function POSPage() {
                 <input
                   type="number" min="0" max="100" value={form.taxPct}
                   onChange={e => setForm(f => ({ ...f, taxPct: e.target.value }))}
-                  className="w-full bg-background border border-border/30 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="w-full bg-background border border-border/30 rounded px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   dir="ltr"
                 />
               </div>
@@ -985,7 +985,7 @@ export default function POSPage() {
                 value={form.couponCode}
                 onChange={e => setForm(f => ({ ...f, couponCode: e.target.value.toUpperCase().replace(/\s+/g, ""), couponDiscountAmount: "0" }))}
                 placeholder="كوبون"
-                className="flex-1 bg-background border border-border/30 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="flex-1 bg-background border border-border/30 rounded px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
               <button
@@ -1028,13 +1028,13 @@ export default function POSPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => { setNumpadField({ idx: -1, field: "paidAmount" }); setNumpadVal(form.paidAmount); }}
-                  className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm font-mono font-bold text-foreground text-right hover:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                  className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm font-mono font-bold text-foreground text-right hover:border-primary/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 >
                   {form.paidAmount || "0"}
                 </button>
                 <button
                   onClick={() => setForm(f => ({ ...f, paidAmount: grandTotal.toString() }))}
-                  className="px-3 py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg text-xs font-medium hover:bg-emerald-500/20 transition-colors whitespace-nowrap"
+                  className="px-3 py-2 bg-status-success/10 border border-status-success/30 text-status-success rounded-lg text-xs font-medium hover:bg-status-success/20 transition-colors whitespace-nowrap"
                 >
                   كامل
                 </button>
@@ -1044,9 +1044,9 @@ export default function POSPage() {
             {/* Remaining */}
             {grandTotal > 0 && (
               <div className={`flex justify-between items-center text-sm font-bold rounded-lg px-3 py-2 ${
-                remaining > 0 ? "bg-red-500/10 text-red-400"
+                remaining > 0 ? "bg-status-danger/10 text-status-danger"
                 : remaining < 0 ? "bg-blue-500/10 text-blue-400"
-                : "bg-emerald-500/10 text-emerald-400"
+                : "bg-status-success/10 text-status-success"
               }`}>
                 <span>
                   {remaining > 0 ? "المتبقي" : remaining < 0 ? "الباقي (زيادة)" : "✓ مدفوع بالكامل"}
@@ -1061,7 +1061,7 @@ export default function POSPage() {
               onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
               placeholder="ملاحظات..."
               rows={1}
-              className="w-full bg-background border border-border/30 rounded-lg px-3 py-2 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-full bg-background border border-border/30 rounded-lg px-3 py-2 text-xs resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
 
@@ -1099,13 +1099,13 @@ export default function POSPage() {
           {/* Last Invoice Info */}
           {lastInvoiceNo && (
             <div className="flex items-center justify-between bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
-              <span className="text-xs text-emerald-400 flex items-center gap-2">
+              <span className="text-xs text-status-success flex items-center gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 آخر فاتورة: <strong>{lastInvoiceNo}</strong>
               </span>
               <button
                 onClick={() => openPrintWindow(lastSavedCart, form, totals, lastInvoiceNo, "80mm", settings)}
-                className="text-[11px] text-emerald-400 hover:text-emerald-300 underline"
+                className="text-[11px] text-status-success hover:text-emerald-300 underline"
               >
                 إعادة طباعة
               </button>

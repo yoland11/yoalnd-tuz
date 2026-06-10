@@ -51,8 +51,8 @@ export default function Services() {
             <CardContent className="p-8 text-center text-muted-foreground">{t("لا توجد خدمات متاحة حالياً")}</CardContent>
           </Card>
         ) : (
-          services.map((service) => (
-            <Card key={service.id} className="bg-card border-border overflow-hidden flex flex-col">
+          services.map((service, i) => (
+            <Card key={service.id} className="bg-card border-border overflow-hidden flex flex-col group cursor-pointer hover:border-primary/50 transition-[colors,shadow] duration-200 hover:shadow-lg hover:shadow-black/10 animate-fade-up" style={{ animationDelay: `${Math.min(i * 80, 400)}ms` }}>
               <div className="relative h-64 overflow-hidden bg-muted">
                 <img
                   src={(service as any).image || serviceImages[service.type] || '/images/hero.png'}
@@ -61,31 +61,25 @@ export default function Services() {
                   height={420}
                   loading="lazy"
                   decoding="async"
-                  className="w-full h-full transition-transform duration-700 hover:scale-105"
+                  className="w-full h-full transition-transform duration-700 group-hover:scale-105"
                   style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
                 />
-                <div className="absolute bottom-3 right-3 rounded-lg bg-black/55 border border-white/10 px-3 py-1 text-xs text-white backdrop-blur-sm">
-                  {t("صور وتفاصيل الخدمة")}
-                </div>
               </div>
               <CardContent className="p-6 flex flex-col flex-1">
-                <h2 className="text-2xl font-bold text-foreground mb-3">{cl.name(service)}</h2>
-                <p className="text-muted-foreground mb-6 flex-1">
+                <h2 className="text-2xl font-bold text-foreground mb-3 group-hover:text-primary transition-colors">{cl.name(service)}</h2>
+                <p className="text-muted-foreground mb-6 flex-1 line-clamp-3">
                   {cl.description(service)}
                 </p>
-                <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
-                  <Link href="/gallery" className="rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-center text-muted-foreground hover:text-primary transition-colors">
+                <div className="flex gap-2">
+                  <Link href="/gallery" className="flex-1 rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-center text-xs text-muted-foreground hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                     {t("أعمالنا")}
                   </Link>
-                  <Link href={`/services/${service.id}`} className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-center text-primary transition-colors">
-                    {t("احجز الآن")}
+                  <Link href={`/services/${service.id}`} className="flex-1">
+                    <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
+                      {t("طلب الخدمة")}
+                    </Button>
                   </Link>
                 </div>
-                <Link href={`/services/${service.id}`}>
-                  <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
-                    {t("طلب الخدمة")}
-                  </Button>
-                </Link>
               </CardContent>
             </Card>
           ))

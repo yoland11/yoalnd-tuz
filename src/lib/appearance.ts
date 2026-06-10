@@ -162,6 +162,10 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     "--ajn-heading": hexToHslTriplet(appearance.headings),
     "--ajn-link": hexToHslTriplet(appearance.links),
     "--ajn-hover": hexToHslTriplet(appearance.hover),
+    // Semantic status tokens — darker shades for light themes to maintain contrast
+    "--status-success": isLightTheme ? "142 60% 28%" : "142 72% 55%",
+    "--status-danger": isLightTheme ? "0 75% 42%" : "0 84% 70%",
+    "--status-warning": isLightTheme ? "38 85% 35%" : "38 90% 68%",
   };
 }
 

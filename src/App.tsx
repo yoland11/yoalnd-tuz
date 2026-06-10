@@ -1,6 +1,6 @@
 "use client";
 
-import { lazy, Suspense, useEffect } from "react";
+import { Component, lazy, Suspense, useEffect, type ReactNode } from "react";
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -11,19 +11,23 @@ import Home from "@/views/home";
 import Services from "@/views/services/index";
 import ServiceRequest from "@/views/services/id";
 import Store from "@/views/store/index";
-import ProductDetail from "@/views/store/id";
 import Cart from "@/views/cart";
-import Checkout from "@/views/checkout";
-import Favorites from "@/views/favorites";
-import Track from "@/views/track";
-import Gallery from "@/views/gallery";
 import Login from "@/views/login";
-import Profile from "@/views/profile";
 import { registerServiceWorker } from "@/lib/pwa";
 import { ThemeVariables } from "@/components/theme-variables";
 
+// Admin — lazy (large bundle, staff-only)
 const Admin = lazy(() => import("@/views/admin/index"));
 const Invoice = lazy(() => import("@/views/admin/invoice"));
+
+// Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
+const ProductDetail = lazy(() => import("@/views/store/id"));
+const Track = lazy(() => import("@/views/track"));
+const Checkout = lazy(() => import("@/views/checkout"));
+const Gallery = lazy(() => import("@/views/gallery"));
+const Favorites = lazy(() => import("@/views/favorites"));
+const Profile = lazy(() => import("@/views/profile"));
+const Account = lazy(() => import("@/views/account"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,54 +40,100 @@ const queryClient = new QueryClient({
   },
 });
 
-function Router() {
-  const adminFallback = (
-    <div className="min-h-screen bg-background flex items-center justify-center" dir="rtl">
-      <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-    </div>
-  );
+// Minimal spinner shown while lazy chunks load
+const PageSpinner = () => (
+  <div className="min-h-[50vh] flex items-center justify-center" dir="rtl">
+    <div className="h-7 w-7 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+  </div>
+);
 
+const AdminSpinner = () => (
+  <div className="min-h-screen bg-background flex items-center justify-center" dir="rtl">
+    <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+  </div>
+);
+
+// Recovers from ChunkLoadError caused by stale cached HTML referencing new deploy chunks
+class ChunkErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError(error: Error) {
+    if (error.name === "ChunkLoadError" || /loading chunk/i.test(error.message)) {
+      return { failed: true };
+    }
+    return null;
+  }
+  componentDidCatch(error: Error) {
+    if (error.name === "ChunkLoadError" || /loading chunk/i.test(error.message)) {
+      // Force a hard reload to fetch fresh chunks from the new deployment
+      window.location.reload();
+    }
+  }
+  render() {
+    if (this.state.failed) return <PageSpinner />;
+    return this.props.children;
+  }
+}
+
+function Router() {
   return (
     <Switch>
-      {/* Admin routes - separate from main layout */}
+      {/* Admin routes — lazy, outside Layout */}
       <Route path="/admin/invoice/:id">
-        <Suspense fallback={adminFallback}>
+        <Suspense fallback={<AdminSpinner />}>
           <Invoice />
         </Suspense>
       </Route>
       <Route path="/admin/:rest*">
-        <Suspense fallback={adminFallback}>
+        <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
       <Route path="/admin">
-        <Suspense fallback={adminFallback}>
+        <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
-      
-      {/* Main app routes wrapped in Layout */}
+
+      {/* Customer routes wrapped in Layout */}
       <Route path="*">
         <Layout>
-          <Switch>
-            <Route path="/" component={Home} />
-            <Route path="/services" component={Services} />
-            <Route path="/services/:id" component={ServiceRequest} />
-            <Route path="/store" component={Store} />
-            <Route path="/store/category/:categorySlug/:subcategorySlug" component={Store} />
-            <Route path="/store/category/:categorySlug" component={Store} />
-            <Route path="/store/:id" component={ProductDetail} />
-            <Route path="/cart" component={Cart} />
-            <Route path="/checkout" component={Checkout} />
-            <Route path="/favorites" component={Favorites} />
-            <Route path="/track/:token" component={Track} />
-            <Route path="/track" component={Track} />
-            <Route path="/gallery" component={Gallery} />
-            <Route path="/login" component={Login} />
-            <Route path="/profile" component={Profile} />
-            <Route path="/account" component={Profile} />
-            <Route component={NotFound} />
-          </Switch>
+          <ChunkErrorBoundary>
+            <Switch>
+              <Route path="/" component={Home} />
+              <Route path="/services" component={Services} />
+              <Route path="/services/:id" component={ServiceRequest} />
+              <Route path="/store" component={Store} />
+              <Route path="/store/category/:categorySlug/:subcategorySlug" component={Store} />
+              <Route path="/store/category/:categorySlug" component={Store} />
+              <Route path="/store/:id">
+                <Suspense fallback={<PageSpinner />}><ProductDetail /></Suspense>
+              </Route>
+              <Route path="/cart" component={Cart} />
+              <Route path="/checkout">
+                <Suspense fallback={<PageSpinner />}><Checkout /></Suspense>
+              </Route>
+              <Route path="/favorites">
+                <Suspense fallback={<PageSpinner />}><Favorites /></Suspense>
+              </Route>
+              <Route path="/track/:token">
+                <Suspense fallback={<PageSpinner />}><Track /></Suspense>
+              </Route>
+              <Route path="/track">
+                <Suspense fallback={<PageSpinner />}><Track /></Suspense>
+              </Route>
+              <Route path="/gallery">
+                <Suspense fallback={<PageSpinner />}><Gallery /></Suspense>
+              </Route>
+              <Route path="/login" component={Login} />
+              <Route path="/profile">
+                <Suspense fallback={<PageSpinner />}><Profile /></Suspense>
+              </Route>
+              <Route path="/account">
+                <Suspense fallback={<PageSpinner />}><Account /></Suspense>
+              </Route>
+              <Route component={NotFound} />
+            </Switch>
+          </ChunkErrorBoundary>
         </Layout>
       </Route>
     </Switch>

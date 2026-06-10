@@ -94,11 +94,11 @@ export default function Login() {
                     inputMode="numeric"
                     autoComplete="tel"
                     placeholder="07700000000"
-                    className="w-full bg-background border border-border/40 rounded-xl pr-12 pl-4 py-4 text-foreground text-lg placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                    className="w-full bg-background border border-border/40 rounded-xl pr-12 pl-4 py-4 text-foreground text-lg placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                   />
                 </div>
               </div>
-              {error && <p className="text-sm text-red-400 text-center">{error}</p>}
+              {error && <p className="text-sm text-status-danger text-center">{error}</p>}
               <Button type="submit" size="lg" className="w-full h-12" disabled={loading}>
                 {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <MessageCircle className="w-5 h-5" />}
                 إرسال رمز واتساب
@@ -122,11 +122,11 @@ export default function Login() {
                     inputMode="numeric"
                     autoComplete="one-time-code"
                     placeholder="000000"
-                    className="w-full bg-background border border-border/40 rounded-xl pr-12 pl-4 py-4 text-foreground text-lg tracking-[0.4em] text-center placeholder-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                    className="w-full bg-background border border-border/40 rounded-xl pr-12 pl-4 py-4 text-foreground text-lg tracking-[0.4em] text-center placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                   />
                 </div>
               </div>
-              {error && <p className="text-sm text-red-400 text-center">{error}</p>}
+              {error && <p className="text-sm text-status-danger text-center">{error}</p>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Button type="submit" size="lg" className="h-12" disabled={loading}>
                   {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}

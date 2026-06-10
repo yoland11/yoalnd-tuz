@@ -1,4 +1,5 @@
 import { revalidateTag } from "next/cache";
+import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
 import {
   createHmac,
@@ -4732,6 +4733,21 @@ async function handleNotifications(req: NextRequest, parts: string[]) {
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "translate") {
+    const auth = await requireAnyPermission(req, ["products", "services", "settings"]);
+    if (isResponse(auth)) return auth;
+    if (method !== "POST") return error("غير مدعوم", 405);
+    const status = autoTranslateStatus();
+    if (!status.available) return error(status.reason || "الترجمة التلقائية غير مفعّلة", 400);
+    const b = await body(req);
+    try {
+      const result = await autoTranslate({ name: b?.name, description: b?.description });
+      return json(result);
+    } catch (err: any) {
+      return error(err?.message || "تعذّر تنفيذ الترجمة التلقائية", 502);
+    }
+  }
 
   if (section === "auth") {
     await ensureAdminSeeded();

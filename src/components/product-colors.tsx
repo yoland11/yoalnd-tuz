@@ -113,7 +113,7 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="ابحث بالاسم أو HEX مثل ذهبي أو #D4AF37"
-          className="w-full rounded-lg border border-border/40 bg-background py-2 pl-3 pr-10 text-sm focus:outline-none focus:border-primary/50"
+          className="w-full rounded-lg border border-border/40 bg-background py-2 pl-3 pr-10 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
         />
       </div>
 
@@ -174,7 +174,7 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
               value={customName}
               onChange={(event) => setCustomName(event.target.value)}
               placeholder="اسم اللون"
-              className="h-10 rounded-lg border border-border/40 bg-card px-3 text-sm focus:outline-none focus:border-primary/50"
+              className="h-10 rounded-lg border border-border/40 bg-card px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
             <button
               type="button"

@@ -81,14 +81,14 @@ export default function DashboardPage() {
   const cards = [
     { label: "إجمالي الطلبات", value: data.totalOrders, icon: ShoppingBag, color: "text-blue-400" },
     { label: "الطلبات النشطة", value: data.activeOrders, icon: Clock, color: "text-yellow-400" },
-    { label: "المسلَّمة", value: data.deliveredOrders, icon: Truck, color: "text-green-400" },
-    { label: "الملغية", value: data.cancelledOrders, icon: XCircle, color: "text-red-400" },
+    { label: "المسلَّمة", value: data.deliveredOrders, icon: Truck, color: "text-status-success" },
+    { label: "الملغية", value: data.cancelledOrders, icon: XCircle, color: "text-status-danger" },
     { label: "طلبات الخدمات", value: data.serviceOrders, icon: Sparkles, color: "text-pink-400" },
     { label: "المنتجات", value: data.totalProducts, icon: Package, color: "text-purple-400" },
     { label: "العملاء", value: data.totalCustomers, icon: Users, color: "text-cyan-400" },
     { label: "الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
-    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-green-400" },
-    { label: "المتبقي", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-amber-400" },
+    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success" },
+    { label: "المتبقي", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({
@@ -116,14 +116,14 @@ export default function DashboardPage() {
       title: order.customerName || order.trackingCode,
       meta: `طلب متأخر • ${order.trackingCode}`,
       href: "/admin/orders",
-      tone: "text-amber-400",
+      tone: "text-status-warning",
     })),
     ...((data.todayTasks?.paymentFollowups ?? 0) > 0 ? [{
       key: "payment-followups",
       title: "متابعة المدفوعات",
       meta: `${data.todayTasks.paymentFollowups} طلب يحتاج متابعة دفع`,
       href: "/admin/orders",
-      tone: "text-green-400",
+      tone: "text-status-success",
     }] : []),
   ].slice(0, 7);
 
@@ -222,7 +222,7 @@ export default function DashboardPage() {
               <p className="text-[11px] text-muted-foreground mt-1">حجوزات</p>
             </div>
             <div className="rounded-lg bg-background/60 border border-border/25 p-3">
-              <p className="text-xl font-bold text-amber-400">{data.todayTasks?.late ?? 0}</p>
+              <p className="text-xl font-bold text-status-warning">{data.todayTasks?.late ?? 0}</p>
               <p className="text-[11px] text-muted-foreground mt-1">متأخر</p>
             </div>
             <div className="rounded-lg bg-background/60 border border-border/25 p-3">
@@ -233,7 +233,7 @@ export default function DashboardPage() {
         </div>
         <div className="bg-card rounded-xl border border-border/30 p-5">
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400" /> الطلبات المتأخرة
+            <AlertTriangle className="w-4 h-4 text-status-warning" /> الطلبات المتأخرة
           </h3>
           {!data.lateOrders || data.lateOrders.length === 0 ? <EmptyState message="لا توجد طلبات متأخرة" /> : (
             <ul className="space-y-2 text-sm">

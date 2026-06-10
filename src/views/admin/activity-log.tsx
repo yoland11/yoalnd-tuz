@@ -135,13 +135,13 @@ export default function ActivityLogPage() {
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1); }}
               placeholder="بحث بالعملية أو المستخدم أو التفاصيل..."
-              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
           <select
             value={userId}
             onChange={(e) => { setUserId(e.target.value); setPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">كل المستخدمين</option>
             {data?.users.map((user) => (
@@ -151,7 +151,7 @@ export default function ActivityLogPage() {
           <select
             value={action}
             onChange={(e) => { setAction(e.target.value); setPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">كل العمليات</option>
             {actionOptions.map(([value, label]) => (
@@ -171,7 +171,7 @@ export default function ActivityLogPage() {
                 type="date"
                 value={from}
                 onChange={(e) => { setFrom(e.target.value); setPage(1); }}
-                className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
           </label>
@@ -183,7 +183,7 @@ export default function ActivityLogPage() {
                 type="date"
                 value={to}
                 onChange={(e) => { setTo(e.target.value); setPage(1); }}
-                className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
           </label>

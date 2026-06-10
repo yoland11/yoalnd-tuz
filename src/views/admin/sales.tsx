@@ -38,9 +38,9 @@ const PAYMENT_METHODS = [
 ];
 
 const PAYMENT_STATUSES = [
-  { value: "paid",    label: "مدفوع",    color: "text-emerald-400" },
-  { value: "partial", label: "جزئي",     color: "text-amber-400" },
-  { value: "unpaid",  label: "غير مدفوع", color: "text-red-400" },
+  { value: "paid",    label: "مدفوع",    color: "text-status-success" },
+  { value: "partial", label: "جزئي",     color: "text-status-warning" },
+  { value: "unpaid",  label: "غير مدفوع", color: "text-status-danger" },
 ];
 
 function newInvoice() {
@@ -369,7 +369,7 @@ export default function SalesPage() {
                 onChange={e => setSearchQ(e.target.value)}
                 onKeyDown={handleSearchKey}
                 placeholder="ابحث عن منتج أو امسح الباركود..."
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-2 pr-9 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-4 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 autoFocus
               />
               {searchQ && (
@@ -431,7 +431,7 @@ export default function SalesPage() {
                             <input
                               value={item.productName}
                               onChange={e => updateItem(idx, "productName", e.target.value)}
-                              className="bg-transparent w-full min-w-[120px] focus:outline-none focus:ring-1 focus:ring-primary rounded px-1"
+                              className="bg-transparent w-full min-w-[120px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -439,7 +439,7 @@ export default function SalesPage() {
                               type="number" min="0.001" step="0.001"
                               value={item.quantity}
                               onChange={e => updateItem(idx, "quantity", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                              className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -447,7 +447,7 @@ export default function SalesPage() {
                               type="number" min="0"
                               value={item.unitPrice}
                               onChange={e => updateItem(idx, "unitPrice", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -455,7 +455,7 @@ export default function SalesPage() {
                               type="number" min="0" max="100"
                               value={item.discountPct}
                               onChange={e => updateItem(idx, "discountPct", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-16 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                              className="bg-background border border-border/30 rounded text-center w-16 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -463,7 +463,7 @@ export default function SalesPage() {
                               type="number" min="0"
                               value={item.discount}
                               onChange={e => updateItem(idx, "discount", e.target.value)}
-                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                              className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             />
                           </td>
                           <td className="px-3 py-2 text-center font-medium text-primary">
@@ -493,7 +493,7 @@ export default function SalesPage() {
               <input
                 type="date" value={form.date}
                 onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
             <div>
@@ -502,7 +502,7 @@ export default function SalesPage() {
                 value={form.customerName}
                 onChange={e => setForm(f => ({ ...f, customerName: e.target.value }))}
                 placeholder="عميل نقدي"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
             <div>
@@ -511,7 +511,7 @@ export default function SalesPage() {
                 value={form.customerPhone}
                 onChange={e => setForm(f => ({ ...f, customerPhone: e.target.value }))}
                 placeholder="07XX XXX XXXX"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
@@ -539,7 +539,7 @@ export default function SalesPage() {
                 type="number" min="0"
                 value={form.discountAmount}
                 onChange={e => setForm(f => ({ ...f, discountAmount: e.target.value }))}
-                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
@@ -549,7 +549,7 @@ export default function SalesPage() {
                 <input
                   value={form.couponCode}
                   onChange={e => setForm(f => ({ ...f, couponCode: e.target.value.toUpperCase().replace(/\s+/g, ""), couponDiscountAmount: "0" }))}
-                  className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   dir="ltr"
                   placeholder="CODE"
                 />
@@ -559,7 +559,7 @@ export default function SalesPage() {
               </div>
             </div>
             {couponDiscount > 0 && (
-              <div className="flex justify-between text-sm text-green-400">
+              <div className="flex justify-between text-sm text-status-success">
                 <span>خصم الكوبون</span>
                 <span>- {formatCurrency(couponDiscount)}</span>
               </div>
@@ -570,7 +570,7 @@ export default function SalesPage() {
                 type="number" min="0" max="100"
                 value={form.taxPct}
                 onChange={e => setForm(f => ({ ...f, taxPct: e.target.value }))}
-                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
@@ -611,12 +611,12 @@ export default function SalesPage() {
                 value={form.paidAmount}
                 onChange={e => setForm(f => ({ ...f, paidAmount: e.target.value }))}
                 placeholder={grandTotal.toString()}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
             {grandTotal > 0 && (
-              <div className={`flex justify-between text-sm font-medium ${remaining > 0 ? "text-red-400" : "text-emerald-400"}`}>
+              <div className={`flex justify-between text-sm font-medium ${remaining > 0 ? "text-status-danger" : "text-status-success"}`}>
                 <span>{remaining > 0 ? "المتبقي" : "الباقي"}</span>
                 <span>{formatCurrency(Math.abs(remaining))}{remaining < 0 ? " (زيادة)" : ""}</span>
               </div>
@@ -635,7 +635,7 @@ export default function SalesPage() {
                 value={form.notes}
                 onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
                 rows={2}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
           </div>
@@ -684,12 +684,12 @@ function InvoiceListView({
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
           <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
           <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
       </div>
       {/* Table */}
@@ -974,7 +974,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     type="date"
                     value={draft.date}
                     onChange={(e) => updateDraft("date", e.target.value)}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </div>
                 <div>
@@ -982,7 +982,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   <input
                     value={draft.customerName}
                     onChange={(e) => updateDraft("customerName", e.target.value)}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </div>
                 <div>
@@ -990,7 +990,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   <input
                     value={draft.customerPhone}
                     onChange={(e) => updateDraft("customerPhone", e.target.value)}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
                 </div>
@@ -1021,7 +1021,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     min="0"
                     value={draft.paidAmount}
                     onChange={(e) => updateDraft("paidAmount", e.target.value)}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
                 </div>
@@ -1053,7 +1053,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     min="0"
                     value={draft.discountAmount}
                     onChange={(e) => updateDraft("discountAmount", e.target.value)}
-                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
                 </div>
@@ -1064,7 +1064,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     min="0"
                     value={draft.taxAmount}
                     onChange={(e) => updateDraft("taxAmount", e.target.value)}
-                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus:outline-none focus:ring-1 focus:ring-primary"
+                    className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
                 </div>
@@ -1106,7 +1106,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                           <input
                             value={item.productName}
                             onChange={(e) => updateDetailItem(idx, "productName", e.target.value)}
-                            className="bg-transparent w-full focus:outline-none focus:ring-1 focus:ring-primary rounded px-1"
+                            className="bg-transparent w-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
                           />
                         </td>
                         <td className="px-3 py-2">
@@ -1116,7 +1116,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                             step="0.001"
                             value={item.quantity}
                             onChange={(e) => updateDetailItem(idx, "quantity", e.target.value)}
-                            className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2">
@@ -1125,7 +1125,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                             min="0"
                             value={item.unitPrice}
                             onChange={(e) => updateDetailItem(idx, "unitPrice", e.target.value)}
-                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2">
@@ -1134,7 +1134,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                             min="0"
                             value={item.discount}
                             onChange={(e) => updateDetailItem(idx, "discount", e.target.value)}
-                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2 text-center font-medium text-primary">{formatCurrency(item.total)}</td>
@@ -1160,7 +1160,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 value={draft.notes}
                 onChange={(e) => updateDraft("notes", e.target.value)}
                 rows={3}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
 
@@ -1179,9 +1179,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; class: string }> = {
-    active:  { label: "نشطة",   class: "bg-emerald-500/10 text-emerald-400" },
-    deleted: { label: "محذوفة", class: "bg-red-500/10 text-red-400" },
-    held:    { label: "معلقة",  class: "bg-amber-500/10 text-amber-400" },
+    active:  { label: "نشطة",   class: "bg-status-success/10 text-status-success" },
+    deleted: { label: "محذوفة", class: "bg-status-danger/10 text-status-danger" },
+    held:    { label: "معلقة",  class: "bg-status-warning/10 text-status-warning" },
   };
   const s = map[status] ?? { label: status, class: "bg-muted/30 text-muted-foreground" };
   return <span className={`text-xs px-2 py-0.5 rounded-full ${s.class}`}>{s.label}</span>;
@@ -1189,9 +1189,9 @@ function StatusBadge({ status }: { status: string }) {
 
 function PayStatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; icon: any; class: string }> = {
-    paid:    { label: "مدفوع",     icon: CheckCircle2, class: "text-emerald-400" },
-    partial: { label: "جزئي",      icon: Clock,        class: "text-amber-400" },
-    unpaid:  { label: "غير مدفوع", icon: AlertCircle,  class: "text-red-400" },
+    paid:    { label: "مدفوع",     icon: CheckCircle2, class: "text-status-success" },
+    partial: { label: "جزئي",      icon: Clock,        class: "text-status-warning" },
+    unpaid:  { label: "غير مدفوع", icon: AlertCircle,  class: "text-status-danger" },
   };
   const s = map[status] ?? { label: status, icon: null, class: "text-muted-foreground" };
   const Icon = s.icon;

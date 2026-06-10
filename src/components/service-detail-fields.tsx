@@ -16,7 +16,7 @@ type Props = {
 };
 
 const inputClass =
-  "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
+  "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors";
 
 export function ServiceDetailFields({
   serviceType,
@@ -107,7 +107,7 @@ function ServiceDetailInput({
                 ))}
           </select>
           {selectedCrew && selectedCrew.status && !["available", "inactive"].includes(selectedCrew.status) && (
-            <p className="mt-1 text-[11px] text-amber-300">
+            <p className="mt-1 text-[11px] text-status-warning">
               تنبيه: حالة الكادر {crewStatusLabel(selectedCrew.status)}، يمكن إكمال الحجز عند الحاجة.
             </p>
           )}

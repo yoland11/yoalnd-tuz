@@ -497,7 +497,7 @@ function AdminSidebarEntry({
       <ItemIcon className="w-4 h-4" />
       <span>{item.label}</span>
       {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
-        <span className="mr-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
+        <span className="mr-auto rounded-full bg-status-warning/15 px-2 py-0.5 text-[10px] text-status-warning">
           {lowStockCount.toLocaleString("ar-IQ")}
         </span>
       )}

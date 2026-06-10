@@ -58,7 +58,7 @@ export default function AdminLogin() {
               <input
                 type="text" value={username} autoFocus autoComplete="username"
                 onChange={e => { setUsername(e.target.value); setLoginError(null); }}
-                className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="alijan"
                 dir="ltr"
               />
@@ -68,12 +68,12 @@ export default function AdminLogin() {
               <input
                 type="password" value={password} autoComplete="current-password"
                 onChange={e => { setPassword(e.target.value); setLoginError(null); }}
-                className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="••••••••"
                 dir="ltr"
               />
             </div>
-            {loginError && <p className="text-red-400 text-sm text-center">{loginError}</p>}
+            {loginError && <p className="text-status-danger text-sm text-center">{loginError}</p>}
             <Button type="submit" className="w-full py-5" disabled={submitting || !username || !password}>
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : "دخول"}
             </Button>

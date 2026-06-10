@@ -315,7 +315,7 @@ export function ImageUploadEditor({
                   استبدال الصورة
                 </button>
                 {onRemove && (
-                  <button type="button" onClick={onRemove} className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/20">
+                  <button type="button" onClick={onRemove} className="rounded-lg border border-status-danger/25 bg-status-danger/10 px-3 py-1.5 text-xs text-status-danger hover:bg-status-danger/20">
                     حذف
                   </button>
                 )}
@@ -345,7 +345,7 @@ export function ImageUploadEditor({
         />
       </label>
 
-      {error && <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</p>}
+      {error && <p className="rounded-lg border border-status-danger/20 bg-status-danger/10 px-3 py-2 text-xs text-status-danger">{error}</p>}
 
       {progress > 0 && (
         <div className="h-2 overflow-hidden rounded-full border border-border/20 bg-background">
@@ -376,7 +376,7 @@ export function ImageUploadEditor({
               <button
                 type="button"
                 onClick={() => closeEditor(true)}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/35 bg-card text-muted-foreground transition-colors hover:border-red-500/35 hover:bg-red-500/10 hover:text-red-300"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/35 bg-card text-muted-foreground transition-colors hover:border-status-danger/35 hover:bg-status-danger/10 hover:text-status-danger"
                 aria-label="إغلاق"
               >
                 <X className="h-4 w-4" />

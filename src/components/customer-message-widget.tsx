@@ -65,7 +65,7 @@ export function CustomerMessageWidget() {
                 <h2 className="text-base font-bold text-foreground">رسالة للمحل</h2>
                 <p className="text-xs text-muted-foreground mt-1">اكتب رسالتك وسنرد عليك من لوحة الإدارة.</p>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground">
+              <button type="button" onClick={() => setOpen(false)} className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -74,21 +74,21 @@ export function CustomerMessageWidget() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="الاسم"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
               <input
                 value={phone}
                 onChange={(e) => setPhone(formatIraqiPhoneInput(e.target.value))}
                 placeholder="رقم الهاتف"
                 inputMode="numeric"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
               <textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="نص الرسالة"
                 rows={4}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 resize-none"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
               />
               {error && <p className="text-xs text-destructive">{error}</p>}
               {status === "sent" && <p className="text-xs text-primary">تم إرسال الرسالة</p>}

@@ -34,12 +34,12 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_TONES: Record<string, string> = {
-  pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+  pending: "border-status-warning/30 bg-status-warning/10 text-status-warning",
   confirmed: "border-primary/30 bg-primary/10 text-primary",
   processing: "border-blue-500/30 bg-blue-500/10 text-blue-300",
-  completed: "border-green-500/30 bg-green-500/10 text-green-300",
-  delivered: "border-green-500/30 bg-green-500/10 text-green-300",
-  cancelled: "border-red-500/30 bg-red-500/10 text-red-300",
+  completed: "border-status-success/30 bg-status-success/10 text-status-success",
+  delivered: "border-status-success/30 bg-status-success/10 text-status-success",
+  cancelled: "border-status-danger/30 bg-status-danger/10 text-status-danger",
 };
 
 function todayIso() {
@@ -152,8 +152,8 @@ export default function CalendarPage() {
       ) : (
         <div className="space-y-3">
           {conflicts.length > 0 && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
-              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-300">
+            <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-4">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-status-warning">
                 <AlertTriangle className="h-4 w-4" />
                 تنبيهات تعارض محتملة
               </div>
@@ -189,7 +189,7 @@ export default function CalendarPage() {
                     <div className="flex items-start justify-between gap-2">
                       <p className="font-semibold text-sm">{event.title}</p>
                       {conflictIds.has(`${event.kind}-${event.id}`) && (
-                        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">تعارض</span>
+                        <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-[10px] text-status-warning">تعارض</span>
                       )}
                     </div>
                     <p className="text-xs opacity-80 mt-1">{event.customerName}</p>

@@ -151,14 +151,14 @@ export default function TasksPage() {
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
             placeholder="عنوان المهمة"
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           <textarea
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             placeholder="وصف مختصر"
             rows={3}
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 resize-none"
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
           />
           <div className="grid grid-cols-2 gap-2">
             <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
@@ -202,7 +202,7 @@ export default function TasksPage() {
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
             placeholder="ملاحظات داخلية"
             rows={2}
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 resize-none"
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
           />
           <Button type="submit" className="w-full gap-2" disabled={save.isPending}>
             <Plus className="w-4 h-4" /> حفظ المهمة

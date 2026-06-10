@@ -482,7 +482,7 @@ export default function InvoiceDesignerPage() {
             value={templateName}
             onChange={e => setTemplateName(e.target.value)}
             placeholder="اسم القالب"
-            className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+            className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
         {activeId && (
@@ -604,7 +604,7 @@ export default function InvoiceDesignerPage() {
                         value={config.taxNoValue}
                         onChange={e => cfg({ taxNoValue: e.target.value })}
                         placeholder="أدخل الرقم الضريبي"
-                        className="mt-2 w-full bg-background border border-border/40 rounded px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                        className="mt-2 w-full bg-background border border-border/40 rounded px-2 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       />
                     )}
                   </div>
@@ -701,7 +701,7 @@ export default function InvoiceDesignerPage() {
                           value={config.customHeader}
                           onChange={e => cfg({ customHeader: e.target.value })}
                           placeholder="نص يظهر تحت معلومات الشركة..."
-                          className="w-full bg-background border border-border/40 rounded px-3 py-2 text-sm text-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
+                          className="w-full bg-background border border-border/40 rounded px-3 py-2 text-sm text-foreground resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
                       </div>
                       <div>
@@ -711,7 +711,7 @@ export default function InvoiceDesignerPage() {
                           value={config.customFooter}
                           onChange={e => cfg({ customFooter: e.target.value })}
                           placeholder="شكراً لتعاملكم معنا..."
-                          className="w-full bg-background border border-border/40 rounded px-3 py-2 text-sm text-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary/40"
+                          className="w-full bg-background border border-border/40 rounded px-3 py-2 text-sm text-foreground resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
                       </div>
                     </div>

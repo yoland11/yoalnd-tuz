@@ -93,14 +93,16 @@ export default function Cart() {
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
                       onClick={() => handleUpdate(item.id, item.quantity - 1)}
-                      className="w-8 h-8 rounded-full border border-border/40 flex items-center justify-center hover:border-primary/50 transition-colors"
+                      aria-label={t("تقليل الكمية")}
+                      className="w-8 h-8 rounded-full border border-border/40 flex items-center justify-center hover:border-primary/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                       disabled={item.quantity <= 1}
                     >
                       <Minus className="w-3 h-3" />
                     </button>
-                    <span className="w-8 text-center text-foreground font-medium">{item.quantity}</span>
+                    <span className="w-8 text-center text-foreground font-medium" aria-live="polite">{item.quantity}</span>
                     <button
                       onClick={() => handleUpdate(item.id, item.quantity + 1)}
+                      aria-label={t("زيادة الكمية")}
                       className="w-8 h-8 rounded-full border border-border/40 flex items-center justify-center hover:border-primary/50 transition-colors"
                     >
                       <Plus className="w-3 h-3" />
@@ -112,6 +114,7 @@ export default function Cart() {
                   </div>
                   <button
                     onClick={() => handleRemove(item.id)}
+                    aria-label={t("حذف المنتج من السلة")}
                     className="text-muted-foreground hover:text-destructive transition-colors flex-shrink-0 mr-2"
                   >
                     <Trash2 className="w-4 h-4" />

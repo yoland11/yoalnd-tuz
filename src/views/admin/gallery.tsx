@@ -65,7 +65,7 @@ export default function GalleryPage() {
                   <Eye className="w-4 h-4" />
                 </button>
                 <button onClick={() => confirm("حذف؟") && del.mutateAsync({ id: item.id }).then(invalidate).catch((err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }))}
-                  className="p-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30">
+                  className="p-2 rounded-full bg-status-danger/20 text-status-danger hover:bg-status-danger/30">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
@@ -104,18 +104,18 @@ export default function GalleryPage() {
               <input value={form.mediaUrl.startsWith("data:") ? "" : form.mediaUrl}
                 onChange={e => setForm(f => ({ ...f, mediaUrl: e.target.value }))}
                 placeholder="https://..."
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-muted-foreground mb-1">العنوان</label>
                 <input value={form.titleAr} onChange={e => setForm(f => ({ ...f, titleAr: e.target.value }))}
-                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
               </div>
               <div>
                 <label className="block text-xs text-muted-foreground mb-1">التصنيف</label>
                 <input value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                  className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
               </div>
             </div>
             <Button type="submit" disabled={!form.mediaUrl || create.isPending} className="w-full">

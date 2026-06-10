@@ -168,7 +168,7 @@ export default function Invoice() {
         </div>
 
         {/* Title strip */}
-        <div className="bg-neutral-50 border-r-4 border-amber-500 px-4 py-2 mb-6">
+        <div className="bg-amber-50/60 border border-amber-200 rounded px-4 py-2 mb-6">
           <p className="text-xs text-neutral-500">نوع المستند</p>
           <p className="font-bold">{isBooking ? `فاتورة حجز خدمة — ${data.serviceName}` : "فاتورة طلب من المتجر"}</p>
         </div>

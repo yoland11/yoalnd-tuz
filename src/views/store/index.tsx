@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShoppingCart, Search, Filter, Grid3X3, ChevronLeft, Heart, Star } from "lucide-react";
+import { Search, Filter, Grid3X3, ChevronLeft, Heart, Star } from "lucide-react";
 import { ProductColorDots } from "@/components/product-colors";
 import { logCustomerActivity } from "@/lib/customer-activity";
 import { useWishlist } from "@/lib/wishlist";
@@ -214,12 +214,12 @@ function CategoryGrid({ isLoading, categories, parentSlug }: { isLoading: boolea
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-      {categories.map((category) => {
+      {categories.map((category, i) => {
         const href = parentSlug
           ? `/store/category/${parentSlug}/${category.slug}`
           : `/store/category/${category.slug}`;
         return (
-          <Link key={category.id} href={href}>
+          <Link key={category.id} href={href} className="animate-fade-up" style={{ animationDelay: `${Math.min(i * 45, 360)}ms` }}>
             <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
               <div className="relative aspect-square overflow-hidden bg-muted">
                 <img
@@ -273,13 +273,13 @@ function ProductsGrid({ isLoading, products, onClearSearch }: { isLoading: boole
           </Button>
         </div>
       ) : (
-        products.map((product) => <ProductCard key={product.id} product={product} />)
+        products.map((product, i) => <ProductCard key={product.id} product={product} index={i} />)
       )}
     </div>
   );
 }
 
-export function ProductCard({ product }: { product: Product }) {
+export function ProductCard({ product, index = 0 }: { product: Product; index?: number }) {
   const { has, toggle } = useWishlist();
   const favorited = has(product.id);
   const t = useT();
@@ -287,8 +287,8 @@ export function ProductCard({ product }: { product: Product }) {
   const productName = cl.name(product);
   const description = shortProductDescription(cl.description(product));
   return (
-    <Link href={`/store/${product.id}`}>
-      <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
+    <Link href={`/store/${product.id}`} className="animate-fade-up block" style={{ animationDelay: `${Math.min(index * 45, 360)}ms` }}>
+      <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-[colors,shadow] duration-200 hover:shadow-lg hover:shadow-black/10 h-full flex flex-col">
         <div className="relative aspect-square overflow-hidden bg-muted">
           <img
             src={product.images[0] || fallbackProductImage}
@@ -339,26 +339,21 @@ export function ProductCard({ product }: { product: Product }) {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-1">
-              <span
-                role="button"
-                tabIndex={0}
-                aria-label={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
-                aria-pressed={favorited}
-                title={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle(product.id); }}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); toggle(product.id); } }}
-                className={cn(
-                  "h-8 w-8 flex items-center justify-center rounded-full transition-colors shrink-0",
-                  favorited ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-primary hover:bg-primary/10",
-                )}
-              >
-                <Heart className={cn("h-4 w-4", favorited && "fill-current")} />
-              </span>
-              <span className="h-8 w-8 flex items-center justify-center rounded-full text-muted-foreground group-hover:text-primary group-hover:bg-primary/10 transition-colors shrink-0">
-                <ShoppingCart className="h-4 w-4" />
-              </span>
-            </div>
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
+              aria-pressed={favorited}
+              title={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle(product.id); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); toggle(product.id); } }}
+              className={cn(
+                "h-8 w-8 flex items-center justify-center rounded-full transition-colors shrink-0",
+                favorited ? "text-primary bg-primary/10" : "text-muted-foreground hover:text-primary hover:bg-primary/10",
+              )}
+            >
+              <Heart className={cn("h-4 w-4", favorited && "fill-current")} />
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -479,7 +474,7 @@ function ProductFilterBar(props: {
         value={props.sort}
         onChange={(e) => props.onSortChange(e.target.value as ProductSort)}
         aria-label={t("ترتيب المنتجات")}
-        className="h-9 rounded-lg border border-border/40 bg-card px-3 text-xs text-foreground focus:outline-none focus:border-primary/50"
+        className="h-9 rounded-lg border border-border/40 bg-card px-3 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
       >
         {SORT_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{t(o.label)}</option>

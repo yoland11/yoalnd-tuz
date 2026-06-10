@@ -118,7 +118,7 @@ export default function StaffPage() {
                     disabled={s.role === "admin"}
                     className="accent-primary"
                   />
-                  <span className={`text-xs ${s.isActive ? "text-green-400" : "text-red-400"}`}>{s.isActive ? "مفعّل" : "معطّل"}</span>
+                  <span className={`text-xs ${s.isActive ? "text-status-success" : "text-status-danger"}`}>{s.isActive ? "مفعّل" : "معطّل"}</span>
                 </label>
               </div>
               {s.permissions.length > 0 && (
@@ -137,7 +137,7 @@ export default function StaffPage() {
                 </button>
                 {s.role !== "admin" && (
                   <button onClick={() => confirm("حذف الموظف؟") && del.mutate(s.id)}
-                    className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20">
+                    className="inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -168,7 +168,7 @@ export default function StaffPage() {
                   setEditing(s => ({ ...s!, role, permissions: ROLE_PRESETS[role] ?? s!.permissions }));
                 }}
                 disabled={editing.role === "admin"}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 disabled:opacity-70"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-70"
               >
                 {ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
               </select>
@@ -210,7 +210,7 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
     <div>
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
-        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
     </div>
   );
 }

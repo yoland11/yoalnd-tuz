@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useLocation } from "wouter";
+import { useParams, useLocation, Link } from "wouter";
 import { useGetProduct, useListReviews, useCreateReview, useAddToCart, getGetCartQueryKey, getGetProductQueryKey, getListReviewsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -137,7 +137,7 @@ export default function ProductDetail() {
       {/* Breadcrumb */}
       <div className="border-b border-border/30 py-3">
         <div className="container mx-auto px-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <button onClick={() => navigate("/store")} className="hover:text-primary transition-colors">{t("المتجر")}</button>
+          <Link href="/store" className="hover:text-primary transition-colors">{t("المتجر")}</Link>
           <span>/</span>
           <span className="text-foreground">{productName}</span>
         </div>
@@ -165,7 +165,9 @@ export default function ProductDetail() {
                   <button
                     key={i}
                     onClick={() => setSelectedImage(i)}
-                    className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors ${i === selectedImage ? "border-primary" : "border-transparent"}`}
+                    aria-label={`${t("صورة")} ${i + 1}`}
+                    aria-pressed={i === selectedImage}
+                    className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${i === selectedImage ? "border-primary" : "border-transparent hover:border-border/60"}`}
                   >
                     <img src={img} alt="" className="w-full h-full" style={{ objectFit: String(imageMetadata[i]?.objectFit ?? "cover") as any }} />
                   </button>
@@ -218,9 +220,9 @@ export default function ProductDetail() {
             {/* Stock */}
             <div>
               {product.stock > 0 ? (
-                <span className="text-green-400 text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>
+                <span className="text-status-success text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>
               ) : (
-                <span className="text-red-400 text-sm font-medium">{t("نفذت الكمية")}</span>
+                <span className="text-status-danger text-sm font-medium">{t("نفذت الكمية")}</span>
               )}
             </div>
 
@@ -267,14 +269,18 @@ export default function ProductDetail() {
               <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
                 <button
                   onClick={() => setQuantity(q => Math.max(1, q - 1))}
-                  className="px-3 py-2 hover:bg-muted transition-colors"
+                  aria-label={t("تقليل الكمية")}
+                  disabled={quantity <= 1}
+                  className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Minus className="w-4 h-4" />
                 </button>
-                <span className="px-4 py-2 text-foreground font-medium">{quantity}</span>
+                <span className="px-4 py-2 text-foreground font-medium" aria-live="polite">{quantity}</span>
                 <button
                   onClick={() => setQuantity(q => Math.min(product.stock, q + 1))}
-                  className="px-3 py-2 hover:bg-muted transition-colors"
+                  aria-label={t("زيادة الكمية")}
+                  disabled={quantity >= product.stock}
+                  className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Plus className="w-4 h-4" />
                 </button>
@@ -347,26 +353,48 @@ export default function ProductDetail() {
           <div className="bg-card rounded-xl p-6 border border-border/30 max-w-lg">
             <h3 className="text-lg font-semibold mb-4">{t("أضف تقييمك")}</h3>
             <form onSubmit={handleSubmitReview} className="space-y-4">
-              <input
-                value={reviewerName}
-                onChange={e => setReviewerName(e.target.value)}
-                placeholder={t("اسمك")}
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50"
-              />
-              <div className="flex gap-1">
-                {[1,2,3,4,5].map(s => (
-                  <button key={s} type="button" onClick={() => setReviewRating(s)}>
-                    <Star className={`w-6 h-6 transition-colors ${s <= reviewRating ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
-                  </button>
-                ))}
+              <div>
+                <label htmlFor="review-name" className="block text-sm font-medium text-foreground mb-1.5">
+                  {t("الاسم")}
+                </label>
+                <input
+                  id="review-name"
+                  value={reviewerName}
+                  onChange={e => setReviewerName(e.target.value)}
+                  placeholder={t("اسمك")}
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
               </div>
-              <textarea
-                value={reviewComment}
-                onChange={e => setReviewComment(e.target.value)}
-                placeholder={t("تعليقك (اختياري)")}
-                rows={3}
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 resize-none"
-              />
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1.5">{t("التقييم")}</label>
+                <div className="flex gap-1" role="group" aria-label={t("التقييم")}>
+                  {[1,2,3,4,5].map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      aria-label={`${s} ${t("نجوم")}`}
+                      aria-pressed={s <= reviewRating}
+                      onClick={() => setReviewRating(s)}
+                      className="rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <Star className={`w-6 h-6 transition-colors ${s <= reviewRating ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label htmlFor="review-comment" className="block text-sm font-medium text-foreground mb-1.5">
+                  {t("التعليق")} <span className="text-muted-foreground font-normal">({t("اختياري")})</span>
+                </label>
+                <textarea
+                  id="review-comment"
+                  value={reviewComment}
+                  onChange={e => setReviewComment(e.target.value)}
+                  placeholder={t("تعليقك (اختياري)")}
+                  rows={3}
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+                />
+              </div>
               <Button type="submit" className="w-full" disabled={createReview.isPending}>
                 {createReview.isPending ? t("جاري الإرسال...") : t("إرسال التقييم")}
               </Button>

@@ -128,7 +128,7 @@ export default function CustomersPage() {
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <input value={search} onChange={e => setSearch(formatIraqiPhoneInput(e.target.value) || e.target.value)}
           placeholder="بحث باسم أو هاتف..."
-          className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       </div>
 
       {isLoading ? <div className="space-y-3">{[1,2,3,4].map(i => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
@@ -201,7 +201,7 @@ export default function CustomersPage() {
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                   <Metric icon={ShoppingBag} label="الطلبات" value={(detail.summary?.productOrders ?? detail.orders.length).toLocaleString("ar-IQ")} />
                   <Metric icon={Sparkles} label="الحجوزات" value={(detail.summary?.serviceOrders ?? detail.serviceOrders.length).toLocaleString("ar-IQ")} />
-                  <Metric icon={Wallet} label="المتبقي" value={formatCurrency(detail.summary?.remainingTotal ?? 0)} tone={(detail.summary?.remainingTotal ?? 0) > 0 ? "text-amber-400" : "text-primary"} />
+                  <Metric icon={Wallet} label="المتبقي" value={formatCurrency(detail.summary?.remainingTotal ?? 0)} tone={(detail.summary?.remainingTotal ?? 0) > 0 ? "text-status-warning" : "text-primary"} />
                   <Metric icon={Receipt} label="الفواتير" value={(detail.summary?.invoices ?? detail.invoices?.length ?? 0).toLocaleString("ar-IQ")} />
                 </div>
 
@@ -215,13 +215,13 @@ export default function CustomersPage() {
                       onChange={(e) => setPointsDelta(e.target.value.replace(/[^\d-]/g, ""))}
                       inputMode="numeric"
                       placeholder="+50"
-                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     <input
                       value={pointsNote}
                       onChange={(e) => setPointsNote(e.target.value)}
                       placeholder="سبب التعديل"
-                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     <button
                       type="button"
@@ -243,12 +243,12 @@ export default function CustomersPage() {
                       value={noteBody}
                       onChange={(e) => setNoteBody(e.target.value)}
                       placeholder="أضف ملاحظة داخلية عن الزبون..."
-                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
                     <select
                       value={notePriority}
                       onChange={(e) => setNotePriority(e.target.value)}
-                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <option value="normal">اعتيادية</option>
                       <option value="important">مهمة</option>
@@ -305,7 +305,7 @@ export default function CustomersPage() {
                         {(detail.whatsappLogs ?? []).slice(0, 3).map((row) => (
                           <div key={`wa-${row.id}`} className="flex items-center justify-between rounded-lg bg-background/40 border border-border/25 p-3 text-xs">
                             <span className="text-foreground">{row.event}</span>
-                            <span className={row.status === "sent" ? "text-primary" : "text-amber-400"}>{row.status}</span>
+                            <span className={row.status === "sent" ? "text-primary" : "text-status-warning"}>{row.status}</span>
                           </div>
                         ))}
                         {(detail.messageThreads ?? []).slice(0, 2).map((row) => (
@@ -371,7 +371,7 @@ export default function CustomersPage() {
                           </div>
                           <div className="text-left">
                             <p className="text-xs text-muted-foreground">{o.status}</p>
-                            <p className="text-xs text-amber-400">متبقي {formatCurrency(o.remainingAmount ?? 0)}</p>
+                            <p className="text-xs text-status-warning">متبقي {formatCurrency(o.remainingAmount ?? 0)}</p>
                           </div>
                         </div>
                       ))}

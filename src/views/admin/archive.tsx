@@ -110,15 +110,15 @@ export default function ArchivePage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="بحث: اسم، هاتف، تتبع، خدمة، محافظة..."
-            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
-        <select value={type} onChange={(e) => setType(e.target.value)} className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+        <select value={type} onChange={(e) => setType(e.target.value)} className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           <option value="all">كل الأرشيف</option>
           <option value="products">طلبات المتجر</option>
           <option value="services">حجوزات الخدمات</option>
         </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           <option value="">كل الحالات</option>
           <option value="delivered">تم التوصيل</option>
           <option value="completed">مكتمل</option>

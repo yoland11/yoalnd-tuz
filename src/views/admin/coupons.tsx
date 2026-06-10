@@ -139,34 +139,34 @@ export default function CouponsPage() {
         <div className="grid gap-3 md:grid-cols-4">
           <Field label="الكود">
             <input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase().replace(/\s+/g, "") }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" dir="ltr" placeholder="AJN10" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" dir="ltr" placeholder="AJN10" />
           </Field>
           <Field label="العنوان">
             <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" placeholder="خصم افتتاح" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" placeholder="خصم افتتاح" />
           </Field>
           <Field label="النوع">
             <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as CouponType }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50">
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
               {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </Field>
           <Field label={form.type === "percentage" ? "النسبة %" : form.type === "free_shipping" ? "القيمة غير مطلوبة" : "قيمة الخصم"}>
             <input type="number" min="0" value={form.value} disabled={form.type === "free_shipping"}
               onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50 disabled:opacity-60" dir="ltr" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60" dir="ltr" />
           </Field>
           <Field label="الحد الأدنى">
             <input type="number" min="0" value={form.minOrderAmount} onChange={(e) => setForm((f) => ({ ...f, minOrderAmount: e.target.value }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" dir="ltr" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" dir="ltr" />
           </Field>
           <Field label="حد الاستخدام">
             <input type="number" min="0" value={form.usageLimit} onChange={(e) => setForm((f) => ({ ...f, usageLimit: e.target.value }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" dir="ltr" placeholder="بدون حد" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" dir="ltr" placeholder="بدون حد" />
           </Field>
           <Field label="تاريخ الانتهاء">
             <input type="date" value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           </Field>
           <label className="flex items-center gap-2 text-sm pt-6">
             <input type="checkbox" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} className="accent-primary" />
@@ -186,7 +186,7 @@ export default function CouponsPage() {
       <div className="relative">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث عن كوبون..."
-          className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
       </div>
 
       {isLoading ? (
@@ -222,7 +222,7 @@ export default function CouponsPage() {
                       {coupon.usedCount.toLocaleString("ar-IQ")} / {coupon.usageLimit ? coupon.usageLimit.toLocaleString("ar-IQ") : "غير محدود"}
                     </td>
                     <td className="p-3">
-                      <span className={`text-xs px-2 py-1 rounded-full ${coupon.isActive ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
+                      <span className={`text-xs px-2 py-1 rounded-full ${coupon.isActive ? "bg-status-success/10 text-status-success" : "bg-status-danger/10 text-status-danger"}`}>
                         {coupon.isActive ? "فعال" : "معطل"}
                       </span>
                     </td>
@@ -231,7 +231,7 @@ export default function CouponsPage() {
                         <button type="button" onClick={() => editCoupon(coupon)} className="p-2 rounded-lg text-primary hover:bg-primary/10">
                           <Edit2 className="w-4 h-4" />
                         </button>
-                        <button type="button" onClick={() => confirm("تعطيل الكوبون؟") && disableMutation.mutate(coupon.id)} className="p-2 rounded-lg text-red-400 hover:bg-red-500/10">
+                        <button type="button" onClick={() => confirm("تعطيل الكوبون؟") && disableMutation.mutate(coupon.id)} className="p-2 rounded-lg text-status-danger hover:bg-status-danger/10">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>

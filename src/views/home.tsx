@@ -2,7 +2,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
-import { MapPin, MessageCircle, Phone, ShoppingCart } from "lucide-react";
+import { ChevronLeft, MapPin, MessageCircle, Phone } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
@@ -37,14 +37,14 @@ export default function Home() {
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg" />
-          <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg font-serif">
+          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg animate-fade-up" />
+          <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg text-balance animate-fade-up [animation-delay:80ms]">
             {siteName}
           </h1>
-          <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow">
+          <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow animate-fade-up [animation-delay:160ms]">
             {t("للمناسبات والتجهيزات")}
           </p>
-          <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85">
+          <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85 animate-fade-up [animation-delay:220ms]">
             {settings?.phone && (
               <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-2 hover:text-primary transition-colors">
                 <Phone className="w-4 h-4" /> {settings.phone}
@@ -62,7 +62,7 @@ export default function Home() {
             )}
           </div>
           
-          <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto">
+          <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto animate-fade-up [animation-delay:280ms]">
             <Link href="/services">
               <Button size="lg" className="w-40 bg-primary text-primary-foreground hover:bg-primary/90">
                 {t("الخدمات")}
@@ -91,7 +91,7 @@ export default function Home() {
       <section className="py-20 bg-card border-y border-border">
         <div className="container mx-auto px-4">
           <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-foreground mb-4">{t("خدماتنا المتميزة")}</h2>
+            <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("خدماتنا المتميزة")}</h2>
             <div className="h-1 w-20 bg-primary mx-auto rounded-full" />
             <p className="text-muted-foreground mt-4 max-w-2xl mx-auto">
               {t("نقدم مجموعة متكاملة من خدمات تنسيق وتجهيز المناسبات بأعلى مستويات الجودة والفخامة")}
@@ -103,9 +103,9 @@ export default function Home() {
               Array(3).fill(0).map((_, i) => (
                 <Skeleton key={i} className="h-64 rounded-lg" />
               ))
-            ) : services.slice(0, 3).map((service: any) => (
+            ) : services.slice(0, 3).map((service: any, i: number) => (
               <Link key={service.id} href={`/services/${service.id}`}>
-                <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border">
+                <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
                   <img
                     src={service.image || serviceImageFor(service.type)}
                     alt={cl.name(service) || service.name}
@@ -140,7 +140,7 @@ export default function Home() {
   <div className="container mx-auto px-4">
     <div className="flex justify-between items-end mb-10">
       <div>
-        <h2 className="text-3xl font-bold text-foreground mb-4">{t("وصل حديثاً")}</h2>
+        <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("وصل حديثاً")}</h2>
         <div className="h-1 w-20 bg-primary rounded-full" />
       </div>
       <Link href="/store">
@@ -167,8 +167,8 @@ export default function Home() {
           : (featuredProducts as any)?.items || (featuredProducts as any)?.data || []
         )
           .slice(0, 4)
-          .map((product: any) => (
-            <Link key={product.id} href={`/store/${product.id}`}>
+          .map((product: any, i: number) => (
+            <Link key={product.id} href={`/store/${product.id}`} className="animate-fade-up" style={{ animationDelay: `${i * 60}ms` }}>
               <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
                 <div className="relative aspect-square overflow-hidden bg-muted">
                   <img
@@ -196,9 +196,7 @@ export default function Home() {
                     <span className="font-bold text-primary">
                       {Number(product.price || 0).toLocaleString("en-US")} د.ع
                     </span>
-                    <span className="h-8 w-8 flex items-center justify-center text-muted-foreground group-hover:text-primary transition-colors">
-                      <ShoppingCart className="h-4 w-4" />
-                    </span>
+                    <ChevronLeft className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                   </div>
                 </CardContent>
               </Card>
@@ -223,8 +221,8 @@ export default function Home() {
       <section className="py-24 bg-card border-t border-border relative overflow-hidden">
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }} />
         <div className="container mx-auto px-4 text-center relative z-10 max-w-3xl">
-          <h2 className="text-3xl font-serif text-primary mb-6">{t("قصتنا")}</h2>
-          <p className="text-lg text-muted-foreground leading-relaxed mb-8">
+          <h2 className="text-3xl font-bold text-primary mb-6 text-balance">{t("قصتنا")}</h2>
+          <p className="text-lg text-muted-foreground leading-relaxed mb-8 [text-wrap:pretty] max-w-prose mx-auto">
             {t("تأسست {name} في {city} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.")
               .replace("{name}", siteName)
               .replace("{city}", settings?.city || "طوزخورماتو")}

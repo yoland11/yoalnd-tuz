@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, Search, ShoppingBag, Sun, User } from "lucide-react";
+import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, ShoppingBag, Sun, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -129,9 +129,6 @@ export function Navbar() {
             {isDarkTheme ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
           <LanguageSwitcher />
-          <Button variant="ghost" size="icon" aria-label={t("بحث")} title={t("بحث")} className="text-muted-foreground hover:text-primary">
-            <Search className="h-5 w-5" />
-          </Button>
           <Link href="/profile">
             <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
               {customer?.avatarUrl ? (

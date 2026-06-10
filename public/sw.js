@@ -1,5 +1,5 @@
 // AJN Service Worker — PWA shell, offline fallback, and Web Push.
-const VERSION = "ajn-pwa-v2";
+const VERSION = "ajn-pwa-v3";
 const APP_SHELL = [
   "/",
   "/store",

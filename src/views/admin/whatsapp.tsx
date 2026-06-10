@@ -139,7 +139,7 @@ export default function WhatsappPage() {
           عند الإيقاف تبقى أزرار "واتساب" اليدوية في صفحة الطلبات كبديل.
         </p>
         {form.automationEnabled && !providerConfigured && (
-          <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
+          <p className="text-xs text-status-warning bg-status-warning/10 border border-status-warning/30 rounded-lg p-2">
             ⚠ المزود المختار غير مكتمل الإعداد. يرجى إضافة المفاتيح المطلوبة في متغيرات البيئة أدناه.
           </p>
         )}
@@ -151,7 +151,7 @@ export default function WhatsappPage() {
           <select
             value={form.provider}
             onChange={e => setForm(f => ({ ...f!, provider: e.target.value }))}
-            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+            className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {form.providers.map(p => (
               <option key={p.id} value={p.id}>
@@ -178,8 +178,8 @@ export default function WhatsappPage() {
                   <p className="text-[11px] text-muted-foreground">{v.label}</p>
                 </div>
                 {v.set
-                  ? <span className="text-[11px] text-green-400 bg-green-500/10 border border-green-500/30 rounded px-2 py-0.5">مضبوط ✓</span>
-                  : <span className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded px-2 py-0.5">غير مضبوط</span>}
+                  ? <span className="text-[11px] text-status-success bg-status-success/10 border border-status-success/30 rounded px-2 py-0.5">مضبوط ✓</span>
+                  : <span className="text-[11px] text-status-danger bg-status-danger/10 border border-status-danger/30 rounded px-2 py-0.5">غير مضبوط</span>}
               </div>
             ))}
           </div>
@@ -243,7 +243,7 @@ export default function WhatsappPage() {
                 rows={3}
                 value={form.templates[ev] ?? ""}
                 onChange={e => setForm(f => ({ ...f!, templates: { ...f!.templates, [ev]: e.target.value } }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
           ))}
@@ -259,7 +259,7 @@ export default function WhatsappPage() {
                     rows={3}
                     value={form.templates[ev] ?? ""}
                     onChange={e => setForm(f => ({ ...f!, templates: { ...f!.templates, [ev]: e.target.value } }))}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   />
                 </div>
               ))}
@@ -276,7 +276,7 @@ export default function WhatsappPage() {
               value={testPhone}
               onChange={e => setTestPhone(formatIraqiPhoneInput(e.target.value))}
               placeholder="07701234567"
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
           <Button
@@ -289,7 +289,7 @@ export default function WhatsappPage() {
           </Button>
         </div>
         {testResult && (
-          <p className={`text-sm ${testResult.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{testResult}</p>
+          <p className={`text-sm ${testResult.startsWith("✓") ? "text-status-success" : "text-status-danger"}`}>{testResult}</p>
         )}
       </Section>
 
@@ -303,13 +303,13 @@ export default function WhatsappPage() {
             variant="outline"
             size="sm"
             onClick={() => confirm("حذف كل السجل؟") && clearLog.mutate()}
-            className="gap-1.5 text-red-400 border-red-500/30 hover:bg-red-500/10"
+            className="gap-1.5 text-status-danger border-status-danger/30 hover:bg-status-danger/10"
           >
             <Trash2 className="w-3.5 h-3.5" /> مسح السجل
           </Button>
         </div>
         {resendMsg && (
-          <p className={`text-sm ${resendMsg.startsWith("✓") ? "text-green-400" : "text-red-400"}`}>{resendMsg}</p>
+          <p className={`text-sm ${resendMsg.startsWith("✓") ? "text-status-success" : "text-status-danger"}`}>{resendMsg}</p>
         )}
         {logLoading ? <Skeleton className="h-32 rounded-lg" /> : (
           (log?.length ?? 0) === 0 ? (
@@ -321,8 +321,8 @@ export default function WhatsappPage() {
                   <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
                     <div className="flex items-center gap-2 text-sm">
                       {r.status === "sent"
-                        ? <CheckCircle2 className="w-4 h-4 text-green-400" />
-                        : <XCircle className="w-4 h-4 text-red-400" />}
+                        ? <CheckCircle2 className="w-4 h-4 text-status-success" />
+                        : <XCircle className="w-4 h-4 text-status-danger" />}
                       <span className="font-mono">{r.phone ? formatIraqiPhone(r.phone) : "—"}</span>
                       <span className="text-xs text-muted-foreground">· {EVENT_LABELS[r.event] ?? r.event}</span>
                       {r.provider && <span className="text-[10px] text-muted-foreground">[{r.provider}]</span>}
@@ -330,7 +330,7 @@ export default function WhatsappPage() {
                     <span className="text-[11px] text-muted-foreground">{new Date(r.sentAt).toLocaleString("ar-IQ")}</span>
                   </div>
                   <p className="text-xs text-muted-foreground line-clamp-2 whitespace-pre-wrap">{r.message}</p>
-                  {r.error && <p className="text-xs text-red-400 mt-1">{r.error}</p>}
+                  {r.error && <p className="text-xs text-status-danger mt-1">{r.error}</p>}
                   {r.status !== "sent" && (
                     <div className="mt-2">
                       <Button
