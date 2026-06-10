@@ -14,6 +14,7 @@ import Store from "@/views/store/index";
 import ProductDetail from "@/views/store/id";
 import Cart from "@/views/cart";
 import Checkout from "@/views/checkout";
+import Favorites from "@/views/favorites";
 import Track from "@/views/track";
 import Gallery from "@/views/gallery";
 import Login from "@/views/login";
@@ -74,6 +75,7 @@ function Router() {
             <Route path="/store/:id" component={ProductDetail} />
             <Route path="/cart" component={Cart} />
             <Route path="/checkout" component={Checkout} />
+            <Route path="/favorites" component={Favorites} />
             <Route path="/track/:token" component={Track} />
             <Route path="/track" component={Track} />
             <Route path="/gallery" component={Gallery} />

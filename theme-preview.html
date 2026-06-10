@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AJN — معاينة الثيمات الجاهزة</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Cairo', system-ui, sans-serif;
+    background: #0b0b0d;
+    color: #ECECEC;
+    padding: 28px 20px 60px;
+  }
+  .page-head { max-width: 1200px; margin: 0 auto 26px; }
+  .page-head h1 { font-size: 22px; margin: 0 0 6px; color: #E5C158; }
+  .page-head p { margin: 2px 0; font-size: 13px; color: #b6b6b6; line-height: 1.7; }
+  .grid {
+    max-width: 1200px; margin: 0 auto;
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  }
+  /* بطاقة العرض الخارجية (محايدة) */
+  .theme {
+    border: 1px solid #232327; border-radius: 16px; overflow: hidden;
+    background: #141417;
+  }
+  .theme > .label {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; font-size: 13px; font-weight: 700;
+    border-bottom: 1px solid #232327; color: #f3f0e8;
+  }
+  .label .swatches { display: flex; gap: 4px; }
+  .label .swatches span { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); }
+
+  /* ===== الموك (يستخدم متغيرات الثيم تماماً مثل الموقع الحقيقي) ===== */
+  .mock { background: hsl(var(--background)); }
+  .mock-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px;
+    background: hsl(var(--ajn-header));
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .brand .dot { width: 18px; height: 18px; border-radius: 6px; background: hsl(var(--primary)); }
+  .brand .name { font-size: 13px; font-weight: 700; color: hsl(var(--ajn-heading)); }
+  .nav { display: flex; gap: 12px; font-size: 11px; }
+  .nav a { color: hsl(var(--ajn-link)); text-decoration: none; }
+
+  .mock-body { display: flex; min-height: 188px; }
+  .mock-side {
+    width: 92px; padding: 10px 8px;
+    background: hsl(var(--sidebar));
+    border-inline-start: 1px solid hsl(var(--sidebar-border));
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  .mock-side .item {
+    font-size: 10px; color: hsl(var(--foreground));
+    padding: 6px 8px; border-radius: 7px;
+    border: 1px solid hsl(var(--sidebar-border));
+    background: hsl(var(--card));
+  }
+  .mock-side .item.active {
+    background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+    border-color: var(--primary-border);
+  }
+  .mock-main { flex: 1; padding: 12px; }
+
+  .card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--card-border));
+    border-radius: 10px; padding: 12px;
+  }
+  .card h4 { margin: 0 0 6px; font-size: 13px; color: hsl(var(--ajn-heading)); }
+  .card .line { height: 7px; border-radius: 4px; background: hsl(var(--foreground)); opacity: .75; }
+  .card .line.short { width: 62%; opacity: .4; margin-top: 6px; }
+  .card .muted { margin-top: 8px; font-size: 10px; color: hsl(var(--muted-foreground)); }
+
+  .row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 11px; }
+  .btn { font-size: 10.5px; padding: 6px 11px; border-radius: 7px; cursor: default; }
+  .btn.primary { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: 1px solid var(--primary-border); }
+  .btn.secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); border: 1px solid var(--secondary-border); }
+  .btn.outline { background: transparent; color: hsl(var(--foreground)); border: 1px solid var(--button-outline); }
+  .link { font-size: 11px; color: hsl(var(--ajn-link)); }
+  .badge { font-size: 9.5px; padding: 3px 8px; border-radius: 999px; color: hsl(var(--foreground)); border: 1px solid var(--badge-outline); background: var(--elevate-1); }
+  .input { margin-top: 11px; width: 100%; font-size: 10.5px; padding: 7px 9px; border-radius: 7px;
+           background: hsl(var(--background)); color: hsl(var(--foreground)); border: 1px solid hsl(var(--input)); }
+
+  .mock-footer {
+    padding: 9px 12px; font-size: 10px; text-align: center;
+    background: hsl(var(--ajn-footer));
+    border-top: 1px solid hsl(var(--border));
+    color: hsl(var(--muted-foreground));
+  }
+</style>
+</head>
+<body>
+  <div class="page-head">
+    <h1>معاينة الثيمات الجاهزة — AJN</h1>
+    <p>كل بطاقة أدناه تعرض الموقع الحقيقي (هيدر + قائمة جانبية + بطاقة + أزرار + رابط + حقل إدخال + شارة + فوتر) بنفس آلية الألوان المستخدمة في المشروع.</p>
+    <p>لاحظ أن <b>الإطارات</b> (إطار الموقع، إطار البطاقات، الهيدر، إطار الأزرار وحقول الإدخال) تبقى ظاهرة ومتناسقة في كل ثيم — فاتحاً كان أو داكناً.</p>
+    <button id="modeToggle" style="margin-top:10px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;padding:8px 14px;border-radius:10px;border:1px solid #E5C158;background:transparent;color:#E5C158">◐ عرض: الوضع الأصلي (اضغط للبديل)</button>
+    <p style="margin-top:8px">زر «التبديل ليلي/نهاري» أعلاه يحاكي زر الزبون في الهيدر: يقلب الأسطح فقط مع الحفاظ على لون الهوية.</p>
+  </div>
+  <div class="grid" id="grid"></div>
+
+<script>
+// ===== نفس منطق src/lib/appearance.ts (مطابق حرفياً) =====
+function hexToHsl(hex){
+  const n=String(hex).replace('#','');
+  const r=parseInt(n.slice(0,2),16)/255, g=parseInt(n.slice(2,4),16)/255, b=parseInt(n.slice(4,6),16)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b); let h=0,s=0; const l=(max+min)/2;
+  if(max!==min){const d=max-min; s=l>0.5?d/(2-max-min):d/(max+min);
+    if(max===r)h=(g-b)/d+(g<b?6:0); else if(max===g)h=(b-r)/d+2; else h=(r-g)/d+4; h/=6;}
+  return {h:Math.round(h*360), s:Math.round(s*100), l:Math.round(l*100)};
+}
+const clamp=(v,m)=>Math.max(0,Math.min(m,Math.round(v)));
+const triplet=(h,s,l)=>`${clamp(h,360)} ${clamp(s,100)}% ${clamp(l,100)}%`;
+const frameL=(l,d,li)=>l<50?l+d:l-li;
+const surfaceBorder=(hex,d,li)=>{const c=hexToHsl(hex); return triplet(c.h,c.s,frameL(c.l,d,li));};
+const hslT=(hex)=>{const c=hexToHsl(hex); return `${c.h} ${c.s}% ${c.l}%`;};
+function readableFg(hex){const n=String(hex).replace('#','');const r=parseInt(n.slice(0,2),16),g=parseInt(n.slice(2,4),16),b=parseInt(n.slice(4,6),16);
+  return (0.299*r+0.587*g+0.114*b)/255>0.62?'#0A0A0A':'#F8F4EA';}
+
+function cssVars(a){
+  const bg=hexToHsl(a.background), tx=hexToHsl(a.text);
+  const isLight=bg.l>55; const ob=isLight?'0, 0, 0':'255, 255, 255';
+  const intensity=isLight?-10:9;
+  const primary=hexToHsl(a.primaryButton), secondary=hexToHsl(a.secondaryButton);
+  return {
+    '--background':hslT(a.background), '--foreground':hslT(a.text),
+    '--card':hslT(a.cards), '--card-border':surfaceBorder(a.cards,5,12),
+    '--primary':hslT(a.primaryButton), '--primary-foreground':hslT(readableFg(a.primaryButton)),
+    '--primary-border':`hsl(${primary.h} ${primary.s}% ${clamp(primary.l+intensity,100)}%)`,
+    '--secondary':hslT(a.secondaryButton), '--secondary-foreground':hslT(readableFg(a.secondaryButton)),
+    '--secondary-border':`hsl(${secondary.h} ${secondary.s}% ${clamp(secondary.l+intensity,100)}%)`,
+    '--muted-foreground':triplet(tx.h,Math.round(tx.s*0.34),isLight?45:49),
+    '--border':surfaceBorder(a.background,11,14), '--input':surfaceBorder(a.background,14,16),
+    '--sidebar':hslT(a.sidebar), '--sidebar-border':surfaceBorder(a.sidebar,5,12),
+    '--button-outline':`rgba(${ob}, ${isLight?0.14:0.10})`,
+    '--badge-outline':`rgba(${ob}, ${isLight?0.08:0.05})`,
+    '--elevate-1':`rgba(${ob}, ${isLight?0.05:0.04})`,
+    '--ajn-header':hslT(a.header), '--ajn-footer':hslT(a.footer),
+    '--ajn-heading':hslT(a.headings), '--ajn-link':hslT(a.links),
+  };
+}
+
+// ===== اشتقاق الوضع البديل (نهاري/ليلي) — مطابق لـ deriveAlternateAppearance =====
+const LIGHT_SURFACES={background:"#FAFAFA",header:"#FFFFFF",footer:"#F4F4F5",sidebar:"#FFFFFF",cards:"#FFFFFF",secondaryButton:"#ECECEC",headings:"#1A1A1A",text:"#2A2A2A"};
+const DARK_SURFACES={background:"#0A0A0A",header:"#0A0A0A",footer:"#0A0A0A",sidebar:"#121212",cards:"#121212",secondaryButton:"#262626",headings:"#F3EFE8",text:"#F3EFE8"};
+function deriveAlternate(a){
+  const isDark=hexToHsl(a.background).l<55;
+  const s=isDark?LIGHT_SURFACES:DARK_SURFACES;
+  return {...s, primaryButton:a.primaryButton, links:a.links, hover:a.hover};
+}
+
+// ===== نفس الثيمات الـ20 من src/lib/theme-presets.ts =====
+const PRESETS=[
+ ["AJN الكلاسيكي",{background:"#0A0A0A",header:"#0A0A0A",footer:"#0A0A0A",sidebar:"#121212",primaryButton:"#D4AF37",secondaryButton:"#262626",headings:"#F3EFE8",text:"#F3EFE8",cards:"#121212",links:"#D4AF37",hover:"#D4AF37"}],
+ ["AJN بريميوم",{background:"#0B0B0D",header:"#0B0B0D",footer:"#0B0B0D",sidebar:"#141417",primaryButton:"#E5C158",secondaryButton:"#1F1F24",headings:"#F5F0E6",text:"#E8E3D8",cards:"#15151A",links:"#E5C158",hover:"#E5C158"}],
+ ["الذهبي الفاخر",{background:"#0A0A0A",header:"#100D06",footer:"#100D06",sidebar:"#15110A",primaryButton:"#D4AF37",secondaryButton:"#2A2310",headings:"#F7E9C2",text:"#EFE6D2",cards:"#15110A",links:"#E6C66A",hover:"#E6C66A"}],
+ ["الأزرق الملكي",{background:"#0A0F1F",header:"#0A0F1F",footer:"#0A0F1F",sidebar:"#0F1730",primaryButton:"#3B82F6",secondaryButton:"#15203B",headings:"#EAF1FF",text:"#DCE6F7",cards:"#0F1730",links:"#6BA6FF",hover:"#3B82F6"}],
+ ["أسود منتصف الليل",{background:"#050505",header:"#050505",footer:"#050505",sidebar:"#0D0D0D",primaryButton:"#4B5563",secondaryButton:"#161616",headings:"#ECECEC",text:"#D6D6D6",cards:"#0D0D0D",links:"#9CA3AF",hover:"#6B7280"}],
+ ["الأخضر الزمردي",{background:"#07140F",header:"#07140F",footer:"#07140F",sidebar:"#0B1F17",primaryButton:"#10B981",secondaryButton:"#103026",headings:"#E6FFF4",text:"#D2F1E5",cards:"#0B1F17",links:"#34D399",hover:"#10B981"}],
+ ["الذهبي الوردي",{background:"#14100F",header:"#14100F",footer:"#14100F",sidebar:"#1E1614",primaryButton:"#B76E79",secondaryButton:"#2A1E1C",headings:"#FBEDEA",text:"#F0DEDA",cards:"#1E1614",links:"#D49AA0",hover:"#B76E79"}],
+ ["الرمادي العصري",{background:"#111315",header:"#111315",footer:"#111315",sidebar:"#1A1D21",primaryButton:"#64748B",secondaryButton:"#232830",headings:"#F1F5F9",text:"#D9DEE6",cards:"#1A1D21",links:"#94A3B8",hover:"#64748B"}],
+ ["البنفسجي العميق",{background:"#0F0A18",header:"#0F0A18",footer:"#0F0A18",sidebar:"#170F26",primaryButton:"#8B5CF6",secondaryButton:"#221836",headings:"#F1EAFF",text:"#DED3F2",cards:"#170F26",links:"#A78BFA",hover:"#8B5CF6"}],
+ ["أزرق المحيط",{background:"#07131A",header:"#07131A",footer:"#07131A",sidebar:"#0B1E2A",primaryButton:"#0EA5E9",secondaryButton:"#103040",headings:"#E4F6FF",text:"#CDEAF7",cards:"#0B1E2A",links:"#38BDF8",hover:"#0EA5E9"}],
+ ["الوردي الناعم",{background:"#FFF5F8",header:"#FFFFFF",footer:"#FFF0F5",sidebar:"#FFE9F1",primaryButton:"#EC4899",secondaryButton:"#FBD7E7",headings:"#4A1730",text:"#5A2540",cards:"#FFFFFF",links:"#DB2777",hover:"#EC4899"}],
+ ["الأحمر الداكن",{background:"#140707",header:"#140707",footer:"#140707",sidebar:"#1F0C0C",primaryButton:"#DC2626",secondaryButton:"#301212",headings:"#FFEAEA",text:"#F2D6D6",cards:"#1F0C0C",links:"#F87171",hover:"#DC2626"}],
+ ["البني القهوة",{background:"#14100B",header:"#14100B",footer:"#14100B",sidebar:"#1E1812",primaryButton:"#B5793F",secondaryButton:"#2C2016",headings:"#F3E7D8",text:"#E4D5C2",cards:"#1E1812",links:"#C99A66",hover:"#B5793F"}],
+ ["ليلة فضية",{background:"#0C0E12",header:"#0C0E12",footer:"#0C0E12",sidebar:"#14171D",primaryButton:"#C0C0C0",secondaryButton:"#1E222A",headings:"#F4F6FA",text:"#D7DCE4",cards:"#14171D",links:"#CBD5E1",hover:"#C0C0C0"}],
+ ["الأبيض الأنيق",{background:"#FAFAFA",header:"#FFFFFF",footer:"#F4F4F5",sidebar:"#FFFFFF",primaryButton:"#C9A84C",secondaryButton:"#ECECEC",headings:"#1A1A1A",text:"#2A2A2A",cards:"#FFFFFF",links:"#B08A2E",hover:"#C9A84C"}],
+ ["برتقالي الغروب",{background:"#160C06",header:"#160C06",footer:"#160C06",sidebar:"#21130A",primaryButton:"#F97316",secondaryButton:"#321B0E",headings:"#FFEEDD",text:"#F6DCC6",cards:"#21130A",links:"#FB923C",hover:"#F97316"}],
+ ["التركواز",{background:"#061413",header:"#061413",footer:"#061413",sidebar:"#0A201E",primaryButton:"#14B8A6",secondaryButton:"#0F302C",headings:"#E2FFFB",text:"#CDF3EE",cards:"#0A201E",links:"#2DD4BF",hover:"#14B8A6"}],
+ ["الأسود البريميوم",{background:"#000000",header:"#000000",footer:"#000000",sidebar:"#0A0A0A",primaryButton:"#FFFFFF",secondaryButton:"#141414",headings:"#FFFFFF",text:"#E5E5E5",cards:"#0A0A0A",links:"#FFFFFF",hover:"#D4D4D4"}],
+ ["أخضر الغابة",{background:"#0A130C",header:"#0A130C",footer:"#0A130C",sidebar:"#101E13",primaryButton:"#22C55E",secondaryButton:"#16301E",headings:"#E8F7EC",text:"#D2EBD8",cards:"#101E13",links:"#4ADE80",hover:"#22C55E"}],
+ ["الذهب الفخم",{background:"#0B0A06",header:"#0B0A06",footer:"#0B0A06",sidebar:"#14110A",primaryButton:"#E8B923",secondaryButton:"#2A2412",headings:"#FBF1D4",text:"#EFE2BE",cards:"#14110A",links:"#F4D27A",hover:"#E8B923"}],
+];
+
+const grid=document.getElementById('grid');
+let useAlt=false;
+function renderGrid(){
+ grid.innerHTML='';
+ for(const [label,baseColors] of PRESETS){
+  const colors=useAlt?deriveAlternate(baseColors):baseColors;
+  const vars=cssVars(colors);
+  const styleStr=Object.entries(vars).map(([k,v])=>`${k}:${v}`).join(';');
+  const sw=[baseColors.background,baseColors.primaryButton,baseColors.cards,baseColors.links]
+    .map(c=>`<span style="background:${c}"></span>`).join('');
+  const el=document.createElement('div');
+  el.className='theme';
+  el.innerHTML=`
+    <div class="label"><span>${label}${useAlt?' · بديل':''}</span><span class="swatches">${sw}</span></div>
+    <div class="mock" style="${styleStr}">
+      <div class="mock-header">
+        <div class="brand"><span class="dot"></span><span class="name">مجموعة علي جان</span></div>
+        <div class="nav"><a href="#">المتجر</a><a href="#">الخدمات</a><a href="#">تتبع</a></div>
+      </div>
+      <div class="mock-body">
+        <div class="mock-side">
+          <div class="item active">لوحة التحكم</div>
+          <div class="item">الطلبات</div>
+          <div class="item">المنتجات</div>
+        </div>
+        <div class="mock-main">
+          <div class="card">
+            <h4>بطاقة منتج</h4>
+            <div class="line"></div><div class="line short"></div>
+            <div class="muted">نص ثانوي خافت للمعاينة</div>
+            <div class="row">
+              <span class="btn primary">زر أساسي</span>
+              <span class="btn secondary">ثانوي</span>
+              <span class="btn outline">إطار</span>
+              <span class="badge">شارة</span>
+            </div>
+            <a class="link" href="#">رابط داخل الموقع ↗</a>
+            <input class="input" value="حقل إدخال" readonly />
+          </div>
+        </div>
+      </div>
+      <div class="mock-footer">© مجموعة علي جان — جميع الحقوق محفوظة</div>
+    </div>`;
+  grid.appendChild(el);
+ }
+}
+renderGrid();
+const toggleBtn=document.getElementById('modeToggle');
+toggleBtn.addEventListener('click',()=>{
+  useAlt=!useAlt;
+  toggleBtn.textContent=useAlt?'◑ عرض: الوضع البديل (اضغط للأصلي)':'◐ عرض: الوضع الأصلي (اضغط للبديل)';
+  renderGrid();
+});
+</script>
+</body>
+</html>

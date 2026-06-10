@@ -26,6 +26,8 @@ import {
 } from "@/lib/service-details";
 import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { CalendarIcon, PhoneIcon, UserIcon } from "lucide-react";
+import { useT } from "@/lib/i18n";
+import { useContentLocalizer } from "@/lib/content-i18n";
 
 const formSchema = z.object({
   customerName: z.string().optional(),
@@ -41,7 +43,9 @@ export default function ServiceRequest() {
   const id = parseInt(params.id || "1", 10);
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  
+  const t = useT();
+  const cl = useContentLocalizer();
+
   const { data: service, isLoading } = useGetService(id, {
     query: { enabled: !!id, queryKey: ['/api/services', id] }
   });
@@ -92,7 +96,7 @@ export default function ServiceRequest() {
   function onSubmit(data: FormValues) {
     const phone = normalizeIraqiPhone(data.phone ?? "");
     if (!phone) {
-      form.setError("phone", { message: "أدخل رقم عراقي صحيح مثل 07700000000" });
+      form.setError("phone", { message: t("أدخل رقم عراقي صحيح مثل 07700000000") });
       return;
     }
     const details = withDerivedServiceDetails(serviceType, serviceDetails);
@@ -100,8 +104,8 @@ export default function ServiceRequest() {
     setDetailErrors(errors);
     if (Object.keys(errors).length > 0) {
       toast({
-        title: "راجع تفاصيل الخدمة",
-        description: "يرجى مراجعة القيم غير الصحيحة قبل إرسال الطلب.",
+        title: t("راجع تفاصيل الخدمة"),
+        description: t("يرجى مراجعة القيم غير الصحيحة قبل إرسال الطلب."),
         variant: "destructive",
       });
       return;
@@ -120,15 +124,15 @@ export default function ServiceRequest() {
     }, {
       onSuccess: (order) => {
         toast({
-          title: "تم استلام طلبك",
-          description: "سنتواصل معك قريباً لتأكيد التفاصيل.",
+          title: t("تم استلام طلبك"),
+          description: t("سنتواصل معك قريباً لتأكيد التفاصيل."),
         });
         setLocation(order.trackingCode ? `/track?code=${order.trackingCode}` : "/track");
       },
       onError: (err: any) => {
         toast({
-          title: "تعذر إرسال الطلب",
-          description: err?.message ?? "يرجى المحاولة مرة أخرى لاحقاً.",
+          title: t("تعذر إرسال الطلب"),
+          description: err?.message ?? t("يرجى المحاولة مرة أخرى لاحقاً."),
           variant: "destructive"
         });
       }
@@ -158,10 +162,10 @@ export default function ServiceRequest() {
     <div className="container mx-auto px-4 py-12 max-w-2xl">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-foreground mb-2">
-          طلب خدمة: {service?.nameAr || "خدمة مخصصة"}
+          {t("طلب خدمة")}: {(service && cl.name(service)) || t("خدمة مخصصة")}
         </h1>
         <p className="text-muted-foreground">
-          {service?.descriptionAr || "الرجاء ملء النموذج أدناه لطلب الخدمة وسنقوم بالتواصل معك."}
+          {(service && cl.description(service)) || t("الرجاء ملء النموذج أدناه لطلب الخدمة وسنقوم بالتواصل معك.")}
         </p>
       </div>
 
@@ -180,14 +184,14 @@ export default function ServiceRequest() {
       )}
 
       <div className="mb-6 space-y-6">
-        <BeforeAfterSection items={galleryItems as any[]} title="قبل / بعد من أعمالنا" />
-        <ModelViewerCard modelUrl={serviceModelUrl || null} title="معاينة الخدمة ثلاثية الأبعاد" />
+        <BeforeAfterSection items={galleryItems as any[]} title={t("قبل / بعد من أعمالنا")} />
+        <ModelViewerCard modelUrl={serviceModelUrl || null} title={t("معاينة الخدمة ثلاثية الأبعاد")} />
       </div>
 
       <Card className="bg-card border-border shadow-lg">
         <CardHeader className="border-b border-border/50 bg-muted/20">
-          <CardTitle className="text-xl">تفاصيل الطلب</CardTitle>
-          <CardDescription>رقم الهاتف ضروري للتواصل، وباقي التفاصيل يمكن إكمالها لاحقاً</CardDescription>
+          <CardTitle className="text-xl">{t("تفاصيل الطلب")}</CardTitle>
+          <CardDescription>{t("رقم الهاتف ضروري للتواصل، وباقي التفاصيل يمكن إكمالها لاحقاً")}</CardDescription>
         </CardHeader>
         <CardContent className="p-6">
           <Form {...form}>
@@ -198,11 +202,11 @@ export default function ServiceRequest() {
                 name="customerName"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>الاسم الكامل</FormLabel>
+                    <FormLabel>{t("الاسم الكامل")}</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <UserIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
-                        <Input placeholder="الاسم" className="pr-10 bg-background" {...field} />
+                        <Input placeholder={t("الاسم")} className="pr-10 bg-background" {...field} />
                       </div>
                     </FormControl>
                     <FormMessage />
@@ -215,7 +219,7 @@ export default function ServiceRequest() {
                 name="phone"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>رقم الهاتف</FormLabel>
+                    <FormLabel>{t("رقم الهاتف")}</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <PhoneIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -239,7 +243,7 @@ export default function ServiceRequest() {
                 name="eventDate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>تاريخ الحجز</FormLabel>
+                    <FormLabel>{t("تاريخ الحجز")}</FormLabel>
                     <FormControl>
                       <div className="relative">
                         <CalendarIcon className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -263,17 +267,17 @@ export default function ServiceRequest() {
                 grid={false}
                 density="form"
               />
-              <LocationMapCard address={requestLocation || null} title="موقع المناسبة" compact />
+              <LocationMapCard address={requestLocation || null} title={t("موقع المناسبة")} compact />
 
               <FormField
                 control={form.control}
                 name="notes"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>ملاحظات إضافية</FormLabel>
+                    <FormLabel>{t("ملاحظات إضافية")}</FormLabel>
                     <FormControl>
-                      <Textarea 
-                        placeholder="أي تفاصيل أخرى تود إضافتها للطلب..." 
+                      <Textarea
+                        placeholder={t("أي تفاصيل أخرى تود إضافتها للطلب...")}
                         className="min-h-[100px] bg-background" 
                         {...field} 
                       />
@@ -288,7 +292,7 @@ export default function ServiceRequest() {
                 className="w-full bg-primary text-primary-foreground hover:bg-primary/90" 
                 disabled={createOrder.isPending}
               >
-                {createOrder.isPending ? "جاري الإرسال..." : "إرسال الطلب"}
+                {createOrder.isPending ? t("جاري الإرسال...") : t("إرسال الطلب")}
               </Button>
             </form>
           </Form>
@@ -296,7 +300,7 @@ export default function ServiceRequest() {
       </Card>
 
       <div className="mt-6">
-        <SmartSuggestions contextServiceType={serviceType} title="خدمات تكمل حجزك" />
+        <SmartSuggestions contextServiceType={serviceType} title={t("خدمات تكمل حجزك")} />
       </div>
     </div>
   );

@@ -1191,13 +1191,29 @@ async function upgradeStoredMedia(kind: string, id: number | string, value: unkn
   return stored;
 }
 
+// يستخرج حقول ترجمة المحتوى من جسم الطلب (إضافية وغير مخلّة بأي عقد API قائم)
+function pickContentTranslations(src: any, withDescription: boolean): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  const keys = withDescription
+    ? ["nameKu", "nameTr", "descriptionKu", "descriptionTr"]
+    : ["nameKu", "nameTr"];
+  for (const k of keys) {
+    if (src && src[k] !== undefined) out[k] = nullableText(src[k]);
+  }
+  return out;
+}
+
 function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
   return {
     id: p.id,
     name: p.name,
     nameAr: p.nameAr,
+    nameKu: p.nameKu ?? p.name_ku ?? null,
+    nameTr: p.nameTr ?? p.name_tr ?? null,
     description: p.description ?? null,
     descriptionAr: p.descriptionAr ?? null,
+    descriptionKu: p.descriptionKu ?? p.description_ku ?? null,
+    descriptionTr: p.descriptionTr ?? p.description_tr ?? null,
     price: Number.parseFloat(p.price),
     originalPrice: p.originalPrice ? Number.parseFloat(p.originalPrice) : null,
     stock: p.stock,
@@ -1228,6 +1244,8 @@ function formatCategory(row: any, productCount = 0) {
     id: row.id,
     name: row.name,
     nameAr: row.nameAr ?? row.name_ar,
+    nameKu: row.nameKu ?? row.name_ku ?? null,
+    nameTr: row.nameTr ?? row.name_tr ?? null,
     slug: row.slug,
     parentId: row.parentId ?? row.parent_id ?? null,
     imageUrl: publicMediaValue("category", row, row.imageUrl ?? row.image_url ?? null),
@@ -1345,8 +1363,12 @@ function formatService(s: any) {
     id: s.id,
     name: s.name,
     nameAr: s.nameAr,
+    nameKu: s.nameKu ?? s.name_ku ?? null,
+    nameTr: s.nameTr ?? s.name_tr ?? null,
     description: s.description ?? null,
     descriptionAr: s.descriptionAr ?? null,
+    descriptionKu: s.descriptionKu ?? s.description_ku ?? null,
+    descriptionTr: s.descriptionTr ?? s.description_tr ?? null,
     type: s.type,
     icon: s.icon ?? null,
     image: publicMediaValue("service", s, s.image ?? null),
@@ -2876,7 +2898,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   if (method === "POST" && parts.length === 1) {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
-    const parsed = CreateProductBody.safeParse(await body(req));
+    const rawBody = await body(req);
+    const parsed = CreateProductBody.safeParse(rawBody);
     if (!parsed.success) return validationError("products.create", parsed);
     const data = parsed.data as any;
     const productNameAr = textFallback(data.nameAr, data.name, "منتج جديد");
@@ -2893,6 +2916,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         nameAr: productNameAr,
         description: data.description,
         descriptionAr: data.descriptionAr,
+        ...pickContentTranslations(rawBody, true),
         price: String(money(data.price)),
         originalPrice: money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null,
         costPrice: String(money(data.costPrice)),
@@ -2927,7 +2951,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
-    const parsed = UpdateProductBody.safeParse(await body(req));
+    const rawBody = await body(req);
+    const parsed = UpdateProductBody.safeParse(rawBody);
     if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
@@ -2980,6 +3005,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (data.price !== undefined) update.price = data.price.toString();
     if (data.originalPrice !== undefined) update.originalPrice = money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null;
     if (data.costPrice !== undefined) update.costPrice = String(money(data.costPrice));
+    Object.assign(update, pickContentTranslations(rawBody, true));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
     void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
@@ -5683,7 +5709,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return catRes;
     }
     if (method === "POST") {
-      const { name, nameAr, slug, parentId, sortOrder, isActive, imageUrl, imageMetadata } = await body(req);
+      const catBody = await body(req);
+      const { name, nameAr, slug, parentId, sortOrder, isActive, imageUrl, imageMetadata } = catBody;
       const categoryNameAr = textFallback(nameAr, name, "تصنيف جديد");
       const categoryName = textFallback(name, nameAr, `category-${Date.now().toString(36)}`);
       const categorySlug = textFallback(slug, `${slugFallback(categoryNameAr || categoryName, "category")}-${Date.now().toString(36)}`);
@@ -5694,6 +5721,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           .values({
             name: categoryName,
             nameAr: categoryNameAr,
+            ...pickContentTranslations(catBody, false),
             slug: categorySlug,
             parentId: parentValue,
             sortOrder: Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : 0,
@@ -5720,6 +5748,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       for (const k of ["name", "nameAr", "slug", "sortOrder", "isActive"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
+      Object.assign(update, pickContentTranslations(b, false));
       if (b?.parentId !== undefined) {
         const parentValue = numberId(b.parentId);
         update.parentId = parentValue && parentValue !== id ? parentValue : null;
@@ -7091,7 +7120,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json(rows.map(formatService));
     }
     if (method === "POST" && !parts[2]) {
-      const { name, nameAr, description, descriptionAr, type, icon, image, imageMetadata, isActive, sortOrder } = await body(req);
+      const svcBody = await body(req);
+      const { name, nameAr, description, descriptionAr, type, icon, image, imageMetadata, isActive, sortOrder } = svcBody;
       const serviceNameAr = textFallback(nameAr, name, "خدمة جديدة");
       const serviceName = textFallback(name, nameAr, `service-${Date.now().toString(36)}`);
       const serviceType = textFallback(type, "other");
@@ -7102,6 +7132,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           nameAr: serviceNameAr,
           description: nullableText(description),
           descriptionAr: nullableText(descriptionAr),
+          ...pickContentTranslations(svcBody, true),
           type: serviceType,
           icon: nullableText(icon),
           image: await persistMediaValue(image, "services"),
@@ -7121,6 +7152,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       for (const k of ["name", "nameAr", "description", "descriptionAr", "type", "icon", "image", "imageMetadata", "isActive", "sortOrder"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
+      Object.assign(update, pickContentTranslations(b, true));
       if (update.name !== undefined && !String(update.name ?? "").trim()) delete update.name;
       if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
       if (update.type !== undefined && !String(update.type ?? "").trim()) update.type = "other";

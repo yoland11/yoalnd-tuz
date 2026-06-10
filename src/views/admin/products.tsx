@@ -21,7 +21,9 @@ type Category = { id: number; name: string; nameAr: string; slug: string; parent
 type ProductForm = {
   id?: number;
   name: string; nameAr: string;
+  nameKu?: string; nameTr?: string;
   description?: string; descriptionAr?: string;
+  descriptionKu?: string; descriptionTr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
   categoryId?: number | null; subcategoryId?: number | null;
@@ -81,8 +83,12 @@ export default function ProductsPage() {
     const body = {
       name: form.name.trim(),
       nameAr: form.nameAr.trim(),
+      nameKu: form.nameKu?.trim() || "",
+      nameTr: form.nameTr?.trim() || "",
       description: form.description?.trim() || "",
       descriptionAr: form.descriptionAr?.trim() || "",
+      descriptionKu: form.descriptionKu?.trim() || "",
+      descriptionTr: form.descriptionTr?.trim() || "",
       price,
       originalPrice: parsedOriginalPrice && parsedOriginalPrice > price ? parsedOriginalPrice : 0,
       costPrice: parseFloat(form.costPrice ?? "0") || 0,
@@ -243,7 +249,9 @@ export default function ProductsPage() {
                       <div className="flex items-center gap-2">
                         <button onClick={() => setEditing({
                           id: p.id, name: p.name, nameAr: p.nameAr,
+                          nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
                           description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
+                          descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                           costPrice: p.costPrice ? String(p.costPrice) : "0",
                           stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
@@ -422,6 +430,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         <div className="grid grid-cols-2 gap-3">
           <Inp label="الاسم بالعربي" value={form.nameAr} onChange={v => onChange({ ...form, nameAr: v })} />
           <Inp label="الاسم بالإنجليزي" value={form.name} onChange={v => onChange({ ...form, name: v })} />
+          <Inp label="الاسم (كردي)" value={form.nameKu ?? ""} onChange={v => onChange({ ...form, nameKu: v })} />
+          <Inp label="الاسم (تركي)" value={form.nameTr ?? ""} onChange={v => onChange({ ...form, nameTr: v })} />
           <Inp label="السعر" type="number" value={form.price} onChange={v => onChange({ ...form, price: v })} />
           <Inp label="السعر الأصلي (اختياري)" type="number" value={form.originalPrice ?? ""} onChange={v => onChange({ ...form, originalPrice: v })} />
           <Inp label="سعر الشراء" type="number" value={form.costPrice ?? "0"} onChange={v => onChange({ ...form, costPrice: v })} />
@@ -473,6 +483,19 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <label className="block text-xs text-muted-foreground mb-1">الوصف (عربي)</label>
           <textarea value={form.descriptionAr ?? ""} onChange={e => onChange({ ...form, descriptionAr: e.target.value })} rows={3}
             className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">الوصف (كردي)</label>
+            <textarea value={form.descriptionKu ?? ""} onChange={e => onChange({ ...form, descriptionKu: e.target.value })} rows={3}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          </div>
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">الوصف (تركي)</label>
+            <textarea value={form.descriptionTr ?? ""} onChange={e => onChange({ ...form, descriptionTr: e.target.value })} rows={3}
+              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+          </div>
         </div>
 
         <div>

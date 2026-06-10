@@ -14,6 +14,8 @@ type Category = {
   id: number;
   name: string;
   nameAr: string;
+  nameKu?: string | null;
+  nameTr?: string | null;
   slug: string;
   parentId: number | null;
   imageUrl?: string | null;
@@ -131,6 +133,8 @@ export default function CategoriesPage() {
             </div>
             <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameAr: v }))} />
             <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(s => ({ ...s!, name: v }))} />
+            <Field label="الاسم (كردي)" value={editing.nameKu ?? ""} onChange={v => setEditing(s => ({ ...s!, nameKu: v }))} />
+            <Field label="الاسم (تركي)" value={editing.nameTr ?? ""} onChange={v => setEditing(s => ({ ...s!, nameTr: v }))} />
             {(editing.parentId != null || (editing.id && editing.parentId != null)) && (
               <div>
                 <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>

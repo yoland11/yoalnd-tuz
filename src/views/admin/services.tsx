@@ -12,7 +12,9 @@ import { useToast } from "@/hooks/use-toast";
 
 type Service = {
   id: number; name: string; nameAr: string;
+  nameKu?: string | null; nameTr?: string | null;
   description: string | null; descriptionAr: string | null;
+  descriptionKu?: string | null; descriptionTr?: string | null;
   type: string; icon: string | null; image: string | null;
   imageMetadata?: ImageMetadata | null;
   isActive: boolean; sortOrder?: number;
@@ -129,6 +131,8 @@ export default function ServicesPage() {
             </div>
             <Field label="الاسم بالعربي" value={editing.nameAr ?? ""} onChange={v => setEditing(e => ({ ...e!, nameAr: v }))} />
             <Field label="الاسم بالإنجليزي" value={editing.name ?? ""} onChange={v => setEditing(e => ({ ...e!, name: v }))} />
+            <Field label="الاسم (كردي)" value={editing.nameKu ?? ""} onChange={v => setEditing(e => ({ ...e!, nameKu: v }))} />
+            <Field label="الاسم (تركي)" value={editing.nameTr ?? ""} onChange={v => setEditing(e => ({ ...e!, nameTr: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">النوع</label>
               <select value={editing.type ?? "kosha"} onChange={e => setEditing(s => ({ ...s!, type: e.target.value }))}
@@ -137,6 +141,8 @@ export default function ServicesPage() {
               </select>
             </div>
             <Field label="وصف عربي" textarea value={editing.descriptionAr ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionAr: v }))} />
+            <Field label="وصف (كردي)" textarea value={editing.descriptionKu ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionKu: v }))} />
+            <Field label="وصف (تركي)" textarea value={editing.descriptionTr ?? ""} onChange={v => setEditing(e => ({ ...e!, descriptionTr: v }))} />
             <Field label="رمز الأيقونة (lucide)" value={editing.icon ?? ""} onChange={v => setEditing(e => ({ ...e!, icon: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">صورة الخدمة</label>

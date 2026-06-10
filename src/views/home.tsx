@@ -8,11 +8,15 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { ProductColorDots } from "@/components/product-colors";
 import { LocationMapCard } from "@/components/interactive/location-map-card";
+import { useT } from "@/lib/i18n";
+import { useContentLocalizer } from "@/lib/content-i18n";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
   const { data: services = [], isLoading: loadingServices } = useListServices();
   const { data: settings } = usePublicSettings();
+  const t = useT();
+  const cl = useContentLocalizer();
   const siteName = settings?.site_name ?? "مجموعة علي جان";
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار عن خدمات AJN") : "";
 
@@ -38,7 +42,7 @@ export default function Home() {
             {siteName}
           </h1>
           <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow">
-            للمناسبات والتجهيزات
+            {t("للمناسبات والتجهيزات")}
           </p>
           <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85">
             {settings?.phone && (
@@ -48,12 +52,12 @@ export default function Home() {
             )}
             {waLink && (
               <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MessageCircle className="w-4 h-4" /> واتساب
+                <MessageCircle className="w-4 h-4" /> {t("واتساب")}
               </a>
             )}
             {settings?.map_url && (
               <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MapPin className="w-4 h-4" /> موقع المحل
+                <MapPin className="w-4 h-4" /> {t("موقع المحل")}
               </a>
             )}
           </div>
@@ -61,22 +65,22 @@ export default function Home() {
           <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto">
             <Link href="/services">
               <Button size="lg" className="w-40 bg-primary text-primary-foreground hover:bg-primary/90">
-                الخدمات
+                {t("الخدمات")}
               </Button>
             </Link>
             <Link href="/store">
               <Button size="lg" variant="outline" className="w-40 border-primary text-primary hover:bg-primary/10">
-                المتجر
+                {t("المتجر")}
               </Button>
             </Link>
             <Link href="/track">
               <Button size="lg" variant="outline" className="w-40 border-white/20 text-white hover:bg-white/10 backdrop-blur-sm">
-                تتبع الطلب
+                {t("تتبع الطلب")}
               </Button>
             </Link>
             <Link href="/gallery">
               <Button size="lg" variant="outline" className="w-40 border-white/20 text-white hover:bg-white/10 backdrop-blur-sm">
-                أعمالنا
+                {t("أعمالنا")}
               </Button>
             </Link>
           </div>
@@ -87,10 +91,10 @@ export default function Home() {
       <section className="py-20 bg-card border-y border-border">
         <div className="container mx-auto px-4">
           <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-foreground mb-4">خدماتنا المتميزة</h2>
+            <h2 className="text-3xl font-bold text-foreground mb-4">{t("خدماتنا المتميزة")}</h2>
             <div className="h-1 w-20 bg-primary mx-auto rounded-full" />
             <p className="text-muted-foreground mt-4 max-w-2xl mx-auto">
-              نقدم مجموعة متكاملة من خدمات تنسيق وتجهيز المناسبات بأعلى مستويات الجودة والفخامة
+              {t("نقدم مجموعة متكاملة من خدمات تنسيق وتجهيز المناسبات بأعلى مستويات الجودة والفخامة")}
             </p>
           </div>
 
@@ -102,9 +106,9 @@ export default function Home() {
             ) : services.slice(0, 3).map((service: any) => (
               <Link key={service.id} href={`/services/${service.id}`}>
                 <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border">
-                  <img 
-                    src={service.image || serviceImageFor(service.type)} 
-                    alt={service.nameAr || service.name} 
+                  <img
+                    src={service.image || serviceImageFor(service.type)}
+                    alt={cl.name(service) || service.name}
                     width={640}
                     height={420}
                     loading="lazy"
@@ -113,7 +117,7 @@ export default function Home() {
                     style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-end p-6">
-                    <h3 className="text-xl font-bold text-white">{service.nameAr || service.name}</h3>
+                    <h3 className="text-xl font-bold text-white">{cl.name(service) || service.name}</h3>
                   </div>
                 </div>
               </Link>
@@ -123,7 +127,7 @@ export default function Home() {
           <div className="mt-10 text-center">
             <Link href="/services">
               <Button variant="ghost" className="text-primary hover:text-primary hover:bg-primary/10">
-                عرض جميع الخدمات
+                {t("عرض جميع الخدمات")}
               </Button>
             </Link>
           </div>
@@ -136,12 +140,12 @@ export default function Home() {
   <div className="container mx-auto px-4">
     <div className="flex justify-between items-end mb-10">
       <div>
-        <h2 className="text-3xl font-bold text-foreground mb-4">وصل حديثاً</h2>
+        <h2 className="text-3xl font-bold text-foreground mb-4">{t("وصل حديثاً")}</h2>
         <div className="h-1 w-20 bg-primary rounded-full" />
       </div>
       <Link href="/store">
         <Button variant="link" className="text-primary hidden sm:flex">
-          تسوق الآن
+          {t("تسوق الآن")}
         </Button>
       </Link>
     </div>
@@ -174,7 +178,7 @@ export default function Home() {
                       product.image_url ||
                       "/images/hero.png"
                     }
-                    alt={product.nameAr || product.name_ar || product.name || "منتج"}
+                    alt={cl.name(product) || product.name || "منتج"}
                     width={400}
                     height={400}
                     loading="lazy"
@@ -185,7 +189,7 @@ export default function Home() {
                 </div>
                 <CardContent className="p-4 flex flex-col flex-1">
                   <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
-                    {product.nameAr || product.name_ar || product.name || "منتج"}
+                    {cl.name(product) || product.name || "منتج"}
                   </h3>
                   <ProductColorDots colors={product.colors} />
                   <div className="mt-auto flex items-center justify-between">
@@ -210,7 +214,7 @@ export default function Home() {
             <LocationMapCard
               mapUrl={settings.map_url}
               address={[settings.address, settings.city].filter(Boolean).join(" / ")}
-              title="موقع المحل"
+              title={t("موقع المحل")}
             />
           </div>
         </section>
@@ -219,9 +223,11 @@ export default function Home() {
       <section className="py-24 bg-card border-t border-border relative overflow-hidden">
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }} />
         <div className="container mx-auto px-4 text-center relative z-10 max-w-3xl">
-          <h2 className="text-3xl font-serif text-primary mb-6">قصتنا</h2>
+          <h2 className="text-3xl font-serif text-primary mb-6">{t("قصتنا")}</h2>
           <p className="text-lg text-muted-foreground leading-relaxed mb-8">
-            تأسست {siteName} في {settings?.city || "طوزخورماتو"} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.
+            {t("تأسست {name} في {city} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.")
+              .replace("{name}", siteName)
+              .replace("{city}", settings?.city || "طوزخورماتو")}
           </p>
           <div className="flex justify-center gap-4">
             <div className="w-16 h-[1px] bg-primary/40 mt-4" />

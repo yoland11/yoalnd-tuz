@@ -5,8 +5,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus } from "lucide-react";
+import { Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart } from "lucide-react";
 import { ColorDot } from "@/components/product-colors";
+import { useWishlist } from "@/lib/wishlist";
+import { useT } from "@/lib/i18n";
+import { useContentLocalizer } from "@/lib/content-i18n";
 import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/colors";
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
@@ -26,6 +29,12 @@ export default function ProductDetail() {
   });
 
   const addToCart = useAddToCart();
+  const { has: isFavorite, toggle: toggleFavorite } = useWishlist();
+  const favorited = isFavorite(productId);
+  const t = useT();
+  const cl = useContentLocalizer();
+  const productName = product ? cl.name(product) : "";
+  const productDescription = product ? cl.description(product) : "";
 
   const [selectedImage, setSelectedImage] = useState(0);
   const [selectedColor, setSelectedColor] = useState<ProductColor | null>(null);
@@ -117,20 +126,20 @@ export default function ProductDetail() {
   if (!product) {
     return (
       <div className="container mx-auto px-4 py-24 text-center text-muted-foreground">
-        <p className="text-lg">المنتج غير موجود</p>
-        <Button onClick={() => navigate("/store")} className="mt-4">العودة للمتجر</Button>
+        <p className="text-lg">{t("المنتج غير موجود")}</p>
+        <Button onClick={() => navigate("/store")} className="mt-4">{t("العودة للمتجر")}</Button>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground" dir="rtl">
+    <div className="min-h-screen bg-background text-foreground">
       {/* Breadcrumb */}
       <div className="border-b border-border/30 py-3">
         <div className="container mx-auto px-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <button onClick={() => navigate("/store")} className="hover:text-primary transition-colors">المتجر</button>
+          <button onClick={() => navigate("/store")} className="hover:text-primary transition-colors">{t("المتجر")}</button>
           <span>/</span>
-          <span className="text-foreground">{product.nameAr}</span>
+          <span className="text-foreground">{productName}</span>
         </div>
       </div>
 
@@ -144,11 +153,11 @@ export default function ProductDetail() {
             >
               <img
                 src={images[selectedImage]}
-                alt={product.nameAr}
+                alt={productName}
                 className="w-full h-full transition-transform duration-300 hover:scale-105"
                 style={{ objectFit: String(imageMetadata[selectedImage]?.objectFit ?? "cover") as any }}
               />
-              <span className="absolute bottom-3 left-3 text-xs text-white/70 bg-black/40 px-2 py-1 rounded">معاينة</span>
+              <span className="absolute bottom-3 left-3 text-xs text-white/70 bg-black/40 px-2 py-1 rounded">{t("معاينة")}</span>
             </div>
             {images.length > 1 && (
               <div className="flex gap-2 overflow-x-auto pb-1">
@@ -168,7 +177,19 @@ export default function ProductDetail() {
           {/* Details */}
           <div className="space-y-6">
             <div>
-              <h1 className="text-3xl font-bold text-foreground mb-2">{product.nameAr}</h1>
+              <div className="flex items-start justify-between gap-3">
+                <h1 className="text-3xl font-bold text-foreground mb-2">{productName}</h1>
+                <button
+                  type="button"
+                  onClick={() => toggleFavorite(productId)}
+                  aria-pressed={favorited}
+                  aria-label={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
+                  title={favorited ? t("إزالة من المفضّلة") : t("إضافة إلى المفضّلة")}
+                  className={`shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-full border transition-colors ${favorited ? "border-primary/50 bg-primary/10 text-primary" : "border-border/40 text-muted-foreground hover:text-primary"}`}
+                >
+                  <Heart className={`h-5 w-5 ${favorited ? "fill-current" : ""}`} />
+                </button>
+              </div>
               {product.category && (
                 <Badge variant="secondary" className="text-xs text-primary border border-primary/30">{product.category}</Badge>
               )}
@@ -182,7 +203,7 @@ export default function ProductDetail() {
                     <Star key={s} className={`w-4 h-4 ${s <= Math.round(product.rating!) ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
                   ))}
                 </div>
-                <span className="text-sm text-muted-foreground">({product.reviewCount} تقييم)</span>
+                <span className="text-sm text-muted-foreground">({product.reviewCount} {t("تقييم")})</span>
               </div>
             )}
 
@@ -197,22 +218,22 @@ export default function ProductDetail() {
             {/* Stock */}
             <div>
               {product.stock > 0 ? (
-                <span className="text-green-400 text-sm font-medium">متوفر في المخزن ({product.stock} قطعة)</span>
+                <span className="text-green-400 text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>
               ) : (
-                <span className="text-red-400 text-sm font-medium">نفذت الكمية</span>
+                <span className="text-red-400 text-sm font-medium">{t("نفذت الكمية")}</span>
               )}
             </div>
 
             {/* Description */}
-            {product.descriptionAr && (
-              <p className="text-muted-foreground leading-relaxed">{product.descriptionAr}</p>
+            {productDescription && (
+              <p className="text-muted-foreground leading-relaxed">{productDescription}</p>
             )}
 
             {/* Color Picker */}
             {colors.length > 0 && (
               <div>
                 <p className="text-sm font-medium mb-3 text-foreground">
-                  اللون: <span className="text-primary">{selectedColor?.name ?? "اختر لوناً"}</span>
+                  {t("اللون")}: <span className="text-primary">{selectedColor?.name ?? t("اختر لوناً")}</span>
                 </p>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {colors.map((color) => {
@@ -242,7 +263,7 @@ export default function ProductDetail() {
 
             {/* Quantity */}
             <div className="flex items-center gap-4">
-              <span className="text-sm font-medium text-foreground">الكمية:</span>
+              <span className="text-sm font-medium text-foreground">{t("الكمية")}:</span>
               <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
                 <button
                   onClick={() => setQuantity(q => Math.max(1, q - 1))}
@@ -267,7 +288,7 @@ export default function ProductDetail() {
               onClick={handleAddToCart}
             >
               <ShoppingCart className="w-5 h-5" />
-              {addedToCart ? "تمت الإضافة!" : addToCart.isPending ? "جاري الإضافة..." : colors.length > 0 && !selectedColor ? "اختر اللون أولاً" : "أضف إلى السلة"}
+              {addedToCart ? t("تمت الإضافة!") : addToCart.isPending ? t("جاري الإضافة...") : colors.length > 0 && !selectedColor ? t("اختر اللون أولاً") : t("أضف إلى السلة")}
             </Button>
           </div>
         </div>
@@ -277,8 +298,8 @@ export default function ProductDetail() {
             <section className="rounded-2xl border border-border/30 bg-card p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-bold text-foreground">فيديوهات المنتج</h2>
-                  <p className="text-xs text-muted-foreground">معاينة سريعة قبل الإضافة للسلة</p>
+                  <h2 className="text-xl font-bold text-foreground">{t("فيديوهات المنتج")}</h2>
+                  <p className="text-xs text-muted-foreground">{t("معاينة سريعة قبل الإضافة للسلة")}</p>
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -294,13 +315,13 @@ export default function ProductDetail() {
               </div>
             </section>
           )}
-          <ModelViewerCard modelUrl={productModelUrl || null} title="معاينة المنتج ثلاثية الأبعاد" />
-          <SmartSuggestions title="منتجات وخدمات مناسبة" />
+          <ModelViewerCard modelUrl={productModelUrl || null} title={t("معاينة المنتج ثلاثية الأبعاد")} />
+          <SmartSuggestions title={t("منتجات وخدمات مناسبة")} />
         </div>
 
         {/* Reviews Section */}
         <div className="mt-16 border-t border-border/30 pt-10">
-          <h2 className="text-2xl font-bold text-foreground mb-8">التقييمات</h2>
+          <h2 className="text-2xl font-bold text-foreground mb-8">{t("التقييمات")}</h2>
           
           {reviews && reviews.length > 0 ? (
             <div className="space-y-4 mb-10">
@@ -319,17 +340,17 @@ export default function ProductDetail() {
               ))}
             </div>
           ) : (
-            <p className="text-muted-foreground mb-8">لا توجد تقييمات بعد. كن أول من يقيّم!</p>
+            <p className="text-muted-foreground mb-8">{t("لا توجد تقييمات بعد. كن أول من يقيّم!")}</p>
           )}
 
           {/* Add Review Form */}
           <div className="bg-card rounded-xl p-6 border border-border/30 max-w-lg">
-            <h3 className="text-lg font-semibold mb-4">أضف تقييمك</h3>
+            <h3 className="text-lg font-semibold mb-4">{t("أضف تقييمك")}</h3>
             <form onSubmit={handleSubmitReview} className="space-y-4">
               <input
                 value={reviewerName}
                 onChange={e => setReviewerName(e.target.value)}
-                placeholder="اسمك"
+                placeholder={t("اسمك")}
                 className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50"
               />
               <div className="flex gap-1">
@@ -342,12 +363,12 @@ export default function ProductDetail() {
               <textarea
                 value={reviewComment}
                 onChange={e => setReviewComment(e.target.value)}
-                placeholder="تعليقك (اختياري)"
+                placeholder={t("تعليقك (اختياري)")}
                 rows={3}
                 className="w-full bg-background border border-border/40 rounded-lg px-4 py-2.5 text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary/50 resize-none"
               />
               <Button type="submit" className="w-full" disabled={createReview.isPending}>
-                {createReview.isPending ? "جاري الإرسال..." : "إرسال التقييم"}
+                {createReview.isPending ? t("جاري الإرسال...") : t("إرسال التقييم")}
               </Button>
             </form>
           </div>

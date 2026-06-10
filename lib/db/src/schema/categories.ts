@@ -6,6 +6,8 @@ export const categoriesTable = pgTable("categories", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   nameAr: text("name_ar").notNull(),
+  nameKu: text("name_ku"),
+  nameTr: text("name_tr"),
   slug: varchar("slug", { length: 100 }).notNull().unique(),
   parentId: integer("parent_id").references((): AnyPgColumn => categoriesTable.id),
   imageUrl: text("image_url"),

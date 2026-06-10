@@ -1,10 +1,15 @@
 import { Link, useLocation } from "wouter";
-import { Facebook, Instagram, Lock, MapPin, MessageCircle, Phone, Search, ShoppingBag, User } from "lucide-react";
+import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, Search, ShoppingBag, Sun, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { deriveAlternateAppearance, hexToHsl } from "@/lib/appearance";
+import { useThemeMode } from "@/lib/theme-mode";
+import { useWishlist } from "@/lib/wishlist";
+import { useT } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 export function Navbar() {
   const [location] = useLocation();
@@ -21,6 +26,13 @@ export function Navbar() {
     retry: false,
   });
 
+  const { mode, toggle } = useThemeMode();
+  const { count: wishlistCount } = useWishlist();
+  const t = useT();
+  const baseAppearance = settings?.appearance_settings;
+  const effectiveAppearance = mode === "alt" && baseAppearance ? deriveAlternateAppearance(baseAppearance) : baseAppearance;
+  const isDarkTheme = effectiveAppearance ? hexToHsl(effectiveAppearance.background).l < 55 : true;
+
   const cartItemCount = cart?.itemCount || 0;
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار") : "";
 
@@ -36,12 +48,12 @@ export function Navbar() {
             )}
             {waLink && (
               <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
-                <MessageCircle className="h-3.5 w-3.5" /> واتساب
+                <MessageCircle className="h-3.5 w-3.5" /> {t("واتساب")}
               </a>
             )}
             {settings?.map_url && (
               <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
-                <MapPin className="h-3.5 w-3.5" /> موقع المحل
+                <MapPin className="h-3.5 w-3.5" /> {t("موقع المحل")}
               </a>
             )}
           </div>
@@ -72,41 +84,52 @@ export function Navbar() {
 
         {/* Desktop Navigation */}
         <nav className="hidden md:flex items-center gap-8">
-          <Link 
-            href="/" 
+          <Link
+            href="/"
             className={`text-sm font-medium transition-colors hover:text-primary ${location === '/' ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            الرئيسية
+            {t("الرئيسية")}
           </Link>
-          <Link 
-            href="/services" 
+          <Link
+            href="/services"
             className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/services') ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            الخدمات
+            {t("الخدمات")}
           </Link>
-          <Link 
-            href="/store" 
+          <Link
+            href="/store"
             className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/store') ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            المتجر
+            {t("المتجر")}
           </Link>
-          <Link 
-            href="/gallery" 
+          <Link
+            href="/gallery"
             className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/gallery') ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            أعمالنا
+            {t("أعمالنا")}
           </Link>
-          <Link 
-            href="/track" 
+          <Link
+            href="/track"
             className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/track') ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            تتبع الطلب
+            {t("تتبع الطلب")}
           </Link>
         </nav>
 
         {/* Actions */}
         <div className="flex items-center gap-2 md:gap-4">
-          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggle}
+            aria-label="تبديل الوضع الليلي/النهاري"
+            title={isDarkTheme ? "التبديل إلى الوضع النهاري" : "التبديل إلى الوضع الليلي"}
+            className="text-muted-foreground hover:text-primary"
+          >
+            {isDarkTheme ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+          </Button>
+          <LanguageSwitcher />
+          <Button variant="ghost" size="icon" aria-label={t("بحث")} title={t("بحث")} className="text-muted-foreground hover:text-primary">
             <Search className="h-5 w-5" />
           </Button>
           <Link href="/profile">
@@ -115,6 +138,16 @@ export function Navbar() {
                 <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover border border-primary/20" />
               ) : (
                 <User className="h-5 w-5" />
+              )}
+            </Button>
+          </Link>
+          <Link href="/favorites" aria-label="المفضّلة">
+            <Button variant="ghost" size="icon" className="relative text-muted-foreground hover:text-primary">
+              <Heart className="h-5 w-5" />
+              {wishlistCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                  {wishlistCount}
+                </span>
               )}
             </Button>
           </Link>

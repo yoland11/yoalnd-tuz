@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Save, Upload, X, Plus } from "lucide-react";
+import { Save, Upload, X, Plus, Palette, RotateCcw, Check, CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, fileToDataUrl } from "./_lib";
@@ -8,6 +8,9 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
+import { THEME_PRESETS, matchPresetId, type ThemePreset } from "@/lib/theme-presets";
+import { type SeasonalTheme, normalizeSeasonalThemes, findActiveSeason } from "@/lib/seasonal-themes";
+import { cn } from "@/lib/utils";
 
 type Settings = {
   siteName: string;
@@ -33,7 +36,12 @@ type Settings = {
     watermark: boolean;
   };
   appearanceSettings: AppearanceSettings;
+  customThemes?: CustomTheme[];
+  seasonalEnabled?: boolean;
+  seasonalThemes?: SeasonalTheme[];
 };
+
+type CustomTheme = { id: string; label: string; colors: AppearanceSettings };
 
 type NotificationSettings = {
   pushEnabled: boolean;
@@ -88,6 +96,13 @@ export default function SettingsPage() {
       ...data,
       imageSettings: { ...defaultImageSettings, ...(data.imageSettings ?? {}) },
       appearanceSettings: normalizeAppearanceSettings(data.appearanceSettings),
+      customThemes: Array.isArray(data.customThemes)
+        ? data.customThemes
+            .filter((t) => t && typeof t.id === "string" && typeof t.label === "string")
+            .map((t) => ({ id: t.id, label: t.label, colors: normalizeAppearanceSettings(t.colors) }))
+        : [],
+      seasonalEnabled: data.seasonalEnabled === true,
+      seasonalThemes: normalizeSeasonalThemes(data.seasonalThemes),
     });
   }, [data, form]);
 
@@ -101,6 +116,36 @@ export default function SettingsPage() {
     },
     onError: (err: any) => toast({ title: "تعذر حفظ الإعدادات", description: err?.message, variant: "destructive" }),
   });
+
+  // تطبيق ثيم كامل فوراً مع حفظه في إعدادات النظام (يتحدّث الموقع بالكامل عبر نفس مسار حفظ المظهر الحالي)
+  function persistTheme(appearance: AppearanceSettings, successTitle: string) {
+    if (!form) return;
+    const next: Settings = { ...form, appearanceSettings: normalizeAppearanceSettings(appearance) };
+    setForm(next);
+    save.mutate(next, { onSuccess: () => toast({ title: successTitle }) });
+  }
+
+  const applyThemePreset = (preset: ThemePreset) => persistTheme(preset.colors, `تم تطبيق الثيم: ${preset.label}`);
+  const restoreDefaultTheme = () => persistTheme(DEFAULT_APPEARANCE_SETTINGS, "تمت استعادة الثيم الافتراضي");
+
+  // حفظ الألوان الحالية كثيم مخصّص باسم يختاره المدير (يُخزَّن ضمن الإعدادات بلا أي migration)
+  function saveCurrentAsCustomTheme() {
+    if (!form) return;
+    const name = window.prompt("اسم الثيم المخصّص:", `ثيمي ${(form.customThemes?.length ?? 0) + 1}`)?.trim();
+    if (!name) return;
+    const id = `custom-${Date.now().toString(36)}`;
+    const colors = normalizeAppearanceSettings(form.appearanceSettings);
+    const next: Settings = { ...form, customThemes: [...(form.customThemes ?? []), { id, label: name, colors }] };
+    setForm(next);
+    save.mutate(next, { onSuccess: () => toast({ title: `تم حفظ الثيم المخصّص: ${name}` }) });
+  }
+
+  function deleteCustomTheme(id: string) {
+    if (!form) return;
+    const next: Settings = { ...form, customThemes: (form.customThemes ?? []).filter((t) => t.id !== id) };
+    setForm(next);
+    save.mutate(next, { onSuccess: () => toast({ title: "تم حذف الثيم المخصّص" }) });
+  }
 
   const saveNotificationSettings = useMutation({
     mutationFn: (settings: NotificationSettings) => adminFetch<NotificationSettings>("/admin/notifications/settings", { method: "PATCH", body: JSON.stringify(settings) }),
@@ -133,6 +178,32 @@ export default function SettingsPage() {
   }
 
   if (isLoading || !form) return <div className="space-y-4">{[1,2,3,4].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>;
+
+  const customThemes = form.customThemes ?? [];
+  const customPresets: ThemePreset[] = customThemes.map((t) => ({ id: t.id, name: t.label, label: t.label, colors: t.colors }));
+  const allPresets: ThemePreset[] = [...THEME_PRESETS, ...customPresets];
+  const normalizedCurrent = JSON.stringify(normalizeAppearanceSettings(form.appearanceSettings));
+  const activeThemeId =
+    matchPresetId(form.appearanceSettings) ??
+    customThemes.find((t) => JSON.stringify(normalizeAppearanceSettings(t.colors)) === normalizedCurrent)?.id ??
+    null;
+
+  const presetIdForColors = (colors: AppearanceSettings): string => {
+    const norm = JSON.stringify(normalizeAppearanceSettings(colors));
+    return allPresets.find((p) => JSON.stringify(normalizeAppearanceSettings(p.colors)) === norm)?.id ?? "";
+  };
+
+  const seasonalThemes = form.seasonalThemes ?? [];
+  const activeSeason = form.seasonalEnabled ? findActiveSeason(seasonalThemes) : null;
+  const updateSeasons = (next: SeasonalTheme[]) => setForm((f) => (f ? { ...f, seasonalThemes: next } : f));
+  const addSeason = () =>
+    updateSeasons([
+      ...seasonalThemes,
+      { id: `season-${Date.now().toString(36)}`, label: "موسم جديد", start: "", end: "", enabled: true, colors: normalizeAppearanceSettings(form.appearanceSettings) },
+    ]);
+  const patchSeason = (id: string, patch: Partial<SeasonalTheme>) =>
+    updateSeasons(seasonalThemes.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const removeSeason = (id: string) => updateSeasons(seasonalThemes.filter((s) => s.id !== id));
 
   return (
     <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
@@ -209,6 +280,54 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="مظهر الموقع">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Palette className="w-4 h-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">الثيمات الجاهزة</h3>
+              <span className="text-[11px] text-muted-foreground">(Theme Presets)</span>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              disabled={save.isPending}
+              onClick={restoreDefaultTheme}
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> استعادة الثيم الافتراضي
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            اختر ثيماً جاهزاً ليُطبَّق فوراً على الموقع بالكامل ولوحة الإدارة ويُحفظ تلقائياً. كل بطاقة تعرض ألوان الثيم قبل تطبيقه، ويمكنك بعدها تخصيص أي لون يدوياً بالأسفل.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {THEME_PRESETS.map((preset) => (
+              <ThemePresetCard
+                key={preset.id}
+                preset={preset}
+                active={activeThemeId === preset.id}
+                disabled={save.isPending}
+                onSelect={() => applyThemePreset(preset)}
+              />
+            ))}
+            {customPresets.map((preset) => (
+              <ThemePresetCard
+                key={preset.id}
+                preset={preset}
+                active={activeThemeId === preset.id}
+                disabled={save.isPending}
+                onSelect={() => applyThemePreset(preset)}
+                onDelete={() => deleteCustomTheme(preset.id)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-border/20 pt-4">
+          <p className="text-xs text-muted-foreground mb-3">تخصيص يدوي للألوان</p>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {appearanceFields.map((field) => (
             <ColorField
@@ -239,13 +358,108 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="gap-1.5"
+            disabled={save.isPending}
+            onClick={saveCurrentAsCustomTheme}
+          >
+            <Plus className="w-4 h-4" /> حفظ الألوان كثيم مخصّص
+          </Button>
           <Button
             type="button"
             variant="outline"
             onClick={() => setForm(f => ({ ...f!, appearanceSettings: DEFAULT_APPEARANCE_SETTINGS }))}
           >
             استعادة الألوان الافتراضية
+          </Button>
+        </div>
+
+        <div className="border-t border-border/20 pt-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">الثيمات الموسمية</h3>
+              {activeSeason && (
+                <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[10px] text-primary">نشط الآن: {activeSeason.label}</span>
+              )}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={!!form.seasonalEnabled}
+                onChange={(e) => setForm(f => (f ? { ...f, seasonalEnabled: e.target.checked } : f))}
+                className="accent-primary"
+              />
+              تفعيل تلقائي حسب التاريخ
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            أضف مواسم بفترات تاريخية (رمضان، العيد…) ليتحوّل الموقع لثيمها تلقائياً خلال الفترة ثم يعود للثيم الأساسي. لا تنسَ الضغط على «حفظ التغييرات» بالأعلى.
+          </p>
+
+          {seasonalThemes.length === 0 && (
+            <p className="rounded-lg border border-dashed border-border/40 px-3 py-3 text-center text-xs text-muted-foreground">لا توجد مواسم بعد.</p>
+          )}
+
+          <div className="space-y-2">
+            {seasonalThemes.map((season) => {
+              const isActive = !!form.seasonalEnabled && !!findActiveSeason([season]);
+              const selectedId = presetIdForColors(season.colors);
+              return (
+                <div key={season.id} className={cn("rounded-xl border p-3 space-y-2", isActive ? "border-primary/50" : "border-border/30")}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={season.label}
+                      onChange={(e) => patchSeason(season.id, { label: e.target.value })}
+                      placeholder="اسم الموسم"
+                      className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                    />
+                    {isActive && <span className="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[10px] text-primary">نشط</span>}
+                    <button type="button" onClick={() => removeSeason(season.id)} className="text-red-400 hover:bg-red-500/10 p-2 rounded-lg" aria-label="حذف الموسم">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">من تاريخ</label>
+                      <input type="date" value={season.start} onChange={(e) => patchSeason(season.id, { start: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">إلى تاريخ</label>
+                      <input type="date" value={season.end} onChange={(e) => patchSeason(season.id, { end: e.target.value })} dir="ltr" className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">الثيم</label>
+                      <select
+                        value={selectedId}
+                        onChange={(e) => { const p = allPresets.find((x) => x.id === e.target.value); if (p) patchSeason(season.id, { colors: normalizeAppearanceSettings(p.colors) }); }}
+                        className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                      >
+                        {selectedId === "" && <option value="">مخصّص (الحالي)</option>}
+                        {allPresets.map((p) => (<option key={p.id} value={p.id}>{p.label}</option>))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-xs text-foreground">
+                      <input type="checkbox" checked={season.enabled} onChange={(e) => patchSeason(season.id, { enabled: e.target.checked })} className="accent-primary" /> مفعّل
+                    </label>
+                    <span className="flex items-center gap-1">
+                      {[season.colors.background, season.colors.primaryButton, season.colors.cards, season.colors.links].map((c, i) => (
+                        <span key={i} className="h-4 w-4 rounded-full border border-border/30" style={{ backgroundColor: c }} />
+                      ))}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={addSeason}>
+            <Plus className="w-3.5 h-3.5" /> إضافة موسم
           </Button>
         </div>
       </Section>
@@ -360,6 +574,84 @@ function Field({ label, value, onChange, type = "text", placeholder }: { label: 
       <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50" />
     </div>
+  );
+}
+
+function ThemePresetCard({
+  preset,
+  active,
+  disabled,
+  onSelect,
+  onDelete,
+}: {
+  preset: ThemePreset;
+  active: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+  onDelete?: () => void;
+}) {
+  const c = preset.colors;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={disabled}
+      aria-pressed={active}
+      title={preset.name}
+      className={cn(
+        "group relative rounded-xl border bg-card p-2.5 text-right transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60",
+        active ? "border-primary ring-1 ring-primary/40" : "border-border/30 hover:border-primary/50",
+      )}
+    >
+      {active && (
+        <span className="absolute top-2 left-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          <Check className="h-3 w-3" />
+        </span>
+      )}
+      {onDelete && (
+        <span
+          role="button"
+          tabIndex={0}
+          title="حذف الثيم المخصّص"
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onDelete(); } }}
+          className="absolute top-2 right-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/40 bg-background/80 text-muted-foreground hover:text-red-400"
+        >
+          <X className="h-3 w-3" />
+        </span>
+      )}
+      {/* معاينة ألوان الثيم قبل تطبيقه */}
+      <div className="overflow-hidden rounded-lg border border-border/25" style={{ backgroundColor: c.background }}>
+        <div className="px-2 py-1.5" style={{ backgroundColor: c.header }}>
+          <div className="h-1.5 w-10 rounded-full" style={{ backgroundColor: c.headings }} />
+        </div>
+        <div className="p-2">
+          <div className="rounded-md border p-2" style={{ backgroundColor: c.cards, borderColor: c.secondaryButton }}>
+            <div className="h-1.5 w-full rounded-full" style={{ backgroundColor: c.text, opacity: 0.7 }} />
+            <div className="mt-1 h-1.5 w-2/3 rounded-full" style={{ backgroundColor: c.text, opacity: 0.4 }} />
+            <div className="mt-2 flex items-center gap-1">
+              <span className="h-3 w-8 rounded" style={{ backgroundColor: c.primaryButton }} />
+              <span className="h-3 w-5 rounded" style={{ backgroundColor: c.secondaryButton }} />
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: c.links }} />
+            </div>
+          </div>
+        </div>
+      </div>
+      {/* الاسم + عيّنات الألوان */}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate text-xs font-medium text-foreground">{preset.label}</span>
+          {onDelete && (
+            <span className="shrink-0 rounded-full border border-border/40 px-1.5 py-px text-[9px] text-muted-foreground">مخصّص</span>
+          )}
+        </span>
+        <span className="flex shrink-0 items-center gap-0.5">
+          {[c.background, c.primaryButton, c.cards, c.links].map((color, i) => (
+            <span key={i} className="h-3 w-3 rounded-full border border-border/30" style={{ backgroundColor: color }} />
+          ))}
+        </span>
+      </div>
+    </button>
   );
 }
 

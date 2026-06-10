@@ -6,10 +6,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ShoppingCart, Trash2, Minus, Plus, ArrowLeft } from "lucide-react";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
+import { useT } from "@/lib/i18n";
 
 export default function Cart() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const t = useT();
   const { data: cart, isLoading } = useGetCart();
   const updateItem = useUpdateCartItem();
   const removeItem = useRemoveCartItem();
@@ -33,7 +35,7 @@ export default function Cart() {
 
   if (isLoading) {
     return (
-      <div className="container mx-auto px-4 py-12" dir="rtl">
+      <div className="container mx-auto px-4 py-12">
         <Skeleton className="h-10 w-40 mb-8" />
         {[1, 2].map(i => <Skeleton key={i} className="h-24 rounded-xl mb-4" />)}
       </div>
@@ -43,11 +45,11 @@ export default function Cart() {
   const items = cart?.items ?? [];
 
   return (
-    <div className="container mx-auto px-4 py-10 min-h-screen" dir="rtl">
+    <div className="container mx-auto px-4 py-10 min-h-screen">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold text-foreground flex items-center gap-3">
           <ShoppingCart className="w-7 h-7 text-primary" />
-          سلة المشتريات
+          {t("سلة المشتريات")}
         </h1>
         {items.length > 0 && (
           <button
@@ -55,7 +57,7 @@ export default function Cart() {
             className="text-sm text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
           >
             <Trash2 className="w-4 h-4" />
-            مسح الكل
+            {t("مسح الكل")}
           </button>
         )}
       </div>
@@ -63,8 +65,8 @@ export default function Cart() {
       {items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <ShoppingCart className="w-16 h-16 text-muted-foreground/30 mb-4" />
-          <p className="text-lg text-muted-foreground mb-6">سلتك فارغة</p>
-          <Button onClick={() => navigate("/store")}>تصفح المتجر</Button>
+          <p className="text-lg text-muted-foreground mb-6">{t("سلتك فارغة")}</p>
+          <Button onClick={() => navigate("/store")}>{t("تصفح المتجر")}</Button>
         </div>
       ) : (
         <div className="space-y-8">
@@ -121,35 +123,35 @@ export default function Cart() {
             {/* Order Summary */}
             <div className="lg:col-span-1">
               <div className="bg-card rounded-xl border border-border/30 p-6 sticky top-6">
-                <h2 className="text-lg font-bold text-foreground mb-6">ملخص الطلب</h2>
+                <h2 className="text-lg font-bold text-foreground mb-6">{t("ملخص الطلب")}</h2>
                 <div className="space-y-3 mb-6">
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">المجموع الفرعي</span>
+                    <span className="text-muted-foreground">{t("المجموع الفرعي")}</span>
                     <span className="text-foreground">{Number(cart?.total ?? 0).toLocaleString('ar-IQ')} د.ع</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">التوصيل</span>
-                    <span className="text-muted-foreground">يحدد عند الدفع</span>
+                    <span className="text-muted-foreground">{t("التوصيل")}</span>
+                    <span className="text-muted-foreground">{t("يحدد عند الدفع")}</span>
                   </div>
                   <div className="border-t border-border/30 pt-3 flex justify-between font-bold text-lg">
-                    <span className="text-foreground">الإجمالي</span>
+                    <span className="text-foreground">{t("الإجمالي")}</span>
                     <span className="text-primary">{Number(cart?.total ?? 0).toLocaleString('ar-IQ')} د.ع</span>
                   </div>
                 </div>
                 <Button className="w-full py-5 text-base gap-2" onClick={() => navigate("/checkout")}>
-                  إتمام الطلب
+                  {t("إتمام الطلب")}
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
                 <button
                   onClick={() => navigate("/store")}
                   className="w-full mt-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  متابعة التسوق
+                  {t("متابعة التسوق")}
                 </button>
               </div>
             </div>
           </div>
-          <SmartSuggestions title="قد يناسب سلتك أيضاً" />
+          <SmartSuggestions title={t("قد يناسب سلتك أيضاً")} />
         </div>
       )}
     </div>
