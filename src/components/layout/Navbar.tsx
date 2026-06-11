@@ -37,7 +37,7 @@ export function Navbar() {
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار") : "";
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}>
+    <header className="sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}>
       <div className="hidden border-b border-border/30 bg-card/80 md:block" dir="rtl" style={{ backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}>
         <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-4">

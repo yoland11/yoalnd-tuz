@@ -111,12 +111,14 @@ export default function Track() {
         {/* Mode tabs */}
         <div className="grid grid-cols-2 gap-2 mb-4 bg-card border border-border/30 rounded-xl p-1">
           <button
+            type="button"
             onClick={() => setMode("code")}
             className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-colors ${mode === "code" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
             <Hash className="w-4 h-4" /> {t("رمز التتبع")}
           </button>
           <button
+            type="button"
             onClick={() => setMode("phone")}
             className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm transition-colors ${mode === "phone" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >

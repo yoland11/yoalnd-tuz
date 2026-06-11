@@ -103,7 +103,7 @@ export default function ProductDetail() {
     if (!product) return;
     createReview.mutate(
       { data: { productId: product.id, customerName: reviewerName, rating: reviewRating, comment: reviewComment } },
-      { onSuccess: () => { setReviewerName(""); setReviewComment(""); setReviewRating(5); } }
+      { onSuccess: () => { setReviewerName(""); setReviewComment(""); setReviewRating(5); }, onError: () => {} }
     );
   }
 
@@ -148,14 +148,14 @@ export default function ProductDetail() {
           {/* Images */}
           <div className="space-y-4">
             <div
-              className="relative aspect-square rounded-xl overflow-hidden bg-card cursor-zoom-in border border-border/40"
+              className="relative aspect-[4/3] max-h-72 rounded-xl overflow-hidden bg-card cursor-zoom-in border border-border/40"
               onClick={() => setPreviewOpen(true)}
             >
               <img
                 src={images[selectedImage]}
                 alt={productName}
                 className="w-full h-full transition-transform duration-300 hover:scale-105"
-                style={{ objectFit: String(imageMetadata[selectedImage]?.objectFit ?? "cover") as any }}
+                style={{ objectFit: String(imageMetadata[selectedImage]?.objectFit ?? "contain") as any }}
               />
               <span className="absolute bottom-3 left-3 text-xs text-white/70 bg-black/40 px-2 py-1 rounded">{t("معاينة")}</span>
             </div>
@@ -178,8 +178,8 @@ export default function ProductDetail() {
 
           {/* Details */}
           <div className="space-y-6">
-            <div>
-              <div className="flex items-start justify-between gap-3">
+            <div className="text-center">
+              <div className="flex items-start justify-center gap-3">
                 <h1 className="text-3xl font-bold text-foreground mb-2">{productName}</h1>
                 <button
                   type="button"
@@ -199,7 +199,7 @@ export default function ProductDetail() {
 
             {/* Rating */}
             {product.rating && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-center gap-2">
                 <div className="flex">
                   {[1,2,3,4,5].map(s => (
                     <Star key={s} className={`w-4 h-4 ${s <= Math.round(product.rating!) ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
@@ -210,7 +210,7 @@ export default function ProductDetail() {
             )}
 
             {/* Price */}
-            <div className="flex items-baseline gap-3">
+            <div className="flex items-baseline justify-center gap-3">
               <span className="text-4xl font-bold text-primary">{Number(product.price).toLocaleString('ar-IQ')} د.ع</span>
               {product.originalPrice && (
                 <span className="text-lg text-muted-foreground line-through">{Number(product.originalPrice).toLocaleString('ar-IQ')}</span>
@@ -218,7 +218,7 @@ export default function ProductDetail() {
             </div>
 
             {/* Stock */}
-            <div>
+            <div className="text-center">
               {product.stock > 0 ? (
                 <span className="text-status-success text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>
               ) : (
@@ -228,12 +228,12 @@ export default function ProductDetail() {
 
             {/* Description */}
             {productDescription && (
-              <p className="text-muted-foreground leading-relaxed">{productDescription}</p>
+              <p className="text-muted-foreground leading-relaxed text-center">{productDescription}</p>
             )}
 
             {/* Color Picker */}
             {colors.length > 0 && (
-              <div>
+              <div className="text-center">
                 <p className="text-sm font-medium mb-3 text-foreground">
                   {t("اللون")}: <span className="text-primary">{selectedColor?.name ?? t("اختر لوناً")}</span>
                 </p>
@@ -264,7 +264,7 @@ export default function ProductDetail() {
             )}
 
             {/* Quantity */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center justify-center gap-4">
               <span className="text-sm font-medium text-foreground">{t("الكمية")}:</span>
               <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
                 <button
@@ -288,14 +288,16 @@ export default function ProductDetail() {
             </div>
 
             {/* Add to Cart Button */}
-            <Button
-              className="w-full py-6 text-lg gap-2"
-              disabled={product.stock === 0 || addToCart.isPending || (colors.length > 0 && !selectedColor)}
-              onClick={handleAddToCart}
-            >
-              <ShoppingCart className="w-5 h-5" />
-              {addedToCart ? t("تمت الإضافة!") : addToCart.isPending ? t("جاري الإضافة...") : colors.length > 0 && !selectedColor ? t("اختر اللون أولاً") : t("أضف إلى السلة")}
-            </Button>
+            <div className="flex justify-center">
+              <Button
+                className="w-1/2 py-6 text-lg gap-2"
+                disabled={product.stock === 0 || addToCart.isPending || (colors.length > 0 && !selectedColor)}
+                onClick={handleAddToCart}
+              >
+                <ShoppingCart className="w-5 h-5" />
+                {addedToCart ? t("تمت الإضافة!") : addToCart.isPending ? t("جاري الإضافة...") : colors.length > 0 && !selectedColor ? t("اختر اللون أولاً") : t("أضف إلى السلة")}
+              </Button>
+            </div>
           </div>
         </div>
 

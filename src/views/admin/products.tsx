@@ -190,7 +190,7 @@ export default function ProductsPage() {
                         <td className="p-3">
                           {dirty && (
                             <button onClick={async () => {
-                              await update.mutateAsync({ id: p.id, data: { name: p.name, nameAr: p.nameAr, price: Number(p.price), stock: parseInt(draft) || 0 } });
+                              await update.mutateAsync({ id: p.id, data: { name: p.name, nameAr: p.nameAr, price: Number(p.price), stock: Math.max(0, parseInt(draft || "0") || 0) } });
                               setStockDrafts(d => { const c = { ...d }; delete c[p.id]; return c; });
                               invalidate();
                             }} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">

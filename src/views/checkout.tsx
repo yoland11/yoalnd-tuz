@@ -244,7 +244,7 @@ export default function Checkout() {
                 ))}
               </select>
             </div>
-            {selectedZone?.areas && selectedZone.areas.length > 0 && (
+            {selectedZone?.areas && selectedZone?.areas.length > 0 && (
               <div>
                 <label className="block text-sm text-muted-foreground mb-1.5">{t("المنطقة / الحي")}</label>
                 <select
@@ -254,7 +254,7 @@ export default function Checkout() {
                   className="w-full bg-background border border-border/40 rounded-lg px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 >
                   <option value="">{t("اختر المنطقة")}</option>
-                  {selectedZone.areas.map(a => (
+                  {selectedZone?.areas.map(a => (
                     <option key={a} value={a}>{a}</option>
                   ))}
                 </select>
@@ -352,7 +352,7 @@ export default function Checkout() {
               {cart?.items?.map(item => (
                 <div key={item.id} className="flex justify-between gap-3 text-sm">
                   <span className="min-w-0 text-muted-foreground">
-                    <span className="block truncate">{item.product?.nameAr} × {item.quantity}</span>
+                    <span className="block truncate">{item.product?.nameAr ?? "—"} × {item.quantity}</span>
                     <SelectedColorLabel color={(item as any).selectedColorData} fallback={item.selectedColor} className="mt-1 flex text-[11px] text-muted-foreground" />
                   </span>
                   <span className="text-foreground">{(Number(item.price) * item.quantity).toLocaleString('ar-IQ')}</span>

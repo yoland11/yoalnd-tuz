@@ -355,8 +355,8 @@ export default function OrdersPage() {
             {filteredProducts.map(order => {
               const stages = getStagesFor(order.serviceType, "product");
               const phone = order.customerPhone ?? "";
-              const trackUrl = `${window.location.origin}/track?code=${order.trackingCode}`;
-              const waMsg = `مرحبا ${order.customerName}، رمز تتبع طلبك: ${order.trackingCode}\n${trackUrl}`;
+              const trackUrl = `${window.location.origin}/track?code=${order.trackingCode ?? ""}`;
+              const waMsg = `مرحبا ${order.customerName}، رمز تتبع طلبك: ${order.trackingCode ?? ""}\n${trackUrl}`;
               const canArchive = ["delivered", "completed", "cancelled"].includes(order.status);
               return (
                 <div key={order.id} className="bg-card rounded-xl border border-border/30 p-4">
@@ -447,8 +447,8 @@ export default function OrdersPage() {
           <div className="space-y-3">
             {filteredServices.map(o => {
               const stages = getStagesFor(o.serviceType, "service");
-              const trackUrl = `${window.location.origin}/track?code=${o.trackingCode}`;
-              const waMsg = `مرحبا ${o.customerName}، رمز تتبع حجزك: ${o.trackingCode}\n${trackUrl}`;
+              const trackUrl = `${window.location.origin}/track?code=${o.trackingCode ?? ""}`;
+              const waMsg = `مرحبا ${o.customerName}، رمز تتبع حجزك: ${o.trackingCode ?? ""}\n${trackUrl}`;
               const isReschedulePending = o.status === "reschedule_pending";
               const detailRows = serviceDetailsToRows(o.serviceType, o.customFields);
               const canArchive = ["delivered", "completed", "cancelled"].includes(o.status);
