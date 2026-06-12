@@ -20,6 +20,7 @@ const PAYMENT_STATUS_AR: Record<string, string> = {
   partial: "جزئي",
   paid: "مدفوع",
 };
+const INVOICE_CONTACT_PHONE = "07725762520";
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
@@ -332,7 +333,7 @@ export default function Invoice() {
         {/* Footer */}
         <div className="border-t-2 border-amber-500 pt-4 mt-8 text-center text-xs text-neutral-600">
           <p>شكراً لاختياركم مجموعة علي جان</p>
-          <p className="mt-1">للاستفسار: 07701234567</p>
+          <p className="mt-1">للاستفسار: {INVOICE_CONTACT_PHONE}</p>
         </div>
       </div>
 

@@ -251,12 +251,12 @@ export function AdminLayout({
 
   return (
     <div className="min-h-screen bg-background flex overflow-x-hidden" dir="rtl">
-      <aside className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`} style={{ backgroundColor: "hsl(var(--sidebar))" }}>
-        <div className="px-3 mb-6">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 object-contain mb-3" />
+      <aside className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 shrink-0 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`} style={{ backgroundColor: "hsl(var(--sidebar))" }}>
+        <div className="px-3 mb-6 min-w-0">
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 shrink-0 object-contain mb-3" />
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
-          <h2 className="text-lg font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
-          <p className="text-[11px] text-primary mt-2">
+          <h2 className="truncate text-lg font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
+          <p className="truncate text-[11px] text-primary mt-2">
             {me.fullName || me.username}
             {me.role === "admin" && <span className="text-muted-foreground"> · مدير رئيسي</span>}
           </p>
@@ -285,23 +285,23 @@ export function AdminLayout({
         <AdminNotificationsBell />
       </div>
       <div className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur" dir="rtl" style={{ backgroundColor: "hsl(var(--sidebar) / 0.95)" }}>
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3 overflow-hidden px-4 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <button
               type="button"
               onClick={() => setMobileSidebarOpen(true)}
-              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
+              className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
               aria-label="فتح القائمة"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-9 object-contain" />
-            <div>
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-9 shrink-0 object-contain" />
+            <div className="min-w-0 flex-1">
               <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
-              <p className="text-sm font-semibold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</p>
+              <p className="truncate text-sm font-semibold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <AdminNotificationsBell />
             <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-destructive">
               <LogOut className="w-4 h-4" />
@@ -318,16 +318,16 @@ export function AdminLayout({
             onClick={() => setMobileSidebarOpen(false)}
           />
           <aside className="absolute right-0 top-0 h-full w-72 max-w-[86vw] bg-card border-l border-border/30 shadow-2xl flex flex-col py-5 px-3" style={{ backgroundColor: "hsl(var(--sidebar))" }}>
-            <div className="px-3 mb-4 flex items-start justify-between gap-3">
-              <div>
-                <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={44} decoding="async" className="h-11 w-24 object-contain mb-2" />
+            <div className="px-3 mb-4 flex min-w-0 items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={44} decoding="async" className="h-11 w-24 shrink-0 object-contain mb-2" />
                 <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
-                <h2 className="text-base font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
+                <h2 className="truncate text-base font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setMobileSidebarOpen(false)}
-                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
+                className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
                 aria-label="إغلاق القائمة"
               >
                 <X className="w-4 h-4" />
@@ -347,7 +347,7 @@ export function AdminLayout({
           </aside>
         </div>
       )}
-      <main className={`flex-1 p-4 pt-20 md:pt-6 md:p-6 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}>{children}</main>
+      <main className={`flex-1 min-w-0 p-4 pt-20 md:pt-6 md:p-6 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}>{children}</main>
     </div>
   );
 }

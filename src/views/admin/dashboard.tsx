@@ -70,7 +70,9 @@ export default function DashboardPage() {
   if (isLoading || !data) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-bold text-foreground">لوحة التحكم</h1>
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-bold text-foreground">لوحة التحكم</h1>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[...Array(8)].map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
@@ -129,9 +131,11 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-foreground">لوحة التحكم</h1>
-        <p className="text-sm text-muted-foreground">إيرادات اليوم: <span className="text-primary font-semibold">{formatCurrency(data.todayRevenue)}</span></p>
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-bold text-foreground">لوحة التحكم</h1>
+        </div>
+        <p className="shrink-0 text-sm text-muted-foreground">إيرادات اليوم: <span className="text-primary font-semibold">{formatCurrency(data.todayRevenue)}</span></p>
       </div>
 
       <div className="bg-card rounded-xl border border-border/30 p-4">
