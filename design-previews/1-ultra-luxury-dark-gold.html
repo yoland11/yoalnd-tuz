@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>#1 Ultra Luxury Dark Gold — AJN</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;800&family=Reem+Kufi:wght@500;700&display=swap');
+  :root{
+    --bg:#0B0B0D; --surface:#131316; --card:#16161A; --gold:#E5C158; --gold2:#C9A84C;
+    --ink:#F4F1EA; --mut:#9A968C; --line:rgba(229,193,88,.16);
+    --shadow:0 24px 60px -28px rgba(0,0,0,.85); --glow:0 0 0 1px var(--gold), 0 18px 50px -22px rgba(229,193,88,.25);
+    --r:16px; --ease:cubic-bezier(.2,.8,.2,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Cairo',sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+  a{color:inherit;text-decoration:none}
+  .reem{font-family:'Reem Kufi',sans-serif}
+  /* navbar */
+  nav{position:sticky;top:0;z-index:50;background:rgba(11,11,13,.72);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:68px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px}
+  .brand .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--gold),var(--gold2));}
+  .links{display:flex;gap:26px;font-size:14px;color:var(--mut)}
+  .links a.on,.links a:hover{color:var(--gold)}
+  .nav-ic{display:flex;gap:18px;color:var(--mut);font-size:18px}
+  /* hero */
+  .hero{position:relative;min-height:460px;display:flex;align-items:center;border-bottom:1px solid var(--line);overflow:hidden}
+  .hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.42}
+  .hero::after{content:"";position:absolute;inset:0;background:radial-gradient(120% 100% at 80% 0%,transparent,rgba(11,11,13,.6) 55%,var(--bg))}
+  .hero-in{position:relative;z-index:2;padding:64px 0}
+  .eyebrow{color:var(--gold);font-weight:600;letter-spacing:.14em;font-size:13px}
+  h1.h{font-size:clamp(40px,6vw,76px);font-weight:800;letter-spacing:-.03em;line-height:1.02;margin:14px 0}
+  .lead{color:var(--mut);max-width:520px;font-size:17px}
+  .cta{display:flex;gap:14px;margin-top:30px;flex-wrap:wrap}
+  .btn{font-family:inherit;font-size:15px;font-weight:600;padding:14px 30px;border-radius:12px;border:0;cursor:pointer;transition:transform .22s var(--ease),box-shadow .22s var(--ease),background .22s}
+  .btn-primary{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#0B0B0D}
+  .btn-primary:hover{transform:translateY(-3px);box-shadow:0 20px 44px -18px rgba(229,193,88,.55)}
+  .btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+  .btn-sm{padding:11px 22px;font-size:14px}
+  /* sections */
+  section.blk{padding:70px 0;border-bottom:1px solid var(--line)}
+  .head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:34px}
+  .head h2{font-size:30px;font-weight:800;letter-spacing:-.02em}
+  .head .more{color:var(--gold);font-size:14px}
+  .rule{width:54px;height:3px;background:var(--gold);border-radius:3px;margin-top:12px}
+  /* product grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:22px}
+  .pcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:transform .28s var(--ease),box-shadow .28s var(--ease)}
+  .pcard:hover{transform:translateY(-6px);box-shadow:var(--glow)}
+  .pcard .pimg{position:relative;aspect-ratio:4/3;overflow:hidden}
+  .pcard .pimg img{width:100%;height:100%;object-fit:cover;transition:transform .5s var(--ease)}
+  .pcard:hover .pimg img{transform:scale(1.07)}
+  .badge{position:absolute;top:12px;inset-inline-start:12px;background:var(--gold);color:#0B0B0D;font-size:11px;font-weight:700;padding:5px 11px;border-radius:8px}
+  .pbody{padding:16px 16px 18px}
+  .pbody h3{font-size:15px;font-weight:600}
+  .pmeta{display:flex;align-items:center;justify-content:space-between;margin-top:12px}
+  .price{color:var(--gold);font-weight:800;font-size:16px}
+  .iconbtn{width:38px;height:38px;border-radius:11px;border:1px solid var(--line);display:grid;place-items:center;color:var(--mut);transition:.2s}
+  .iconbtn:hover{background:var(--gold);color:#0B0B0D;border-color:var(--gold)}
+  /* product detail */
+  .detail{display:grid;grid-template-columns:1.1fr 1fr;gap:40px;align-items:center}
+  .detail .dimg{border-radius:20px;overflow:hidden;aspect-ratio:1/1;border:1px solid var(--line)}
+  .detail .dimg img{width:100%;height:100%;object-fit:cover}
+  .stars{color:var(--gold);font-size:15px;letter-spacing:3px}
+  .swatches{display:flex;gap:10px;margin:18px 0}
+  .swatches span{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);cursor:pointer}
+  .swatches span:hover{border-color:var(--gold)}
+  /* mobile frame */
+  .phone{width:300px;margin:0 auto;border:10px solid #1d1d22;border-radius:42px;overflow:hidden;background:var(--bg);box-shadow:var(--shadow)}
+  .phone .pnav{display:flex;justify-content:space-between;align-items:center;padding:16px 16px 12px;border-bottom:1px solid var(--line)}
+  .phone .phero{position:relative;height:170px}
+  .phone .phero img{width:100%;height:100%;object-fit:cover;opacity:.55}
+  .phone .phero .pcap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;padding:16px;background:linear-gradient(transparent,rgba(11,11,13,.85))}
+  .pgrid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
+  .label{text-align:center;color:var(--mut);font-size:13px;margin-bottom:26px}
+  .btnrow{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  @media(max-width:760px){.detail{grid-template-columns:1fr}.links{display:none}}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap nav-in">
+  <div class="brand"><span class="mark"></span><span class="reem">مجموعة علي جان</span></div>
+  <div class="links"><a class="on">الرئيسية</a><a>الخدمات</a><a>المتجر</a><a>أعمالنا</a><a>تتبّع الطلب</a></div>
+  <div class="nav-ic"><span>⌕</span><span>♡</span><span>🛍</span></div>
+</div></nav>
+
+<header class="hero">
+  <img src="https://picsum.photos/seed/ajn-lux-hero/1600/900" alt="مناسبة فاخرة" />
+  <div class="wrap hero-in">
+    <p class="eyebrow">مجموعة علي جان</p>
+    <h1 class="h">نصنع مناسبات<br>لا تُنسى</h1>
+    <p class="lead">فخامة عصرية لتجهيز أهم لحظات حياتكم — كوشات، تصوير، هدايا وتنسيق راقٍ.</p>
+    <div class="cta">
+      <button class="btn btn-primary">تسوّق الآن</button>
+      <button class="btn btn-ghost">اكتشف الخدمات</button>
+    </div>
+  </div>
+</header>
+
+<section class="blk"><div class="wrap">
+  <div class="head"><div><h2>وصل حديثاً</h2><div class="rule"></div></div><a class="more">عرض الكل ←</a></div>
+  <div class="grid">
+    <article class="pcard"><div class="pimg"><span class="badge">جديد</span><img src="https://picsum.photos/seed/ajn-kosha/600/450" alt="كوشة عروس"></div><div class="pbody"><h3>كوشة عروس فاخرة</h3><div class="pmeta"><span class="price">٢٥٠٬٠٠٠ د.ع</span><span class="iconbtn">🛍</span></div></div></article>
+    <article class="pcard"><div class="pimg"><img src="https://picsum.photos/seed/ajn-flow/600/450" alt="تنسيق ورد"></div><div class="pbody"><h3>تنسيق ورد طبيعي</h3><div class="pmeta"><span class="price">٩٠٬٠٠٠ د.ع</span><span class="iconbtn">🛍</span></div></div></article>
+    <article class="pcard"><div class="pimg"><span class="badge">تخفيض</span><img src="https://picsum.photos/seed/ajn-gift/600/450" alt="صندوق هدايا"></div><div class="pbody"><h3>صندوق هدايا مذهّب</h3><div class="pmeta"><span class="price">٤٠٬٠٠٠ د.ع</span><span class="iconbtn">🛍</span></div></div></article>
+    <article class="pcard"><div class="pimg"><img src="https://picsum.photos/seed/ajn-photo/600/450" alt="تصوير"></div><div class="pbody"><h3>جلسة تصوير</h3><div class="pmeta"><span class="price">١٢٠٬٠٠٠ د.ع</span><span class="iconbtn">🛍</span></div></div></article>
+  </div>
+</div></section>
+
+<section class="blk"><div class="wrap">
+  <div class="head"><div><h2>تفاصيل المنتج</h2><div class="rule"></div></div></div>
+  <div class="detail">
+    <div class="dimg"><img src="https://picsum.photos/seed/ajn-detail/800/800" alt="كوشة عروس فاخرة"></div>
+    <div>
+      <div class="stars">★★★★★ <span style="color:var(--mut);font-size:13px;letter-spacing:0">(٤٨ تقييم)</span></div>
+      <h2 style="font-size:32px;font-weight:800;letter-spacing:-.02em;margin:10px 0">كوشة عروس فاخرة</h2>
+      <p class="lead" style="font-size:15px">تصميم ذهبي حصري بإضاءة دافئة وتفاصيل يدوية، يُجهَّز ويُركَّب بالكامل في موقع المناسبة.</p>
+      <div style="font-size:30px;font-weight:800;color:var(--gold);margin:18px 0">٢٥٠٬٠٠٠ د.ع</div>
+      <div class="swatches"><span style="background:#E5C158"></span><span style="background:#F4F1EA"></span><span style="background:#8E1B2E"></span><span style="background:#1B3A5B"></span></div>
+      <div class="btnrow"><button class="btn btn-primary">أضف إلى السلة</button><button class="btn btn-ghost btn-sm">♡ المفضّلة</button></div>
+    </div>
+  </div>
+</div></section>
+
+<section class="blk"><div class="wrap">
+  <div class="head"><div><h2>الأزرار والحالات</h2><div class="rule"></div></div></div>
+  <div class="btnrow">
+    <button class="btn btn-primary">زر أساسي</button>
+    <button class="btn btn-ghost">زر ثانوي</button>
+    <button class="btn btn-primary btn-sm">صغير</button>
+    <a class="more" style="font-size:15px">رابط ←</a>
+    <button class="btn btn-ghost" disabled style="opacity:.4;cursor:not-allowed">معطّل</button>
+  </div>
+</div></section>
+
+<section class="blk" style="border-bottom:0"><div class="wrap">
+  <div class="head"><div><h2>نسخة الموبايل</h2><div class="rule"></div></div></div>
+  <p class="label">شريط سفلي ثابت، لمسات كبيرة، صور ممتدة.</p>
+  <div class="phone">
+    <div class="pnav"><span class="reem" style="font-weight:700">علي جان</span><span style="color:var(--mut)">☰</span></div>
+    <div class="phero"><img src="https://picsum.photos/seed/ajn-mhero/600/400" alt=""><div class="pcap"><p class="eyebrow" style="font-size:11px">للمناسبات</p><div style="font-size:22px;font-weight:800">مناسبات لا تُنسى</div></div></div>
+    <div style="padding:14px 14px 0"><button class="btn btn-primary" style="width:100%">تسوّق الآن</button></div>
+    <div class="pgrid2">
+      <article class="pcard"><div class="pimg"><img src="https://picsum.photos/seed/ajn-m1/300/220" alt=""></div><div class="pbody" style="padding:10px"><h3 style="font-size:13px">كوشة</h3><span class="price" style="font-size:13px">٢٥٠٬٠٠٠</span></div></article>
+      <article class="pcard"><div class="pimg"><img src="https://picsum.photos/seed/ajn-m2/300/220" alt=""></div><div class="pbody" style="padding:10px"><h3 style="font-size:13px">هدايا</h3><span class="price" style="font-size:13px">٤٠٬٠٠٠</span></div></article>
+    </div>
+  </div>
+</div></section>
+
+</body>
+</html>

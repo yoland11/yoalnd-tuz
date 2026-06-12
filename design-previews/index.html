@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AJN — معاينات التصميم (5 أنماط)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;800&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Cairo',sans-serif;background:#0C0C0E;color:#EDEAE2;padding:48px 20px 80px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:30px;font-weight:800;letter-spacing:-.02em}
+  .sub{color:#9A968C;margin:10px 0 36px;line-height:1.7;max-width:640px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+  a.card{display:block;text-decoration:none;background:#141417;border:1px solid #25252A;border-radius:18px;padding:24px;color:inherit;transition:transform .25s cubic-bezier(.2,.8,.2,1),border-color .25s}
+  a.card:hover{transform:translateY(-4px);border-color:#E5C158}
+  .n{font-size:13px;color:#E5C158;font-weight:600}
+  .t{font-size:20px;font-weight:800;margin:8px 0 6px}
+  .d{font-size:13px;color:#9A968C;line-height:1.7}
+  .sw{display:flex;gap:6px;margin-top:16px}
+  .sw span{width:22px;height:22px;border-radius:6px;border:1px solid rgba(255,255,255,.1)}
+  .note{margin-top:34px;font-size:12px;color:#6E6B63;border-top:1px solid #25252A;padding-top:18px;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>معاينات تصميم AJN — 5 أنماط عصرية</h1>
+  <p class="sub">معاينات بصرية مستقلة فقط (لا تُطبَّق على الموقع الفعلي). افتح كل نمط لمشاهدة: الهيدر، الرئيسية، المتجر، بطاقة المنتج، الأزرار، ونسخة الموبايل. بعد اختيارك اكتب «Apply Style #X».</p>
+  <div class="grid">
+    <a class="card" href="1-ultra-luxury-dark-gold.html">
+      <span class="n">#1</span><div class="t">Ultra Luxury Dark Gold</div>
+      <p class="d">داكن عصري فاخر، ذهب لامع، صور كبيرة، بطاقات راقية وحركة ناعمة.</p>
+      <div class="sw"><span style="background:#0B0B0D"></span><span style="background:#E5C158"></span><span style="background:#131316"></span><span style="background:#F2F0EA"></span></div>
+    </a>
+    <a class="card" href="2-modern-apple-clean.html">
+      <span class="n">#2</span><div class="t">Modern Apple Clean</div>
+      <p class="d">أبيض نظيف، عناوين ضخمة، أزرار حبّة، مساحات واسعة وهدوء.</p>
+      <div class="sw"><span style="background:#FFFFFF"></span><span style="background:#F5F5F7"></span><span style="background:#1D1D1F"></span><span style="background:#B98A2E"></span></div>
+    </a>
+    <a class="card" href="3-sport-luxury.html">
+      <span class="n">#3</span><div class="t">Sport Luxury (Nike/Adidas)</div>
+      <p class="d">جريء عالي التباين، عناوين ضخمة، طاقة رياضية بلمسة ذهب فاخرة.</p>
+      <div class="sw"><span style="background:#0A0A0A"></span><span style="background:#FFFFFF"></span><span style="background:#E5C158"></span><span style="background:#1A1A1A"></span></div>
+    </a>
+    <a class="card" href="4-glass-premium-editorial.html">
+      <span class="n">#4</span><div class="t">Glass Premium Editorial</div>
+      <p class="d">زجاج ضبابي راقٍ، طبقات شفافة، تحرير أنيق وإضاءة ذهبية.</p>
+      <div class="sw"><span style="background:#14121A"></span><span style="background:#E5C158"></span><span style="background:#2A2640"></span><span style="background:#EDEafc"></span></div>
+    </a>
+    <a class="card" href="5-minimal-boutique.html">
+      <span class="n">#5</span><div class="t">Minimal High-End Boutique</div>
+      <p class="d">مينمال راقٍ جدًا، فراغ واسع، خطوط رفيعة، لمسة ذهب صغيرة.</p>
+      <div class="sw"><span style="background:#FAF9F6"></span><span style="background:#111"></span><span style="background:#C9A84C"></span><span style="background:#EFECE4"></span></div>
+    </a>
+  </div>
+  <p class="note">ملفات معاينة قائمة بذاتها داخل <code>design-previews/</code> — لا يستوردها تطبيق Next ولا تدخل في البناء، ولا تغيّر CSS/Routes/API/قاعدة البيانات. الإنتاج كما هو تمامًا.</p>
+</div>
+</body>
+</html>
