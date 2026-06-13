@@ -36,6 +36,15 @@ type DashboardData = {
     ordersNeedingFollowup: number;
     recentCustomerActivity: { id: number; action: string; entityLabel: string; phone: string; createdAt: string }[];
   };
+  dailyCash?: {
+    reportDate: string;
+    totalSales: number;
+    totalExpenses: number;
+    expectedCashBalance: number;
+    actualCashInDrawer: number | null;
+    difference: number | null;
+    status: "balanced" | "surplus" | "shortage" | "not_reconciled";
+  } | null;
   alerts: { key: string; label: string; count: number }[];
 };
 
@@ -91,6 +100,9 @@ export default function DashboardPage() {
     { label: "الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
     { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success" },
     { label: "المتبقي", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning" },
+    { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary" },
+    { label: "رصيد الصندوق المتوقع", value: formatCurrency(data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
+    { label: "فرق الجرد", value: data.dailyCash?.difference == null ? "غير مجرود" : formatCurrency(data.dailyCash.difference), icon: CreditCard, color: data.dailyCash?.status === "shortage" ? "text-status-danger" : "text-primary" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({

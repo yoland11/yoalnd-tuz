@@ -33,6 +33,8 @@ const NAV: NavItem[] = [
   { href: "/admin/sales",          label: "فواتير المبيعات",   icon: Receipt,         perm: "invoices" },
   { href: "/admin/purchases",      label: "فواتير الشراء",      icon: ShoppingCart,    perm: "accounting" },
   { href: "/admin/reports",        label: "التقارير",           icon: BarChart3,       perm: "accounting" },
+  { href: "/admin/daily-cash-reports", label: "تقرير الصندوق اليومي", icon: Receipt,   perm: "accounting" },
+  { href: "/admin/daily-cash-reconciliation", label: "جرد الصندوق اليومي", icon: Wallet, perm: "accounting" },
   { href: "/admin/coupons",        label: "الكوبونات",          icon: Percent,         perm: "accounting" },
   { href: "/admin/gallery",        label: "الصور والملفات",     icon: ImageIcon,       perm: "gallery" },
   { href: "/admin/delivery",       label: "التوصيل",            icon: Truck,           perm: "delivery" },
@@ -124,6 +126,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: BarChart3,
     items: [
       navItem("/admin/reports"),
+      navItem("/admin/daily-cash-reports"),
+      navItem("/admin/daily-cash-reconciliation"),
       navItem("/admin/accounting"),
     ],
   },

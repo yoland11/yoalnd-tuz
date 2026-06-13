@@ -61,9 +61,20 @@ import {
   printTemplatesTable,
   qrTokensTable,
   db,
+  dailyCashReconciliationsTable,
+  dailyCashReportsTable,
   taskCommentsTable,
   tasksTable,
 } from "@workspace/db";
+import {
+  dailyCashListQuerySchema,
+  getDailyCashDashboardSummary,
+  listDailyCashRows,
+  upsertDailyCashReconciliation,
+  upsertDailyCashReconciliationSchema,
+  upsertDailyCashReport,
+  upsertDailyCashReportSchema,
+} from "@/server/daily-cash";
 import {
   primaryLocationFromDetails,
   withDerivedServiceDetails,
@@ -4801,6 +4812,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  const dailyCash = await handleDailyCash(req, parts, section);
+  if (dailyCash) return dailyCash;
+
   if (section === "activity-log" && method === "GET") {
     const auth = await requirePermission(req, "staff");
     if (isResponse(auth)) return auth;
@@ -5640,6 +5654,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       { key: "messages", label: "رسائل زبائن جديدة", count: newMessageCount[0]?.c ?? 0 },
       { key: "tasks", label: "مهام اليوم", count: todayTaskCount[0]?.c ?? 0 },
     ].filter((item) => item.count > 0);
+    let dailyCashSummary = null as Awaited<ReturnType<typeof getDailyCashDashboardSummary>> | null;
+    try {
+      dailyCashSummary = await getDailyCashDashboardSummary();
+    } catch (err: any) {
+      console.warn("daily cash dashboard summary failed", { message: err?.message });
+    }
     return json({
       totalOrders: totalOrders[0].c,
       activeOrders: activeOrders[0].c,
@@ -5691,6 +5711,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           createdAt: row.createdAt.toISOString(),
         })),
       },
+      dailyCash: dailyCashSummary,
       alerts,
     });
   }
@@ -8462,6 +8483,52 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
   return null;
 }
 
+async function handleDailyCash(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "daily-cash") return null;
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+
+  const method = req.method;
+  const resource = parts[2] ?? "reports";
+
+  if (method === "GET" && resource === "summary") {
+    return json(await getDailyCashDashboardSummary());
+  }
+
+  if (method === "GET" && (resource === "reports" || resource === "reconciliation")) {
+    const parsed = dailyCashListQuerySchema.safeParse(query(req));
+    if (!parsed.success) return validationError("admin.daily-cash.list", parsed);
+    return json(await listDailyCashRows(parsed.data));
+  }
+
+  if ((method === "POST" || method === "PATCH" || method === "PUT") && resource === "reports") {
+    const payload = await body(req);
+    const parsed = upsertDailyCashReportSchema.safeParse(payload);
+    if (!parsed.success) return validationError("admin.daily-cash.report", parsed);
+    const row = await upsertDailyCashReport(parsed.data, actor(auth));
+    void logAdminActivity(req, "daily_cash_report_saved", "daily_cash_report", undefined, {
+      reportDate: row.reportDate,
+      closingBalance: row.closingBalance,
+    });
+    return json(row);
+  }
+
+  if ((method === "POST" || method === "PATCH" || method === "PUT") && resource === "reconciliation") {
+    const payload = await body(req);
+    const parsed = upsertDailyCashReconciliationSchema.safeParse(payload);
+    if (!parsed.success) return validationError("admin.daily-cash.reconciliation", parsed);
+    const row = await upsertDailyCashReconciliation(parsed.data, actor(auth));
+    void logAdminActivity(req, "daily_cash_reconciliation_saved", "daily_cash_reconciliation", undefined, {
+      reportDate: row.reportDate,
+      status: row.status,
+      difference: row.difference,
+    });
+    return json(row);
+  }
+
+  return error("مسار الصندوق اليومي غير مدعوم", 404);
+}
+
 async function handlePrintTemplates(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "print-templates") return null;
   const auth = await requirePermission(req, "accounting");
@@ -8908,6 +8975,8 @@ const BACKUP_ENTITIES = {
   receipt_vouchers: receiptVouchersTable,
   payment_vouchers: paymentVouchersTable,
   expenses: expensesTable,
+  daily_cash_reports: dailyCashReportsTable,
+  daily_cash_reconciliations: dailyCashReconciliationsTable,
   customer_reward_history: customerRewardHistoryTable,
 } as const;
 type BackupEntity = keyof typeof BACKUP_ENTITIES;
@@ -8991,6 +9060,8 @@ async function handleBackup(req: NextRequest, parts: string[], section: string |
       "receipt_vouchers",
       "payment_vouchers",
       "expenses",
+      "daily_cash_reports",
+      "daily_cash_reconciliations",
     ];
     for (const name of order) {
       const rows = Array.isArray(data[name]) ? data[name] : [];

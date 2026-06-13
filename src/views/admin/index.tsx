@@ -23,6 +23,8 @@ const POSPage   = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
 const ReportsPage = lazy(() => import("./reports"));
+const DailyCashReportsPage = lazy(() => import("./daily-cash").then((module) => ({ default: module.DailyCashReportsPage })));
+const DailyCashReconciliationPage = lazy(() => import("./daily-cash").then((module) => ({ default: module.DailyCashReconciliationPage })));
 const CouponsPage = lazy(() => import("./coupons"));
 const GalleryPage = lazy(() => import("./gallery"));
 const DeliveryPage = lazy(() => import("./delivery"));
@@ -116,6 +118,8 @@ export default function Admin() {
           <Route path="/admin/sales"     >{() => <Guard me={me} perm="invoices"  ><SalesPage      /></Guard>}</Route>
           <Route path="/admin/purchases" >{() => <Guard me={me} perm="accounting"><PurchasesPage  /></Guard>}</Route>
           <Route path="/admin/reports"   >{() => <Guard me={me} perm="accounting"><ReportsPage    /></Guard>}</Route>
+          <Route path="/admin/daily-cash-reports">{() => <Guard me={me} perm="accounting"><DailyCashReportsPage /></Guard>}</Route>
+          <Route path="/admin/daily-cash-reconciliation">{() => <Guard me={me} perm="accounting"><DailyCashReconciliationPage /></Guard>}</Route>
           <Route path="/admin/coupons"   >{() => <Guard me={me} perm="accounting"><CouponsPage    /></Guard>}</Route>
           <Route path="/admin/gallery"   >{() => <Guard me={me} perm="gallery"   ><GalleryPage    /></Guard>}</Route>
           <Route path="/admin/delivery"  >{() => <Guard me={me} perm="delivery" ><DeliveryPage   /></Guard>}</Route>
