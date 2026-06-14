@@ -7,7 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { ProductColorDots } from "@/components/product-colors";
-import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
 
@@ -206,17 +205,6 @@ export default function Home() {
     </div>
   </div>
 </section>
-      {(settings?.map_url || settings?.address) && (
-        <section className="py-16 bg-card border-t border-border">
-          <div className="container mx-auto px-4">
-            <LocationMapCard
-              mapUrl={settings.map_url}
-              address={[settings.address, settings.city].filter(Boolean).join(" / ")}
-              title={t("موقع المحل")}
-            />
-          </div>
-        </section>
-      )}
       {/* About snippet */}
       <section className="py-24 bg-card border-t border-border relative overflow-hidden">
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }} />
