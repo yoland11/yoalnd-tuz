@@ -46,9 +46,12 @@ export const paymentVouchersTable = pgTable("payment_vouchers", {
 export const expensesTable = pgTable("expenses", {
   id: serial("id").primaryKey(),
   date: date("date").notNull().defaultNow(),
+  name: text("name").notNull().default(""),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   categoryId: integer("category_id").references(() => expenseCategoriesTable.id),
   categoryName: text("category_name").notNull().default(""),
+  paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
+  receiptImage: text("receipt_image"),
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),

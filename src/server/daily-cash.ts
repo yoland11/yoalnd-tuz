@@ -9,7 +9,12 @@ import {
 export type DailyCashActor = {
   id: number | null;
   name: string;
+  /** المدير/الأدمن يستطيع تعديل/إعادة فتح الأيام المقفلة */
+  canOverride?: boolean;
 };
+
+export type DailyCashReportStatus = "open" | "closed";
+export type DailyCashApprovalStatus = "none" | "pending" | "approved";
 
 export type DailyCashStatus = "balanced" | "surplus" | "shortage";
 
@@ -39,6 +44,13 @@ export type DailyCashRow = {
   updatedAt: string | null;
   reconciliationUpdatedAt: string | null;
   hasManualOpeningBalance: boolean;
+  reportStatus: DailyCashReportStatus;
+  closedByName: string;
+  closedAt: string | null;
+  approvalStatus: DailyCashApprovalStatus;
+  approvedByName: string;
+  approvalNote: string;
+  approvedAt: string | null;
   breakdown: DailyCashBreakdown;
 };
 
@@ -120,6 +132,22 @@ export async function ensureDailyCashTables() {
         ON "daily_cash_reconciliations" ("created_by");
       CREATE INDEX IF NOT EXISTS "daily_cash_reconciliations_updated_at_idx"
         ON "daily_cash_reconciliations" ("updated_at");
+
+      ALTER TABLE "daily_cash_reports" ADD COLUMN IF NOT EXISTS "status" varchar(20) NOT NULL DEFAULT 'open';
+      ALTER TABLE "daily_cash_reports" ADD COLUMN IF NOT EXISTS "closed_by" integer;
+      ALTER TABLE "daily_cash_reports" ADD COLUMN IF NOT EXISTS "closed_by_name" text NOT NULL DEFAULT '';
+      ALTER TABLE "daily_cash_reports" ADD COLUMN IF NOT EXISTS "closed_at" timestamp;
+      CREATE INDEX IF NOT EXISTS "daily_cash_reports_status_idx" ON "daily_cash_reports" ("status");
+
+      ALTER TABLE "daily_cash_reconciliations" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'none';
+      ALTER TABLE "daily_cash_reconciliations" ADD COLUMN IF NOT EXISTS "approved_by" integer;
+      ALTER TABLE "daily_cash_reconciliations" ADD COLUMN IF NOT EXISTS "approved_by_name" text NOT NULL DEFAULT '';
+      ALTER TABLE "daily_cash_reconciliations" ADD COLUMN IF NOT EXISTS "approval_note" text;
+      ALTER TABLE "daily_cash_reconciliations" ADD COLUMN IF NOT EXISTS "approved_at" timestamp;
+
+      ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "name" text NOT NULL DEFAULT '';
+      ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "payment_method" varchar(20) NOT NULL DEFAULT 'cash';
+      ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "receipt_image" text;
     `).then(() => undefined).catch((err) => {
       dailyCashTablesReady = null;
       throw err;
@@ -312,6 +340,13 @@ function buildCashRow(
     updatedAt: report?.updatedAt ? new Date(report.updatedAt).toISOString() : null,
     reconciliationUpdatedAt: reconciliation?.updatedAt ? new Date(reconciliation.updatedAt).toISOString() : null,
     hasManualOpeningBalance: Boolean(report),
+    reportStatus: (report?.status === "closed" ? "closed" : "open"),
+    closedByName: String(report?.closedByName ?? ""),
+    closedAt: report?.closedAt ? new Date(report.closedAt).toISOString() : null,
+    approvalStatus: ((reconciliation?.approvalStatus as DailyCashApprovalStatus) ?? "none"),
+    approvedByName: String(reconciliation?.approvedByName ?? ""),
+    approvalNote: String(reconciliation?.approvalNote ?? ""),
+    approvedAt: reconciliation?.approvedAt ? new Date(reconciliation.approvedAt).toISOString() : null,
     breakdown: {
       invoiceSales,
       productOrderSales,
@@ -409,9 +444,17 @@ export async function getDailyCashRow(reportDate: string) {
   return buildCashRow(parsedDate, aggregate, report, reconciliation);
 }
 
+async function assertDayEditable(reportDate: string, actor: DailyCashActor) {
+  const report = await db.query.dailyCashReportsTable.findFirst({ where: eq(dailyCashReportsTable.reportDate, reportDate) }) as any;
+  if (report?.status === "closed" && !actor.canOverride) {
+    throw new Error("هذا اليوم مقفل ولا يمكن تعديله — يتطلب صلاحية مدير لإعادة الفتح");
+  }
+}
+
 export async function upsertDailyCashReport(input: unknown, actor: DailyCashActor) {
   await ensureDailyCashTables();
   const parsed = upsertDailyCashReportSchema.parse(input);
+  await assertDayEditable(parsed.reportDate, actor);
   const aggregate = await aggregateDailyCash(parsed.reportDate, parsed.reportDate);
   const snapshot = buildCashRow(parsed.reportDate, aggregate, { openingBalance: parsed.openingBalance }, undefined);
   const notes = parsed.notes?.trim() || null;
@@ -451,6 +494,7 @@ export async function upsertDailyCashReport(input: unknown, actor: DailyCashActo
 export async function upsertDailyCashReconciliation(input: unknown, actor: DailyCashActor) {
   await ensureDailyCashTables();
   const parsed = upsertDailyCashReconciliationSchema.parse(input);
+  await assertDayEditable(parsed.reportDate, actor);
   const current = await getDailyCashRow(parsed.reportDate);
   const openingBalance = money(parsed.openingBalance ?? current.openingBalance);
   const expectedCashBalance = money(openingBalance + current.totalSales - current.totalExpenses);
@@ -537,5 +581,128 @@ export async function getDailyCashDashboardSummary(reportDate = todayBaghdad()) 
     actualCashInDrawer: row.actualCashInDrawer,
     difference: row.difference,
     status: row.status,
+  };
+}
+
+/** الرصيد الافتتاحي المقترَح = رصيد إغلاق اليوم السابق (ترحيل تلقائي). */
+export async function suggestOpeningBalance(reportDate: string): Promise<number> {
+  await ensureDailyCashTables();
+  const parsedDate = dateStringSchema.parse(reportDate);
+  const previousRow = await getDailyCashRow(addDays(parsedDate, -1));
+  return money(previousRow.closingBalance);
+}
+
+/** إقفال نهاية اليوم: يثبّت التقرير ويقفله، ويرحّل رصيد الإغلاق لافتتاح الغد ضمنياً. */
+export async function closeDailyCashDay(reportDate: string, actor: DailyCashActor) {
+  await ensureDailyCashTables();
+  const parsedDate = dateStringSchema.parse(reportDate);
+  const current = await getDailyCashRow(parsedDate);
+  const openingBalance = current.hasManualOpeningBalance ? current.openingBalance : await suggestOpeningBalance(parsedDate);
+  const closingBalance = money(openingBalance + current.totalSales - current.totalExpenses);
+  const now = new Date();
+  await db
+    .insert(dailyCashReportsTable)
+    .values({
+      reportDate: parsedDate,
+      openingBalance: String(openingBalance),
+      totalSales: String(current.totalSales),
+      totalExpenses: String(current.totalExpenses),
+      closingBalance: String(closingBalance),
+      status: "closed",
+      closedBy: actor.id,
+      closedByName: actor.name,
+      closedAt: now,
+      createdBy: actor.id,
+      createdByName: actor.name,
+      updatedBy: actor.id,
+      updatedByName: actor.name,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: dailyCashReportsTable.reportDate,
+      set: {
+        openingBalance: String(openingBalance),
+        totalSales: String(current.totalSales),
+        totalExpenses: String(current.totalExpenses),
+        closingBalance: String(closingBalance),
+        status: "closed",
+        closedBy: actor.id,
+        closedByName: actor.name,
+        closedAt: now,
+        updatedBy: actor.id,
+        updatedByName: actor.name,
+        updatedAt: now,
+      },
+    });
+  return getDailyCashRow(parsedDate);
+}
+
+/** إعادة فتح يوم مقفل (تتطلب صلاحية مدير). */
+export async function reopenDailyCashDay(reportDate: string, actor: DailyCashActor) {
+  await ensureDailyCashTables();
+  if (!actor.canOverride) throw new Error("إعادة فتح اليوم تتطلب صلاحية مدير");
+  const parsedDate = dateStringSchema.parse(reportDate);
+  const now = new Date();
+  await db
+    .update(dailyCashReportsTable)
+    .set({ status: "open", closedBy: null, closedByName: "", closedAt: null, updatedBy: actor.id, updatedByName: actor.name, updatedAt: now })
+    .where(eq(dailyCashReportsTable.reportDate, parsedDate));
+  return getDailyCashRow(parsedDate);
+}
+
+/** موافقة المدير على فرق الصندوق. */
+export async function approveDailyCashReconciliation(reportDate: string, note: string, actor: DailyCashActor) {
+  await ensureDailyCashTables();
+  if (!actor.canOverride) throw new Error("اعتماد فرق الصندوق يتطلب صلاحية مدير");
+  const parsedDate = dateStringSchema.parse(reportDate);
+  const reconciliation = await db.query.dailyCashReconciliationsTable.findFirst({ where: eq(dailyCashReconciliationsTable.reportDate, parsedDate) });
+  if (!reconciliation) throw new Error("لا يوجد جرد لهذا اليوم بعد");
+  const now = new Date();
+  await db
+    .update(dailyCashReconciliationsTable)
+    .set({
+      approvalStatus: "approved",
+      approvedBy: actor.id,
+      approvedByName: actor.name,
+      approvalNote: note.trim() || null,
+      approvedAt: now,
+      updatedBy: actor.id,
+      updatedByName: actor.name,
+      updatedAt: now,
+    })
+    .where(eq(dailyCashReconciliationsTable.reportDate, parsedDate));
+  return getDailyCashRow(parsedDate);
+}
+
+/** لوحة الإدارة المالية: كروت اليوم + الترحيل المقترَح. */
+export async function getFinanceDashboard(reportDate = todayBaghdad()) {
+  await ensureDailyCashTables();
+  const parsedDate = dateStringSchema.parse(reportDate);
+  const [row, suggestedOpening] = await Promise.all([
+    getDailyCashRow(parsedDate),
+    suggestOpeningBalance(parsedDate),
+  ]);
+  const netProfit = money(row.totalSales - row.totalExpenses);
+  const totalOrders = row.breakdown.productOrderCount + row.breakdown.serviceOrderCount;
+  return {
+    reportDate: row.reportDate,
+    suggestedOpeningBalance: suggestedOpening,
+    cards: {
+      todaySales: row.totalSales,
+      todayExpenses: row.totalExpenses,
+      openingBalance: row.openingBalance,
+      closingBalance: row.closingBalance,
+      cashDifference: row.difference,
+      netProfit,
+      totalOrders,
+      totalInvoices: row.breakdown.invoiceCount,
+    },
+    reportStatus: row.reportStatus,
+    reconciliationStatus: row.status,
+    approvalStatus: row.approvalStatus,
+    needsApproval: row.difference != null && Math.abs(row.difference) >= 0.005 && row.approvalStatus !== "approved",
+    actualCashInDrawer: row.actualCashInDrawer,
+    breakdown: row.breakdown,
   };
 }

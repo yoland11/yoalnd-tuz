@@ -74,6 +74,11 @@ import {
   upsertDailyCashReconciliationSchema,
   upsertDailyCashReport,
   upsertDailyCashReportSchema,
+  closeDailyCashDay,
+  reopenDailyCashDay,
+  approveDailyCashReconciliation,
+  getFinanceDashboard,
+  suggestOpeningBalance,
 } from "@/server/daily-cash";
 import {
   primaryLocationFromDetails,
@@ -8490,9 +8495,60 @@ async function handleDailyCash(req: NextRequest, parts: string[], section: strin
 
   const method = req.method;
   const resource = parts[2] ?? "reports";
+  const financeActor = () => ({ ...actor(auth), canOverride: auth.role === "admin" });
 
   if (method === "GET" && resource === "summary") {
     return json(await getDailyCashDashboardSummary());
+  }
+
+  if (method === "GET" && resource === "dashboard") {
+    const date = req.nextUrl.searchParams.get("date") ?? undefined;
+    return json(await getFinanceDashboard(date || undefined));
+  }
+
+  if (method === "GET" && resource === "suggest-opening") {
+    const date = req.nextUrl.searchParams.get("date");
+    if (!date) return error("التاريخ مطلوب", 400);
+    return json({ openingBalance: await suggestOpeningBalance(date) });
+  }
+
+  if (method === "POST" && resource === "close") {
+    const payload = await body(req);
+    const date = String(payload?.reportDate ?? "");
+    if (!date) return error("التاريخ مطلوب", 400);
+    try {
+      const row = await closeDailyCashDay(date, financeActor());
+      void logAdminActivity(req, "daily_cash_day_closed", "daily_cash_report", undefined, { reportDate: row.reportDate, closingBalance: row.closingBalance });
+      return json(row);
+    } catch (err: any) {
+      return error(err?.message || "تعذّر إقفال اليوم", 400);
+    }
+  }
+
+  if (method === "POST" && resource === "reopen") {
+    const payload = await body(req);
+    const date = String(payload?.reportDate ?? "");
+    if (!date) return error("التاريخ مطلوب", 400);
+    try {
+      const row = await reopenDailyCashDay(date, financeActor());
+      void logAdminActivity(req, "daily_cash_day_reopened", "daily_cash_report", undefined, { reportDate: row.reportDate });
+      return json(row);
+    } catch (err: any) {
+      return error(err?.message || "تعذّر إعادة فتح اليوم", 403);
+    }
+  }
+
+  if (method === "POST" && resource === "approve") {
+    const payload = await body(req);
+    const date = String(payload?.reportDate ?? "");
+    if (!date) return error("التاريخ مطلوب", 400);
+    try {
+      const row = await approveDailyCashReconciliation(date, String(payload?.note ?? ""), financeActor());
+      void logAdminActivity(req, "daily_cash_difference_approved", "daily_cash_reconciliation", undefined, { reportDate: row.reportDate, difference: row.difference });
+      return json(row);
+    } catch (err: any) {
+      return error(err?.message || "تعذّر اعتماد الفرق", 403);
+    }
   }
 
   if (method === "GET" && (resource === "reports" || resource === "reconciliation")) {
@@ -8505,7 +8561,12 @@ async function handleDailyCash(req: NextRequest, parts: string[], section: strin
     const payload = await body(req);
     const parsed = upsertDailyCashReportSchema.safeParse(payload);
     if (!parsed.success) return validationError("admin.daily-cash.report", parsed);
-    const row = await upsertDailyCashReport(parsed.data, actor(auth));
+    let row;
+    try {
+      row = await upsertDailyCashReport(parsed.data, financeActor());
+    } catch (err: any) {
+      return error(err?.message || "تعذّر حفظ التقرير", 400);
+    }
     void logAdminActivity(req, "daily_cash_report_saved", "daily_cash_report", undefined, {
       reportDate: row.reportDate,
       closingBalance: row.closingBalance,
@@ -8517,7 +8578,12 @@ async function handleDailyCash(req: NextRequest, parts: string[], section: strin
     const payload = await body(req);
     const parsed = upsertDailyCashReconciliationSchema.safeParse(payload);
     if (!parsed.success) return validationError("admin.daily-cash.reconciliation", parsed);
-    const row = await upsertDailyCashReconciliation(parsed.data, actor(auth));
+    let row;
+    try {
+      row = await upsertDailyCashReconciliation(parsed.data, financeActor());
+    } catch (err: any) {
+      return error(err?.message || "تعذّر حفظ الجرد", 400);
+    }
     void logAdminActivity(req, "daily_cash_reconciliation_saved", "daily_cash_reconciliation", undefined, {
       reportDate: row.reportDate,
       status: row.status,
@@ -8831,9 +8897,12 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .insert(expensesTable)
         .values({
           date: b?.date || new Date().toISOString().slice(0, 10),
+          name: textFallback(b?.name, categoryName || "مصروف"),
           amount: String(amt),
           categoryId: b?.categoryId ?? null,
           categoryName,
+          paymentMethod: normMethod(b?.paymentMethod ?? b?.method),
+          receiptImage: b?.receiptImage ? await persistMediaValue(b.receiptImage, "expenses") : null,
           notes: b?.notes ?? null,
           createdBy: a.id,
           createdByName: a.name,
