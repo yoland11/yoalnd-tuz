@@ -969,7 +969,7 @@ async function createCustomerNotificationByPhone(phone: string | null | undefine
 }
 
 async function notifyLowStockForProductIds(productIds: number[]) {
-  const ids = [...new Set(productIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const ids = await stockOwnerIdsForProductIds(productIds);
   if (ids.length === 0) return;
   const rows = await db.query.productsTable.findMany({
     where: and(inArray(productsTable.id, ids), sql`${productsTable.stock} <= ${productsTable.minStock}`),
@@ -1233,8 +1233,11 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     descriptionTr: p.descriptionTr ?? p.description_tr ?? null,
     price: Number.parseFloat(p.price),
     originalPrice: p.originalPrice ? Number.parseFloat(p.originalPrice) : null,
-    stock: p.stock,
-    minStock: Number(p.minStock ?? p.min_stock ?? 0),
+    stock: Number(p.effectiveStock ?? p.stock ?? 0),
+    ownStock: Number(p.ownStock ?? p.stock ?? 0),
+    minStock: Number(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? 0),
+    sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
+    sharedStockProductName: p.sharedStockProductName ?? p.shared_stock_product_name ?? null,
     barcode: p.barcode ?? null,
     costPrice: Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     categoryId: p.categoryId ?? p.category_id ?? null,
@@ -1254,6 +1257,106 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     reviewCount: reviewCount ?? 0,
     createdAt: p.createdAt.toISOString(),
   };
+}
+
+function productSharedStockId(row: any): number | null {
+  return numberId(row?.sharedStockProductId ?? row?.shared_stock_product_id);
+}
+
+function productStockAmount(row: any): number {
+  return Number(row?.effectiveStock ?? row?.stock ?? 0);
+}
+
+async function hydrateSharedStockProducts(products: any[]): Promise<any[]> {
+  const sharedIds = [
+    ...new Set(products.map((product) => productSharedStockId(product)).filter((id): id is number => !!id)),
+  ];
+  if (sharedIds.length === 0) {
+    return products.map((product) => ({
+      ...product,
+      ownStock: Number(product?.stock ?? 0),
+      effectiveStock: Number(product?.stock ?? 0),
+      effectiveMinStock: Number(product?.minStock ?? product?.min_stock ?? 0),
+    }));
+  }
+  const stockProducts = await db.query.productsTable.findMany({
+    where: inArray(productsTable.id, sharedIds),
+  }) as any[];
+  const stockMap = new Map(stockProducts.map((product) => [product.id, product]));
+  return products.map((product) => {
+    const stockProductId = productSharedStockId(product);
+    const stockProduct = stockProductId ? stockMap.get(stockProductId) : null;
+    if (!stockProduct) {
+      return {
+        ...product,
+        ownStock: Number(product?.stock ?? 0),
+        effectiveStock: Number(product?.stock ?? 0),
+        effectiveMinStock: Number(product?.minStock ?? product?.min_stock ?? 0),
+      };
+    }
+    return {
+      ...product,
+      ownStock: Number(product?.stock ?? 0),
+      effectiveStock: Number(stockProduct.stock ?? 0),
+      effectiveMinStock: Number(stockProduct.minStock ?? stockProduct.min_stock ?? 0),
+      sharedStockProductId: stockProduct.id,
+      sharedStockProductName: stockProduct.nameAr ?? stockProduct.name ?? `#${stockProduct.id}`,
+    };
+  });
+}
+
+async function hydrateSharedStockProduct(product: any | null | undefined): Promise<any | null> {
+  if (!product) return null;
+  const [hydrated] = await hydrateSharedStockProducts([product]);
+  return hydrated ?? product;
+}
+
+async function resolveSharedStockProductId(value: unknown, selfId?: number | null): Promise<{ id: number | null; message?: string }> {
+  const requestedId = numberId(value);
+  if (!requestedId) return { id: null };
+  if (selfId && requestedId === selfId) return { id: null, message: "لا يمكن ربط المنتج بمخزونه نفسه" };
+  const target = await db.query.productsTable.findFirst({ where: eq(productsTable.id, requestedId) }) as any;
+  if (!target) return { id: null, message: "المنتج المرتبط بالمخزون غير موجود" };
+  const rootId = productSharedStockId(target) ?? target.id;
+  if (selfId && rootId === selfId) return { id: null, message: "لا يمكن إنشاء ربط دائري للمخزون" };
+  return { id: rootId };
+}
+
+async function getStockOwnerProduct(productId: number): Promise<{ product: any; stockProduct: any } | null> {
+  const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }) as any;
+  if (!product) return null;
+  const stockProductId = productSharedStockId(product);
+  if (!stockProductId) return { product, stockProduct: product };
+  const stockProduct = await db.query.productsTable.findFirst({ where: eq(productsTable.id, stockProductId) }) as any;
+  return { product, stockProduct: stockProduct ?? product };
+}
+
+async function stockOwnerIdsForProductIds(productIds: number[]): Promise<number[]> {
+  const ids = [...new Set(productIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return [];
+  const rows = await db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) as any[];
+  return [...new Set(rows.map((row) => productSharedStockId(row) ?? row.id).filter((id): id is number => !!id))];
+}
+
+async function adjustProductStock(productId: number, delta: number): Promise<number | null> {
+  const resolved = await getStockOwnerProduct(productId);
+  if (!resolved) return null;
+  await db.execute(sql`
+    UPDATE products
+    SET stock = GREATEST(0, stock + ${Number(delta)}), updated_at = now()
+    WHERE id = ${resolved.stockProduct.id}
+  `);
+  return resolved.stockProduct.id;
+}
+
+async function setProductStock(productId: number, stock: number): Promise<number | null> {
+  const resolved = await getStockOwnerProduct(productId);
+  if (!resolved) return null;
+  await db
+    .update(productsTable)
+    .set({ stock: Math.max(0, Math.floor(Number(stock) || 0)), updatedAt: new Date() })
+    .where(eq(productsTable.id, resolved.stockProduct.id));
+  return resolved.stockProduct.id;
 }
 
 function formatCategory(row: any, productCount = 0) {
@@ -1819,12 +1922,24 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "barcode" varchar(100);
       alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
       alter table "products" add column if not exists "min_stock" integer not null default 0;
+      alter table "products" add column if not exists "shared_stock_product_id" integer;
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
+      do $$
+      begin
+        alter table "products"
+          add constraint "products_shared_stock_product_id_fkey"
+          foreign key ("shared_stock_product_id")
+          references "products" ("id")
+          on delete set null;
+      exception
+        when duplicate_object then null;
+      end $$;
       update "products"
       set "barcode" = 'AJN' || lpad("id"::text, 8, '0')
       where "barcode" is null or "barcode" = '';
       create index if not exists "products_barcode_idx" on "products" ("barcode") where "barcode" is not null;
       create index if not exists "products_stock_min_stock_idx" on "products" ("stock", "min_stock");
+      create index if not exists "products_shared_stock_product_id_idx" on "products" ("shared_stock_product_id");
     `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
   }
   await adminProductsColumnsPromise;
@@ -2421,7 +2536,8 @@ async function buildCart(sessionId: string) {
     productIds.length > 0
       ? await db.select().from(productsTable).where(inArray(productsTable.id, productIds))
       : [];
-  const productMap = new Map(products.map((product) => [product.id, product]));
+  const hydratedProducts = await hydrateSharedStockProducts(products);
+  const productMap = new Map(hydratedProducts.map((product) => [product.id, product]));
   const enriched = items.map((item) => {
     const product = productMap.get(item.productId);
     return {
@@ -2434,7 +2550,7 @@ async function buildCart(sessionId: string) {
             nameAr: product.nameAr,
             price: Number.parseFloat(product.price),
             images: product.images ?? [],
-            stock: product.stock,
+            stock: productStockAmount(product),
             colors: normalizeColors(product.colors ?? []),
             isFeatured: product.isFeatured,
             rating: null,
@@ -2819,7 +2935,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       where: and(eq(productsTable.isFeatured, true), eq(productsTable.isActive, true)),
       limit: 8,
     });
-    return json(products.map((p) => formatProduct(p)));
+    const hydrated = await hydrateSharedStockProducts(products);
+    return json(hydrated.map((p) => formatProduct(p)));
   }
 
   if (method === "GET" && parts[1] === "store-categories") {
@@ -2888,13 +3005,14 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         category ? or(eq(productsTable.category, category), sql`${productsTable.categoryId} in (select id from categories where slug = ${category})`) : undefined,
         subcategory ? or(eq(productsTable.subcategory, subcategory), sql`${productsTable.subcategoryId} in (select id from categories where slug = ${subcategory})`) : undefined,
         search ? ilike(productsTable.nameAr, `%${search}%`) : undefined,
-        inStock ? sql`${productsTable.stock} > 0` : undefined,
+        inStock ? sql`coalesce((select stock from products root where root.id = ${productsTable.sharedStockProductId}), ${productsTable.stock}) > 0` : undefined,
       ),
       orderBy: (p, { desc }) => [desc(p.createdAt)],
       limit,
       offset,
     });
-    return json(products.map((p) => formatProduct(p)));
+    const hydrated = await hydrateSharedStockProducts(products);
+    return json(hydrated.map((p) => formatProduct(p)));
   }
 
   if (method === "GET" && parts[1]) {
@@ -2909,7 +3027,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     });
     const avgRating =
       reviews.length > 0 ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : undefined;
-    return json(formatProduct(product, avgRating, reviews.length));
+    const hydrated = await hydrateSharedStockProduct(product);
+    return json(formatProduct(hydrated, avgRating, reviews.length));
   }
 
   if (method === "POST" && parts.length === 1) {
@@ -2924,6 +3043,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const requestedBarcode = normalizeProductBarcode(data.barcode);
     if (requestedBarcode && await productBarcodeExists(requestedBarcode)) return error("الباركود مستخدم مسبقاً", 409);
     const productCategories = await resolveProductCategories(data);
+    const sharedStock = await resolveSharedStockProductId(data.sharedStockProductId);
+    if (sharedStock.message) return error(sharedStock.message, 400);
     const storedImages = await persistMediaList(data.images ?? [], "products");
     const storedVideos = await persistMediaList(data.videos ?? [], "products/videos");
     let [product] = await db
@@ -2937,8 +3058,9 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         price: String(money(data.price)),
         originalPrice: money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null,
         costPrice: String(money(data.costPrice)),
-        stock: Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
-        minStock: Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0,
+        stock: sharedStock.id ? 0 : Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
+        minStock: sharedStock.id ? 0 : Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0,
+        sharedStockProductId: sharedStock.id,
         barcode: requestedBarcode || null,
         categoryId: productCategories.categoryId,
         subcategoryId: productCategories.subcategoryId,
@@ -2960,7 +3082,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     }
     void logAdminActivity(req, "product_created", "product", product.id, { name: product.nameAr });
     clearStoreCategoriesCache();
-    return json(formatProduct(product), 201);
+    const hydrated = await hydrateSharedStockProduct(product);
+    return json(formatProduct(hydrated), 201);
   }
 
   if (method === "PATCH" && parts[1]) {
@@ -2972,6 +3095,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const parsed = UpdateProductBody.safeParse(rawBody);
     if (!parsed.success) return validationError("products.update", parsed);
     const data = parsed.data as any;
+    const existing = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+    if (!existing) return error("المنتج غير موجود", 404);
+    const hasSharedStockChange = Object.prototype.hasOwnProperty.call(data, "sharedStockProductId");
+    const sharedStock = hasSharedStockChange
+      ? await resolveSharedStockProductId(data.sharedStockProductId, id)
+      : { id: productSharedStockId(existing) };
+    if (sharedStock.message) return error(sharedStock.message, 400);
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
     if (data.videos !== undefined) data.videos = await resolveProductVideoInputs(id, data.videos);
     const update: any = { updatedAt: new Date() };
@@ -2989,7 +3119,6 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "subcategory",
       "isActive",
       "sortOrder",
-      "stock",
       "minStock",
       "barcode",
       "categoryId",
@@ -3012,6 +3141,34 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         }
       }
     }
+    if (hasSharedStockChange) {
+      update.sharedStockProductId = sharedStock.id;
+      if (sharedStock.id) {
+        update.stock = 0;
+        update.minStock = 0;
+      }
+    }
+    if (data.stock !== undefined) {
+      const nextStock = Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0;
+      if (sharedStock.id) {
+        await setProductStock(sharedStock.id, nextStock);
+      } else {
+        update.stock = Math.max(0, Math.floor(nextStock));
+      }
+    }
+    if (data.minStock !== undefined) {
+      const nextMinStock = Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0;
+      if (sharedStock.id) {
+        await db
+          .update(productsTable)
+          .set({ minStock: Math.max(0, Math.floor(nextMinStock)), updatedAt: new Date() })
+          .where(eq(productsTable.id, sharedStock.id));
+        if (hasSharedStockChange) update.minStock = 0;
+        else delete update.minStock;
+      } else {
+        update.minStock = Math.max(0, Math.floor(nextMinStock));
+      }
+    }
     if (data.category !== undefined || data.subcategory !== undefined || data.categoryId !== undefined || data.subcategoryId !== undefined) {
       const productCategories = await resolveProductCategories(data);
       update.categoryId = productCategories.categoryId;
@@ -3027,7 +3184,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (!product) return error("المنتج غير موجود", 404);
     void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
     clearStoreCategoriesCache();
-    return json(formatProduct(product));
+    const hydrated = await hydrateSharedStockProduct(product);
+    return json(formatProduct(hydrated));
   }
 
   if (method === "DELETE" && parts[1]) {
@@ -3720,10 +3878,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           image: product ? publicMediaValue("product", product, product.images?.[0], 0) : null,
         });
         if (product) {
-          await db
-            .update(productsTable)
-            .set({ stock: Math.max(0, product.stock - item.quantity) })
-            .where(eq(productsTable.id, product.id));
+          await adjustProductStock(product.id, -item.quantity);
         }
       }),
     );
@@ -4437,12 +4592,13 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
     if (items.length === 0) return error("لا توجد منتجات لإعادة الطلب", 400);
     const sessionId = getSessionId(req);
     for (const item of items) {
-      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) });
-      if (!product || product.isActive === false || product.stock <= 0) continue;
+      const rawProduct = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) });
+      const product = await hydrateSharedStockProduct(rawProduct);
+      if (!product || product.isActive === false || productStockAmount(product) <= 0) continue;
       await db.insert(cartItemsTable).values({
         sessionId,
         productId: product.id,
-        quantity: Math.min(item.quantity, Math.max(1, product.stock)),
+        quantity: Math.min(item.quantity, Math.max(1, productStockAmount(product))),
         price: product.price,
         selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
         selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
@@ -5870,14 +6026,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         orderBy: (p, { asc, desc: d }) => [asc(p.sortOrder), d(p.createdAt)],
         limit: limitParam,
       }) as any[];
-      const res = json(rows.map(p => ({
+      const hydrated = await hydrateSharedStockProducts(rows);
+      const res = json(hydrated.map(p => ({
         id: p.id,
         name: p.name,
         nameAr: p.nameAr,
         price: String(p.price),
         costPrice: String(p.costPrice ?? p.cost_price ?? "0"),
-        stock: String(p.stock),
-        minStock: String(p.minStock ?? p.min_stock ?? "0"),
+        stock: String(productStockAmount(p)),
+        ownStock: String(p.ownStock ?? p.stock ?? "0"),
+        minStock: String(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? "0"),
+        sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
+        sharedStockProductName: p.sharedStockProductName ?? null,
         category: p.category ?? "",
         images: publicMediaList("product", p, p.images),
         videos: publicMediaList("product-video", p, p.videos),
@@ -5991,16 +6151,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     await ensureAdminProductsColumns();
     const rows = await db.query.productsTable.findMany({
-      where: sql`(("stock" <= "min_stock" and "min_stock" > 0) or "stock" <= 0)`,
+      where: sql`((coalesce((select stock from products root where root.id = ${productsTable.sharedStockProductId}), "stock") <= coalesce((select min_stock from products root where root.id = ${productsTable.sharedStockProductId}), "min_stock") and coalesce((select min_stock from products root where root.id = ${productsTable.sharedStockProductId}), "min_stock") > 0) or coalesce((select stock from products root where root.id = ${productsTable.sharedStockProductId}), "stock") <= 0)`,
       orderBy: (product, { asc }) => [asc(product.stock), asc(product.nameAr)],
       limit: 500,
     }) as any[];
-    const mapped = rows.map((product) => ({
+    const hydrated = await hydrateSharedStockProducts(rows);
+    const mapped = hydrated.map((product) => ({
       id: product.id,
       name: product.name,
       nameAr: product.nameAr,
-      stock: Number(product.stock ?? 0),
-      minStock: Number(product.minStock ?? product.min_stock ?? 0),
+      stock: productStockAmount(product),
+      minStock: Number(product.effectiveMinStock ?? product.minStock ?? product.min_stock ?? 0),
       barcode: product.barcode ?? "",
       category: product.category ?? "",
       images: publicMediaList("product", product, product.images),
@@ -7002,13 +7163,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           await Promise.all(
             orderItems
               .filter((it: any) => Number(it.productId) > 0)
-              .map((it: any) =>
-                db.execute(sql`
-                  UPDATE products
-                  SET stock = GREATEST(0, stock - ${Number(it.quantity)})
-                  WHERE id = ${Number(it.productId)}
-                `),
-              ),
+              .map((it: any) => adjustProductStock(Number(it.productId), -Number(it.quantity))),
           );
           await db.insert(orderStatusHistoryTable).values({ orderId: order.id, status: "pending", notes: "إضافة من الإدارة" });
           void fireOrderEvent("placed", {
@@ -7670,10 +7825,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       // Update product stock
       for (const item of items) {
         if (item.productId && item.quantity > 0) {
-          await db.execute(sql`
-            UPDATE products SET stock = GREATEST(0, stock - ${item.quantity})
-            WHERE id = ${item.productId}
-          `);
+          await adjustProductStock(Number(item.productId), -Number(item.quantity));
         }
       }
       void notifyLowStockForProductIds(items.map((item) => Number(item.productId)));
@@ -7732,7 +7884,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
         const productId = Number(item.productId ?? 0);
         const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
         if (productId > 0 && quantity > 0) {
-          await db.execute(sql`UPDATE products SET stock = stock + ${quantity} WHERE id = ${productId}`);
+          await adjustProductStock(productId, quantity);
         }
       }
       await db.delete(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
@@ -7748,10 +7900,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
         );
         for (const item of parsedItems) {
           if (item.productId && item.quantity > 0) {
-            await db.execute(sql`
-              UPDATE products SET stock = GREATEST(0, stock - ${item.quantity})
-              WHERE id = ${item.productId}
-            `);
+            await adjustProductStock(Number(item.productId), -Number(item.quantity));
           }
         }
         void notifyLowStockForProductIds(parsedItems.map((item) => Number(item.productId)));
@@ -7884,7 +8033,8 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
       // Update product stock on purchase
       for (const item of processedItems) {
         if (item.productId && item.quantity > 0) {
-          const updateVals: any = { stock: sql`stock + ${item.quantity}`, costPrice: String(item.costPrice) };
+          await adjustProductStock(Number(item.productId), Number(item.quantity));
+          const updateVals: any = { costPrice: String(item.costPrice) };
           if (item.salePrice > 0) {
             updateVals.price = String(item.salePrice);
           }

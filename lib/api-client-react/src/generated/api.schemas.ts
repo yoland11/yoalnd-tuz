@@ -59,6 +59,11 @@ export interface Product {
   originalPrice?: number | null;
   costPrice?: number;
   stock: number;
+  ownStock?: number;
+  /** @nullable */
+  sharedStockProductId?: number | null;
+  /** @nullable */
+  sharedStockProductName?: string | null;
   minStock?: number;
   /** @nullable */
   barcode?: string | null;
@@ -96,6 +101,7 @@ export interface ProductInput {
   originalPrice?: number;
   costPrice?: number;
   stock?: number;
+  sharedStockProductId?: number | null;
   minStock?: number;
   barcode?: string;
   categoryId?: number | null;
@@ -120,6 +126,7 @@ export interface ProductUpdate {
   originalPrice?: number;
   costPrice?: number;
   stock?: number;
+  sharedStockProductId?: number | null;
   minStock?: number;
   barcode?: string;
   categoryId?: number | null;

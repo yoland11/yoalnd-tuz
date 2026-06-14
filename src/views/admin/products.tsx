@@ -4,7 +4,7 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -27,6 +27,7 @@ type ProductForm = {
   descriptionKu?: string; descriptionTr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
+  sharedStockProductId?: number | null;
   categoryId?: number | null; subcategoryId?: number | null;
   category?: string; subcategory?: string;
   images: string[]; videos: string[]; colors: ProductColor[];
@@ -36,6 +37,7 @@ type ProductForm = {
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
+  sharedStockProductId: null,
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
@@ -62,7 +64,7 @@ export default function ProductsPage() {
     if (catFilter) rows = rows.filter((p: any) => p.category === catFilter);
     if (search) {
       const s = search.toLowerCase();
-      rows = rows.filter(p => p.nameAr.toLowerCase().includes(s) || p.name.toLowerCase().includes(s));
+      rows = rows.filter((p: any) => p.nameAr.toLowerCase().includes(s) || p.name.toLowerCase().includes(s) || String(p.sharedStockProductName ?? "").toLowerCase().includes(s));
     }
     return rows;
   }, [products, search, catFilter]);
@@ -95,6 +97,7 @@ export default function ProductsPage() {
       costPrice: parseFloat(form.costPrice ?? "0") || 0,
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
+      sharedStockProductId: form.sharedStockProductId ?? null,
       barcode: form.barcode?.trim() ?? "",
       categoryId: form.categoryId ?? null,
       subcategoryId: form.subcategoryId ?? null,
@@ -178,6 +181,11 @@ export default function ProductsPage() {
                               ? <img src={p.images[0]} className="w-10 h-10 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
                               : <div className="w-10 h-10 rounded-lg bg-background border border-border/30" />}
                             <span className="font-medium text-foreground">{p.nameAr}</span>
+                            {p.sharedStockProductName && (
+                              <span className="text-[11px] text-primary inline-flex items-center gap-1">
+                                <Link2 className="w-3 h-3" /> مشترك مع {p.sharedStockProductName}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="p-3 text-primary">{formatCurrency(p.price)}</td>
@@ -233,6 +241,11 @@ export default function ProductsPage() {
                             <p className="font-medium text-foreground">{p.nameAr}</p>
                             <p className="text-xs text-muted-foreground">{p.name}</p>
                             {p.barcode && <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">{p.barcode}</p>}
+                            {p.sharedStockProductName && (
+                              <p className="text-[11px] text-primary inline-flex items-center gap-1 mt-0.5">
+                                <Link2 className="w-3 h-3" /> مخزون مشترك مع {p.sharedStockProductName}
+                              </p>
+                            )}
                             <ProductColorDots colors={p.colors} max={4} />
                             {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
                           </div>
@@ -256,6 +269,7 @@ export default function ProductsPage() {
                           price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                           costPrice: p.costPrice ? String(p.costPrice) : "0",
                           stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
+                          sharedStockProductId: (p as any).sharedStockProductId ?? null,
                           categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
                           images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
@@ -276,15 +290,16 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {editing && <ProductFormModal form={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={save} parentCats={parentCats} subCats={subCats} />}
+      {editing && <ProductFormModal form={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={save} parentCats={parentCats} subCats={subCats} products={products ?? []} />}
     </div>
   );
 }
 
-function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats }: {
+function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats, products }: {
   form: ProductForm; onChange: (f: ProductForm) => void; onClose: () => void;
   onSave: (f: ProductForm) => Promise<void>;
   parentCats: Category[]; subCats: Category[];
+  products: any[];
 }) {
   const [busy, setBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -302,6 +317,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const filteredSubs = subCats.filter(s => {
     return selectedParent ? s.parentId === selectedParent.id : true;
   });
+  const linkedStockProduct = products.find((product: any) => product.id === form.sharedStockProductId);
+  const linkableProducts = products.filter((product: any) => product.id !== form.id);
 
   function addImages(results: ImageEditResult[]) {
     onChange({
@@ -439,6 +456,64 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
           <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />
           <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
+          <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+            <label className="flex items-center justify-between gap-3 text-sm text-foreground">
+              <span className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={!!form.sharedStockProductId}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    const firstProduct = linkableProducts[0];
+                    onChange({
+                      ...form,
+                      sharedStockProductId: checked ? firstProduct?.id ?? null : null,
+                      stock: checked && firstProduct ? String(firstProduct.stock ?? 0) : form.stock,
+                      minStock: checked && firstProduct ? String(firstProduct.minStock ?? 0) : form.minStock,
+                    });
+                  }}
+                  className="accent-primary"
+                />
+                مخزون مشترك مع منتج مشابه
+              </span>
+              {linkedStockProduct && (
+                <span className="text-[11px] text-primary inline-flex items-center gap-1">
+                  <Link2 className="w-3 h-3" /> {linkedStockProduct.nameAr || linkedStockProduct.name}
+                </span>
+              )}
+            </label>
+            {!!form.sharedStockProductId && (
+              <div>
+                <label className="block text-xs text-muted-foreground mb-1">اختر المنتج الذي يشارك المخزون</label>
+                <select
+                  value={form.sharedStockProductId ?? ""}
+                  onChange={(event) => {
+                    const selected = linkableProducts.find((product: any) => product.id === Number(event.target.value));
+                    onChange({
+                      ...form,
+                      sharedStockProductId: selected?.id ?? null,
+                      stock: selected ? String(selected.stock ?? 0) : form.stock,
+                      minStock: selected ? String(selected.minStock ?? 0) : form.minStock,
+                    });
+                  }}
+                  className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {linkableProducts.length === 0 ? (
+                    <option value="">لا توجد منتجات متاحة للربط</option>
+                  ) : (
+                    linkableProducts.map((product: any) => (
+                      <option key={product.id} value={product.id}>
+                        {(product.nameAr || product.name) + ` - المخزون ${product.stock ?? 0}`}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
+                  سيبقى المنتج ظاهر بشكل مستقل في المتجر، لكن البيع أو الشراء لأي منتج مرتبط سيؤثر على نفس رصيد المخزون.
+                </p>
+              </div>
+            )}
+          </div>
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
             <select
