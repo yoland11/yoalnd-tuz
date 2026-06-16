@@ -83,6 +83,11 @@ function Router() {
           <Invoice />
         </Suspense>
       </Route>
+      <Route path="/admin/reports/daily">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
       <Route path="/admin/:rest*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
