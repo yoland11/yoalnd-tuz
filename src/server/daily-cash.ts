@@ -258,6 +258,7 @@ async function aggregateDailyCash(from: string, to: string) {
       FROM expenses
       WHERE date >= ${from}
         AND date <= ${to}
+        AND deleted_at IS NULL
       GROUP BY date
     `),
   ]);

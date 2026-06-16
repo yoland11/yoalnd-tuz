@@ -23,6 +23,7 @@ const POSPage   = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
 const ReportsPage = lazy(() => import("./reports"));
+const DailyFinancialReportPage = lazy(() => import("./daily-report"));
 const DailyCashReportsPage = lazy(() => import("./daily-cash").then((module) => ({ default: module.DailyCashReportsPage })));
 const DailyCashReconciliationPage = lazy(() => import("./daily-cash").then((module) => ({ default: module.DailyCashReconciliationPage })));
 const CouponsPage = lazy(() => import("./coupons"));
@@ -39,8 +40,9 @@ const MessagesPage = lazy(() => import("./messages"));
 const CustomerActivityPage = lazy(() => import("./customer-activity"));
 const AccountingPage = lazy(() => import("./accounting"));
 const FinanceDashboardPage = lazy(() => import("./finance").then((module) => ({ default: module.FinanceDashboardPage })));
-const FinanceExpensesPage = lazy(() => import("./finance").then((module) => ({ default: module.FinanceExpensesPage })));
 const FinanceReportsPage = lazy(() => import("./finance").then((module) => ({ default: module.FinanceReportsPage })));
+const ExpensesPage = lazy(() => import("./expenses"));
+const ExpenseCategoriesPage = lazy(() => import("./expenses").then((module) => ({ default: module.ExpenseCategoriesPage })));
 const WhatsappPage = lazy(() => import("./whatsapp"));
 const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
@@ -120,11 +122,15 @@ export default function Admin() {
           <Route path="/admin/pos"       >{() => <Guard me={me} perm="invoices"  ><POSPage        /></Guard>}</Route>
           <Route path="/admin/sales"     >{() => <Guard me={me} perm="invoices"  ><SalesPage      /></Guard>}</Route>
           <Route path="/admin/purchases" >{() => <Guard me={me} perm="accounting"><PurchasesPage  /></Guard>}</Route>
+          <Route path="/admin/reports/daily">{() => <Guard me={me} perm="accounting"><DailyFinancialReportPage /></Guard>}</Route>
           <Route path="/admin/reports"   >{() => <Guard me={me} perm="accounting"><ReportsPage    /></Guard>}</Route>
           <Route path="/admin/finance">{() => <Guard me={me} perm="accounting"><FinanceDashboardPage me={me} /></Guard>}</Route>
           <Route path="/admin/finance/daily-report">{() => <Guard me={me} perm="accounting"><DailyCashReportsPage /></Guard>}</Route>
           <Route path="/admin/finance/reconciliation">{() => <Guard me={me} perm="accounting"><DailyCashReconciliationPage /></Guard>}</Route>
-          <Route path="/admin/finance/expenses">{() => <Guard me={me} perm="accounting"><FinanceExpensesPage /></Guard>}</Route>
+          <Route path="/admin/expenses/new">{() => <Guard me={me} perm="accounting"><ExpensesPage startNew /></Guard>}</Route>
+          <Route path="/admin/expenses/categories">{() => <Guard me={me} perm="accounting"><ExpenseCategoriesPage /></Guard>}</Route>
+          <Route path="/admin/expenses">{() => <Guard me={me} perm="accounting"><ExpensesPage /></Guard>}</Route>
+          <Route path="/admin/finance/expenses">{() => <Guard me={me} perm="accounting"><ExpensesPage /></Guard>}</Route>
           <Route path="/admin/finance/reports">{() => <Guard me={me} perm="accounting"><FinanceReportsPage /></Guard>}</Route>
           <Route path="/admin/daily-cash-reports">{() => <Redirect to="/admin/finance/daily-report" />}</Route>
           <Route path="/admin/daily-cash-reconciliation">{() => <Redirect to="/admin/finance/reconciliation" />}</Route>

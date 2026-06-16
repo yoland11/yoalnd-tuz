@@ -45,6 +45,14 @@ type DashboardData = {
     difference: number | null;
     status: "balanced" | "surplus" | "shortage" | "not_reconciled";
   } | null;
+  financialSummary?: {
+    todaySales: number;
+    todayExpenses: number;
+    todayNetTotal: number;
+    monthlyExpenses: number;
+    cashBalance: number;
+    deliveryFeesTotal: number;
+  };
   alerts: { key: string; label: string; count: number }[];
 };
 
@@ -103,6 +111,12 @@ export default function DashboardPage() {
     { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary" },
     { label: "رصيد الصندوق المتوقع", value: formatCurrency(data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
     { label: "فرق الجرد", value: data.dailyCash?.difference == null ? "غير مجرود" : formatCurrency(data.dailyCash.difference), icon: CreditCard, color: data.dailyCash?.status === "shortage" ? "text-status-danger" : "text-primary" },
+    { label: "مبيعات اليوم", value: formatCurrency(data.financialSummary?.todaySales ?? data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-status-success" },
+    { label: "مصاريف اليوم", value: formatCurrency(data.financialSummary?.todayExpenses ?? data.dailyCash?.totalExpenses ?? 0), icon: CreditCard, color: "text-status-danger" },
+    { label: "صافي اليوم", value: formatCurrency(data.financialSummary?.todayNetTotal ?? 0), icon: DollarSign, color: "text-primary" },
+    { label: "مصاريف الشهر", value: formatCurrency(data.financialSummary?.monthlyExpenses ?? 0), icon: CreditCard, color: "text-status-warning" },
+    { label: "رصيد الكاش", value: formatCurrency(data.financialSummary?.cashBalance ?? data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
+    { label: "توصيل اليوم", value: formatCurrency(data.financialSummary?.deliveryFeesTotal ?? 0), icon: Truck, color: "text-primary" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({

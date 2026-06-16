@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { downloadElementPdf } from "@/lib/pdf";
 import { adminFetch, formatCurrency } from "./_lib";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type ReportType =
   | "invoice-sales"
@@ -323,6 +324,7 @@ const REPORTS: ReportConfig[] = [
 
 export default function ReportsPage() {
   const reportRef = useRef<HTMLDivElement | null>(null);
+  const { data: settings } = usePublicSettings();
   const [tab, setTab] = useState<ReportType>("invoice-sales");
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -387,6 +389,7 @@ export default function ReportsPage() {
   async function exportPdf() {
     setExportingPdf(true);
     try {
+      void recordReportAudit("report_pdf_exported", activeReport.label, "pdf");
       await downloadElementPdf(reportRef.current, `${activeReport.label}.pdf`);
     } catch (err) {
       alert(err instanceof Error ? err.message : "تعذر تصدير PDF");
@@ -405,13 +408,23 @@ export default function ReportsPage() {
     downloadBlob(`\uFEFF${html}`, `${activeReport.label}.xls`, "application/vnd.ms-excel;charset=utf-8");
   }
 
-  function printReport() {
+  function printReport(thermal = false) {
     const popup = window.open("", "_blank", "width=1100,height=760");
     if (!popup) {
       alert("تعذر فتح نافذة الطباعة");
       return;
     }
-    popup.document.write(buildPrintHtml(activeReport.label, activeReport.columns, rows, totals));
+    void recordReportAudit("report_printed", activeReport.label, thermal ? "thermal" : "a4");
+    popup.document.write(buildPrintHtml({
+      title: activeReport.label,
+      columns: activeReport.columns,
+      rows,
+      totals,
+      from: appliedFilters.from,
+      to: appliedFilters.to,
+      logo: logoSrc(settings),
+      thermal,
+    }));
     popup.document.close();
     popup.focus();
     setTimeout(() => popup.print(), 250);
@@ -545,9 +558,13 @@ export default function ReportsPage() {
       </div>
 
       <div className="flex flex-wrap gap-2 justify-end">
-        <Button variant="outline" size="sm" onClick={printReport} disabled={rows.length === 0} className="gap-2">
+        <Button variant="outline" size="sm" onClick={() => printReport(false)} disabled={rows.length === 0} className="gap-2">
           <Printer className="w-4 h-4" />
-          طباعة
+          طباعة A4
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => printReport(true)} disabled={rows.length === 0} className="gap-2">
+          <Printer className="w-4 h-4" />
+          حراري
         </Button>
         <Button variant="outline" size="sm" onClick={exportPdf} disabled={rows.length === 0 || exportingPdf} className="gap-2">
           <FileText className="w-4 h-4" />
@@ -564,6 +581,19 @@ export default function ReportsPage() {
       </div>
 
       <div ref={reportRef} className="space-y-4">
+        <div className="bg-card rounded-xl border border-border/40 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src={logoSrc(settings)} alt="AJN" className="h-12 w-20 object-contain rounded-lg bg-background/60 border border-border/30" />
+            <div>
+              <p className="text-xs text-muted-foreground">مجموعة علي جان</p>
+              <h2 className="font-bold text-foreground">{activeReport.label}</h2>
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground text-left">
+            <p>{appliedFilters.from} إلى {appliedFilters.to}</p>
+            <p>{new Date().toLocaleString("ar-IQ")}</p>
+          </div>
+        </div>
         <div className="bg-card rounded-xl border border-border/40 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
             <div>
@@ -781,26 +811,56 @@ function buildExcelHtml(title: string, columns: ReportColumn[], rows: Record<str
   `;
 }
 
-function buildPrintHtml(title: string, columns: ReportColumn[], rows: Record<string, unknown>[], totals: Array<TotalDef & { value: number }>) {
+function buildPrintHtml(input: {
+  title: string;
+  columns: ReportColumn[];
+  rows: Record<string, unknown>[];
+  totals: Array<TotalDef & { value: number }>;
+  from: string;
+  to: string;
+  logo: string;
+  thermal?: boolean;
+}) {
+  const { title, columns, rows, totals, from, to, logo, thermal } = input;
+  const generatedAt = new Date().toLocaleString("ar-IQ");
   return `<!doctype html>
     <html dir="rtl" lang="ar">
       <head>
         <meta charset="utf-8" />
         <title>${escapeHtml(title)}</title>
         <style>
-          body { font-family: Arial, sans-serif; color: #000; padding: 24px; }
-          h1 { font-size: 20px; margin: 0 0 12px; }
-          .totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
-          .total { border: 1px solid #222; padding: 8px; border-radius: 6px; }
+          @page { size: ${thermal ? "80mm auto" : "A4"}; margin: ${thermal ? "4mm" : "12mm"}; }
+          * { color: #000 !important; box-shadow: none !important; text-shadow: none !important; }
+          body { font-family: Arial, sans-serif; background: #fff; color: #000; padding: ${thermal ? "0" : "12px"}; width: ${thermal ? "72mm" : "auto"}; }
+          .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 12px; }
+          .brand { display: flex; align-items: center; gap: 10px; }
+          img { width: ${thermal ? "42px" : "68px"}; height: ${thermal ? "42px" : "52px"}; object-fit: contain; }
+          h1 { font-size: ${thermal ? "15px" : "20px"}; margin: 0; font-weight: 800; }
+          .meta { font-size: ${thermal ? "10px" : "12px"}; line-height: 1.8; }
+          .totals { display: grid; grid-template-columns: repeat(${thermal ? 2 : 4}, 1fr); gap: 8px; margin-bottom: 16px; }
+          .total { border: 1px solid #000; padding: 8px; border-radius: 6px; }
           .total span { display: block; font-size: 11px; color: #333; }
           .total strong { font-size: 14px; }
-          table { width: 100%; border-collapse: collapse; font-size: 12px; }
-          th, td { border: 1px solid #222; padding: 7px; text-align: right; }
-          th { background: #f2f2f2; font-weight: 700; }
+          table { width: 100%; border-collapse: collapse; font-size: ${thermal ? "10px" : "12px"}; }
+          th, td { border: 1px solid #000; padding: ${thermal ? "4px" : "7px"}; text-align: right; font-weight: 600; }
+          th { background: #fff; font-weight: 800; }
+          ${thermal ? ".totals + table th:nth-child(n+5), .totals + table td:nth-child(n+5){display:none}" : ""}
         </style>
       </head>
       <body>
-        <h1>${escapeHtml(title)}</h1>
+        <div class="head">
+          <div class="brand">
+            <img src="${escapeHtml(logo)}" alt="AJN" />
+            <div>
+              <h1>${escapeHtml(title)}</h1>
+              <div class="meta">مجموعة علي جان</div>
+            </div>
+          </div>
+          <div class="meta">
+            <div>الفترة: ${escapeHtml(from)} إلى ${escapeHtml(to)}</div>
+            <div>تاريخ الإنشاء: ${escapeHtml(generatedAt)}</div>
+          </div>
+        </div>
         <div class="totals">
           ${totals.map((total) => `<div class="total"><span>${escapeHtml(total.label)}</span><strong>${escapeHtml(total.type === "money" ? formatCurrency(total.value) : formatNumber(total.value))}</strong></div>`).join("")}
         </div>
@@ -812,6 +872,13 @@ function buildPrintHtml(title: string, columns: ReportColumn[], rows: Record<str
         </table>
       </body>
     </html>`;
+}
+
+function recordReportAudit(action: "report_printed" | "report_pdf_exported", title: string, format: string) {
+  return adminFetch("/admin/reports/audit", {
+    method: "POST",
+    body: JSON.stringify({ action, title, format }),
+  }).catch(() => null);
 }
 
 function downloadBlob(content: string, filename: string, type: string) {

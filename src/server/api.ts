@@ -12,6 +12,7 @@ import {
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import webpush from "web-push";
+import { z } from "zod/v4";
 import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
@@ -5821,6 +5822,32 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     } catch (err: any) {
       console.warn("daily cash dashboard summary failed", { message: err?.message });
     }
+    let financialSummary = {
+      todaySales: dailyCashSummary?.totalSales ?? 0,
+      todayExpenses: dailyCashSummary?.totalExpenses ?? 0,
+      todayNetTotal: (dailyCashSummary?.totalSales ?? 0) - (dailyCashSummary?.totalExpenses ?? 0),
+      monthlyExpenses: 0,
+      cashBalance: dailyCashSummary?.expectedCashBalance ?? 0,
+      deliveryFeesTotal: 0,
+    };
+    try {
+      await ensureExpenseManagementTables();
+      const [todayDeliveryRow, monthlyExpenseRow] = await Promise.all([
+        db.select({ total: sql<number>`coalesce(sum(${ordersTable.deliveryFee}::numeric),0)::float` })
+          .from(ordersTable)
+          .where(and(gte(ordersTable.createdAt, today), lt(ordersTable.createdAt, tomorrow), sql`${ordersTable.archivedAt} is null`)),
+        db.select({ total: sql<number>`coalesce(sum(${expensesTable.amount}::numeric),0)::float` })
+          .from(expensesTable)
+          .where(and(gte(expensesTable.date, monthStart.toISOString().slice(0, 10)), sql`${expensesTable.deletedAt} is null`)),
+      ]);
+      financialSummary = {
+        ...financialSummary,
+        monthlyExpenses: Number(monthlyExpenseRow[0]?.total ?? 0),
+        deliveryFeesTotal: Number(todayDeliveryRow[0]?.total ?? 0),
+      };
+    } catch (err: any) {
+      console.warn("dashboard financial summary failed", { message: err?.message });
+    }
     return json({
       totalOrders: totalOrders[0].c,
       activeOrders: activeOrders[0].c,
@@ -5873,6 +5900,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         })),
       },
       dailyCash: dailyCashSummary,
+      financialSummary,
       alerts,
     });
   }
@@ -8116,10 +8144,219 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
   const method = req.method;
   const reportType = parts[2];
 
+  if (method === "POST" && reportType === "audit") {
+    const b = await body(req);
+    const action = String(b?.action ?? "") === "report_pdf_exported" ? "report_pdf_exported" : "report_printed";
+    const title = textFallback(b?.title, "تقرير");
+    void logAdminActivity(req, action, "report", undefined, { title, format: b?.format ?? null });
+    return json({ message: "تم تسجيل العملية" });
+  }
+
   if (method !== "GET") return null;
 
   const from = req.nextUrl.searchParams.get("from") ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const to = req.nextUrl.searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
+
+  if (reportType === "daily") {
+    await ensureExpenseManagementTables();
+    const date = req.nextUrl.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+    const paymentMethod = (req.nextUrl.searchParams.get("paymentMethod") ?? "").trim();
+    const status = (req.nextUrl.searchParams.get("status") ?? "").trim();
+    const user = (req.nextUrl.searchParams.get("user") ?? "").trim();
+    const fromTs = `${date}T00:00:00`;
+    const toTs = `${date}T23:59:59`;
+    const userLike = `%${user}%`;
+
+    const [
+      invoiceRow,
+      invoiceProfitRow,
+      orderRow,
+      serviceRow,
+      expenseRow,
+      paymentRows,
+      expenseCategoryRows,
+      invoiceRows,
+      orderRows,
+      serviceRows,
+      expenseRows,
+    ] = await Promise.all([
+      db.execute(sql`
+        SELECT
+          COALESCE(SUM(total::numeric), 0)::float AS total,
+          COALESCE(SUM(paid_amount::numeric), 0)::float AS paid,
+          COALESCE(SUM(remaining_amount::numeric), 0)::float AS remaining,
+          COUNT(*)::int AS count,
+          COUNT(*) FILTER (WHERE payment_status = 'paid')::int AS completed_payments,
+          COUNT(*) FILTER (WHERE payment_status <> 'paid')::int AS pending_payments
+        FROM sales_invoices
+        WHERE status = 'active'
+          AND date = ${date}
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+          AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+      `),
+      db.execute(sql`
+        SELECT COALESCE(SUM(sii.total::numeric - (sii.cost_price::numeric * sii.quantity::numeric)), 0)::float AS profit
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        WHERE si.status = 'active'
+          AND si.date = ${date}
+          AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND (${status} = '' OR si.payment_status = ${status} OR si.status = ${status})
+          AND (${user} = '' OR COALESCE(si.created_by_name, '') ILIKE ${userLike})
+      `),
+      db.execute(sql`
+        SELECT
+          COALESCE(SUM(total::numeric), 0)::float AS gross_total,
+          COALESCE(SUM(total::numeric - COALESCE(delivery_fee::numeric, 0)), 0)::float AS net_total,
+          COALESCE(SUM(COALESCE(delivery_fee::numeric, 0)), 0)::float AS delivery_total,
+          COALESCE(SUM(remaining_amount::numeric), 0)::float AS remaining,
+          COUNT(*)::int AS count,
+          COUNT(*) FILTER (WHERE payment_status = 'paid')::int AS completed_payments,
+          COUNT(*) FILTER (WHERE payment_status <> 'paid')::int AS pending_payments
+        FROM orders
+        WHERE archived_at IS NULL
+          AND created_at >= ${fromTs}::timestamp
+          AND created_at <= ${toTs}::timestamp
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+      `),
+      db.execute(sql`
+        SELECT
+          COALESCE(SUM(total_amount::numeric), 0)::float AS total,
+          COALESCE(SUM(remaining_amount::numeric), 0)::float AS remaining,
+          COUNT(*)::int AS count,
+          COUNT(*) FILTER (WHERE payment_status = 'paid')::int AS completed_payments,
+          COUNT(*) FILTER (WHERE payment_status <> 'paid')::int AS pending_payments
+        FROM service_orders
+        WHERE archived_at IS NULL
+          AND created_at >= ${fromTs}::timestamp
+          AND created_at <= ${toTs}::timestamp
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+      `),
+      db.execute(sql`
+        SELECT COALESCE(SUM(amount::numeric), 0)::float AS total, COUNT(*)::int AS count
+        FROM expenses
+        WHERE deleted_at IS NULL
+          AND date = ${date}
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+      `),
+      db.execute(sql`
+        SELECT method, COALESCE(SUM(amount), 0)::float AS total
+        FROM (
+          SELECT payment_method AS method, total::numeric AS amount
+          FROM sales_invoices
+          WHERE status = 'active' AND date = ${date}
+            AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+            AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+          UNION ALL
+          SELECT payment_method AS method, (total::numeric - COALESCE(delivery_fee::numeric, 0)) AS amount
+          FROM orders
+          WHERE archived_at IS NULL
+            AND created_at >= ${fromTs}::timestamp
+            AND created_at <= ${toTs}::timestamp
+            AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+        ) payments
+        WHERE (${paymentMethod} = '' OR method = ${paymentMethod})
+        GROUP BY method
+      `),
+      db.execute(sql`
+        SELECT COALESCE(category_name, 'غير مصنف') AS category_name, COALESCE(SUM(amount::numeric), 0)::float AS total
+        FROM expenses
+        WHERE deleted_at IS NULL
+          AND date = ${date}
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+        GROUP BY COALESCE(category_name, 'غير مصنف')
+        ORDER BY COALESCE(SUM(amount::numeric), 0) DESC
+      `),
+      db.execute(sql`
+        SELECT invoice_no AS ref, date::text AS date, COALESCE(customer_name, 'زبون') AS customer, total::text AS total, payment_method, payment_status
+        FROM sales_invoices
+        WHERE status = 'active' AND date = ${date}
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+          AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+        ORDER BY id DESC LIMIT 200
+      `),
+      db.execute(sql`
+        SELECT tracking_code AS ref, DATE(created_at)::text AS date, customer_name AS customer, total::text AS total, delivery_fee::text AS delivery_fee, payment_method, payment_status, status
+        FROM orders
+        WHERE archived_at IS NULL
+          AND created_at >= ${fromTs}::timestamp
+          AND created_at <= ${toTs}::timestamp
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+        ORDER BY created_at DESC LIMIT 200
+      `),
+      db.execute(sql`
+        SELECT tracking_code AS ref, DATE(created_at)::text AS date, customer_name AS customer, total_amount::text AS total, payment_status, status
+        FROM service_orders
+        WHERE archived_at IS NULL
+          AND created_at >= ${fromTs}::timestamp
+          AND created_at <= ${toTs}::timestamp
+          AND (${status} = '' OR payment_status = ${status} OR status = ${status})
+        ORDER BY created_at DESC LIMIT 200
+      `),
+      db.execute(sql`
+        SELECT id::text AS ref, date::text AS date, name AS title, category_name, amount::text AS amount, payment_method, created_by_name
+        FROM expenses
+        WHERE deleted_at IS NULL
+          AND date = ${date}
+          AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
+          AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
+        ORDER BY id DESC LIMIT 200
+      `),
+    ]);
+
+    const invoice = (invoiceRow.rows?.[0] ?? {}) as any;
+    const invoiceProfit = (invoiceProfitRow.rows?.[0] ?? {}) as any;
+    const order = (orderRow.rows?.[0] ?? {}) as any;
+    const service = (serviceRow.rows?.[0] ?? {}) as any;
+    const expense = (expenseRow.rows?.[0] ?? {}) as any;
+    const paymentByMethod = new Map((paymentRows.rows ?? []).map((row: any) => [String(row.method ?? ""), Number(row.total ?? 0)]));
+    const totalInvoices = Number(invoice.total ?? 0);
+    const totalStoreOrders = Number(order.net_total ?? 0);
+    const totalServiceBookings = Number(service.total ?? 0);
+    const totalExpenses = Number(expense.total ?? 0);
+    const deliveryFeesTotal = Number(order.delivery_total ?? 0);
+    const totalSales = totalInvoices + totalStoreOrders + totalServiceBookings;
+    const pendingPayments = Number(invoice.pending_payments ?? 0) + Number(order.pending_payments ?? 0) + Number(service.pending_payments ?? 0);
+    const completedPayments = Number(invoice.completed_payments ?? 0) + Number(order.completed_payments ?? 0) + Number(service.completed_payments ?? 0);
+
+    return json({
+      date,
+      filters: { paymentMethod, status, user },
+      summary: {
+        totalSales,
+        totalServiceBookings,
+        totalStoreOrders,
+        totalInvoices,
+        totalExpenses,
+        deliveryFeesTotal,
+        netSalesExcludingDelivery: totalSales,
+        netProfit: Number(invoiceProfit.profit ?? 0) + totalStoreOrders + totalServiceBookings - totalExpenses,
+        cashTotal: Number(paymentByMethod.get("cash") ?? paymentByMethod.get("cod") ?? 0),
+        cardTotal: Number(paymentByMethod.get("card") ?? paymentByMethod.get("pos") ?? 0),
+        transferTotal: Number(paymentByMethod.get("transfer") ?? 0),
+        pendingPayments,
+        completedPayments,
+        invoicesCount: Number(invoice.count ?? 0),
+        storeOrdersCount: Number(order.count ?? 0),
+        serviceBookingsCount: Number(service.count ?? 0),
+        expensesCount: Number(expense.count ?? 0),
+      },
+      payments: paymentRows.rows ?? [],
+      expensesByCategory: expenseCategoryRows.rows ?? [],
+      rows: {
+        invoices: invoiceRows.rows ?? [],
+        orders: orderRows.rows ?? [],
+        serviceBookings: serviceRows.rows ?? [],
+        expenses: expenseRows.rows ?? [],
+      },
+    });
+  }
 
   if (reportType === "options") {
     const [customers, products, categories, paymentMethods] = await Promise.all([
@@ -8548,7 +8785,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
       count: sql<number>`count(*)::int`,
     }).from(purchaseInvoicesTable).where(and(...purchaseConds) as any);
 
-    const expenseConds: any[] = [gte(expensesTable.date, from), lte(expensesTable.date, to)];
+    const expenseConds: any[] = [gte(expensesTable.date, from), lte(expensesTable.date, to), sql`${expensesTable.deletedAt} is null`];
     const [expenseRow] = await db.select({
       total: sql<string>`COALESCE(SUM(amount)::text, '0')`,
     }).from(expensesTable).where(and(...expenseConds) as any);
@@ -8829,16 +9066,55 @@ function normalizePrintTemplateConfig(value: unknown): string | null {
 }
 
 const DEFAULT_EXPENSE_CATEGORIES: { name: string; nameAr: string }[] = [
-  { name: "rent", nameAr: "إيجار" },
-  { name: "salaries", nameAr: "رواتب" },
-  { name: "supplies", nameAr: "مستلزمات" },
-  { name: "marketing", nameAr: "تسويق" },
-  { name: "other", nameAr: "أخرى" },
+  { name: "rent", nameAr: "الإيجار" },
+  { name: "salaries", nameAr: "الرواتب" },
+  { name: "fuel", nameAr: "الوقود" },
+  { name: "transportation", nameAr: "النقل" },
+  { name: "utilities", nameAr: "الخدمات" },
+  { name: "purchases", nameAr: "المشتريات" },
+  { name: "marketing", nameAr: "التسويق" },
+  { name: "maintenance", nameAr: "الصيانة" },
+  { name: "delivery", nameAr: "التوصيل" },
+  { name: "miscellaneous", nameAr: "متفرقات" },
 ];
 
+let expenseManagementReady: Promise<void> | null = null;
+async function ensureExpenseManagementTables() {
+  if (!expenseManagementReady) {
+    expenseManagementReady = db.execute(sql`
+      ALTER TABLE "expense_categories"
+        ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now();
+
+      ALTER TABLE "expenses"
+        ADD COLUMN IF NOT EXISTS "name" text NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
+        ADD COLUMN IF NOT EXISTS "receipt_image" text,
+        ADD COLUMN IF NOT EXISTS "updated_by" integer,
+        ADD COLUMN IF NOT EXISTS "updated_by_name" text NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now(),
+        ADD COLUMN IF NOT EXISTS "deleted_at" timestamp;
+
+      CREATE INDEX IF NOT EXISTS "expenses_date_idx" ON "expenses" ("date");
+      CREATE INDEX IF NOT EXISTS "expenses_category_id_idx" ON "expenses" ("category_id");
+      CREATE INDEX IF NOT EXISTS "expenses_payment_method_idx" ON "expenses" ("payment_method");
+      CREATE INDEX IF NOT EXISTS "expenses_created_by_idx" ON "expenses" ("created_by");
+      CREATE INDEX IF NOT EXISTS "expenses_deleted_at_idx" ON "expenses" ("deleted_at");
+    `).then(() => undefined).catch((err) => {
+      expenseManagementReady = null;
+      throw err;
+    });
+  }
+  await expenseManagementReady;
+}
+
 async function ensureExpenseCategoriesSeeded() {
-  const existing = await db.query.expenseCategoriesTable.findFirst();
-  if (!existing) await db.insert(expenseCategoriesTable).values(DEFAULT_EXPENSE_CATEGORIES);
+  await ensureExpenseManagementTables();
+  for (const category of DEFAULT_EXPENSE_CATEGORIES) {
+    const existing = await db.query.expenseCategoriesTable.findFirst({
+      where: or(eq(expenseCategoriesTable.name, category.name), eq(expenseCategoriesTable.nameAr, category.nameAr)),
+    });
+    if (!existing) await db.insert(expenseCategoriesTable).values(category);
+  }
 }
 
 function actor(user: AdminUser): { id: number | null; name: string } {
@@ -8847,8 +9123,25 @@ function actor(user: AdminUser): { id: number | null; name: string } {
 
 const PAYMENT_METHODS_VO = ["cash", "transfer", "pos"] as const;
 function normMethod(v: unknown): "cash" | "transfer" | "pos" {
+  if (v === "card") return "pos";
   return (PAYMENT_METHODS_VO as readonly string[]).includes(v as string) ? (v as any) : "cash";
 }
+
+const expenseMutationSchema = z.object({
+  date: z.string().min(1, "التاريخ مطلوب"),
+  name: z.string().optional().default(""),
+  categoryId: z.coerce.number({ error: "التصنيف مطلوب" }).int().positive("التصنيف مطلوب"),
+  amount: z.coerce.number({ error: "المبلغ مطلوب" }).positive("المبلغ يجب أن يكون أكبر من صفر"),
+  paymentMethod: z.enum(["cash", "transfer", "pos", "card"], { error: "طريقة الدفع مطلوبة" }).transform((value) => value === "card" ? "pos" : value),
+  notes: z.string().nullish(),
+  receiptImage: z.string().nullish(),
+});
+
+const expenseCategoryMutationSchema = z.object({
+  name: z.string().optional(),
+  nameAr: z.string().min(1, "اسم التصنيف مطلوب"),
+  isActive: z.boolean().optional(),
+});
 
 function parseAmount(v: unknown): number | null {
   const n = typeof v === "string" ? Number.parseFloat(v) : Number(v);
@@ -8867,23 +9160,33 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
   if (section === "expense-categories") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
+    await ensureExpenseManagementTables();
     if (method === "GET") {
       await ensureExpenseCategoriesSeeded();
-      const rows = await db.query.expenseCategoriesTable.findMany({ orderBy: (c, { asc }) => [asc(c.id)] });
+      const includeAll = req.nextUrl.searchParams.get("all") === "1";
+      const rows = await db.query.expenseCategoriesTable.findMany({
+        where: includeAll ? undefined : eq(expenseCategoriesTable.isActive, 1),
+        orderBy: (c, { asc }) => [asc(c.id)],
+      });
       return json(rows);
     }
     if (method === "POST") {
-      const { name, nameAr, isActive } = await body(req);
+      const parsed = expenseCategoryMutationSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("expense-categories.create", parsed);
+      const { name, nameAr, isActive } = parsed.data;
       const finalNameAr = textFallback(nameAr, name, "تصنيف مصروف جديد");
-      const finalName = textFallback(name, nameAr, `expense-${Date.now().toString(36)}`);
+      const finalName = textFallback(name, nameAr, slugFallback(nameAr, `expense-${Date.now().toString(36)}`));
       const [row] = await db.insert(expenseCategoriesTable).values({ name: finalName, nameAr: finalNameAr, isActive: isActive === false ? 0 : 1 }).returning();
+      void logAdminActivity(req, "expense_category_created", "expense_category", row.id, { name: row.nameAr });
       return json(row, 201);
     }
     if (method === "PATCH" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
-      const b = await body(req);
-      const update: any = {};
+      const parsed = expenseCategoryMutationSchema.partial().safeParse(await body(req));
+      if (!parsed.success) return validationError("expense-categories.update", parsed);
+      const b = parsed.data;
+      const update: any = { updatedAt: new Date() };
       if (b?.name !== undefined) update.name = b.name;
       if (b?.nameAr !== undefined) update.nameAr = b.nameAr;
       if (b?.isActive !== undefined) update.isActive = b.isActive ? 1 : 0;
@@ -8891,6 +9194,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       if (update.nameAr !== undefined && !String(update.nameAr ?? "").trim()) delete update.nameAr;
       const [row] = await db.update(expenseCategoriesTable).set(update).where(eq(expenseCategoriesTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      void logAdminActivity(req, "expense_category_updated", "expense_category", row.id, { fields: Object.keys(update) });
       return json(row);
     }
     if (method === "DELETE" && parts[2]) {
@@ -8901,6 +9205,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         return error(`لا يمكن الحذف — يوجد ${used[0].c} مصروف مرتبط بهذا النوع. عطّله بدل الحذف.`, 409);
       }
       await db.delete(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, id));
+      void logAdminActivity(req, "expense_category_deleted", "expense_category", id);
       return json({ message: "تم الحذف" });
     }
   }
@@ -9020,12 +9325,24 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
   if (section === "expenses") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
+    await ensureExpenseManagementTables();
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
+      const categoryId = numberId(req.nextUrl.searchParams.get("categoryId"));
+      const paymentMethod = (req.nextUrl.searchParams.get("paymentMethod") ?? "").trim();
+      const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
+      const user = (req.nextUrl.searchParams.get("user") ?? "").trim();
+      const searchLike = `%${search}%`;
+      const userLike = `%${user}%`;
       const conds = [] as any[];
+      conds.push(sql`${expensesTable.deletedAt} is null`);
       if (from) conds.push(gte(expensesTable.date, from));
       if (to) conds.push(lte(expensesTable.date, to));
+      if (categoryId) conds.push(eq(expensesTable.categoryId, categoryId));
+      if (paymentMethod) conds.push(eq(expensesTable.paymentMethod, normMethod(paymentMethod)));
+      if (search) conds.push(or(ilike(expensesTable.name, searchLike), ilike(expensesTable.categoryName, searchLike), ilike(expensesTable.notes, searchLike)));
+      if (user) conds.push(ilike(expensesTable.createdByName, userLike));
       const rows = await db
         .select()
         .from(expensesTable)
@@ -9034,9 +9351,9 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       return json(rows);
     }
     if (method === "POST") {
-      const b = await body(req);
-      const amt = parseAmount(b?.amount);
-      if (amt === null) return error("المبلغ غير صحيح", 400);
+      const parsed = expenseMutationSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("expenses.create", parsed);
+      const b = parsed.data;
       let categoryName = "";
       if (b?.categoryId) {
         const cat = await db.query.expenseCategoriesTable.findFirst({ where: eq(expenseCategoriesTable.id, b.categoryId) });
@@ -9048,10 +9365,10 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .values({
           date: b?.date || new Date().toISOString().slice(0, 10),
           name: textFallback(b?.name, categoryName || "مصروف"),
-          amount: String(amt),
+          amount: String(b.amount),
           categoryId: b?.categoryId ?? null,
           categoryName,
-          paymentMethod: normMethod(b?.paymentMethod ?? b?.method),
+          paymentMethod: normMethod(b?.paymentMethod),
           receiptImage: b?.receiptImage ? await persistMediaValue(b.receiptImage, "expenses") : null,
           notes: b?.notes ?? null,
           createdBy: a.id,
@@ -9061,10 +9378,44 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       void logAdminActivity(req, "expense_created", "expense", row.id);
       return json(row, 201);
     }
+    if ((method === "PATCH" || method === "PUT") && parts[2]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const parsed = expenseMutationSchema.partial().safeParse(await body(req));
+      if (!parsed.success) return validationError("expenses.update", parsed);
+      const b = parsed.data;
+      const update: any = { updatedAt: new Date() };
+      if (b.date !== undefined) update.date = b.date;
+      if (b.amount !== undefined) update.amount = String(b.amount);
+      if (b.categoryId !== undefined) {
+        const cat = await db.query.expenseCategoriesTable.findFirst({ where: eq(expenseCategoriesTable.id, b.categoryId) });
+        if (!cat) return error("تصنيف المصروف غير موجود", 400);
+        update.categoryId = b.categoryId;
+        update.categoryName = cat.nameAr;
+      }
+      if (b.name !== undefined) update.name = textFallback(b.name, update.categoryName, "مصروف");
+      if (b.paymentMethod !== undefined) update.paymentMethod = normMethod(b.paymentMethod);
+      if (b.notes !== undefined) update.notes = nullableText(b.notes);
+      if (b.receiptImage !== undefined) update.receiptImage = b.receiptImage ? await persistMediaValue(b.receiptImage, "expenses") : null;
+      const a = actor(auth);
+      update.updatedBy = a.id;
+      update.updatedByName = a.name;
+      const [row] = await db.update(expensesTable).set(update).where(and(eq(expensesTable.id, id), sql`${expensesTable.deletedAt} is null`) as any).returning();
+      if (!row) return error("المصروف غير موجود", 404);
+      void logAdminActivity(req, "expense_updated", "expense", row.id, { fields: Object.keys(update) });
+      return json(row);
+    }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
-      await db.delete(expensesTable).where(eq(expensesTable.id, id));
+      const a = actor(auth);
+      const [row] = await db
+        .update(expensesTable)
+        .set({ deletedAt: new Date(), updatedAt: new Date(), updatedBy: a.id, updatedByName: a.name })
+        .where(and(eq(expensesTable.id, id), sql`${expensesTable.deletedAt} is null`) as any)
+        .returning();
+      if (!row) return error("المصروف غير موجود", 404);
+      void logAdminActivity(req, "expense_deleted", "expense", id, { name: row.name, amount: row.amount });
       return json({ message: "تم الحذف" });
     }
   }
@@ -9150,7 +9501,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
             total: sql<number>`coalesce(sum(amount::numeric),0)::float`,
           })
           .from(expensesTable)
-          .where(and(gte(expensesTable.date, from), lte(expensesTable.date, to)))
+          .where(and(gte(expensesTable.date, from), lte(expensesTable.date, to), sql`${expensesTable.deletedAt} is null`))
           .groupBy(expensesTable.categoryId)
           .orderBy(sql`coalesce(sum(amount::numeric),0) desc`),
       ]);

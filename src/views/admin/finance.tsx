@@ -176,7 +176,7 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
         {[
           { href: "/admin/finance/daily-report", label: "التقرير اليومي", icon: Receipt },
           { href: "/admin/finance/reconciliation", label: "جرد الصندوق", icon: Scale },
-          { href: "/admin/finance/expenses", label: "المصاريف", icon: TrendingDown },
+          { href: "/admin/expenses", label: "المصاريف", icon: TrendingDown },
           { href: "/admin/finance/reports", label: "التقارير والتصدير", icon: FileText },
           { href: "/admin/accounting", label: "الحسابات", icon: Wallet },
         ].map((link) => (

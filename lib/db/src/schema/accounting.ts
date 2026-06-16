@@ -10,6 +10,7 @@ export const expenseCategoriesTable = pgTable("expense_categories", {
   nameAr: text("name_ar").notNull(),
   isActive: integer("is_active").notNull().default(1),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export const receiptVouchersTable = pgTable("receipt_vouchers", {
@@ -55,7 +56,11 @@ export const expensesTable = pgTable("expenses", {
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),
+  updatedBy: integer("updated_by").references(() => staffTable.id),
+  updatedByName: text("updated_by_name").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at"),
 });
 
 export type ReceiptVoucher = typeof receiptVouchersTable.$inferSelect;
