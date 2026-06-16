@@ -273,8 +273,10 @@ export function AdminLayout({
   return (
     <div className="min-h-screen bg-background flex overflow-x-hidden" dir="rtl">
       <aside className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 shrink-0 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`} style={{ backgroundColor: "hsl(var(--sidebar))" }}>
-        <div className="px-3 mb-6 min-w-0">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 shrink-0 object-contain mb-3" />
+        <div className="px-3 mb-6 min-w-0 overflow-hidden">
+          <div className="mb-3 flex h-14 w-full items-center overflow-hidden">
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={112} height={48} decoding="async" className="h-12 w-28 max-w-full shrink-0 object-contain" />
+          </div>
           <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
           <h2 className="truncate text-lg font-bold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</h2>
           <p className="truncate text-[11px] text-primary mt-2">
@@ -295,28 +297,30 @@ export function AdminLayout({
       <button
         type="button"
         onClick={toggleDesktopSidebar}
-        className={`hidden md:inline-flex fixed top-6 z-30 h-10 w-10 items-center justify-center rounded-lg bg-card border border-border/40 text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all ${
-          sidebarHidden ? "right-6" : "right-[15.5rem]"
+        className={`hidden md:inline-flex fixed top-5 z-30 h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-card border border-border/40 text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all ${
+          sidebarHidden ? "right-6" : "right-[calc(15rem+1rem)]"
         }`}
         aria-label={sidebarHidden ? "إظهار القائمة" : "إخفاء القائمة"}
       >
         <Menu className="w-4 h-4" />
       </button>
-      <div className="hidden md:block fixed left-6 top-6 z-20">
+      <div className="hidden md:flex fixed left-6 top-5 z-30 h-10 shrink-0 items-center">
         <AdminNotificationsBell />
       </div>
       <div className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur" dir="rtl" style={{ backgroundColor: "hsl(var(--sidebar) / 0.95)" }}>
-        <div className="flex items-center justify-between gap-3 overflow-hidden px-4 py-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 overflow-hidden px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
               onClick={() => setMobileSidebarOpen(true)}
-              className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"
               aria-label="فتح القائمة"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-9 shrink-0 object-contain" />
+            <div className="flex h-10 w-12 shrink-0 items-center justify-center overflow-hidden">
+              <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} decoding="async" className="h-9 w-10 max-w-full shrink-0 object-contain" />
+            </div>
             <div className="min-w-0 flex-1">
               <p className="text-xs text-muted-foreground">لوحة الإدارة</p>
               <p className="truncate text-sm font-semibold text-foreground">{settings?.site_name ?? "مجموعة علي جان"}</p>
@@ -324,7 +328,7 @@ export function AdminLayout({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <AdminNotificationsBell />
-            <button onClick={onLogout} className="p-2 rounded-lg text-muted-foreground hover:text-destructive">
+            <button onClick={onLogout} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-destructive" aria-label="تسجيل الخروج">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
@@ -368,7 +372,7 @@ export function AdminLayout({
           </aside>
         </div>
       )}
-      <main className={`flex-1 min-w-0 p-4 pt-20 md:pt-6 md:p-6 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}>{children}</main>
+      <main className={`flex-1 min-w-0 overflow-x-hidden p-4 pt-20 md:p-6 md:pt-20 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}>{children}</main>
     </div>
   );
 }
@@ -442,13 +446,13 @@ function AdminSidebarNav({
               type="button"
               onClick={() => toggleGroup(group.id)}
               aria-expanded={isOpen}
-              className={`w-full flex items-center gap-3 px-3 rounded-lg text-sm transition-colors ${
+              className={`w-full flex min-w-0 items-center gap-3 px-3 rounded-lg text-sm transition-colors ${
                 compact ? "py-2" : "py-2.5"
               } ${active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
             >
-              <GroupIcon className="w-4 h-4" />
-              <span className="font-medium">{group.label}</span>
-              <ChevronDown className={`w-4 h-4 mr-auto transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
+              <GroupIcon className="w-4 h-4 shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-right font-medium">{group.label}</span>
+              <ChevronDown className={`w-4 h-4 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
             </button>
             <div className={`grid transition-all duration-200 ease-out ${isOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}>
               <div className="overflow-hidden">
@@ -493,7 +497,7 @@ function AdminSidebarEntry({
   compact: boolean;
 }) {
   const ItemIcon = item.icon;
-  const baseClass = `w-full flex items-center gap-2.5 rounded-lg text-sm transition-colors ${
+  const baseClass = `w-full flex min-w-0 items-center gap-2.5 rounded-lg text-sm transition-colors ${
     compact ? "px-3 py-2" : "px-3 py-2.5"
   }`;
   if (!isNavItem(item)) {
@@ -506,8 +510,8 @@ function AdminSidebarEntry({
         }}
         className={`${baseClass} text-muted-foreground hover:text-destructive hover:bg-destructive/10`}
       >
-        <ItemIcon className="w-4 h-4" />
-        {item.label}
+        <ItemIcon className="w-4 h-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-right">{item.label}</span>
       </button>
     );
   }
@@ -515,15 +519,15 @@ function AdminSidebarEntry({
   const active = itemIsActive(location, item);
   const content = (
     <>
-      <ItemIcon className="w-4 h-4" />
-      <span>{item.label}</span>
+      <ItemIcon className="w-4 h-4 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-right">{item.label}</span>
       {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
-        <span className="mr-auto rounded-full bg-status-warning/15 px-2 py-0.5 text-[10px] text-status-warning">
+        <span className="shrink-0 rounded-full bg-status-warning/15 px-2 py-0.5 text-[10px] text-status-warning">
           {lowStockCount.toLocaleString("ar-IQ")}
         </span>
       )}
       {item.href === "/admin/messages" && newMessageCount > 0 && (
-        <span className="mr-auto rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+        <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
           {newMessageCount.toLocaleString("ar-IQ")}
         </span>
       )}
