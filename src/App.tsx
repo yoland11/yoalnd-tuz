@@ -88,6 +88,21 @@ function Router() {
           <Admin />
         </Suspense>
       </Route>
+      <Route path="/admin/reports/:rest*">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
+      <Route path="/admin/finance/:rest*">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
+      <Route path="/admin/expenses/:rest*">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
       <Route path="/admin/:rest*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
