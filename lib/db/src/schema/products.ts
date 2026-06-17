@@ -35,6 +35,20 @@ export const productsTable = pgTable("products", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export const stockMovementsTable = pgTable("stock_movements", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").references(() => productsTable.id),
+  stockSourceProductId: integer("stock_source_product_id").references(() => productsTable.id),
+  quantityChange: numeric("quantity_change", { precision: 12, scale: 3 }).notNull(),
+  reason: varchar("reason", { length: 80 }).notNull(),
+  relatedType: varchar("related_type", { length: 40 }),
+  relatedId: integer("related_id"),
+  createdBy: integer("created_by"),
+  createdByName: text("created_by_name").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertProductSchema = createInsertSchema(productsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type Product = typeof productsTable.$inferSelect;
+export type StockMovement = typeof stockMovementsTable.$inferSelect;

@@ -186,6 +186,11 @@ export default function ProductsPage() {
                                 <Link2 className="w-3 h-3" /> مشترك مع {p.sharedStockProductName}
                               </span>
                             )}
+                            {(p.sharedStockLinkedProducts?.length ?? 0) > 0 && (
+                              <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
+                                <Link2 className="w-3 h-3" /> مرتبط به {p.sharedStockLinkedProducts.map((item: any) => item.name).join("، ")}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="p-3 text-primary">{formatCurrency(p.price)}</td>
@@ -244,6 +249,11 @@ export default function ProductsPage() {
                             {p.sharedStockProductName && (
                               <p className="text-[11px] text-primary inline-flex items-center gap-1 mt-0.5">
                                 <Link2 className="w-3 h-3" /> مخزون مشترك مع {p.sharedStockProductName}
+                              </p>
+                            )}
+                            {(p.sharedStockLinkedProducts?.length ?? 0) > 0 && (
+                              <p className="text-[11px] text-muted-foreground inline-flex items-center gap-1 mt-0.5">
+                                <Link2 className="w-3 h-3" /> يستخدمه {p.sharedStockLinkedProducts.map((item: any) => item.name).join("، ")}
                               </p>
                             )}
                             <ProductColorDots colors={p.colors} max={4} />
@@ -307,6 +317,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
   const [draggedVideo, setDraggedVideo] = useState<number | null>(null);
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
+  const [sharedStockEnabled, setSharedStockEnabled] = useState(Boolean(form.sharedStockProductId));
+  const [stockSearch, setStockSearch] = useState("");
   const { data: publicSettings } = usePublicSettings();
   const selectedParent = form.categoryId
     ? parentCats.find(p => p.id === form.categoryId)
@@ -319,6 +331,21 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   });
   const linkedStockProduct = products.find((product: any) => product.id === form.sharedStockProductId);
   const linkableProducts = products.filter((product: any) => product.id !== form.id);
+  const filteredLinkableProducts = linkableProducts
+    .filter((product: any) => {
+      const term = stockSearch.trim().toLowerCase();
+      if (!term) return true;
+      return [
+        product.nameAr,
+        product.name,
+        product.barcode,
+        product.category,
+        product.categoryName,
+        product.subcategory,
+        product.subcategoryName,
+      ].some((value) => String(value ?? "").toLowerCase().includes(term));
+    })
+    .slice(0, 24);
 
   function addImages(results: ImageEditResult[]) {
     onChange({
@@ -461,15 +488,13 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               <span className="inline-flex items-center gap-2">
                 <input
                   type="checkbox"
-                  checked={!!form.sharedStockProductId}
+                  checked={sharedStockEnabled}
                   onChange={(event) => {
                     const checked = event.target.checked;
-                    const firstProduct = linkableProducts[0];
+                    setSharedStockEnabled(checked);
                     onChange({
                       ...form,
-                      sharedStockProductId: checked ? firstProduct?.id ?? null : null,
-                      stock: checked && firstProduct ? String(firstProduct.stock ?? 0) : form.stock,
-                      minStock: checked && firstProduct ? String(firstProduct.minStock ?? 0) : form.minStock,
+                      sharedStockProductId: checked ? form.sharedStockProductId ?? null : null,
                     });
                   }}
                   className="accent-primary"
@@ -482,32 +507,49 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                 </span>
               )}
             </label>
-            {!!form.sharedStockProductId && (
-              <div>
-                <label className="block text-xs text-muted-foreground mb-1">اختر المنتج الذي يشارك المخزون</label>
-                <select
-                  value={form.sharedStockProductId ?? ""}
-                  onChange={(event) => {
-                    const selected = linkableProducts.find((product: any) => product.id === Number(event.target.value));
-                    onChange({
-                      ...form,
-                      sharedStockProductId: selected?.id ?? null,
-                      stock: selected ? String(selected.stock ?? 0) : form.stock,
-                      minStock: selected ? String(selected.minStock ?? 0) : form.minStock,
-                    });
-                  }}
-                  className="w-full bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  {linkableProducts.length === 0 ? (
-                    <option value="">لا توجد منتجات متاحة للربط</option>
-                  ) : (
-                    linkableProducts.map((product: any) => (
-                      <option key={product.id} value={product.id}>
-                        {(product.nameAr || product.name) + ` - المخزون ${product.stock ?? 0}`}
-                      </option>
-                    ))
-                  )}
-                </select>
+            {sharedStockEnabled && (
+              <div className="space-y-2">
+                <label className="block text-xs text-muted-foreground">اختر المنتج الذي يشارك المخزون</label>
+                <div className="relative">
+                  <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    value={stockSearch}
+                    onChange={(event) => setStockSearch(event.target.value)}
+                    placeholder="ابحث بالاسم، الباركود، أو التصنيف..."
+                    className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+                <div className="max-h-48 overflow-y-auto rounded-lg border border-border/30 bg-background/30 divide-y divide-border/20">
+                  {filteredLinkableProducts.length === 0 ? (
+                    <div className="px-3 py-3 text-xs text-muted-foreground">لا توجد منتجات مطابقة للبحث</div>
+                  ) : filteredLinkableProducts.map((product: any) => {
+                    const selected = product.id === form.sharedStockProductId;
+                    const category = product.categoryName || product.category || "بدون تصنيف";
+                    return (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => onChange({
+                          ...form,
+                          sharedStockProductId: product.id,
+                          stock: String(product.stock ?? 0),
+                          minStock: String(product.minStock ?? 0),
+                        })}
+                        className={`w-full text-right px-3 py-2 transition-colors ${selected ? "bg-primary/10 text-primary" : "hover:bg-card/70 text-foreground"}`}
+                      >
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium truncate">{product.nameAr || product.name}</span>
+                            <span className="block text-[11px] text-muted-foreground truncate">
+                              {category}{product.barcode ? ` · ${product.barcode}` : ""}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">المخزون {product.stock ?? 0}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
                   سيبقى المنتج ظاهر بشكل مستقل في المتجر، لكن البيع أو الشراء لأي منتج مرتبط سيؤثر على نفس رصيد المخزون.
                 </p>

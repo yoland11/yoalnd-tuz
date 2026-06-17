@@ -23,6 +23,8 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("paid"),
   status: varchar("status", { length: 20 }).notNull().default("active"),
   isInternal: integer("is_internal").notNull().default(0),
+  stockApplied: integer("stock_applied").notNull().default(1),
+  stockRestoredAt: timestamp("stock_restored_at"),
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),

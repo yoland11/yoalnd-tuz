@@ -32,6 +32,8 @@ export const ordersTable = pgTable("orders", {
   notes: text("notes"),
   internalNotes: text("internal_notes"),
   archivedAt: timestamp("archived_at"),
+  stockApplied: integer("stock_applied").notNull().default(1),
+  stockRestoredAt: timestamp("stock_restored_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -53,6 +53,7 @@ import {
   servicesTable,
   settingsTable,
   staffTable,
+  stockMovementsTable,
   whatsappLogTable,
   suppliersTable,
   salesInvoicesTable,
@@ -202,6 +203,8 @@ let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
 let storeCategoryColumnsPromise: Promise<void> | null = null;
 let adminExtensionsTablesPromise: Promise<void> | null = null;
+let accountingTablesPromise: Promise<void> | null = null;
+let stockTrackingTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<string, { expiresAt: number; payload: any[] }>();
 const STORE_CATEGORIES_TTL_MS = 60_000;
 
@@ -1239,6 +1242,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     minStock: Number(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? 0),
     sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
     sharedStockProductName: p.sharedStockProductName ?? p.shared_stock_product_name ?? null,
+    sharedStockLinkedProducts: Array.isArray(p.sharedStockLinkedProducts) ? p.sharedStockLinkedProducts : [],
     barcode: p.barcode ?? null,
     costPrice: Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     categoryId: p.categoryId ?? p.category_id ?? null,
@@ -1268,31 +1272,68 @@ function productStockAmount(row: any): number {
   return Number(row?.effectiveStock ?? row?.stock ?? 0);
 }
 
+type StockMovementMeta = {
+  reason: string;
+  relatedType?: string | null;
+  relatedId?: number | null;
+  createdBy?: number | null;
+  createdByName?: string | null;
+};
+
+const NON_STOCK_CONSUMING_STATUSES = new Set(["cancelled", "canceled", "refunded", "returned", "deleted"]);
+
+function consumesStockStatus(status: unknown): boolean {
+  const value = String(status ?? "").trim().toLowerCase();
+  return value ? !NON_STOCK_CONSUMING_STATUSES.has(value) : true;
+}
+
+function hasAppliedStock(row: any): boolean {
+  return Number(row?.stockApplied ?? row?.stock_applied ?? 1) === 1;
+}
+
 async function hydrateSharedStockProducts(products: any[]): Promise<any[]> {
-  const sharedIds = [
+  const directSharedIds = [
     ...new Set(products.map((product) => productSharedStockId(product)).filter((id): id is number => !!id)),
   ];
-  if (sharedIds.length === 0) {
+  if (directSharedIds.length === 0) {
+    const productIds = products.map((product) => Number(product?.id)).filter((id) => Number.isFinite(id) && id > 0);
+    const linkedRows = productIds.length
+      ? await db.query.productsTable.findMany({ where: inArray(productsTable.sharedStockProductId, productIds) }) as any[]
+      : [];
     return products.map((product) => ({
       ...product,
       ownStock: Number(product?.stock ?? 0),
       effectiveStock: Number(product?.stock ?? 0),
       effectiveMinStock: Number(product?.minStock ?? product?.min_stock ?? 0),
+      sharedStockLinkedProducts: linkedRows
+        .filter((row) => productSharedStockId(row) === product.id && row.id !== product.id)
+        .map((row) => ({ id: row.id, name: row.nameAr ?? row.name ?? `#${row.id}` })),
     }));
   }
   const stockProducts = await db.query.productsTable.findMany({
-    where: inArray(productsTable.id, sharedIds),
+    where: inArray(productsTable.id, directSharedIds),
   }) as any[];
   const stockMap = new Map(stockProducts.map((product) => [product.id, product]));
+  const stockSourceIds = [
+    ...new Set(products.map((product) => productSharedStockId(product) ?? product.id).filter((id): id is number => !!id)),
+  ];
+  const linkedRows = stockSourceIds.length
+    ? await db.query.productsTable.findMany({ where: inArray(productsTable.sharedStockProductId, stockSourceIds) }) as any[]
+    : [];
   return products.map((product) => {
     const stockProductId = productSharedStockId(product);
     const stockProduct = stockProductId ? stockMap.get(stockProductId) : null;
+    const sourceId = stockProduct?.id ?? product.id;
+    const linkedProducts = linkedRows
+      .filter((row) => productSharedStockId(row) === sourceId && row.id !== product.id)
+      .map((row) => ({ id: row.id, name: row.nameAr ?? row.name ?? `#${row.id}` }));
     if (!stockProduct) {
       return {
         ...product,
         ownStock: Number(product?.stock ?? 0),
         effectiveStock: Number(product?.stock ?? 0),
         effectiveMinStock: Number(product?.minStock ?? product?.min_stock ?? 0),
+        sharedStockLinkedProducts: linkedProducts,
       };
     }
     return {
@@ -1302,6 +1343,7 @@ async function hydrateSharedStockProducts(products: any[]): Promise<any[]> {
       effectiveMinStock: Number(stockProduct.minStock ?? stockProduct.min_stock ?? 0),
       sharedStockProductId: stockProduct.id,
       sharedStockProductName: stockProduct.nameAr ?? stockProduct.name ?? `#${stockProduct.id}`,
+      sharedStockLinkedProducts: linkedProducts,
     };
   });
 }
@@ -1318,28 +1360,70 @@ async function resolveSharedStockProductId(value: unknown, selfId?: number | nul
   if (selfId && requestedId === selfId) return { id: null, message: "لا يمكن ربط المنتج بمخزونه نفسه" };
   const target = await db.query.productsTable.findFirst({ where: eq(productsTable.id, requestedId) }) as any;
   if (!target) return { id: null, message: "المنتج المرتبط بالمخزون غير موجود" };
-  const rootId = productSharedStockId(target) ?? target.id;
-  if (selfId && rootId === selfId) return { id: null, message: "لا يمكن إنشاء ربط دائري للمخزون" };
-  return { id: rootId };
+  let root = target;
+  const visited = new Set<number>(selfId ? [selfId] : []);
+  for (let depth = 0; depth < 20; depth += 1) {
+    const nextId = productSharedStockId(root);
+    if (!nextId) return { id: root.id };
+    if (selfId && nextId === selfId) return { id: null, message: "لا يمكن إنشاء ربط دائري للمخزون" };
+    if (visited.has(nextId)) return { id: null, message: "لا يمكن إنشاء ربط دائري للمخزون" };
+    visited.add(nextId);
+    const next = await db.query.productsTable.findFirst({ where: eq(productsTable.id, nextId) }) as any;
+    if (!next) return { id: root.id };
+    root = next;
+  }
+  return { id: null, message: "لا يمكن إنشاء ربط مخزون بهذا العمق" };
 }
 
 async function getStockOwnerProduct(productId: number): Promise<{ product: any; stockProduct: any } | null> {
   const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }) as any;
   if (!product) return null;
-  const stockProductId = productSharedStockId(product);
-  if (!stockProductId) return { product, stockProduct: product };
-  const stockProduct = await db.query.productsTable.findFirst({ where: eq(productsTable.id, stockProductId) }) as any;
-  return { product, stockProduct: stockProduct ?? product };
+  let stockProduct = product;
+  const visited = new Set<number>([product.id]);
+  for (let depth = 0; depth < 20; depth += 1) {
+    const stockProductId = productSharedStockId(stockProduct);
+    if (!stockProductId || visited.has(stockProductId)) break;
+    visited.add(stockProductId);
+    const next = await db.query.productsTable.findFirst({ where: eq(productsTable.id, stockProductId) }) as any;
+    if (!next) break;
+    stockProduct = next;
+  }
+  return { product, stockProduct };
 }
 
 async function stockOwnerIdsForProductIds(productIds: number[]): Promise<number[]> {
   const ids = [...new Set(productIds.filter((id) => Number.isFinite(id) && id > 0))];
   if (ids.length === 0) return [];
   const rows = await db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) as any[];
-  return [...new Set(rows.map((row) => productSharedStockId(row) ?? row.id).filter((id): id is number => !!id))];
+  const owners = await Promise.all(rows.map(async (row) => (await getStockOwnerProduct(row.id))?.stockProduct?.id ?? row.id));
+  return [...new Set(owners.filter((id): id is number => !!id))];
 }
 
-async function adjustProductStock(productId: number, delta: number): Promise<number | null> {
+async function recordStockMovement(resolved: { product: any; stockProduct: any }, delta: number, meta?: StockMovementMeta): Promise<void> {
+  if (!meta?.reason) return;
+  try {
+    await ensureStockTrackingTables();
+    await db.insert(stockMovementsTable).values({
+      productId: resolved.product?.id ?? null,
+      stockSourceProductId: resolved.stockProduct?.id ?? null,
+      quantityChange: String(delta),
+      reason: meta.reason,
+      relatedType: meta.relatedType ?? null,
+      relatedId: meta.relatedId ?? null,
+      createdBy: meta.createdBy ?? null,
+      createdByName: meta.createdByName ?? "",
+    } as any);
+  } catch (err) {
+    console.warn("stock movement log failed", {
+      reason: meta.reason,
+      relatedType: meta.relatedType,
+      relatedId: meta.relatedId,
+      message: err instanceof Error ? err.message : "unknown",
+    });
+  }
+}
+
+async function adjustProductStock(productId: number, delta: number, meta?: StockMovementMeta): Promise<number | null> {
   const resolved = await getStockOwnerProduct(productId);
   if (!resolved) return null;
   await db.execute(sql`
@@ -1347,17 +1431,119 @@ async function adjustProductStock(productId: number, delta: number): Promise<num
     SET stock = GREATEST(0, stock + ${Number(delta)}), updated_at = now()
     WHERE id = ${resolved.stockProduct.id}
   `);
+  await recordStockMovement(resolved, delta, meta);
   return resolved.stockProduct.id;
 }
 
-async function setProductStock(productId: number, stock: number): Promise<number | null> {
+async function setProductStock(productId: number, stock: number, meta?: StockMovementMeta): Promise<number | null> {
   const resolved = await getStockOwnerProduct(productId);
   if (!resolved) return null;
+  const previousStock = Number(resolved.stockProduct?.stock ?? 0);
+  const nextStock = Math.max(0, Math.floor(Number(stock) || 0));
   await db
     .update(productsTable)
-    .set({ stock: Math.max(0, Math.floor(Number(stock) || 0)), updatedAt: new Date() })
+    .set({ stock: nextStock, updatedAt: new Date() })
     .where(eq(productsTable.id, resolved.stockProduct.id));
+  const delta = nextStock - previousStock;
+  if (delta !== 0) await recordStockMovement(resolved, delta, meta);
   return resolved.stockProduct.id;
+}
+
+async function applyOrderItemsStock(
+  orderId: number,
+  direction: 1 | -1,
+  reason: string,
+  actorInfo?: { id: number | null; name: string } | null,
+): Promise<void> {
+  const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, orderId));
+  for (const item of items) {
+    const productId = Number(item.productId ?? 0);
+    const quantity = Number(item.quantity ?? 0);
+    if (productId > 0 && quantity > 0) {
+      await adjustProductStock(productId, direction * quantity, {
+        reason,
+        relatedType: "order",
+        relatedId: orderId,
+        createdBy: actorInfo?.id ?? null,
+        createdByName: actorInfo?.name ?? "",
+      });
+    }
+  }
+}
+
+async function syncOrderStockState(order: any, actorInfo?: { id: number | null; name: string } | null): Promise<void> {
+  if (!order?.id) return;
+  await ensureStockTrackingTables();
+  const shouldConsume = consumesStockStatus(order.status);
+  const stockApplied = hasAppliedStock(order);
+  if (stockApplied && !shouldConsume) {
+    await applyOrderItemsStock(order.id, 1, "order_stock_restored", actorInfo);
+    await db
+      .update(ordersTable)
+      .set({ stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date() } as any)
+      .where(eq(ordersTable.id, order.id));
+    return;
+  }
+  if (!stockApplied && shouldConsume) {
+    await applyOrderItemsStock(order.id, -1, "order_stock_deducted_again", actorInfo);
+    await db
+      .update(ordersTable)
+      .set({ stockApplied: 1, stockRestoredAt: null, updatedAt: new Date() } as any)
+      .where(eq(ordersTable.id, order.id));
+  }
+}
+
+async function restoreOrderStockBeforeDelete(order: any, actorInfo?: { id: number | null; name: string } | null): Promise<void> {
+  if (!order?.id || !hasAppliedStock(order)) return;
+  await applyOrderItemsStock(order.id, 1, "order_stock_restored_before_delete", actorInfo);
+  await db
+    .update(ordersTable)
+    .set({ stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date() } as any)
+    .where(eq(ordersTable.id, order.id));
+}
+
+async function applySalesInvoiceItemsStock(
+  invoiceId: number,
+  direction: 1 | -1,
+  reason: string,
+  actorInfo?: { id: number | null; name: string } | null,
+): Promise<void> {
+  const items = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, invoiceId));
+  for (const item of items) {
+    const productId = Number(item.productId ?? 0);
+    const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
+    if (productId > 0 && quantity > 0) {
+      await adjustProductStock(productId, direction * quantity, {
+        reason,
+        relatedType: "sales_invoice",
+        relatedId: invoiceId,
+        createdBy: actorInfo?.id ?? null,
+        createdByName: actorInfo?.name ?? "",
+      });
+    }
+  }
+}
+
+async function syncSalesInvoiceStockState(invoice: any, actorInfo?: { id: number | null; name: string } | null): Promise<void> {
+  if (!invoice?.id) return;
+  await ensureStockTrackingTables();
+  const shouldConsume = consumesStockStatus(invoice.status);
+  const stockApplied = hasAppliedStock(invoice);
+  if (stockApplied && !shouldConsume) {
+    await applySalesInvoiceItemsStock(invoice.id, 1, "sales_invoice_stock_restored", actorInfo);
+    await db
+      .update(salesInvoicesTable)
+      .set({ stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date() } as any)
+      .where(eq(salesInvoicesTable.id, invoice.id));
+    return;
+  }
+  if (!stockApplied && shouldConsume) {
+    await applySalesInvoiceItemsStock(invoice.id, -1, "sales_invoice_stock_deducted_again", actorInfo);
+    await db
+      .update(salesInvoicesTable)
+      .set({ stockApplied: 1, stockRestoredAt: null, updatedAt: new Date() } as any)
+      .where(eq(salesInvoicesTable.id, invoice.id));
+  }
 }
 
 function formatCategory(row: any, productCount = 0) {
@@ -1944,6 +2130,54 @@ async function ensureAdminProductsColumns(): Promise<void> {
     `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
   }
   await adminProductsColumnsPromise;
+}
+
+async function ensureStockTrackingTables(): Promise<void> {
+  if (!stockTrackingTablesPromise) {
+    stockTrackingTablesPromise = db.execute(sql`
+      alter table "orders"
+        add column if not exists "stock_applied" integer not null default 1,
+        add column if not exists "stock_restored_at" timestamp;
+
+      do $$
+      begin
+        if to_regclass('sales_invoices') is not null then
+          alter table "sales_invoices"
+            add column if not exists "stock_applied" integer not null default 1,
+            add column if not exists "stock_restored_at" timestamp;
+        end if;
+      end $$;
+
+      create table if not exists "stock_movements" (
+        "id" serial primary key,
+        "product_id" integer references "products" ("id") on delete set null,
+        "stock_source_product_id" integer references "products" ("id") on delete set null,
+        "quantity_change" numeric(12,3) not null,
+        "reason" varchar(80) not null,
+        "related_type" varchar(40),
+        "related_id" integer,
+        "created_by" integer,
+        "created_by_name" text not null default '',
+        "created_at" timestamp not null default now()
+      );
+
+      create index if not exists "stock_movements_product_id_idx" on "stock_movements" ("product_id");
+      create index if not exists "stock_movements_stock_source_product_id_idx" on "stock_movements" ("stock_source_product_id");
+      create index if not exists "stock_movements_related_idx" on "stock_movements" ("related_type", "related_id");
+      create index if not exists "stock_movements_created_at_idx" on "stock_movements" ("created_at");
+      create index if not exists "orders_stock_applied_status_idx" on "orders" ("stock_applied", "status");
+      do $$
+      begin
+        if to_regclass('sales_invoices') is not null then
+          create index if not exists "sales_invoices_stock_applied_status_idx" on "sales_invoices" ("stock_applied", "status");
+        end if;
+      end $$;
+    `).then(() => undefined).catch((err) => {
+      stockTrackingTablesPromise = null;
+      throw err;
+    });
+  }
+  await stockTrackingTablesPromise;
 }
 
 async function ensureStoreCategoryColumns(): Promise<void> {
@@ -3035,6 +3269,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   if (method === "POST" && parts.length === 1) {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
+    const productActor = actor(auth);
     const rawBody = await body(req);
     const parsed = CreateProductBody.safeParse(rawBody);
     if (!parsed.success) return validationError("products.create", parsed);
@@ -3081,6 +3316,18 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       const [updated] = await db.update(productsTable).set({ barcode, updatedAt: new Date() }).where(eq(productsTable.id, product.id)).returning();
       product = updated ?? product;
     }
+    if (!sharedStock.id && Number(data.stock ?? 0) > 0) {
+      const resolved = await getStockOwnerProduct(product.id);
+      if (resolved) {
+        await recordStockMovement(resolved, Number(data.stock ?? 0), {
+          reason: "product_initial_stock",
+          relatedType: "product",
+          relatedId: product.id,
+          createdBy: productActor.id,
+          createdByName: productActor.name,
+        });
+      }
+    }
     void logAdminActivity(req, "product_created", "product", product.id, { name: product.nameAr });
     clearStoreCategoriesCache();
     const hydrated = await hydrateSharedStockProduct(product);
@@ -3090,6 +3337,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   if (method === "PATCH" && parts[1]) {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
+    const productActor = actor(auth);
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
     const rawBody = await body(req);
@@ -3106,6 +3354,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
     if (data.videos !== undefined) data.videos = await resolveProductVideoInputs(id, data.videos);
     const update: any = { updatedAt: new Date() };
+    let directStockMovementDelta: number | null = null;
     for (const k of [
       "name",
       "nameAr",
@@ -3152,9 +3401,25 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (data.stock !== undefined) {
       const nextStock = Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0;
       if (sharedStock.id) {
-        await setProductStock(sharedStock.id, nextStock);
+        await setProductStock(sharedStock.id, nextStock, {
+          reason: "manual_stock_adjustment",
+          relatedType: "product",
+          relatedId: id,
+          createdBy: productActor.id,
+          createdByName: productActor.name,
+        });
+      } else if (hasSharedStockChange) {
+        const cleanStock = Math.max(0, Math.floor(nextStock));
+        directStockMovementDelta = cleanStock - Number(existing.stock ?? 0);
+        update.stock = cleanStock;
       } else {
-        update.stock = Math.max(0, Math.floor(nextStock));
+        await setProductStock(id, nextStock, {
+          reason: "manual_stock_adjustment",
+          relatedType: "product",
+          relatedId: id,
+          createdBy: productActor.id,
+          createdByName: productActor.name,
+        });
       }
     }
     if (data.minStock !== undefined) {
@@ -3183,6 +3448,15 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     Object.assign(update, pickContentTranslations(rawBody, true));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
+    if (directStockMovementDelta) {
+      await recordStockMovement({ product, stockProduct: product }, directStockMovementDelta, {
+        reason: "manual_stock_adjustment",
+        relatedType: "product",
+        relatedId: id,
+        createdBy: productActor.id,
+        createdByName: productActor.name,
+      });
+    }
     void logAdminActivity(req, "product_updated", "product", product.id, { fields: Object.keys(update) });
     clearStoreCategoriesCache();
     const hydrated = await hydrateSharedStockProduct(product);
@@ -3672,6 +3946,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
 async function handleOrders(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureTrackingColumns();
+  await ensureStockTrackingTables();
 
   if (method === "GET" && parts[1] === "my") {
     const customerId = getCurrentCustomerId(req);
@@ -3879,7 +4154,11 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           image: product ? publicMediaValue("product", product, product.images?.[0], 0) : null,
         });
         if (product) {
-          await adjustProductStock(product.id, -item.quantity);
+          await adjustProductStock(product.id, -item.quantity, {
+            reason: "order_stock_deducted",
+            relatedType: "order",
+            relatedId: order.id,
+          });
         }
       }),
     );
@@ -3974,6 +4253,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       .where(eq(ordersTable.id, id))
       .returning();
     if (!order) return error("الطلب غير موجود", 404);
+    await syncOrderStockState(order, actor(auth));
     await db.insert(orderStatusHistoryTable).values({
       orderId: order.id,
       status,
@@ -6066,6 +6346,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         minStock: String(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? "0"),
         sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
         sharedStockProductName: p.sharedStockProductName ?? null,
+        sharedStockLinkedProducts: Array.isArray(p.sharedStockLinkedProducts) ? p.sharedStockLinkedProducts : [],
         category: p.category ?? "",
         images: publicMediaList("product", p, p.images),
         videos: publicMediaList("product-video", p, p.videos),
@@ -7139,9 +7420,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
-  if (section === "orders") {
+    if (section === "orders") {
     const auth = await requirePermission(req, "orders");
     if (isResponse(auth)) return auth;
+    await ensureStockTrackingTables();
+    const orderActor = actor(auth);
     if (method === "POST" && !parts[2]) {
       const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus } = await body(req);
       const orderItems = mergeOrderItems(items);
@@ -7191,7 +7474,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           await Promise.all(
             orderItems
               .filter((it: any) => Number(it.productId) > 0)
-              .map((it: any) => adjustProductStock(Number(it.productId), -Number(it.quantity))),
+              .map((it: any) => adjustProductStock(Number(it.productId), -Number(it.quantity), {
+                reason: "order_stock_deducted",
+                relatedType: "order",
+                relatedId: order.id,
+                createdBy: orderActor.id,
+                createdByName: orderActor.name,
+              })),
           );
           await db.insert(orderStatusHistoryTable).values({ orderId: order.id, status: "pending", notes: "إضافة من الإدارة" });
           void fireOrderEvent("placed", {
@@ -7285,6 +7574,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
+      if (update.status !== undefined) {
+        await syncOrderStockState(row, orderActor);
+      }
       if (update.paymentStatus !== undefined || update.remainingAmount !== undefined) {
         void notifyOrderNeedsFollowup({
           kind: "order",
@@ -7329,6 +7621,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) as any;
+      if (current) {
+        await restoreOrderStockBeforeDelete(current, orderActor);
+      }
       await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, id));
       await db.delete(orderStatusHistoryTable).where(eq(orderStatusHistoryTable.orderId, id));
       await db.delete(ordersTable).where(eq(ordersTable.id, id));
@@ -7641,7 +7937,9 @@ async function ensureSalesInvoicesTables() {
       );
       ALTER TABLE sales_invoices
         ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(60),
-        ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS stock_applied INTEGER NOT NULL DEFAULT 1,
+        ADD COLUMN IF NOT EXISTS stock_restored_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
       CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
@@ -7757,6 +8055,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
   const auth = await requirePermission(req, "accounting");
   if (isResponse(auth)) return auth;
   await ensureSalesInvoicesTables();
+  await ensureStockTrackingTables();
   const method = req.method;
   const id = parts[2] ? int(parts[2]) : null;
 
@@ -7853,7 +8152,13 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       // Update product stock
       for (const item of items) {
         if (item.productId && item.quantity > 0) {
-          await adjustProductStock(Number(item.productId), -Number(item.quantity));
+          await adjustProductStock(Number(item.productId), -Number(item.quantity), {
+            reason: "sales_invoice_stock_deducted",
+            relatedType: "sales_invoice",
+            relatedId: inv.id,
+            createdBy: a.id,
+            createdByName: a.name,
+          });
         }
       }
       void notifyLowStockForProductIds(items.map((item) => Number(item.productId)));
@@ -7876,6 +8181,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
 
   if (method === "PUT" && id) {
     const b = await body(req);
+    const a = actor(auth);
     const existing = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
     if (!existing) return error("الفاتورة غير موجودة", 404);
     const oldItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
@@ -7902,18 +8208,20 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       taxAmount: String(taxAmount), total: String(total),
       paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
       paymentMethod: b.paymentMethod ?? existing.paymentMethod,
-      paymentStatus, notes: b.notes ?? existing.notes,
+      paymentStatus,
+      status: b.status !== undefined ? String(b.status || existing.status) : existing.status,
+      notes: b.notes ?? existing.notes,
       isInternal: b.isInternal !== undefined ? (b.isInternal ? 1 : 0) : existing.isInternal,
       updatedAt: new Date(),
     } as any).where(eq(salesInvoicesTable.id, id));
 
     if (parsedItems) {
-      for (const item of oldItems) {
-        const productId = Number(item.productId ?? 0);
-        const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
-        if (productId > 0 && quantity > 0) {
-          await adjustProductStock(productId, quantity);
-        }
+      if (hasAppliedStock(existing)) {
+        await applySalesInvoiceItemsStock(id, 1, "sales_invoice_stock_restored_for_edit", a);
+        await db
+          .update(salesInvoicesTable)
+          .set({ stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date() } as any)
+          .where(eq(salesInvoicesTable.id, id));
       }
       await db.delete(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
       if (parsedItems.length > 0) {
@@ -7926,15 +8234,11 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
             costPrice: String(item.costPrice ?? 0),
           }))
         );
-        for (const item of parsedItems) {
-          if (item.productId && item.quantity > 0) {
-            await adjustProductStock(Number(item.productId), -Number(item.quantity));
-          }
-        }
         void notifyLowStockForProductIds(parsedItems.map((item) => Number(item.productId)));
       }
     }
     const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    if (final) await syncSalesInvoiceStockState(final, a);
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
     const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
     void logAdminActivity(req, "sales_invoice_updated", "sales_invoice", id, {
@@ -7947,7 +8251,16 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
   }
 
   if (method === "DELETE" && id) {
-    await db.update(salesInvoicesTable).set({ status: "deleted" } as any).where(eq(salesInvoicesTable.id, id));
+    const a = actor(auth);
+    const [deleted] = await db
+      .update(salesInvoicesTable)
+      .set({ status: "deleted", updatedAt: new Date() } as any)
+      .where(eq(salesInvoicesTable.id, id))
+      .returning();
+    if (deleted) {
+      await syncSalesInvoiceStockState(deleted, a);
+      void logAdminActivity(req, "sales_invoice_deleted", "sales_invoice", id, { invoiceNo: deleted.invoiceNo });
+    }
     return json({ message: "تم الحذف" });
   }
 
@@ -8061,7 +8374,13 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
       // Update product stock on purchase
       for (const item of processedItems) {
         if (item.productId && item.quantity > 0) {
-          await adjustProductStock(Number(item.productId), Number(item.quantity));
+          await adjustProductStock(Number(item.productId), Number(item.quantity), {
+            reason: "purchase_invoice_stock_increased",
+            relatedType: "purchase_invoice",
+            relatedId: inv.id,
+            createdBy: a.id,
+            createdByName: a.name,
+          });
           const updateVals: any = { costPrice: String(item.costPrice) };
           if (item.salePrice > 0) {
             updateVals.price = String(item.salePrice);
@@ -9082,6 +9401,34 @@ let expenseManagementReady: Promise<void> | null = null;
 async function ensureExpenseManagementTables() {
   if (!expenseManagementReady) {
     expenseManagementReady = db.execute(sql`
+      CREATE TABLE IF NOT EXISTS "expense_categories" (
+        "id" serial PRIMARY KEY,
+        "name" text NOT NULL,
+        "name_ar" text NOT NULL,
+        "is_active" integer NOT NULL DEFAULT 1,
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS "expenses" (
+        "id" serial PRIMARY KEY,
+        "date" date NOT NULL DEFAULT now(),
+        "name" text NOT NULL DEFAULT '',
+        "amount" numeric(12,2) NOT NULL,
+        "category_id" integer REFERENCES "expense_categories" ("id") ON DELETE SET NULL,
+        "category_name" text NOT NULL DEFAULT '',
+        "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
+        "receipt_image" text,
+        "notes" text,
+        "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+        "created_by_name" text NOT NULL DEFAULT '',
+        "updated_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+        "updated_by_name" text NOT NULL DEFAULT '',
+        "created_at" timestamp NOT NULL DEFAULT now(),
+        "updated_at" timestamp NOT NULL DEFAULT now(),
+        "deleted_at" timestamp
+      );
+
       ALTER TABLE "expense_categories"
         ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now();
 
@@ -9107,6 +9454,86 @@ async function ensureExpenseManagementTables() {
   await expenseManagementReady;
 }
 
+async function ensureAccountingVoucherTables() {
+  if (!accountingTablesPromise) {
+    accountingTablesPromise = ensureExpenseManagementTables()
+      .then(() => db.execute(sql`
+        CREATE TABLE IF NOT EXISTS "receipt_vouchers" (
+          "id" serial PRIMARY KEY,
+          "voucher_no" varchar(30) NOT NULL UNIQUE,
+          "date" date NOT NULL DEFAULT now(),
+          "amount" numeric(12,2) NOT NULL,
+          "payer_name" text NOT NULL,
+          "customer_id" integer REFERENCES "customers" ("id") ON DELETE SET NULL,
+          "order_id" integer REFERENCES "orders" ("id") ON DELETE SET NULL,
+          "booking_id" integer REFERENCES "service_orders" ("id") ON DELETE SET NULL,
+          "reference" text,
+          "method" varchar(20) NOT NULL DEFAULT 'cash',
+          "notes" text,
+          "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+          "created_by_name" text NOT NULL DEFAULT '',
+          "created_at" timestamp NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS "payment_vouchers" (
+          "id" serial PRIMARY KEY,
+          "voucher_no" varchar(30) NOT NULL UNIQUE,
+          "date" date NOT NULL DEFAULT now(),
+          "amount" numeric(12,2) NOT NULL,
+          "payee_name" text NOT NULL,
+          "reference" text,
+          "method" varchar(20) NOT NULL DEFAULT 'cash',
+          "notes" text,
+          "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+          "created_by_name" text NOT NULL DEFAULT '',
+          "created_at" timestamp NOT NULL DEFAULT now()
+        );
+
+        ALTER TABLE "receipt_vouchers"
+          ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
+          ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
+          ADD COLUMN IF NOT EXISTS "amount" numeric(12,2) NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS "payer_name" text NOT NULL DEFAULT '',
+          ADD COLUMN IF NOT EXISTS "customer_id" integer,
+          ADD COLUMN IF NOT EXISTS "order_id" integer,
+          ADD COLUMN IF NOT EXISTS "booking_id" integer,
+          ADD COLUMN IF NOT EXISTS "reference" text,
+          ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
+          ADD COLUMN IF NOT EXISTS "notes" text,
+          ADD COLUMN IF NOT EXISTS "created_by" integer,
+          ADD COLUMN IF NOT EXISTS "created_by_name" text NOT NULL DEFAULT '',
+          ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
+
+        ALTER TABLE "payment_vouchers"
+          ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
+          ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
+          ADD COLUMN IF NOT EXISTS "amount" numeric(12,2) NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS "payee_name" text NOT NULL DEFAULT '',
+          ADD COLUMN IF NOT EXISTS "reference" text,
+          ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
+          ADD COLUMN IF NOT EXISTS "notes" text,
+          ADD COLUMN IF NOT EXISTS "created_by" integer,
+          ADD COLUMN IF NOT EXISTS "created_by_name" text NOT NULL DEFAULT '',
+          ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
+
+        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_vouchers_voucher_no_idx" ON "receipt_vouchers" ("voucher_no");
+        CREATE INDEX IF NOT EXISTS "receipt_vouchers_date_idx" ON "receipt_vouchers" ("date");
+        CREATE INDEX IF NOT EXISTS "receipt_vouchers_customer_id_idx" ON "receipt_vouchers" ("customer_id");
+        CREATE INDEX IF NOT EXISTS "receipt_vouchers_created_by_idx" ON "receipt_vouchers" ("created_by");
+
+        CREATE UNIQUE INDEX IF NOT EXISTS "payment_vouchers_voucher_no_idx" ON "payment_vouchers" ("voucher_no");
+        CREATE INDEX IF NOT EXISTS "payment_vouchers_date_idx" ON "payment_vouchers" ("date");
+        CREATE INDEX IF NOT EXISTS "payment_vouchers_created_by_idx" ON "payment_vouchers" ("created_by");
+      `))
+      .then(() => undefined)
+      .catch((err) => {
+        accountingTablesPromise = null;
+        throw err;
+      });
+  }
+  await accountingTablesPromise;
+}
+
 async function ensureExpenseCategoriesSeeded() {
   await ensureExpenseManagementTables();
   for (const category of DEFAULT_EXPENSE_CATEGORIES) {
@@ -9128,10 +9555,16 @@ function normMethod(v: unknown): "cash" | "transfer" | "pos" {
 }
 
 const expenseMutationSchema = z.object({
-  date: z.string().min(1, "التاريخ مطلوب"),
+  date: z.preprocess((value) => normalizeDateOnly(value) ?? value, z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ غير صحيح")),
   name: z.string().optional().default(""),
-  categoryId: z.coerce.number({ error: "التصنيف مطلوب" }).int().positive("التصنيف مطلوب"),
-  amount: z.coerce.number({ error: "المبلغ مطلوب" }).positive("المبلغ يجب أن يكون أكبر من صفر"),
+  categoryId: z.preprocess(
+    (value) => typeof value === "string" ? normalizePhoneDigits(value) : value,
+    z.coerce.number({ error: "التصنيف مطلوب" }).int().positive("التصنيف مطلوب"),
+  ),
+  amount: z.preprocess(
+    (value) => parseAmount(value) ?? value,
+    z.number({ error: "المبلغ مطلوب" }).positive("المبلغ يجب أن يكون أكبر من صفر"),
+  ),
   paymentMethod: z.enum(["cash", "transfer", "pos", "card"], { error: "طريقة الدفع مطلوبة" }).transform((value) => value === "card" ? "pos" : value),
   notes: z.string().nullish(),
   receiptImage: z.string().nullish(),
@@ -9144,8 +9577,38 @@ const expenseCategoryMutationSchema = z.object({
 });
 
 function parseAmount(v: unknown): number | null {
-  const n = typeof v === "string" ? Number.parseFloat(v) : Number(v);
+  const normalized = typeof v === "string"
+    ? v
+        .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+        .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+        .replace(/[٬,،\s]/g, "")
+        .replace(/[٫]/g, ".")
+    : v;
+  const n = typeof normalized === "string" ? Number.parseFloat(normalized) : Number(normalized);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function normalizeDateOnly(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(normalized);
+  const local = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/.exec(normalized);
+  const parts = iso
+    ? { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) }
+    : local
+      ? { year: Number(local[3]), month: Number(local[2]), day: Number(local[1]) }
+      : null;
+  if (!parts) return null;
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (
+    date.getUTCFullYear() !== parts.year ||
+    date.getUTCMonth() !== parts.month - 1 ||
+    date.getUTCDate() !== parts.day
+  ) return null;
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
 function fmtVoucherNo(prefix: string, id: number, createdAt: Date): string {
@@ -9213,6 +9676,12 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
   if (section === "receipt-vouchers") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
+    try {
+      await ensureAccountingVoucherTables();
+    } catch (err: any) {
+      console.error("accounting vouchers table ensure failed", { section, message: err?.message });
+      return error("تعذر تجهيز جداول الحسابات. تأكد من صلاحيات قاعدة البيانات ثم حاول مرة أخرى.", 500);
+    }
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
@@ -9231,6 +9700,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       let customerId = b?.customerId ?? null;
       const amt = parseAmount(b?.amount);
       if (amt === null) return error("المبلغ غير صحيح", 400);
+      const voucherDate = normalizeDateOnly(b?.date) ?? new Date().toISOString().slice(0, 10);
       if (!customerId && typeof b?.customerPhone === "string" && b.customerPhone.trim()) {
         const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -9238,35 +9708,45 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         if (c) customerId = c.id;
       }
       const a = actor(auth);
-      const [row] = await db
-        .insert(receiptVouchersTable)
-        .values({
-          voucherNo: `TMP-${randomUUID()}`,
-          date: b?.date || new Date().toISOString().slice(0, 10),
-          amount: String(amt),
-          payerName: textFallback(b?.payerName, "زبون"),
-          customerId: customerId ?? null,
-          orderId: b?.orderId ?? null,
-          bookingId: b?.bookingId ?? null,
-          reference: b?.reference ?? null,
-          method: normMethod(b?.method),
-          notes: b?.notes ?? null,
-          createdBy: a.id,
-          createdByName: a.name,
-        })
-        .returning();
-      const [updated] = await db
-        .update(receiptVouchersTable)
-        .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
-        .where(eq(receiptVouchersTable.id, row.id))
-        .returning();
-      void logAdminActivity(req, "receipt_voucher_created", "receipt_voucher", updated.id, { voucherNo: updated.voucherNo });
-      return json(updated, 201);
+      try {
+        const [row] = await db
+          .insert(receiptVouchersTable)
+          .values({
+            voucherNo: `TMP-${randomUUID()}`,
+            date: voucherDate,
+            amount: String(amt),
+            payerName: textFallback(b?.payerName, "زبون"),
+            customerId: customerId ?? null,
+            orderId: b?.orderId ?? null,
+            bookingId: b?.bookingId ?? null,
+            reference: nullableText(b?.reference),
+            method: normMethod(b?.method),
+            notes: nullableText(b?.notes),
+            createdBy: a.id,
+            createdByName: a.name,
+          })
+          .returning();
+        const [updated] = await db
+          .update(receiptVouchersTable)
+          .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
+          .where(eq(receiptVouchersTable.id, row.id))
+          .returning();
+        void logAdminActivity(req, "receipt_voucher_created", "receipt_voucher", updated.id, { voucherNo: updated.voucherNo });
+        return json(updated, 201);
+      } catch (err: any) {
+        console.error("receipt voucher save failed", { message: err?.message });
+        return error("تعذر حفظ سند القبض. تحقق من البيانات أو صلاحيات قاعدة البيانات.", 500);
+      }
     }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
-      await db.delete(receiptVouchersTable).where(eq(receiptVouchersTable.id, id));
+      try {
+        await db.delete(receiptVouchersTable).where(eq(receiptVouchersTable.id, id));
+      } catch (err: any) {
+        console.error("receipt voucher delete failed", { id, message: err?.message });
+        return error("تعذر حذف سند القبض.", 500);
+      }
       return json({ message: "تم الحذف" });
     }
   }
@@ -9274,6 +9754,12 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
   if (section === "payment-vouchers") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
+    try {
+      await ensureAccountingVoucherTables();
+    } catch (err: any) {
+      console.error("accounting vouchers table ensure failed", { section, message: err?.message });
+      return error("تعذر تجهيز جداول الحسابات. تأكد من صلاحيات قاعدة البيانات ثم حاول مرة أخرى.", 500);
+    }
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
@@ -9291,33 +9777,44 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const b = await body(req);
       const amt = parseAmount(b?.amount);
       if (amt === null) return error("المبلغ غير صحيح", 400);
+      const voucherDate = normalizeDateOnly(b?.date) ?? new Date().toISOString().slice(0, 10);
       const a = actor(auth);
-      const [row] = await db
-        .insert(paymentVouchersTable)
-        .values({
-          voucherNo: `TMP-${randomUUID()}`,
-          date: b?.date || new Date().toISOString().slice(0, 10),
-          amount: String(amt),
-          payeeName: textFallback(b?.payeeName, "مستلم"),
-          reference: b?.reference ?? null,
-          method: normMethod(b?.method),
-          notes: b?.notes ?? null,
-          createdBy: a.id,
-          createdByName: a.name,
-        })
-        .returning();
-      const [updated] = await db
-        .update(paymentVouchersTable)
-        .set({ voucherNo: fmtVoucherNo("PAY", row.id, row.createdAt) })
-        .where(eq(paymentVouchersTable.id, row.id))
-        .returning();
-      void logAdminActivity(req, "payment_voucher_created", "payment_voucher", updated.id, { voucherNo: updated.voucherNo });
-      return json(updated, 201);
+      try {
+        const [row] = await db
+          .insert(paymentVouchersTable)
+          .values({
+            voucherNo: `TMP-${randomUUID()}`,
+            date: voucherDate,
+            amount: String(amt),
+            payeeName: textFallback(b?.payeeName, "مستلم"),
+            reference: nullableText(b?.reference),
+            method: normMethod(b?.method),
+            notes: nullableText(b?.notes),
+            createdBy: a.id,
+            createdByName: a.name,
+          })
+          .returning();
+        const [updated] = await db
+          .update(paymentVouchersTable)
+          .set({ voucherNo: fmtVoucherNo("PAY", row.id, row.createdAt) })
+          .where(eq(paymentVouchersTable.id, row.id))
+          .returning();
+        void logAdminActivity(req, "payment_voucher_created", "payment_voucher", updated.id, { voucherNo: updated.voucherNo });
+        return json(updated, 201);
+      } catch (err: any) {
+        console.error("payment voucher save failed", { message: err?.message });
+        return error("تعذر حفظ سند الصرف. تحقق من البيانات أو صلاحيات قاعدة البيانات.", 500);
+      }
     }
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
-      await db.delete(paymentVouchersTable).where(eq(paymentVouchersTable.id, id));
+      try {
+        await db.delete(paymentVouchersTable).where(eq(paymentVouchersTable.id, id));
+      } catch (err: any) {
+        console.error("payment voucher delete failed", { id, message: err?.message });
+        return error("تعذر حذف سند الصرف.", 500);
+      }
       return json({ message: "تم الحذف" });
     }
   }
@@ -9423,6 +9920,12 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
   if (section === "accounting") {
     const auth = await requirePermission(req, "accounting");
     if (isResponse(auth)) return auth;
+    try {
+      await ensureAccountingVoucherTables();
+    } catch (err: any) {
+      console.error("accounting tables ensure failed", { section, message: err?.message });
+      return error("تعذر تجهيز جداول الحسابات. تأكد من صلاحيات قاعدة البيانات ثم حاول مرة أخرى.", 500);
+    }
     if (method === "GET" && parts[2] === "statement") {
       const customerId = req.nextUrl.searchParams.get("customerId") ? Number.parseInt(req.nextUrl.searchParams.get("customerId")!, 10) : null;
       const rawPhoneParam = req.nextUrl.searchParams.get("phone")?.trim();

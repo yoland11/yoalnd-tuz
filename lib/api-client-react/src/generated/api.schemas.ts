@@ -64,6 +64,7 @@ export interface Product {
   sharedStockProductId?: number | null;
   /** @nullable */
   sharedStockProductName?: string | null;
+  sharedStockLinkedProducts?: { id: number; name: string }[];
   minStock?: number;
   /** @nullable */
   barcode?: string | null;
