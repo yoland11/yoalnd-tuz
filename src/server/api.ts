@@ -1314,15 +1314,23 @@ async function hydrateSharedStockProducts(products: any[]): Promise<any[]> {
     where: inArray(productsTable.id, directSharedIds),
   }) as any[];
   const stockMap = new Map(stockProducts.map((product) => [product.id, product]));
+  const rootMap = new Map<number, any>();
+  await Promise.all(stockProducts.map(async (product) => {
+    const resolved = await getStockOwnerProduct(product.id);
+    rootMap.set(product.id, resolved?.stockProduct ?? product);
+  }));
   const stockSourceIds = [
-    ...new Set(products.map((product) => productSharedStockId(product) ?? product.id).filter((id): id is number => !!id)),
+    ...new Set(products.map((product) => {
+      const stockProductId = productSharedStockId(product);
+      return stockProductId ? rootMap.get(stockProductId)?.id ?? stockProductId : product.id;
+    }).filter((id): id is number => !!id)),
   ];
   const linkedRows = stockSourceIds.length
     ? await db.query.productsTable.findMany({ where: inArray(productsTable.sharedStockProductId, stockSourceIds) }) as any[]
     : [];
   return products.map((product) => {
     const stockProductId = productSharedStockId(product);
-    const stockProduct = stockProductId ? stockMap.get(stockProductId) : null;
+    const stockProduct = stockProductId ? rootMap.get(stockProductId) ?? stockMap.get(stockProductId) : null;
     const sourceId = stockProduct?.id ?? product.id;
     const linkedProducts = linkedRows
       .filter((row) => productSharedStockId(row) === sourceId && row.id !== product.id)
@@ -1447,6 +1455,63 @@ async function setProductStock(productId: number, stock: number, meta?: StockMov
   const delta = nextStock - previousStock;
   if (delta !== 0) await recordStockMovement(resolved, delta, meta);
   return resolved.stockProduct.id;
+}
+
+function normalizeSharedStockLinkedIds(value: unknown, sourceId: number): number[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((item) => numberId(item))
+        .filter((id): id is number => !!id && id !== sourceId),
+    ),
+  ];
+}
+
+async function validateSharedStockLinkedProducts(sourceId: number, linkedIds: number[]): Promise<string | null> {
+  const source = await db.query.productsTable.findFirst({ where: eq(productsTable.id, sourceId) }) as any;
+  if (!source) return "المنتج الرئيسي غير موجود";
+  if (productSharedStockId(source)) return "لا يمكن أن يكون المنتج مصدر مخزون وهو مرتبط بمصدر آخر";
+  for (const linkedId of linkedIds) {
+    if (linkedId === sourceId) return "لا يمكن ربط المنتج بمخزونه نفسه";
+    const child = await db.query.productsTable.findFirst({ where: eq(productsTable.id, linkedId) }) as any;
+    if (!child) return "أحد المنتجات المرتبطة غير موجود";
+    const circularCheck = await resolveSharedStockProductId(sourceId, linkedId);
+    if (circularCheck.message) return circularCheck.message;
+  }
+  return null;
+}
+
+async function syncSharedStockLinkedProducts(
+  sourceId: number,
+  linkedIds: number[],
+  actorInfo?: { id: number | null; name: string } | null,
+): Promise<void> {
+  void actorInfo;
+  const desiredIds = normalizeSharedStockLinkedIds(linkedIds, sourceId);
+  const currentRows = await db.query.productsTable.findMany({
+    where: eq(productsTable.sharedStockProductId, sourceId),
+  }) as any[];
+  const currentIds = currentRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+  const desiredSet = new Set(desiredIds);
+  const removeIds = currentIds.filter((id) => !desiredSet.has(id));
+  if (removeIds.length > 0) {
+    await db
+      .update(productsTable)
+      .set({ sharedStockProductId: null, updatedAt: new Date() } as any)
+      .where(inArray(productsTable.id, removeIds));
+  }
+  for (const linkedId of desiredIds) {
+    await db.execute(sql`
+      update products
+      set shared_stock_product_id = ${sourceId}, updated_at = now()
+      where shared_stock_product_id = ${linkedId} and id <> ${sourceId}
+    `);
+    await db
+      .update(productsTable)
+      .set({ sharedStockProductId: sourceId, stock: 0, minStock: 0, updatedAt: new Date() } as any)
+      .where(eq(productsTable.id, linkedId));
+  }
 }
 
 async function applyOrderItemsStock(
@@ -3351,6 +3416,15 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       ? await resolveSharedStockProductId(data.sharedStockProductId, id)
       : { id: productSharedStockId(existing) };
     if (sharedStock.message) return error(sharedStock.message, 400);
+    const hasLinkedStockList = Object.prototype.hasOwnProperty.call(data, "sharedStockLinkedProductIds");
+    const requestedLinkedStockIds = hasLinkedStockList
+      ? normalizeSharedStockLinkedIds(data.sharedStockLinkedProductIds, id)
+      : [];
+    if (hasLinkedStockList) {
+      if (sharedStock.id) return error("لا يمكن أن يكون المنتج تابعاً لمصدر مخزون ويمتلك منتجات مرتبطة في نفس الوقت", 400);
+      const linkedError = await validateSharedStockLinkedProducts(id, requestedLinkedStockIds);
+      if (linkedError) return error(linkedError, 400);
+    }
     if (data.images !== undefined) data.images = await resolveProductImageInputs(id, data.images);
     if (data.videos !== undefined) data.videos = await resolveProductVideoInputs(id, data.videos);
     const update: any = { updatedAt: new Date() };
@@ -3448,6 +3522,15 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     Object.assign(update, pickContentTranslations(rawBody, true));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
+    if (hasLinkedStockList) {
+      await syncSharedStockLinkedProducts(id, requestedLinkedStockIds, productActor);
+    } else if (hasSharedStockChange && sharedStock.id) {
+      await db.execute(sql`
+        update products
+        set shared_stock_product_id = ${sharedStock.id}, updated_at = now()
+        where shared_stock_product_id = ${id}
+      `);
+    }
     if (directStockMovementDelta) {
       await recordStockMovement({ product, stockProduct: product }, directStockMovementDelta, {
         reason: "manual_stock_adjustment",

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
@@ -28,6 +28,7 @@ type ProductForm = {
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
   sharedStockProductId?: number | null;
+  sharedStockLinkedProductIds?: number[];
   categoryId?: number | null; subcategoryId?: number | null;
   category?: string; subcategory?: string;
   images: string[]; videos: string[]; colors: ProductColor[];
@@ -37,7 +38,7 @@ type ProductForm = {
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
-  sharedStockProductId: null,
+  sharedStockProductId: null, sharedStockLinkedProductIds: [],
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
@@ -98,6 +99,7 @@ export default function ProductsPage() {
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
       sharedStockProductId: form.sharedStockProductId ?? null,
+      ...(form.id && !form.sharedStockProductId ? { sharedStockLinkedProductIds: form.sharedStockLinkedProductIds ?? [] } : {}),
       barcode: form.barcode?.trim() ?? "",
       categoryId: form.categoryId ?? null,
       subcategoryId: form.subcategoryId ?? null,
@@ -280,6 +282,7 @@ export default function ProductsPage() {
                           costPrice: p.costPrice ? String(p.costPrice) : "0",
                           stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
                           sharedStockProductId: (p as any).sharedStockProductId ?? null,
+                          sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
                           categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
                           category: p.category ?? "", subcategory: p.subcategory ?? "",
                           images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
@@ -319,7 +322,13 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const [sharedStockEnabled, setSharedStockEnabled] = useState(Boolean(form.sharedStockProductId));
   const [stockSearch, setStockSearch] = useState("");
+  const [linkedSearch, setLinkedSearch] = useState("");
   const { data: publicSettings } = usePublicSettings();
+  useEffect(() => {
+    setSharedStockEnabled(Boolean(form.sharedStockProductId));
+    setStockSearch("");
+    setLinkedSearch("");
+  }, [form.id]);
   const selectedParent = form.categoryId
     ? parentCats.find(p => p.id === form.categoryId)
     : parentCats.find(p => p.slug === form.category);
@@ -331,6 +340,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   });
   const linkedStockProduct = products.find((product: any) => product.id === form.sharedStockProductId);
   const linkableProducts = products.filter((product: any) => product.id !== form.id);
+  const selectedLinkedIds = new Set((form.sharedStockLinkedProductIds ?? []).filter((id) => id !== form.id));
   const filteredLinkableProducts = linkableProducts
     .filter((product: any) => {
       const term = stockSearch.trim().toLowerCase();
@@ -346,6 +356,30 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       ].some((value) => String(value ?? "").toLowerCase().includes(term));
     })
     .slice(0, 24);
+  const filteredLinkedCandidates = linkableProducts
+    .filter((product: any) => {
+      const term = linkedSearch.trim().toLowerCase();
+      if (!term) return true;
+      return [
+        product.nameAr,
+        product.name,
+        product.barcode,
+        product.category,
+        product.categoryName,
+        product.subcategory,
+        product.subcategoryName,
+      ].some((value) => String(value ?? "").toLowerCase().includes(term));
+    })
+    .sort((a: any, b: any) => Number(selectedLinkedIds.has(b.id)) - Number(selectedLinkedIds.has(a.id)))
+    .slice(0, 30);
+  const selectedLinkedProducts = linkableProducts.filter((product: any) => selectedLinkedIds.has(product.id));
+
+  function toggleLinkedStockProduct(productId: number) {
+    const current = new Set((form.sharedStockLinkedProductIds ?? []).filter((id) => id !== form.id));
+    if (current.has(productId)) current.delete(productId);
+    else current.add(productId);
+    onChange({ ...form, sharedStockLinkedProductIds: Array.from(current) });
+  }
 
   function addImages(results: ImageEditResult[]) {
     onChange({
@@ -495,6 +529,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     onChange({
                       ...form,
                       sharedStockProductId: checked ? form.sharedStockProductId ?? null : null,
+                      sharedStockLinkedProductIds: checked ? [] : form.sharedStockLinkedProductIds ?? [],
                     });
                   }}
                   className="accent-primary"
@@ -556,6 +591,74 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               </div>
             )}
           </div>
+          {form.id && !sharedStockEnabled && (
+            <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm text-foreground inline-flex items-center gap-2">
+                  <Link2 className="w-4 h-4 text-primary" />
+                  المنتجات التي تستخدم مخزون هذا المنتج
+                </label>
+                <span className="text-[11px] text-muted-foreground">{selectedLinkedIds.size} منتج مرتبط</span>
+              </div>
+              {selectedLinkedProducts.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {selectedLinkedProducts.map((product: any) => (
+                    <button
+                      key={product.id}
+                      type="button"
+                      onClick={() => toggleLinkedStockProduct(product.id)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] text-primary hover:bg-primary/15"
+                    >
+                      <X className="w-3 h-3" />
+                      {product.nameAr || product.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="relative">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
+                  value={linkedSearch}
+                  onChange={(event) => setLinkedSearch(event.target.value)}
+                  placeholder="ابحث لإضافة منتجات تستخدم نفس المخزون..."
+                  className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+              <div className="max-h-52 overflow-y-auto rounded-lg border border-border/30 bg-background/30 divide-y divide-border/20">
+                {filteredLinkedCandidates.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-muted-foreground">لا توجد منتجات مطابقة للبحث</div>
+                ) : filteredLinkedCandidates.map((product: any) => {
+                  const selected = selectedLinkedIds.has(product.id);
+                  const category = product.categoryName || product.category || "بدون تصنيف";
+                  const usesOtherSource = product.sharedStockProductId && product.sharedStockProductId !== form.id;
+                  return (
+                    <button
+                      key={product.id}
+                      type="button"
+                      onClick={() => toggleLinkedStockProduct(product.id)}
+                      className={`w-full text-right px-3 py-2 transition-colors ${selected ? "bg-primary/10 text-primary" : "hover:bg-card/70 text-foreground"}`}
+                    >
+                      <span className="flex items-center justify-between gap-3">
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium truncate">{product.nameAr || product.name}</span>
+                          <span className="block text-[11px] text-muted-foreground truncate">
+                            {category}{product.barcode ? ` · ${product.barcode}` : ""}
+                            {usesOtherSource ? ` · مرتبط حالياً مع ${product.sharedStockProductName ?? "مصدر آخر"}` : ""}
+                          </span>
+                        </span>
+                        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${selected ? "border-primary/40 bg-primary/15 text-primary" : "border-border/40 text-muted-foreground"}`}>
+                          {selected ? "مختار" : "ربط"}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                أي منتج تختاره هنا سيظهر بشكل مستقل في المتجر، لكن البيع منه سيخصم من مخزون هذا المنتج الرئيسي.
+              </p>
+            </div>
+          )}
           <div>
             <label className="block text-xs text-muted-foreground mb-1">القسم الرئيسي</label>
             <select

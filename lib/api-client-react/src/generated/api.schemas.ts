@@ -103,6 +103,7 @@ export interface ProductInput {
   costPrice?: number;
   stock?: number;
   sharedStockProductId?: number | null;
+  sharedStockLinkedProductIds?: number[];
   minStock?: number;
   barcode?: string;
   categoryId?: number | null;
@@ -128,6 +129,7 @@ export interface ProductUpdate {
   costPrice?: number;
   stock?: number;
   sharedStockProductId?: number | null;
+  sharedStockLinkedProductIds?: number[];
   minStock?: number;
   barcode?: string;
   categoryId?: number | null;
