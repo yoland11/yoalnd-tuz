@@ -1471,7 +1471,6 @@ function normalizeSharedStockLinkedIds(value: unknown, sourceId: number): number
 async function validateSharedStockLinkedProducts(sourceId: number, linkedIds: number[]): Promise<string | null> {
   const source = await db.query.productsTable.findFirst({ where: eq(productsTable.id, sourceId) }) as any;
   if (!source) return "المنتج الرئيسي غير موجود";
-  if (productSharedStockId(source)) return "لا يمكن أن يكون المنتج مصدر مخزون وهو مرتبط بمصدر آخر";
   for (const linkedId of linkedIds) {
     if (linkedId === sourceId) return "لا يمكن ربط المنتج بمخزونه نفسه";
     const child = await db.query.productsTable.findFirst({ where: eq(productsTable.id, linkedId) }) as any;
@@ -3412,7 +3411,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     const existing = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
     if (!existing) return error("المنتج غير موجود", 404);
     const hasSharedStockChange = Object.prototype.hasOwnProperty.call(data, "sharedStockProductId");
-    const sharedStock = hasSharedStockChange
+    let sharedStock = hasSharedStockChange
       ? await resolveSharedStockProductId(data.sharedStockProductId, id)
       : { id: productSharedStockId(existing) };
     if (sharedStock.message) return error(sharedStock.message, 400);
@@ -3421,7 +3420,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       ? normalizeSharedStockLinkedIds(data.sharedStockLinkedProductIds, id)
       : [];
     if (hasLinkedStockList) {
-      if (sharedStock.id) return error("لا يمكن أن يكون المنتج تابعاً لمصدر مخزون ويمتلك منتجات مرتبطة في نفس الوقت", 400);
+      sharedStock = { id: null };
       const linkedError = await validateSharedStockLinkedProducts(id, requestedLinkedStockIds);
       if (linkedError) return error(linkedError, 400);
     }
@@ -3471,6 +3470,9 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         update.stock = 0;
         update.minStock = 0;
       }
+    }
+    if (hasLinkedStockList) {
+      update.sharedStockProductId = null;
     }
     if (data.stock !== undefined) {
       const nextStock = Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0;
