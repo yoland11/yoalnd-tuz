@@ -1278,55 +1278,75 @@ const KOSHA_STATUS_VALUES = ["available", "booked", "hidden", "maintenance"] as 
 const KOSHA_BOOKING_STATUS_VALUES = ["new", "contacted", "confirmed", "in_progress", "completed", "cancelled"] as const;
 const DEFAULT_KOSHA_ADDONS = ["تصوير", "ألبوم", "فيديو مختصر", "دي جي", "إضاءة إضافية", "توصيل وتركيب"] as const;
 const DEFAULT_KOSHA_WELCOME_BOARDS = ["بورد ترحيب كلاسيك", "بورد ترحيب ذهبي", "بورد ورد", "بورد مرآة"] as const;
+const blankToZero = (value: unknown) => (value === "" || value === null || value === undefined || Number.isNaN(value) ? 0 : value);
+const blankToNull = (value: unknown) => (value === "" || value === null || value === undefined || Number.isNaN(value) ? null : value);
+const looseText = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+const looseBoolean = (value: unknown) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (["false", "0", "no", "off", "لا"].includes(text)) return false;
+  if (["true", "1", "yes", "on", "نعم"].includes(text)) return true;
+  return Boolean(value);
+};
 
 const KoshaImageInputSchema = z.object({
-  imageUrl: z.string().optional().default(""),
-  url: z.string().optional(),
-  imageMetadata: z.record(z.string(), z.unknown()).optional().default({}),
-  sortOrder: z.coerce.number().int().optional().default(0),
+  imageUrl: z.preprocess(looseText, z.string()).optional().default(""),
+  url: z.preprocess(looseText, z.string()).optional(),
+  imageMetadata: z.preprocess(
+    (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    z.record(z.string(), z.unknown()),
+  ).optional().default({}),
+  sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional().default(0),
 });
 
 const KoshaMutationSchema = z.object({
-  name: z.string().optional().default(""),
-  slug: z.string().optional().default(""),
-  description: z.string().optional().nullable(),
-  price: z.coerce.number().nonnegative().optional().default(0),
-  oldPrice: z.coerce.number().nonnegative().optional().nullable(),
-  discountPercentage: z.coerce.number().int().min(0).max(100).optional().default(0),
-  mainImage: z.string().optional().nullable(),
-  numberOfPieces: z.coerce.number().int().nonnegative().optional().nullable(),
-  mainColor: z.string().optional().nullable(),
-  flowerColor: z.string().optional().nullable(),
-  koshaSpace: z.string().optional().nullable(),
-  sideConsoleSpace: z.string().optional().nullable(),
+  name: z.preprocess(looseText, z.string()).optional().default(""),
+  slug: z.preprocess(looseText, z.string()).optional().default(""),
+  description: z.preprocess(looseText, z.string()).optional().nullable(),
+  price: z.preprocess(blankToZero, z.coerce.number().nonnegative()).optional().default(0),
+  oldPrice: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullable()).optional().nullable(),
+  discountPercentage: z.preprocess(blankToZero, z.coerce.number().int().min(0).max(100)).optional().default(0),
+  mainImage: z.preprocess(looseText, z.string()).optional().nullable(),
+  numberOfPieces: z.preprocess(blankToNull, z.coerce.number().int().nonnegative().nullable()).optional().nullable(),
+  mainColor: z.preprocess(looseText, z.string()).optional().nullable(),
+  flowerColor: z.preprocess(looseText, z.string()).optional().nullable(),
+  koshaSpace: z.preprocess(looseText, z.string()).optional().nullable(),
+  sideConsoleSpace: z.preprocess(looseText, z.string()).optional().nullable(),
   accessories: z.union([z.array(z.string()), z.string()]).optional().default([]),
-  notes: z.string().optional().nullable(),
-  availabilityStatus: z.enum(KOSHA_STATUS_VALUES).optional().default("available"),
-  isFeatured: z.boolean().optional().default(false),
-  isActive: z.boolean().optional().default(true),
-  sortOrder: z.coerce.number().int().optional().default(0),
+  notes: z.preprocess(looseText, z.string()).optional().nullable(),
+  availabilityStatus: z.preprocess(
+    (value) => (KOSHA_STATUS_VALUES as readonly string[]).includes(String(value)) ? value : "available",
+    z.enum(KOSHA_STATUS_VALUES),
+  ).optional().default("available"),
+  isFeatured: z.preprocess(looseBoolean, z.boolean()).optional().default(false),
+  isActive: z.preprocess(looseBoolean, z.boolean()).optional().default(true),
+  sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional().default(0),
   galleryImages: z.array(KoshaImageInputSchema).optional().default([]),
 });
 
 const KoshaPatchSchema = z.object({
-  name: z.string().optional(),
-  slug: z.string().optional(),
-  description: z.string().optional().nullable(),
-  price: z.coerce.number().nonnegative().optional(),
-  oldPrice: z.coerce.number().nonnegative().optional().nullable(),
-  discountPercentage: z.coerce.number().int().min(0).max(100).optional(),
-  mainImage: z.string().optional().nullable(),
-  numberOfPieces: z.coerce.number().int().nonnegative().optional().nullable(),
-  mainColor: z.string().optional().nullable(),
-  flowerColor: z.string().optional().nullable(),
-  koshaSpace: z.string().optional().nullable(),
-  sideConsoleSpace: z.string().optional().nullable(),
+  name: z.preprocess(looseText, z.string()).optional(),
+  slug: z.preprocess(looseText, z.string()).optional(),
+  description: z.preprocess(looseText, z.string()).optional().nullable(),
+  price: z.preprocess(blankToZero, z.coerce.number().nonnegative()).optional(),
+  oldPrice: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullable()).optional().nullable(),
+  discountPercentage: z.preprocess(blankToZero, z.coerce.number().int().min(0).max(100)).optional(),
+  mainImage: z.preprocess(looseText, z.string()).optional().nullable(),
+  numberOfPieces: z.preprocess(blankToNull, z.coerce.number().int().nonnegative().nullable()).optional().nullable(),
+  mainColor: z.preprocess(looseText, z.string()).optional().nullable(),
+  flowerColor: z.preprocess(looseText, z.string()).optional().nullable(),
+  koshaSpace: z.preprocess(looseText, z.string()).optional().nullable(),
+  sideConsoleSpace: z.preprocess(looseText, z.string()).optional().nullable(),
   accessories: z.union([z.array(z.string()), z.string()]).optional(),
-  notes: z.string().optional().nullable(),
-  availabilityStatus: z.enum(KOSHA_STATUS_VALUES).optional(),
-  isFeatured: z.boolean().optional(),
-  isActive: z.boolean().optional(),
-  sortOrder: z.coerce.number().int().optional(),
+  notes: z.preprocess(looseText, z.string()).optional().nullable(),
+  availabilityStatus: z.preprocess(
+    (value) => value === undefined ? undefined : ((KOSHA_STATUS_VALUES as readonly string[]).includes(String(value)) ? value : "available"),
+    z.enum(KOSHA_STATUS_VALUES).optional(),
+  ),
+  isFeatured: z.preprocess((value) => value === undefined ? undefined : looseBoolean(value), z.boolean().optional()),
+  isActive: z.preprocess((value) => value === undefined ? undefined : looseBoolean(value), z.boolean().optional()),
+  sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional(),
   galleryImages: z.array(KoshaImageInputSchema).optional(),
 });
 

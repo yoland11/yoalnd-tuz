@@ -127,6 +127,46 @@ function normalizeForm(kosha: Partial<Kosha> | null | undefined): KoshaFormState
   };
 }
 
+function optionalNumber(value: unknown): number | null {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function numberOrZero(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function cleanKoshaPayload(form: KoshaFormState) {
+  return {
+    name: String(form.name ?? "").trim(),
+    slug: String(form.slug ?? "").trim(),
+    description: String(form.description ?? "").trim(),
+    price: numberOrZero(form.price),
+    oldPrice: optionalNumber(form.oldPrice),
+    discountPercentage: Math.min(100, Math.max(0, Math.floor(numberOrZero(form.discountPercentage)))),
+    mainImage: form.mainImage || null,
+    numberOfPieces: optionalNumber(form.numberOfPieces),
+    mainColor: String(form.mainColor ?? "").trim(),
+    flowerColor: String(form.flowerColor ?? "").trim(),
+    koshaSpace: String(form.koshaSpace ?? "").trim(),
+    sideConsoleSpace: String(form.sideConsoleSpace ?? "").trim(),
+    accessories: Array.isArray(form.accessories) ? form.accessories.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+    notes: String(form.notes ?? "").trim(),
+    availabilityStatus: form.availabilityStatus || "available",
+    isFeatured: Boolean(form.isFeatured),
+    isActive: form.isActive !== false,
+    sortOrder: Math.floor(numberOrZero(form.sortOrder)),
+    galleryImages: (form.galleryImages ?? []).map((image, index) => ({
+      imageUrl: image.imageUrl || "",
+      imageMetadata: image.imageMetadata && typeof image.imageMetadata === "object" ? image.imageMetadata : {},
+      sortOrder: index,
+    })).filter((image) => image.imageUrl),
+  };
+}
+
 function KoshaOptionsManager({
   title,
   description,
@@ -228,11 +268,8 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      const payload = {
-        ...form,
-        accessories: Array.isArray(form.accessories) ? form.accessories : [],
-        galleryImages: form.galleryImages.map((image, index) => ({ ...image, sortOrder: index })),
-      };
+      const payload = cleanKoshaPayload(form);
+      if (!payload.name) throw new Error("اسم الكوشة مطلوب");
       return mode === "edit"
         ? adminFetch<Kosha>(`/admin/koshas/${id}`, { method: "PATCH", body: JSON.stringify(payload) })
         : adminFetch<Kosha>("/admin/koshas", { method: "POST", body: JSON.stringify(payload) });
