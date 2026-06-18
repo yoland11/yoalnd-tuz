@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, ChevronRight, ImagePlus, Images, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -89,6 +89,7 @@ type BookingForm = {
 };
 
 const WIZARD_STEPS = ["الكوشة", "الخدمات الإضافية", "بورد الترحيب", "الاكسسوارات", "البيانات", "التأكيد"] as const;
+const WIZARD_STEP_ICONS = [Flower2, DoorOpen, Grid3X3, Gem, ClipboardList, CircleCheck] as const;
 const EVENT_TYPES = ["زفاف", "خطوبة", "حنة", "سبوع", "توديع العزوبية"];
 const SERVICE_LEVELS = ["عادي", "VIP"];
 const VENUE_TYPES = ["داخلي", "خارجي"];
@@ -192,27 +193,43 @@ export function FeaturedKoshasSection() {
 }
 
 function Stepper({ step }: { step: WizardStep }) {
+  const progress = step / Math.max(WIZARD_STEPS.length - 1, 1);
+
   return (
-    <div className="sticky top-20 z-20 -mx-1 mb-5 overflow-x-auto rounded-xl border border-border/40 bg-card/95 p-2 backdrop-blur supports-[backdrop-filter]:bg-card/85">
-      <div className="flex min-w-max items-center gap-2">
+    <div className="sticky top-20 z-20 -mx-1 mb-5 overflow-x-auto rounded-2xl border border-[#eadfd4] bg-[#fbf5ec] p-3 shadow-[0_8px_18px_rgba(85,65,58,0.08)]">
+      <div className="relative flex min-w-[650px] items-start justify-between gap-3 px-3 pb-2 pt-3 sm:min-w-0">
+        <span className="pointer-events-none absolute left-[54px] right-[54px] top-[39px] h-px rounded-full bg-[#d8cbc1]" />
+        <span
+          className="pointer-events-none absolute right-[54px] top-[39px] h-px rounded-full bg-[#8c6e6e] transition-[width] duration-500 ease-in-out"
+          style={{ width: `calc((100% - 108px) * ${progress})` }}
+        />
         {WIZARD_STEPS.map((label, index) => {
           const active = index === step;
           const done = index < step;
+          const Icon = WIZARD_STEP_ICONS[index];
           return (
             <div
               key={label}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-all duration-300 ${
-                active
-                  ? "border-primary/60 bg-primary/12 text-primary shadow-[0_0_0_1px_hsl(var(--primary)/0.12)]"
-                  : done
-                    ? "border-primary/30 bg-primary/8 text-foreground"
-                    : "border-border/40 bg-background/60 text-muted-foreground"
-              }`}
+              className="relative z-10 flex min-w-20 flex-1 flex-col items-center text-center"
+              aria-current={active ? "step" : undefined}
             >
-              <span className={`grid h-5 w-5 place-items-center rounded-md border text-[11px] transition-all duration-300 ${done ? "border-primary bg-primary text-primary-foreground" : active ? "border-primary/50 text-primary" : "border-border/50"}`}>
-                {done ? <Check className="h-3 w-3" /> : index + 1}
+              <span
+                className={`relative grid h-14 w-14 place-items-center rounded-[18px] border transition-all duration-500 ease-in-out ${
+                  active
+                    ? "scale-[1.04] border-[#8c6e6e] bg-[#8c6e6e] text-white shadow-[0_0_0_5px_rgba(140,110,110,0.12),0_10px_18px_rgba(140,110,110,0.22)]"
+                    : "border-[#efe6dc] bg-white text-[#a88f8f] shadow-[0_5px_12px_rgba(85,65,58,0.08)]"
+                }`}
+              >
+                <Icon className="h-6 w-6 transition-transform duration-500 ease-in-out" strokeWidth={1.85} />
+                {done ? (
+                  <span className="absolute -left-1 -top-1 grid h-5 w-5 animate-kosha-check-pop place-items-center rounded-full bg-[#8c6e6e] text-white shadow-[0_3px_8px_rgba(140,110,110,0.22)]">
+                    <Check className="h-3 w-3" strokeWidth={2.4} />
+                  </span>
+                ) : null}
               </span>
-              {label}
+              <span className={`mt-2 max-w-24 text-[11px] font-semibold leading-5 transition-colors duration-300 ${active ? "text-[#8c6e6e]" : "text-[#8c8077]"}`}>
+                {label}
+              </span>
             </div>
           );
         })}
@@ -348,31 +365,6 @@ export default function KoshasPage() {
 
   return (
     <div className="container mx-auto px-4 py-10 md:py-12">
-      <section className="mb-10 overflow-hidden rounded-2xl border border-border bg-card">
-        <div className="grid lg:grid-cols-[0.95fr_1.05fr]">
-          <div className="relative min-h-[300px] bg-muted lg:min-h-[420px]">
-            <img src="/images/kosha.png" alt="الكوشات" width={1000} height={680} className="h-full min-h-[300px] w-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/15 to-transparent" />
-          </div>
-          <div className="flex flex-col justify-center p-6 md:p-10">
-            <div className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-              <Sparkles className="h-3.5 w-3.5" />
-              الكوشات
-            </div>
-            <h1 className="max-w-2xl text-3xl font-bold leading-tight text-foreground md:text-5xl">كتالوج كوشات مستقل للحجز المباشر</h1>
-            <p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">
-              تصفح الكوشات المتاحة، شاهد الصور والمواصفات، ثم أرسل طلب الحجز ليظهر مباشرة داخل لوحة الإدارة.
-            </p>
-            <a href="#koshas-list" className="mt-6 w-fit">
-              <Button className="gap-2">
-                <Images className="h-4 w-4" />
-                عرض الكوشات
-              </Button>
-            </a>
-          </div>
-        </div>
-      </section>
-
       <section id="koshas-list" className="scroll-mt-24">
         <Stepper step={step} />
         {isLoading ? (
@@ -630,15 +622,16 @@ export default function KoshasPage() {
 
       <style>{`
         @keyframes kosha-step {
-          from { opacity: 0; transform: translateX(-14px); filter: blur(2px); }
-          to { opacity: 1; transform: translateX(0); filter: blur(0); }
+          from { opacity: 0; transform: translate3d(-18px, 0, 0) scale(0.992); filter: blur(2px); }
+          to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); filter: blur(0); }
         }
         @keyframes kosha-check-pop {
-          from { opacity: 0; transform: scale(0.72); }
-          to { opacity: 1; transform: scale(1); }
+          0% { opacity: 0; transform: scale(0.72); }
+          70% { opacity: 1; transform: scale(1.08); }
+          100% { opacity: 1; transform: scale(1); }
         }
-        .animate-kosha-step { animation: kosha-step 320ms ease-in-out both; }
-        .animate-kosha-check-pop { animation: kosha-check-pop 180ms ease-out both; }
+        .animate-kosha-step { animation: kosha-step 420ms cubic-bezier(0.4, 0, 0.2, 1) both; }
+        .animate-kosha-check-pop { animation: kosha-check-pop 220ms cubic-bezier(0.16, 1, 0.3, 1) both; }
         @media (prefers-reduced-motion: reduce) {
           .animate-kosha-step,
           .animate-kosha-check-pop,
