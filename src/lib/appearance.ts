@@ -13,6 +13,20 @@ export type AppearanceSettings = {
 };
 
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
+  background: "#0B0B12",
+  header: "#12131A",
+  footer: "#12131A",
+  sidebar: "#12131A",
+  primaryButton: "#D4B15A",
+  secondaryButton: "#12131A",
+  headings: "#FFFFFF",
+  text: "#FFFFFF",
+  cards: "#1A1C25",
+  links: "#D4B15A",
+  hover: "#E7D6A0",
+};
+
+const LEGACY_DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   background: "#0A0A0A",
   header: "#0A0A0A",
   footer: "#0A0A0A",
@@ -40,7 +54,7 @@ export function normalizeHexColor(value: unknown, fallback: string): string {
 
 export function normalizeAppearanceSettings(value: unknown): AppearanceSettings {
   const source = value && typeof value === "object" ? value as Partial<AppearanceSettings> : {};
-  return {
+  const normalized = {
     background: normalizeHexColor(source.background, DEFAULT_APPEARANCE_SETTINGS.background),
     header: normalizeHexColor(source.header, DEFAULT_APPEARANCE_SETTINGS.header),
     footer: normalizeHexColor(source.footer, DEFAULT_APPEARANCE_SETTINGS.footer),
@@ -53,6 +67,11 @@ export function normalizeAppearanceSettings(value: unknown): AppearanceSettings 
     links: normalizeHexColor(source.links, DEFAULT_APPEARANCE_SETTINGS.links),
     hover: normalizeHexColor(source.hover, DEFAULT_APPEARANCE_SETTINGS.hover),
   };
+  return sameAppearance(normalized, LEGACY_DEFAULT_APPEARANCE_SETTINGS) ? { ...DEFAULT_APPEARANCE_SETTINGS } : normalized;
+}
+
+function sameAppearance(a: AppearanceSettings, b: AppearanceSettings): boolean {
+  return (Object.keys(DEFAULT_APPEARANCE_SETTINGS) as Array<keyof AppearanceSettings>).every((key) => a[key] === b[key]);
 }
 
 export function hexToHsl(hex: string): { h: number; s: number; l: number } {
@@ -106,45 +125,43 @@ export function readableForeground(hex: string): string {
   const g = Number.parseInt(normalized.slice(2, 4), 16);
   const b = Number.parseInt(normalized.slice(4, 6), 16);
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.62 ? "#0A0A0A" : "#F8F4EA";
+  return luminance > 0.62 ? "#0B0B12" : "#FFFFFF";
 }
 
 export function appearanceCssVariables(settings: unknown): Record<string, string> {
   const appearance = normalizeAppearanceSettings(settings);
   const primaryForeground = hexToHslTriplet(readableForeground(appearance.primaryButton));
   const secondaryForeground = hexToHslTriplet(readableForeground(appearance.secondaryButton));
-  const accentForeground = hexToHslTriplet(readableForeground(appearance.hover));
+  const accentForeground = hexToHslTriplet(readableForeground("#A97B8B"));
 
   const bg = hexToHsl(appearance.background);
-  const textHsl = hexToHsl(appearance.text);
   // الثيمات الفاتحة تحتاج طبقات إبراز/إطار داكنة، والداكنة تحتاج فاتحة — حتى لا تختفي الإطارات
   const isLightTheme = bg.l > 55;
-  const overlayBase = isLightTheme ? "0, 0, 0" : "255, 255, 255";
 
   return {
     "--background": hexToHslTriplet(appearance.background),
     "--foreground": hexToHslTriplet(appearance.text),
     "--card": hexToHslTriplet(appearance.cards),
     "--card-foreground": hexToHslTriplet(appearance.text),
-    "--card-border": surfaceBorderTriplet(appearance.cards, 5, 12),
+    "--card-border": hexToHslTriplet("#2A2D36"),
     "--popover": hexToHslTriplet(appearance.cards),
     "--popover-foreground": hexToHslTriplet(appearance.text),
-    "--popover-border": surfaceBorderTriplet(appearance.cards, 8, 12),
+    "--popover-border": hexToHslTriplet("#2A2D36"),
     "--primary": hexToHslTriplet(appearance.primaryButton),
     "--primary-foreground": primaryForeground,
     "--secondary": hexToHslTriplet(appearance.secondaryButton),
     "--secondary-foreground": secondaryForeground,
-    "--muted": hslTriplet(bg.h, bg.s, frameLightness(bg.l, 8, 10)),
-    "--muted-foreground": hslTriplet(textHsl.h, Math.round(textHsl.s * 0.34), isLightTheme ? 45 : 49),
-    "--accent": hexToHslTriplet(appearance.hover),
+    "--muted": hexToHslTriplet("#1A1C25"),
+    "--muted-foreground": hexToHslTriplet("#C8CBD3"),
+    "--accent": hexToHslTriplet("#A97B8B"),
     "--accent-foreground": accentForeground,
     // الإطار العام (يُستخدم في كل الحدود الافتراضية وبطاقات الموقع والهيدر)
-    "--border": surfaceBorderTriplet(appearance.background, 11, 14),
-    "--input": surfaceBorderTriplet(appearance.background, 14, 16),
-    "--ring": hexToHslTriplet(appearance.hover),
+    "--border": hexToHslTriplet("#2A2D36"),
+    "--input": hexToHslTriplet("#2A2D36"),
+    "--ring": hexToHslTriplet(appearance.primaryButton),
     "--sidebar": hexToHslTriplet(appearance.sidebar),
     "--sidebar-foreground": hexToHslTriplet(appearance.text),
-    "--sidebar-border": surfaceBorderTriplet(appearance.sidebar, 5, 12),
+    "--sidebar-border": hexToHslTriplet("#2A2D36"),
     "--sidebar-primary": hexToHslTriplet(appearance.primaryButton),
     "--sidebar-primary-foreground": primaryForeground,
     "--sidebar-accent": hexToHslTriplet(appearance.secondaryButton),
@@ -153,43 +170,43 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     // اتجاه إطار الأزرار المعتمة: يفتّح في الثيم الداكن ويغمّق في الفاتح
     "--opaque-button-border-intensity": isLightTheme ? "-10" : "9",
     // إطار الأزرار + إطار الشارات + طبقات اللمعان عند المرور/الضغط (إحساس الفخامة)
-    "--button-outline": `rgba(${overlayBase}, ${isLightTheme ? 0.14 : 0.1})`,
-    "--badge-outline": `rgba(${overlayBase}, ${isLightTheme ? 0.08 : 0.05})`,
-    "--elevate-1": `rgba(${overlayBase}, ${isLightTheme ? 0.05 : 0.04})`,
-    "--elevate-2": `rgba(${overlayBase}, ${isLightTheme ? 0.1 : 0.09})`,
+    "--button-outline": "rgba(212, 177, 90, .22)",
+    "--badge-outline": "rgba(212, 177, 90, .16)",
+    "--elevate-1": "rgba(212, 177, 90, .055)",
+    "--elevate-2": "rgba(212, 177, 90, .10)",
     "--ajn-header": hexToHslTriplet(appearance.header),
     "--ajn-footer": hexToHslTriplet(appearance.footer),
     "--ajn-heading": hexToHslTriplet(appearance.headings),
     "--ajn-link": hexToHslTriplet(appearance.links),
     "--ajn-hover": hexToHslTriplet(appearance.hover),
     // Semantic status tokens — darker shades for light themes to maintain contrast
-    "--status-success": isLightTheme ? "142 60% 28%" : "142 72% 55%",
+    "--status-success": hexToHslTriplet(appearance.primaryButton),
     "--status-danger": isLightTheme ? "0 75% 42%" : "0 84% 70%",
-    "--status-warning": isLightTheme ? "38 85% 35%" : "38 90% 68%",
+    "--status-warning": "41 50% 48%",
   };
 }
 
 // أسطح فاتحة/داكنة جاهزة للوضع البديل (تبقى ألوان الهوية كما هي)
 const LIGHT_SURFACES = {
-  background: "#FAFAFA",
-  header: "#FFFFFF",
-  footer: "#F4F4F5",
-  sidebar: "#FFFFFF",
-  cards: "#FFFFFF",
-  secondaryButton: "#ECECEC",
-  headings: "#1A1A1A",
-  text: "#2A2A2A",
+  background: "#0B0B12",
+  header: "#12131A",
+  footer: "#12131A",
+  sidebar: "#12131A",
+  cards: "#1A1C25",
+  secondaryButton: "#12131A",
+  headings: "#FFFFFF",
+  text: "#FFFFFF",
 } as const;
 
 const DARK_SURFACES = {
-  background: "#0A0A0A",
-  header: "#0A0A0A",
-  footer: "#0A0A0A",
-  sidebar: "#121212",
-  cards: "#121212",
-  secondaryButton: "#262626",
-  headings: "#F3EFE8",
-  text: "#F3EFE8",
+  background: "#0B0B12",
+  header: "#12131A",
+  footer: "#12131A",
+  sidebar: "#12131A",
+  cards: "#1A1C25",
+  secondaryButton: "#12131A",
+  headings: "#FFFFFF",
+  text: "#FFFFFF",
 } as const;
 
 /**

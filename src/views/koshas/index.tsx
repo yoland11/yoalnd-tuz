@@ -204,11 +204,11 @@ function Stepper({ step }: { step: WizardStep }) {
   const progress = step / Math.max(WIZARD_STEPS.length - 1, 1);
 
   return (
-    <div className="sticky top-20 z-20 -mx-1 mb-5 overflow-x-auto rounded-2xl border border-[#eadfd4] bg-[#fbf5ec] p-3 shadow-[0_8px_18px_rgba(85,65,58,0.08)]">
+    <div className="sticky top-20 z-20 -mx-1 mb-5 overflow-x-auto rounded-2xl border border-[#2A2D36] bg-[#12131A]/95 p-3 shadow-[0_12px_28px_rgba(212,177,90,0.08)] backdrop-blur">
       <div className="relative flex min-w-[650px] items-start justify-between gap-3 px-3 pb-2 pt-3 sm:min-w-0">
-        <span className="pointer-events-none absolute left-[54px] right-[54px] top-[39px] h-px rounded-full bg-[#d8cbc1]" />
+        <span className="pointer-events-none absolute left-[54px] right-[54px] top-[39px] h-px rounded-full bg-[#2A2D36]" />
         <span
-          className="pointer-events-none absolute right-[54px] top-[39px] h-px rounded-full bg-[#8c6e6e] transition-[width] duration-500 ease-in-out"
+          className="pointer-events-none absolute right-[54px] top-[39px] h-px rounded-full bg-[#A97B8B] transition-[width] duration-500 ease-in-out"
           style={{ width: `calc((100% - 108px) * ${progress})` }}
         />
         {WIZARD_STEPS.map((label, index) => {
@@ -224,18 +224,18 @@ function Stepper({ step }: { step: WizardStep }) {
               <span
                 className={`relative grid h-14 w-14 place-items-center rounded-[18px] border transition-all duration-500 ease-in-out ${
                   active
-                    ? "scale-[1.04] border-[#8c6e6e] bg-[#8c6e6e] text-white shadow-[0_0_0_5px_rgba(140,110,110,0.12),0_10px_18px_rgba(140,110,110,0.22)]"
-                    : "border-[#efe6dc] bg-white text-[#a88f8f] shadow-[0_5px_12px_rgba(85,65,58,0.08)]"
+                    ? "scale-[1.04] border-[#A97B8B] bg-[#A97B8B] text-white shadow-[0_0_0_5px_rgba(169,123,139,0.14),0_10px_18px_rgba(169,123,139,0.22)]"
+                    : "border-[#2A2D36] bg-[#1A1C25] text-white shadow-[0_5px_12px_rgba(0,0,0,0.18)]"
                 }`}
               >
                 <Icon className="h-6 w-6 transition-transform duration-500 ease-in-out" strokeWidth={1.85} />
                 {done ? (
-                  <span className="absolute -left-1 -top-1 grid h-5 w-5 animate-kosha-check-pop place-items-center rounded-full bg-[#8c6e6e] text-white shadow-[0_3px_8px_rgba(140,110,110,0.22)]">
+                  <span className="absolute -left-1 -top-1 grid h-5 w-5 animate-kosha-check-pop place-items-center rounded-full bg-[#D4B15A] text-[#0B0B12] shadow-[0_3px_8px_rgba(212,177,90,0.22)]">
                     <Check className="h-3 w-3" strokeWidth={2.4} />
                   </span>
                 ) : null}
               </span>
-              <span className={`mt-2 max-w-24 text-[11px] font-semibold leading-5 transition-colors duration-300 ${active ? "text-[#8c6e6e]" : "text-[#8c8077]"}`}>
+              <span className={`mt-2 max-w-24 text-[11px] font-semibold leading-5 transition-colors duration-300 ${active ? "text-[#A97B8B]" : "text-[#C8CBD3]"}`}>
                 {label}
               </span>
             </div>
@@ -249,7 +249,7 @@ function Stepper({ step }: { step: WizardStep }) {
 function SelectionMark({ selected }: { selected: boolean }) {
   if (!selected) return null;
   return (
-    <span className="absolute right-3 top-3 grid h-7 w-7 animate-kosha-check-pop place-items-center rounded-full bg-primary text-primary-foreground shadow-sm">
+    <span className="absolute right-3 top-3 grid h-7 w-7 animate-kosha-check-pop place-items-center rounded-full bg-[#A97B8B] text-white shadow-[0_3px_10px_rgba(169,123,139,0.28)]">
       <Check className="h-4 w-4" />
     </span>
   );
@@ -262,9 +262,9 @@ function SelectablePill({ label, selected, onClick, tone = "default" }: { label:
       onClick={onClick}
       className={`relative inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-all duration-200 active:scale-[0.98] ${
         selected
-          ? "border-primary bg-primary/12 text-primary"
+          ? "border-[#A97B8B] bg-[#A97B8B]/15 text-[#A97B8B]"
           : tone === "pink"
-            ? "border-rose-200/60 bg-rose-100/70 text-rose-900 hover:border-primary/50 hover:bg-primary/10 hover:text-primary dark:border-rose-300/20 dark:bg-rose-300/10 dark:text-rose-100"
+            ? "border-[#A97B8B]/30 bg-[#A97B8B]/10 text-white hover:border-[#A97B8B]/60 hover:bg-[#A97B8B]/15 hover:text-white"
             : "border-border/40 bg-background text-foreground hover:border-primary/50 hover:text-primary"
       }`}
     >
@@ -290,7 +290,7 @@ function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct
       type="button"
       onClick={onClick}
       className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${
-        selected ? "border-primary shadow-[0_0_0_1px_hsl(var(--primary)/0.22)]" : "border-border/40 hover:border-primary/50"
+        selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"
       }`}
     >
       <SelectionMark selected={selected} />
@@ -450,7 +450,7 @@ export default function KoshasPage() {
                             setSelectedKosha(kosha);
                             window.setTimeout(() => setStep(1), 320);
                           }}
-                          className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-primary shadow-[0_0_0_1px_hsl(var(--primary)/0.22)]" : "border-border/40 hover:border-primary/50"}`}
+                          className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"}`}
                         >
                           <SelectionMark selected={selected} />
                           <div className="aspect-[4/3] overflow-hidden bg-muted">
@@ -738,7 +738,7 @@ function ButtonGroup({ label, options, value, onChange }: { label: string; optio
             key={item}
             type="button"
             onClick={() => onChange(item)}
-            className={`h-10 rounded-lg border px-3 text-sm transition-colors ${value === item ? "border-primary bg-primary/12 text-primary" : "border-border/40 bg-background text-foreground hover:border-primary/50"}`}
+            className={`h-10 rounded-lg border px-3 text-sm transition-colors ${value === item ? "border-[#A97B8B] bg-[#A97B8B]/15 text-[#A97B8B]" : "border-border/40 bg-background text-foreground hover:border-primary/50"}`}
           >
             {item}
           </button>
