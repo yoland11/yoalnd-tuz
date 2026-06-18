@@ -4,7 +4,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Package, ShoppingBag, Image as ImageIcon, Truck,
   Settings, LogOut, Users, Tag, UserCog, Sparkles, Wallet, MessageCircle, Database, Archive,
-  Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer,
+  Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer, WalletCards,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
   Bell, Menu, X,
@@ -31,6 +31,7 @@ const NAV: NavItem[] = [
   { href: "/admin/categories",     label: "التصنيفات",          icon: Tag,             perm: "products" },
   { href: "/admin/barcodes",       label: "طباعة الباركود",     icon: Barcode,         perm: "products" },
   { href: "/admin/inventory-alerts",label: "تنبيهات المخزون",   icon: AlertTriangle,   perm: "products" },
+  { href: "/admin/inventory-value", label: "تقرير قيمة المخزون", icon: WalletCards,     perm: "products" },
   { href: "/admin/pos",             label: "نقطة البيع POS",    icon: Monitor,         perm: "invoices" },
   { href: "/admin/sales",          label: "فواتير المبيعات",   icon: Receipt,         perm: "invoices" },
   { href: "/admin/purchases",      label: "فواتير الشراء",      icon: ShoppingCart,    perm: "accounting" },
@@ -114,6 +115,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Boxes,
     items: [
       navItem("/admin/inventory-alerts"),
+      navItem("/admin/inventory-value"),
       navItem("/admin/barcodes"),
     ],
   },

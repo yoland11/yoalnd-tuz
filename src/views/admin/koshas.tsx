@@ -268,8 +268,9 @@ export default function AdminKoshasPage() {
   const [location] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const isNew = location === "/admin/koshas/new";
-  const isEdit = /\/admin\/koshas\/\d+\/edit$/.test(location);
+  const normalizedLocation = location.replace(/\/+$/, "");
+  const isNew = normalizedLocation === "/admin/koshas/new";
+  const isEdit = /\/admin\/koshas\/\d+\/edit$/.test(normalizedLocation);
   const { data = [], isLoading } = useQuery({
     queryKey: ["admin", "koshas"],
     queryFn: () => adminFetch<Kosha[]>("/admin/koshas"),

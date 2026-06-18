@@ -7047,6 +7047,150 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     return json({ data: mapped, count: mapped.length, emailEnabled: Boolean(process.env.RESEND_API_KEY || process.env.SMTP_HOST) });
   }
 
+  if (section === "inventory-value" && method === "GET") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    await ensureAdminProductsColumns();
+    await ensureStoreCategoryColumns();
+
+    const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
+    const category = (req.nextUrl.searchParams.get("category") ?? "").trim();
+    const searchLike = `%${search}%`;
+    const categoryLike = `%${category}%`;
+    const isUncategorized = category === "uncategorized";
+
+    try {
+      const inventoryResult = await db.execute(sql`
+        WITH grouped_products AS (
+          SELECT
+            COALESCE(p.shared_stock_product_id, p.id) AS stock_source_id,
+            COUNT(*)::int AS linked_count,
+            STRING_AGG(COALESCE(NULLIF(p.name_ar, ''), NULLIF(p.name, ''), 'منتج'), '، ' ORDER BY p.id) AS linked_product_names,
+            STRING_AGG(COALESCE(p.barcode, ''), ' ' ORDER BY p.id) AS linked_barcodes,
+            STRING_AGG(COALESCE(c.name_ar, c.name, p.category, ''), '، ' ORDER BY p.id) AS linked_categories
+          FROM products p
+          LEFT JOIN categories c ON c.id = p.category_id
+          GROUP BY COALESCE(p.shared_stock_product_id, p.id)
+        )
+        SELECT
+          src.id,
+          COALESCE(NULLIF(src.name_ar, ''), NULLIF(src.name, ''), 'منتج') AS product_name,
+          COALESCE(cat.name_ar, cat.name, NULLIF(src.category, ''), 'بدون تصنيف') AS category_name,
+          COALESCE(src.stock, 0)::int AS stock,
+          COALESCE(src.cost_price, 0)::text AS wholesale_price,
+          COALESCE(src.price, 0)::text AS sale_price,
+          (COALESCE(src.cost_price, 0) * COALESCE(src.stock, 0))::text AS wholesale_value,
+          (COALESCE(src.price, 0) * COALESCE(src.stock, 0))::text AS sale_value,
+          ((COALESCE(src.price, 0) - COALESCE(src.cost_price, 0)) * COALESCE(src.stock, 0))::text AS expected_profit,
+          COALESCE(g.linked_count, 1)::int AS linked_count,
+          COALESCE(g.linked_product_names, '') AS linked_product_names
+        FROM grouped_products g
+        JOIN products src ON src.id = g.stock_source_id
+        LEFT JOIN categories cat ON cat.id = src.category_id
+        WHERE (
+          ${search} = ''
+          OR COALESCE(NULLIF(src.name_ar, ''), NULLIF(src.name, ''), '') ILIKE ${searchLike}
+          OR COALESCE(src.barcode, '') ILIKE ${searchLike}
+          OR COALESCE(g.linked_product_names, '') ILIKE ${searchLike}
+          OR COALESCE(g.linked_barcodes, '') ILIKE ${searchLike}
+        )
+        AND (
+          ${category} = ''
+          OR (${isUncategorized} = true AND src.category_id IS NULL AND COALESCE(NULLIF(src.category, ''), '') = '')
+          OR COALESCE(src.category_id::text, '') = ${category}
+          OR COALESCE(src.category, '') = ${category}
+          OR COALESCE(cat.slug, '') = ${category}
+          OR COALESCE(cat.name_ar, cat.name, src.category, '') ILIKE ${categoryLike}
+          OR COALESCE(g.linked_categories, '') ILIKE ${categoryLike}
+        )
+        ORDER BY COALESCE(cat.name_ar, cat.name, src.category, 'بدون تصنيف') ASC,
+                 COALESCE(NULLIF(src.name_ar, ''), NULLIF(src.name, ''), 'منتج') ASC
+      `);
+
+      const categoryResult = await db.execute(sql`
+        SELECT DISTINCT
+          COALESCE(c.id::text, NULLIF(p.category, ''), 'uncategorized') AS value,
+          COALESCE(c.name_ar, c.name, NULLIF(p.category, ''), 'بدون تصنيف') AS label
+        FROM products p
+        LEFT JOIN categories c ON c.id = p.category_id
+        ORDER BY label ASC
+      `);
+
+      type InventoryValueApiRow = {
+        id: number;
+        productName: string;
+        categoryName: string;
+        stock: number;
+        wholesalePrice: number;
+        salePrice: number;
+        wholesaleValue: number;
+        saleValue: number;
+        expectedProfit: number;
+        linkedCount: number;
+        linkedProductNames: string;
+      };
+
+      type InventoryValueApiTotals = {
+        productCount: number;
+        totalQuantity: number;
+        totalWholesaleValue: number;
+        totalSaleValue: number;
+        expectedProfit: number;
+      };
+
+      const rows: InventoryValueApiRow[] = ((inventoryResult as any).rows ?? []).map((row: any) => {
+        const stock = Number(row.stock ?? 0);
+        const wholesalePrice = Number(row.wholesale_price ?? 0);
+        const salePrice = Number(row.sale_price ?? 0);
+        const wholesaleValue = Number(row.wholesale_value ?? wholesalePrice * stock);
+        const saleValue = Number(row.sale_value ?? salePrice * stock);
+        return {
+          id: Number(row.id),
+          productName: String(row.product_name ?? "منتج"),
+          categoryName: String(row.category_name ?? "بدون تصنيف"),
+          stock,
+          wholesalePrice,
+          salePrice,
+          wholesaleValue,
+          saleValue,
+          expectedProfit: Number(row.expected_profit ?? saleValue - wholesaleValue),
+          linkedCount: Number(row.linked_count ?? 1),
+          linkedProductNames: String(row.linked_product_names ?? ""),
+        };
+      });
+
+      const totals = rows.reduce<InventoryValueApiTotals>((acc, row) => {
+        acc.productCount += 1;
+        acc.totalQuantity += row.stock;
+        acc.totalWholesaleValue += row.wholesaleValue;
+        acc.totalSaleValue += row.saleValue;
+        return acc;
+      }, {
+        productCount: 0,
+        totalQuantity: 0,
+        totalWholesaleValue: 0,
+        totalSaleValue: 0,
+        expectedProfit: 0,
+      });
+      totals.expectedProfit = totals.totalSaleValue - totals.totalWholesaleValue;
+
+      const categoryOptions = ((categoryResult as any).rows ?? [])
+        .map((row: any) => ({
+          value: String(row.value ?? "uncategorized"),
+          label: String(row.label ?? "بدون تصنيف"),
+        }))
+        .filter((row: { value: string; label: string }, index: number, list: { value: string; label: string }[]) =>
+          row.value && list.findIndex((item) => item.value === row.value) === index
+        );
+
+      void logAdminActivity(req, "inventory_value_report_viewed", "report", undefined, { search, category });
+      return json({ rows, totals, categories: categoryOptions });
+    } catch (err) {
+      console.error("Inventory value report failed", err instanceof Error ? err.message : err);
+      return error("تعذر تحميل تقرير قيمة المخزون", 500);
+    }
+  }
+
   if (section === "loyalty") {
     const auth = await requirePermission(req, "customers");
     if (isResponse(auth)) return auth;

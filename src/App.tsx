@@ -105,6 +105,21 @@ function Router() {
           <Admin />
         </Suspense>
       </Route>
+      <Route path="/admin/koshas/:rest*">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
+      <Route path="/admin/kosha-bookings/:rest*">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
+      <Route path="/admin/kosha-bookings">
+        <Suspense fallback={<AdminSpinner />}>
+          <Admin />
+        </Suspense>
+      </Route>
       <Route path="/admin/:rest*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />

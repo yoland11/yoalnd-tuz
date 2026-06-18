@@ -21,6 +21,7 @@ const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
+const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const POSPage   = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
@@ -125,6 +126,7 @@ export default function Admin() {
           <Route path="/admin/categories">{() => <Guard me={me} perm="products"  ><CategoriesPage /></Guard>}</Route>
           <Route path="/admin/barcodes"  >{() => <Guard me={me} perm="products"  ><BarcodesPage   /></Guard>}</Route>
           <Route path="/admin/inventory-alerts">{() => <Guard me={me} perm="products"><InventoryAlertsPage /></Guard>}</Route>
+          <Route path="/admin/inventory-value">{() => <Guard me={me} perm="products"><InventoryValueReportPage /></Guard>}</Route>
           <Route path="/admin/pos"       >{() => <Guard me={me} perm="invoices"  ><POSPage        /></Guard>}</Route>
           <Route path="/admin/sales"     >{() => <Guard me={me} perm="invoices"  ><SalesPage      /></Guard>}</Route>
           <Route path="/admin/purchases" >{() => <Guard me={me} perm="accounting"><PurchasesPage  /></Guard>}</Route>
