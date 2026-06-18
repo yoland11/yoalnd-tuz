@@ -151,6 +151,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/reports/daily"),
       navItem("/admin/reports"),
+      navItem("/admin/inventory-value"),
       navItem("/admin/accounting"),
     ],
   },

@@ -4,7 +4,7 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2 } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -42,6 +42,58 @@ const blank: ProductForm = {
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
 
+const DEFAULT_LOW_STOCK_THRESHOLD = 5;
+type StockFilter = "all" | "available" | "low" | "out";
+
+function stockQuantity(product: any) {
+  return Number(product?.stock ?? 0);
+}
+
+function stockThreshold(product: any) {
+  const productThreshold = Number(product?.minStock ?? 0);
+  return productThreshold > 0 ? productThreshold : DEFAULT_LOW_STOCK_THRESHOLD;
+}
+
+function stockStatus(product: any): "available" | "low" | "out" {
+  const quantity = stockQuantity(product);
+  if (quantity <= 0) return "out";
+  if (quantity < stockThreshold(product)) return "low";
+  return "available";
+}
+
+function stockStatusMeta(status: ReturnType<typeof stockStatus>) {
+  if (status === "out") {
+    return {
+      label: "نفد المخزون",
+      className: "border-status-danger/30 bg-status-danger/10 text-status-danger",
+      icon: PackageX,
+    };
+  }
+  if (status === "low") {
+    return {
+      label: "منخفض",
+      className: "border-amber-400/30 bg-amber-400/10 text-amber-400",
+      icon: AlertTriangle,
+    };
+  }
+  return {
+    label: "متوفر",
+    className: "border-status-success/30 bg-status-success/10 text-status-success",
+    icon: CheckCircle2,
+  };
+}
+
+function StockStatusBadge({ product }: { product: any }) {
+  const meta = stockStatusMeta(stockStatus(product));
+  const Icon = meta.icon;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs ${meta.className}`}>
+      <Icon className="h-3.5 w-3.5" />
+      {meta.label}
+    </span>
+  );
+}
+
 export default function ProductsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -57,18 +109,34 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState<ProductForm | null>(null);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("");
+  const [stockFilter, setStockFilter] = useState<StockFilter>("all");
   const [view, setView] = useState<"list" | "stock">("list");
   const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
 
+  const productRows = products ?? [];
+  const stockStats = useMemo(() => {
+    return productRows.reduce(
+      (acc, product: any) => {
+        const status = stockStatus(product);
+        if (status === "out") acc.out += 1;
+        else if (status === "low") acc.low += 1;
+        else acc.available += 1;
+        return acc;
+      },
+      { available: 0, low: 0, out: 0 },
+    );
+  }, [productRows]);
+
   const filtered = useMemo(() => {
-    let rows = products ?? [];
+    let rows = productRows;
     if (catFilter) rows = rows.filter((p: any) => p.category === catFilter);
+    if (stockFilter !== "all") rows = rows.filter((p: any) => stockStatus(p) === stockFilter);
     if (search) {
       const s = search.toLowerCase();
       rows = rows.filter((p: any) => p.nameAr.toLowerCase().includes(s) || p.name.toLowerCase().includes(s) || String(p.sharedStockProductName ?? "").toLowerCase().includes(s));
     }
     return rows;
-  }, [products, search, catFilter]);
+  }, [productRows, search, catFilter, stockFilter]);
 
   const parentCats = categories?.filter(c => !c.parentId) ?? [];
   const subCats = categories?.filter(c => c.parentId) ?? [];
@@ -78,6 +146,32 @@ export default function ProductsPage() {
     queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
+  }
+
+  async function saveStock(product: any) {
+    const draft = stockDrafts[product.id];
+    const nextStock = Math.max(0, parseInt(draft ?? String(stockQuantity(product)), 10) || 0);
+    await update.mutateAsync({
+      id: product.id,
+      data: {
+        name: product.name,
+        nameAr: product.nameAr,
+        price: Number(product.price),
+        stock: nextStock,
+      },
+    });
+    setStockDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[product.id];
+      return next;
+    });
+    invalidate();
+    toast({
+      title: "تم تحديث المخزون",
+      description: product.sharedStockProductName
+        ? `تم تحديث مخزون المصدر: ${product.sharedStockProductName}`
+        : product.nameAr || product.name,
+    });
   }
 
   async function save(form: ProductForm) {
@@ -145,6 +239,49 @@ export default function ProductsPage() {
         </div>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setStockFilter(stockFilter === "out" ? "all" : "out")}
+          className={`rounded-xl border p-4 text-right transition-colors ${
+            stockFilter === "out"
+              ? "border-status-danger/45 bg-status-danger/15"
+              : "border-border/30 bg-card hover:bg-background/40"
+          }`}
+        >
+          <span className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted-foreground">منتجات نفد مخزونها</span>
+            <PackageX className="h-5 w-5 text-status-danger" />
+          </span>
+          <strong className="mt-2 block text-2xl text-foreground">{stockStats.out}</strong>
+          <span className="mt-1 block text-[11px] text-muted-foreground">يعتمد على المخزون الفعلي، بما فيه المخزون المشترك</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
+          className={`rounded-xl border p-4 text-right transition-colors ${
+            stockFilter === "low"
+              ? "border-amber-400/45 bg-amber-400/15"
+              : "border-border/30 bg-card hover:bg-background/40"
+          }`}
+        >
+          <span className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted-foreground">المخزون المنخفض</span>
+            <AlertTriangle className="h-5 w-5 text-amber-400" />
+          </span>
+          <strong className="mt-2 block text-2xl text-foreground">{stockStats.low}</strong>
+          <span className="mt-1 block text-[11px] text-muted-foreground">أقل من حد التنبيه أو {DEFAULT_LOW_STOCK_THRESHOLD} كافتراضي</span>
+        </button>
+        <div className="rounded-xl border border-border/30 bg-card p-4">
+          <span className="flex items-center justify-between gap-3">
+            <span className="text-sm text-muted-foreground">منتجات متوفرة</span>
+            <CheckCircle2 className="h-5 w-5 text-status-success" />
+          </span>
+          <strong className="mt-2 block text-2xl text-foreground">{stockStats.available}</strong>
+          <span className="mt-1 block text-[11px] text-muted-foreground">اضغط على العدادات لتفعيل الفلتر السريع</span>
+        </div>
+      </div>
+
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[240px]">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -156,6 +293,37 @@ export default function ProductsPage() {
           <option value="">كل التصنيفات</option>
           {parentCats.map(c => <option key={c.id} value={c.slug}>{c.nameAr}</option>)}
         </select>
+        <select value={stockFilter} onChange={e => setStockFilter(e.target.value as StockFilter)}
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          <option value="all">كل حالات المخزون</option>
+          <option value="available">متوفر</option>
+          <option value="low">المخزون المنخفض</option>
+          <option value="out">نفد المخزون</option>
+        </select>
+        <button
+          type="button"
+          onClick={() => setStockFilter(stockFilter === "out" ? "all" : "out")}
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+            stockFilter === "out"
+              ? "border-status-danger/40 bg-status-danger/10 text-status-danger"
+              : "border-border/40 bg-card text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <PackageX className="h-4 w-4" />
+          عرض المنتجات ذات المخزون 0 فقط
+        </button>
+        <button
+          type="button"
+          onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+            stockFilter === "low"
+              ? "border-amber-400/40 bg-amber-400/10 text-amber-400"
+              : "border-border/40 bg-card text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <AlertTriangle className="h-4 w-4" />
+          المخزون المنخفض
+        </button>
       </div>
 
       {view === "stock" ? (
@@ -168,15 +336,18 @@ export default function ProductsPage() {
                     <th className="text-right p-3 font-medium">المنتج</th>
                     <th className="text-right p-3 font-medium">السعر</th>
                     <th className="text-right p-3 font-medium w-40">المخزون</th>
+                    <th className="text-right p-3 font-medium w-36">حالة المخزون</th>
                     <th className="text-right p-3 font-medium w-32">إجراء</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/20">
                   {filtered.map((p: any) => {
                     const draft = stockDrafts[p.id];
-                    const dirty = draft !== undefined && draft !== String(p.stock);
+                    const currentStock = stockQuantity(p);
+                    const dirty = draft !== undefined && draft !== String(currentStock);
+                    const status = stockStatus(p);
                     return (
-                      <tr key={p.id} className="hover:bg-background/30">
+                      <tr key={p.id} className={`hover:bg-background/30 ${status === "out" ? "bg-status-danger/5" : ""}`}>
                         <td className="p-3">
                           <div className="flex items-center gap-3">
                             {p.images?.[0]
@@ -198,17 +369,14 @@ export default function ProductsPage() {
                         <td className="p-3 text-primary">{formatCurrency(p.price)}</td>
                         <td className="p-3">
                           <input type="number" min={0}
-                            value={draft ?? String(p.stock)}
+                            value={draft ?? String(currentStock)}
                             onChange={e => setStockDrafts(d => ({ ...d, [p.id]: e.target.value }))}
-                            className={`w-24 bg-background border rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${dirty ? "border-primary" : "border-border/40"} ${p.stock === 0 ? "text-status-danger" : ""}`} />
+                            className={`w-24 bg-background border rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${dirty ? "border-primary" : "border-border/40"} ${status === "out" ? "text-status-danger" : ""}`} />
                         </td>
+                        <td className="p-3"><StockStatusBadge product={p} /></td>
                         <td className="p-3">
                           {dirty && (
-                            <button onClick={async () => {
-                              await update.mutateAsync({ id: p.id, data: { name: p.name, nameAr: p.nameAr, price: Number(p.price), stock: Math.max(0, parseInt(draft || "0") || 0) } });
-                              setStockDrafts(d => { const c = { ...d }; delete c[p.id]; return c; });
-                              invalidate();
-                            }} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
+                            <button onClick={() => void saveStock(p)} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
                               <Save className="w-3.5 h-3.5" /> حفظ
                             </button>
                           )}
@@ -231,72 +399,95 @@ export default function ProductsPage() {
                   <th className="text-right p-3 font-medium">المنتج</th>
                   <th className="text-right p-3 font-medium">السعر</th>
                   <th className="text-right p-3 font-medium">المخزون</th>
+                  <th className="text-right p-3 font-medium">حالة المخزون</th>
                   <th className="text-right p-3 font-medium">التصنيف</th>
-                  <th className="text-right p-3 font-medium">الحالة</th>
+                  <th className="text-right p-3 font-medium">حالة النشر</th>
                   <th className="text-right p-3 font-medium">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {filtered.map((p: any) => (
-                  <tr key={p.id} className="hover:bg-background/30">
-                    <td className="p-3">
-                      <div className="flex items-center gap-3">
-                        {p.images?.[0]
-                          ? <img src={p.images[0]} className="w-12 h-12 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
-                          : <div className="w-12 h-12 rounded-lg bg-background border border-border/30" />}
-                          <div>
-                            <p className="font-medium text-foreground">{p.nameAr}</p>
-                            <p className="text-xs text-muted-foreground">{p.name}</p>
-                            {p.barcode && <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">{p.barcode}</p>}
-                            {p.sharedStockProductName && (
-                              <p className="text-[11px] text-primary inline-flex items-center gap-1 mt-0.5">
-                                <Link2 className="w-3 h-3" /> مخزون مشترك مع {p.sharedStockProductName}
-                              </p>
-                            )}
-                            {(p.sharedStockLinkedProducts?.length ?? 0) > 0 && (
-                              <p className="text-[11px] text-muted-foreground inline-flex items-center gap-1 mt-0.5">
-                                <Link2 className="w-3 h-3" /> يستخدمه {p.sharedStockLinkedProducts.map((item: any) => item.name).join("، ")}
-                              </p>
-                            )}
-                            <ProductColorDots colors={p.colors} max={4} />
-                            {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
-                          </div>
-                      </div>
-                    </td>
-                    <td className="p-3 text-primary font-semibold">{formatCurrency(p.price)}</td>
-                    <td className="p-3"><span className={p.stock === 0 ? "text-status-danger" : "text-status-success"}>{p.stock}</span></td>
-                    <td className="p-3 text-muted-foreground">{p.category ?? "—"}</td>
-                    <td className="p-3">
-                      <span className={`text-xs px-2 py-1 rounded-full ${p.isActive === false ? "bg-status-danger/10 text-status-danger" : "bg-status-success/10 text-status-success"}`}>
-                        {p.isActive === false ? "مخفي" : "ظاهر"}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setEditing({
-                          id: p.id, name: p.name, nameAr: p.nameAr,
-                          nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
-                          description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
-                          descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
-                          price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
-                          costPrice: p.costPrice ? String(p.costPrice) : "0",
-                          stock: String(p.stock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
-                          sharedStockProductId: (p as any).sharedStockProductId ?? null,
-                          sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
-                          categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
-                          category: p.category ?? "", subcategory: p.subcategory ?? "",
-                          images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
-                          isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
-                        })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((p: any) => {
+                  const draft = stockDrafts[p.id];
+                  const currentStock = stockQuantity(p);
+                  const dirty = draft !== undefined && draft !== String(currentStock);
+                  const status = stockStatus(p);
+                  return (
+                    <tr key={p.id} className={`hover:bg-background/30 ${status === "out" ? "bg-status-danger/5" : ""}`}>
+                      <td className="p-3">
+                        <div className="flex items-center gap-3">
+                          {p.images?.[0]
+                            ? <img src={p.images[0]} className="w-12 h-12 rounded-lg" style={{ objectFit: (p as any).imageMetadata?.[0]?.objectFit ?? "cover" }} alt="" />
+                            : <div className="w-12 h-12 rounded-lg bg-background border border-border/30" />}
+                            <div>
+                              <p className="font-medium text-foreground">{p.nameAr}</p>
+                              <p className="text-xs text-muted-foreground">{p.name}</p>
+                              {p.barcode && <p className="text-[11px] text-muted-foreground font-mono" dir="ltr">{p.barcode}</p>}
+                              {p.sharedStockProductName && (
+                                <p className="text-[11px] text-primary inline-flex items-center gap-1 mt-0.5">
+                                  <Link2 className="w-3 h-3" /> مخزون مشترك مع {p.sharedStockProductName}
+                                </p>
+                              )}
+                              {(p.sharedStockLinkedProducts?.length ?? 0) > 0 && (
+                                <p className="text-[11px] text-muted-foreground inline-flex items-center gap-1 mt-0.5">
+                                  <Link2 className="w-3 h-3" /> يستخدمه {p.sharedStockLinkedProducts.map((item: any) => item.name).join("، ")}
+                                </p>
+                              )}
+                              <ProductColorDots colors={p.colors} max={4} />
+                              {p.isFeatured && <span className="text-xs text-primary">★ مميز</span>}
+                            </div>
+                        </div>
+                      </td>
+                      <td className="p-3 text-primary font-semibold">{formatCurrency(p.price)}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            value={draft ?? String(currentStock)}
+                            onChange={e => setStockDrafts(d => ({ ...d, [p.id]: e.target.value }))}
+                            className={`w-20 bg-background border rounded-lg px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${dirty ? "border-primary" : "border-border/40"} ${status === "out" ? "text-status-danger" : ""}`}
+                          />
+                          {dirty && (
+                            <button onClick={() => void saveStock(p)} className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-xs text-primary-foreground hover:bg-primary/90">
+                              <Save className="h-3.5 w-3.5" /> حفظ
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3"><StockStatusBadge product={p} /></td>
+                      <td className="p-3 text-muted-foreground">{p.category ?? "—"}</td>
+                      <td className="p-3">
+                        <span className={`text-xs px-2 py-1 rounded-full ${p.isActive === false ? "bg-status-danger/10 text-status-danger" : "bg-status-success/10 text-status-success"}`}>
+                          {p.isActive === false ? "مخفي" : "ظاهر"}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setEditing({
+                            id: p.id, name: p.name, nameAr: p.nameAr,
+                            nameKu: (p as any).nameKu ?? "", nameTr: (p as any).nameTr ?? "",
+                            description: p.description ?? "", descriptionAr: p.descriptionAr ?? "",
+                            descriptionKu: (p as any).descriptionKu ?? "", descriptionTr: (p as any).descriptionTr ?? "",
+                            price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
+                            costPrice: p.costPrice ? String(p.costPrice) : "0",
+                            stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
+                            sharedStockProductId: (p as any).sharedStockProductId ?? null,
+                            sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
+                            categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
+                            category: p.category ?? "", subcategory: p.subcategory ?? "",
+                            images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
+                            isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
+                          })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
