@@ -9,6 +9,7 @@ import { buildWhatsAppLink } from "@/lib/order-stages";
 import { ProductColorDots } from "@/components/product-colors";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
+import { FeaturedKoshasSection } from "@/views/koshas";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
@@ -132,6 +133,8 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <FeaturedKoshasSection />
 
       {/* Featured Products */}
 {/* Featured Products */}

@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, ShoppingBag, Sun, User } from "lucide-react";
+import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, ShoppingBag, Sparkles, Sun, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -101,6 +101,13 @@ export function Navbar() {
             className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/store') ? 'text-primary' : 'text-muted-foreground'}`}
           >
             {t("المتجر")}
+          </Link>
+          <Link
+            href="/koshas"
+            className={`text-sm font-medium transition-colors hover:text-primary inline-flex items-center gap-1.5 ${location.startsWith('/koshas') ? 'text-primary' : 'text-muted-foreground'}`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            الكوشات
           </Link>
           <Link
             href="/gallery"

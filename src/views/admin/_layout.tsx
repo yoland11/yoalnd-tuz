@@ -25,6 +25,8 @@ const NAV: NavItem[] = [
   { href: "/admin/calendar",       label: "تقويم الحجوزات",     icon: CalendarDays,   perm: "orders" },
   { href: "/admin/archive",        label: "الأرشيف",           icon: Archive,        perm: "orders" },
   { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
+  { href: "/admin/koshas",         label: "إدارة الكوشات",       icon: Sparkles,        perm: "services" },
+  { href: "/admin/kosha-bookings", label: "حجوزات الكوشات",      icon: CalendarDays,    perm: "orders" },
   { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
   { href: "/admin/categories",     label: "التصنيفات",          icon: Tag,             perm: "products" },
   { href: "/admin/barcodes",       label: "طباعة الباركود",     icon: Barcode,         perm: "products" },
@@ -86,6 +88,8 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/qr-orders"),
       navItem("/admin/archive"),
       navItem("/admin/services"),
+      navItem("/admin/koshas"),
+      navItem("/admin/kosha-bookings"),
       navItem("/admin/products"),
       navItem("/admin/categories"),
       navItem("/admin/gallery"),
@@ -177,6 +181,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/", label: "رجوع إلى الموقع", icon: Home, perm: null, external: true },
       { href: "/store", label: "فتح المتجر", icon: Store, perm: null, external: true },
+      { href: "/koshas", label: "فتح الكوشات", icon: Sparkles, perm: null, external: true },
     ],
   },
   {

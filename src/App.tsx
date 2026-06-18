@@ -10,6 +10,8 @@ import { Layout } from "@/components/layout/Layout";
 import Home from "@/views/home";
 import Services from "@/views/services/index";
 import ServiceRequest from "@/views/services/id";
+import Koshas from "@/views/koshas/index";
+import KoshaDetails from "@/views/koshas/id";
 import Store from "@/views/store/index";
 import Cart from "@/views/cart";
 import Login from "@/views/login";
@@ -122,6 +124,8 @@ function Router() {
               <Route path="/" component={Home} />
               <Route path="/services" component={Services} />
               <Route path="/services/:id" component={ServiceRequest} />
+              <Route path="/koshas" component={Koshas} />
+              <Route path="/koshas/:id" component={KoshaDetails} />
               <Route path="/store" component={Store} />
               <Route path="/store/category/:categorySlug/:subcategorySlug" component={Store} />
               <Route path="/store/category/:categorySlug" component={Store} />

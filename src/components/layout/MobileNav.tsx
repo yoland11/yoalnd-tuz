@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Home, Store, ShoppingBag, Grid, User } from "lucide-react";
+import { Home, Store, ShoppingBag, Grid, User, Sparkles } from "lucide-react";
 import { useGetCart } from "@workspace/api-client-react";
 import { useT } from "@/lib/i18n";
 
@@ -26,6 +26,11 @@ export function MobileNav() {
         <Link href="/store" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/store') ? 'text-primary' : 'text-muted-foreground'}`}>
           <Store className="h-5 w-5" />
           <span className="text-[10px] font-medium">{t("المتجر")}</span>
+        </Link>
+
+        <Link href="/koshas" className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/koshas') ? 'text-primary' : 'text-muted-foreground'}`}>
+          <Sparkles className="h-5 w-5" />
+          <span className="text-[10px] font-medium">الكوشات</span>
         </Link>
         
         <Link href="/cart" className={`relative flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/cart') ? 'text-primary' : 'text-muted-foreground'}`}>
