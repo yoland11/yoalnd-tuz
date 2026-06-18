@@ -33,8 +33,10 @@ import {
   expenseCategoriesTable,
   expensesTable,
   galleryItemsTable,
+  koshaAccessoriesTable,
   koshaBookingsTable,
   koshaImagesTable,
+  koshaProvincesTable,
   koshasTable,
   loyaltyPointsTable,
   messageRepliesTable,
@@ -1274,6 +1276,8 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
 
 const KOSHA_STATUS_VALUES = ["available", "booked", "hidden", "maintenance"] as const;
 const KOSHA_BOOKING_STATUS_VALUES = ["new", "contacted", "confirmed", "in_progress", "completed", "cancelled"] as const;
+const DEFAULT_KOSHA_ADDONS = ["تصوير", "ألبوم", "فيديو مختصر", "دي جي", "إضاءة إضافية", "توصيل وتركيب"] as const;
+const DEFAULT_KOSHA_WELCOME_BOARDS = ["بورد ترحيب كلاسيك", "بورد ترحيب ذهبي", "بورد ورد", "بورد مرآة"] as const;
 
 const KoshaImageInputSchema = z.object({
   imageUrl: z.string().optional().default(""),
@@ -1330,10 +1334,28 @@ const KoshaBookingCreateSchema = z.object({
   koshaId: z.coerce.number().int().positive(),
   customerName: z.string().optional().default(""),
   phone: z.string().optional().default(""),
+  brideName: z.string().optional().default(""),
+  groomName: z.string().optional().default(""),
   eventDate: z.string().optional().default(""),
   eventTime: z.string().optional().default(""),
+  eventType: z.string().optional().default(""),
+  serviceLevel: z.string().optional().default(""),
+  venueType: z.string().optional().default(""),
+  themeColor: z.string().optional().default(""),
+  province: z.string().optional().default(""),
+  area: z.string().optional().default(""),
+  mahalla: z.string().optional().default(""),
+  nearestPoint: z.string().optional().default(""),
+  addressNotes: z.string().optional().default(""),
+  bridePhone: z.string().optional().default(""),
+  groomPhone: z.string().optional().default(""),
+  alternatePhone: z.string().optional().default(""),
   cityArea: z.string().optional().default(""),
   hallLocation: z.string().optional().default(""),
+  selectedAddons: z.array(z.string()).optional().default([]),
+  welcomeBoards: z.array(z.string()).optional().default([]),
+  selectedAccessories: z.array(z.string()).optional().default([]),
+  venueImages: z.array(z.string()).optional().default([]),
   notes: z.string().optional().default(""),
 });
 
@@ -1350,6 +1372,11 @@ function normalizeKoshaAccessories(value: unknown): string[] {
     .split(/\n|،|,/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeKoshaStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
 }
 
 function normalizeKoshaSlug(value: unknown, fallback: unknown): string {
@@ -1468,10 +1495,29 @@ async function formatKoshaBooking(row: any) {
     koshaSlug: kosha?.slug ?? null,
     customerName: row.customerName,
     phone: formatIraqiPhone(row.phone) ?? row.phone,
+    brideName: row.brideName ?? row.bride_name ?? "",
+    groomName: row.groomName ?? row.groom_name ?? "",
     eventDate: row.eventDate ?? "",
     eventTime: row.eventTime ?? "",
+    eventType: row.eventType ?? row.event_type ?? "",
+    serviceLevel: row.serviceLevel ?? row.service_level ?? "",
+    venueType: row.venueType ?? row.venue_type ?? "",
+    themeColor: row.themeColor ?? row.theme_color ?? "",
+    province: row.province ?? "",
+    area: row.area ?? "",
+    mahalla: row.mahalla ?? "",
+    nearestPoint: row.nearestPoint ?? row.nearest_point ?? "",
+    addressNotes: row.addressNotes ?? row.address_notes ?? "",
+    bridePhone: formatIraqiPhone(row.bridePhone ?? row.bride_phone) || "",
+    groomPhone: formatIraqiPhone(row.groomPhone ?? row.groom_phone) || "",
+    alternatePhone: formatIraqiPhone(row.alternatePhone ?? row.alternate_phone) || "",
     cityArea: row.cityArea ?? "",
     hallLocation: row.hallLocation ?? "",
+    selectedAddons: Array.isArray(row.selectedAddons ?? row.selected_addons) ? (row.selectedAddons ?? row.selected_addons) : [],
+    welcomeBoards: Array.isArray(row.welcomeBoards ?? row.welcome_boards) ? (row.welcomeBoards ?? row.welcome_boards) : [],
+    selectedAccessories: Array.isArray(row.selectedAccessories ?? row.selected_accessories) ? (row.selectedAccessories ?? row.selected_accessories) : [],
+    venueImages: Array.isArray(row.venueImages ?? row.venue_images) ? (row.venueImages ?? row.venue_images).map((image: unknown) => publicMediaValue("kosha-booking", row, image as string)) : [],
+    bookingDetails: row.bookingDetails ?? row.booking_details ?? {},
     notes: row.notes ?? "",
     status: row.status ?? "new",
     internalNotes: row.internalNotes ?? "",
@@ -2501,13 +2547,71 @@ async function ensureKoshaTables(): Promise<void> {
         "kosha_id" integer references "koshas" ("id") on delete set null,
         "customer_name" text not null,
         "phone" varchar(20) not null,
+        "bride_name" text,
+        "groom_name" text,
         "event_date" text,
         "event_time" varchar(20),
+        "event_type" varchar(40),
+        "service_level" varchar(20),
+        "venue_type" varchar(20),
+        "theme_color" varchar(20),
+        "province" text,
+        "area" text,
+        "mahalla" text,
+        "nearest_point" text,
+        "address_notes" text,
+        "bride_phone" varchar(20),
+        "groom_phone" varchar(20),
+        "alternate_phone" varchar(20),
         "city_area" text,
         "hall_location" text,
+        "selected_addons" jsonb not null default '[]'::jsonb,
+        "welcome_boards" jsonb not null default '[]'::jsonb,
+        "selected_accessories" jsonb not null default '[]'::jsonb,
+        "venue_images" jsonb not null default '[]'::jsonb,
+        "booking_details" jsonb not null default '{}'::jsonb,
         "notes" text,
         "status" varchar(30) not null default 'new',
         "internal_notes" text,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+
+      alter table "kosha_bookings"
+        add column if not exists "bride_name" text,
+        add column if not exists "groom_name" text,
+        add column if not exists "event_type" varchar(40),
+        add column if not exists "service_level" varchar(20),
+        add column if not exists "venue_type" varchar(20),
+        add column if not exists "theme_color" varchar(20),
+        add column if not exists "province" text,
+        add column if not exists "area" text,
+        add column if not exists "mahalla" text,
+        add column if not exists "nearest_point" text,
+        add column if not exists "address_notes" text,
+        add column if not exists "bride_phone" varchar(20),
+        add column if not exists "groom_phone" varchar(20),
+        add column if not exists "alternate_phone" varchar(20),
+        add column if not exists "selected_addons" jsonb not null default '[]'::jsonb,
+        add column if not exists "welcome_boards" jsonb not null default '[]'::jsonb,
+        add column if not exists "selected_accessories" jsonb not null default '[]'::jsonb,
+        add column if not exists "venue_images" jsonb not null default '[]'::jsonb,
+        add column if not exists "booking_details" jsonb not null default '{}'::jsonb;
+
+      create table if not exists "kosha_accessories" (
+        "id" serial primary key,
+        "name" text not null unique,
+        "is_active" boolean not null default true,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+
+      create table if not exists "kosha_provinces" (
+        "id" serial primary key,
+        "name" text not null unique,
+        "is_active" boolean not null default true,
+        "sort_order" integer not null default 0,
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
       );
@@ -2518,6 +2622,34 @@ async function ensureKoshaTables(): Promise<void> {
       create index if not exists "kosha_bookings_kosha_idx" on "kosha_bookings" ("kosha_id");
       create index if not exists "kosha_bookings_status_idx" on "kosha_bookings" ("status");
       create index if not exists "kosha_bookings_created_at_idx" on "kosha_bookings" ("created_at");
+      create index if not exists "kosha_bookings_event_date_idx" on "kosha_bookings" ("event_date");
+      create index if not exists "kosha_accessories_active_sort_idx" on "kosha_accessories" ("is_active", "sort_order", "id");
+      create index if not exists "kosha_provinces_active_sort_idx" on "kosha_provinces" ("is_active", "sort_order", "id");
+
+      insert into "kosha_accessories" ("name", "sort_order")
+      values
+        ('كفرات منع التصوير', 10),
+        ('دفوف حنة', 20),
+        ('مبخرة', 30),
+        ('مهفة', 40),
+        ('القرآن الكريم', 50),
+        ('شال المهر', 60),
+        ('ورد الحنة', 70),
+        ('وثيقة', 80),
+        ('ستاند حلقات', 90),
+        ('قصاصات', 100)
+      on conflict ("name") do nothing;
+
+      insert into "kosha_provinces" ("name", "sort_order")
+      values
+        ('كركوك', 10),
+        ('صلاح الدين', 20),
+        ('بغداد', 30),
+        ('أربيل', 40),
+        ('السليمانية', 50),
+        ('ديالى', 60),
+        ('نينوى', 70)
+      on conflict ("name") do nothing;
     `).then(() => undefined).catch((err) => {
       koshaTablesPromise = null;
       throw err;
@@ -3865,6 +3997,25 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     return json(await Promise.all(rows.map((row) => formatKosha(row, false))));
   }
 
+  if (method === "GET" && parts[1] === "options") {
+    const [accessories, provinces] = await Promise.all([
+      db.query.koshaAccessoriesTable.findMany({
+        where: eq(koshaAccessoriesTable.isActive, true),
+        orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+      }),
+      db.query.koshaProvincesTable.findMany({
+        where: eq(koshaProvincesTable.isActive, true),
+        orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+      }),
+    ]);
+    return json({
+      addons: DEFAULT_KOSHA_ADDONS,
+      welcomeBoards: DEFAULT_KOSHA_WELCOME_BOARDS,
+      accessories: accessories.map((item) => ({ id: item.id, name: item.name })),
+      provinces: provinces.map((item) => ({ id: item.id, name: item.name })),
+    });
+  }
+
   if (method === "GET" && parts[1]) {
     const raw = decodeURIComponent(parts[1]);
     const parsedId = int(raw);
@@ -3887,17 +4038,46 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       where: and(eq(koshasTable.id, data.koshaId), eq(koshasTable.isActive, true)),
     });
     if (!kosha) return error("الكوشة غير موجودة", 404);
-    const phone = normalizeIraqiPhone(data.phone);
+    const phone = normalizeIraqiPhone(data.phone || data.bridePhone || data.groomPhone || data.alternatePhone);
     if (!phone) return error("أدخل رقم هاتف عراقي صحيح", 400);
-    const customerName = textFallback(data.customerName, "زبون");
+    const customerName = textFallback(data.customerName, [data.brideName, data.groomName].filter(Boolean).join(" و ") || "زبون");
+    const venueImages = await persistMediaList(data.venueImages ?? [], "koshas/bookings");
+    const selectedAddons = normalizeKoshaStringList(data.selectedAddons);
+    const welcomeBoards = normalizeKoshaStringList(data.welcomeBoards);
+    const selectedAccessories = normalizeKoshaStringList(data.selectedAccessories);
     const [booking] = await db.insert(koshaBookingsTable).values({
       koshaId: kosha.id,
       customerName,
       phone,
+      brideName: nullableText(data.brideName),
+      groomName: nullableText(data.groomName),
       eventDate: nullableText(data.eventDate),
       eventTime: nullableText(data.eventTime),
-      cityArea: nullableText(data.cityArea),
-      hallLocation: nullableText(data.hallLocation),
+      eventType: nullableText(data.eventType),
+      serviceLevel: nullableText(data.serviceLevel),
+      venueType: nullableText(data.venueType),
+      themeColor: nullableText(data.themeColor),
+      province: nullableText(data.province),
+      area: nullableText(data.area),
+      mahalla: nullableText(data.mahalla),
+      nearestPoint: nullableText(data.nearestPoint),
+      addressNotes: nullableText(data.addressNotes),
+      bridePhone: normalizeIraqiPhone(data.bridePhone),
+      groomPhone: normalizeIraqiPhone(data.groomPhone),
+      alternatePhone: normalizeIraqiPhone(data.alternatePhone),
+      cityArea: nullableText(data.cityArea || [data.province, data.area].filter(Boolean).join(" - ")),
+      hallLocation: nullableText(data.hallLocation || data.nearestPoint || data.area),
+      selectedAddons,
+      welcomeBoards,
+      selectedAccessories,
+      venueImages,
+      bookingDetails: {
+        koshaName: kosha.name,
+        koshaPrice: Number.parseFloat(String(kosha.price ?? "0")) || 0,
+        selectedAddons,
+        welcomeBoards,
+        selectedAccessories,
+      },
       notes: nullableText(data.notes),
       status: "new",
     }).returning();
@@ -5634,8 +5814,72 @@ async function handleNotifications(req: NextRequest, parts: string[]) {
 
 async function handleAdminKoshas(req: NextRequest, parts: string[], section: string | undefined) {
   const method = req.method;
-  if (section !== "koshas" && section !== "kosha-bookings") return null;
+  if (section !== "koshas" && section !== "kosha-bookings" && section !== "kosha-accessories" && section !== "kosha-provinces") return null;
   await ensureKoshaTables();
+
+  if (section === "kosha-accessories" || section === "kosha-provinces") {
+    const auth = await requirePermission(req, "services");
+    if (isResponse(auth)) return auth;
+    const table = section === "kosha-accessories" ? koshaAccessoriesTable : koshaProvincesTable;
+    const entity = section === "kosha-accessories" ? "kosha_accessory" : "kosha_province";
+    const title = section === "kosha-accessories" ? "الاكسسوار" : "المحافظة";
+    const id = parts[2] ? int(parts[2]) : null;
+
+    if (method === "GET" && parts.length === 2) {
+      const rows = await db.select().from(table).orderBy(asc(table.sortOrder), asc(table.id));
+      return json(rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        isActive: row.isActive,
+        sortOrder: row.sortOrder,
+      })));
+    }
+
+    if (method === "POST" && parts.length === 2) {
+      const b = await body(req);
+      const name = textFallback(b?.name, "");
+      if (!name) return error(`اسم ${title} مطلوب`, 400);
+      try {
+        const [row] = await db.insert(table).values({
+          name,
+          isActive: b?.isActive !== false,
+          sortOrder: Number.isFinite(Number(b?.sortOrder)) ? Number(b.sortOrder) : 0,
+        } as any).returning();
+        void logAdminActivity(req, `${entity}_created`, entity, row.id, { name });
+        return json(row, 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error(`اسم ${title} مستخدم مسبقاً`, 409);
+        throw err;
+      }
+    }
+
+    if ((method === "PATCH" || method === "PUT") && id) {
+      const b = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (b?.name !== undefined) {
+        update.name = textFallback(b.name, "");
+        if (!update.name) return error(`اسم ${title} مطلوب`, 400);
+      }
+      if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
+      if (b?.sortOrder !== undefined) update.sortOrder = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : 0;
+      try {
+        const [row] = await db.update(table).set(update).where(eq(table.id, id)).returning();
+        if (!row) return error(`${title} غير موجود`, 404);
+        void logAdminActivity(req, `${entity}_updated`, entity, id, { fields: Object.keys(update) });
+        return json(row);
+      } catch (err: any) {
+        if (err?.code === "23505") return error(`اسم ${title} مستخدم مسبقاً`, 409);
+        throw err;
+      }
+    }
+
+    if (method === "DELETE" && id) {
+      const [row] = await db.delete(table).where(eq(table.id, id)).returning();
+      if (!row) return error(`${title} غير موجود`, 404);
+      void logAdminActivity(req, `${entity}_deleted`, entity, id);
+      return json({ message: "تم الحذف" });
+    }
+  }
 
   if (section === "koshas") {
     const auth = await requirePermission(req, "services");

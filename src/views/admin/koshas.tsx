@@ -22,14 +22,40 @@ type KoshaBooking = {
   koshaName: string | null;
   customerName: string;
   phone: string;
+  brideName: string;
+  groomName: string;
   eventDate: string;
   eventTime: string;
+  eventType: string;
+  serviceLevel: string;
+  venueType: string;
+  themeColor: string;
+  province: string;
+  area: string;
+  mahalla: string;
+  nearestPoint: string;
+  addressNotes: string;
+  bridePhone: string;
+  groomPhone: string;
+  alternatePhone: string;
   cityArea: string;
   hallLocation: string;
+  selectedAddons: string[];
+  welcomeBoards: string[];
+  selectedAccessories: string[];
+  venueImages: string[];
+  bookingDetails: Record<string, unknown>;
   notes: string;
   status: string;
   internalNotes: string;
   createdAt: string;
+};
+
+type KoshaOption = {
+  id: number;
+  name: string;
+  isActive: boolean;
+  sortOrder: number;
 };
 
 const EMPTY_KOSHA: KoshaFormState = {
@@ -99,6 +125,86 @@ function normalizeForm(kosha: Partial<Kosha> | null | undefined): KoshaFormState
     galleryImages: kosha?.galleryImages ?? [],
     accessories: kosha?.accessories ?? [],
   };
+}
+
+function KoshaOptionsManager({
+  title,
+  description,
+  endpoint,
+}: {
+  title: string;
+  description: string;
+  endpoint: "kosha-accessories" | "kosha-provinces";
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const { data = [], isLoading } = useQuery({
+    queryKey: ["admin", endpoint],
+    queryFn: () => adminFetch<KoshaOption[]>(`/admin/${endpoint}`),
+  });
+  const create = useMutation({
+    mutationFn: () => adminFetch(`/admin/${endpoint}`, { method: "POST", body: JSON.stringify({ name, sortOrder: data.length * 10 + 10 }) }),
+    onSuccess: () => {
+      setName("");
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تمت الإضافة" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الإضافة", description: err?.message, variant: "destructive" }),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, values }: { id: number; values: Partial<KoshaOption> }) => adminFetch(`/admin/${endpoint}/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تم الحفظ" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الحفظ", description: err?.message, variant: "destructive" }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/${endpoint}/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تم الحذف" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-card p-4">
+      <div className="mb-3">
+        <h2 className="font-bold text-foreground">{title}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="mb-3 flex gap-2">
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="اسم جديد" className="min-w-0 flex-1 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+        <Button type="button" size="sm" onClick={() => create.mutate()} disabled={!name.trim() || create.isPending}>إضافة</Button>
+      </div>
+      {isLoading ? <Skeleton className="h-28 rounded-lg" /> : (
+        <div className="space-y-2">
+          {data.map((item) => <KoshaOptionRow key={item.id} item={item} onSave={(values) => update.mutate({ id: item.id, values })} onDelete={() => confirm("حذف العنصر؟") && remove.mutate(item.id)} />)}
+          {data.length === 0 && <p className="rounded-lg border border-border/30 bg-background/60 p-3 text-center text-sm text-muted-foreground">لا توجد عناصر بعد.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KoshaOptionRow({ item, onSave, onDelete }: { item: KoshaOption; onSave: (values: Partial<KoshaOption>) => void; onDelete: () => void }) {
+  const [name, setName] = useState(item.name);
+  const [sortOrder, setSortOrder] = useState(String(item.sortOrder ?? 0));
+  useEffect(() => {
+    setName(item.name);
+    setSortOrder(String(item.sortOrder ?? 0));
+  }, [item.name, item.sortOrder]);
+  return (
+    <div className="grid gap-2 rounded-lg border border-border/30 bg-background/50 p-2 sm:grid-cols-[1fr_86px_auto_auto_auto]">
+      <input value={name} onChange={(event) => setName(event.target.value)} className="rounded-md border border-border/40 bg-background px-2 py-1.5 text-sm" />
+      <input value={sortOrder} type="number" onChange={(event) => setSortOrder(event.target.value)} className="rounded-md border border-border/40 bg-background px-2 py-1.5 text-sm" />
+      <Button type="button" size="sm" variant="outline" onClick={() => onSave({ isActive: !item.isActive })}>{item.isActive ? "تعطيل" : "تفعيل"}</Button>
+      <Button type="button" size="sm" onClick={() => onSave({ name, sortOrder: Number(sortOrder) || 0 })}>حفظ</Button>
+      <Button type="button" size="sm" variant="outline" onClick={onDelete} className="text-status-danger hover:text-status-danger">حذف</Button>
+    </div>
+  );
 }
 
 function KoshaForm({ mode }: { mode: "new" | "edit" }) {
@@ -299,6 +405,19 @@ export default function AdminKoshasPage() {
         <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2">
+        <KoshaOptionsManager
+          title="إدارة اكسسوارات الحجز"
+          description="هذه القائمة تظهر للزبون في خطوة الاكسسوارات داخل حجز الكوشة."
+          endpoint="kosha-accessories"
+        />
+        <KoshaOptionsManager
+          title="إدارة محافظات الكوشات"
+          description="هذه المحافظات تظهر في نموذج بيانات الحجز داخل صفحة الكوشات."
+          endpoint="kosha-provinces"
+        />
+      </div>
+
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">{[1, 2, 3].map((item) => <Skeleton key={item} className="h-72 rounded-xl" />)}</div>
       ) : data.length === 0 ? <EmptyState /> : (
@@ -352,8 +471,8 @@ export function AdminKoshaBookingsPage() {
   });
 
   const csv = useMemo(() => {
-    const header = ["الرقم", "الكوشة", "الزبون", "الهاتف", "التاريخ", "الوقت", "المنطقة", "الحالة"];
-    const rows = data.map((item) => [item.id, item.koshaName ?? "", item.customerName, item.phone, item.eventDate, item.eventTime, item.cityArea, STATUS_LABELS[item.status] ?? item.status]);
+    const header = ["الرقم", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الحالة"];
+    const rows = data.map((item) => [item.id, item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", STATUS_LABELS[item.status] ?? item.status]);
     return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   }, [data]);
 
@@ -374,10 +493,21 @@ export function AdminKoshaBookingsPage() {
       ["الكوشة", item.koshaName ?? "-"],
       ["الزبون", item.customerName],
       ["الهاتف", item.phone],
+      ["العروس", item.brideName],
+      ["العريس", item.groomName],
       ["التاريخ", item.eventDate],
       ["الوقت", item.eventTime],
-      ["المنطقة", item.cityArea],
-      ["الموقع", item.hallLocation],
+      ["نوع الحفل", item.eventType],
+      ["مستوى الخدمة", item.serviceLevel],
+      ["نوع المكان", item.venueType],
+      ["لون الثيم", item.themeColor],
+      ["المحافظة", item.province],
+      ["المنطقة", item.area || item.cityArea],
+      ["المحلة", item.mahalla],
+      ["أقرب نقطة", item.nearestPoint || item.hallLocation],
+      ["الخدمات الإضافية", item.selectedAddons?.join("، ")],
+      ["بورد الترحيب", item.welcomeBoards?.join("، ")],
+      ["الاكسسوارات", item.selectedAccessories?.join("، ")],
       ["الحالة", STATUS_LABELS[item.status] ?? item.status],
       ["ملاحظات", item.notes],
     ].map(([label, value]) => `<div class="row"><strong>${label}</strong><br>${value || "-"}</div>`).join("")}<script>window.onload=()=>window.print()</script></body></html>`);
@@ -410,6 +540,7 @@ export function AdminKoshaBookingsPage() {
                   <th className="px-4 py-3 text-right">الزبون</th>
                   <th className="px-4 py-3 text-right">الهاتف</th>
                   <th className="px-4 py-3 text-right">الموعد</th>
+                  <th className="px-4 py-3 text-right">التفاصيل</th>
                   <th className="px-4 py-3 text-right">الحالة</th>
                   <th className="px-4 py-3 text-right">إجراءات</th>
                 </tr>
@@ -418,9 +549,19 @@ export function AdminKoshaBookingsPage() {
                 {data.map((item) => (
                   <tr key={item.id} className="border-t border-border/30">
                     <td className="px-4 py-3">{item.koshaName ?? "-"}</td>
-                    <td className="px-4 py-3">{item.customerName}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-foreground">{item.customerName}</div>
+                      {(item.brideName || item.groomName) && <div className="text-xs text-muted-foreground">{[item.brideName, item.groomName].filter(Boolean).join(" و ")}</div>}
+                    </td>
                     <td className="px-4 py-3" dir="ltr">{item.phone}</td>
                     <td className="px-4 py-3">{item.eventDate || "-"} {item.eventTime || ""}</td>
+                    <td className="px-4 py-3">
+                      <div className="max-w-64 text-xs leading-6 text-muted-foreground">
+                        {[item.eventType, item.serviceLevel, item.venueType, item.themeColor].filter(Boolean).join(" · ") || "-"}
+                        <br />
+                        {[item.province, item.area || item.cityArea, item.nearestPoint].filter(Boolean).join(" - ")}
+                      </div>
+                    </td>
                     <td className="px-4 py-3">
                       <select value={item.status} onChange={(event) => update.mutate({ id: item.id, values: { status: event.target.value } })} className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs">
                         {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}

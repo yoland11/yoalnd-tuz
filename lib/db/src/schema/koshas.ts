@@ -40,10 +40,29 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   koshaId: integer("kosha_id").references(() => koshasTable.id, { onDelete: "set null" }),
   customerName: text("customer_name").notNull(),
   phone: varchar("phone", { length: 20 }).notNull(),
+  brideName: text("bride_name"),
+  groomName: text("groom_name"),
   eventDate: text("event_date"),
   eventTime: varchar("event_time", { length: 20 }),
+  eventType: varchar("event_type", { length: 40 }),
+  serviceLevel: varchar("service_level", { length: 20 }),
+  venueType: varchar("venue_type", { length: 20 }),
+  themeColor: varchar("theme_color", { length: 20 }),
+  province: text("province"),
+  area: text("area"),
+  mahalla: text("mahalla"),
+  nearestPoint: text("nearest_point"),
+  addressNotes: text("address_notes"),
+  bridePhone: varchar("bride_phone", { length: 20 }),
+  groomPhone: varchar("groom_phone", { length: 20 }),
+  alternatePhone: varchar("alternate_phone", { length: 20 }),
   cityArea: text("city_area"),
   hallLocation: text("hall_location"),
+  selectedAddons: jsonb("selected_addons").$type<string[]>().notNull().default([]),
+  welcomeBoards: jsonb("welcome_boards").$type<string[]>().notNull().default([]),
+  selectedAccessories: jsonb("selected_accessories").$type<string[]>().notNull().default([]),
+  venueImages: jsonb("venue_images").$type<string[]>().notNull().default([]),
+  bookingDetails: jsonb("booking_details").$type<Record<string, unknown>>().notNull().default({}),
   notes: text("notes"),
   status: varchar("status", { length: 30 }).notNull().default("new"),
   internalNotes: text("internal_notes"),
@@ -51,13 +70,37 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export const koshaAccessoriesTable = pgTable("kosha_accessories", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const koshaProvincesTable = pgTable("kosha_provinces", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const insertKoshaSchema = createInsertSchema(koshasTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaImageSchema = createInsertSchema(koshaImagesTable).omit({ id: true, createdAt: true });
 export const insertKoshaBookingSchema = createInsertSchema(koshaBookingsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaAccessorySchema = createInsertSchema(koshaAccessoriesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaProvinceSchema = createInsertSchema(koshaProvincesTable).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Kosha = typeof koshasTable.$inferSelect;
 export type KoshaImage = typeof koshaImagesTable.$inferSelect;
 export type KoshaBooking = typeof koshaBookingsTable.$inferSelect;
+export type KoshaAccessory = typeof koshaAccessoriesTable.$inferSelect;
+export type KoshaProvince = typeof koshaProvincesTable.$inferSelect;
 export type InsertKosha = z.infer<typeof insertKoshaSchema>;
 export type InsertKoshaImage = z.infer<typeof insertKoshaImageSchema>;
 export type InsertKoshaBooking = z.infer<typeof insertKoshaBookingSchema>;
+export type InsertKoshaAccessory = z.infer<typeof insertKoshaAccessorySchema>;
+export type InsertKoshaProvince = z.infer<typeof insertKoshaProvinceSchema>;
