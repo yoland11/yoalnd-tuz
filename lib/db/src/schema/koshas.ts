@@ -73,6 +73,33 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
 export const koshaAccessoriesTable = pgTable("kosha_accessories", {
   id: serial("id").primaryKey(),
   name: text("name").notNull().unique(),
+  price: numeric("price", { precision: 14, scale: 2 }).notNull().default("0"),
+  description: text("description"),
+  mainImage: text("main_image"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const koshaAddonsTable = pgTable("kosha_addons", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  price: numeric("price", { precision: 14, scale: 2 }).notNull().default("0"),
+  description: text("description"),
+  mainImage: text("main_image"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const koshaWelcomeBoardsTable = pgTable("kosha_welcome_boards", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  price: numeric("price", { precision: 14, scale: 2 }).notNull().default("0"),
+  description: text("description"),
+  mainImage: text("main_image"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -92,15 +119,21 @@ export const insertKoshaSchema = createInsertSchema(koshasTable).omit({ id: true
 export const insertKoshaImageSchema = createInsertSchema(koshaImagesTable).omit({ id: true, createdAt: true });
 export const insertKoshaBookingSchema = createInsertSchema(koshaBookingsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaAccessorySchema = createInsertSchema(koshaAccessoriesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaAddonSchema = createInsertSchema(koshaAddonsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaWelcomeBoardSchema = createInsertSchema(koshaWelcomeBoardsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaProvinceSchema = createInsertSchema(koshaProvincesTable).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Kosha = typeof koshasTable.$inferSelect;
 export type KoshaImage = typeof koshaImagesTable.$inferSelect;
 export type KoshaBooking = typeof koshaBookingsTable.$inferSelect;
 export type KoshaAccessory = typeof koshaAccessoriesTable.$inferSelect;
+export type KoshaAddon = typeof koshaAddonsTable.$inferSelect;
+export type KoshaWelcomeBoard = typeof koshaWelcomeBoardsTable.$inferSelect;
 export type KoshaProvince = typeof koshaProvincesTable.$inferSelect;
 export type InsertKosha = z.infer<typeof insertKoshaSchema>;
 export type InsertKoshaImage = z.infer<typeof insertKoshaImageSchema>;
 export type InsertKoshaBooking = z.infer<typeof insertKoshaBookingSchema>;
 export type InsertKoshaAccessory = z.infer<typeof insertKoshaAccessorySchema>;
+export type InsertKoshaAddon = z.infer<typeof insertKoshaAddonSchema>;
+export type InsertKoshaWelcomeBoard = z.infer<typeof insertKoshaWelcomeBoardSchema>;
 export type InsertKoshaProvince = z.infer<typeof insertKoshaProvinceSchema>;

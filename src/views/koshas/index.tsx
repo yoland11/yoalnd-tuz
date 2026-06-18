@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -60,12 +60,20 @@ async function fetchKoshas(featured = false): Promise<Kosha[]> {
   return res.json();
 }
 
-type WizardOption = { id: number; name: string };
+export type KoshaOptionProduct = {
+  id: number;
+  name: string;
+  price: number;
+  description?: string | null;
+  mainImage?: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+};
 type KoshaWizardOptions = {
-  addons: string[];
-  welcomeBoards: string[];
-  accessories: WizardOption[];
-  provinces: WizardOption[];
+  addons: KoshaOptionProduct[];
+  welcomeBoards: KoshaOptionProduct[];
+  accessories: KoshaOptionProduct[];
+  provinces: { id: number; name: string }[];
 };
 type WizardStep = 0 | 1 | 2 | 3 | 4 | 5;
 type BookingForm = {
@@ -266,6 +274,42 @@ function SelectablePill({ label, selected, onClick, tone = "default" }: { label:
   );
 }
 
+function selectedOptionItems(options: KoshaOptionProduct[], selectedNames: string[]) {
+  const selected = new Set(selectedNames);
+  return options.filter((item) => selected.has(item.name));
+}
+
+function optionsTotal(items: KoshaOptionProduct[]) {
+  return items.reduce((sum, item) => sum + (Number(item.price ?? 0) || 0), 0);
+}
+
+function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct; selected: boolean; onClick: () => void }) {
+  const image = item.mainImage || "";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${
+        selected ? "border-primary shadow-[0_0_0_1px_hsl(var(--primary)/0.22)]" : "border-border/40 hover:border-primary/50"
+      }`}
+    >
+      <SelectionMark selected={selected} />
+      <div className="aspect-[4/3] overflow-hidden bg-muted">
+        {image ? (
+          <img src={image} alt={item.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" loading="lazy" decoding="async" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-background/70 px-3 text-center text-sm text-muted-foreground">بدون صورة</div>
+        )}
+      </div>
+      <div className="space-y-2 p-4">
+        <h3 className="font-bold text-foreground">{item.name}</h3>
+        <p className="text-lg font-bold text-primary">{formatKoshaPrice(item.price)}</p>
+        {shortText(item.description) ? <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{shortText(item.description)}</p> : null}
+      </div>
+    </button>
+  );
+}
+
 function WizardInput({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="block space-y-1">
@@ -309,6 +353,12 @@ export default function KoshasPage() {
 
   const options = optionsQuery.data ?? { addons: [], welcomeBoards: [], accessories: [], provinces: [] };
   const allAccessoryNames = options.accessories.map((item) => item.name);
+  const selectedAddonItems = useMemo(() => selectedOptionItems(options.addons, selectedAddons), [options.addons, selectedAddons]);
+  const selectedBoardItems = useMemo(() => selectedOptionItems(options.welcomeBoards, selectedBoards), [options.welcomeBoards, selectedBoards]);
+  const selectedAccessoryItems = useMemo(() => selectedOptionItems(options.accessories, selectedAccessories), [options.accessories, selectedAccessories]);
+  const koshaBasePrice = Number(selectedKosha?.price ?? 0) || 0;
+  const selectedOptionsTotal = optionsTotal([...selectedAddonItems, ...selectedBoardItems, ...selectedAccessoryItems]);
+  const bookingTotal = koshaBasePrice + selectedOptionsTotal;
 
   const booking = useMutation({
     mutationFn: async () => {
@@ -426,15 +476,18 @@ export default function KoshasPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h2 className="text-2xl font-bold text-foreground">الخدمات الإضافية</h2>
-                      <p className="mt-1 text-sm text-muted-foreground">اختيارية، ويمكنك تخطيها بدون حفظ الاختيارات.</p>
+                      <p className="mt-1 text-sm text-muted-foreground">اختيارية، اختر خدمة أو أكثر وسيتم احتساب السعر مباشرة.</p>
                     </div>
                     <div className="flex gap-2">
                       <Button type="button" variant="outline" onClick={() => { setSelectedAddons([]); go(2); }}>تخطّي هذه الخطوة</Button>
                       <Button type="button" onClick={() => go(2)}>التالي</Button>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {options.addons.map((item) => <SelectablePill key={item} label={item} selected={selectedAddons.includes(item)} onClick={() => toggleList(item, selectedAddons, setSelectedAddons)} />)}
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {options.addons.map((item) => (
+                      <KoshaOptionCard key={item.id} item={item} selected={selectedAddons.includes(item.name)} onClick={() => toggleList(item.name, selectedAddons, setSelectedAddons)} />
+                    ))}
+                    {options.addons.length === 0 && <p className="rounded-lg border border-border/30 bg-background/60 p-4 text-sm text-muted-foreground sm:col-span-2">لا توجد خدمات إضافية ظاهرة حالياً.</p>}
                   </div>
                 </>
               )}
@@ -444,15 +497,23 @@ export default function KoshasPage() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h2 className="text-2xl font-bold text-foreground">بورد الترحيب</h2>
-                      <p className="mt-1 text-sm text-muted-foreground">اختر بورد ترحيب واحد أو أكثر، أو تخطى الخطوة.</p>
+                      <p className="mt-1 text-sm text-muted-foreground">اختر بورد ترحيب واحد فقط، أو تخطى الخطوة.</p>
                     </div>
                     <div className="flex gap-2">
                       <Button type="button" variant="outline" onClick={() => { setSelectedBoards([]); go(3); }}>تخطّي هذه الخطوة</Button>
                       <Button type="button" onClick={() => go(3)}>التالي</Button>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {options.welcomeBoards.map((item) => <SelectablePill key={item} label={item} selected={selectedBoards.includes(item)} onClick={() => toggleList(item, selectedBoards, setSelectedBoards)} />)}
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {options.welcomeBoards.map((item) => (
+                      <KoshaOptionCard
+                        key={item.id}
+                        item={item}
+                        selected={selectedBoards.includes(item.name)}
+                        onClick={() => setSelectedBoards(selectedBoards.includes(item.name) ? [] : [item.name])}
+                      />
+                    ))}
+                    {options.welcomeBoards.length === 0 && <p className="rounded-lg border border-border/30 bg-background/60 p-4 text-sm text-muted-foreground sm:col-span-2">لا توجد بوردات ترحيب ظاهرة حالياً.</p>}
                   </div>
                 </>
               )}
@@ -464,17 +525,23 @@ export default function KoshasPage() {
                     <p className="mt-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-2 text-sm text-primary">ملاحظة: سيتم طباعة الأحرف الأولى من اسم العروسين على الاكسسوارات المختارة.</p>
                   </div>
                   <div className="rounded-xl border border-border/30 bg-background/45 p-4">
-                    <h3 className="mb-3 font-bold text-foreground">خيارات الاكسسوارات</h3>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold text-foreground">خيارات الاكسسوارات</h3>
+                        <p className="mt-1 text-xs text-muted-foreground">كل اكسسوار يظهر كعنصر مستقل مع صورته وسعره.</p>
+                      </div>
                       <SelectablePill
                         label="الكل"
                         tone="pink"
                         selected={allAccessoryNames.length > 0 && selectedAccessories.length === allAccessoryNames.length}
                         onClick={() => setSelectedAccessories(selectedAccessories.length === allAccessoryNames.length ? [] : allAccessoryNames)}
                       />
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {options.accessories.map((item) => (
-                        <SelectablePill key={item.id} label={item.name} tone="pink" selected={selectedAccessories.includes(item.name)} onClick={() => toggleList(item.name, selectedAccessories, setSelectedAccessories)} />
+                        <KoshaOptionCard key={item.id} item={item} selected={selectedAccessories.includes(item.name)} onClick={() => toggleList(item.name, selectedAccessories, setSelectedAccessories)} />
                       ))}
+                      {options.accessories.length === 0 && <p className="rounded-lg border border-border/30 bg-card p-4 text-sm text-muted-foreground sm:col-span-2">لا توجد اكسسوارات ظاهرة حالياً.</p>}
                     </div>
                   </div>
                   <div className="flex justify-between gap-2">
@@ -582,7 +649,7 @@ export default function KoshasPage() {
                         </div>
                         <div className="text-left">
                           <p className="text-xs text-muted-foreground">السعر المبدئي</p>
-                          <p className="text-xl font-bold text-primary">{formatKoshaPrice(selectedKosha?.price)}</p>
+                          <p className="text-xl font-bold text-primary">{formatKoshaPrice(koshaBasePrice)}</p>
                         </div>
                       </div>
                       <div className="grid gap-5 md:grid-cols-2">
@@ -591,6 +658,20 @@ export default function KoshasPage() {
                           <SummaryRow label="الخدمات الإضافية" value={selectedAddons} />
                           <SummaryRow label="بورد الترحيب" value={selectedBoards} />
                           <SummaryRow label="الاكسسوارات" value={selectedAccessories} />
+                          <div className="mt-3 rounded-lg border border-border/30 bg-card p-3 text-sm">
+                            <div className="flex items-center justify-between gap-3 py-1">
+                              <span className="text-muted-foreground">سعر الكوشة</span>
+                              <span className="font-bold text-foreground">{formatKoshaPrice(koshaBasePrice)}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3 py-1">
+                              <span className="text-muted-foreground">إضافات الحجز</span>
+                              <span className="font-bold text-foreground">{formatKoshaPrice(selectedOptionsTotal)}</span>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-3 border-t border-border/30 pt-3">
+                              <span className="font-bold text-foreground">الإجمالي</span>
+                              <span className="text-lg font-bold text-primary">{formatKoshaPrice(bookingTotal)}</span>
+                            </div>
+                          </div>
                         </div>
                         <div>
                           <h4 className="mb-2 font-bold text-foreground">البيانات</h4>

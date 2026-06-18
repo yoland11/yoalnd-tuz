@@ -54,6 +54,9 @@ type KoshaBooking = {
 type KoshaOption = {
   id: number;
   name: string;
+  price?: number;
+  description?: string | null;
+  mainImage?: string | null;
   isActive: boolean;
   sortOrder: number;
 };
@@ -87,6 +90,22 @@ const STATUS_LABELS: Record<string, string> = {
   in_progress: "قيد التنفيذ",
   completed: "مكتمل",
   cancelled: "ملغي",
+};
+
+function koshaBookingTotal(details: Record<string, unknown> | null | undefined) {
+  const value = Number((details as any)?.total ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+type KoshaCatalogEndpoint = "kosha-addons" | "kosha-welcome-boards" | "kosha-accessories";
+
+const EMPTY_KOSHA_OPTION = {
+  name: "",
+  price: 0,
+  description: "",
+  mainImage: "",
+  isActive: true,
+  sortOrder: 0,
 };
 
 function fieldValue(value: unknown) {
@@ -165,6 +184,180 @@ function cleanKoshaPayload(form: KoshaFormState) {
       sortOrder: index,
     })).filter((image) => image.imageUrl),
   };
+}
+
+function KoshaCatalogOptionsManager({
+  title,
+  description,
+  endpoint,
+}: {
+  title: string;
+  description: string;
+  endpoint: KoshaCatalogEndpoint;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const { data: publicSettings } = usePublicSettings();
+  const [draft, setDraft] = useState({ ...EMPTY_KOSHA_OPTION });
+  const { data = [], isLoading } = useQuery({
+    queryKey: ["admin", endpoint],
+    queryFn: () => adminFetch<KoshaOption[]>(`/admin/${endpoint}`),
+  });
+  const create = useMutation({
+    mutationFn: () => adminFetch(`/admin/${endpoint}`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...draft,
+        name: draft.name.trim(),
+        price: numberOrZero(draft.price),
+        sortOrder: Number.isFinite(Number(draft.sortOrder)) ? Number(draft.sortOrder) : data.length * 10 + 10,
+      }),
+    }),
+    onSuccess: () => {
+      setDraft({ ...EMPTY_KOSHA_OPTION, sortOrder: data.length * 10 + 20 });
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تمت الإضافة" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الإضافة", description: err?.message, variant: "destructive" }),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, values }: { id: number; values: Partial<KoshaOption> }) => adminFetch(`/admin/${endpoint}/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تم الحفظ" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الحفظ", description: err?.message, variant: "destructive" }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/${endpoint}/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", endpoint] });
+      toast({ title: "تم الحذف" });
+    },
+    onError: (err: any) => toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }),
+  });
+
+  function draftImageResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    setDraft((current) => ({ ...current, mainImage: result.dataUrl }));
+  }
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-card p-4">
+      <div className="mb-3">
+        <h2 className="font-bold text-foreground">{title}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="mb-4 grid gap-3 rounded-lg border border-border/30 bg-background/45 p-3 lg:grid-cols-[1fr_110px_90px]">
+        <Field label="الاسم" value={draft.name} onChange={(value) => setDraft((current) => ({ ...current, name: value }))} />
+        <Field label="السعر" type="number" value={draft.price} onChange={(value) => setDraft((current) => ({ ...current, price: Number(value) || 0 }))} />
+        <Field label="الترتيب" type="number" value={draft.sortOrder} onChange={(value) => setDraft((current) => ({ ...current, sortOrder: Number(value) || 0 }))} />
+        <div className="lg:col-span-2">
+          <Field label="الوصف" textarea value={draft.description} onChange={(value) => setDraft((current) => ({ ...current, description: value }))} />
+        </div>
+        <div className="space-y-2">
+          <label className="block text-xs text-muted-foreground">الصورة</label>
+          <ImageUploadEditor
+            kind="gallery"
+            label="رفع صورة"
+            currentImage={draft.mainImage || null}
+            settings={publicSettings?.image_settings}
+            watermarkText={publicSettings?.site_name}
+            onComplete={draftImageResult}
+            onRemove={() => setDraft((current) => ({ ...current, mainImage: "" }))}
+          />
+        </div>
+        <div className="flex items-end">
+          <Button type="button" size="sm" onClick={() => create.mutate()} disabled={!draft.name.trim() || create.isPending} className="w-full">
+            {create.isPending ? "جاري الإضافة..." : "إضافة"}
+          </Button>
+        </div>
+      </div>
+      {isLoading ? <Skeleton className="h-28 rounded-lg" /> : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {data.map((item) => (
+            <KoshaCatalogOptionRow
+              key={item.id}
+              item={item}
+              settings={publicSettings?.image_settings}
+              watermarkText={publicSettings?.site_name}
+              onSave={(values) => update.mutate({ id: item.id, values })}
+              onDelete={() => confirm("حذف العنصر؟") && remove.mutate(item.id)}
+            />
+          ))}
+          {data.length === 0 && <p className="rounded-lg border border-border/30 bg-background/60 p-3 text-center text-sm text-muted-foreground md:col-span-2">لا توجد عناصر بعد.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KoshaCatalogOptionRow({
+  item,
+  settings,
+  watermarkText,
+  onSave,
+  onDelete,
+}: {
+  item: KoshaOption;
+  settings: any;
+  watermarkText?: string;
+  onSave: (values: Partial<KoshaOption>) => void;
+  onDelete: () => void;
+}) {
+  const [name, setName] = useState(item.name);
+  const [price, setPrice] = useState(String(item.price ?? 0));
+  const [description, setDescription] = useState(item.description ?? "");
+  const [mainImage, setMainImage] = useState(item.mainImage ?? "");
+  const [sortOrder, setSortOrder] = useState(String(item.sortOrder ?? 0));
+  useEffect(() => {
+    setName(item.name);
+    setPrice(String(item.price ?? 0));
+    setDescription(item.description ?? "");
+    setMainImage(item.mainImage ?? "");
+    setSortOrder(String(item.sortOrder ?? 0));
+  }, [item.name, item.price, item.description, item.mainImage, item.sortOrder]);
+
+  function rowImageResult(results: ImageEditResult[]) {
+    const result = results[0];
+    if (!result) return;
+    setMainImage(result.dataUrl);
+  }
+
+  return (
+    <div className="rounded-lg border border-border/30 bg-background/50 p-3">
+      <div className="grid gap-3 sm:grid-cols-[112px_1fr]">
+        <div className="space-y-2">
+          <div className="aspect-square overflow-hidden rounded-lg border border-border/30 bg-card">
+            {mainImage ? <img src={mainImage} alt={name} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">بدون صورة</div>}
+          </div>
+          <ImageUploadEditor
+            kind="gallery"
+            label="تغيير الصورة"
+            currentImage={mainImage || null}
+            settings={settings}
+            watermarkText={watermarkText}
+            onComplete={rowImageResult}
+            onRemove={() => setMainImage("")}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Field label="الاسم" value={name} onChange={setName} />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Field label="السعر" type="number" value={price} onChange={setPrice} />
+            <Field label="الترتيب" type="number" value={sortOrder} onChange={setSortOrder} />
+          </div>
+          <Field label="الوصف" textarea value={description} onChange={setDescription} />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => onSave({ isActive: !item.isActive })}>{item.isActive ? "تعطيل" : "تفعيل"}</Button>
+            <Button type="button" size="sm" onClick={() => onSave({ name, price: numberOrZero(price), description, mainImage, sortOrder: Number(sortOrder) || 0 })}>حفظ</Button>
+            <Button type="button" size="sm" variant="outline" onClick={onDelete} className="text-status-danger hover:text-status-danger">حذف</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function KoshaOptionsManager({
@@ -442,12 +635,25 @@ export default function AdminKoshasPage() {
         <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <KoshaOptionsManager
-          title="إدارة اكسسوارات الحجز"
-          description="هذه القائمة تظهر للزبون في خطوة الاكسسوارات داخل حجز الكوشة."
+      <div className="grid gap-4 xl:grid-cols-3">
+        <KoshaCatalogOptionsManager
+          title="إدارة الخدمات الإضافية"
+          description="تظهر كمنتجات مصغرة في خطوة الخدمات الإضافية مع الصورة والسعر."
+          endpoint="kosha-addons"
+        />
+        <KoshaCatalogOptionsManager
+          title="إدارة بورد الترحيب"
+          description="تظهر في خطوة بورد الترحيب، والزبون يختار بورد واحد فقط."
+          endpoint="kosha-welcome-boards"
+        />
+        <KoshaCatalogOptionsManager
+          title="إدارة الاكسسوارات"
+          description="تظهر كمنتجات مستقلة في خطوة الاكسسوارات مع اختيار متعدد."
           endpoint="kosha-accessories"
         />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
         <KoshaOptionsManager
           title="إدارة محافظات الكوشات"
           description="هذه المحافظات تظهر في نموذج بيانات الحجز داخل صفحة الكوشات."
@@ -508,8 +714,8 @@ export function AdminKoshaBookingsPage() {
   });
 
   const csv = useMemo(() => {
-    const header = ["الرقم", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الحالة"];
-    const rows = data.map((item) => [item.id, item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", STATUS_LABELS[item.status] ?? item.status]);
+    const header = ["الرقم", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الإجمالي", "الحالة"];
+    const rows = data.map((item) => [item.id, item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingTotal(item.bookingDetails) ?? "", STATUS_LABELS[item.status] ?? item.status]);
     return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   }, [data]);
 
@@ -545,6 +751,7 @@ export function AdminKoshaBookingsPage() {
       ["الخدمات الإضافية", item.selectedAddons?.join("، ")],
       ["بورد الترحيب", item.welcomeBoards?.join("، ")],
       ["الاكسسوارات", item.selectedAccessories?.join("، ")],
+      ["الإجمالي", koshaBookingTotal(item.bookingDetails) ? formatCurrency(koshaBookingTotal(item.bookingDetails) ?? 0) : "-"],
       ["الحالة", STATUS_LABELS[item.status] ?? item.status],
       ["ملاحظات", item.notes],
     ].map(([label, value]) => `<div class="row"><strong>${label}</strong><br>${value || "-"}</div>`).join("")}<script>window.onload=()=>window.print()</script></body></html>`);
@@ -577,6 +784,7 @@ export function AdminKoshaBookingsPage() {
                   <th className="px-4 py-3 text-right">الزبون</th>
                   <th className="px-4 py-3 text-right">الهاتف</th>
                   <th className="px-4 py-3 text-right">الموعد</th>
+                  <th className="px-4 py-3 text-right">الإجمالي</th>
                   <th className="px-4 py-3 text-right">التفاصيل</th>
                   <th className="px-4 py-3 text-right">الحالة</th>
                   <th className="px-4 py-3 text-right">إجراءات</th>
@@ -592,6 +800,7 @@ export function AdminKoshaBookingsPage() {
                     </td>
                     <td className="px-4 py-3" dir="ltr">{item.phone}</td>
                     <td className="px-4 py-3">{item.eventDate || "-"} {item.eventTime || ""}</td>
+                    <td className="px-4 py-3 font-bold text-primary">{koshaBookingTotal(item.bookingDetails) ? formatCurrency(koshaBookingTotal(item.bookingDetails) ?? 0) : "-"}</td>
                     <td className="px-4 py-3">
                       <div className="max-w-64 text-xs leading-6 text-muted-foreground">
                         {[item.eventType, item.serviceLevel, item.venueType, item.themeColor].filter(Boolean).join(" · ") || "-"}
