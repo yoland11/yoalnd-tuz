@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Facebook, Heart, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, ShoppingBag, Sparkles, Sun, User } from "lucide-react";
+import { Armchair, Facebook, Heart, Images, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, Route, ShoppingBag, Store, Sun, User, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -86,39 +86,43 @@ export function Navbar() {
         <nav className="hidden md:flex items-center gap-8">
           <Link
             href="/"
-            className={`text-sm font-medium transition-colors hover:text-primary ${location === '/' ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link text-sm font-medium ${location === '/' ? 'is-active' : ''}`}
           >
             {t("الرئيسية")}
           </Link>
           <Link
             href="/services"
-            className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/services') ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/services') ? 'is-active' : ''}`}
           >
+            <WandSparkles className="h-3.5 w-3.5 shrink-0" />
             {t("الخدمات")}
           </Link>
           <Link
             href="/store"
-            className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/store') ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/store') ? 'is-active' : ''}`}
           >
+            <Store className="h-3.5 w-3.5 shrink-0" />
             {t("المتجر")}
           </Link>
           <Link
             href="/koshas"
-            className={`text-sm font-medium transition-colors hover:text-primary inline-flex items-center gap-1.5 ${location.startsWith('/koshas') ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/koshas') ? 'is-active' : ''}`}
           >
-            <Sparkles className="h-3.5 w-3.5" />
+            <Armchair className="h-3.5 w-3.5 shrink-0" />
             الكوشات
           </Link>
           <Link
             href="/gallery"
-            className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/gallery') ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/gallery') ? 'is-active' : ''}`}
           >
+            <Images className="h-3.5 w-3.5 shrink-0" />
             {t("أعمالنا")}
           </Link>
           <Link
             href="/track"
-            className={`text-sm font-medium transition-colors hover:text-primary ${location.startsWith('/track') ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/track') ? 'is-active' : ''}`}
           >
+            <Route className="h-3.5 w-3.5 shrink-0" />
             {t("تتبع الطلب")}
           </Link>
         </nav>
@@ -131,13 +135,13 @@ export function Navbar() {
             onClick={toggle}
             aria-label="تبديل الوضع الليلي/النهاري"
             title={isDarkTheme ? "التبديل إلى الوضع النهاري" : "التبديل إلى الوضع الليلي"}
-            className="text-muted-foreground hover:text-primary"
+            className="ajn-nav-icon"
           >
             {isDarkTheme ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
           <LanguageSwitcher />
           <Link href="/profile">
-            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-primary">
+            <Button variant="ghost" size="icon" className="ajn-nav-icon">
               {customer?.avatarUrl ? (
                 <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover border border-primary/20" />
               ) : (
@@ -146,7 +150,7 @@ export function Navbar() {
             </Button>
           </Link>
           <Link href="/favorites" aria-label="المفضّلة">
-            <Button variant="ghost" size="icon" className="relative text-muted-foreground hover:text-primary">
+            <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
               <Heart className="h-5 w-5" />
               {wishlistCount > 0 && (
                 <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
@@ -156,7 +160,7 @@ export function Navbar() {
             </Button>
           </Link>
           <Link href="/cart">
-            <Button variant="ghost" size="icon" className="relative text-muted-foreground hover:text-primary">
+            <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
               <ShoppingBag className="h-5 w-5" />
               {cartItemCount > 0 && (
                 <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
@@ -169,7 +173,7 @@ export function Navbar() {
             <Button
               variant="ghost"
               size="icon"
-              className={`transition-colors ${location.startsWith('/admin') ? 'text-primary' : 'text-muted-foreground hover:text-primary'}`}
+              className={`ajn-nav-icon ${location.startsWith('/admin') ? 'is-active' : ''}`}
             >
               <Lock className="h-5 w-5" />
             </Button>

@@ -13,7 +13,7 @@ export function LanguageSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="اللغة" title="اللغة" className="text-muted-foreground hover:text-primary">
+        <Button variant="ghost" size="icon" aria-label="اللغة" title="اللغة" className="ajn-nav-icon">
           <Globe className="h-5 w-5" />
         </Button>
       </DropdownMenuTrigger>

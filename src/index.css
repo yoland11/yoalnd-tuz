@@ -144,6 +144,9 @@
   --ajn-heading: 0 0% 100%;
   --ajn-link: 43 59% 59%;
   --ajn-hover: 46 60% 77%;
+  /* ألوان موحّدة لعناصر القائمة العلوية (Navbar) — توكن واحد لكل الحالات */
+  --ajn-nav-link: #FFFFFF;
+  --ajn-nav-link-active: #D4B15A;
   --status-success: 43 59% 59%;
   --status-danger: 0 72% 58%;
   --status-warning: 41 50% 48%;
@@ -181,6 +184,40 @@ h6 {
 
 a:hover {
   color: hsl(var(--ajn-hover));
+}
+
+/* ===== توحيد ألوان عناصر القائمة العلوية (Navbar) ===== */
+/* النص + الأيقونة يرثان نفس اللون (currentColor)، نفس التوكن للجميع */
+.ajn-nav-link {
+  color: var(--ajn-nav-link);
+  position: relative;
+  transition: color 200ms ease;
+}
+.ajn-nav-link:hover,
+.ajn-nav-link:focus-visible {
+  color: var(--ajn-nav-link-active);
+}
+.ajn-nav-link.is-active {
+  color: var(--ajn-nav-link-active);
+}
+.ajn-nav-link.is-active::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ajn-nav-link-active);
+}
+/* أزرار الأيقونات في الهيدر (بحث/سلة/حساب/إدارة/لغة/الوضع) — نفس التوكن بلا خط سفلي */
+.ajn-nav-icon {
+  color: var(--ajn-nav-link);
+  transition: color 200ms ease;
+}
+.ajn-nav-icon:hover,
+.ajn-nav-icon:focus-visible,
+.ajn-nav-icon.is-active {
+  color: var(--ajn-nav-link-active);
 }
 
 .dark {
