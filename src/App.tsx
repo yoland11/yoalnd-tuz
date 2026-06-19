@@ -90,27 +90,27 @@ function Router() {
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/reports/:rest*">
+      <Route path="/admin/reports/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/finance/:rest*">
+      <Route path="/admin/finance/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/expenses/:rest*">
+      <Route path="/admin/expenses/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/koshas/:rest*">
+      <Route path="/admin/koshas/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/kosha-bookings/:rest*">
+      <Route path="/admin/kosha-bookings/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
@@ -120,7 +120,7 @@ function Router() {
           <Admin />
         </Suspense>
       </Route>
-      <Route path="/admin/:rest*">
+      <Route path="/admin/*">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
         </Suspense>
