@@ -20,7 +20,8 @@ const PAYMENT_STATUS_AR: Record<string, string> = {
   partial: "جزئي",
   paid: "مدفوع",
 };
-const INVOICE_CONTACT_PHONE = "07725762520";
+
+const money = (n: unknown) => Number(n || 0).toLocaleString("en-US");
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
@@ -66,8 +67,11 @@ export default function Invoice() {
     if (!sheetRef.current || !data) return;
     setDownloading(true);
     try {
+      const el = sheetRef.current;
+      // Thermal-width PDF (80mm) with height tracking the content — no A4 whitespace.
+      const heightMm = Math.max(120, Math.round((el.offsetHeight * 25.4) / 96) + 6);
       const filename = `${data.kind === "booking" ? "booking" : "invoice"}-${data.trackingCode ?? data.id}.pdf`;
-      await downloadElementPdf(sheetRef.current, filename);
+      await downloadElementPdf(el, filename, { format: [80, heightMm], margin: 2 });
     } catch (e) {
       alert(e instanceof Error ? e.message : "تعذر تحميل PDF، جرّب الطباعة أو إعادة المحاولة.");
     } finally {
@@ -112,256 +116,173 @@ export default function Invoice() {
   }
 
   const isBooking = data.kind === "booking";
+  const subtotal = (data.items ?? []).reduce((s: number, i: any) => s + i.price * i.quantity, 0);
 
   return (
-    <div className="invoice-page min-h-screen bg-white text-black" dir="rtl">
+    <div className="inv-thermal-wrap" dir="rtl">
       {/* Toolbar (hidden on print/PDF) */}
       <div className="print:hidden bg-neutral-900 text-white p-3 flex items-center justify-between sticky top-0 z-10">
         <a href="/admin/dashboard" className="inline-flex items-center gap-2 text-sm text-neutral-300 hover:text-white">
           <ArrowRight className="w-4 h-4" /> العودة للوحة
         </a>
         <div className="flex items-center gap-2">
-          <button
-            onClick={printQrOnly}
-            className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors"
-          >
+          <button onClick={printQrOnly} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
             <QrCode className="w-4 h-4" /> طباعة QR
           </button>
-          <button
-            onClick={downloadQrImage}
-            className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors"
-          >
+          <button onClick={downloadQrImage} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
             <Download className="w-4 h-4" /> تحميل QR
           </button>
-          <button
-            onClick={downloadPdf}
-            disabled={downloading}
-            className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors disabled:opacity-60"
-          >
+          <button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors disabled:opacity-60">
             <Download className="w-4 h-4" /> {downloading ? "جاري التحميل..." : "تحميل PDF"}
           </button>
-          <button
-            onClick={() => window.print()}
-            className="inline-flex items-center gap-2 bg-amber-400 text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-300 transition-colors"
-          >
+          <button onClick={() => window.print()} className="inline-flex items-center gap-2 bg-amber-400 text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-300 transition-colors">
             <Printer className="w-4 h-4" /> طباعة
           </button>
         </div>
       </div>
 
-      <div ref={sheetRef} className="invoice-sheet max-w-3xl mx-auto p-8 print:p-6 bg-white text-black">
-        {/* Header */}
-        <div className="flex items-start justify-between border-b-2 border-amber-500 pb-4 mb-6">
-          <div className="flex items-center gap-3">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={56} decoding="async" className="h-14 w-24 object-contain" />
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">{settings?.site_name ?? "AJN"}</h1>
-              <p className="text-sm text-neutral-600">{settings?.address || "مجموعة علي جان — طوزخورماتو"}</p>
-            </div>
-          </div>
-          <div className="text-left">
-            <p className="text-xs text-neutral-500">{isBooking ? "رقم الحجز" : "رقم الفاتورة"}</p>
-            <p className="text-xl font-mono font-bold">{data.trackingCode ?? "—"}</p>
-            <p className="text-xs text-neutral-500 mt-1">
-              {new Date(data.createdAt).toLocaleDateString('ar-IQ', { year: 'numeric', month: 'long', day: 'numeric' })}
-            </p>
-          </div>
+      {/* ===== Thermal receipt sheet (80mm) ===== */}
+      <div ref={sheetRef} className="inv-sheet">
+        <div className="ih-head">
+          <img src={logoSrc(settings)} alt="" className="ih-logo" decoding="async" />
+          <div className="ih-co">{settings?.site_name ?? "مجموعة علي جان"}</div>
+          <div className="ih-sub">{settings?.address || "طوزخورماتو — العراق"}</div>
         </div>
 
-        {/* Title strip */}
-        <div className="bg-amber-50/60 border border-amber-200 rounded px-4 py-2 mb-6">
-          <p className="text-xs text-neutral-500">نوع المستند</p>
-          <p className="font-bold">{isBooking ? `فاتورة حجز خدمة — ${data.serviceName}` : "فاتورة طلب من المتجر"}</p>
-        </div>
+        <hr className="ih-rule" />
+        <div className="ih-kv"><span>{isBooking ? "رقم الحجز" : "رقم الفاتورة"}</span><span className="v big num">{data.trackingCode ?? "—"}</span></div>
+        <div className="ih-kv"><span>التاريخ</span><span className="v num">{new Date(data.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}</span></div>
+        <div className="ih-kv"><span>نوع المستند</span><span className="v">{isBooking ? "فاتورة حجز خدمة" : "فاتورة طلب من المتجر"}</span></div>
 
-        {/* Customer + meta */}
-        <div className="grid grid-cols-2 gap-6 mb-6 text-sm">
-          <div>
-            <p className="text-xs text-neutral-500 mb-1">الزبون</p>
-            <p className="font-semibold">{data.customerName}</p>
-            <p className="text-neutral-700">{formatIraqiPhone(data.customerPhone)}</p>
-          </div>
-          {isBooking ? (
-            <div>
-              <p className="text-xs text-neutral-500 mb-1">تفاصيل المناسبة</p>
-              <p className="font-semibold">{data.eventDate ?? "—"}</p>
-              <p className="text-neutral-700">{data.eventLocation ?? ""}</p>
-            </div>
-          ) : (
-            <div>
-              <p className="text-xs text-neutral-500 mb-1">عنوان التوصيل</p>
-              <p className="font-semibold">
-                {data.governorate ?? "—"}{data.area ? ` — ${data.area}` : ""}
-              </p>
-              <p className="text-neutral-700">{data.address ?? ""}</p>
-              <p className="text-xs text-neutral-500 mt-2">
-                طريقة الدفع: <span className="text-neutral-800 font-medium">{PAYMENT_LABELS_AR[data.paymentMethod ?? "cod"] ?? "—"}</span>
-              </p>
-            </div>
-          )}
-        </div>
-
+        <hr className="ih-rule" />
+        <div className="ih-kv"><span>الزبون</span><span className="v">{data.customerName || "—"}</span></div>
+        {data.customerPhone && <div className="ih-kv"><span>الهاتف</span><span className="v num">{formatIraqiPhone(data.customerPhone)}</span></div>}
         {isBooking ? (
           <>
-            {/* Booking summary table */}
-            <table className="w-full text-sm mb-6 border-collapse">
-              <thead>
-                <tr className="bg-neutral-100 text-right">
-                  <th className="border border-neutral-300 px-3 py-2 font-medium">الخدمة</th>
-                  <th className="border border-neutral-300 px-3 py-2 font-medium w-40 text-center">تاريخ المناسبة</th>
-                  <th className="border border-neutral-300 px-3 py-2 font-medium w-32 text-center">الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="border border-neutral-300 px-3 py-2">{data.serviceName}</td>
-                  <td className="border border-neutral-300 px-3 py-2 text-center">{data.eventDate ?? "—"}</td>
-                  <td className="border border-neutral-300 px-3 py-2 text-center">{data.status}</td>
-                </tr>
-              </tbody>
-            </table>
-
-            {/* Booking totals */}
-            <div className="flex justify-end mb-8">
-              <div className="w-72 space-y-2 text-sm">
-                <div className="flex justify-between border-b border-neutral-200 pb-2">
-                  <span className="text-neutral-600">السعر المتفق عليه</span>
-                  <span>{data.price > 0 ? `${Number(data.price).toLocaleString('en-US')} د.ع` : "—"}</span>
-                </div>
-                <div className="flex justify-between border-b border-neutral-200 pb-2">
-                  <span className="text-neutral-600">العربون المدفوع</span>
-                  <span>{data.deposit > 0 ? `${Number(data.deposit).toLocaleString('en-US')} د.ع` : "—"}</span>
-                </div>
-                <div className="flex justify-between border-b border-neutral-200 pb-2">
-                  <span className="text-neutral-600">حالة الدفع</span>
-                  <span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span>
-                </div>
-                <div className="flex justify-between bg-amber-50 border border-amber-200 px-3 py-2 rounded font-bold">
-                  <span>المتبقي</span>
-                  <span>{data.price > 0 ? `${Number(data.balance).toLocaleString('en-US')} د.ع` : "—"}</span>
-                </div>
-              </div>
-            </div>
+            <div className="ih-kv"><span>الخدمة</span><span className="v">{data.serviceName ?? "—"}</span></div>
+            <div className="ih-kv"><span>تاريخ المناسبة</span><span className="v">{data.eventDate ?? "—"}</span></div>
+            {data.eventLocation && <div className="ih-kv"><span>الموقع</span><span className="v">{data.eventLocation}</span></div>}
           </>
         ) : (
           <>
-            {/* Items */}
-            <table className="w-full text-sm mb-6 border-collapse">
-              <thead>
-                <tr className="bg-neutral-100 text-right">
-                  <th className="border border-neutral-300 px-3 py-2 font-medium">المنتج</th>
-                  <th className="border border-neutral-300 px-3 py-2 font-medium w-16 text-center">الكمية</th>
-                  <th className="border border-neutral-300 px-3 py-2 font-medium w-28 text-center">السعر</th>
-                  <th className="border border-neutral-300 px-3 py-2 font-medium w-28 text-center">الإجمالي</th>
-                </tr>
-              </thead>
+            <div className="ih-kv"><span>عنوان التوصيل</span><span className="v">{data.governorate ?? "—"}{data.area ? ` — ${data.area}` : ""}</span></div>
+            {data.address && <div className="ih-kv"><span>العنوان</span><span className="v">{data.address}</span></div>}
+            <div className="ih-kv"><span>طريقة الدفع</span><span className="v">{PAYMENT_LABELS_AR[data.paymentMethod ?? "cod"] ?? "—"}</span></div>
+          </>
+        )}
+
+        {!isBooking && (
+          <>
+            <hr className="ih-rule" />
+            <table className="ih-items">
+              <thead><tr><th className="nm">المنتج</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead>
               <tbody>
                 {data.items?.map((item: any) => (
                   <tr key={item.id}>
-                    <td className="border border-neutral-300 px-3 py-2">
+                    <td className="nm">
                       {item.productNameAr || item.productName}
-                      <SelectedColorLabel
-                        color={item.selectedColorData}
-                        fallback={item.selectedColor}
-                        className="mr-2 inline-flex text-xs text-neutral-500"
-                      />
+                      <SelectedColorLabel color={item.selectedColorData} fallback={item.selectedColor} className="mr-1 inline-flex" />
                     </td>
-                    <td className="border border-neutral-300 px-3 py-2 text-center">{item.quantity}</td>
-                    <td className="border border-neutral-300 px-3 py-2 text-center">{Number(item.price).toLocaleString('en-US')}</td>
-                    <td className="border border-neutral-300 px-3 py-2 text-center">{(item.price * item.quantity).toLocaleString('en-US')}</td>
+                    <td className="c num">{item.quantity}</td>
+                    <td className="c num">{money(item.price)}</td>
+                    <td className="l num">{money(item.price * item.quantity)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </>
+        )}
 
-            {/* Order totals */}
-            {(() => {
-              const subtotal = (data.items ?? []).reduce((s: number, i: any) => s + i.price * i.quantity, 0);
-              const deliveryFee = Number(data.deliveryFee ?? 0);
-              const total = Number(data.total);
-              return (
-                <div className="flex justify-end mb-8">
-                  <div className="w-72 space-y-2 text-sm">
-                    <div className="flex justify-between border-b border-neutral-200 pb-2">
-                      <span className="text-neutral-600">المجموع</span>
-                      <span>{subtotal.toLocaleString('en-US')} د.ع</span>
-                    </div>
-                    <div className="flex justify-between border-b border-neutral-200 pb-2">
-                      <span className="text-neutral-600">رسوم التوصيل</span>
-                      <span>{deliveryFee.toLocaleString('en-US')} د.ع</span>
-                    </div>
-                    <div className="flex justify-between border-b border-neutral-200 pb-2">
-                      <span className="text-neutral-600">العربون</span>
-                      <span>{Number(data.depositAmount ?? 0).toLocaleString('en-US')} د.ع</span>
-                    </div>
-                    <div className="flex justify-between border-b border-neutral-200 pb-2">
-                      <span className="text-neutral-600">حالة الدفع</span>
-                      <span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span>
-                    </div>
-                    <div className="flex justify-between bg-amber-50 border border-amber-200 px-3 py-2 rounded font-bold">
-                      <span>المتبقي</span>
-                      <span>{Number(data.remainingAmount ?? total).toLocaleString('en-US')} د.ع</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
+        <hr className="ih-rule" />
+        {isBooking ? (
+          <>
+            <div className="ih-row"><span>السعر المتفق عليه</span><span className="num">{data.price > 0 ? `${money(data.price)} د.ع` : "—"}</span></div>
+            <div className="ih-row"><span>العربون المدفوع</span><span className="num">{data.deposit > 0 ? `${money(data.deposit)} د.ع` : "—"}</span></div>
+            <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
+            <div className="ih-grand"><span>الإجمالي</span><span className="num">{money(data.price)} د.ع</span></div>
+            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{money(data.balance)} د.ع</span></div>
+          </>
+        ) : (
+          <>
+            <div className="ih-row"><span>المجموع</span><span className="num">{money(subtotal)} د.ع</span></div>
+            <div className="ih-row"><span>رسوم التوصيل</span><span className="num">{money(data.deliveryFee)} د.ع</span></div>
+            {Number(data.depositAmount) > 0 && <div className="ih-row"><span>العربون</span><span className="num">{money(data.depositAmount)} د.ع</span></div>}
+            <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
+            <div className="ih-grand"><span>الإجمالي</span><span className="num">{money(data.total)} د.ع</span></div>
+            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{money(data.remainingAmount ?? data.total)} د.ع</span></div>
           </>
         )}
 
         {data.notes && (
-          <div className="mb-6 p-3 bg-neutral-50 border border-neutral-200 rounded text-sm">
-            <p className="text-xs text-neutral-500 mb-1">ملاحظات</p>
-            <p>{data.notes}</p>
-          </div>
+          <>
+            <hr className="ih-rule dashed" />
+            <div className="ih-notes"><span>ملاحظات: </span>{data.notes}</div>
+          </>
         )}
 
         {data.qr?.dataUrl && (
-          <div className="mb-6 text-center">
-            <img
-              src={data.qr.dataUrl}
-              alt="QR"
-              className="qr-code mx-auto h-[120px] w-[120px] object-contain"
-              width={120}
-              height={120}
-              decoding="async"
-            />
-            <p className="text-xs text-neutral-500 mt-2">امسح الرمز لفتح التتبع</p>
+          <div className="ih-qr">
+            <img src={data.qr.dataUrl} alt="QR" width={160} height={160} decoding="async" />
+            <div className="cap">امسح الرمز لمتابعة {isBooking ? "الحجز" : "الطلب"}</div>
           </div>
         )}
 
-        {/* Footer */}
-        <div className="border-t-2 border-amber-500 pt-4 mt-8 text-center text-xs text-neutral-600">
-          <p>شكراً لاختياركم مجموعة علي جان</p>
-          <p className="mt-1">للاستفسار: {INVOICE_CONTACT_PHONE}</p>
-        </div>
+        <hr className="ih-rule" />
+        <div className="ih-thanks">شكراً لاختياركم مجموعة علي جان</div>
       </div>
 
       <style>{`
+        .inv-thermal-wrap { min-height: 100vh; background: #5b5e63; }
+        .inv-sheet {
+          width: 302px;
+          margin: 0 auto;
+          background: #fff;
+          color: #000;
+          font-family: Cairo, Tajawal, Tahoma, Arial, sans-serif;
+          font-weight: 600;
+          font-size: 13px;
+          line-height: 1.3;
+          padding: 14px 16px;
+        }
+        .inv-sheet * { color: #000 !important; }
+        .inv-sheet .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+        .ih-head { text-align: center; margin-bottom: 4px; }
+        .ih-logo { height: 46px; width: auto; max-width: 68%; object-fit: contain; display: block; margin: 0 auto 4px; filter: grayscale(1) contrast(1.45); }
+        .ih-co { font-size: 1.55em; font-weight: 900; line-height: 1.12; }
+        .ih-sub { font-size: 0.9em; font-weight: 600; }
+        .ih-rule { border: 0; border-top: 1.5px solid #000; margin: 5px 0; }
+        .ih-rule.dashed { border-top: 1.5px dashed #000; }
+        .ih-kv { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; font-weight: 700; }
+        .ih-kv .v { font-weight: 800; text-align: left; }
+        .ih-kv .v.big { font-size: 1.12em; }
+        .ih-items { width: 100%; border-collapse: collapse; margin: 3px 0; }
+        .ih-items th { font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 3px; text-align: center; }
+        .ih-items th.nm, .ih-items td.nm { text-align: right; }
+        .ih-items td { padding: 3px; border-bottom: 1px solid #000; font-weight: 700; vertical-align: top; }
+        .ih-items td.nm { font-weight: 800; }
+        .ih-items td.c { text-align: center; }
+        .ih-items td.l { text-align: left; }
+        .ih-row { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; margin: 2px 0; }
+        .ih-grand { display: flex; justify-content: space-between; align-items: center; border: 2.5px solid #000; padding: 4px 6px; margin: 5px 0; font-size: 1.32em; font-weight: 900; }
+        .ih-pay { display: flex; justify-content: space-between; font-weight: 800; font-size: 1.08em; margin: 2px 0; }
+        .ih-pay.rm { font-size: 1.18em; border: 1.5px solid #000; padding: 2px 5px; margin-top: 3px; }
+        .ih-qr { text-align: center; margin-top: 8px; break-inside: avoid; page-break-inside: avoid; }
+        .ih-qr img { width: 160px; height: 160px; image-rendering: pixelated; object-fit: contain; display: block; margin: 0 auto 3px; }
+        .ih-qr .cap { font-weight: 700; font-size: 0.88em; }
+        .ih-thanks { text-align: center; font-weight: 800; font-size: 1.05em; margin-top: 6px; }
+        .ih-notes { margin-top: 4px; font-weight: 700; }
+
         @media print {
-          @page { size: A4; margin: 12mm; }
-          body { background: white !important; }
-          .invoice-sheet, .invoice-sheet * {
-            color: #000 !important;
-            text-shadow: none !important;
+          @page { size: 80mm auto; margin: 0; }
+          html, body { background: #fff !important; }
+          .inv-thermal-wrap { background: #fff !important; min-height: 0 !important; }
+          .inv-sheet {
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 2.5mm 3mm !important;
             box-shadow: none !important;
           }
-          .invoice-sheet table,
-          .invoice-sheet th,
-          .invoice-sheet td {
-            border-color: #000 !important;
-          }
-          .invoice-sheet th,
-          .invoice-sheet .font-bold,
-          .invoice-sheet .font-semibold {
-            font-weight: 700 !important;
-          }
-          img.qr-code {
-            display: block !important;
-            width: 120px !important;
-            height: 120px !important;
-            image-rendering: pixelated;
-          }
+          .inv-sheet * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
       `}</style>
     </div>

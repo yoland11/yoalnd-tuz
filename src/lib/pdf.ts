@@ -110,7 +110,18 @@ function createPdfSnapshot(element: HTMLElement) {
   return { snapshot: clone, cleanup: () => wrapper.remove() };
 }
 
-export async function downloadElementPdf(element: HTMLElement | null, filename: string) {
+export type PdfExportOptions = {
+  /** jsPDF page format — "a4" (default) or a custom [widthMm, heightMm] for thermal receipts. */
+  format?: string | number[];
+  /** page margin in mm (number or [top,right,bottom,left]). Default 8. */
+  margin?: number | number[];
+};
+
+export async function downloadElementPdf(
+  element: HTMLElement | null,
+  filename: string,
+  options?: PdfExportOptions,
+) {
   if (!element || typeof window === "undefined") {
     throw new Error("العنصر غير جاهز للتصدير");
   }
@@ -125,7 +136,7 @@ export async function downloadElementPdf(element: HTMLElement | null, filename: 
   try {
     await factory()
       .set({
-        margin: [8, 8, 8, 8],
+        margin: options?.margin ?? [8, 8, 8, 8],
         filename,
         image: { type: "jpeg", quality: 0.96 },
         html2canvas: {
@@ -136,7 +147,7 @@ export async function downloadElementPdf(element: HTMLElement | null, filename: 
           imageTimeout: 15000,
           onclone: preparePdfClone,
         },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: "portrait" },
         pagebreak: { mode: ["avoid-all", "css", "legacy"] },
       })
       .from(snapshot)
