@@ -22,6 +22,9 @@ import { ThemeVariables } from "@/components/theme-variables";
 const Admin = lazy(() => import("@/views/admin/index"));
 const Invoice = lazy(() => import("@/views/admin/invoice"));
 
+// Kosha Staff Portal — lazy, separate restricted app (field crew)
+const StaffPortal = lazy(() => import("@/views/staff/index"));
+
 // Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
 const ProductDetail = lazy(() => import("@/views/store/id"));
 const Track = lazy(() => import("@/views/track"));
@@ -128,6 +131,23 @@ function Router() {
       <Route path="/admin">
         <Suspense fallback={<AdminSpinner />}>
           <Admin />
+        </Suspense>
+      </Route>
+
+      {/* Kosha Staff Portal — lazy, outside Layout */}
+      <Route path="/staff/koshas/*">
+        <Suspense fallback={<AdminSpinner />}>
+          <StaffPortal />
+        </Suspense>
+      </Route>
+      <Route path="/staff/koshas">
+        <Suspense fallback={<AdminSpinner />}>
+          <StaffPortal />
+        </Suspense>
+      </Route>
+      <Route path="/staff">
+        <Suspense fallback={<AdminSpinner />}>
+          <StaffPortal />
         </Suspense>
       </Route>
 

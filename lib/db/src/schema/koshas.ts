@@ -71,6 +71,9 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
   dueDate: date("due_date"),
   internalNotes: text("internal_notes"),
+  // Kosha Staff Portal — field-crew execution stage + optional assignment.
+  executionStage: varchar("execution_stage", { length: 30 }).notNull().default("preparing"),
+  assignedStaffId: integer("assigned_staff_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

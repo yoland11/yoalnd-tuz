@@ -49,6 +49,7 @@ const FinancialRequestPage = lazy(() => import("./master-cash").then((module) =>
 const ExpensesPage = lazy(() => import("./expenses"));
 const ExpenseCategoriesPage = lazy(() => import("./expenses").then((module) => ({ default: module.ExpenseCategoriesPage })));
 const WhatsappPage = lazy(() => import("./whatsapp"));
+const TelegramSettingsPage = lazy(() => import("./telegram"));
 const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
 const PrinterSettingsPage = lazy(() => import("./printer-settings"));
@@ -163,6 +164,7 @@ export default function Admin() {
           <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
           <Route path="/admin/invoice-designer">{() => <Guard me={me} perm="settings"><InvoiceDesignerPage /></Guard>}</Route>
           <Route path="/admin/settings/printer">{() => <Guard me={me} perm="settings"><PrinterSettingsPage /></Guard>}</Route>
+          <Route path="/admin/settings/telegram">{() => <Guard me={me} perm="settings"><TelegramSettingsPage /></Guard>}</Route>
           <Route path="/admin/printer-settings">{() => <Guard me={me} perm="settings"><PrinterSettingsPage /></Guard>}</Route>
           <Route path="/admin/settings"  >{() => <Guard me={me} perm="settings" ><SettingsPage   /></Guard>}</Route>
           <Route>{() => <NoPermission />}</Route>

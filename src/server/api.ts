@@ -36,6 +36,12 @@ import {
   koshaAddonsTable,
   koshaAccessoriesTable,
   koshaBookingsTable,
+  koshaBookingEventsTable,
+  koshaMediaTable,
+  koshaDeliveryReportsTable,
+  koshaPaymentRequestsTable,
+  koshaStaffNotificationsTable,
+  KOSHA_EXECUTION_STAGES,
   koshaImagesTable,
   koshaProvincesTable,
   koshaWelcomeBoardsTable,
@@ -116,6 +122,20 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import {
+  getTelegramSettings,
+  notifyTelegramDailyReport,
+  notifyTelegramInvoice,
+  notifyTelegramKoshaBooking,
+  notifyTelegramLogin,
+  notifyTelegramOrder,
+  notifyTelegramPayment,
+  saveTelegramSettings,
+  sendTelegramMessage,
+  sendTelegramTestPdf,
+  telegramEnvironmentStatus,
+  telegramSettingsSchema,
+} from "@/server/telegram";
+import {
   primaryLocationFromDetails,
   withDerivedServiceDetails,
 } from "@/lib/service-details";
@@ -193,6 +213,7 @@ export const ALL_PERMISSIONS = [
   "accounting",
   "backup",
   "tasks",
+  "koshas",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -239,6 +260,7 @@ let adminExtensionsTablesPromise: Promise<void> | null = null;
 let accountingTablesPromise: Promise<void> | null = null;
 let stockTrackingTablesPromise: Promise<void> | null = null;
 let koshaTablesPromise: Promise<void> | null = null;
+let koshaStaffTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<string, { expiresAt: number; payload: any[] }>();
 const STORE_CATEGORIES_TTL_MS = 60_000;
 
@@ -2832,6 +2854,91 @@ async function ensureKoshaTables(): Promise<void> {
   await koshaTablesPromise;
 }
 
+// Kosha Staff Portal — additive field-crew execution layer.
+async function ensureKoshaStaffTables(): Promise<void> {
+  await ensureKoshaTables();
+  if (!koshaStaffTablesPromise) {
+    koshaStaffTablesPromise = db.execute(sql`
+      alter table "kosha_bookings" add column if not exists "execution_stage" varchar(30) not null default 'preparing';
+      alter table "kosha_bookings" add column if not exists "assigned_staff_id" integer;
+
+      create table if not exists "kosha_booking_events" (
+        "id" serial primary key,
+        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "type" varchar(30) not null,
+        "from_stage" varchar(30),
+        "to_stage" varchar(30),
+        "note" text,
+        "meta" jsonb not null default '{}'::jsonb,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_booking_events_booking_idx" on "kosha_booking_events" ("booking_id");
+
+      create table if not exists "kosha_media" (
+        "id" serial primary key,
+        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
+        "event_id" integer references "kosha_booking_events" ("id") on delete set null,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "url" text not null,
+        "kind" varchar(10) not null default 'image',
+        "stage" varchar(30),
+        "purpose" varchar(20) not null default 'execution',
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_media_booking_idx" on "kosha_media" ("booking_id");
+
+      create table if not exists "kosha_delivery_reports" (
+        "id" serial primary key,
+        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "has_loss" boolean not null default false,
+        "has_breakage" boolean not null default false,
+        "note" text,
+        "compensation_amount" numeric(14,2) not null default 0,
+        "signature_url" text,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_delivery_reports_booking_idx" on "kosha_delivery_reports" ("booking_id");
+
+      create table if not exists "kosha_payment_requests" (
+        "id" serial primary key,
+        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "amount" numeric(14,2) not null default 0,
+        "note" text,
+        "status" varchar(12) not null default 'pending',
+        "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
+        "reviewed_by_name" text,
+        "reviewed_at" timestamp,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_payment_requests_status_idx" on "kosha_payment_requests" ("status");
+
+      create table if not exists "kosha_staff_notifications" (
+        "id" serial primary key,
+        "staff_id" integer references "staff" ("id") on delete cascade,
+        "audience" varchar(12) not null default 'staff',
+        "type" varchar(30) not null,
+        "title" text not null,
+        "body" text,
+        "href" text,
+        "booking_id" integer references "kosha_bookings" ("id") on delete cascade,
+        "is_read" boolean not null default false,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_staff_notifications_staff_idx" on "kosha_staff_notifications" ("staff_id");
+    `).then(() => undefined).catch((err) => {
+      koshaStaffTablesPromise = null;
+      throw err;
+    });
+  }
+  await koshaStaffTablesPromise;
+}
+
 async function ensureStoreCategoryColumns(): Promise<void> {
   if (!storeCategoryColumnsPromise) {
     storeCategoryColumnsPromise = db.execute(sql`
@@ -4292,6 +4399,18 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       entityId: booking.id,
       href: "/admin/kosha-bookings",
     });
+    void notifyTelegramKoshaBooking({
+      id: booking.id,
+      reference: `KB-${booking.id}`,
+      koshaName: kosha.name,
+      customerName: booking.customerName,
+      phone: booking.phone,
+      eventDate: booking.eventDate,
+      total: booking.totalAmount,
+      paid: booking.paidAmount,
+      remaining: booking.remainingAmount,
+      status: booking.status,
+    });
     return json(await formatKoshaBooking(booking), 201);
   }
 
@@ -4647,6 +4766,21 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       reason: "payment",
     });
     await syncServiceOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    void notifyTelegramOrder({
+      kind: "service",
+      id: order.id,
+      reference: order.trackingCode,
+      serviceName: service?.nameAr ?? service?.name ?? "خدمة",
+      customerName: order.customerName,
+      phone: order.phone,
+      createdByName: "الموقع",
+      createdAt: order.createdAt,
+      paymentMethod: "cash",
+      total: order.totalAmount,
+      paid: order.depositAmount,
+      remaining: order.remainingAmount,
+      status: order.status,
+    });
     return json(
       {
         id: order.id,
@@ -5068,6 +5202,20 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       });
     }
     await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    void notifyTelegramOrder({
+      kind: "store",
+      id: order.id,
+      reference: order.trackingCode,
+      customerName: order.customerName,
+      phone: order.customerPhone,
+      createdByName: "المتجر الإلكتروني",
+      createdAt: order.createdAt,
+      paymentMethod: order.paymentMethod,
+      total: order.total,
+      paid: order.depositAmount,
+      remaining: order.remainingAmount,
+      status: order.status,
+    });
     void logAdminActivity(req, "customer_order_created", "order", order.id, { tracking: order.trackingCode });
     return json(formatted, 201);
   }
@@ -6271,6 +6419,19 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         }
         const [row] = await db.update(koshaBookingsTable).set(update).where(eq(koshaBookingsTable.id, id)).returning();
         await syncKoshaFinancialPayment(row, financialActor(auth));
+        const koshaPaymentDelta = Number(row.paidAmount) - Number(existing.paidAmount);
+        if (koshaPaymentDelta > 0) {
+          void notifyTelegramPayment({
+            event: "paymentReceived",
+            reference: `KB-${row.id}`,
+            customerName: row.customerName,
+            amount: koshaPaymentDelta,
+            paymentMethod: "cash",
+            createdByName: auth.fullName || auth.username,
+            status: row.paymentStatus,
+            entityPath: `/admin/kosha-bookings?booking=${row.id}`,
+          });
+        }
         void logAdminActivity(req, "kosha_booking_updated", "kosha_booking", id, update);
         return json(await formatKoshaBooking(row));
       }
@@ -6293,6 +6454,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  const telegram = await handleTelegram(req, parts, section);
+  if (telegram) return telegram;
 
   if (section === "translate") {
     const auth = await requireAnyPermission(req, ["products", "services", "settings"]);
@@ -6332,6 +6496,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       await ensureStaffActivityColumn();
       await db.update(staffTable).set({ lastActivityAt: new Date() }).where(eq(staffTable.id, user.id));
       void logAdminActivity(req, "admin_login_success", "staff", user.id, { username: userKey });
+      void notifyTelegramLogin({ id: user.id, username: user.username, fullName: user.fullName, role: user.role });
       return withSessionCookie(
         json({
           user: publicUser({
@@ -8488,6 +8653,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         reason: "payment",
       });
       await syncServiceOrderFinancialPayment(order, financialActor(auth));
+      void notifyTelegramOrder({
+        kind: "service",
+        id: order.id,
+        reference: order.trackingCode,
+        serviceName: service.nameAr ?? service.name ?? "خدمة",
+        customerName: order.customerName,
+        phone: order.phone,
+        createdByName: auth.fullName || auth.username,
+        createdAt: order.createdAt,
+        paymentMethod: "cash",
+        total: order.totalAmount,
+        paid: order.depositAmount,
+        remaining: order.remainingAmount,
+        status: order.status,
+      });
       return json(
         {
           id: order.id,
@@ -8667,6 +8847,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       await awardServiceOrderPoints(row);
       await syncServiceOrderFinancialPayment(row, financialActor(auth));
+      const servicePaymentDelta = Number(row.depositAmount) - Number(prev.depositAmount);
+      if (servicePaymentDelta > 0) {
+        void notifyTelegramPayment({
+          event: "paymentReceived",
+          reference: row.trackingCode ?? `#${row.id}`,
+          customerName: row.customerName,
+          amount: servicePaymentDelta,
+          paymentMethod: "cash",
+          createdByName: auth.fullName || auth.username,
+          status: row.paymentStatus,
+          entityPath: `/admin/orders?serviceOrder=${row.id}`,
+        });
+      }
       void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -8781,6 +8974,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           });
           void notifyLowStockForProductIds(orderItems.map((it: any) => Number(it.productId)));
           await syncOrderFinancialPayment(order, financialActor(auth));
+          void notifyTelegramOrder({
+            kind: "store",
+            id: order.id,
+            reference: order.trackingCode,
+            customerName: order.customerName,
+            phone: order.customerPhone,
+            createdByName: auth.fullName || auth.username,
+            createdAt: order.createdAt,
+            paymentMethod: order.paymentMethod,
+            total: order.total,
+            paid: order.depositAmount,
+            remaining: order.remainingAmount,
+            status: order.status,
+          });
           void logAdminActivity(req, "order_created", "order", order.id, { tracking: order.trackingCode });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
     }
@@ -8880,6 +9087,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       await awardProductOrderPoints(row);
       await syncOrderFinancialPayment(row, financialActor(auth));
+      const orderPaymentDelta = Number(row.depositAmount) - Number(current?.depositAmount ?? row.depositAmount);
+      if (orderPaymentDelta > 0) {
+        void notifyTelegramPayment({
+          event: "paymentReceived",
+          reference: row.trackingCode,
+          customerName: row.customerName,
+          amount: orderPaymentDelta,
+          paymentMethod: row.paymentMethod,
+          createdByName: auth.fullName || auth.username,
+          status: row.paymentStatus,
+          entityPath: `/admin/orders?order=${row.id}`,
+        });
+      }
       void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -9461,6 +9681,24 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       notes: final.notes,
     }, financialActor(auth)) : null;
     void logAdminActivity(req, "sales_invoice_created", "sales_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
+    if (final) {
+      void notifyTelegramInvoice({
+        id: final.id,
+        invoiceNo: final.invoiceNo,
+        customerName: final.customerName,
+        customerPhone: final.customerPhone,
+        createdByName: final.createdByName || auth.fullName || auth.username,
+        date: final.date,
+        paymentMethod: final.paymentMethod,
+        subtotal: final.subtotal,
+        discountAmount: final.discountAmount,
+        total: final.total,
+        paidAmount: final.paidAmount,
+        remainingAmount: final.remainingAmount,
+        paymentStatus: final.paymentStatus,
+        items: finalItems,
+      });
+    }
     return json({ ...final, qr, items: finalItems, financialTransaction, invoice: final ? { ...final, qr } : final }, 201);
   }
 
@@ -9550,6 +9788,18 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       oldItemCount: oldItems.length,
       total,
     });
+    if (final && Number(final.paidAmount) > Number(existing.paidAmount)) {
+      void notifyTelegramPayment({
+        event: "paymentReceived",
+        reference: final.invoiceNo,
+        customerName: final.customerName,
+        amount: Number(final.paidAmount) - Number(existing.paidAmount),
+        paymentMethod: final.paymentMethod,
+        createdByName: auth.fullName || auth.username,
+        status: final.paymentStatus,
+        entityPath: `/admin/sales?invoice=${final.id}`,
+      });
+    }
     return json({ ...final, items: finalItems, qr, financialTransaction, invoice: final ? { ...final, qr } : final });
   }
 
@@ -10578,6 +10828,15 @@ async function handleDailyCash(req: NextRequest, parts: string[], section: strin
     try {
       const row = await closeDailyCashDay(date, financeActor());
       void logAdminActivity(req, "daily_cash_day_closed", "daily_cash_report", undefined, { reportDate: row.reportDate, closingBalance: row.closingBalance });
+      void notifyTelegramDailyReport({
+        event: "dailyCashClosed",
+        reportDate: row.reportDate,
+        openingBalance: row.openingBalance,
+        totalRevenue: row.totalSales,
+        totalExpenses: row.totalExpenses,
+        closingBalance: row.closingBalance,
+        createdByName: auth.fullName || auth.username,
+      });
       return json(row);
     } catch (err: any) {
       return error(err?.message || "تعذّر إقفال اليوم", 400);
@@ -10629,6 +10888,15 @@ async function handleDailyCash(req: NextRequest, parts: string[], section: strin
     void logAdminActivity(req, "daily_cash_report_saved", "daily_cash_report", undefined, {
       reportDate: row.reportDate,
       closingBalance: row.closingBalance,
+    });
+    void notifyTelegramDailyReport({
+      event: "dailyReport",
+      reportDate: row.reportDate,
+      openingBalance: row.openingBalance,
+      totalRevenue: row.totalSales,
+      totalExpenses: row.totalExpenses,
+      closingBalance: row.closingBalance,
+      createdByName: auth.fullName || auth.username,
     });
     return json(row);
   }
@@ -10980,6 +11248,421 @@ async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$infer
   }, financeActorValue);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Kosha Staff Portal API  (/api/staff/koshas/*)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function baghdadToday(): string {
+  return new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+}
+function parseEventDateIso(value: unknown): string | null {
+  const s = String(value ?? "").trim();
+  if (!s) return null;
+  const iso = s.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) return new Date(d.getTime() + 3 * 3600_000).toISOString().slice(0, 10);
+  return null;
+}
+type CrewBucket = "today" | "tomorrow" | "upcoming" | "late" | "completed";
+function crewBucket(row: any, today: string): CrewBucket {
+  const stage = row.executionStage ?? row.execution_stage ?? "preparing";
+  if (stage === "delivered") return "completed";
+  const ev = parseEventDateIso(row.eventDate ?? row.event_date);
+  if (!ev) return "upcoming";
+  const day = 86400_000;
+  const t = new Date(today + "T00:00:00Z").getTime();
+  const e = new Date(ev + "T00:00:00Z").getTime();
+  if (e === t) return "today";
+  if (e === t + day) return "tomorrow";
+  if (e > t + day) return "upcoming";
+  return "late";
+}
+
+async function formatKoshaBookingForCrew(row: any) {
+  const base = await formatKoshaBooking(row);
+  return {
+    ...base,
+    executionStage: row.executionStage ?? row.execution_stage ?? "preparing",
+    assignedStaffId: row.assignedStaffId ?? row.assigned_staff_id ?? null,
+    bucket: crewBucket(row, baghdadToday()),
+  };
+}
+
+async function addKoshaEvent(input: {
+  bookingId: number; staff: AdminUser | null; type: string;
+  fromStage?: string | null; toStage?: string | null; note?: string | null; meta?: Record<string, unknown>;
+}) {
+  const [row] = await db.insert(koshaBookingEventsTable).values({
+    bookingId: input.bookingId,
+    staffId: input.staff?.id ?? null,
+    staffName: input.staff?.fullName || input.staff?.username || "",
+    type: input.type,
+    fromStage: input.fromStage ?? null,
+    toStage: input.toStage ?? null,
+    note: input.note ?? null,
+    meta: input.meta ?? {},
+  }).returning();
+  return row;
+}
+
+async function addKoshaNotification(input: {
+  staffId?: number | null; audience: "staff" | "manager"; type: string;
+  title: string; body?: string | null; href?: string | null; bookingId?: number | null;
+}) {
+  try {
+    await db.insert(koshaStaffNotificationsTable).values({
+      staffId: input.staffId ?? null,
+      audience: input.audience,
+      type: input.type,
+      title: input.title,
+      body: input.body ?? null,
+      href: input.href ?? null,
+      bookingId: input.bookingId ?? null,
+    });
+  } catch (err) {
+    console.warn("kosha notification insert failed", { type: input.type, error: err instanceof Error ? err.message : "unknown" });
+  }
+}
+
+async function saveKoshaMedia(input: {
+  bookingId: number; eventId?: number | null; staff: AdminUser | null;
+  media: Array<{ url?: string; kind?: string }>; stage?: string | null; purpose: string;
+}) {
+  const saved: any[] = [];
+  for (const m of input.media || []) {
+    const cleaned = String(m?.url ?? "").trim();
+    if (!cleaned) continue;
+    const isVideo = m?.kind === "video" || cleaned.startsWith("data:video");
+    const url = cleaned.startsWith("data:")
+      ? await persistDataUrlToStorage(cleaned, `koshas/${input.purpose}/${input.bookingId}`)
+      : cleaned;
+    const [row] = await db.insert(koshaMediaTable).values({
+      bookingId: input.bookingId,
+      eventId: input.eventId ?? null,
+      staffId: input.staff?.id ?? null,
+      url,
+      kind: isVideo ? "video" : "image",
+      stage: input.stage ?? null,
+      purpose: input.purpose,
+    }).returning();
+    saved.push(row);
+  }
+  return saved;
+}
+
+async function loadKoshaBookingDetail(bookingId: number) {
+  const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, bookingId) });
+  if (!booking) return null;
+  const [events, media, delivery, payments] = await Promise.all([
+    db.query.koshaBookingEventsTable.findMany({ where: eq(koshaBookingEventsTable.bookingId, bookingId), orderBy: [asc(koshaBookingEventsTable.createdAt)] }),
+    db.query.koshaMediaTable.findMany({ where: eq(koshaMediaTable.bookingId, bookingId), orderBy: [desc(koshaMediaTable.createdAt)] }),
+    db.query.koshaDeliveryReportsTable.findFirst({ where: eq(koshaDeliveryReportsTable.bookingId, bookingId), orderBy: [desc(koshaDeliveryReportsTable.createdAt)] }),
+    db.query.koshaPaymentRequestsTable.findMany({ where: eq(koshaPaymentRequestsTable.bookingId, bookingId), orderBy: [desc(koshaPaymentRequestsTable.createdAt)] }),
+  ]);
+  return {
+    booking: await formatKoshaBookingForCrew(booking),
+    timeline: events.map((e: any) => ({ ...e, createdAt: e.createdAt?.toISOString?.() ?? String(e.createdAt) })),
+    media: media.map((m: any) => ({ ...m, createdAt: m.createdAt?.toISOString?.() ?? String(m.createdAt) })),
+    delivery: delivery ? { ...delivery, compensationAmount: Number(delivery.compensationAmount), createdAt: delivery.createdAt?.toISOString?.() ?? String(delivery.createdAt) } : null,
+    paymentRequests: payments.map((p: any) => ({ ...p, amount: Number(p.amount), createdAt: p.createdAt?.toISOString?.() ?? String(p.createdAt), reviewedAt: p.reviewedAt?.toISOString?.() ?? null })),
+  };
+}
+
+async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<NextResponse | null> {
+  if (parts[1] !== "koshas") return null;
+  const method = req.method;
+  const resource = parts[2];           // dashboard | bookings | notifications | reports | payment-requests
+  const id = parts[3] ? int(parts[3]) : null;
+  const action = parts[4];
+  await ensureKoshaStaffTables();
+
+  // Manager-only endpoints (approve/reject collections, list pending requests).
+  if (resource === "payment-requests") {
+    const auth = await requireAnyPermission(req, ["accounting", "bookings"]);
+    if (isResponse(auth)) return auth;
+
+    if (method === "GET" && !id) {
+      const status = req.nextUrl.searchParams.get("status") || "pending";
+      const rows = await db.query.koshaPaymentRequestsTable.findMany({
+        where: status === "all" ? undefined : eq(koshaPaymentRequestsTable.status, status),
+        orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
+        limit: 200,
+      });
+      const out = await Promise.all(rows.map(async (r: any) => {
+        const b = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, r.bookingId) });
+        return {
+          ...r, amount: Number(r.amount),
+          createdAt: r.createdAt?.toISOString?.() ?? String(r.createdAt),
+          reviewedAt: r.reviewedAt?.toISOString?.() ?? null,
+          booking: b ? { id: b.id, customerName: b.customerName, totalAmount: Number(b.totalAmount), paidAmount: Number(b.paidAmount), remainingAmount: Number(b.remainingAmount) } : null,
+        };
+      }));
+      return json(out);
+    }
+
+    if (method === "POST" && id && (action === "approve" || action === "reject")) {
+      const reqRow = await db.query.koshaPaymentRequestsTable.findFirst({ where: eq(koshaPaymentRequestsTable.id, id) });
+      if (!reqRow) return error("الطلب غير موجود", 404);
+      if (reqRow.status !== "pending") return error("تمت معالجة هذا الطلب مسبقًا", 409);
+      const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, reqRow.bookingId) });
+      if (!booking) return error("الحجز غير موجود", 404);
+
+      if (action === "reject") {
+        await db.update(koshaPaymentRequestsTable).set({
+          status: "rejected", reviewedByStaffId: auth.id, reviewedByName: auth.fullName || auth.username, reviewedAt: new Date(),
+        }).where(eq(koshaPaymentRequestsTable.id, id));
+        await addKoshaEvent({ bookingId: booking.id, staff: auth, type: "payment_rejected", note: reqRow.note, meta: { amount: Number(reqRow.amount) } });
+        await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_rejected", title: "رُفض تحصيل المبلغ", body: `رفض المدير تحصيل ${Number(reqRow.amount).toLocaleString("en-US")} د.ع`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
+        return json({ ok: true, status: "rejected" });
+      }
+
+      // approve → record payment, push to finance.
+      const amount = Number(reqRow.amount);
+      const newPaid = Number(booking.paidAmount) + amount;
+      const newRemaining = Math.max(0, Number(booking.remainingAmount) - amount);
+      const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
+      const [updated] = await db.update(koshaBookingsTable).set({
+        paidAmount: String(newPaid), remainingAmount: String(newRemaining), paymentStatus, updatedAt: new Date(),
+      }).where(eq(koshaBookingsTable.id, booking.id)).returning();
+      await db.update(koshaPaymentRequestsTable).set({
+        status: "approved", reviewedByStaffId: auth.id, reviewedByName: auth.fullName || auth.username, reviewedAt: new Date(),
+      }).where(eq(koshaPaymentRequestsTable.id, id));
+      try {
+        await syncKoshaFinancialPayment(updated, financialActor(auth));
+      } catch (err) {
+        console.error("kosha payment finance sync failed", { bookingId: booking.id, error: err instanceof Error ? err.message : "unknown" });
+      }
+      await addKoshaEvent({ bookingId: booking.id, staff: auth, type: "payment_approved", note: reqRow.note, meta: { amount } });
+      await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_approved", title: "اعتُمد تحصيل المبلغ", body: `وافق المدير على تحصيل ${amount.toLocaleString("en-US")} د.ع ودخل النظام`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
+      return json({ ok: true, status: "approved", paidAmount: newPaid, remainingAmount: newRemaining });
+    }
+    return error("المسار غير موجود", 404);
+  }
+
+  // Everything below requires the kosha staff permission.
+  const auth = await requirePermission(req, "koshas");
+  if (isResponse(auth)) return auth;
+
+  // ── Dashboard ──
+  if (resource === "dashboard" && method === "GET") {
+    const today = baghdadToday();
+    const rows = await db.query.koshaBookingsTable.findMany({ orderBy: [desc(koshaBookingsTable.createdAt)], limit: 500 });
+    const active = rows.filter((r: any) => String(r.status ?? "") !== "cancelled");
+    const counts: Record<CrewBucket, number> = { today: 0, tomorrow: 0, upcoming: 0, late: 0, completed: 0 };
+    const todayList: any[] = []; const tomorrowList: any[] = [];
+    for (const r of active) {
+      const b = crewBucket(r, today);
+      counts[b] += 1;
+      if (b === "today") todayList.push(r);
+      if (b === "tomorrow") tomorrowList.push(r);
+    }
+    return json({
+      today,
+      counts,
+      todayBookings: await Promise.all(todayList.map(formatKoshaBookingForCrew)),
+      tomorrowBookings: await Promise.all(tomorrowList.map(formatKoshaBookingForCrew)),
+    });
+  }
+
+  // ── Bookings list ──
+  if (resource === "bookings" && !id && method === "GET") {
+    const bucket = req.nextUrl.searchParams.get("bucket") as CrewBucket | "all" | null;
+    const search = (req.nextUrl.searchParams.get("search") || "").trim();
+    const today = baghdadToday();
+    let rows = await db.query.koshaBookingsTable.findMany({ orderBy: [desc(koshaBookingsTable.createdAt)], limit: 500 });
+    rows = rows.filter((r: any) => String(r.status ?? "") !== "cancelled");
+    if (bucket && bucket !== "all") rows = rows.filter((r: any) => crewBucket(r, today) === bucket);
+    if (search) {
+      const q = search.toLowerCase();
+      rows = rows.filter((r: any) =>
+        String(r.customerName ?? "").toLowerCase().includes(q) ||
+        String(r.phone ?? "").includes(q) ||
+        String(r.hallLocation ?? "").toLowerCase().includes(q) ||
+        String(r.cityArea ?? "").toLowerCase().includes(q));
+    }
+    return json(await Promise.all(rows.map(formatKoshaBookingForCrew)));
+  }
+
+  // ── Booking detail ──
+  if (resource === "bookings" && id && !action && method === "GET") {
+    const detail = await loadKoshaBookingDetail(id);
+    return detail ? json(detail) : error("الحجز غير موجود", 404);
+  }
+
+  // ── Change execution stage ──
+  if (resource === "bookings" && id && action === "stage" && method === "POST") {
+    const data = await body(req);
+    const toStage = String(data?.toStage ?? "").trim();
+    if (!(KOSHA_EXECUTION_STAGES as readonly string[]).includes(toStage)) return error("مرحلة غير صحيحة", 400);
+    if (toStage === "delivered") return error("استخدم نموذج التسليم لإكمال هذه المرحلة", 400);
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!booking) return error("الحجز غير موجود", 404);
+    const fromStage = (booking as any).executionStage ?? "preparing";
+    const media: Array<{ url?: string; kind?: string }> = Array.isArray(data?.media) ? data.media : [];
+
+    if (toStage === "executed" && media.length === 0) {
+      return error("يجب رفع صورة واحدة على الأقل أو فيديو قبل حفظ مرحلة (تم التنفيذ)", 400);
+    }
+    const event = await addKoshaEvent({ bookingId: id, staff: auth, type: "stage", fromStage, toStage, note: data?.note ?? null });
+    if (media.length) await saveKoshaMedia({ bookingId: id, eventId: event.id, staff: auth, media, stage: toStage, purpose: "execution" });
+    await db.update(koshaBookingsTable).set({ executionStage: toStage, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+    return json(await loadKoshaBookingDetail(id));
+  }
+
+  // ── Standalone media upload ──
+  if (resource === "bookings" && id && action === "media" && method === "POST") {
+    const data = await body(req);
+    const media: Array<{ url?: string; kind?: string }> = Array.isArray(data?.media) ? data.media : [];
+    if (media.length === 0) return error("لا توجد ملفات للرفع", 400);
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!booking) return error("الحجز غير موجود", 404);
+    const event = await addKoshaEvent({ bookingId: id, staff: auth, type: "media", note: data?.note ?? null });
+    await saveKoshaMedia({ bookingId: id, eventId: event.id, staff: auth, media, stage: (booking as any).executionStage, purpose: String(data?.purpose ?? "execution") });
+    return json(await loadKoshaBookingDetail(id));
+  }
+
+  // ── Delivery report (تم التسليم) ──
+  if (resource === "bookings" && id && action === "delivery" && method === "POST") {
+    const data = await body(req);
+    const hasLoss = Boolean(data?.hasLoss);
+    const hasBreakage = Boolean(data?.hasBreakage);
+    const note = String(data?.note ?? "").trim();
+    const media: Array<{ url?: string; kind?: string }> = Array.isArray(data?.media) ? data.media : [];
+    const compensation = Math.max(0, Number(data?.compensationAmount ?? 0) || 0);
+    if ((hasLoss || hasBreakage) && (!note || media.length === 0)) {
+      return error("عند وجود فقدان أو كسر يجب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
+    }
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!booking) return error("الحجز غير موجود", 404);
+
+    const event = await addKoshaEvent({ bookingId: id, staff: auth, type: "delivery", fromStage: (booking as any).executionStage ?? null, toStage: "delivered", note: note || null, meta: { hasLoss, hasBreakage, compensation } });
+    if (media.length) await saveKoshaMedia({ bookingId: id, eventId: event.id, staff: auth, media, stage: "delivered", purpose: (hasLoss || hasBreakage) ? "breakage" : "delivery" });
+    let signatureUrl: string | null = null;
+    const sig = String(data?.signature ?? "").trim();
+    if (sig) {
+      const [m] = await saveKoshaMedia({ bookingId: id, eventId: event.id, staff: auth, media: [{ url: sig, kind: "image" }], stage: "delivered", purpose: "signature" });
+      signatureUrl = m?.url ?? null;
+    }
+
+    const existing = await db.query.koshaDeliveryReportsTable.findFirst({ where: eq(koshaDeliveryReportsTable.bookingId, id) });
+    if (existing) {
+      await db.update(koshaDeliveryReportsTable).set({ staffId: auth.id, staffName: auth.fullName || auth.username, hasLoss, hasBreakage, note: note || null, compensationAmount: String(compensation), signatureUrl: signatureUrl ?? existing.signatureUrl }).where(eq(koshaDeliveryReportsTable.id, existing.id));
+    } else {
+      await db.insert(koshaDeliveryReportsTable).values({ bookingId: id, staffId: auth.id, staffName: auth.fullName || auth.username, hasLoss, hasBreakage, note: note || null, compensationAmount: String(compensation), signatureUrl });
+    }
+
+    // Breakage/loss compensation is added to the customer's remaining balance.
+    const patch: Record<string, unknown> = { executionStage: "delivered", updatedAt: new Date() };
+    if (compensation > 0) {
+      const newRemaining = Number(booking.remainingAmount) + compensation;
+      const newTotal = Number(booking.totalAmount) + compensation;
+      patch.remainingAmount = String(newRemaining);
+      patch.totalAmount = String(newTotal);
+      patch.paymentStatus = newRemaining <= 0 ? "paid" : (Number(booking.paidAmount) > 0 ? "partial" : "unpaid");
+    }
+    await db.update(koshaBookingsTable).set(patch).where(eq(koshaBookingsTable.id, id));
+    return json(await loadKoshaBookingDetail(id));
+  }
+
+  // ── Collect remaining balance → creates a pending request for the manager ──
+  if (resource === "bookings" && id && action === "collect" && method === "POST") {
+    const data = await body(req);
+    const amount = Number(data?.amount ?? 0);
+    const note = String(data?.note ?? "").trim();
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!booking) return error("الحجز غير موجود", 404);
+    const remaining = Number(booking.remainingAmount);
+    if (!(amount > 0)) return error("أدخل مبلغًا صحيحًا", 400);
+    if (amount > remaining) return error("المبلغ أكبر من المتبقي على العميل", 400);
+    const pending = await db.query.koshaPaymentRequestsTable.findFirst({ where: and(eq(koshaPaymentRequestsTable.bookingId, id), eq(koshaPaymentRequestsTable.status, "pending")) });
+    if (pending) return error("يوجد طلب تحصيل بانتظار موافقة المدير لهذا الحجز", 409);
+
+    const [reqRow] = await db.insert(koshaPaymentRequestsTable).values({
+      bookingId: id, staffId: auth.id, staffName: auth.fullName || auth.username, amount: String(amount), note: note || null, status: "pending",
+    }).returning();
+    await addKoshaEvent({ bookingId: id, staff: auth, type: "payment_request", note: note || null, meta: { amount } });
+    await addKoshaNotification({ audience: "manager", type: "payment_request", title: "طلب تحصيل ميداني", body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع — ${booking.customerName}`, href: "/staff/koshas/approvals", bookingId: id });
+    return json({ ok: true, request: { ...reqRow, amount: Number(reqRow.amount) } }, 201);
+  }
+
+  // ── Notifications ──
+  if (resource === "notifications") {
+    const isManager = hasPermission(auth, "accounting") || hasPermission(auth, "bookings");
+    if (method === "GET" && !id) {
+      const rows = await db.query.koshaStaffNotificationsTable.findMany({
+        where: isManager
+          ? sql`(${koshaStaffNotificationsTable.audience} = 'manager' or ${koshaStaffNotificationsTable.staffId} = ${auth.id})`
+          : and(eq(koshaStaffNotificationsTable.audience, "staff"), eq(koshaStaffNotificationsTable.staffId, auth.id)),
+        orderBy: [desc(koshaStaffNotificationsTable.createdAt)],
+        limit: 50,
+      });
+      return json(rows.map((n: any) => ({ ...n, createdAt: n.createdAt?.toISOString?.() ?? String(n.createdAt) })));
+    }
+    if (method === "POST" && parts[3] === "read-all") {
+      await db.update(koshaStaffNotificationsTable).set({ isRead: true }).where(
+        isManager ? sql`(${koshaStaffNotificationsTable.audience} = 'manager' or ${koshaStaffNotificationsTable.staffId} = ${auth.id})`
+                  : and(eq(koshaStaffNotificationsTable.audience, "staff"), eq(koshaStaffNotificationsTable.staffId, auth.id)));
+      return json({ ok: true });
+    }
+    if (method === "POST" && id && action === "read") {
+      await db.update(koshaStaffNotificationsTable).set({ isRead: true }).where(eq(koshaStaffNotificationsTable.id, id));
+      return json({ ok: true });
+    }
+  }
+
+  // ── Per-staff report ──
+  if (resource === "reports" && action === undefined && parts[3] === "me" && method === "GET") {
+    const mine = eq(koshaBookingEventsTable.staffId, auth.id);
+    const [executed, delivered, deliveryReports, approved] = await Promise.all([
+      db.$count(koshaBookingEventsTable, and(mine, eq(koshaBookingEventsTable.type, "stage"), eq(koshaBookingEventsTable.toStage, "executed"))),
+      db.$count(koshaBookingEventsTable, and(mine, eq(koshaBookingEventsTable.type, "delivery"))),
+      db.query.koshaDeliveryReportsTable.findMany({ where: eq(koshaDeliveryReportsTable.staffId, auth.id) }),
+      db.query.koshaPaymentRequestsTable.findMany({ where: and(eq(koshaPaymentRequestsTable.staffId, auth.id), eq(koshaPaymentRequestsTable.status, "approved")) }),
+    ]);
+    const breakage = deliveryReports.filter((r: any) => r.hasBreakage).length;
+    const loss = deliveryReports.filter((r: any) => r.hasLoss).length;
+    const collected = approved.reduce((s: number, r: any) => s + Number(r.amount), 0);
+    return json({ executed: Number(executed), delivered: Number(delivered), breakage, loss, collected, collectedCount: approved.length });
+  }
+
+  return error("المسار غير موجود", 404);
+}
+
+async function handleTelegram(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "telegram") return null;
+  const auth = await requirePermission(req, "settings");
+  if (isResponse(auth)) return auth;
+  const method = req.method;
+  const resource = parts[2] ?? "settings";
+
+  if (method === "GET" && resource === "settings") {
+    return json({ settings: await getTelegramSettings(), environment: telegramEnvironmentStatus() });
+  }
+
+  if ((method === "PUT" || method === "PATCH") && resource === "settings") {
+    const parsed = telegramSettingsSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("admin.telegram.settings", parsed);
+    const saved = await saveTelegramSettings(parsed.data);
+    void logAdminActivity(req, "telegram_settings_updated", "settings", undefined, { enabled: saved.enabled, events: saved.events });
+    return json({ settings: saved, environment: telegramEnvironmentStatus() });
+  }
+
+  if (method === "POST" && resource === "test-message") {
+    const result = await sendTelegramMessage("✅ <b>رسالة اختبار من نظام AJN</b>\n\nتم ربط إشعارات Telegram بنجاح.");
+    void logAdminActivity(req, "telegram_test_message", "settings", undefined, { ok: result.ok });
+    return result.ok ? json({ message: "تم إرسال رسالة الاختبار" }) : error(result.error, result.error.includes("Environment") ? 400 : 502);
+  }
+
+  if (method === "POST" && resource === "test-pdf") {
+    const result = await sendTelegramTestPdf();
+    void logAdminActivity(req, "telegram_test_pdf", "settings", undefined, { ok: result.ok });
+    return result.ok ? json({ message: "تم إرسال ملف PDF الاختباري" }) : error(result.error, result.error.includes("Environment") ? 400 : 502);
+  }
+
+  return error("مسار Telegram غير مدعوم", 404);
+}
+
 async function handleMasterCash(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "master-cash") return null;
   const method = req.method;
@@ -11055,6 +11738,18 @@ async function handleMasterCash(req: NextRequest, parts: string[], section: stri
           balanceBefore: row.balanceBefore,
           balanceAfter: row.balanceAfter,
         });
+        if (row.direction === "revenue") {
+          void notifyTelegramPayment({
+            event: "managerApproval",
+            reference: row.transactionNo,
+            customerName: row.customerName || row.description,
+            amount: row.amount,
+            paymentMethod: row.paymentMethod,
+            createdByName: financeUser.name,
+            status: row.approvalStatus,
+            entityPath: "/admin/finance/master-cash",
+          });
+        }
         return json(row);
       }
 
@@ -11295,6 +11990,16 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           financialTransactionId: financialTransaction.id,
         }).where(eq(receiptVouchersTable.id, updated.id)).returning();
         void logAdminActivity(req, "receipt_voucher_created", "receipt_voucher", updated.id, { voucherNo: updated.voucherNo });
+        void notifyTelegramPayment({
+          event: "paymentReceived",
+          reference: updated.voucherNo,
+          customerName: updated.payerName,
+          amount: updated.amount,
+          paymentMethod: updated.method,
+          createdByName: updated.createdByName || auth.fullName || auth.username,
+          status: financialTransaction.approvalStatus,
+          entityPath: "/admin/accounting",
+        });
         return json(savedVoucher, 201);
       } catch (err: any) {
         console.error("receipt voucher save failed", { message: err?.message });
@@ -11874,6 +12579,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
       (root === "messages" || root === "activity" || root === "qr" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
       (root === "koshas" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
+      (root === "staff") ? ensureKoshaStaffTables() : undefined,
       (root === "orders" || root === "service-orders" || root === "koshas" || (!isAdminAuth && root === "admin"))
         ? ensureMasterCashBoxTables() : undefined,
     ].filter(Boolean));
@@ -11921,6 +12627,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
                           ? await handleDelivery(req, parts)
                           : root === "dashboard"
                             ? await handleDashboard(req, parts)
+                            : root === "staff"
+                              ? await handleStaffPortal(req, parts)
                             : root === "admin"
                               ? await handleAdmin(req, parts)
                               : null;

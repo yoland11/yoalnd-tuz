@@ -27,4 +27,5 @@ export * from "./loyalty";
 export * from "./admin-extensions";
 export * from "./daily-cash";
 export * from "./koshas";
+export * from "./kosha-staff";
 export * from "./master-cash-box";
