@@ -64,22 +64,22 @@ export default function Home() {
           
           <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto animate-fade-up [animation-delay:280ms]">
             <Link href="/services">
-              <Button size="lg" className="w-40 bg-primary text-primary-foreground hover:bg-primary/90">
+              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
                 {t("الخدمات")}
               </Button>
             </Link>
             <Link href="/store">
-              <Button size="lg" variant="outline" className="w-40 border-primary text-primary hover:bg-primary/10">
+              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
                 {t("المتجر")}
               </Button>
             </Link>
             <Link href="/track">
-              <Button size="lg" variant="outline" className="w-40 border-white/20 text-white hover:bg-white/10 backdrop-blur-sm">
+              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
                 {t("تتبع الطلب")}
               </Button>
             </Link>
             <Link href="/gallery">
-              <Button size="lg" variant="outline" className="w-40 border-white/20 text-white hover:bg-white/10 backdrop-blur-sm">
+              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
                 {t("أعمالنا")}
               </Button>
             </Link>

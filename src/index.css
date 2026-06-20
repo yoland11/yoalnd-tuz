@@ -187,19 +187,38 @@ a:hover {
 }
 
 /* ===== توحيد ألوان عناصر القائمة العلوية (Navbar) ===== */
-/* النص + الأيقونة يرثان نفس اللون (currentColor)، نفس التوكن للجميع */
+/* توكن واحد للجميع — النص + أيقونة الـ SVG يأخذان نفس اللون بصراحة (لا اعتماد على الوراثة فقط) */
+/* القواعد خارج أي @layer فتتفوّق على أي utility من Tailwind بصرف النظر عن الـ specificity */
 .ajn-nav-link {
-  color: var(--ajn-nav-link);
   position: relative;
   transition: color 200ms ease;
 }
+.ajn-nav-icon {
+  transition: color 200ms ease;
+}
+/* الحالة الافتراضية: أبيض موحّد للنص وكل أيقونة داخله */
+.ajn-nav-link,
+.ajn-nav-link svg,
+.ajn-nav-icon,
+.ajn-nav-icon svg {
+  color: var(--ajn-nav-link);
+}
+/* الحالة النشِطة + Hover + Focus: ذهبي موحّد للنص والأيقونة */
 .ajn-nav-link:hover,
-.ajn-nav-link:focus-visible {
+.ajn-nav-link:hover svg,
+.ajn-nav-link:focus-visible,
+.ajn-nav-link:focus-visible svg,
+.ajn-nav-link.is-active,
+.ajn-nav-link.is-active svg,
+.ajn-nav-icon:hover,
+.ajn-nav-icon:hover svg,
+.ajn-nav-icon:focus-visible,
+.ajn-nav-icon:focus-visible svg,
+.ajn-nav-icon.is-active,
+.ajn-nav-icon.is-active svg {
   color: var(--ajn-nav-link-active);
 }
-.ajn-nav-link.is-active {
-  color: var(--ajn-nav-link-active);
-}
+/* الخط السفلي للعنصر النشِط فقط (الأزرار الأيقونية بلا خط سفلي) */
 .ajn-nav-link.is-active::after {
   content: "";
   position: absolute;
@@ -209,15 +228,20 @@ a:hover {
   border-radius: 2px;
   background: var(--ajn-nav-link-active);
 }
-/* أزرار الأيقونات في الهيدر (بحث/سلة/حساب/إدارة/لغة/الوضع) — نفس التوكن بلا خط سفلي */
-.ajn-nav-icon {
+
+/* أزرار الهيرو في الصفحة الرئيسية — نمط موحّد لجميعها (أبيض + Hover ذهبي) */
+.ajn-hero-btn {
+  background-color: transparent;
   color: var(--ajn-nav-link);
-  transition: color 200ms ease;
+  border-color: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(2px);
+  transition: color 200ms ease, border-color 200ms ease, background-color 200ms ease;
 }
-.ajn-nav-icon:hover,
-.ajn-nav-icon:focus-visible,
-.ajn-nav-icon.is-active {
+.ajn-hero-btn:hover,
+.ajn-hero-btn:focus-visible {
   color: var(--ajn-nav-link-active);
+  border-color: var(--ajn-nav-link-active);
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
 .dark {
