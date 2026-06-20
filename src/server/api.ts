@@ -5869,6 +5869,73 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
   const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
   if (!customer) return error("المستخدم غير موجود", 404);
 
+  // ── Customer Kosha Portal: a customer sees only their own kosha bookings ──
+  if (section === "koshas") {
+    await ensureKoshaStaffTables();
+    const corePhone = (p: unknown) => {
+      let d = String(p ?? "").replace(/\D/g, "");
+      if (d.startsWith("964")) d = d.slice(3);
+      if (d.startsWith("0")) d = d.slice(1);
+      return d;
+    };
+    const myCore = corePhone(customer.phone);
+    const koshaBookingId = parts[2] ? int(parts[2]) : null;
+
+    if (method === "GET" && !koshaBookingId) {
+      if (!myCore) return json([]);
+      const all = await db.query.koshaBookingsTable.findMany({ orderBy: [desc(koshaBookingsTable.createdAt)], limit: 300 });
+      const mine = all.filter((b: any) => corePhone(b.phone) === myCore && String(b.status ?? "") !== "cancelled");
+      const koshaIds = Array.from(new Set(mine.map((b: any) => b.koshaId).filter(Boolean))) as number[];
+      const koshasList = koshaIds.length ? await db.query.koshasTable.findMany({ where: inArray(koshasTable.id, koshaIds) }) : [];
+      const nameOf = (kid: number | null) => koshasList.find((k: any) => k.id === kid)?.name ?? null;
+      return json(mine.map((b: any) => ({
+        id: b.id, koshaName: nameOf(b.koshaId), eventDate: b.eventDate ?? "", eventTime: b.eventTime ?? "",
+        eventType: b.eventType ?? "", executionStage: b.executionStage ?? "preparing",
+        totalAmount: Number(b.totalAmount), paidAmount: Number(b.paidAmount), remainingAmount: Number(b.remainingAmount),
+        paymentStatus: b.paymentStatus ?? "unpaid",
+      })));
+    }
+
+    if (koshaBookingId) {
+      const b = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, koshaBookingId) });
+      if (!b || !myCore || corePhone((b as any).phone) !== myCore) return error("الحجز غير موجود", 404);
+
+      if (method === "GET") {
+        const [kosha, media, events] = await Promise.all([
+          b.koshaId ? db.query.koshasTable.findFirst({ where: eq(koshasTable.id, b.koshaId) }) : Promise.resolve(null),
+          db.query.koshaMediaTable.findMany({ where: and(eq(koshaMediaTable.bookingId, koshaBookingId), inArray(koshaMediaTable.purpose, ["execution", "delivery"])), orderBy: [desc(koshaMediaTable.createdAt)] }),
+          db.query.koshaBookingEventsTable.findMany({ where: and(eq(koshaBookingEventsTable.bookingId, koshaBookingId), inArray(koshaBookingEventsTable.type, ["stage", "delivery"])), orderBy: [asc(koshaBookingEventsTable.createdAt)] }),
+        ]);
+        const details: any = b.bookingDetails ?? {};
+        return json({
+          id: b.id,
+          koshaName: kosha?.name ?? null,
+          koshaImage: kosha?.mainImage ? publicMediaValue("kosha", kosha, kosha.mainImage as string) : null,
+          customerName: b.customerName,
+          eventDate: b.eventDate ?? "", eventTime: b.eventTime ?? "", eventType: b.eventType ?? "",
+          province: b.province ?? "", area: b.area ?? "", cityArea: b.cityArea ?? "", hallLocation: b.hallLocation ?? "",
+          executionStage: (b as any).executionStage ?? "preparing",
+          totalAmount: Number(b.totalAmount), paidAmount: Number(b.paidAmount), remainingAmount: Number(b.remainingAmount), paymentStatus: b.paymentStatus ?? "unpaid",
+          media: media.map((m: any) => ({ id: m.id, url: m.url, kind: m.kind })),
+          stages: events.map((e: any) => ({ stage: e.toStage, at: e.createdAt?.toISOString?.() ?? String(e.createdAt) })).filter((s: any) => s.stage),
+          confirmation: details.customerConfirmation ?? null,
+        });
+      }
+
+      if (method === "POST" && parts[3] === "confirm") {
+        if ((b as any).executionStage !== "delivered") return error("لا يمكن التأكيد قبل تسليم الكوشة", 400);
+        const data = await body(req);
+        const rating = Math.max(0, Math.min(5, Math.round(Number(data?.rating ?? 0)) || 0));
+        const note = String(data?.note ?? "").trim();
+        const details: any = { ...(b.bookingDetails ?? {}) };
+        details.customerConfirmation = { confirmedAt: new Date().toISOString(), rating, note: note || null };
+        await db.update(koshaBookingsTable).set({ bookingDetails: details, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, koshaBookingId));
+        return json({ ok: true, confirmation: details.customerConfirmation });
+      }
+    }
+    return error("المسار غير موجود", 404);
+  }
+
   if (section === "addresses") {
     if (method === "GET") {
       const rows = await db.query.customerAddressesTable.findMany({

@@ -12,7 +12,8 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { User, Package, LogOut, Phone, CheckCircle, ShoppingCart } from "lucide-react";
+import { User, Package, LogOut, Phone, CheckCircle, ShoppingCart, Armchair, ChevronLeft } from "lucide-react";
+import { Link } from "wouter";
 import { clearAuthToken, getAuthToken, setAuthToken } from "@/lib/api-session";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 
@@ -156,6 +157,19 @@ export default function Account() {
             </div>
             <p className="text-primary font-bold">{Number(cart?.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
           </div>
+
+          <Link href="/account/koshas" className="bg-card rounded-2xl border border-border/30 p-5 mb-6 flex items-center justify-between gap-4 hover:border-primary/40 transition-colors">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
+                <Armchair className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">كوشاتي</p>
+                <p className="text-xs text-muted-foreground">تابع حالة كوشاتك وصورها</p>
+              </div>
+            </div>
+            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
+          </Link>
 
           {/* Orders */}
           <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">

@@ -33,6 +33,7 @@ const Gallery = lazy(() => import("@/views/gallery"));
 const Favorites = lazy(() => import("@/views/favorites"));
 const Profile = lazy(() => import("@/views/profile"));
 const Account = lazy(() => import("@/views/account"));
+const AccountKoshas = lazy(() => import("@/views/account-koshas"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -186,6 +187,9 @@ function Router() {
               <Route path="/login" component={Login} />
               <Route path="/profile">
                 <Suspense fallback={<PageSpinner />}><Profile /></Suspense>
+              </Route>
+              <Route path="/account/koshas">
+                <Suspense fallback={<PageSpinner />}><AccountKoshas /></Suspense>
               </Route>
               <Route path="/account">
                 <Suspense fallback={<PageSpinner />}><Account /></Suspense>
