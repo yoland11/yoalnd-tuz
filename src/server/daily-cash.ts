@@ -5,6 +5,7 @@ import {
   dailyCashReportsTable,
   db,
 } from "@workspace/db";
+import { ensureMasterCashBoxTables } from "@/server/master-cash-box";
 
 export type DailyCashActor = {
   id: number | null;
@@ -22,6 +23,7 @@ export type DailyCashBreakdown = {
   invoiceSales: number;
   productOrderSales: number;
   serviceOrderSales: number;
+  otherRevenue: number;
   invoiceCount: number;
   productOrderCount: number;
   serviceOrderCount: number;
@@ -215,51 +217,81 @@ function reconciliationStatus(difference: number): DailyCashStatus {
 }
 
 async function aggregateDailyCash(from: string, to: string) {
-  const [invoiceRows, productOrderRows, serviceOrderRows, expenseRows] = await Promise.all([
+  await ensureMasterCashBoxTables();
+  const [invoiceRows, productOrderRows, serviceOrderRows, otherRevenueRows, expenseRows] = await Promise.all([
     db.execute(sql`
-      SELECT
-        date::text AS day,
-        COALESCE(SUM(total::numeric), 0)::float AS total,
-        COUNT(*)::int AS count
-      FROM sales_invoices
-      WHERE status = 'active'
-        AND date >= ${from}
-        AND date <= ${to}
-      GROUP BY date
+      SELECT day, COALESCE(SUM(total),0)::float AS total, COALESCE(SUM(count),0)::int AS count FROM (
+        SELECT date::text AS day, COALESCE(SUM(total::numeric),0) AS total, COUNT(*)::int AS count
+        FROM sales_invoices invoice
+        WHERE status='active' AND date >= ${from} AND date <= ${to}
+          AND NOT EXISTS (SELECT 1 FROM financial_transactions ft WHERE ft.source_type='sales_invoice' AND ft.source_id=invoice.id::text)
+        GROUP BY date
+        UNION ALL
+        SELECT transaction_date::text AS day,
+          COALESCE(SUM(CASE WHEN direction='revenue' THEN amount::numeric ELSE -amount::numeric END),0) AS total,
+          COUNT(*)::int AS count
+        FROM financial_transactions
+        WHERE approval_status='executed' AND source_type='sales_invoice' AND transaction_date >= ${from} AND transaction_date <= ${to}
+        GROUP BY transaction_date
+      ) rows GROUP BY day
     `),
     db.execute(sql`
-      SELECT
-        DATE(created_at)::text AS day,
-        COALESCE(SUM((total::numeric - COALESCE(delivery_fee::numeric, 0))), 0)::float AS total,
-        COUNT(*)::int AS count
-      FROM orders
-      WHERE archived_at IS NULL
-        AND status IN ('completed', 'delivered')
-        AND created_at >= ${from}::date
-        AND created_at < (${to}::date + interval '1 day')
-      GROUP BY DATE(created_at)
+      SELECT day, COALESCE(SUM(total),0)::float AS total, COALESCE(SUM(count),0)::int AS count FROM (
+        SELECT DATE(created_at)::text AS day, COALESCE(SUM(total::numeric - COALESCE(delivery_fee::numeric,0)),0) AS total, COUNT(*)::int AS count
+        FROM orders order_row
+        WHERE archived_at IS NULL AND status IN ('completed','delivered')
+          AND created_at >= ${from}::date AND created_at < (${to}::date + interval '1 day')
+          AND NOT EXISTS (SELECT 1 FROM financial_transactions ft WHERE ft.source_type='order' AND ft.source_id=order_row.id::text)
+        GROUP BY DATE(created_at)
+        UNION ALL
+        SELECT transaction_date::text AS day,
+          COALESCE(SUM(CASE WHEN direction='revenue' THEN amount::numeric ELSE -amount::numeric END),0) AS total,
+          COUNT(*)::int AS count
+        FROM financial_transactions
+        WHERE approval_status='executed' AND source_type='order' AND transaction_date >= ${from} AND transaction_date <= ${to}
+        GROUP BY transaction_date
+      ) rows GROUP BY day
     `),
     db.execute(sql`
-      SELECT
-        DATE(created_at)::text AS day,
-        COALESCE(SUM(total_amount::numeric), 0)::float AS total,
-        COUNT(*)::int AS count
-      FROM service_orders
-      WHERE archived_at IS NULL
-        AND status IN ('completed', 'delivered')
-        AND created_at >= ${from}::date
-        AND created_at < (${to}::date + interval '1 day')
-      GROUP BY DATE(created_at)
+      SELECT day, COALESCE(SUM(total),0)::float AS total, COALESCE(SUM(count),0)::int AS count FROM (
+        SELECT DATE(created_at)::text AS day, COALESCE(SUM(total_amount::numeric),0) AS total, COUNT(*)::int AS count
+        FROM service_orders service_row
+        WHERE archived_at IS NULL AND status IN ('completed','delivered')
+          AND created_at >= ${from}::date AND created_at < (${to}::date + interval '1 day')
+          AND NOT EXISTS (SELECT 1 FROM financial_transactions ft WHERE ft.source_type='service_order' AND ft.source_id=service_row.id::text)
+        GROUP BY DATE(created_at)
+        UNION ALL
+        SELECT transaction_date::text AS day,
+          COALESCE(SUM(CASE WHEN direction='revenue' THEN amount::numeric ELSE -amount::numeric END),0) AS total,
+          COUNT(*)::int AS count
+        FROM financial_transactions
+        WHERE approval_status='executed' AND source_type IN ('service_order','kosha_booking') AND transaction_date >= ${from} AND transaction_date <= ${to}
+        GROUP BY transaction_date
+      ) rows GROUP BY day
     `),
     db.execute(sql`
-      SELECT
-        date::text AS day,
-        COALESCE(SUM(amount::numeric), 0)::float AS total
-      FROM expenses
-      WHERE date >= ${from}
-        AND date <= ${to}
-        AND deleted_at IS NULL
-      GROUP BY date
+      SELECT transaction_date::text AS day,
+        COALESCE(SUM(CASE WHEN direction='revenue' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN direction='expense' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0)::float AS total
+      FROM financial_transactions
+      WHERE approval_status='executed'
+        AND COALESCE(source_type,'') NOT IN ('sales_invoice','order','service_order','kosha_booking')
+        AND transaction_date >= ${from} AND transaction_date <= ${to}
+      GROUP BY transaction_date
+    `),
+    db.execute(sql`
+      SELECT day, COALESCE(SUM(total),0)::float AS total FROM (
+        SELECT date::text AS day, COALESCE(SUM(amount::numeric),0) AS total
+        FROM expenses
+        WHERE date >= ${from} AND date <= ${to} AND deleted_at IS NULL
+          AND COALESCE(approval_status,'executed')='executed' AND financial_transaction_id IS NULL
+        GROUP BY date
+        UNION ALL
+        SELECT transaction_date::text AS day,
+          COALESCE(SUM(CASE WHEN direction='expense' AND transaction_type NOT LIKE '%_reversal' THEN amount::numeric WHEN direction='revenue' AND transaction_type LIKE '%_reversal' THEN -amount::numeric ELSE 0 END),0) AS total
+        FROM financial_transactions
+        WHERE approval_status='executed' AND transaction_date >= ${from} AND transaction_date <= ${to}
+        GROUP BY transaction_date
+      ) rows GROUP BY day
     `),
   ]);
 
@@ -267,6 +299,7 @@ async function aggregateDailyCash(from: string, to: string) {
     invoiceSales: number;
     productOrderSales: number;
     serviceOrderSales: number;
+    otherRevenue: number;
     totalExpenses: number;
     invoiceCount: number;
     productOrderCount: number;
@@ -279,6 +312,7 @@ async function aggregateDailyCash(from: string, to: string) {
       invoiceSales: 0,
       productOrderSales: 0,
       serviceOrderSales: 0,
+      otherRevenue: 0,
       totalExpenses: 0,
       invoiceCount: 0,
       productOrderCount: 0,
@@ -302,6 +336,9 @@ async function aggregateDailyCash(from: string, to: string) {
     item.serviceOrderSales = toNumber(row.total);
     item.serviceOrderCount = Number(row.count ?? 0);
   }
+  for (const row of (otherRevenueRows.rows ?? []) as any[]) {
+    ensure(String(row.day)).otherRevenue = toNumber(row.total);
+  }
   for (const row of (expenseRows.rows ?? []) as any[]) {
     ensure(String(row.day)).totalExpenses = toNumber(row.total);
   }
@@ -318,7 +355,8 @@ function buildCashRow(
   const invoiceSales = money(day?.invoiceSales ?? 0);
   const productOrderSales = money(day?.productOrderSales ?? 0);
   const serviceOrderSales = money(day?.serviceOrderSales ?? 0);
-  const totalSales = money(invoiceSales + productOrderSales + serviceOrderSales);
+  const otherRevenue = money(day?.otherRevenue ?? 0);
+  const totalSales = money(invoiceSales + productOrderSales + serviceOrderSales + otherRevenue);
   const totalExpenses = money(day?.totalExpenses ?? 0);
   const openingBalance = money(toNumber(report?.openingBalance ?? reconciliation?.openingBalance ?? 0));
   const closingBalance = money(openingBalance + totalSales - totalExpenses);
@@ -352,6 +390,7 @@ function buildCashRow(
       invoiceSales,
       productOrderSales,
       serviceOrderSales,
+      otherRevenue,
       invoiceCount: Number(day?.invoiceCount ?? 0),
       productOrderCount: Number(day?.productOrderCount ?? 0),
       serviceOrderCount: Number(day?.serviceOrderCount ?? 0),

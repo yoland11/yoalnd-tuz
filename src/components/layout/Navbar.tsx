@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Armchair, Facebook, Heart, Images, Instagram, Lock, MapPin, MessageCircle, Moon, Phone, Route, ShoppingBag, Store, Sun, User, WandSparkles } from "lucide-react";
+import { Armchair, Heart, Images, Lock, MessageCircle, Moon, Route, ShoppingBag, Store, Sun, User, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -10,6 +10,8 @@ import { useThemeMode } from "@/lib/theme-mode";
 import { useWishlist } from "@/lib/wishlist";
 import { useT } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/language-switcher";
+
+const NAV_CAMERA_SRC = "/images/nav-camera.png";
 
 export function Navbar() {
   const [location] = useLocation();
@@ -36,146 +38,144 @@ export function Navbar() {
   const cartItemCount = cart?.itemCount || 0;
   const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار") : "";
 
+  const sections = [
+    { href: "/", label: t("الرئيسية"), Icon: null, active: location === "/" },
+    { href: "/services", label: t("الخدمات"), Icon: WandSparkles, active: location.startsWith("/services") },
+    { href: "/store", label: t("المتجر"), Icon: Store, active: location.startsWith("/store") },
+    { href: "/koshas", label: "الكوشات", Icon: Armchair, active: location.startsWith("/koshas") },
+    { href: "/gallery", label: t("أعمالنا"), Icon: Images, active: location.startsWith("/gallery") },
+    { href: "/track", label: t("تتبع الطلب"), Icon: Route, active: location.startsWith("/track") },
+  ];
+
   return (
-    <header className="sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60" style={{ backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}>
-      <div className="hidden border-b border-border/30 bg-card/80 md:block" dir="rtl" style={{ backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}>
-        <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
-          <div className="flex items-center gap-4">
-            {settings?.phone && (
-              <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
-                <Phone className="h-3.5 w-3.5" /> {settings.phone}
-              </a>
-            )}
+    <header className="sticky top-0 z-50 w-full" style={{ backgroundColor: "#0a0a0b" }}>
+      {/* ===== Desktop: thin utility + actions bar ===== */}
+      <div className="hidden border-b border-white/5 md:block" dir="rtl">
+        <div className="container mx-auto flex h-12 items-center justify-between gap-4 px-4">
+          {/* Brand */}
+          <Link href="/" className="flex items-center gap-2.5">
+            <span className="h-9 w-9 rounded-lg border border-[#D4B15A]/25 bg-[#D4B15A]/5 p-1 flex items-center justify-center overflow-hidden">
+              <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={36} height={36} fetchPriority="high" decoding="async" className="h-full w-full object-contain" />
+            </span>
+            <span className="font-semibold text-sm text-white">{settings?.site_name ?? "مجموعة علي جان"}</span>
+          </Link>
+
+          {/* Actions */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggle}
+              aria-label="تبديل الوضع الليلي/النهاري"
+              title={isDarkTheme ? "التبديل إلى الوضع النهاري" : "التبديل إلى الوضع الليلي"}
+              className="ajn-nav-icon h-9 w-9"
+            >
+              {isDarkTheme ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </Button>
+            <LanguageSwitcher />
             {waLink && (
-              <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
-                <MessageCircle className="h-3.5 w-3.5" /> {t("واتساب")}
+              <a href={waLink} target="_blank" rel="noreferrer" aria-label={t("واتساب")} title={t("واتساب")}>
+                <Button variant="ghost" size="icon" className="ajn-nav-icon h-9 w-9">
+                  <MessageCircle className="h-5 w-5" />
+                </Button>
               </a>
             )}
-            {settings?.map_url && (
-              <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-primary transition-colors">
-                <MapPin className="h-3.5 w-3.5" /> {t("موقع المحل")}
-              </a>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {settings?.social_links.instagram && (
-              <a href={settings.social_links.instagram} target="_blank" rel="noreferrer" aria-label="Instagram" className="hover:text-primary transition-colors">
-                <Instagram className="h-4 w-4" />
-              </a>
-            )}
-            {settings?.social_links.facebook && (
-              <a href={settings.social_links.facebook} target="_blank" rel="noreferrer" aria-label="Facebook" className="hover:text-primary transition-colors">
-                <Facebook className="h-4 w-4" />
-              </a>
-            )}
+            <Link href="/profile" aria-label={t("حسابي")}>
+              <Button variant="ghost" size="icon" className="ajn-nav-icon h-9 w-9">
+                {customer?.avatarUrl ? (
+                  <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover border border-[#D4B15A]/25" />
+                ) : (
+                  <User className="h-5 w-5" />
+                )}
+              </Button>
+            </Link>
+            <Link href="/favorites" aria-label="المفضّلة">
+              <Button variant="ghost" size="icon" className="relative ajn-nav-icon h-9 w-9">
+                <Heart className="h-5 w-5" />
+                {wishlistCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#D4B15A] text-[10px] font-bold text-black">
+                    {wishlistCount}
+                  </span>
+                )}
+              </Button>
+            </Link>
+            <Link href="/cart" aria-label={t("السلة")}>
+              <Button variant="ghost" size="icon" className="relative ajn-nav-icon h-9 w-9">
+                <ShoppingBag className="h-5 w-5" />
+                {cartItemCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#D4B15A] text-[10px] font-bold text-black">
+                    {cartItemCount}
+                  </span>
+                )}
+              </Button>
+            </Link>
+            <Link href="/admin/login" aria-label="دخول الإدارة" title="دخول الإدارة">
+              <Button variant="ghost" size="icon" className={`ajn-nav-icon h-9 w-9 ${location.startsWith("/admin") ? "is-active" : ""}`}>
+                <Lock className="h-5 w-5" />
+              </Button>
+            </Link>
           </div>
         </div>
       </div>
-      <div className="container mx-auto flex h-20 items-center justify-between px-4">
-        
-        {/* Logo */}
+
+      {/* ===== Desktop: camera band with engraved sections ===== */}
+      <div className="hidden md:block" style={{ backgroundColor: "#0a0a0b" }}>
+        <div className="relative mx-auto w-full max-w-[1180px] h-[150px] lg:h-[180px] overflow-hidden">
+          <img
+            src={NAV_CAMERA_SRC}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+            fetchPriority="high"
+            className="pointer-events-none absolute inset-0 h-full w-full select-none object-cover object-center"
+          />
+          {/* Sections engraved on the flat front face */}
+          <nav
+            className="absolute left-[24%] right-[25%] top-[60%] flex -translate-y-1/2 items-center justify-between"
+            dir="rtl"
+            style={{ textShadow: "0 1px 3px rgba(0,0,0,0.65)" }}
+          >
+            {sections.map(({ href, label, Icon, active }) => (
+              <Link
+                key={href}
+                href={href}
+                className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium tracking-wide ${active ? "is-active" : ""}`}
+              >
+                {Icon && <Icon className="h-3.5 w-3.5 shrink-0" />}
+                {label}
+              </Link>
+            ))}
+          </nav>
+        </div>
+      </div>
+
+      {/* ===== Mobile: compact header (bottom MobileNav handles primary nav) ===== */}
+      <div className="container mx-auto flex h-16 items-center justify-between px-4 md:hidden">
         <Link href="/" className="flex items-center gap-2">
-          <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={40} height={40} fetchPriority="high" decoding="async" className="h-full w-full object-contain" />
+          <span className="h-9 w-9 rounded-lg border border-[#D4B15A]/25 bg-[#D4B15A]/5 p-1 flex items-center justify-center overflow-hidden">
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={36} height={36} fetchPriority="high" decoding="async" className="h-full w-full object-contain" />
           </span>
-          <div className="h-6 w-[1px] bg-border mx-2 hidden sm:block" />
-          <span className="font-semibold text-lg hidden sm:block">{settings?.site_name ?? "مجموعة علي جان"}</span>
+          <span className="font-semibold text-base text-white">{settings?.site_name ?? "مجموعة علي جان"}</span>
         </Link>
-
-        {/* Desktop Navigation */}
-        <nav className="hidden md:flex items-center gap-8">
-          <Link
-            href="/"
-            className={`ajn-nav-link text-sm font-medium ${location === '/' ? 'is-active' : ''}`}
-          >
-            {t("الرئيسية")}
-          </Link>
-          <Link
-            href="/services"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/services') ? 'is-active' : ''}`}
-          >
-            <WandSparkles className="h-3.5 w-3.5 shrink-0" />
-            {t("الخدمات")}
-          </Link>
-          <Link
-            href="/store"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/store') ? 'is-active' : ''}`}
-          >
-            <Store className="h-3.5 w-3.5 shrink-0" />
-            {t("المتجر")}
-          </Link>
-          <Link
-            href="/koshas"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/koshas') ? 'is-active' : ''}`}
-          >
-            <Armchair className="h-3.5 w-3.5 shrink-0" />
-            الكوشات
-          </Link>
-          <Link
-            href="/gallery"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/gallery') ? 'is-active' : ''}`}
-          >
-            <Images className="h-3.5 w-3.5 shrink-0" />
-            {t("أعمالنا")}
-          </Link>
-          <Link
-            href="/track"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith('/track') ? 'is-active' : ''}`}
-          >
-            <Route className="h-3.5 w-3.5 shrink-0" />
-            {t("تتبع الطلب")}
-          </Link>
-        </nav>
-
-        {/* Actions */}
-        <div className="flex items-center gap-2 md:gap-4">
+        <div className="flex items-center gap-1">
           <Button
             variant="ghost"
             size="icon"
             onClick={toggle}
             aria-label="تبديل الوضع الليلي/النهاري"
-            title={isDarkTheme ? "التبديل إلى الوضع النهاري" : "التبديل إلى الوضع الليلي"}
             className="ajn-nav-icon"
           >
             {isDarkTheme ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
           <LanguageSwitcher />
-          <Link href="/profile">
-            <Button variant="ghost" size="icon" className="ajn-nav-icon">
-              {customer?.avatarUrl ? (
-                <img src={customer.avatarUrl} alt="" className="h-7 w-7 rounded-full object-cover border border-primary/20" />
-              ) : (
-                <User className="h-5 w-5" />
-              )}
-            </Button>
-          </Link>
-          <Link href="/favorites" aria-label="المفضّلة">
-            <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
-              <Heart className="h-5 w-5" />
-              {wishlistCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
-                  {wishlistCount}
-                </span>
-              )}
-            </Button>
-          </Link>
-          <Link href="/cart">
+          <Link href="/cart" aria-label={t("السلة")}>
             <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
               <ShoppingBag className="h-5 w-5" />
               {cartItemCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#D4B15A] text-[10px] font-bold text-black">
                   {cartItemCount}
                 </span>
               )}
-            </Button>
-          </Link>
-          <Link href="/admin/login" aria-label="دخول الإدارة" title="دخول الإدارة">
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`ajn-nav-icon ${location.startsWith('/admin') ? 'is-active' : ''}`}
-            >
-              <Lock className="h-5 w-5" />
             </Button>
           </Link>
         </div>

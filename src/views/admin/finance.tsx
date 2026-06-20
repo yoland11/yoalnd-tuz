@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
-  Wallet, TrendingUp, TrendingDown, Coins, Scale, PiggyBank, ShoppingBag, Receipt,
+  Wallet, TrendingUp, TrendingDown, Coins, Scale, PiggyBank, ShoppingBag, Receipt, CircleDollarSign,
   Lock, Unlock, ShieldCheck, FileSpreadsheet, Printer, FileText, Plus, Trash2, Filter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -172,8 +172,9 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
         </div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {[
+          { href: "/admin/finance/master-cash", label: "الصندوق الرئيسي", icon: CircleDollarSign },
           { href: "/admin/finance/daily-report", label: "التقرير اليومي", icon: Receipt },
           { href: "/admin/finance/reconciliation", label: "جرد الصندوق", icon: Scale },
           { href: "/admin/expenses", label: "المصاريف", icon: TrendingDown },

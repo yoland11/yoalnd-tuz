@@ -7,7 +7,7 @@ import {
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer, WalletCards,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
-  Bell, Menu, X,
+  Bell, CircleDollarSign, Menu, X,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -38,6 +38,8 @@ const NAV: NavItem[] = [
   { href: "/admin/reports",        label: "التقارير",           icon: BarChart3,       perm: "accounting" },
   { href: "/admin/reports/daily",  label: "التقرير اليومي",      icon: Receipt,         perm: "accounting" },
   { href: "/admin/finance",        label: "لوحة المالية",        icon: BarChart3,       perm: "accounting" },
+  { href: "/admin/finance/master-cash", label: "الصندوق الرئيسي", icon: CircleDollarSign, perm: "accounting" },
+  { href: "/admin/finance/request", label: "طلب حركة مالية", icon: Wallet, perm: "tasks" },
   { href: "/admin/finance/daily-report", label: "تقرير الصندوق اليومي", icon: Receipt, perm: "accounting" },
   { href: "/admin/finance/reconciliation", label: "جرد الصندوق اليومي", icon: Wallet, perm: "accounting" },
   { href: "/admin/expenses",       label: "المصاريف",           icon: ShoppingCart,    perm: "accounting" },
@@ -137,6 +139,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Wallet,
     items: [
       navItem("/admin/finance"),
+      navItem("/admin/finance/master-cash"),
+      navItem("/admin/finance/request"),
       navItem("/admin/finance/daily-report"),
       navItem("/admin/finance/reconciliation"),
       navItem("/admin/expenses"),

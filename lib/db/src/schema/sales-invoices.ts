@@ -21,6 +21,7 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   remainingAmount: numeric("remaining_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
   paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("paid"),
+  dueDate: date("due_date"),
   status: varchar("status", { length: 20 }).notNull().default("active"),
   isInternal: integer("is_internal").notNull().default(0),
   stockApplied: integer("stock_applied").notNull().default(1),

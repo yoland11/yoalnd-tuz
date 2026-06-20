@@ -72,6 +72,11 @@ import {
   db,
   dailyCashReconciliationsTable,
   dailyCashReportsTable,
+  financialAccountsTable,
+  financialAuditLogsTable,
+  financialLedgerEntriesTable,
+  financialTransactionsTable,
+  masterCashBoxTable,
   taskCommentsTable,
   tasksTable,
 } from "@workspace/db";
@@ -89,6 +94,27 @@ import {
   getFinanceDashboard,
   suggestOpeningBalance,
 } from "@/server/daily-cash";
+import {
+  approveAndExecuteFinancialTransaction,
+  cancelFinancialTransactionRequest,
+  canApproveFinancialTransactions,
+  createFinancialTransaction,
+  createSourceFinancialRequest,
+  ensureMasterCashBoxTables,
+  financialTransactionInputSchema,
+  financialTransactionListSchema,
+  financialTransactionPatchSchema,
+  getFinancialTransaction,
+  getMasterCashDashboard,
+  listFinancialTransactions,
+  recalculateMasterCashBox,
+  rejectFinancialTransaction,
+  submitFinancialTransaction,
+  syncSourcePaymentTarget,
+  syncSourceFinancialRequest,
+  updateFinancialTransaction,
+  type FinancialActor,
+} from "@/server/master-cash-box";
 import {
   primaryLocationFromDetails,
   withDerivedServiceDetails,
@@ -1388,6 +1414,10 @@ const KoshaBookingCreateSchema = z.object({
 const KoshaBookingUpdateSchema = z.object({
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
   internalNotes: z.string().optional().nullable(),
+  totalAmount: z.coerce.number().nonnegative().optional(),
+  paidAmount: z.coerce.number().nonnegative().optional(),
+  paymentStatus: z.enum(["paid", "partial", "unpaid"]).optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
 });
 
 const KoshaOptionProductSchema = z.object({
@@ -1607,6 +1637,11 @@ async function formatKoshaBooking(row: any) {
     bookingDetails: row.bookingDetails ?? row.booking_details ?? {},
     notes: row.notes ?? "",
     status: row.status ?? "new",
+    totalAmount: Number(row.totalAmount ?? row.total_amount ?? 0),
+    paidAmount: Number(row.paidAmount ?? row.paid_amount ?? 0),
+    remainingAmount: Number(row.remainingAmount ?? row.remaining_amount ?? 0),
+    paymentStatus: row.paymentStatus ?? row.payment_status ?? "unpaid",
+    dueDate: row.dueDate ?? row.due_date ?? null,
     internalNotes: row.internalNotes ?? "",
     createdAt: row.createdAt?.toISOString?.() ?? String(row.createdAt ?? ""),
     updatedAt: row.updatedAt?.toISOString?.() ?? String(row.updatedAt ?? ""),
@@ -4202,6 +4237,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     const accessoryDetails = koshaOptionSummary(accessoryRows.map((item) => formatKoshaOptionProduct(item, "accessory")), selectedAccessories);
     const optionsTotal = [...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].reduce((sum, item) => sum + (Number(item.price) || 0), 0);
     const koshaPrice = Number.parseFloat(String(kosha.price ?? "0")) || 0;
+    const bookingTotal = koshaPrice + optionsTotal;
     const [booking] = await db.insert(koshaBookingsTable).values({
       koshaId: kosha.id,
       customerName,
@@ -4238,8 +4274,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
         welcomeBoardDetails,
         accessoryDetails,
         optionsTotal,
-        total: koshaPrice + optionsTotal,
+        total: bookingTotal,
       },
+      totalAmount: String(bookingTotal),
+      paidAmount: "0",
+      remainingAmount: String(bookingTotal),
+      paymentStatus: "unpaid",
       notes: nullableText(data.notes),
       status: "new",
     }).returning();
@@ -4606,6 +4646,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       remainingAmount: order.remainingAmount,
       reason: "payment",
     });
+    await syncServiceOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
     return json(
       {
         id: order.id,
@@ -5026,6 +5067,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
       });
     }
+    await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
     void logAdminActivity(req, "customer_order_created", "order", order.id, { tracking: order.trackingCode });
     return json(formatted, 201);
   }
@@ -5094,6 +5136,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         href: "/admin/orders",
       });
     }
+    await syncOrderFinancialPayment(order, financialActor(auth));
     return json(await formatOrder(order));
   }
 
@@ -6217,12 +6260,23 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         const update: any = { updatedAt: new Date() };
         if (parsed.data.status !== undefined) update.status = parsed.data.status;
         if (parsed.data.internalNotes !== undefined) update.internalNotes = nullableText(parsed.data.internalNotes);
+        if (parsed.data.dueDate !== undefined) update.dueDate = parsed.data.dueDate;
+        if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined) {
+          const totalAmount = parsed.data.totalAmount ?? Number(existing.totalAmount);
+          const payment = paymentSummary(totalAmount, parsed.data.paidAmount ?? existing.paidAmount, parsed.data.paymentStatus ?? existing.paymentStatus);
+          update.totalAmount = String(money(totalAmount));
+          update.paidAmount = String(payment.deposit);
+          update.remainingAmount = String(payment.remaining);
+          update.paymentStatus = payment.status;
+        }
         const [row] = await db.update(koshaBookingsTable).set(update).where(eq(koshaBookingsTable.id, id)).returning();
+        await syncKoshaFinancialPayment(row, financialActor(auth));
         void logAdminActivity(req, "kosha_booking_updated", "kosha_booking", id, update);
         return json(await formatKoshaBooking(row));
       }
 
       if (method === "DELETE") {
+        await syncKoshaFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
         await db.delete(koshaBookingsTable).where(eq(koshaBookingsTable.id, id));
         void logAdminActivity(req, "kosha_booking_deleted", "kosha_booking", id);
         return json({ message: "تم حذف الحجز" });
@@ -6236,6 +6290,9 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const masterCash = await handleMasterCash(req, parts, section);
+  if (masterCash) return masterCash;
 
   if (section === "translate") {
     const auth = await requireAnyPermission(req, ["products", "services", "settings"]);
@@ -7171,7 +7228,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           .where(and(gte(ordersTable.createdAt, today), lt(ordersTable.createdAt, tomorrow), sql`${ordersTable.archivedAt} is null`)),
         db.select({ total: sql<number>`coalesce(sum(${expensesTable.amount}::numeric),0)::float` })
           .from(expensesTable)
-          .where(and(gte(expensesTable.date, monthStart.toISOString().slice(0, 10)), sql`${expensesTable.deletedAt} is null`)),
+          .where(and(
+            gte(expensesTable.date, monthStart.toISOString().slice(0, 10)),
+            sql`${expensesTable.deletedAt} is null`,
+            sql`coalesce(${expensesTable.approvalStatus}, 'executed') = 'executed'`,
+          )),
       ]);
       financialSummary = {
         ...financialSummary,
@@ -8384,6 +8445,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         depositAmount: String(payment.deposit),
         remainingAmount: String(payment.remaining),
         paymentStatus: payment.status,
+        dueDate: normalizeDateOnly(rawBody?.dueDate) ?? null,
         customFields,
       });
       await ensureQrForEntity("service_order", order, req);
@@ -8425,6 +8487,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         remainingAmount: order.remainingAmount,
         reason: "payment",
       });
+      await syncServiceOrderFinancialPayment(order, financialActor(auth));
       return json(
         {
           id: order.id,
@@ -8514,7 +8577,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
       const update: any = {};
-      for (const k of ["status", "customerName", "phone", "eventDate", "eventLocation", "notes", "internalNotes"]) {
+      for (const k of ["status", "customerName", "phone", "eventDate", "eventLocation", "notes", "internalNotes", "dueDate"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       const prev = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
@@ -8603,6 +8666,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
       }
       await awardServiceOrderPoints(row);
+      await syncServiceOrderFinancialPayment(row, financialActor(auth));
       void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -8610,6 +8674,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const existing = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
+      if (existing) await syncServiceOrderFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
       await db.delete(serviceOrderStatusHistoryTable).where(eq(serviceOrderStatusHistoryTable.serviceOrderId, id));
       await db.delete(serviceOrdersTable).where(eq(serviceOrdersTable.id, id));
       void logAdminActivity(req, "booking_deleted", "service_order", id);
@@ -8623,7 +8689,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     await ensureStockTrackingTables();
     const orderActor = actor(auth);
     if (method === "POST" && !parts[2]) {
-      const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus } = await body(req);
+      const { customerName, customerPhone, governorate, area, address, notes, internalNotes, items, deliveryFee, mapsUrl, paymentMethod, depositAmount, paymentStatus, dueDate } = await body(req);
       const orderItems = mergeOrderItems(items);
       if (!customerPhone || orderItems.length === 0) return error("رقم الهاتف والمنتجات مطلوبة", 400);
       if (paymentMethod !== undefined && normalizePayment(paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
@@ -8649,6 +8715,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               depositAmount: String(payment.deposit),
               remainingAmount: String(payment.remaining),
               paymentStatus: payment.status,
+              dueDate: normalizeDateOnly(dueDate) ?? null,
               deliveryFee: String(money(deliveryFee)),
               total: String(total),
             })
@@ -8713,6 +8780,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
           });
           void notifyLowStockForProductIds(orderItems.map((it: any) => Number(it.productId)));
+          await syncOrderFinancialPayment(order, financialActor(auth));
           void logAdminActivity(req, "order_created", "order", order.id, { tracking: order.trackingCode });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
     }
@@ -8724,7 +8792,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.paymentMethod !== undefined && normalizePayment(b.paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
       if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
       const update: any = { updatedAt: new Date() };
-      for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes"]) {
+      for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes", "dueDate"]) {
         if (b?.[k] !== undefined) update[k] = b[k];
       }
       if (b?.status !== undefined) {
@@ -8811,6 +8879,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
       }
       await awardProductOrderPoints(row);
+      await syncOrderFinancialPayment(row, financialActor(auth));
       void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
       return json(row);
     }
@@ -8821,6 +8890,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) as any;
       if (current) {
         await restoreOrderStockBeforeDelete(current, orderActor);
+        await syncOrderFinancialPayment({ ...current, status: "cancelled" }, financialActor(auth));
       }
       await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, id));
       await db.delete(orderStatusHistoryTable).where(eq(orderStatusHistoryTable.orderId, id));
@@ -9321,6 +9391,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       remainingAmount: String(remainingAmount),
       paymentMethod: b.paymentMethod ?? "cash",
       paymentStatus,
+      dueDate: normalizeDateOnly(b.dueDate) ?? null,
       status: "active",
       isInternal: b.isInternal ? 1 : 0,
       notes: b.notes ?? null,
@@ -9372,8 +9443,25 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const final = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, inv.id) });
     const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
+    const financialTransaction = final ? await syncSourcePaymentTarget({
+      sourceType: "sales_invoice",
+      sourceId: final.id,
+      sourceEvent: "payment",
+      targetAmount: Number(final.paidAmount),
+      normalDirection: "revenue",
+      transactionDate: final.date,
+      department: "store",
+      transactionType: "sales_invoice",
+      description: `فاتورة مبيعات ${final.invoiceNo}`,
+      paymentMethod: (final.paymentMethod as any) || "cash",
+      customerId: final.customerId,
+      customerName: final.customerName,
+      customerPhone: final.customerPhone,
+      dueDate: final.dueDate,
+      notes: final.notes,
+    }, financialActor(auth)) : null;
     void logAdminActivity(req, "sales_invoice_created", "sales_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
-    return json({ ...final, qr, items: finalItems, invoice: final ? { ...final, qr } : final }, 201);
+    return json({ ...final, qr, items: finalItems, financialTransaction, invoice: final ? { ...final, qr } : final }, 201);
   }
 
   if (method === "PUT" && id) {
@@ -9406,6 +9494,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
       paymentMethod: b.paymentMethod ?? existing.paymentMethod,
       paymentStatus,
+      dueDate: b.dueDate !== undefined ? normalizeDateOnly(b.dueDate) : existing.dueDate,
       status: b.status !== undefined ? String(b.status || existing.status) : existing.status,
       notes: b.notes ?? existing.notes,
       isInternal: b.isInternal !== undefined ? (b.isInternal ? 1 : 0) : existing.isInternal,
@@ -9438,13 +9527,30 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     if (final) await syncSalesInvoiceStockState(final, a);
     const finalItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
     const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
+    const financialTransaction = final ? await syncSourcePaymentTarget({
+      sourceType: "sales_invoice",
+      sourceId: final.id,
+      sourceEvent: "payment",
+      targetAmount: final.status === "active" ? Number(final.paidAmount) : 0,
+      normalDirection: "revenue",
+      transactionDate: final.date,
+      department: "store",
+      transactionType: "sales_invoice",
+      description: `فاتورة مبيعات ${final.invoiceNo}`,
+      paymentMethod: (final.paymentMethod as any) || "cash",
+      customerId: final.customerId,
+      customerName: final.customerName,
+      customerPhone: final.customerPhone,
+      dueDate: final.dueDate,
+      notes: final.notes,
+    }, financialActor(auth)) : null;
     void logAdminActivity(req, "sales_invoice_updated", "sales_invoice", id, {
       invoiceNo: final?.invoiceNo,
       itemCount: finalItems.length,
       oldItemCount: oldItems.length,
       total,
     });
-    return json({ ...final, items: finalItems, qr, invoice: final ? { ...final, qr } : final });
+    return json({ ...final, items: finalItems, qr, financialTransaction, invoice: final ? { ...final, qr } : final });
   }
 
   if (method === "DELETE" && id) {
@@ -9456,6 +9562,21 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       .returning();
     if (deleted) {
       await syncSalesInvoiceStockState(deleted, a);
+      await syncSourcePaymentTarget({
+        sourceType: "sales_invoice",
+        sourceId: deleted.id,
+        sourceEvent: "payment",
+        targetAmount: 0,
+        normalDirection: "revenue",
+        transactionDate: deleted.date,
+        department: "store",
+        transactionType: "sales_invoice",
+        description: `إلغاء فاتورة مبيعات ${deleted.invoiceNo}`,
+        paymentMethod: (deleted.paymentMethod as any) || "cash",
+        customerId: deleted.customerId,
+        customerName: deleted.customerName,
+        customerPhone: deleted.customerPhone,
+      }, financialActor(auth));
       void logAdminActivity(req, "sales_invoice_deleted", "sales_invoice", id, { invoiceNo: deleted.invoiceNo });
     }
     return json({ message: "تم الحذف" });
@@ -9589,12 +9710,39 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
 
     const final = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, inv.id) });
     const finalItems = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, inv.id));
+    const financialTransaction = final ? await syncSourcePaymentTarget({
+      sourceType: "purchase_invoice",
+      sourceId: final.id,
+      sourceEvent: "payment",
+      targetAmount: Number(final.paidAmount),
+      normalDirection: "expense",
+      transactionDate: final.date,
+      department: "store",
+      transactionType: "purchase_invoice",
+      description: `فاتورة شراء ${final.invoiceNo}`,
+      paymentMethod: (final.paymentMethod as any) || "cash",
+      notes: final.notes,
+    }, financialActor(auth)) : null;
     void logAdminActivity(req, "purchase_invoice_created", "purchase_invoice", inv.id, { invoiceNo, itemCount: finalItems.length });
-    return json({ ...final, items: finalItems, invoice: final }, 201);
+    return json({ ...final, items: finalItems, financialTransaction, invoice: final }, 201);
   }
 
   if (method === "DELETE" && id) {
-    await db.update(purchaseInvoicesTable).set({ status: "deleted" } as any).where(eq(purchaseInvoicesTable.id, id));
+    const [deleted] = await db.update(purchaseInvoicesTable).set({ status: "deleted" } as any).where(eq(purchaseInvoicesTable.id, id)).returning();
+    if (deleted) {
+      await syncSourcePaymentTarget({
+        sourceType: "purchase_invoice",
+        sourceId: deleted.id,
+        sourceEvent: "payment",
+        targetAmount: 0,
+        normalDirection: "expense",
+        transactionDate: deleted.date,
+        department: "store",
+        transactionType: "purchase_invoice",
+        description: `إلغاء فاتورة شراء ${deleted.invoiceNo}`,
+        paymentMethod: (deleted.paymentMethod as any) || "cash",
+      }, financialActor(auth));
+    }
     return json({ message: "تم الحذف" });
   }
 
@@ -9754,6 +9902,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         SELECT COALESCE(SUM(amount::numeric), 0)::float AS total, COUNT(*)::int AS count
         FROM expenses
         WHERE deleted_at IS NULL
+          AND COALESCE(approval_status, 'executed') = 'executed'
           AND date = ${date}
           AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
           AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
@@ -9781,6 +9930,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         SELECT COALESCE(category_name, 'غير مصنف') AS category_name, COALESCE(SUM(amount::numeric), 0)::float AS total
         FROM expenses
         WHERE deleted_at IS NULL
+          AND COALESCE(approval_status, 'executed') = 'executed'
           AND date = ${date}
           AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
           AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
@@ -9819,6 +9969,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         SELECT id::text AS ref, date::text AS date, name AS title, category_name, amount::text AS amount, payment_method, created_by_name
         FROM expenses
         WHERE deleted_at IS NULL
+          AND COALESCE(approval_status, 'executed') = 'executed'
           AND date = ${date}
           AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
           AND (${user} = '' OR COALESCE(created_by_name, '') ILIKE ${userLike})
@@ -10301,7 +10452,12 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
       count: sql<number>`count(*)::int`,
     }).from(purchaseInvoicesTable).where(and(...purchaseConds) as any);
 
-    const expenseConds: any[] = [gte(expensesTable.date, from), lte(expensesTable.date, to), sql`${expensesTable.deletedAt} is null`];
+    const expenseConds: any[] = [
+      gte(expensesTable.date, from),
+      lte(expensesTable.date, to),
+      sql`${expensesTable.deletedAt} is null`,
+      sql`coalesce(${expensesTable.approvalStatus}, 'executed') = 'executed'`,
+    ];
     const [expenseRow] = await db.select({
       total: sql<string>`COALESCE(SUM(amount)::text, '0')`,
     }).from(expensesTable).where(and(...expenseConds) as any);
@@ -10745,6 +10901,195 @@ function actor(user: AdminUser): { id: number | null; name: string } {
   return { id: user.id ?? null, name: user.fullName || user.username || "" };
 }
 
+function financialActor(user: AdminUser): FinancialActor {
+  return { ...actor(user), role: user.role };
+}
+
+const SYSTEM_FINANCIAL_ACTOR: FinancialActor = { id: null, name: "النظام", role: "system" };
+
+function serviceDepartment(service: { type?: string | null; name?: string | null; nameAr?: string | null } | null | undefined) {
+  const value = `${service?.type ?? ""} ${service?.name ?? ""} ${service?.nameAr ?? ""}`.toLowerCase();
+  if (/kosha|كوش/.test(value)) return "koshas";
+  if (/photo|تصوير|album|ألبوم/.test(value)) return "photography";
+  if (/audio|sound|dj|صوت/.test(value)) return "audio";
+  if (/gift|هدي|توزيع/.test(value)) return "gifts";
+  return "general";
+}
+
+async function syncOrderFinancialPayment(order: typeof ordersTable.$inferSelect, financeActorValue: FinancialActor) {
+  const productAmount = Math.max(Number(order.total) - Number(order.deliveryFee), 0);
+  const targetPaid = order.status === "cancelled" ? 0 : Math.min(Number(order.depositAmount), productAmount);
+  return syncSourcePaymentTarget({
+    sourceType: "order",
+    sourceId: order.id,
+    sourceEvent: "payment",
+    targetAmount: targetPaid,
+    normalDirection: "revenue",
+    transactionDate: order.createdAt.toISOString().slice(0, 10),
+    department: "store",
+    transactionType: "store_order",
+    description: `دفعة طلب ${order.trackingCode}`,
+    paymentMethod: order.paymentMethod === "transfer" ? "transfer" : "cash",
+    customerId: order.customerId,
+    customerName: order.customerName,
+    customerPhone: order.customerPhone,
+    dueDate: order.dueDate,
+    notes: order.notes,
+    attachments: order.attachments ?? [],
+  }, financeActorValue);
+}
+
+async function syncServiceOrderFinancialPayment(order: typeof serviceOrdersTable.$inferSelect, financeActorValue: FinancialActor) {
+  const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, order.serviceId) });
+  const targetPaid = order.status === "cancelled" ? 0 : Number(order.depositAmount);
+  return syncSourcePaymentTarget({
+    sourceType: "service_order",
+    sourceId: order.id,
+    sourceEvent: "payment",
+    targetAmount: targetPaid,
+    normalDirection: "revenue",
+    transactionDate: order.createdAt.toISOString().slice(0, 10),
+    department: serviceDepartment(service),
+    transactionType: "service_booking",
+    description: `دفعة حجز ${order.trackingCode ?? `#${order.id}`}`,
+    paymentMethod: "cash",
+    customerName: order.customerName,
+    customerPhone: order.phone,
+    dueDate: order.dueDate,
+    notes: order.notes,
+  }, financeActorValue);
+}
+
+async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$inferSelect, financeActorValue: FinancialActor) {
+  const targetPaid = order.status === "cancelled" ? 0 : Number(order.paidAmount);
+  return syncSourcePaymentTarget({
+    sourceType: "kosha_booking",
+    sourceId: order.id,
+    sourceEvent: "payment",
+    targetAmount: targetPaid,
+    normalDirection: "revenue",
+    transactionDate: order.createdAt.toISOString().slice(0, 10),
+    department: "koshas",
+    transactionType: "kosha_booking",
+    description: `دفعة حجز كوشة #${order.id}`,
+    paymentMethod: "cash",
+    customerName: order.customerName,
+    customerPhone: order.phone,
+    dueDate: order.dueDate,
+    notes: order.notes,
+  }, financeActorValue);
+}
+
+async function handleMasterCash(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "master-cash") return null;
+  const method = req.method;
+  const resource = parts[2];
+  const id = parts[3] ? int(parts[3]) : null;
+  const action = parts[4];
+  const currentUser = await getAdminUser(req);
+  if (!currentUser) return error("غير مخول", 401);
+
+  // Any authenticated employee can submit a financial request. Ledger access
+  // remains restricted to accounting users and managers.
+  if (method === "POST" && resource === "transactions" && !id) {
+    const parsed = financialTransactionInputSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("master-cash.transaction.create", parsed);
+    try {
+      const row = await createFinancialTransaction(parsed.data, financialActor(currentUser));
+      void logAdminActivity(req, "financial_transaction_created", "financial_transaction", row.id, {
+        transactionNo: row.transactionNo,
+        status: row.approvalStatus,
+        direction: row.direction,
+        amount: row.amount,
+      });
+      return json(row, 201);
+    } catch (err: any) {
+      console.error("financial transaction create failed", { message: err?.message, userId: currentUser.id });
+      return error(err?.message || "تعذر إنشاء الطلب المالي", 400);
+    }
+  }
+
+  const auth = await requirePermission(req, "accounting");
+  if (isResponse(auth)) return auth;
+  const financeUser = financialActor(auth);
+
+  try {
+    await ensureMasterCashBoxTables();
+
+    if (method === "GET" && resource === "dashboard") {
+      return json(await getMasterCashDashboard());
+    }
+
+    if (method === "GET" && resource === "transactions" && !id) {
+      const parsed = financialTransactionListSchema.safeParse(query(req));
+      if (!parsed.success) return validationError("master-cash.transaction.list", parsed);
+      return json(await listFinancialTransactions(parsed.data));
+    }
+
+    if (resource === "transactions" && id) {
+      if (method === "GET" && !action) {
+        const row = await getFinancialTransaction(id);
+        return row ? json(row) : error("المعاملة غير موجودة", 404);
+      }
+
+      if ((method === "PATCH" || method === "PUT") && !action) {
+        const parsed = financialTransactionPatchSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("master-cash.transaction.update", parsed);
+        const row = await updateFinancialTransaction(id, parsed.data, financeUser);
+        void logAdminActivity(req, "financial_transaction_updated", "financial_transaction", id, { reason: parsed.data.reason });
+        return json(row);
+      }
+
+      if (method === "POST" && action === "submit") {
+        const row = await submitFinancialTransaction(id, financeUser);
+        void logAdminActivity(req, "financial_transaction_submitted", "financial_transaction", id);
+        return json(row);
+      }
+
+      if (method === "POST" && action === "approve") {
+        if (!canApproveFinancialTransactions(financeUser)) return error("اعتماد المعاملات متاح للمدير فقط", 403);
+        const payload = await body(req);
+        const row = await approveAndExecuteFinancialTransaction(id, financeUser, nullableText(payload?.note));
+        void logAdminActivity(req, "financial_transaction_executed", "financial_transaction", id, {
+          transactionNo: row.transactionNo,
+          balanceBefore: row.balanceBefore,
+          balanceAfter: row.balanceAfter,
+        });
+        return json(row);
+      }
+
+      if (method === "POST" && action === "reject") {
+        if (!canApproveFinancialTransactions(financeUser)) return error("رفض المعاملات متاح للمدير فقط", 403);
+        const payload = await body(req);
+        const row = await rejectFinancialTransaction(id, financeUser, String(payload?.reason ?? ""));
+        void logAdminActivity(req, "financial_transaction_rejected", "financial_transaction", id, { reason: row.rejectionReason });
+        return json(row);
+      }
+    }
+
+    if (method === "POST" && resource === "recalculate") {
+      if (!canApproveFinancialTransactions(financeUser)) return error("إعادة احتساب الصندوق متاحة للمدير فقط", 403);
+      const row = await recalculateMasterCashBox(financeUser);
+      void logAdminActivity(req, "master_cash_recalculated", "master_cash_box", row.id);
+      return json(row);
+    }
+  } catch (err: any) {
+    console.error("master cash operation failed", {
+      method,
+      resource,
+      id,
+      action,
+      userId: currentUser.id,
+      message: err?.message,
+    });
+    const safeMessage = String(err?.message ?? "");
+    const status = /غير موجود/.test(safeMessage) ? 404 : /صلاحية|متاح للمدير/.test(safeMessage) ? 403 : /رصيد|حالة|تعديل|مرسلة|مطلوب/.test(safeMessage) ? 409 : 500;
+    return error(safeMessage || "تعذر إكمال العملية المالية", status);
+  }
+
+  return null;
+}
+
 const PAYMENT_METHODS_VO = ["cash", "transfer", "pos"] as const;
 function normMethod(v: unknown): "cash" | "transfer" | "pos" {
   if (v === "card") return "pos";
@@ -10928,8 +11273,29 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
           .where(eq(receiptVouchersTable.id, row.id))
           .returning();
+        const financialTransaction = await createSourceFinancialRequest({
+          transactionDate: updated.date,
+          direction: "revenue",
+          amount: Number(updated.amount),
+          department: String(b?.department ?? "general"),
+          transactionType: "receipt_voucher",
+          description: `سند قبض من ${updated.payerName}`,
+          paymentMethod: normMethod(updated.method),
+          sourceType: "receipt_voucher",
+          sourceId: updated.id,
+          sourceEvent: "payment",
+          idempotencyKey: `receipt_voucher:${updated.id}:payment`,
+          customerId: updated.customerId,
+          customerName: updated.payerName,
+          notes: updated.notes,
+          attachments: [],
+        }, financialActor(auth));
+        const [savedVoucher] = await db.update(receiptVouchersTable).set({
+          approvalStatus: financialTransaction.approvalStatus,
+          financialTransactionId: financialTransaction.id,
+        }).where(eq(receiptVouchersTable.id, updated.id)).returning();
         void logAdminActivity(req, "receipt_voucher_created", "receipt_voucher", updated.id, { voucherNo: updated.voucherNo });
-        return json(updated, 201);
+        return json(savedVoucher, 201);
       } catch (err: any) {
         console.error("receipt voucher save failed", { message: err?.message });
         return error("تعذر حفظ سند القبض. تحقق من البيانات أو صلاحيات قاعدة البيانات.", 500);
@@ -10939,10 +11305,15 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       try {
+        const voucher = await db.query.receiptVouchersTable.findFirst({ where: eq(receiptVouchersTable.id, id) });
+        if (!voucher) return error("سند القبض غير موجود", 404);
+        if (voucher.financialTransactionId) {
+          await cancelFinancialTransactionRequest(voucher.financialTransactionId, financialActor(auth), "إلغاء سند القبض");
+        }
         await db.delete(receiptVouchersTable).where(eq(receiptVouchersTable.id, id));
       } catch (err: any) {
         console.error("receipt voucher delete failed", { id, message: err?.message });
-        return error("تعذر حذف سند القبض.", 500);
+        return error(err?.message || "تعذر حذف سند القبض.", /منفذة/.test(String(err?.message)) ? 409 : 500);
       }
       return json({ message: "تم الحذف" });
     }
@@ -10996,8 +11367,27 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           .set({ voucherNo: fmtVoucherNo("PAY", row.id, row.createdAt) })
           .where(eq(paymentVouchersTable.id, row.id))
           .returning();
+        const financialTransaction = await createSourceFinancialRequest({
+          transactionDate: updated.date,
+          direction: "expense",
+          amount: Number(updated.amount),
+          department: String(b?.department ?? "general"),
+          transactionType: "payment_voucher",
+          description: `سند صرف إلى ${updated.payeeName}`,
+          paymentMethod: normMethod(updated.method),
+          sourceType: "payment_voucher",
+          sourceId: updated.id,
+          sourceEvent: "payment",
+          idempotencyKey: `payment_voucher:${updated.id}:payment`,
+          notes: updated.notes,
+          attachments: [],
+        }, financialActor(auth));
+        const [savedVoucher] = await db.update(paymentVouchersTable).set({
+          approvalStatus: financialTransaction.approvalStatus,
+          financialTransactionId: financialTransaction.id,
+        }).where(eq(paymentVouchersTable.id, updated.id)).returning();
         void logAdminActivity(req, "payment_voucher_created", "payment_voucher", updated.id, { voucherNo: updated.voucherNo });
-        return json(updated, 201);
+        return json(savedVoucher, 201);
       } catch (err: any) {
         console.error("payment voucher save failed", { message: err?.message });
         return error("تعذر حفظ سند الصرف. تحقق من البيانات أو صلاحيات قاعدة البيانات.", 500);
@@ -11007,10 +11397,15 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       try {
+        const voucher = await db.query.paymentVouchersTable.findFirst({ where: eq(paymentVouchersTable.id, id) });
+        if (!voucher) return error("سند الصرف غير موجود", 404);
+        if (voucher.financialTransactionId) {
+          await cancelFinancialTransactionRequest(voucher.financialTransactionId, financialActor(auth), "إلغاء سند الصرف");
+        }
         await db.delete(paymentVouchersTable).where(eq(paymentVouchersTable.id, id));
       } catch (err: any) {
         console.error("payment voucher delete failed", { id, message: err?.message });
-        return error("تعذر حذف سند الصرف.", 500);
+        return error(err?.message || "تعذر حذف سند الصرف.", /منفذة/.test(String(err?.message)) ? 409 : 500);
       }
       return json({ message: "تم الحذف" });
     }
@@ -11054,6 +11449,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         categoryName = cat?.nameAr ?? "";
       }
       const a = actor(auth);
+      const receiptImage = b?.receiptImage ? await persistMediaValue(b.receiptImage, "expenses") : null;
       const [row] = await db
         .insert(expensesTable)
         .values({
@@ -11063,14 +11459,41 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           categoryId: b?.categoryId ?? null,
           categoryName,
           paymentMethod: normMethod(b?.paymentMethod),
-          receiptImage: b?.receiptImage ? await persistMediaValue(b.receiptImage, "expenses") : null,
+          receiptImage,
           notes: b?.notes ?? null,
           createdBy: a.id,
           createdByName: a.name,
+          approvalStatus: "pending",
         })
         .returning();
+      let financialTransaction;
+      try {
+        financialTransaction = await createSourceFinancialRequest({
+          transactionDate: row.date,
+          direction: "expense",
+          amount: Number(row.amount),
+          department: "general",
+          transactionType: "expense",
+          description: row.name || row.categoryName || "مصروف",
+          paymentMethod: normMethod(row.paymentMethod),
+          sourceType: "expense",
+          sourceId: row.id,
+          sourceEvent: "payment",
+          idempotencyKey: `expense:${row.id}:payment`,
+          notes: row.notes,
+          attachments: row.receiptImage ? [row.receiptImage] : [],
+        }, financialActor(auth));
+      } catch (err: any) {
+        await db.update(expensesTable).set({ deletedAt: new Date() }).where(eq(expensesTable.id, row.id));
+        console.error("expense financial request failed", { expenseId: row.id, message: err?.message });
+        return error("تعذر إنشاء الطلب المالي للمصروف، لم يتم حفظ المصروف", 500);
+      }
+      const [savedRow] = await db.update(expensesTable).set({
+        financialTransactionId: financialTransaction.id,
+        approvalStatus: financialTransaction.approvalStatus,
+      }).where(eq(expensesTable.id, row.id)).returning();
       void logAdminActivity(req, "expense_created", "expense", row.id);
-      return json(row, 201);
+      return json(savedRow, 201);
     }
     if ((method === "PATCH" || method === "PUT") && parts[2]) {
       const id = int(parts[2]);
@@ -11078,6 +11501,10 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const parsed = expenseMutationSchema.partial().safeParse(await body(req));
       if (!parsed.success) return validationError("expenses.update", parsed);
       const b = parsed.data;
+      const existingExpense = await db.query.expensesTable.findFirst({
+        where: and(eq(expensesTable.id, id), sql`${expensesTable.deletedAt} is null`),
+      });
+      if (!existingExpense) return error("المصروف غير موجود", 404);
       const update: any = { updatedAt: new Date() };
       if (b.date !== undefined) update.date = b.date;
       if (b.amount !== undefined) update.amount = String(b.amount);
@@ -11094,6 +11521,28 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const a = actor(auth);
       update.updatedBy = a.id;
       update.updatedByName = a.name;
+      if (existingExpense.financialTransactionId) {
+        try {
+          await syncSourceFinancialRequest(existingExpense.financialTransactionId, {
+            transactionDate: update.date ?? existingExpense.date,
+            direction: "expense",
+            amount: Number(update.amount ?? existingExpense.amount),
+            department: "general",
+            transactionType: "expense",
+            description: update.name ?? existingExpense.name ?? existingExpense.categoryName ?? "مصروف",
+            paymentMethod: update.paymentMethod ?? existingExpense.paymentMethod,
+            sourceType: "expense",
+            sourceId: existingExpense.id,
+            sourceEvent: "payment",
+            idempotencyKey: `expense:${existingExpense.id}:payment`,
+            notes: update.notes ?? existingExpense.notes,
+            attachments: [update.receiptImage ?? existingExpense.receiptImage].filter(Boolean),
+          }, financialActor(auth), "تعديل المصروف المرتبط");
+          update.approvalStatus = "pending";
+        } catch (err: any) {
+          return error(err?.message || "تعذر تحديث المعاملة المالية المرتبطة", 409);
+        }
+      }
       const [row] = await db.update(expensesTable).set(update).where(and(eq(expensesTable.id, id), sql`${expensesTable.deletedAt} is null`) as any).returning();
       if (!row) return error("المصروف غير موجود", 404);
       void logAdminActivity(req, "expense_updated", "expense", row.id, { fields: Object.keys(update) });
@@ -11102,7 +11551,18 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
+      const existingExpense = await db.query.expensesTable.findFirst({
+        where: and(eq(expensesTable.id, id), sql`${expensesTable.deletedAt} is null`),
+      });
+      if (!existingExpense) return error("المصروف غير موجود", 404);
       const a = actor(auth);
+      if (existingExpense.financialTransactionId) {
+        try {
+          await cancelFinancialTransactionRequest(existingExpense.financialTransactionId, financialActor(auth), "إلغاء المصروف من الإدارة");
+        } catch (err: any) {
+          return error(err?.message || "لا يمكن حذف المصروف بعد تنفيذه مالياً", 409);
+        }
+      }
       const [row] = await db
         .update(expensesTable)
         .set({ deletedAt: new Date(), updatedAt: new Date(), updatedBy: a.id, updatedByName: a.name })
@@ -11189,11 +11649,19 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         db
           .select({ s: sql<number>`coalesce(sum(amount::numeric),0)::float` })
           .from(receiptVouchersTable)
-          .where(and(gte(receiptVouchersTable.date, from), lte(receiptVouchersTable.date, to))),
+          .where(and(
+            gte(receiptVouchersTable.date, from),
+            lte(receiptVouchersTable.date, to),
+            sql`coalesce(${receiptVouchersTable.approvalStatus}, 'executed') = 'executed'`,
+          )),
         db
           .select({ s: sql<number>`coalesce(sum(amount::numeric),0)::float` })
           .from(paymentVouchersTable)
-          .where(and(gte(paymentVouchersTable.date, from), lte(paymentVouchersTable.date, to))),
+          .where(and(
+            gte(paymentVouchersTable.date, from),
+            lte(paymentVouchersTable.date, to),
+            sql`coalesce(${paymentVouchersTable.approvalStatus}, 'executed') = 'executed'`,
+          )),
         db
           .select({
             categoryId: expensesTable.categoryId,
@@ -11201,7 +11669,12 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
             total: sql<number>`coalesce(sum(amount::numeric),0)::float`,
           })
           .from(expensesTable)
-          .where(and(gte(expensesTable.date, from), lte(expensesTable.date, to), sql`${expensesTable.deletedAt} is null`))
+          .where(and(
+            gte(expensesTable.date, from),
+            lte(expensesTable.date, to),
+            sql`${expensesTable.deletedAt} is null`,
+            sql`coalesce(${expensesTable.approvalStatus}, 'executed') = 'executed'`,
+          ))
           .groupBy(expensesTable.categoryId)
           .orderBy(sql`coalesce(sum(amount::numeric),0) desc`),
       ]);
@@ -11247,6 +11720,11 @@ const BACKUP_ENTITIES = {
   expenses: expensesTable,
   daily_cash_reports: dailyCashReportsTable,
   daily_cash_reconciliations: dailyCashReconciliationsTable,
+  master_cash_box: masterCashBoxTable,
+  financial_accounts: financialAccountsTable,
+  financial_transactions: financialTransactionsTable,
+  financial_ledger_entries: financialLedgerEntriesTable,
+  financial_audit_logs: financialAuditLogsTable,
   customer_reward_history: customerRewardHistoryTable,
 } as const;
 type BackupEntity = keyof typeof BACKUP_ENTITIES;
@@ -11332,6 +11810,11 @@ async function handleBackup(req: NextRequest, parts: string[], section: string |
       "expenses",
       "daily_cash_reports",
       "daily_cash_reconciliations",
+      "master_cash_box",
+      "financial_accounts",
+      "financial_transactions",
+      "financial_ledger_entries",
+      "financial_audit_logs",
     ];
     for (const name of order) {
       const rows = Array.isArray(data[name]) ? data[name] : [];
@@ -11391,6 +11874,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
       (root === "messages" || root === "activity" || root === "qr" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
       (root === "koshas" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
+      (root === "orders" || root === "service-orders" || root === "koshas" || (!isAdminAuth && root === "admin"))
+        ? ensureMasterCashBoxTables() : undefined,
     ].filter(Boolean));
 
     const route =

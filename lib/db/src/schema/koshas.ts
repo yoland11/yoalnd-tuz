@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, date, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -65,6 +65,11 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   bookingDetails: jsonb("booking_details").$type<Record<string, unknown>>().notNull().default({}),
   notes: text("notes"),
   status: varchar("status", { length: 30 }).notNull().default("new"),
+  totalAmount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  paidAmount: numeric("paid_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  remainingAmount: numeric("remaining_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
+  dueDate: date("due_date"),
   internalNotes: text("internal_notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

@@ -27,6 +27,8 @@ export const receiptVouchersTable = pgTable("receipt_vouchers", {
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),
+  approvalStatus: varchar("approval_status", { length: 20 }).notNull().default("executed"),
+  financialTransactionId: integer("financial_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -41,6 +43,8 @@ export const paymentVouchersTable = pgTable("payment_vouchers", {
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),
+  approvalStatus: varchar("approval_status", { length: 20 }).notNull().default("executed"),
+  financialTransactionId: integer("financial_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -58,6 +62,8 @@ export const expensesTable = pgTable("expenses", {
   createdByName: text("created_by_name").notNull().default(""),
   updatedBy: integer("updated_by").references(() => staffTable.id),
   updatedByName: text("updated_by_name").notNull().default(""),
+  approvalStatus: varchar("approval_status", { length: 20 }).notNull().default("executed"),
+  financialTransactionId: integer("financial_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),

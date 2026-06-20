@@ -9,7 +9,7 @@ import { EmptyState } from "./_layout";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
-type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; createdByName: string; createdAt: string };
+type Expense = { id: number; date: string; name: string; amount: string; categoryId: number | null; categoryName: string; paymentMethod: string; receiptImage: string | null; notes: string | null; approvalStatus?: string; createdByName: string; createdAt: string };
 type Category = { id: number; name: string; nameAr: string; isActive: number };
 type ExpenseForm = { id?: number; date: string; name: string; categoryId: string; amount: string; paymentMethod: string; notes: string; receiptImage: string };
 
@@ -43,10 +43,13 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
 
   const { data: categories = [] } = useQuery<Category[]>({ queryKey: ["admin", "expense-categories"], queryFn: () => adminFetch("/admin/expense-categories") });
   const { data: expenses = [], isLoading } = useQuery<Expense[]>({ queryKey: ["admin", "expenses", filters], queryFn: () => adminFetch(`/admin/expenses?${query}`) });
-  const total = expenses.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
+  const total = expenses.reduce((sum, item) => sum + ((item.approvalStatus ?? "executed") === "executed" ? Number(item.amount ?? 0) : 0), 0);
   const byCategory = useMemo(() => {
     const map = new Map<string, number>();
-    for (const expense of expenses) map.set(expense.categoryName || "غير مصنف", (map.get(expense.categoryName || "غير مصنف") ?? 0) + Number(expense.amount ?? 0));
+    for (const expense of expenses) {
+      if ((expense.approvalStatus ?? "executed") !== "executed") continue;
+      map.set(expense.categoryName || "غير مصنف", (map.get(expense.categoryName || "غير مصنف") ?? 0) + Number(expense.amount ?? 0));
+    }
     return [...map.entries()].map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
   }, [expenses]);
 
@@ -60,7 +63,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       qc.invalidateQueries({ queryKey: ["admin", "expenses"] });
       qc.invalidateQueries({ queryKey: ["admin", "dashboard"] });
       setForm(null);
-      toast({ title: "تم حفظ المصروف" });
+      toast({ title: "تم إرسال المصروف للموافقة", description: "لن يتغير رصيد الصندوق حتى يعتمد المدير الحركة." });
     },
     onError: (error: any) => toast({ title: "تعذر الحفظ", description: error?.message, variant: "destructive" }),
   });
@@ -136,7 +139,7 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
           {isLoading ? <div className="p-5"><Skeleton className="h-48 rounded-xl" /></div> : expenses.length === 0 ? <EmptyState message="لا توجد مصاريف ضمن الفلاتر" /> : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead><tr className="text-xs text-muted-foreground bg-background/50">{["التاريخ", "العنوان", "التصنيف", "الدفع", "المبلغ", "الإيصال", "بواسطة", "إجراءات"].map((h) => <th key={h} className="px-3 py-2.5 text-right">{h}</th>)}</tr></thead>
+                <thead><tr className="text-xs text-muted-foreground bg-background/50">{["التاريخ", "العنوان", "التصنيف", "الدفع", "المبلغ", "الحالة", "الإيصال", "بواسطة", "إجراءات"].map((h) => <th key={h} className="px-3 py-2.5 text-right">{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-border/15">
                   {expenses.map((expense) => (
                     <tr key={expense.id}>
@@ -145,12 +148,15 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
                       <td className="px-3 py-2.5">{expense.categoryName || "—"}</td>
                       <td className="px-3 py-2.5">{paymentLabel(expense.paymentMethod)}</td>
                       <td className="px-3 py-2.5 font-semibold text-foreground">{formatCurrency(expense.amount)}</td>
+                      <td className="px-3 py-2.5"><ApprovalBadge status={expense.approvalStatus} /></td>
                       <td className="px-3 py-2.5">{expense.receiptImage ? <a href={expense.receiptImage} target="_blank" rel="noreferrer" className="text-primary underline text-xs">عرض</a> : "—"}</td>
                       <td className="px-3 py-2.5 text-muted-foreground text-xs">{expense.createdByName || "—"}</td>
                       <td className="px-3 py-2.5">
                         <div className="flex gap-1">
-                          <button onClick={() => setForm({ id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></button>
-                          <button onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></button>
+                          {(expense.approvalStatus ?? "executed") !== "executed" ? <>
+                            <button onClick={() => setForm({ id: expense.id, date: expense.date, name: expense.name ?? "", categoryId: expense.categoryId ? String(expense.categoryId) : "", amount: String(expense.amount ?? ""), paymentMethod: expense.paymentMethod ?? "cash", notes: expense.notes ?? "", receiptImage: expense.receiptImage ?? "" })} className="p-1.5 rounded text-primary hover:bg-primary/10"><Pencil className="w-4 h-4" /></button>
+                            <button onClick={() => confirm("حذف المصروف؟") && remove.mutate(expense.id)} className="p-1.5 rounded text-status-danger hover:bg-status-danger/10"><Trash2 className="w-4 h-4" /></button>
+                          </> : <span className="text-xs text-muted-foreground">محفوظ</span>}
                         </div>
                       </td>
                     </tr>
@@ -163,6 +169,12 @@ export default function ExpensesPage({ startNew = false }: { startNew?: boolean 
       </div>
     </div>
   );
+}
+
+function ApprovalBadge({ status = "executed" }: { status?: string }) {
+  const labels: Record<string, string> = { draft: "مسودة", pending: "بانتظار الموافقة", approved: "معتمد", executed: "منفذ", rejected: "مرفوض" };
+  const style = status === "executed" ? "bg-status-success/10 text-status-success" : status === "rejected" ? "bg-status-danger/10 text-status-danger" : "bg-primary/10 text-primary";
+  return <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-medium ${style}`}>{labels[status] ?? status}</span>;
 }
 
 function ExpenseFormPanel({ form, categories, saving, onChange, onSave, onClose }: { form: ExpenseForm; categories: Category[]; saving: boolean; onChange: (form: ExpenseForm) => void; onSave: () => void; onClose: () => void }) {
