@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { printWhenImagesReadyScript, thermalBaseCss } from "./print-helpers";
+import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -251,25 +251,70 @@ function openPrintWindow(
   const companyName = settings?.site_name ?? "مجموعة علي جان";
   const companyPhone = settings?.phones?.[0] ?? "";
   const companyAddress = settings?.address ?? "";
-  const isNarrow = size === "80mm" || size === "58mm";
-  const pageWidth = size === "58mm" ? "58mm" : size === "80mm" ? "80mm" : "A4";
-  const margin = isNarrow ? "2mm 4mm" : "12mm";
-  const fontSize = size === "58mm" ? "8px" : isNarrow ? "9px" : "12px";
+  const esc = (s: unknown) =>
+    String(s ?? "").replace(/[&<>"]/g, (c) => (({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]));
+  const money = (n: number) => Number(n || 0).toLocaleString("en-US");
 
-  const rows = cart.map(i => isNarrow
-    ? `<tr><td colspan="2">${i.productName}</td></tr><tr><td>${i.quantity} × ${i.unitPrice.toLocaleString("ar-IQ")}</td><td style="text-align:left">${i.total.toLocaleString("ar-IQ")}</td></tr>`
-    : `<tr><td>${i.productName}</td><td style="text-align:center">${i.quantity}</td><td style="text-align:center">${i.unitPrice.toLocaleString("ar-IQ")}</td><td style="text-align:center">${i.discount > 0 ? i.discount.toLocaleString("ar-IQ") : "—"}</td><td style="text-align:left">${i.total.toLocaleString("ar-IQ")}</td></tr>`
+  let html: string;
+
+  // ─── Dedicated thermal receipt (58mm / 80mm) — not a scaled A4 sheet ───
+  if (size === "58mm" || size === "80mm") {
+    const itemHead = size === "58mm"
+      ? `<tr><th class="name">الصنف</th><th>المبلغ</th></tr>`
+      : `<tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>`;
+    const itemRows = cart.map((i) => size === "58mm"
+      ? `<tr><td class="name" colspan="2">${esc(i.productName)}</td></tr><tr class="ln2"><td class="num">${money(i.quantity)} × ${money(i.unitPrice)}</td><td class="num" style="text-align:left">${money(i.total)}</td></tr>`
+      : `<tr><td class="name">${esc(i.productName)}</td><td class="num center">${money(i.quantity)}</td><td class="num center">${money(i.unitPrice)}</td><td class="num" style="text-align:left">${money(i.total)}</td></tr>`
+    ).join("");
+
+    html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>فاتورة ${esc(invoiceNo)}</title>
+    <style>${thermalReceiptCss(size)}</style></head><body>
+    <div class="receipt">
+      <div class="r-head">
+        ${logo ? `<img src="${logo}" class="r-logo" alt="" />` : ""}
+        <div class="r-company">${esc(companyName)}</div>
+        ${companyAddress ? `<div class="r-sub">${esc(companyAddress)}</div>` : ""}
+        ${companyPhone ? `<div class="r-sub num">${esc(companyPhone)}</div>` : ""}
+      </div>
+      <hr class="rule" />
+      <div class="kv"><span>رقم الفاتورة</span><span class="v big num">${esc(invoiceNo)}</span></div>
+      <div class="kv"><span>التاريخ</span><span class="v num">${esc(form.date)}</span></div>
+      ${form.customerName ? `<div class="kv"><span>العميل</span><span class="v">${esc(form.customerName)}</span></div>` : ""}
+      ${form.customerPhone ? `<div class="kv"><span>الهاتف</span><span class="v num">${esc(form.customerPhone)}</span></div>` : ""}
+      <hr class="rule" />
+      <table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>
+      <hr class="rule" />
+      <div class="totals">
+        <div class="row"><span>المجموع الفرعي</span><span class="num">${money(totals.subtotal)} د.ع</span></div>
+        ${totals.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${money(totals.discount)} د.ع</span></div>` : ""}
+        ${totals.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${money(totals.tax)} د.ع</span></div>` : ""}
+        <div class="grand"><span>الإجمالي</span><span class="num">${money(totals.grand)} د.ع</span></div>
+        <div class="payline"><span>المدفوع</span><span class="num">${money(totals.paid)} د.ع</span></div>
+        <div class="payline remain"><span>المتبقي</span><span class="num">${money(totals.remaining)} د.ع</span></div>
+      </div>
+      ${form.notes ? `<hr class="rule dashed" /><div class="kv"><span>ملاحظات</span><span class="v">${esc(form.notes)}</span></div>` : ""}
+      ${options.qrDataUrl ? `<div class="qr"><img src="${options.qrDataUrl}" alt="QR" /><div class="cap">امسح الرمز لعرض الفاتورة</div></div>` : ""}
+      <div class="thanks">شكراً لتعاملكم معنا</div>
+    </div>
+    ${printWhenImagesReadyScript()}
+    </body></html>`;
+
+    const w = window.open("", "_blank", "width=420,height=720");
+    if (w) { w.document.write(html); w.document.close(); }
+    return;
+  }
+
+  // ─── A4 / PDF sheet (unchanged) ───
+  const rows = cart.map(i =>
+    `<tr><td>${esc(i.productName)}</td><td style="text-align:center">${i.quantity.toLocaleString("ar-IQ")}</td><td style="text-align:center">${i.unitPrice.toLocaleString("ar-IQ")}</td><td style="text-align:center">${i.discount > 0 ? i.discount.toLocaleString("ar-IQ") : "—"}</td><td style="text-align:left">${i.total.toLocaleString("ar-IQ")}</td></tr>`
   ).join("");
+  const tableHeader = `<tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>خصم</th><th>الإجمالي</th></tr>`;
 
-  const tableHeader = isNarrow
-    ? `<tr><th>المنتج</th><th>المبلغ</th></tr>`
-    : `<tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>خصم</th><th>الإجمالي</th></tr>`;
-
-  const html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8">
+  html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8">
   <style>
-    ${thermalBaseCss(size, fontSize)}
-    @page { size: ${pageWidth} auto; margin: ${margin}; }
-    body { font-size: ${fontSize}; }
+    ${thermalBaseCss(size, "12px")}
+    @page { size: A4; margin: 12mm; }
+    body { font-size: 12px; }
     .header { text-align: center; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px dashed #000; }
     .logo { height: 40px; object-fit: contain; margin-bottom: 4px; }
     .company-name { font-size: 1.2em; font-weight: 700; }
@@ -288,14 +333,14 @@ function openPrintWindow(
   </style></head><body>
   <div class="header">
     ${logo ? `<img src="${logo}" class="logo" />` : ""}
-    <div class="company-name">${companyName}</div>
-    ${companyAddress ? `<div class="meta">${companyAddress}</div>` : ""}
-    ${companyPhone ? `<div class="meta">${companyPhone}</div>` : ""}
+    <div class="company-name">${esc(companyName)}</div>
+    ${companyAddress ? `<div class="meta">${esc(companyAddress)}</div>` : ""}
+    ${companyPhone ? `<div class="meta">${esc(companyPhone)}</div>` : ""}
   </div>
-  <div class="meta">رقم الفاتورة: <strong>${invoiceNo}</strong></div>
-  <div class="meta">التاريخ: ${form.date}</div>
-  ${form.customerName ? `<div class="meta">العميل: ${form.customerName}</div>` : ""}
-  ${form.customerPhone ? `<div class="meta">الهاتف: ${form.customerPhone}</div>` : ""}
+  <div class="meta">رقم الفاتورة: <strong>${esc(invoiceNo)}</strong></div>
+  <div class="meta">التاريخ: ${esc(form.date)}</div>
+  ${form.customerName ? `<div class="meta">العميل: ${esc(form.customerName)}</div>` : ""}
+  ${form.customerPhone ? `<div class="meta">الهاتف: ${esc(form.customerPhone)}</div>` : ""}
   <hr class="divider" />
   <table><thead>${tableHeader}</thead><tbody>${rows}</tbody></table>
   <hr class="divider" />
@@ -307,13 +352,13 @@ function openPrintWindow(
     <tr><td>المدفوع</td><td>${totals.paid.toLocaleString("ar-IQ")} د.ع</td></tr>
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${totals.remaining.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
   </table>
-  ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${form.notes}</div>` : ""}
+  ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${esc(form.notes)}</div>` : ""}
   ${options.qrDataUrl ? `<div class="qr"><img class="qr-code" src="${options.qrDataUrl}" alt="QR" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
   <div class="footer">شكراً لتعاملكم معنا</div>
   ${printWhenImagesReadyScript()}
   </body></html>`;
 
-  const w = window.open("", "_blank", "width=600,height=700");
+  const w = window.open("", "_blank", "width=760,height=900");
   if (w) { w.document.write(html); w.document.close(); }
 }
 

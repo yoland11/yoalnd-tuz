@@ -94,6 +94,76 @@ export function thermalBaseCss(size: ThermalPaperSize, fontSize?: string) {
   `;
 }
 
+/**
+ * Dedicated thermal-receipt stylesheet (58mm / 80mm ONLY).
+ * Built from scratch for thermal printers — NOT a scaled A4 sheet.
+ * Goals: 100% black, heavy weights, thick borders, minimal margins,
+ * dynamic height (page height = content), tabular numbers, large crisp QR.
+ */
+export function thermalReceiptCss(size: "58mm" | "80mm") {
+  const is58 = size === "58mm";
+  const pad = is58 ? "1.5mm" : "2.5mm";
+  const base = is58 ? "12px" : "13px";
+  const qr = is58 ? 140 : 172;
+  const logoH = is58 ? 34 : 46;
+
+  return `
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800;900&display=swap');
+    @page { size: ${size} auto; margin: 0; }
+    * {
+      box-sizing: border-box;
+      color: #000 !important;
+      text-shadow: none !important;
+      box-shadow: none !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    html, body { margin: 0; padding: 0; background: #fff !important; }
+    body {
+      direction: rtl;
+      font-family: Cairo, Tahoma, Arial, sans-serif;
+      font-weight: 600;
+      font-size: ${base};
+      line-height: 1.3;
+      color: #000 !important;
+    }
+    .receipt { width: 100%; padding: ${pad}; }
+    .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+    .center { text-align: center; }
+    /* Header */
+    .r-head { text-align: center; margin-bottom: 3px; }
+    .r-logo { height: ${logoH}px; width: auto; max-width: 72%; object-fit: contain; display: block; margin: 0 auto 3px; filter: grayscale(1) contrast(1.45); }
+    .r-company { font-size: 1.65em; font-weight: 900; line-height: 1.12; }
+    .r-sub { font-size: 0.92em; font-weight: 600; }
+    /* Dividers — solid & thick for clean thermal output */
+    .rule { border: 0; border-top: 1.5px solid #000; margin: 4px 0; }
+    .rule.dashed { border-top: 1.5px dashed #000; }
+    /* Key/value meta rows */
+    .kv { display: flex; justify-content: space-between; gap: 8px; margin: 1.5px 0; font-weight: 700; }
+    .kv .v { font-weight: 800; text-align: left; }
+    .kv .v.big { font-size: 1.12em; }
+    /* Items table */
+    table.items { width: 100%; border-collapse: collapse; margin: 2px 0; }
+    table.items th { font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 3px 3px; text-align: center; }
+    table.items th.name, table.items td.name { text-align: right; }
+    table.items td { padding: 3px 3px; border-bottom: 1px solid #000; font-weight: 700; vertical-align: top; }
+    table.items td.name { font-weight: 800; }
+    table.items tr.ln2 td { border-bottom: 1.5px solid #000; padding-top: 0; }
+    /* Totals */
+    .totals { margin-top: 3px; }
+    .totals .row { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; margin: 2px 0; }
+    .grand { display: flex; justify-content: space-between; gap: 10px; align-items: center; border: 2.5px solid #000; padding: 4px 6px; margin: 4px 0; font-size: 1.35em; font-weight: 900; }
+    .payline { display: flex; justify-content: space-between; gap: 10px; font-weight: 800; font-size: 1.08em; margin: 2px 0; }
+    .payline.remain { font-size: 1.2em; border: 1.5px solid #000; padding: 2px 5px; margin-top: 3px; }
+    /* QR */
+    .qr { text-align: center; margin-top: 6px; break-inside: avoid; page-break-inside: avoid; }
+    .qr img { width: ${qr}px; height: ${qr}px; object-fit: contain; image-rendering: pixelated; display: block; margin: 0 auto 2px; }
+    .qr .cap { font-weight: 700; font-size: 0.9em; }
+    .thanks { text-align: center; font-weight: 800; font-size: 1.05em; margin-top: 5px; }
+    @media print { * { color: #000 !important; } }
+  `;
+}
+
 export function printWhenImagesReadyScript(closeAfterPrint = true) {
   return `
     <script>
