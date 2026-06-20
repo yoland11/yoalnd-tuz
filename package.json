@@ -4,7 +4,6 @@
   "license": "MIT",
   "packageManager": "pnpm@11.1.2",
   "private": true,
-  "type": "module",
   "scripts": {
     "preinstall": "node ./scripts/ensure-pnpm.mjs",
     "dev": "next dev --hostname 0.0.0.0",
