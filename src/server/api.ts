@@ -128,6 +128,7 @@ import {
   notifyTelegramKoshaBooking,
   notifyTelegramLogin,
   notifyTelegramOrder,
+  notifyTelegramOrderEdited,
   notifyTelegramPayment,
   saveTelegramSettings,
   sendTelegramMessage,
@@ -811,7 +812,7 @@ function publicQrTarget(_entityType: string, _entity: any, req: NextRequest, tok
   return `${base}/track/${encodeURIComponent(token)}`;
 }
 
-async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice", entity: any, req: NextRequest) {
+async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice" | "kosha_booking", entity: any, req: NextRequest) {
   await ensureAdminExtensionsTables();
   const existing = await db.query.qrTokensTable.findFirst({
     where: and(eq(qrTokensTable.entityType, entityType), eq(qrTokensTable.entityId, entity.id)),
@@ -1434,6 +1435,31 @@ const KoshaBookingCreateSchema = z.object({
 });
 
 const KoshaBookingUpdateSchema = z.object({
+  koshaId: z.coerce.number().int().positive().optional(),
+  customerName: z.string().optional(),
+  phone: z.string().optional(),
+  brideName: z.string().optional().nullable(),
+  groomName: z.string().optional().nullable(),
+  eventDate: z.string().optional().nullable(),
+  eventTime: z.string().optional().nullable(),
+  eventType: z.string().optional().nullable(),
+  serviceLevel: z.string().optional().nullable(),
+  venueType: z.string().optional().nullable(),
+  themeColor: z.string().optional().nullable(),
+  province: z.string().optional().nullable(),
+  area: z.string().optional().nullable(),
+  mahalla: z.string().optional().nullable(),
+  nearestPoint: z.string().optional().nullable(),
+  addressNotes: z.string().optional().nullable(),
+  bridePhone: z.string().optional().nullable(),
+  groomPhone: z.string().optional().nullable(),
+  alternatePhone: z.string().optional().nullable(),
+  cityArea: z.string().optional().nullable(),
+  hallLocation: z.string().optional().nullable(),
+  selectedAddons: z.array(z.string()).optional(),
+  welcomeBoards: z.array(z.string()).optional(),
+  selectedAccessories: z.array(z.string()).optional(),
+  notes: z.string().optional().nullable(),
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
   internalNotes: z.string().optional().nullable(),
   totalAmount: z.coerce.number().nonnegative().optional(),
@@ -2123,6 +2149,98 @@ function mergeOrderItems(items: any[]) {
   return Array.from(merged.values());
 }
 
+type OrderInventoryChange = {
+  productId: number;
+  productName: string;
+  stockSourceProductId: number;
+  quantityChange: number;
+};
+
+function orderItemQuantityMap(items: any[]): Map<number, { quantity: number; name: string }> {
+  const result = new Map<number, { quantity: number; name: string }>();
+  for (const item of items) {
+    const productId = numberId(item?.productId);
+    if (!productId) continue;
+    const current = result.get(productId) ?? { quantity: 0, name: String(item?.productNameAr || item?.productName || `#${productId}`) };
+    current.quantity += Number(item?.quantity ?? 0);
+    result.set(productId, current);
+  }
+  return result;
+}
+
+async function buildOrderInventoryChanges(
+  oldItems: any[],
+  nextItems: any[],
+  stockWasApplied: boolean,
+  shouldConsumeStock: boolean,
+): Promise<OrderInventoryChange[]> {
+  const oldMap = orderItemQuantityMap(oldItems);
+  const nextMap = orderItemQuantityMap(nextItems);
+  const ids = [...new Set([...oldMap.keys(), ...nextMap.keys()])];
+  const changes: OrderInventoryChange[] = [];
+  for (const productId of ids) {
+    const oldQuantity = oldMap.get(productId)?.quantity ?? 0;
+    const nextQuantity = nextMap.get(productId)?.quantity ?? 0;
+    const quantityChange = stockWasApplied
+      ? (shouldConsumeStock ? oldQuantity - nextQuantity : oldQuantity)
+      : (shouldConsumeStock ? -nextQuantity : 0);
+    if (quantityChange === 0) continue;
+    const resolved = await getStockOwnerProduct(productId);
+    if (!resolved) throw new Error(`المنتج رقم ${productId} غير موجود`);
+    changes.push({
+      productId,
+      productName: nextMap.get(productId)?.name ?? oldMap.get(productId)?.name ?? `#${productId}`,
+      stockSourceProductId: Number(resolved.stockProduct.id),
+      quantityChange,
+    });
+  }
+  return changes;
+}
+
+async function validateOrderInventoryChanges(changes: OrderInventoryChange[]): Promise<string | null> {
+  const bySource = new Map<number, number>();
+  for (const change of changes) {
+    bySource.set(change.stockSourceProductId, (bySource.get(change.stockSourceProductId) ?? 0) + change.quantityChange);
+  }
+  for (const [sourceId, quantityChange] of bySource) {
+    if (quantityChange >= 0) continue;
+    const source = await db.query.productsTable.findFirst({ where: eq(productsTable.id, sourceId) });
+    if (!source || Number(source.stock ?? 0) + quantityChange < 0) {
+      return `المخزون غير كافٍ للمنتج ${source?.nameAr || source?.name || `#${sourceId}`}`;
+    }
+  }
+  return null;
+}
+
+function orderSnapshot(order: any, items: any[]) {
+  return {
+    customerName: order.customerName,
+    customerPhone: order.customerPhone,
+    governorate: order.governorate ?? "",
+    area: order.area ?? "",
+    address: order.address ?? "",
+    notes: order.notes ?? "",
+    internalNotes: order.internalNotes ?? "",
+    status: order.status,
+    paymentMethod: order.paymentMethod,
+    deliveryFee: Number(order.deliveryFee ?? 0),
+    total: Number(order.total ?? 0),
+    depositAmount: Number(order.depositAmount ?? 0),
+    remainingAmount: Number(order.remainingAmount ?? 0),
+    paymentStatus: order.paymentStatus,
+    items: items.map((item) => ({
+      id: item.id,
+      productId: item.productId,
+      productName: item.productName,
+      productNameAr: item.productNameAr,
+      quantity: Number(item.quantity),
+      price: Number(item.price),
+      selectedColor: item.selectedColor ?? null,
+      selectedColorData: item.selectedColorData ?? null,
+    })),
+  };
+}
+
 function formatZone(z: any) {
   return {
     id: z.id,
@@ -2717,6 +2835,9 @@ async function ensureKoshaTables(): Promise<void> {
         "notes" text,
         "status" varchar(30) not null default 'new',
         "internal_notes" text,
+        "execution_stage" varchar(30) not null default 'preparing',
+        "assigned_staff_id" integer,
+        "archived_at" timestamp,
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
       );
@@ -2740,7 +2861,10 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "welcome_boards" jsonb not null default '[]'::jsonb,
         add column if not exists "selected_accessories" jsonb not null default '[]'::jsonb,
         add column if not exists "venue_images" jsonb not null default '[]'::jsonb,
-        add column if not exists "booking_details" jsonb not null default '{}'::jsonb;
+        add column if not exists "booking_details" jsonb not null default '{}'::jsonb,
+        add column if not exists "execution_stage" varchar(30) not null default 'preparing',
+        add column if not exists "assigned_staff_id" integer,
+        add column if not exists "archived_at" timestamp;
 
       create table if not exists "kosha_accessories" (
         "id" serial primary key,
@@ -2799,6 +2923,7 @@ async function ensureKoshaTables(): Promise<void> {
       create index if not exists "kosha_bookings_status_idx" on "kosha_bookings" ("status");
       create index if not exists "kosha_bookings_created_at_idx" on "kosha_bookings" ("created_at");
       create index if not exists "kosha_bookings_event_date_idx" on "kosha_bookings" ("event_date");
+      create index if not exists "kosha_bookings_archived_created_idx" on "kosha_bookings" ("archived_at", "created_at");
       create index if not exists "kosha_accessories_active_sort_idx" on "kosha_accessories" ("is_active", "sort_order", "id");
       create index if not exists "kosha_addons_active_sort_idx" on "kosha_addons" ("is_active", "sort_order", "id");
       create index if not exists "kosha_welcome_boards_active_sort_idx" on "kosha_welcome_boards" ("is_active", "sort_order", "id");
@@ -4390,6 +4515,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       notes: nullableText(data.notes),
       status: "new",
     }).returning();
+    const bookingQr = await ensureQrForEntity("kosha_booking", booking, req);
     void createNotification({
       audienceType: "admin",
       type: "kosha_booking",
@@ -4410,6 +4536,13 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       paid: booking.paidAmount,
       remaining: booking.remainingAmount,
       status: booking.status,
+      address: [booking.province, booking.area, booking.mahalla, booking.nearestPoint].filter(Boolean).join(" - "),
+      notes: booking.notes,
+      qrDataUrl: bookingQr.dataUrl,
+      items: [
+        { productName: kosha.name, quantity: 1, unitPrice: koshaPrice, total: koshaPrice },
+        ...[...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].map((item) => ({ productName: item.name, quantity: 1, unitPrice: item.price, total: item.price })),
+      ],
     });
     return json(await formatKoshaBooking(booking), 201);
   }
@@ -4727,7 +4860,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       notes: data.notes,
       customFields,
     });
-    await ensureQrForEntity("service_order", order, req);
+    const orderQr = await ensureQrForEntity("service_order", order, req);
     await db.insert(serviceOrderStatusHistoryTable).values({
       serviceOrderId: order.id,
       status: order.status,
@@ -4780,6 +4913,9 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       paid: order.depositAmount,
       remaining: order.remainingAmount,
       status: order.status,
+      address: order.eventLocation,
+      notes: order.notes,
+      qrDataUrl: orderQr.dataUrl,
     });
     return json(
       {
@@ -5116,7 +5252,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         mapsUrl: data.mapsUrl ?? null,
       })
       .returning();
-    await ensureQrForEntity("order", order, req);
+    const orderQr = await ensureQrForEntity("order", order, req);
     await Promise.all(
       cartItems.map(async (item) => {
         const product = await db.query.productsTable.findFirst({
@@ -5215,6 +5351,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       paid: order.depositAmount,
       remaining: order.remainingAmount,
       status: order.status,
+      address: [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+      notes: order.notes,
+      qrDataUrl: orderQr.dataUrl,
+      items: (formatted.items ?? []).map((item: any) => ({
+        productName: String(item.productNameAr ?? item.productName ?? `#${item.productId}`),
+        quantity: item.quantity,
+        unitPrice: item.price,
+        total: Number(item.price) * Number(item.quantity),
+      })),
     });
     void logAdminActivity(req, "customer_order_created", "order", order.id, { tracking: order.trackingCode });
     return json(formatted, 201);
@@ -5469,6 +5614,53 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
   if (method !== "GET") return null;
   const auth = await requirePermission(req, "dashboard");
   if (isResponse(auth)) return auth;
+
+  // Consolidated "الصندوق الرئيسي": all site finance + product/inventory value.
+  if (parts[1] === "master-summary") {
+    let finance: Awaited<ReturnType<typeof getMasterCashDashboard>> | null = null;
+    try { finance = await getMasterCashDashboard(); } catch { finance = null; }
+    const inv = await db.execute(sql`
+      SELECT
+        coalesce(count(*) FILTER (WHERE is_active),0)::int AS product_count,
+        coalesce(sum(stock) FILTER (WHERE shared_stock_product_id IS NULL),0)::int AS total_qty,
+        coalesce(sum(stock::numeric * cost_price::numeric) FILTER (WHERE shared_stock_product_id IS NULL),0)::float AS cost_value,
+        coalesce(sum(stock::numeric * price::numeric) FILTER (WHERE shared_stock_product_id IS NULL),0)::float AS sale_value,
+        coalesce(sum(CASE WHEN min_stock > 0 AND stock <= min_stock THEN 1 ELSE 0 END) FILTER (WHERE is_active),0)::int AS low_stock
+      FROM products
+    `);
+    const r: any = (inv.rows ?? [])[0] ?? {};
+    const costValue = Math.round(Number(r.cost_value ?? 0));
+    const saleValue = Math.round(Number(r.sale_value ?? 0));
+    const inventory = {
+      productCount: Number(r.product_count ?? 0),
+      totalQuantity: Number(r.total_qty ?? 0),
+      costValue,
+      saleValue,
+      expectedProfit: saleValue - costValue,
+      lowStock: Number(r.low_stock ?? 0),
+    };
+    const cash = finance ? Number(finance.cashBox.currentBalance) : 0;
+    const outstanding = finance ? Number(finance.outstanding) : 0;
+    return json({
+      finance: finance ? {
+        currentBalance: Number(finance.cashBox.currentBalance),
+        totalRevenue: Number(finance.cashBox.totalRevenue),
+        totalExpenses: Number(finance.cashBox.totalExpenses),
+        netProfit: Number(finance.cashBox.netProfit),
+        todayRevenue: Number(finance.today.revenue),
+        todayNet: Number(finance.today.net),
+        pendingCount: finance.pending.count,
+        pendingAmount: Number(finance.pending.amount),
+        outstanding,
+        overdue: Number(finance.overdue),
+        departments: finance.departments,
+        trend: finance.trend,
+      } : null,
+      inventory,
+      // إجمالي الصندوق الرئيسي = نقد + قيمة المخزون (سعر البيع) + الذمم المستحقة
+      grandTotal: cash + saleValue + outstanding,
+    });
+  }
 
   if (parts[1] === "stats") {
     const today = new Date();
@@ -6081,6 +6273,24 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
     };
   }
 
+  if (row.entityType === "kosha_booking") {
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, row.entityId) });
+    if (!booking) throw Object.assign(new Error("لم يتم العثور على حجز الكوشة"), { status: 404 });
+    const kosha = booking.koshaId ? await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, booking.koshaId) }) : null;
+    return {
+      kind: "kosha",
+      trackingCode: `KB-${booking.id}`,
+      customerName: booking.customerName,
+      serviceName: kosha?.name ?? "حجز كوشة",
+      serviceType: "kosha",
+      status: booking.status,
+      paymentStatus: booking.paymentStatus ?? "unpaid",
+      createdAt: booking.createdAt.toISOString(),
+      updatedAt: booking.updatedAt.toISOString(),
+      statusHistory: [{ status: booking.status, createdAt: booking.updatedAt.toISOString() }],
+    };
+  }
+
   throw Object.assign(new Error("نوع QR غير مدعوم"), { status: 400 });
 }
 
@@ -6370,6 +6580,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
   }
 
   if (section === "kosha-bookings") {
+    await ensureKoshaTables();
     const auth = await requirePermission(req, "orders");
     if (isResponse(auth)) return auth;
 
@@ -6377,6 +6588,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
       const status = req.nextUrl.searchParams.get("status")?.trim();
       const search = req.nextUrl.searchParams.get("search")?.trim();
       const filters: any[] = [];
+      filters.push(sql`${koshaBookingsTable.archivedAt} is null`);
       if (status && (KOSHA_BOOKING_STATUS_VALUES as readonly string[]).includes(status)) filters.push(eq(koshaBookingsTable.status, status));
       if (search) {
         filters.push(or(
@@ -6406,13 +6618,69 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         const parsed = KoshaBookingUpdateSchema.safeParse(await body(req));
         if (!parsed.success) return validationError("admin.kosha-bookings.update", parsed);
         const update: any = { updatedAt: new Date() };
+        for (const key of [
+          "customerName", "brideName", "groomName", "eventDate", "eventTime", "eventType", "serviceLevel",
+          "venueType", "themeColor", "province", "area", "mahalla", "nearestPoint", "addressNotes",
+          "cityArea", "hallLocation", "notes",
+        ]) {
+          if ((parsed.data as any)[key] !== undefined) update[key] = key === "customerName"
+            ? textFallback((parsed.data as any)[key], existing.customerName)
+            : nullableText((parsed.data as any)[key]);
+        }
+        if (parsed.data.koshaId !== undefined) {
+          const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, parsed.data.koshaId) });
+          if (!kosha) return error("الكوشة المختارة غير موجودة", 404);
+          update.koshaId = kosha.id;
+        }
+        if (parsed.data.phone !== undefined) {
+          const phone = normalizeIraqiPhone(parsed.data.phone);
+          if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+          update.phone = phone;
+        }
+        for (const key of ["bridePhone", "groomPhone", "alternatePhone"] as const) {
+          const value = parsed.data[key];
+          if (value !== undefined) {
+            const phone = value ? normalizeIraqiPhone(value) : null;
+            if (value && !phone) return error(`رقم ${key === "bridePhone" ? "العروس" : key === "groomPhone" ? "العريس" : "الهاتف الإضافي"} غير صحيح`, 400);
+            update[key] = phone;
+          }
+        }
+        if (parsed.data.selectedAddons !== undefined) update.selectedAddons = normalizeKoshaStringList(parsed.data.selectedAddons);
+        if (parsed.data.welcomeBoards !== undefined) update.welcomeBoards = normalizeKoshaStringList(parsed.data.welcomeBoards).slice(0, 1);
+        if (parsed.data.selectedAccessories !== undefined) update.selectedAccessories = normalizeKoshaStringList(parsed.data.selectedAccessories);
         if (parsed.data.status !== undefined) update.status = parsed.data.status;
         if (parsed.data.internalNotes !== undefined) update.internalNotes = nullableText(parsed.data.internalNotes);
         if (parsed.data.dueDate !== undefined) update.dueDate = parsed.data.dueDate;
+        const selectionChanged = parsed.data.koshaId !== undefined || parsed.data.selectedAddons !== undefined || parsed.data.welcomeBoards !== undefined || parsed.data.selectedAccessories !== undefined;
+        if (selectionChanged) {
+          const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, update.koshaId ?? existing.koshaId ?? 0) });
+          if (!kosha) return error("الكوشة المرتبطة غير موجودة", 404);
+          const [addonRows, boardRows, accessoryRows] = await Promise.all([
+            db.query.koshaAddonsTable.findMany(), db.query.koshaWelcomeBoardsTable.findMany(), db.query.koshaAccessoriesTable.findMany(),
+          ]);
+          const selectedAddons = update.selectedAddons ?? existing.selectedAddons ?? [];
+          const welcomeBoards = update.welcomeBoards ?? existing.welcomeBoards ?? [];
+          const selectedAccessories = update.selectedAccessories ?? existing.selectedAccessories ?? [];
+          const addonDetails = koshaOptionSummary(addonRows.map((item) => formatKoshaOptionProduct(item, "addon")), selectedAddons);
+          const welcomeBoardDetails = koshaOptionSummary(boardRows.map((item) => formatKoshaOptionProduct(item, "welcome_board")), welcomeBoards);
+          const accessoryDetails = koshaOptionSummary(accessoryRows.map((item) => formatKoshaOptionProduct(item, "accessory")), selectedAccessories);
+          const optionsTotal = [...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].reduce((sum, item) => sum + Number(item.price || 0), 0);
+          const totalAmount = Number(kosha.price ?? 0) + optionsTotal;
+          update.totalAmount = String(totalAmount);
+          update.bookingDetails = {
+            ...(existing.bookingDetails as Record<string, unknown> ?? {}), koshaName: kosha.name, koshaPrice: Number(kosha.price ?? 0),
+            selectedAddons, welcomeBoards, selectedAccessories, addonDetails, welcomeBoardDetails, accessoryDetails, optionsTotal, total: totalAmount,
+          };
+        }
         if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined) {
-          const totalAmount = parsed.data.totalAmount ?? Number(existing.totalAmount);
+          const totalAmount = parsed.data.totalAmount ?? Number(update.totalAmount ?? existing.totalAmount);
           const payment = paymentSummary(totalAmount, parsed.data.paidAmount ?? existing.paidAmount, parsed.data.paymentStatus ?? existing.paymentStatus);
           update.totalAmount = String(money(totalAmount));
+          update.paidAmount = String(payment.deposit);
+          update.remainingAmount = String(payment.remaining);
+          update.paymentStatus = payment.status;
+        } else if (update.totalAmount !== undefined) {
+          const payment = paymentSummary(update.totalAmount, existing.paidAmount, existing.paymentStatus);
           update.paidAmount = String(payment.deposit);
           update.remainingAmount = String(payment.remaining);
           update.paymentStatus = payment.status;
@@ -6432,15 +6700,24 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
             entityPath: `/admin/kosha-bookings?booking=${row.id}`,
           });
         }
-        void logAdminActivity(req, "kosha_booking_updated", "kosha_booking", id, update);
+        const koshaFinancialDifference = Number(row.totalAmount) - Number(existing.totalAmount);
+        void notifyTelegramOrderEdited({
+          kind: "kosha", id: row.id, reference: `KB-${row.id}`, customerName: row.customerName, phone: row.phone,
+          createdByName: auth.fullName || auth.username, status: row.status, total: row.totalAmount,
+          paid: row.paidAmount, remaining: row.remainingAmount, financialDifference: koshaFinancialDifference,
+          changedFields: Object.keys(update),
+        });
+        void logAdminActivity(req, "kosha_booking_updated", "kosha_booking", id, {
+          fields: Object.keys(update), oldValues: existing, newValues: row, financialDifference: koshaFinancialDifference,
+        });
         return json(await formatKoshaBooking(row));
       }
 
       if (method === "DELETE") {
         await syncKoshaFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
-        await db.delete(koshaBookingsTable).where(eq(koshaBookingsTable.id, id));
-        void logAdminActivity(req, "kosha_booking_deleted", "kosha_booking", id);
-        return json({ message: "تم حذف الحجز" });
+        const [archived] = await db.update(koshaBookingsTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id)).returning();
+        void logAdminActivity(req, "kosha_booking_cancelled_and_archived", "kosha_booking", id, { oldValues: existing, newValues: archived });
+        return json({ message: "تم إلغاء الحجز وأرشفته دون حذف البيانات", booking: archived });
       }
     }
   }
@@ -7626,7 +7903,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
         sharedStockProductName: p.sharedStockProductName ?? null,
         sharedStockLinkedProducts: Array.isArray(p.sharedStockLinkedProducts) ? p.sharedStockLinkedProducts : [],
+        categoryId: p.categoryId ?? p.category_id ?? null,
+        subcategoryId: p.subcategoryId ?? p.subcategory_id ?? null,
         category: p.category ?? "",
+        subcategory: p.subcategory ?? "",
         images: publicMediaList("product", p, p.images),
         videos: publicMediaList("product-video", p, p.videos),
         barcode: p.barcode ?? p.bar_code ?? "",
@@ -8613,7 +8893,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         dueDate: normalizeDateOnly(rawBody?.dueDate) ?? null,
         customFields,
       });
-      await ensureQrForEntity("service_order", order, req);
+      const orderQr = await ensureQrForEntity("service_order", order, req);
       await db.insert(serviceOrderStatusHistoryTable).values({
         serviceOrderId: order.id,
         status: order.status,
@@ -8667,6 +8947,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         paid: order.depositAmount,
         remaining: order.remainingAmount,
         status: order.status,
+        address: order.eventLocation,
+        notes: order.notes,
+        qrDataUrl: orderQr.dataUrl,
       });
       return json(
         {
@@ -8860,7 +9143,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           entityPath: `/admin/orders?serviceOrder=${row.id}`,
         });
       }
-      void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
+      const serviceFinancialDifference = Number(row.totalAmount) - Number(prev.totalAmount);
+      void notifyTelegramOrderEdited({
+        kind: "service", id: row.id, reference: row.trackingCode ?? `#${row.id}`,
+        customerName: row.customerName, phone: row.phone, createdByName: auth.fullName || auth.username,
+        status: row.status, total: row.totalAmount, paid: row.depositAmount, remaining: row.remainingAmount,
+        financialDifference: serviceFinancialDifference, changedFields: Object.keys(update),
+      });
+      void logAdminActivity(req, b?.archived ? "booking_archived" : "booking_updated", "service_order", row.id, {
+        fields: Object.keys(update), tracking: row.trackingCode,
+        oldValues: prev, newValues: row, financialDifference: serviceFinancialDifference,
+      });
       return json(row);
     }
 
@@ -8868,11 +9161,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       const existing = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
-      if (existing) await syncServiceOrderFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
-      await db.delete(serviceOrderStatusHistoryTable).where(eq(serviceOrderStatusHistoryTable.serviceOrderId, id));
-      await db.delete(serviceOrdersTable).where(eq(serviceOrdersTable.id, id));
-      void logAdminActivity(req, "booking_deleted", "service_order", id);
-      return json({ message: "تم الحذف" });
+      if (!existing) return error("غير موجود", 404);
+      await syncServiceOrderFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
+      const [archived] = await db.update(serviceOrdersTable).set({ status: "cancelled", archivedAt: new Date() }).where(eq(serviceOrdersTable.id, id)).returning();
+      await db.insert(serviceOrderStatusHistoryTable).values({ serviceOrderId: id, status: "cancelled", notes: "إلغاء وأرشفة من لوحة الإدارة" });
+      void logAdminActivity(req, "booking_cancelled_and_archived", "service_order", id, { oldValues: existing, newValues: archived });
+      return json({ message: "تم إلغاء الحجز وأرشفته دون حذف البيانات", booking: archived });
     }
   }
 
@@ -8913,7 +9207,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               total: String(total),
             })
             .returning();
-          await ensureQrForEntity("order", order, req);
+          const orderQr = await ensureQrForEntity("order", order, req);
           await Promise.all(
             orderItems.map((it: any) =>
               db.insert(orderItemsTable).values({
@@ -8987,6 +9281,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             paid: order.depositAmount,
             remaining: order.remainingAmount,
             status: order.status,
+            address: [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+            notes: order.notes,
+            qrDataUrl: orderQr.dataUrl,
+            items: orderItems.map((item: any) => ({
+              productName: item.productNameAr || item.productName,
+              quantity: item.quantity,
+              unitPrice: item.price,
+              total: Number(item.price) * Number(item.quantity),
+            })),
           });
           void logAdminActivity(req, "order_created", "order", order.id, { tracking: order.trackingCode });
           return json({ id: order.id, trackingCode: order.trackingCode }, 201);
@@ -8998,125 +9301,188 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const b = await body(req);
       if (b?.paymentMethod !== undefined && normalizePayment(b.paymentMethod) === null) return error("طريقة دفع غير صالحة", 400);
       if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
+      const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) });
+      if (!current) return error("غير موجود", 404);
+      const oldItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
       const update: any = { updatedAt: new Date() };
-      for (const k of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes", "dueDate"]) {
-        if (b?.[k] !== undefined) update[k] = b[k];
+      for (const key of ["customerName", "customerPhone", "governorate", "area", "address", "notes", "mapsUrl", "paymentMethod", "internalNotes", "dueDate"]) {
+        if (b?.[key] !== undefined) update[key] = b[key];
       }
       if (b?.status !== undefined) {
-        const nextStatus = String(b.status ?? "").trim();
-        if (!nextStatus) return error("حالة الطلب غير صالحة", 400);
-        update.status = nextStatus;
+        const nextStatusValue = String(b.status ?? "").trim();
+        if (!nextStatusValue) return error("حالة الطلب غير صالحة", 400);
+        update.status = nextStatusValue;
       }
+      if (update.customerName !== undefined && !String(update.customerName).trim()) update.customerName = current.customerName;
       if (update.customerPhone !== undefined) {
         const normalizedPhone = normalizeIraqiPhone(update.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
         update.customerPhone = normalizedPhone;
         update.phoneLast4 = phoneLast4(normalizedPhone);
       }
-      if (b?.deliveryFee !== undefined) update.deliveryFee = String(b.deliveryFee);
-      if (b?.attachments !== undefined) update.attachments = b.attachments;
-      let current: typeof ordersTable.$inferSelect | null = null;
-      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined || b?.archived !== undefined || b?.status !== undefined) {
-        current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) ?? null;
-        if (!current) return error("غير موجود", 404);
+      if (b?.deliveryFee !== undefined) update.deliveryFee = String(money(b.deliveryFee));
+      if (b?.attachments !== undefined) update.attachments = Array.isArray(b.attachments) ? b.attachments : [];
+
+      const hasItemsUpdate = Object.prototype.hasOwnProperty.call(b ?? {}, "items");
+      let nextItems: any[] = oldItems;
+      if (hasItemsUpdate) {
+        nextItems = mergeOrderItems(b.items);
+        if (!nextItems.length) return error("يجب أن يحتوي الطلب على منتج واحد على الأقل", 400);
+        const productIds = [...new Set(nextItems.map((item) => numberId(item.productId)).filter((value): value is number => !!value))];
+        const products = productIds.length ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) }) : [];
+        if (products.length !== productIds.length) return error("أحد المنتجات غير موجود", 400);
+        const productMap = new Map(products.map((product) => [product.id, product]));
+        const canEditPrices = ["admin", "manager", "accountant"].includes(auth.role);
+        nextItems = nextItems.map((item) => {
+          const product = productMap.get(numberId(item.productId) ?? -1);
+          if (!product) return item;
+          return {
+            ...item,
+            productName: String(item.productName || product.name || product.nameAr),
+            productNameAr: String(item.productNameAr || product.nameAr || product.name),
+            price: canEditPrices ? money(item.price) : money(product.price),
+          };
+        });
+        const delivery = b?.deliveryFee !== undefined ? money(b.deliveryFee) : money(current.deliveryFee);
+        const subtotal = nextItems.reduce((sum, item) => sum + money(item.price) * Number(item.quantity), 0);
+        const discounts = money(current.couponDiscountAmount) + money(current.loyaltyDiscountAmount);
+        update.total = String(Math.max(subtotal + delivery - discounts, 0));
+      } else if (b?.deliveryFee !== undefined) {
+        update.total = String(Math.max(money(current.total) - money(current.deliveryFee) + money(b.deliveryFee), 0));
       }
-      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.deliveryFee !== undefined) {
-        const existingOrder = current!;
-        let total = money(existingOrder.total);
-        if (b?.deliveryFee !== undefined) {
-          const subtotalWithoutDelivery = Math.max(total - money(existingOrder.deliveryFee), 0);
-          total = subtotalWithoutDelivery + money(b.deliveryFee);
-          update.total = String(total);
-        }
-        const payment = paymentSummary(total, b?.depositAmount ?? existingOrder.depositAmount, b?.paymentStatus ?? existingOrder.paymentStatus);
+
+      const effectiveTotal = update.total ?? current.total;
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || update.total !== undefined) {
+        const payment = paymentSummary(effectiveTotal, b?.depositAmount ?? current.depositAmount, b?.paymentStatus ?? current.paymentStatus);
         update.depositAmount = String(payment.deposit);
         update.remainingAmount = String(payment.remaining);
         update.paymentStatus = payment.status;
       }
       if (b?.archived !== undefined) {
         if (Boolean(b.archived)) {
-          const statusToArchive = String(current?.status ?? "");
-          if (!["delivered", "completed", "cancelled"].includes(statusToArchive)) {
-            return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
-          }
+          const statusToArchive = String(update.status ?? current.status);
+          if (!["delivered", "completed", "cancelled"].includes(statusToArchive)) return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
           update.archivedAt = new Date();
-        } else {
-          update.archivedAt = null;
-        }
+        } else update.archivedAt = null;
       }
+
+      const nextStatus = String(update.status ?? current.status);
+      const inventoryChanges = hasItemsUpdate
+        ? await buildOrderInventoryChanges(oldItems, nextItems, hasAppliedStock(current), consumesStockStatus(nextStatus))
+        : [];
+      const inventoryError = await validateOrderInventoryChanges(inventoryChanges);
+      if (inventoryError) return error(inventoryError, 409);
+      if (hasItemsUpdate) {
+        update.stockApplied = consumesStockStatus(nextStatus) ? 1 : 0;
+        update.stockRestoredAt = consumesStockStatus(nextStatus) ? null : new Date();
+      }
+      const projected = { ...current, ...update };
+      const oldSnapshot = orderSnapshot(current, oldItems);
+      const newSnapshot = orderSnapshot(projected, nextItems);
+      const changePreview = {
+        oldValues: oldSnapshot,
+        newValues: newSnapshot,
+        financialDifference: Number(newSnapshot.total) - Number(oldSnapshot.total),
+        inventoryDifference: inventoryChanges,
+      };
+      if (b?.previewOnly === true) return json(changePreview);
+
       const [row] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, id)).returning();
       if (!row) return error("غير موجود", 404);
-      if (update.status !== undefined) {
+      if (hasItemsUpdate) {
+        for (const change of inventoryChanges) {
+          await adjustProductStock(change.productId, change.quantityChange, {
+            reason: change.quantityChange > 0 ? "order_edit_stock_restored" : "order_edit_stock_deducted",
+            relatedType: "order",
+            relatedId: id,
+            createdBy: orderActor.id,
+            createdByName: orderActor.name,
+          });
+        }
+        await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, id));
+        await db.insert(orderItemsTable).values(nextItems.map((item) => ({
+          orderId: id,
+          productId: numberId(item.productId) ?? 0,
+          productName: String(item.productName ?? ""),
+          productNameAr: String(item.productNameAr ?? item.productName ?? ""),
+          quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
+          price: String(money(item.price)),
+          selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+          selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
+          customization: nullableText(item.customization),
+          image: nullableText(item.image),
+        })));
+      } else if (update.status !== undefined) {
         await syncOrderStockState(row, orderActor);
       }
       if (update.paymentStatus !== undefined || update.remainingAmount !== undefined) {
         void notifyOrderNeedsFollowup({
-          kind: "order",
-          id: row.id,
-          trackingCode: row.trackingCode,
-          customerName: row.customerName,
-          paymentStatus: row.paymentStatus,
-          remainingAmount: row.remainingAmount,
-          reason: "payment",
+          kind: "order", id: row.id, trackingCode: row.trackingCode, customerName: row.customerName,
+          paymentStatus: row.paymentStatus, remainingAmount: row.remainingAmount, reason: "payment",
         });
       }
-      if (update.status !== undefined && current?.status !== row.status) {
+      if (update.status !== undefined && current.status !== row.status) {
         await db.insert(orderStatusHistoryTable).values({
-          orderId: row.id,
-          status: row.status,
+          orderId: row.id, status: row.status,
           notes: typeof b?.statusNotes === "string" ? b.statusNotes.slice(0, 500) : "تحديث من الإدارة",
         });
         const event = eventForStatus(row.status);
-        if (event) {
-          void fireOrderEvent(event, {
-            name: row.customerName,
-            phone: row.customerPhone,
-            tracking: row.trackingCode,
-            total: Number.parseFloat(row.total),
-            status: row.status,
-          });
-        }
+        if (event) void fireOrderEvent(event, { name: row.customerName, phone: row.customerPhone, tracking: row.trackingCode, total: Number(row.total), status: row.status });
         void createCustomerNotificationByPhone(row.customerPhone, {
           type: `order_status_${row.status}`,
           title: row.status === "confirmed" ? "تم تأكيد طلبك" : row.status === "processing" ? "طلبك قيد التجهيز" : row.status === "shipped" ? "طلبك في الطريق" : row.status === "delivered" ? "تم تسليم طلبك" : row.status === "cancelled" ? "تم إلغاء الطلب" : "تحديث حالة الطلب",
-          body: `طلب ${row.trackingCode}`,
-          entityType: "order",
-          entityId: row.id,
+          body: `طلب ${row.trackingCode}`, entityType: "order", entityId: row.id,
           href: `/track?code=${encodeURIComponent(row.trackingCode)}`,
         });
       }
       await awardProductOrderPoints(row);
       await syncOrderFinancialPayment(row, financialActor(auth));
-      const orderPaymentDelta = Number(row.depositAmount) - Number(current?.depositAmount ?? row.depositAmount);
+      const orderPaymentDelta = Number(row.depositAmount) - Number(current.depositAmount);
       if (orderPaymentDelta > 0) {
         void notifyTelegramPayment({
-          event: "paymentReceived",
-          reference: row.trackingCode,
-          customerName: row.customerName,
-          amount: orderPaymentDelta,
-          paymentMethod: row.paymentMethod,
-          createdByName: auth.fullName || auth.username,
-          status: row.paymentStatus,
+          event: "paymentReceived", reference: row.trackingCode, customerName: row.customerName,
+          amount: orderPaymentDelta, paymentMethod: row.paymentMethod,
+          createdByName: auth.fullName || auth.username, status: row.paymentStatus,
           entityPath: `/admin/orders?order=${row.id}`,
         });
       }
-      void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, { fields: Object.keys(update), tracking: row.trackingCode });
-      return json(row);
+      void notifyTelegramOrderEdited({
+        kind: "store",
+        id: row.id,
+        reference: row.trackingCode,
+        customerName: row.customerName,
+        phone: row.customerPhone,
+        createdByName: auth.fullName || auth.username,
+        status: row.status,
+        total: row.total,
+        paid: row.depositAmount,
+        remaining: row.remainingAmount,
+        financialDifference: changePreview.financialDifference,
+        changedFields: [...Object.keys(update), ...(hasItemsUpdate ? ["items"] : [])],
+      });
+      void logAdminActivity(req, b?.archived ? "order_archived" : "order_updated", "order", row.id, {
+        fields: [...Object.keys(update), ...(hasItemsUpdate ? ["items"] : [])],
+        tracking: row.trackingCode,
+        oldValues: oldSnapshot,
+        newValues: newSnapshot,
+        financialDifference: changePreview.financialDifference,
+        inventoryDifference: inventoryChanges,
+      });
+      return json({ ...row, items: nextItems, changePreview });
     }
 
     if (method === "DELETE" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) as any;
-      if (current) {
-        await restoreOrderStockBeforeDelete(current, orderActor);
-        await syncOrderFinancialPayment({ ...current, status: "cancelled" }, financialActor(auth));
-      }
-      await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, id));
-      await db.delete(orderStatusHistoryTable).where(eq(orderStatusHistoryTable.orderId, id));
-      await db.delete(ordersTable).where(eq(ordersTable.id, id));
-      void logAdminActivity(req, "order_deleted", "order", id);
-      return json({ message: "تم الحذف" });
+      if (!current) return error("غير موجود", 404);
+      const currentItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
+      await restoreOrderStockBeforeDelete(current, orderActor);
+      await syncOrderFinancialPayment({ ...current, status: "cancelled" }, financialActor(auth));
+      const [archived] = await db.update(ordersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(ordersTable.id, id)).returning();
+      await db.insert(orderStatusHistoryTable).values({ orderId: id, status: "cancelled", notes: "إلغاء وأرشفة من لوحة الإدارة" });
+      void logAdminActivity(req, "order_cancelled_and_archived", "order", id, { oldValues: orderSnapshot(current, currentItems) });
+      return json({ message: "تم إلغاء الطلب وأرشفته دون حذف البيانات", order: archived });
     }
   }
 
@@ -9787,7 +10153,20 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       itemCount: finalItems.length,
       oldItemCount: oldItems.length,
       total,
+      oldValues: existing,
+      newValues: final,
+      financialDifference: final ? Number(final.total) - Number(existing.total) : 0,
     });
+    if (final) {
+      void notifyTelegramOrderEdited({
+        kind: "store", id: final.id, reference: final.invoiceNo,
+        customerName: final.customerName, phone: final.customerPhone,
+        createdByName: auth.fullName || auth.username, status: final.status,
+        total: final.total, paid: final.paidAmount, remaining: final.remainingAmount,
+        financialDifference: Number(final.total) - Number(existing.total),
+        changedFields: [...Object.keys(b ?? {}), ...(parsedItems ? ["items"] : [])],
+      });
+    }
     if (final && Number(final.paidAmount) > Number(existing.paidAmount)) {
       void notifyTelegramPayment({
         event: "paymentReceived",
@@ -11169,6 +11548,10 @@ function actor(user: AdminUser): { id: number | null; name: string } {
   return { id: user.id ?? null, name: user.fullName || user.username || "" };
 }
 
+function canEditOrderFinancials(user: AdminUser): boolean {
+  return ["admin", "manager", "accountant"].includes(user.role) || user.permissions.includes("accounting");
+}
+
 function financialActor(user: AdminUser): FinancialActor {
   return { ...actor(user), role: user.role };
 }
@@ -11530,8 +11913,9 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
     const note = String(data?.note ?? "").trim();
     const media: Array<{ url?: string; kind?: string }> = Array.isArray(data?.media) ? data.media : [];
     const compensation = Math.max(0, Number(data?.compensationAmount ?? 0) || 0);
-    if ((hasLoss || hasBreakage) && (!note || media.length === 0)) {
-      return error("عند وجود فقدان أو كسر يجب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
+    // Proof is mandatory on delivery in BOTH cases (loss/breakage = yes or no).
+    if (!note || media.length === 0) {
+      return error("التسليم يتطلب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
     }
     const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
     if (!booking) return error("الحجز غير موجود", 404);

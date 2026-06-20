@@ -74,6 +74,7 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   // Kosha Staff Portal — field-crew execution stage + optional assignment.
   executionStage: varchar("execution_stage", { length: 30 }).notNull().default("preparing"),
   assignedStaffId: integer("assigned_staff_id"),
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Edit2, Eye, EyeOff, FileDown, Plus, Printer, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Plus, Printer, Save, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +48,11 @@ type KoshaBooking = {
   notes: string;
   status: string;
   internalNotes: string;
+  totalAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  paymentStatus: string;
+  dueDate?: string | null;
   createdAt: string;
 };
 
@@ -703,6 +708,7 @@ export function AdminKoshaBookingsPage() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [editing, setEditing] = useState<KoshaBooking | null>(null);
   const { data = [], isLoading } = useQuery({
     queryKey: ["admin", "kosha-bookings", search, status],
     queryFn: () => adminFetch<KoshaBooking[]>(`/admin/kosha-bookings?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
@@ -815,6 +821,7 @@ export function AdminKoshaBookingsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setEditing(item)} className="gap-1"><Edit2 className="h-3.5 w-3.5" /> تعديل</Button>
                         <Button size="sm" variant="outline" onClick={() => printBooking(item)} className="gap-1"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
                         <Button
                           size="sm"
@@ -835,6 +842,122 @@ export function AdminKoshaBookingsPage() {
           </div>
         </div>
       )}
+      {editing && (
+        <EditKoshaBookingModal
+          booking={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [previewReady, setPreviewReady] = useState(false);
+  const [form, setForm] = useState({
+    koshaId: booking.koshaId ?? 0,
+    customerName: booking.customerName ?? "",
+    phone: booking.phone ?? "",
+    brideName: booking.brideName ?? "",
+    groomName: booking.groomName ?? "",
+    bridePhone: booking.bridePhone ?? "",
+    groomPhone: booking.groomPhone ?? "",
+    alternatePhone: booking.alternatePhone ?? "",
+    eventDate: booking.eventDate ?? "",
+    eventTime: booking.eventTime ?? "",
+    eventType: booking.eventType ?? "",
+    serviceLevel: booking.serviceLevel ?? "",
+    venueType: booking.venueType ?? "",
+    themeColor: booking.themeColor ?? "",
+    province: booking.province ?? "",
+    area: booking.area ?? "",
+    mahalla: booking.mahalla ?? "",
+    nearestPoint: booking.nearestPoint ?? "",
+    addressNotes: booking.addressNotes ?? "",
+    selectedAddons: booking.selectedAddons ?? [],
+    welcomeBoards: booking.welcomeBoards ?? [],
+    selectedAccessories: booking.selectedAccessories ?? [],
+    notes: booking.notes ?? "",
+    internalNotes: booking.internalNotes ?? "",
+    paidAmount: String(booking.paidAmount ?? 0),
+    paymentStatus: booking.paymentStatus ?? "unpaid",
+  });
+  useEffect(() => setPreviewReady(false), [form]);
+  const { data: koshas = [] } = useQuery<Kosha[]>({ queryKey: ["admin", "koshas", "booking-editor"], queryFn: () => adminFetch("/admin/koshas") });
+  const { data: options } = useQuery<{ addons: KoshaOption[]; welcomeBoards: KoshaOption[]; accessories: KoshaOption[]; provinces: Array<{ id: number; name: string }> }>({
+    queryKey: ["koshas", "options", "booking-editor"], queryFn: () => fetch("/api/koshas/options").then((response) => response.json()),
+  });
+  const save = useMutation({
+    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ ...form, paidAmount: Number(form.paidAmount || 0) }) }),
+    onSuccess: () => { toast({ title: "تم حفظ تعديل حجز الكوشة" }); onSaved(); },
+    onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
+  });
+  const chosenKosha = koshas.find((item) => item.id === Number(form.koshaId));
+  const optionTotal = [
+    ...(options?.addons ?? []).filter((item) => form.selectedAddons.includes(item.name)),
+    ...(options?.welcomeBoards ?? []).filter((item) => form.welcomeBoards.includes(item.name)),
+    ...(options?.accessories ?? []).filter((item) => form.selectedAccessories.includes(item.name)),
+  ].reduce((sum, item) => sum + Number(item.price ?? 0), 0);
+  const projectedTotal = Number(chosenKosha?.price ?? booking.totalAmount ?? 0) + optionTotal;
+
+  function toggle(key: "selectedAddons" | "selectedAccessories", name: string) {
+    setForm((current) => ({ ...current, [key]: current[key].includes(name) ? current[key].filter((item) => item !== name) : [...current[key], name] }));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" dir="rtl">
+      <form onSubmit={(event) => { event.preventDefault(); if (!previewReady) { setPreviewReady(true); return; } save.mutate(); }} className="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border/40 bg-card shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 sm:p-5">
+          <div><h3 className="font-bold text-foreground">تعديل حجز الكوشة KB-{booking.id}</h3><p className="mt-1 text-xs text-muted-foreground">التغييرات المالية تظهر قبل اعتماد الحفظ.</p></div>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-5 overflow-y-auto p-4 sm:p-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div><label className="mb-1 block text-xs text-muted-foreground">الكوشة</label><select value={form.koshaId} onChange={(event) => setForm({ ...form, koshaId: Number(event.target.value) })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{koshas.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}</select></div>
+            <Field label="اسم الزبون" value={form.customerName} onChange={(value) => setForm({ ...form, customerName: value })} />
+            <Field label="رقم الهاتف" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} />
+            <Field label="اسم العروس" value={form.brideName} onChange={(value) => setForm({ ...form, brideName: value })} />
+            <Field label="اسم العريس" value={form.groomName} onChange={(value) => setForm({ ...form, groomName: value })} />
+            <Field label="رقم العروس" value={form.bridePhone} onChange={(value) => setForm({ ...form, bridePhone: value })} />
+            <Field label="رقم العريس" value={form.groomPhone} onChange={(value) => setForm({ ...form, groomPhone: value })} />
+            <Field label="هاتف آخر" value={form.alternatePhone} onChange={(value) => setForm({ ...form, alternatePhone: value })} />
+            <Field label="تاريخ المناسبة" type="date" value={form.eventDate} onChange={(value) => setForm({ ...form, eventDate: value })} />
+            <Field label="وقت المناسبة" type="time" value={form.eventTime} onChange={(value) => setForm({ ...form, eventTime: value })} />
+            <Field label="نوع الحفل" value={form.eventType} onChange={(value) => setForm({ ...form, eventType: value })} />
+            <Field label="مستوى الخدمة" value={form.serviceLevel} onChange={(value) => setForm({ ...form, serviceLevel: value })} />
+            <Field label="نوع المكان" value={form.venueType} onChange={(value) => setForm({ ...form, venueType: value })} />
+            <Field label="لون الثيم" value={form.themeColor} onChange={(value) => setForm({ ...form, themeColor: value })} />
+            <div><label className="mb-1 block text-xs text-muted-foreground">المحافظة</label><select value={form.province} onChange={(event) => setForm({ ...form, province: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">—</option>{(options?.provinces ?? []).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select></div>
+            <Field label="المنطقة" value={form.area} onChange={(value) => setForm({ ...form, area: value })} />
+            <Field label="المحلة" value={form.mahalla} onChange={(value) => setForm({ ...form, mahalla: value })} />
+            <Field label="أقرب نقطة" value={form.nearestPoint} onChange={(value) => setForm({ ...form, nearestPoint: value })} />
+            <Field label="ملاحظة العنوان" value={form.addressNotes} onChange={(value) => setForm({ ...form, addressNotes: value })} />
+          </div>
+
+          <KoshaBookingOptionPicker title="الخدمات الإضافية" options={options?.addons ?? []} selected={form.selectedAddons} onToggle={(name) => toggle("selectedAddons", name)} />
+          <KoshaBookingOptionPicker title="بورد الترحيب" options={options?.welcomeBoards ?? []} selected={form.welcomeBoards} single onToggle={(name) => setForm({ ...form, welcomeBoards: form.welcomeBoards.includes(name) ? [] : [name] })} />
+          <KoshaBookingOptionPicker title="الإكسسوارات" options={options?.accessories ?? []} selected={form.selectedAccessories} onToggle={(name) => toggle("selectedAccessories", name)} />
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="المبلغ المدفوع" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
+            <div><label className="mb-1 block text-xs text-muted-foreground">حالة الدفع</label><select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="unpaid">غير مدفوع</option><option value="partial">جزئي</option><option value="paid">مدفوع</option></select></div>
+            <Field label="ملاحظات الزبون" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} textarea />
+            <Field label="ملاحظات داخلية" value={form.internalNotes} onChange={(value) => setForm({ ...form, internalNotes: value })} textarea />
+          </div>
+
+          {previewReady && <div className="rounded-xl border border-primary/35 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-semibold text-foreground">معاينة التغييرات</h4><Check className="h-4 w-4 text-primary" /></div><div className="grid gap-2 text-xs sm:grid-cols-3"><div><p className="text-muted-foreground">الإجمالي السابق</p><p className="mt-1 font-semibold">{formatCurrency(booking.totalAmount)}</p></div><div><p className="text-muted-foreground">الإجمالي الجديد</p><p className="mt-1 font-semibold">{formatCurrency(projectedTotal)}</p></div><div><p className="text-muted-foreground">الفرق المالي</p><p className="mt-1 font-semibold text-primary">{formatCurrency(projectedTotal - booking.totalAmount)}</p></div></div></div>}
+        </div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border/30 p-4"><Button type="button" variant="outline" onClick={onClose}>إلغاء</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? "جاري الحفظ..." : previewReady ? "تأكيد وحفظ" : "معاينة التغييرات"}</Button></div>
+      </form>
+    </div>
+  );
+}
+
+function KoshaBookingOptionPicker({ title, options, selected, onToggle, single = false }: { title: string; options: KoshaOption[]; selected: string[]; onToggle: (name: string) => void; single?: boolean }) {
+  return <div className="space-y-2"><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold text-foreground">{title}</h4><span className="text-xs text-muted-foreground">{single ? "اختيار واحد" : `${selected.length} مختار`}</span></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{options.map((option) => { const active = selected.includes(option.name); return <button key={option.id} type="button" onClick={() => onToggle(option.name)} className={`flex items-center gap-3 rounded-lg border p-2.5 text-right transition-colors ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-background/35 hover:border-primary/30"}`}>{option.mainImage ? <img src={option.mainImage} alt="" className="h-11 w-11 shrink-0 rounded-md object-cover" /> : <span className="h-11 w-11 shrink-0 rounded-md bg-muted" />}<span className="min-w-0 flex-1"><span className="block truncate text-sm text-foreground">{option.name}</span><span className="text-xs text-primary">{formatCurrency(option.price ?? 0)}</span></span>{active && <Check className="h-4 w-4 shrink-0 text-primary" />}</button>; })}</div></div>;
 }

@@ -16,10 +16,13 @@ import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from ".
 
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
-  stock: string; barcode?: string; images?: string[]; categoryId?: number; categoryName?: string;
+  stock: string; barcode?: string; images?: string[];
+  categoryId?: number | null; subcategoryId?: number | null;
+  category?: string | null; subcategory?: string | null;
+  categoryName?: string; subcategoryName?: string;
 };
 
-type Category = { id: number; name: string; nameAr: string; slug?: string };
+type Category = { id: number; name: string; nameAr: string; slug?: string; parentId?: number | null };
 
 type CartItem = {
   productId: number; productName: string; barcode: string;
@@ -426,8 +429,16 @@ export default function POSPage() {
 
   // ── Filtered products ──────────────────────────────────────────────────────
   const q = searchQ.trim().toLowerCase();
+  const selectedCategory = categoryId === null ? null : categories.find((category) => category.id === categoryId) ?? null;
+  const categoryMatches = useCallback((product: Product, category: Category | null) => {
+    if (!category) return true;
+    if (category.parentId) {
+      return product.subcategoryId === category.id || Boolean(category.slug && product.subcategory === category.slug);
+    }
+    return product.categoryId === category.id || Boolean(category.slug && product.category === category.slug);
+  }, []);
   const visibleProducts = products.filter(p => {
-    const matchCat = categoryId === null || p.categoryId === categoryId;
+    const matchCat = categoryMatches(p, selectedCategory);
     const matchQ = !q || p.nameAr?.toLowerCase().includes(q) || p.name?.toLowerCase().includes(q) || p.barcode?.includes(q);
     return matchCat && matchQ;
   });
@@ -507,9 +518,10 @@ export default function POSPage() {
   // ── Barcode / search Enter ─────────────────────────────────────────────────
   function handleBarcodeKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter" || !searchQ) return;
-    const exact = products.find(p => p.barcode === searchQ);
+    const scopedProducts = products.filter((product) => categoryMatches(product, selectedCategory));
+    const exact = scopedProducts.find(p => p.barcode === searchQ);
     if (exact) { addToCart(exact); return; }
-    const filtered = products.filter(p =>
+    const filtered = scopedProducts.filter(p =>
       p.nameAr?.toLowerCase().includes(searchQ.toLowerCase()) ||
       p.name?.toLowerCase().includes(searchQ.toLowerCase())
     );
@@ -842,7 +854,7 @@ export default function POSPage() {
               <Grid3X3 className="w-3.5 h-3.5" />الكل ({products.length})
             </button>
             {categories.map(cat => {
-              const count = products.filter(p => p.categoryId === cat.id).length;
+              const count = products.filter((product) => categoryMatches(product, cat)).length;
               return (
                 <button
                   key={cat.id}

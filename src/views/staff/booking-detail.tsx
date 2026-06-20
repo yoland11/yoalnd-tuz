@@ -4,6 +4,7 @@ import {
   STAGES, STAGE_LABEL, stageRank, money, mapsUrl, filesToMedia, staffApi,
   type BookingDetail, type StageKey, type MediaInput,
 } from "./lib";
+import { isQueued } from "./offline";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -84,6 +85,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [panel, setPanel] = useState<null | "checklist" | "executed" | "delivered">(null);
 
   const reload = useCallback(async () => {
@@ -102,8 +104,12 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
 
   async function run(fn: () => Promise<any>) {
-    setBusy(true); setErr(null);
-    try { const res = await fn(); if (res && (res as any).booking) setData(res as BookingDetail); else await reload(); setPanel(null); }
+    setBusy(true); setErr(null); setNotice(null);
+    try {
+      const res = await fn();
+      if (isQueued(res)) { setNotice("تم الحفظ محليًا — سيُرفع تلقائيًا عند عودة الاتصال"); setPanel(null); }
+      else { if (res && (res as any).booking) setData(res as BookingDetail); else await reload(); setPanel(null); }
+    }
     catch (e: any) { setErr(e?.message ?? "تعذر إكمال العملية"); }
     finally { setBusy(false); }
   }
@@ -129,6 +135,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
 
       <div className="space-y-4 p-4">
         {err && <Banner kind="error">{err}</Banner>}
+        {notice && <Banner kind="ok">{notice}</Banner>}
 
         {/* Customer + event meta */}
         <div className="rounded-xl border border-border bg-card p-3 text-sm">
@@ -318,7 +325,7 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
   const [compensation, setCompensation] = useState("");
   const issue = hasLoss === true || hasBreakage === true;
   const answered = hasLoss !== null && hasBreakage !== null;
-  const valid = answered && (!issue || (note.trim() && media.length > 0));
+  const valid = answered && note.trim().length > 0 && media.length > 0;
 
   const YN = ({ label, value, set }: { label: string; value: boolean | null; set: (v: boolean) => void }) => (
     <div className="flex items-center justify-between gap-3">
@@ -335,17 +342,15 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
       <div className="space-y-3">
         <YN label="هل يوجد فقدان؟" value={hasLoss} set={setHasLoss} />
         <YN label="هل يوجد كسر؟" value={hasBreakage} set={setHasBreakage} />
+        <Banner kind="info">صور وملاحظة إجبارية لإثبات حالة التسليم (في الحالتين).</Banner>
+        <MediaPicker media={media} setMedia={setMedia} label={issue ? "صور الفقدان/الكسر (إجباري)" : "صور التسليم (إجباري)"} />
         {issue && (
-          <>
-            <Banner kind="error">عند وجود فقدان أو كسر: الملاحظة والصور إجبارية.</Banner>
-            <MediaPicker media={media} setMedia={setMedia} label="صور الفقدان/الكسر" />
-            <div>
-              <label className="mb-1 block text-sm font-medium">قيمة التعويض (اختياري — تُضاف للمتبقي)</label>
-              <input value={compensation} onChange={(e) => setCompensation(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder="0" className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
-            </div>
-          </>
+          <div>
+            <label className="mb-1 block text-sm font-medium">قيمة التعويض (اختياري — تُضاف للمتبقي)</label>
+            <input value={compensation} onChange={(e) => setCompensation(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder="0" className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
+          </div>
         )}
-        <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder={issue ? "تفاصيل الفقدان/الكسر (إجباري)" : "ملاحظة التسليم (اختياري)"} rows={2} className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة التسليم (إجباري)" rows={2} className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
         <SignaturePad onChange={setSignature} />
         <button disabled={!valid || busy}
           onClick={() => onSave({ hasLoss: !!hasLoss, hasBreakage: !!hasBreakage, note, media, signature: signature || undefined, compensationAmount: Number(compensation) || 0 })}

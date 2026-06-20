@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
-import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck } from "lucide-react";
+import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff } from "lucide-react";
 import { fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
 import { BUCKET_LABEL, STAGE_LABEL, money, staffApi, type Bucket, type CrewBooking } from "./lib";
+import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 
 const STAGE_BADGE: Record<string, string> = {
@@ -205,6 +206,7 @@ function Approvals() {
 export default function StaffPortal() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [unread, setUnread] = useState(0);
+  const [pendingOps, setPendingOps] = useState(0);
   const [location, nav] = useLocation();
   const lastNotifIds = useRef<Set<number>>(new Set());
 
@@ -240,6 +242,18 @@ export default function StaffPortal() {
     return () => { alive = false; clearInterval(t); };
   }, [allowed]);
 
+  // Offline write-queue: flush on mount + when connectivity returns; track pending count.
+  useEffect(() => {
+    if (!allowed) return;
+    const update = () => countOps().then(setPendingOps).catch(() => {});
+    const onOnline = () => flushQueue().then(() => update());
+    update();
+    flushQueue().then(() => update());
+    window.addEventListener("online", onOnline);
+    window.addEventListener("ajn-queue-changed", update);
+    return () => { window.removeEventListener("online", onOnline); window.removeEventListener("ajn-queue-changed", update); };
+  }, [allowed]);
+
   if (me === undefined) return <Spinner />;
   if (!me) return <Login onDone={refreshMe} />;
   if (!allowed) {
@@ -270,7 +284,12 @@ export default function StaffPortal() {
             <div className="text-[11px] text-muted-foreground">{me.fullName || me.username}</div>
           </div>
         </div>
-        <button onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></button>
+        <div className="flex items-center gap-3">
+          {pendingOps > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-bold text-amber-600"><CloudOff className="h-3.5 w-3.5" /> {pendingOps} بانتظار الرفع</span>
+          )}
+          <button onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></button>
+        </div>
       </header>
 
       <main className="pb-20">

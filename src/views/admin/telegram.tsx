@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch } from "./_lib";
 
-type EventKey = "storeOrder" | "koshaBooking" | "serviceBooking" | "salesInvoice" | "adminLogin" | "paymentReceived" | "managerApproval" | "dailyCashClosed" | "dailyReport";
+type EventKey = "storeOrder" | "koshaBooking" | "serviceBooking" | "salesInvoice" | "adminLogin" | "paymentReceived" | "managerApproval" | "dailyCashClosed" | "dailyReport" | "orderEdited" | "statusChanged";
 type TelegramSettings = { enabled: boolean; events: Record<EventKey, boolean> };
 type TelegramSettingsResponse = {
   settings: TelegramSettings;
@@ -24,6 +24,8 @@ const EVENT_LABELS: Array<{ key: EventKey; title: string; description: string }>
   { key: "managerApproval", title: "اعتماد المدير", description: "عند اعتماد مبلغ إيراد في الصندوق الرئيسي" },
   { key: "dailyCashClosed", title: "إغلاق الصندوق اليومي", description: "ملخص الإغلاق مع ملف PDF" },
   { key: "dailyReport", title: "التقرير المالي اليومي", description: "ملخص التقرير مع ملف PDF" },
+  { key: "orderEdited", title: "تعديل الطلبات", description: "عند تعديل طلب أو حجز وتوضيح الفرق المالي" },
+  { key: "statusChanged", title: "تغيير الحالة", description: "عند تغيير حالة الطلب أو الحجز" },
 ];
 
 export default function TelegramSettingsPage() {

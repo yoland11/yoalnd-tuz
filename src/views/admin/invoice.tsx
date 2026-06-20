@@ -32,6 +32,7 @@ export default function Invoice() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [thermalSize, setThermalSize] = useState<"58mm" | "80mm">("80mm");
   const sheetRef = useRef<HTMLDivElement>(null);
   const { data: settings } = usePublicSettings();
 
@@ -126,6 +127,11 @@ export default function Invoice() {
           <ArrowRight className="w-4 h-4" /> العودة للوحة
         </a>
         <div className="flex items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-lg border border-white/20" aria-label="حجم الطابعة الحرارية">
+            {(["58mm", "80mm"] as const).map((size) => (
+              <button key={size} onClick={() => setThermalSize(size)} className={`px-3 py-2 text-xs font-medium ${thermalSize === size ? "bg-amber-400 text-black" : "bg-neutral-900 text-neutral-200"}`}>{size}</button>
+            ))}
+          </div>
           <button onClick={printQrOnly} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
             <QrCode className="w-4 h-4" /> طباعة QR
           </button>
@@ -234,13 +240,13 @@ export default function Invoice() {
       <style>{`
         .inv-thermal-wrap { min-height: 100vh; background: #5b5e63; }
         .inv-sheet {
-          width: 302px;
+          width: ${thermalSize === "58mm" ? "219px" : "302px"};
           margin: 0 auto;
           background: #fff;
           color: #000;
           font-family: Cairo, Tajawal, Tahoma, Arial, sans-serif;
           font-weight: 600;
-          font-size: 13px;
+          font-size: ${thermalSize === "58mm" ? "11px" : "13px"};
           line-height: 1.3;
           padding: 14px 16px;
         }
@@ -267,13 +273,13 @@ export default function Invoice() {
         .ih-pay { display: flex; justify-content: space-between; font-weight: 800; font-size: 1.08em; margin: 2px 0; }
         .ih-pay.rm { font-size: 1.18em; border: 1.5px solid #000; padding: 2px 5px; margin-top: 3px; }
         .ih-qr { text-align: center; margin-top: 8px; break-inside: avoid; page-break-inside: avoid; }
-        .ih-qr img { width: 160px; height: 160px; image-rendering: pixelated; object-fit: contain; display: block; margin: 0 auto 3px; }
+        .ih-qr img { width: ${thermalSize === "58mm" ? "132px" : "160px"}; height: ${thermalSize === "58mm" ? "132px" : "160px"}; image-rendering: pixelated; object-fit: contain; display: block; margin: 0 auto 3px; }
         .ih-qr .cap { font-weight: 700; font-size: 0.88em; }
         .ih-thanks { text-align: center; font-weight: 800; font-size: 1.05em; margin-top: 6px; }
         .ih-notes { margin-top: 4px; font-weight: 700; }
 
         @media print {
-          @page { size: 80mm auto; margin: 0; }
+          @page { size: ${thermalSize} auto; margin: 0; }
           html, body { background: #fff !important; }
           .inv-thermal-wrap { background: #fff !important; min-height: 0 !important; }
           .inv-sheet {

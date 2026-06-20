@@ -27,6 +27,7 @@ const NAV: NavItem[] = [
   { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
   { href: "/admin/koshas",         label: "إدارة الكوشات",       icon: Sparkles,        perm: "services" },
   { href: "/admin/kosha-bookings", label: "حجوزات الكوشات",      icon: CalendarDays,    perm: "orders" },
+  { href: "/admin/kosha-collections", label: "تحصيلات الكوشات",   icon: CircleDollarSign, perm: "accounting" },
   { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
   { href: "/admin/categories",     label: "التصنيفات",          icon: Tag,             perm: "products" },
   { href: "/admin/barcodes",       label: "طباعة الباركود",     icon: Barcode,         perm: "products" },

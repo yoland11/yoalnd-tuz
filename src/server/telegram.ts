@@ -16,6 +16,8 @@ export const TELEGRAM_EVENT_KEYS = [
   "managerApproval",
   "dailyCashClosed",
   "dailyReport",
+  "orderEdited",
+  "statusChanged",
 ] as const;
 
 export type TelegramEventKey = (typeof TELEGRAM_EVENT_KEYS)[number];
@@ -30,6 +32,8 @@ const eventSettingsSchema = z.object({
   managerApproval: z.boolean().default(true),
   dailyCashClosed: z.boolean().default(true),
   dailyReport: z.boolean().default(true),
+  orderEdited: z.boolean().default(true),
+  statusChanged: z.boolean().default(true),
 });
 
 export const telegramSettingsSchema = z.object({
@@ -83,6 +87,10 @@ export type TelegramOrderInput = {
   remaining?: string | number | null;
   status?: string | null;
   serviceName?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  items?: InvoiceItem[];
+  qrDataUrl?: string | null;
 };
 
 export type TelegramKoshaBookingInput = {
@@ -96,6 +104,25 @@ export type TelegramKoshaBookingInput = {
   paid?: string | number | null;
   remaining?: string | number | null;
   status?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  items?: InvoiceItem[];
+  qrDataUrl?: string | null;
+};
+
+export type TelegramOrderEditInput = {
+  kind: "store" | "service" | "kosha";
+  id: number;
+  reference: string;
+  customerName?: string | null;
+  phone?: string | null;
+  createdByName?: string | null;
+  status?: string | null;
+  total?: string | number | null;
+  paid?: string | number | null;
+  remaining?: string | number | null;
+  financialDifference?: string | number | null;
+  changedFields?: string[];
 };
 
 export type TelegramPaymentInput = {
@@ -258,28 +285,42 @@ function sanitizeFilename(value: string) {
   return safe || "ajn-document.pdf";
 }
 
-function pdfFontPath() {
-  return path.join(process.cwd(), "public", "fonts", "NotoSansArabic.ttf");
+function pdfFontPaths() {
+  return {
+    regular: path.join(/* turbopackIgnore: true */ process.cwd(), "public", "fonts", "Cairo-Regular.ttf"),
+    bold: path.join(/* turbopackIgnore: true */ process.cwd(), "public", "fonts", "Cairo-Bold.ttf"),
+  };
 }
 
 function hasArabic(value: string) {
   return /[\u0600-\u06FF]/.test(value);
 }
 
-function createPdf(title: string, rows: Array<[string, string]>, items: InvoiceItem[] = [], reference?: string): Promise<Buffer> {
+function dataUrlBuffer(value?: string | null): Buffer | null {
+  const match = /^data:[^;]+;base64,(.+)$/i.exec(String(value ?? ""));
+  if (!match) return null;
+  try { return Buffer.from(match[1], "base64"); } catch { return null; }
+}
+
+function createPdf(title: string, rows: Array<[string, string]>, items: InvoiceItem[] = [], reference?: string, qrDataUrl?: string | null): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: 42, info: { Title: title, Author: "AJN" } });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    const font = pdfFontPath();
-    if (fs.existsSync(font)) doc.font(font);
+    const fonts = pdfFontPaths();
+    if (fs.existsSync(fonts.regular)) doc.registerFont("Cairo", fonts.regular).font("Cairo");
+    if (fs.existsSync(fonts.bold)) doc.registerFont("CairoBold", fonts.bold);
     const rtlOptions: PDFKit.Mixins.TextOptions = { align: "right", features: ["rtla"] };
-    doc.fillColor("#111111").fontSize(22).text(title, 250, 42, { width: 303, ...rtlOptions });
+    const logo = path.join(/* turbopackIgnore: true */ process.cwd(), "public", "icons", "icon-192.png");
+    if (fs.existsSync(logo)) doc.image(logo, 507, 36, { fit: [46, 46], align: "center", valign: "center" });
+    if (fs.existsSync(fonts.bold)) doc.font("CairoBold");
+    doc.fillColor("#111111").fontSize(22).text(title, 215, 42, { width: 280, ...rtlOptions });
     if (reference) doc.fontSize(15).text(reference, 42, 48, { width: 180, align: "left", features: [] });
     doc.y = 82;
     doc.moveDown(0.4).strokeColor("#D4B15A").lineWidth(2).moveTo(42, doc.y).lineTo(553, doc.y).stroke().moveDown(0.8);
+    if (fs.existsSync(fonts.regular)) doc.font("Cairo");
     doc.fontSize(11);
     for (const [label, value] of rows) {
       const rowY = doc.y;
@@ -289,7 +330,9 @@ function createPdf(title: string, rows: Array<[string, string]>, items: InvoiceI
       doc.y = rowY + 25;
     }
     if (items.length) {
+      if (fs.existsSync(fonts.bold)) doc.font("CairoBold");
       doc.moveDown(0.5).fillColor("#111111").fontSize(14).text("تفاصيل المواد", rtlOptions).moveDown(0.5);
+      if (fs.existsSync(fonts.regular)) doc.font("Cairo");
       for (const item of items) {
         if (doc.y > 730) doc.addPage();
         const name = String(item.productName || "مادة");
@@ -303,9 +346,44 @@ function createPdf(title: string, rows: Array<[string, string]>, items: InvoiceI
         doc.y = itemY + 27;
       }
     }
+    const qr = dataUrlBuffer(qrDataUrl);
+    if (qr) {
+      if (doc.y > 650) doc.addPage();
+      doc.moveDown(0.8).image(qr, 246, doc.y, { fit: [105, 105], align: "center" });
+      doc.y += 112;
+      doc.fillColor("#333333").fontSize(9).text("امسح الرمز لتتبع الطلب", { align: "center", features: ["rtla"] });
+    }
     doc.moveDown(1).fillColor("#777777").fontSize(9).text(`AJN - ${dateTime().date} ${dateTime().time}`, { align: "center" });
     doc.end();
   });
+}
+
+async function savePdfToStorage(pdf: Buffer, folder: string, filename: string): Promise<string | null> {
+  const storageUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").replace(/\/$/, "");
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET || "ajn-media";
+  if (!storageUrl || !serviceKey) return null;
+  const objectPath = `${folder}/${new Date().toISOString().slice(0, 10)}/${sanitizeFilename(filename)}`;
+  try {
+    const response = await fetch(`${storageUrl}/storage/v1/object/${bucket}/${objectPath}`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        authorization: `Bearer ${serviceKey}`,
+        "content-type": "application/pdf",
+        "x-upsert": "true",
+      },
+      body: new Uint8Array(pdf),
+    });
+    if (!response.ok) {
+      console.warn("order PDF storage upload failed", { folder, status: response.status });
+      return null;
+    }
+    return `${storageUrl}/storage/v1/object/public/${bucket}/${objectPath}`;
+  } catch (error) {
+    console.warn("order PDF storage upload failed", { folder, message: safeError(error) });
+    return null;
+  }
 }
 
 export function generateInvoicePdf(invoice: TelegramInvoiceInput) {
@@ -325,6 +403,39 @@ export function generateInvoicePdf(invoice: TelegramInvoiceInput) {
   ], invoice.items ?? [], invoice.invoiceNo);
 }
 
+export function generateOrderPdf(order: TelegramOrderInput) {
+  return createPdf(order.kind === "store" ? "طلب متجر" : "حجز خدمة", [
+    ["رقم الطلب", order.reference || `#${order.id}`],
+    ["الخدمة", order.serviceName || (order.kind === "store" ? "المتجر" : "-")],
+    ["العميل", order.customerName || "زبون"],
+    ["الهاتف", order.phone ? formatIraqiPhone(order.phone) : "-"],
+    ["العنوان", order.address || "-"],
+    ["التاريخ", dateTime(order.createdAt).date],
+    ["طريقة الدفع", paymentLabel(order.paymentMethod)],
+    ["المبلغ الكلي", pdfAmount(order.total)],
+    ["المدفوع", pdfAmount(order.paid)],
+    ["المتبقي", pdfAmount(order.remaining)],
+    ["الحالة", statusLabel(order.status)],
+    ["ملاحظات", order.notes || "-"],
+  ], order.items ?? [], order.reference || `#${order.id}`, order.qrDataUrl);
+}
+
+export function generateKoshaBookingPdf(booking: TelegramKoshaBookingInput) {
+  return createPdf("حجز كوشة", [
+    ["رقم الحجز", booking.reference || `#${booking.id}`],
+    ["الكوشة", booking.koshaName || "-"],
+    ["العميل", booking.customerName || "زبون"],
+    ["الهاتف", booking.phone ? formatIraqiPhone(booking.phone) : "-"],
+    ["العنوان", booking.address || "-"],
+    ["تاريخ المناسبة", booking.eventDate || "-"],
+    ["المبلغ الكلي", pdfAmount(booking.total)],
+    ["المدفوع", pdfAmount(booking.paid)],
+    ["المتبقي", pdfAmount(booking.remaining)],
+    ["الحالة", statusLabel(booking.status)],
+    ["ملاحظات", booking.notes || "-"],
+  ], booking.items ?? [], booking.reference || `#${booking.id}`, booking.qrDataUrl);
+}
+
 export function generateDailyReportPdf(report: TelegramDailyReportInput) {
   return createPdf("التقرير المالي اليومي", [
     ["التاريخ", report.reportDate],
@@ -338,6 +449,13 @@ export function generateDailyReportPdf(report: TelegramDailyReportInput) {
 }
 
 export async function notifyTelegramInvoice(invoice: TelegramInvoiceInput): Promise<void> {
+  let pdf: Buffer | null = null;
+  try {
+    pdf = await generateInvoicePdf(invoice);
+    await savePdfToStorage(pdf, "documents/sales-invoices", `invoice-${invoice.invoiceNo}.pdf`);
+  } catch (error) {
+    console.warn("invoice PDF generation failed", { invoiceId: invoice.id, message: safeError(error) });
+  }
   if (!await eventEnabled("salesInvoice")) return;
   const stamp = dateTime(invoice.date);
   const href = adminLink(`/admin/sales?invoice=${invoice.id}`);
@@ -357,8 +475,7 @@ export async function notifyTelegramInvoice(invoice: TelegramInvoiceInput): Prom
   ], href);
   await sendTelegramMessage(message);
   try {
-    const pdf = await generateInvoicePdf(invoice);
-    await sendTelegramDocument(pdf, `invoice-${invoice.invoiceNo}.pdf`, `فاتورة ${invoice.invoiceNo}`);
+    if (pdf) await sendTelegramDocument(pdf, `invoice-${invoice.invoiceNo}.pdf`, `فاتورة ${invoice.invoiceNo}`);
   } catch (error) {
     console.warn("telegram invoice PDF generation failed", { invoiceId: invoice.id, message: safeError(error) });
   }
@@ -366,6 +483,13 @@ export async function notifyTelegramInvoice(invoice: TelegramInvoiceInput): Prom
 
 export async function notifyTelegramOrder(order: TelegramOrderInput): Promise<void> {
   const event: TelegramEventKey = order.kind === "store" ? "storeOrder" : "serviceBooking";
+  let pdf: Buffer | null = null;
+  try {
+    pdf = await generateOrderPdf(order);
+    await savePdfToStorage(pdf, `documents/${order.kind}-orders`, `order-${order.reference || order.id}.pdf`);
+  } catch (error) {
+    console.warn("order PDF generation failed", { orderId: order.id, kind: order.kind, message: safeError(error) });
+  }
   if (!await eventEnabled(event)) return;
   const stamp = dateTime(order.createdAt);
   const title = order.kind === "store" ? "🛍️ <b>طلب متجر جديد</b>" : "📅 <b>حجز خدمة جديد</b>";
@@ -384,9 +508,17 @@ export async function notifyTelegramOrder(order: TelegramOrderInput): Promise<vo
     line("المبلغ المتبقي", amount(order.remaining)),
     line("الحالة", statusLabel(order.status)),
   ], href));
+  if (pdf) await sendTelegramDocument(pdf, `order-${order.reference || order.id}.pdf`, `${order.kind === "store" ? "طلب" : "حجز"} ${order.reference || order.id}`);
 }
 
 export async function notifyTelegramKoshaBooking(booking: TelegramKoshaBookingInput): Promise<void> {
+  let pdf: Buffer | null = null;
+  try {
+    pdf = await generateKoshaBookingPdf(booking);
+    await savePdfToStorage(pdf, "documents/kosha-bookings", `kosha-booking-${booking.reference || booking.id}.pdf`);
+  } catch (error) {
+    console.warn("kosha booking PDF generation failed", { bookingId: booking.id, message: safeError(error) });
+  }
   if (!await eventEnabled("koshaBooking")) return;
   const href = adminLink(`/admin/kosha-bookings?booking=${booking.id}`);
   await sendTelegramMessage(messageBlock("💐 <b>حجز كوشة جديد</b>", [
@@ -400,6 +532,27 @@ export async function notifyTelegramKoshaBooking(booking: TelegramKoshaBookingIn
     line("المبلغ المتبقي", amount(booking.remaining)),
     line("الحالة", statusLabel(booking.status)),
   ], href));
+  if (pdf) await sendTelegramDocument(pdf, `kosha-booking-${booking.reference || booking.id}.pdf`, `حجز كوشة ${booking.reference || booking.id}`);
+}
+
+export async function notifyTelegramOrderEdited(input: TelegramOrderEditInput): Promise<void> {
+  const onlyStatus = input.changedFields?.length === 1 && input.changedFields[0] === "status";
+  if (!await eventEnabled(onlyStatus ? "statusChanged" : "orderEdited")) return;
+  const department = input.kind === "store" ? "المتجر" : input.kind === "kosha" ? "الكوشات" : "الخدمات";
+  const path = input.kind === "kosha" ? `/admin/kosha-bookings?booking=${input.id}` : `/admin/orders?${input.kind === "store" ? "order" : "serviceOrder"}=${input.id}`;
+  await sendTelegramMessage(messageBlock("🛠️ <b>تم تعديل طلب</b>", [
+    line("رقم الطلب", input.reference),
+    line("العميل", input.customerName || "زبون"),
+    line("الهاتف", input.phone ? formatIraqiPhone(input.phone) : "-"),
+    line("القسم", department),
+    line("الحالة", statusLabel(input.status)),
+    line("الإجمالي", amount(input.total)),
+    line("المدفوع", amount(input.paid)),
+    line("المتبقي", amount(input.remaining)),
+    line("الفرق المالي", amount(input.financialDifference)),
+    line("الحقول المعدلة", input.changedFields?.join("، ") || "-"),
+    line("بواسطة", input.createdByName || "النظام"),
+  ], adminLink(path)));
 }
 
 export async function notifyTelegramLogin(user: { id: number; username: string; fullName?: string | null; role?: string | null }): Promise<void> {

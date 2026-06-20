@@ -68,6 +68,117 @@ const STATUS_LABELS: Record<string, string> = {
 
 const PIE_COLORS = ["#C9A84C", "#E5C77B", "#8B7355", "#4A4A4A", "#6B5A3E", "#A88B4F"];
 
+type MasterSummary = {
+  finance: {
+    currentBalance: number; totalRevenue: number; totalExpenses: number; netProfit: number;
+    todayRevenue: number; todayNet: number; pendingCount: number; pendingAmount: number;
+    outstanding: number; overdue: number;
+    departments: { department: string; revenue: number; expenses: number; profit: number }[];
+    trend: { month: string; revenue: number; expenses: number }[];
+  } | null;
+  inventory: { productCount: number; totalQuantity: number; costValue: number; saleValue: number; expectedProfit: number; lowStock: number };
+  grandTotal: number;
+};
+
+const DEPT_LABEL: Record<string, string> = {
+  store: "المتجر", products: "المتجر", services: "الخدمات", koshas: "الكوشات",
+  orders: "الطلبات", general: "عام", delivery: "التوصيل",
+};
+
+function MasterCashBox() {
+  const { data } = useQuery({
+    queryKey: ["dashboard", "master-summary"],
+    queryFn: () => adminFetch<MasterSummary>("/dashboard/master-summary"),
+    staleTime: 60_000,
+  });
+  if (!data) return null;
+  const f = data.finance;
+  const inv = data.inventory;
+  const maxTrend = Math.max(1, ...(f?.trend ?? []).map((t) => t.revenue));
+  const financeCards: [string, number, string][] = [
+    ["إجمالي الإيرادات", f?.totalRevenue ?? 0, "text-foreground"],
+    ["إجمالي المصروفات", f?.totalExpenses ?? 0, "text-foreground"],
+    ["صافي الربح", f?.netProfit ?? 0, "text-green-600"],
+    ["إيراد اليوم", f?.todayRevenue ?? 0, "text-foreground"],
+    ["بانتظار الاعتماد", f?.pendingAmount ?? 0, "text-amber-600"],
+    ["المتأخرات", f?.overdue ?? 0, "text-destructive"],
+  ];
+  const invCards: [string, number, "money" | "count", string][] = [
+    ["عدد المنتجات", inv.productCount, "count", "text-foreground"],
+    ["إجمالي الكمية", inv.totalQuantity, "count", "text-foreground"],
+    ["قيمة الكلفة", inv.costValue, "money", "text-foreground"],
+    ["قيمة البيع", inv.saleValue, "money", "text-foreground"],
+    ["الربح المتوقع", inv.expectedProfit, "money", "text-green-600"],
+    ["تحت الحد الأدنى", inv.lowStock, "count", "text-amber-600"],
+  ];
+  return (
+    <section className="space-y-4 rounded-xl border-2 border-primary/40 bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-primary"><DollarSign className="h-4 w-4" /><span className="text-sm font-semibold">الصندوق الرئيسي</span></div>
+          <p className="mt-1 text-3xl font-bold text-foreground">{formatCurrency(data.grandTotal)}</p>
+          <p className="text-xs text-muted-foreground">نقد + قيمة المخزون + الذمم المستحقة</p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {([["الرصيد النقدي", f?.currentBalance ?? 0], ["قيمة المخزون", inv.saleValue], ["ذمم مستحقة", f?.outstanding ?? 0]] as [string, number][]).map(([l, v]) => (
+            <div key={l} className="rounded-lg border border-border/25 bg-background/60 px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">{l}</div>
+              <div className="text-sm font-bold text-foreground">{formatCurrency(v)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+        {financeCards.map(([l, v, c]) => (
+          <div key={l} className="rounded-lg border border-border/25 bg-background/50 p-3">
+            <div className="text-[11px] text-muted-foreground">{l}</div>
+            <div className={`text-base font-bold ${c}`}>{formatCurrency(v)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><Package className="h-4 w-4" /> المنتجات والمخزون</div>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+          {invCards.map(([l, v, t, c]) => (
+            <div key={l} className="rounded-lg border border-border/25 bg-background/50 p-3">
+              <div className="text-[11px] text-muted-foreground">{l}</div>
+              <div className={`text-base font-bold ${c}`}>{t === "money" ? formatCurrency(v) : Number(v).toLocaleString("ar-IQ")}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {f && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-border/25 bg-background/50 p-3">
+            <div className="mb-2 text-xs text-muted-foreground">أرباح الأقسام (هذا الشهر)</div>
+            {f.departments.length === 0 ? <div className="text-xs text-muted-foreground">لا توجد بيانات</div> : (
+              <div className="space-y-1.5">
+                {f.departments.slice(0, 5).map((d) => (
+                  <div key={d.department} className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">{DEPT_LABEL[d.department] ?? d.department ?? "غير محدد"}</span>
+                    <span className="font-semibold text-foreground">{formatCurrency(d.profit)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="rounded-lg border border-border/25 bg-background/50 p-3">
+            <div className="mb-2 text-xs text-muted-foreground">اتجاه الإيرادات (12 شهرًا)</div>
+            <div className="flex h-20 items-end gap-1">
+              {(f.trend.length ? f.trend : [{ month: "", revenue: 0, expenses: 0 }]).map((t, i) => (
+                <div key={i} title={`${t.month}: ${formatCurrency(t.revenue)}`} className="flex-1 rounded-t bg-primary/70" style={{ height: `${Math.max(4, (t.revenue / maxTrend) * 100)}%` }} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "dashboard"],
@@ -163,6 +274,8 @@ export default function DashboardPage() {
         </div>
         <p className="shrink-0 text-sm text-muted-foreground">إيرادات اليوم: <span className="text-primary font-semibold">{formatCurrency(data.todayRevenue)}</span></p>
       </div>
+
+      <MasterCashBox />
 
       <div className="bg-card rounded-xl border border-border/30 p-4">
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">

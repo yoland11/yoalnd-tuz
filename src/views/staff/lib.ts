@@ -1,4 +1,5 @@
 import { adminFetch, compressImageFile, fileToDataUrl } from "@/views/admin/_lib";
+import { mutateOrQueue, type QueuedResult } from "./offline";
 
 export type StageKey =
   | "preparing" | "out_of_warehouse" | "on_the_way" | "executing" | "executed" | "delivered";
@@ -78,14 +79,14 @@ export const staffApi = {
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),
   booking: (id: number) => adminFetch<BookingDetail>(`${base}/bookings/${id}`),
-  setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[]) =>
-    adminFetch<BookingDetail>(`${base}/bookings/${id}/stage`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),
-  uploadMedia: (id: number, media: MediaInput[], purpose = "execution", note?: string) =>
-    adminFetch<BookingDetail>(`${base}/bookings/${id}/media`, { method: "POST", body: JSON.stringify({ media, purpose, note }) }),
-  delivery: (id: number, payload: { hasLoss: boolean; hasBreakage: boolean; note?: string; media?: MediaInput[]; signature?: string; compensationAmount?: number }) =>
-    adminFetch<BookingDetail>(`${base}/bookings/${id}/delivery`, { method: "POST", body: JSON.stringify(payload) }),
-  collect: (id: number, amount: number, note?: string) =>
-    adminFetch<{ ok: boolean }>(`${base}/bookings/${id}/collect`, { method: "POST", body: JSON.stringify({ amount, note }) }),
+  setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[]): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/stage`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),
+  uploadMedia: (id: number, media: MediaInput[], purpose = "execution", note?: string): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/media`, { method: "POST", body: JSON.stringify({ media, purpose, note }) }),
+  delivery: (id: number, payload: { hasLoss: boolean; hasBreakage: boolean; note?: string; media?: MediaInput[]; signature?: string; compensationAmount?: number }): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/delivery`, { method: "POST", body: JSON.stringify(payload) }),
+  collect: (id: number, amount: number, note?: string): Promise<{ ok: boolean } | QueuedResult> =>
+    mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect`, { method: "POST", body: JSON.stringify({ amount, note }) }),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string | null; href: string | null; isRead: boolean; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),

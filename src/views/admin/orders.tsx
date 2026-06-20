@@ -90,6 +90,7 @@ export default function OrdersPage() {
   const [paymentFilter, setPaymentFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [createMode, setCreateMode] = useState<"product" | "service">("product");
+  const [editingProductOrder, setEditingProductOrder] = useState<any | null>(null);
   const [editingServiceOrder, setEditingServiceOrder] = useState<ServiceOrder | null>(null);
 
   useEffect(() => {
@@ -403,6 +404,11 @@ export default function OrdersPage() {
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
                       <Printer className="w-3.5 h-3.5" /> فاتورة
                     </a>
+                    <button
+                      onClick={() => setEditingProductOrder(order)}
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20">
+                      <Edit2 className="w-3.5 h-3.5" /> تعديل الطلب
+                    </button>
                     {canArchive && (
                       <button
                         onClick={() => confirm("أرشفة الطلب؟") && archiveProduct.mutate(order.id)}
@@ -412,9 +418,9 @@ export default function OrdersPage() {
                       </button>
                     )}
                     <button
-                      onClick={() => confirm("حذف الطلب نهائياً؟") && deleteProduct.mutate(order.id)}
+                      onClick={() => confirm("إلغاء الطلب ونقله إلى الأرشيف؟ سيعاد المخزون ولن تحذف البيانات.") && deleteProduct.mutate(order.id)}
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-danger/10 text-status-danger border border-status-danger/30 hover:bg-status-danger/20">
-                      <Trash2 className="w-3.5 h-3.5" /> حذف
+                      <Trash2 className="w-3.5 h-3.5" /> إلغاء وأرشفة
                     </button>
                   </div>
                   <PaymentPanel
@@ -577,6 +583,16 @@ export default function OrdersPage() {
       )}
 
       {showCreate && <CreateOrderModal initialMode={createMode} onClose={() => setShowCreate(false)} />}
+      {editingProductOrder && (
+        <EditProductOrderModal
+          order={editingProductOrder}
+          onClose={() => setEditingProductOrder(null)}
+          onSaved={() => {
+            setEditingProductOrder(null);
+            invalidateAll();
+          }}
+        />
+      )}
       {editingServiceOrder && (
         <EditServiceOrderModal
           order={editingServiceOrder}
@@ -588,6 +604,213 @@ export default function OrdersPage() {
 }
 
 type BookingHistoryEntry = { status: string; notes: string | null; createdAt: string };
+
+type OrderEditPreview = {
+  oldValues: { total: number; depositAmount: number; remainingAmount: number };
+  newValues: { total: number; depositAmount: number; remainingAmount: number };
+  financialDifference: number;
+  inventoryDifference: Array<{ productId: number; productName: string; quantityChange: number }>;
+};
+
+type ProductOrderEditItem = {
+  productId: number;
+  productName: string;
+  productNameAr: string;
+  quantity: number;
+  price: number;
+  selectedColor: string | null;
+  selectedColorData: Record<string, unknown> | null;
+};
+
+type ProductOrderEditForm = {
+  customerName: string;
+  customerPhone: string;
+  governorate: string;
+  area: string;
+  address: string;
+  notes: string;
+  internalNotes: string;
+  deliveryFee: string;
+  depositAmount: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  status: string;
+  items: ProductOrderEditItem[];
+};
+
+function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const [preview, setPreview] = useState<OrderEditPreview | null>(null);
+  const [form, setForm] = useState<ProductOrderEditForm>({
+    customerName: String(order.customerName ?? ""),
+    customerPhone: formatIraqiPhoneInput(order.customerPhone ?? ""),
+    governorate: String(order.governorate ?? ""),
+    area: String(order.area ?? ""),
+    address: String(order.address ?? ""),
+    notes: String(order.notes ?? ""),
+    internalNotes: String(order.internalNotes ?? ""),
+    deliveryFee: String(order.deliveryFee ?? 0),
+    depositAmount: String(order.depositAmount ?? 0),
+    paymentStatus: String(order.paymentStatus ?? "unpaid"),
+    paymentMethod: String(order.paymentMethod ?? "cod"),
+    status: String(order.status ?? "pending"),
+    items: (Array.isArray(order.items) ? order.items : []).map((item: any): ProductOrderEditItem => ({
+      productId: Number(item.productId),
+      productName: String(item.productName ?? ""),
+      productNameAr: String(item.productNameAr ?? item.productName ?? ""),
+      quantity: Number(item.quantity ?? 1),
+      price: Number(item.price ?? 0),
+      selectedColor: item.selectedColor ?? null,
+      selectedColorData: item.selectedColorData ?? null,
+    })),
+  });
+  const { data: products = [] } = useQuery<any[]>({
+    queryKey: ["admin", "products", "order-editor"],
+    queryFn: () => adminFetch("/admin/products?limit=500"),
+    staleTime: 3 * 60 * 1000,
+  });
+  const filteredProducts = products.filter((product) => {
+    const term = search.trim().toLowerCase();
+    return !term || [product.nameAr, product.name, product.barcode].some((value) => String(value ?? "").toLowerCase().includes(term));
+  }).slice(0, 12);
+
+  function payload(previewOnly = false) {
+    return {
+      ...form,
+      customerPhone: normalizeIraqiPhone(form.customerPhone) ?? form.customerPhone,
+      deliveryFee: Number(form.deliveryFee || 0),
+      depositAmount: Number(form.depositAmount || 0),
+      items: form.items.map((item) => ({ ...item, quantity: Number(item.quantity), price: Number(item.price) })),
+      previewOnly,
+    };
+  }
+
+  const previewMutation = useMutation({
+    mutationFn: () => adminFetch<OrderEditPreview>(`/admin/orders/${order.id}`, { method: "PATCH", body: JSON.stringify(payload(true)) }),
+    onSuccess: setPreview,
+    onError: (error: any) => toast({ title: "تعذر تجهيز المعاينة", description: error?.message, variant: "destructive" }),
+  });
+  const saveMutation = useMutation({
+    mutationFn: () => adminFetch(`/admin/orders/${order.id}`, { method: "PATCH", body: JSON.stringify(payload(false)) }),
+    onSuccess: () => {
+      toast({ title: "تم حفظ تعديل الطلب", description: "تم تحديث المبلغ والمخزون وسجل النشاط." });
+      onSaved();
+    },
+    onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
+  });
+
+  function addProduct(product: any) {
+    setPreview(null);
+    setForm((current) => {
+      const index = current.items.findIndex((item) => item.productId === product.id);
+      if (index >= 0) {
+        return { ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: item.quantity + 1 } : item) };
+      }
+      return {
+        ...current,
+        items: [...current.items, {
+          productId: Number(product.id), productName: String(product.name ?? product.nameAr ?? ""),
+          productNameAr: String(product.nameAr ?? product.name ?? ""), quantity: 1, price: Number(product.price ?? 0),
+          selectedColor: null, selectedColorData: null,
+        }],
+      };
+    });
+    setSearch("");
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 sm:p-4" dir="rtl">
+      <div className="bg-card border border-border/40 rounded-xl w-full max-w-4xl max-h-[94vh] overflow-hidden flex flex-col shadow-2xl">
+        <div className="flex items-center justify-between gap-3 p-4 sm:p-5 border-b border-border/30 shrink-0">
+          <div className="min-w-0">
+            <h3 className="font-bold text-foreground truncate">تعديل الطلب {order.trackingCode}</h3>
+            <p className="text-xs text-muted-foreground mt-1">راجع الفروقات قبل اعتماد الحفظ</p>
+          </div>
+          <button type="button" onClick={onClose} className="shrink-0 text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="overflow-y-auto p-4 sm:p-5 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <Input label="اسم الزبون" value={form.customerName} onChange={(value) => { setPreview(null); setForm({ ...form, customerName: value }); }} />
+            <Input label="رقم الهاتف" value={form.customerPhone} onChange={(value) => { setPreview(null); setForm({ ...form, customerPhone: formatIraqiPhoneInput(value) }); }} />
+            <Input label="المحافظة" value={form.governorate} onChange={(value) => { setPreview(null); setForm({ ...form, governorate: value }); }} />
+            <Input label="المنطقة" value={form.area} onChange={(value) => { setPreview(null); setForm({ ...form, area: value }); }} />
+            <Input label="العنوان" value={form.address} onChange={(value) => { setPreview(null); setForm({ ...form, address: value }); }} />
+            <Input label="التوصيل" type="number" value={form.deliveryFee} onChange={(value) => { setPreview(null); setForm({ ...form, deliveryFee: value }); }} />
+            <Input label="المدفوع" type="number" value={form.depositAmount} onChange={(value) => { setPreview(null); setForm({ ...form, depositAmount: value }); }} />
+            <label className="block">
+              <span className="block text-xs text-muted-foreground mb-1">حالة الدفع</span>
+              <select value={form.paymentStatus} onChange={(event) => { setPreview(null); setForm({ ...form, paymentStatus: event.target.value }); }} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+                <option value="unpaid">غير مدفوع</option><option value="partial">جزئي</option><option value="paid">مدفوع</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs text-muted-foreground mb-1">طريقة الدفع</span>
+              <select value={form.paymentMethod} onChange={(event) => { setPreview(null); setForm({ ...form, paymentMethod: event.target.value }); }} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+                <option value="cod">عند الاستلام</option><option value="transfer">حوالة</option><option value="paid">مدفوع</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h4 className="text-sm font-semibold text-foreground">منتجات الطلب</h4>
+              <div className="relative w-full sm:w-72">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث عن منتج لإضافته" className="w-full bg-background border border-border/40 rounded-lg pr-9 pl-3 py-2 text-sm" />
+                {search && (
+                  <div className="absolute top-full right-0 left-0 mt-1 z-20 max-h-56 overflow-y-auto rounded-lg border border-border/40 bg-card shadow-xl">
+                    {filteredProducts.map((product) => (
+                      <button key={product.id} type="button" onClick={() => addProduct(product)} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-right hover:bg-primary/10 border-b border-border/20 last:border-0">
+                        <span className="min-w-0 text-sm truncate">{product.nameAr || product.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">{formatCurrency(product.price)} · {product.stock} بالمخزون</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              {form.items.map((item, index) => (
+                <div key={`${item.productId}-${index}`} className="grid grid-cols-[minmax(0,1fr)_80px_110px_36px] gap-2 items-end rounded-lg border border-border/30 bg-background/35 p-2.5">
+                  <div className="min-w-0"><span className="block text-[11px] text-muted-foreground mb-1">المنتج</span><p className="text-sm text-foreground truncate py-2">{item.productNameAr || item.productName}</p></div>
+                  <Input label="الكمية" type="number" value={String(item.quantity)} onChange={(value) => { setPreview(null); setForm({ ...form, items: form.items.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Math.max(1, Number(value || 1)) } : row) }); }} />
+                  <Input label="السعر" type="number" value={String(item.price)} onChange={(value) => { setPreview(null); setForm({ ...form, items: form.items.map((row, rowIndex) => rowIndex === index ? { ...row, price: Math.max(0, Number(value || 0)) } : row) }); }} />
+                  <button type="button" aria-label="حذف المنتج" disabled={form.items.length === 1} onClick={() => { setPreview(null); setForm({ ...form, items: form.items.filter((_, rowIndex) => rowIndex !== index) }); }} className="h-9 rounded-lg border border-status-danger/30 text-status-danger disabled:opacity-30 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block"><span className="block text-xs text-muted-foreground mb-1">ملاحظات الزبون</span><textarea value={form.notes} onChange={(event) => { setPreview(null); setForm({ ...form, notes: event.target.value }); }} className="w-full min-h-20 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" /></label>
+            <label className="block"><span className="block text-xs text-muted-foreground mb-1">ملاحظات داخلية</span><textarea value={form.internalNotes} onChange={(event) => { setPreview(null); setForm({ ...form, internalNotes: event.target.value }); }} className="w-full min-h-20 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm" /></label>
+          </div>
+
+          {preview && (
+            <div className="rounded-xl border border-primary/35 bg-primary/5 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3"><h4 className="font-semibold text-foreground">معاينة التغييرات</h4><Check className="w-4 h-4 text-primary" /></div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <div><p className="text-muted-foreground">الإجمالي السابق</p><p className="text-foreground font-semibold mt-1">{formatCurrency(preview.oldValues.total)}</p></div>
+                <div><p className="text-muted-foreground">الإجمالي الجديد</p><p className="text-foreground font-semibold mt-1">{formatCurrency(preview.newValues.total)}</p></div>
+                <div><p className="text-muted-foreground">الفرق المالي</p><p className="text-primary font-semibold mt-1">{preview.financialDifference >= 0 ? "+" : ""}{formatCurrency(preview.financialDifference)}</p></div>
+              </div>
+              {preview.inventoryDifference.length > 0 && <div className="border-t border-border/25 pt-3 space-y-1">{preview.inventoryDifference.map((change) => <p key={change.productId} className="text-xs text-muted-foreground">{change.productName}: <span className={change.quantityChange > 0 ? "text-status-success" : "text-status-warning"}>{change.quantityChange > 0 ? `إرجاع ${change.quantityChange}` : `خصم ${Math.abs(change.quantityChange)}`}</span></p>)}</div>}
+            </div>
+          )}
+        </div>
+        <div className="shrink-0 flex items-center justify-end gap-2 p-4 border-t border-border/30 bg-card">
+          <Button type="button" variant="outline" onClick={onClose}>إلغاء</Button>
+          {!preview ? (
+            <Button type="button" disabled={previewMutation.isPending || form.items.length === 0} onClick={() => previewMutation.mutate()}>{previewMutation.isPending ? "جاري التحضير..." : "معاينة التغييرات"}</Button>
+          ) : (
+            <Button type="button" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>{saveMutation.isPending ? "جاري الحفظ..." : "تأكيد وحفظ"}</Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PaymentPanel({
   total,
@@ -1019,6 +1242,8 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
     } as Record<string, any>,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [previewReady, setPreviewReady] = useState(false);
+  useEffect(() => setPreviewReady(false), [form]);
   const { data: crews = [] } = useQuery({
     queryKey: ["crews"],
     queryFn: async () => {
@@ -1049,6 +1274,10 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
     const nextErrors = validateServiceDetails(order.serviceType, details);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
+    if (!previewReady) {
+      setPreviewReady(true);
+      return;
+    }
     save.mutate({
       customerName: form.customerName,
       phone,
@@ -1102,8 +1331,22 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
           />
           <Input label="ملاحظات" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} />
           <Input label="ملاحظات داخلية" value={form.internalNotes} onChange={v => setForm(f => ({ ...f, internalNotes: v }))} />
+          {previewReady && (
+            <div className="rounded-xl border border-primary/35 bg-primary/5 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="font-semibold text-foreground">معاينة التغييرات</h4>
+                <Check className="w-4 h-4 text-primary" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <div><p className="text-muted-foreground">السعر السابق</p><p className="font-semibold text-foreground mt-1">{formatCurrency(order.totalAmount ?? 0)}</p></div>
+                <div><p className="text-muted-foreground">السعر الجديد</p><p className="font-semibold text-foreground mt-1">{formatCurrency(Number(form.totalAmount || 0))}</p></div>
+                <div><p className="text-muted-foreground">الفرق المالي</p><p className="font-semibold text-primary mt-1">{formatCurrency(Number(form.totalAmount || 0) - Number(order.totalAmount || 0))}</p></div>
+              </div>
+              <p className="text-xs text-muted-foreground">سيُحفظ الاسم والهاتف والموعد وتفاصيل الخدمة والدفع مع نسخة القيم السابقة في سجل النشاط.</p>
+            </div>
+          )}
           <Button type="submit" disabled={save.isPending} className="w-full">
-            {save.isPending ? "جاري الحفظ..." : "حفظ التعديل"}
+            {save.isPending ? "جاري الحفظ..." : previewReady ? "تأكيد وحفظ" : "معاينة التغييرات"}
           </Button>
         </form>
       </div>
