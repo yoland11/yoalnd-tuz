@@ -279,22 +279,21 @@ function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct
     <button
       type="button"
       onClick={onClick}
-      className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${
+      className={`group relative block overflow-hidden rounded-2xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${
         selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"
       }`}
     >
       <SelectionMark selected={selected} />
-      <div className="aspect-[4/3] overflow-hidden bg-muted">
+      <div className="relative aspect-[4/5] overflow-hidden bg-muted">
         {image ? (
           <img src={image} alt={item.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" loading="lazy" decoding="async" />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-background/70 px-3 text-center text-sm text-muted-foreground">بدون صورة</div>
         )}
       </div>
-      <div className="space-y-2 p-4">
-        <h3 className="font-bold text-foreground">{item.name}</h3>
-        <p className="text-lg font-bold text-primary">{formatKoshaPrice(item.price)}</p>
-        {shortText(item.description) ? <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{shortText(item.description)}</p> : null}
+      <div className="p-3">
+        <h3 className="text-sm font-semibold text-foreground">{item.name}</h3>
+        <p className="mt-1 text-sm font-bold text-primary">{formatKoshaPrice(item.price)}</p>
       </div>
     </button>
   );
@@ -475,7 +474,7 @@ export default function KoshasPage() {
                       <Button type="button" onClick={() => go(2)}>التالي</Button>
                     </div>
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <div className="grid gap-4 grid-cols-2 lg:grid-cols-3">
                     {options.addons.map((item) => (
                       <KoshaOptionCard key={item.id} item={item} selected={selectedAddons.includes(item.name)} onClick={() => toggleList(item.name, selectedAddons, setSelectedAddons)} />
                     ))}
@@ -496,7 +495,7 @@ export default function KoshasPage() {
                       <Button type="button" onClick={() => go(3)}>التالي</Button>
                     </div>
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <div className="grid gap-4 grid-cols-2 lg:grid-cols-3">
                     {options.welcomeBoards.map((item) => (
                       <KoshaOptionCard
                         key={item.id}
@@ -529,7 +528,7 @@ export default function KoshasPage() {
                         onClick={() => setSelectedAccessories(selectedAccessories.length === allAccessoryNames.length ? [] : allAccessoryNames)}
                       />
                     </div>
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid gap-4 grid-cols-2 lg:grid-cols-3">
                       {options.accessories.map((item) => (
                         <KoshaOptionCard key={item.id} item={item} selected={selectedAccessories.includes(item.name)} onClick={() => toggleList(item.name, selectedAccessories, setSelectedAccessories)} />
                       ))}
