@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus, Layers3, SlidersHorizontal, Star, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,27 @@ export type KoshaOptionProduct = {
   isActive?: boolean;
   sortOrder?: number;
 };
+export type KoshaPackage = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  price: number;
+  configuredPrice?: number;
+  oldPrice?: number | null;
+  mainImage?: string | null;
+  features: string[];
+  badgeText?: string | null;
+  isFeatured: boolean;
+  isActive: boolean;
+  sortOrder: number;
+  defaultKosha: Kosha | null;
+  koshas: Kosha[];
+  addons: KoshaOptionProduct[];
+  welcomeBoards: KoshaOptionProduct[];
+  accessories: KoshaOptionProduct[];
+  componentsTotal?: number;
+};
 type KoshaWizardOptions = {
   addons: KoshaOptionProduct[];
   welcomeBoards: KoshaOptionProduct[];
@@ -126,6 +147,53 @@ async function fetchKoshaOptions(): Promise<KoshaWizardOptions> {
   const res = await fetch("/api/koshas/options");
   if (!res.ok) throw new Error("تعذر تحميل خيارات الحجز");
   return res.json();
+}
+
+async function fetchKoshaPackages(): Promise<KoshaPackage[]> {
+  const res = await fetch("/api/koshas/packages");
+  const payload = await res.json().catch(() => []);
+  if (!res.ok) throw new Error(payload?.error || "تعذر تحميل الباقات");
+  return Array.isArray(payload) ? payload : [];
+}
+
+function PackageCard({ item, onSelect }: { item: KoshaPackage; onSelect: () => void }) {
+  const image = item.mainImage || item.defaultKosha?.mainImage || "/images/kosha.png";
+  return (
+    <article className={`relative overflow-hidden rounded-2xl bg-card transition-colors ${item.isFeatured ? "border border-primary" : "border border-border/40 hover:border-primary/50"}`}>
+      {item.badgeText || item.isFeatured ? (
+        <span className="absolute right-3 top-3 z-10 inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-bold text-primary-foreground">
+          <Star className="h-3.5 w-3.5" />
+          {item.badgeText || "الأكثر طلباً"}
+        </span>
+      ) : null}
+      <div className="aspect-[16/10] overflow-hidden bg-muted">
+        <img src={image} alt={item.name} className="h-full w-full object-cover transition-transform duration-500 hover:scale-[1.03]" loading="lazy" decoding="async" />
+      </div>
+      <div className="space-y-4 p-4">
+        <div>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-xl font-bold text-foreground">{item.name}</h2>
+            <div className="text-left">
+              <div className="text-lg font-bold text-primary">{formatKoshaPrice(item.price)}</div>
+              {item.oldPrice ? <div className="text-xs text-muted-foreground line-through">{formatKoshaPrice(item.oldPrice)}</div> : null}
+            </div>
+          </div>
+          {item.description ? <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.description}</p> : null}
+        </div>
+        <ul className="grid gap-2 text-sm text-foreground sm:grid-cols-2 lg:grid-cols-1">
+          {item.features.slice(0, 8).map((feature) => (
+            <li key={feature} className="flex items-start gap-2">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-primary" />
+              <span>{feature}</span>
+            </li>
+          ))}
+        </ul>
+        <Button type="button" className="w-full" onClick={onSelect} disabled={!item.defaultKosha}>
+          {item.defaultKosha ? "اختيار الباقة" : "الباقة غير جاهزة حالياً"}
+        </Button>
+      </div>
+    </article>
+  );
 }
 
 export function KoshaCard({ kosha, index = 0 }: { kosha: Kosha; index?: number }) {
@@ -330,10 +398,17 @@ export default function KoshasPage() {
     queryFn: fetchKoshaOptions,
     staleTime: 5 * 60_000,
   });
+  const packagesQuery = useQuery({
+    queryKey: ["koshas", "packages"],
+    queryFn: fetchKoshaPackages,
+    staleTime: 2 * 60_000,
+  });
   const t = useT();
   const { toast } = useToast();
+  const [flowView, setFlowView] = useState<"chooser" | "packages" | "wizard">("chooser");
   const [step, setStep] = useState<WizardStep>(0);
   const [selectedKosha, setSelectedKosha] = useState<Kosha | null>(null);
+  const [selectedPackage, setSelectedPackage] = useState<KoshaPackage | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<string[]>([]);
   const [selectedBoards, setSelectedBoards] = useState<string[]>([]);
   const [selectedAccessories, setSelectedAccessories] = useState<string[]>([]);
@@ -347,7 +422,11 @@ export default function KoshasPage() {
   const selectedAccessoryItems = useMemo(() => selectedOptionItems(options.accessories, selectedAccessories), [options.accessories, selectedAccessories]);
   const koshaBasePrice = Number(selectedKosha?.price ?? 0) || 0;
   const selectedOptionsTotal = optionsTotal([...selectedAddonItems, ...selectedBoardItems, ...selectedAccessoryItems]);
-  const bookingTotal = koshaBasePrice + selectedOptionsTotal;
+  const bookingTotal = selectedPackage ? Number(selectedPackage.price ?? 0) : koshaBasePrice + selectedOptionsTotal;
+  const packages = packagesQuery.data ?? [];
+  const upgradePackage = selectedPackage
+    ? packages.find((item) => item.sortOrder > selectedPackage.sortOrder) ?? null
+    : null;
 
   const booking = useMutation({
     mutationFn: async () => {
@@ -357,6 +436,7 @@ export default function KoshasPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...form,
+          packageId: selectedPackage?.id ?? null,
           customerName: [form.brideName, form.groomName].filter(Boolean).join(" و "),
           phone: form.bridePhone || form.groomPhone || form.alternatePhone,
           cityArea: [form.province, form.area].filter(Boolean).join(" - "),
@@ -374,7 +454,9 @@ export default function KoshasPage() {
     onSuccess: () => {
       toast({ title: "تم إرسال الحجز", description: "وصل الطلب إلى لوحة الإدارة وسنتواصل معك قريباً." });
       setStep(0);
+      setFlowView("chooser");
       setSelectedKosha(null);
+      setSelectedPackage(null);
       setSelectedAddons([]);
       setSelectedBoards([]);
       setSelectedAccessories([]);
@@ -392,6 +474,31 @@ export default function KoshasPage() {
     setList(list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
   }
 
+  function applyPackage(item: KoshaPackage) {
+    if (!item.defaultKosha) {
+      toast({ title: "الباقة غير جاهزة", description: "يرجى اختيار كوشة افتراضية لهذه الباقة من لوحة الإدارة.", variant: "destructive" });
+      return;
+    }
+    setSelectedPackage(item);
+    setSelectedKosha(item.defaultKosha);
+    setSelectedAddons(item.addons.map((entry) => entry.name));
+    setSelectedBoards(item.welcomeBoards.slice(0, 1).map((entry) => entry.name));
+    setSelectedAccessories(item.accessories.map((entry) => entry.name));
+    setStep(4);
+    setFlowView("wizard");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function startCustomBooking() {
+    setSelectedPackage(null);
+    setSelectedKosha(null);
+    setSelectedAddons([]);
+    setSelectedBoards([]);
+    setSelectedAccessories([]);
+    setStep(0);
+    setFlowView("wizard");
+  }
+
   async function updateVenueImage(index: number, file: File | null) {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -402,9 +509,68 @@ export default function KoshasPage() {
     setVenueImages((current) => current.map((item, itemIndex) => (itemIndex === index ? dataUrl : item)));
   }
 
+  if (flowView === "chooser") {
+    return (
+      <div className="container mx-auto max-w-5xl px-4 py-10 md:py-14">
+        <div className="mb-7 text-center">
+          <h1 className="text-3xl font-bold text-foreground">كيف تفضّل إكمال حجزك؟</h1>
+          <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">اختر باقة جاهزة لتوفير الوقت، أو خصّص كل تفاصيل الكوشة بنفسك من خلال خطوات الحجز الحالية.</p>
+        </div>
+        <div className="grid gap-5 md:grid-cols-2">
+          <button type="button" onClick={() => setFlowView("packages")} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-primary bg-card p-6 text-right transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <span className="grid h-12 w-12 place-items-center rounded-xl bg-primary text-primary-foreground"><Layers3 className="h-6 w-6" /></span>
+            <span className="mt-8 block">
+              <span className="block text-2xl font-bold text-foreground">الحجز بالباقات الجاهزة</span>
+              <span className="mt-2 block text-sm leading-6 text-muted-foreground">كوشة وإضافات وإكسسوارات مختارة مسبقاً بسعر واضح وخطوات أقل.</span>
+            </span>
+            <span className="mt-5 inline-flex items-center gap-2 font-semibold text-primary">عرض الباقات <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" /></span>
+          </button>
+          <button type="button" onClick={startCustomBooking} className="group flex min-h-64 flex-col justify-between rounded-2xl border border-border/40 bg-card p-6 text-right transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <span className="grid h-12 w-12 place-items-center rounded-xl bg-background text-primary"><SlidersHorizontal className="h-6 w-6" /></span>
+            <span className="mt-8 block">
+              <span className="block text-2xl font-bold text-foreground">التخصيص الكامل</span>
+              <span className="mt-2 block text-sm leading-6 text-muted-foreground">اختر الكوشة والخدمات والبورد والإكسسوارات بالتفصيل عبر المعالج الحالي.</span>
+            </span>
+            <span className="mt-5 inline-flex items-center gap-2 font-semibold text-primary">بدء التخصيص <ArrowLeft className="h-4 w-4 transition-transform group-hover:-translate-x-1" /></span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (flowView === "packages") {
+    return (
+      <div className="container mx-auto px-4 py-10 md:py-12">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <Button type="button" variant="ghost" className="mb-3 px-0 text-muted-foreground hover:text-primary" onClick={() => setFlowView("chooser")}><ChevronRight className="ml-1 h-4 w-4" /> رجوع</Button>
+            <h1 className="text-3xl font-bold text-foreground">الباقات الجاهزة</h1>
+            <p className="mt-2 text-sm text-muted-foreground">اختر الباقة المناسبة، وسننقلك مباشرة إلى بيانات الحجز.</p>
+          </div>
+          <Button type="button" variant="outline" onClick={startCustomBooking}><SlidersHorizontal className="ml-2 h-4 w-4" /> التخصيص الكامل</Button>
+        </div>
+        {packagesQuery.isLoading ? (
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{[1, 2, 3].map((item) => <Skeleton key={item} className="h-[520px] rounded-2xl" />)}</div>
+        ) : packagesQuery.isError ? (
+          <div className="rounded-xl border border-border/40 bg-card p-8 text-center text-muted-foreground">تعذر تحميل الباقات حالياً.</div>
+        ) : packages.length === 0 ? (
+          <div className="rounded-xl border border-border/40 bg-card p-8 text-center"><p className="text-muted-foreground">لا توجد باقات متاحة حالياً.</p><Button className="mt-4" variant="outline" onClick={startCustomBooking}>الانتقال للتخصيص الكامل</Button></div>
+        ) : (
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{packages.map((item) => <PackageCard key={item.id} item={item} onSelect={() => applyPackage(item)} />)}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="container mx-auto px-4 py-10 md:py-12">
       <section id="koshas-list" className="scroll-mt-24">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <Button type="button" variant="ghost" className="px-0 text-muted-foreground hover:text-primary" onClick={() => { setFlowView(selectedPackage ? "packages" : "chooser"); if (!selectedPackage) setStep(0); }}>
+            <ChevronRight className="ml-1 h-4 w-4" /> {selectedPackage ? "العودة للباقات" : "تغيير طريقة الحجز"}
+          </Button>
+          {selectedPackage ? <span className="rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">{selectedPackage.name}</span> : null}
+        </div>
         <Stepper step={step} />
         {isLoading ? (
           <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
@@ -544,6 +710,18 @@ export default function KoshasPage() {
 
               {step === 4 && (
                 <>
+                  {selectedPackage && upgradePackage ? (
+                    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4">
+                      <div className="flex items-start gap-3">
+                        <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground"><TrendingUp className="h-5 w-5" /></span>
+                        <div>
+                          <h3 className="font-bold text-foreground">ترقية إلى {upgradePackage.name}</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">{upgradePackage.price > selectedPackage.price ? `احصل على مكوّنات أكثر مقابل ${formatKoshaPrice(upgradePackage.price - selectedPackage.price)} إضافية.` : "احصل على مكوّنات أكثر، ويُحدّد فرق السعر حسب إعداد الباقة."}</p>
+                        </div>
+                      </div>
+                      <Button type="button" onClick={() => applyPackage(upgradePackage)}>ترقية الباقة</Button>
+                    </div>
+                  ) : null}
                   <div>
                     <h2 className="text-2xl font-bold text-foreground">بيانات الحجز</h2>
                     <p className="mt-1 text-sm text-muted-foreground">املأ التفاصيل المتوفرة، ويمكن ترك أي حقل غير ضروري فارغاً.</p>
@@ -619,7 +797,7 @@ export default function KoshasPage() {
                     </CardContent>
                   </Card>
                   <div className="flex justify-between gap-2">
-                    <Button type="button" variant="outline" onClick={() => go(3)}><ChevronRight className="ml-2 h-4 w-4" /> السابق</Button>
+                    <Button type="button" variant="outline" onClick={() => selectedPackage ? setFlowView("packages") : go(3)}><ChevronRight className="ml-2 h-4 w-4" /> السابق</Button>
                     <Button type="button" onClick={() => go(5)}>مراجعة وتأكيد</Button>
                   </div>
                 </>
@@ -636,11 +814,12 @@ export default function KoshasPage() {
                       <div className="mb-4 flex flex-wrap items-start justify-between gap-3 border-b border-border/30 pb-4">
                         <div>
                           <p className="text-xs text-muted-foreground">فاتورة حجز كوشة</p>
-                          <h3 className="text-xl font-bold text-foreground">{selectedKosha?.name ?? "لم يتم اختيار كوشة"}</h3>
+                          <h3 className="text-xl font-bold text-foreground">{selectedPackage?.name ?? selectedKosha?.name ?? "لم يتم اختيار كوشة"}</h3>
+                          {selectedPackage ? <p className="mt-1 text-xs text-muted-foreground">تشمل: {selectedKosha?.name}</p> : null}
                         </div>
                         <div className="text-left">
                           <p className="text-xs text-muted-foreground">السعر المبدئي</p>
-                          <p className="text-xl font-bold text-primary">{formatKoshaPrice(koshaBasePrice)}</p>
+                          <p className="text-xl font-bold text-primary">{formatKoshaPrice(bookingTotal)}</p>
                         </div>
                       </div>
                       <div className="grid gap-5 md:grid-cols-2">
@@ -651,13 +830,13 @@ export default function KoshasPage() {
                           <SummaryRow label="الاكسسوارات" value={selectedAccessories} />
                           <div className="mt-3 rounded-lg border border-border/30 bg-card p-3 text-sm">
                             <div className="flex items-center justify-between gap-3 py-1">
-                              <span className="text-muted-foreground">سعر الكوشة</span>
-                              <span className="font-bold text-foreground">{formatKoshaPrice(koshaBasePrice)}</span>
+                              <span className="text-muted-foreground">{selectedPackage ? "سعر الباقة" : "سعر الكوشة"}</span>
+                              <span className="font-bold text-foreground">{formatKoshaPrice(selectedPackage ? bookingTotal : koshaBasePrice)}</span>
                             </div>
-                            <div className="flex items-center justify-between gap-3 py-1">
+                            {!selectedPackage ? <div className="flex items-center justify-between gap-3 py-1">
                               <span className="text-muted-foreground">إضافات الحجز</span>
                               <span className="font-bold text-foreground">{formatKoshaPrice(selectedOptionsTotal)}</span>
-                            </div>
+                            </div> : null}
                             <div className="mt-2 flex items-center justify-between gap-3 border-t border-border/30 pt-3">
                               <span className="font-bold text-foreground">الإجمالي</span>
                               <span className="text-lg font-bold text-primary">{formatKoshaPrice(bookingTotal)}</span>

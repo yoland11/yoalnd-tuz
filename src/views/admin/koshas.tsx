@@ -20,6 +20,9 @@ type KoshaBooking = {
   id: number;
   koshaId: number | null;
   koshaName: string | null;
+  packageId?: number | null;
+  packageName?: string | null;
+  packagePrice?: number | null;
   customerName: string;
   phone: string;
   brideName: string;
@@ -720,8 +723,8 @@ export function AdminKoshaBookingsPage() {
   });
 
   const csv = useMemo(() => {
-    const header = ["الرقم", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الإجمالي", "الحالة"];
-    const rows = data.map((item) => [item.id, item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingTotal(item.bookingDetails) ?? "", STATUS_LABELS[item.status] ?? item.status]);
+    const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الإجمالي", "الحالة"];
+    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingTotal(item.bookingDetails) ?? "", STATUS_LABELS[item.status] ?? item.status]);
     return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   }, [data]);
 
@@ -739,6 +742,7 @@ export function AdminKoshaBookingsPage() {
     const win = window.open("", "_blank", "width=420,height=640");
     if (!win) return;
     win.document.write(`<html dir="rtl"><head><title>حجز كوشة</title><style>body{font-family:Arial;padding:24px;color:#000}h1{font-size:20px}.row{margin:10px 0;border-bottom:1px solid #ddd;padding-bottom:8px}</style></head><body><h1>تفاصيل حجز الكوشة</h1>${[
+      ["الباقة", item.packageName ?? "-"],
       ["الكوشة", item.koshaName ?? "-"],
       ["الزبون", item.customerName],
       ["الهاتف", item.phone],
@@ -799,7 +803,7 @@ export function AdminKoshaBookingsPage() {
               <tbody>
                 {data.map((item) => (
                   <tr key={item.id} className="border-t border-border/30">
-                    <td className="px-4 py-3">{item.koshaName ?? "-"}</td>
+                    <td className="px-4 py-3"><div>{item.koshaName ?? "-"}</div>{item.packageName ? <div className="mt-1 text-xs font-semibold text-primary">{item.packageName}</div> : null}</td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-foreground">{item.customerName}</div>
                       {(item.brideName || item.groomName) && <div className="text-xs text-muted-foreground">{[item.brideName, item.groomName].filter(Boolean).join(" و ")}</div>}
@@ -903,7 +907,12 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     ...(options?.welcomeBoards ?? []).filter((item) => form.welcomeBoards.includes(item.name)),
     ...(options?.accessories ?? []).filter((item) => form.selectedAccessories.includes(item.name)),
   ].reduce((sum, item) => sum + Number(item.price ?? 0), 0);
-  const projectedTotal = Number(chosenKosha?.price ?? booking.totalAmount ?? 0) + optionTotal;
+  const packageSelectionsUnchanged = Boolean(booking.packageId)
+    && Number(form.koshaId) === Number(booking.koshaId)
+    && JSON.stringify(form.selectedAddons) === JSON.stringify(booking.selectedAddons)
+    && JSON.stringify(form.welcomeBoards) === JSON.stringify(booking.welcomeBoards)
+    && JSON.stringify(form.selectedAccessories) === JSON.stringify(booking.selectedAccessories);
+  const projectedTotal = packageSelectionsUnchanged ? Number(booking.totalAmount) : Number(chosenKosha?.price ?? booking.totalAmount ?? 0) + optionTotal;
 
   function toggle(key: "selectedAddons" | "selectedAccessories", name: string) {
     setForm((current) => ({ ...current, [key]: current[key].includes(name) ? current[key].filter((item) => item !== name) : [...current[key], name] }));

@@ -1,4 +1,4 @@
-import { revalidateTag } from "next/cache";
+import { revalidateTag, unstable_cache } from "next/cache";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
 import {
@@ -43,6 +43,8 @@ import {
   koshaStaffNotificationsTable,
   KOSHA_EXECUTION_STAGES,
   koshaImagesTable,
+  koshaPackageComponentsTable,
+  koshaPackagesTable,
   koshaProvincesTable,
   koshaWelcomeBoardsTable,
   koshasTable,
@@ -1407,6 +1409,7 @@ const KoshaPatchSchema = z.object({
 
 const KoshaBookingCreateSchema = z.object({
   koshaId: z.coerce.number().int().positive(),
+  packageId: z.coerce.number().int().positive().optional().nullable(),
   customerName: z.string().optional().default(""),
   phone: z.string().optional().default(""),
   brideName: z.string().optional().default(""),
@@ -1486,6 +1489,27 @@ const KoshaOptionProductPatchSchema = z.object({
   sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional(),
 });
 
+const KoshaPackageSchema = z.object({
+  name: z.preprocess(looseText, z.string()).optional().default(""),
+  slug: z.preprocess(looseText, z.string()).optional().default(""),
+  description: z.preprocess(looseText, z.string()).optional().nullable(),
+  price: z.preprocess(blankToZero, z.coerce.number().nonnegative()).optional().default(0),
+  oldPrice: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullable()).optional().nullable(),
+  mainImage: z.preprocess(looseText, z.string()).optional().nullable(),
+  features: z.union([z.array(z.string()), z.string()]).optional().default([]),
+  badgeText: z.preprocess(looseText, z.string()).optional().nullable(),
+  isFeatured: z.preprocess(looseBoolean, z.boolean()).optional().default(false),
+  isActive: z.preprocess(looseBoolean, z.boolean()).optional().default(true),
+  sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional().default(0),
+  koshaIds: z.array(z.coerce.number().int().positive()).optional().default([]),
+  defaultKoshaId: z.coerce.number().int().positive().optional().nullable(),
+  addonIds: z.array(z.coerce.number().int().positive()).optional().default([]),
+  welcomeBoardIds: z.array(z.coerce.number().int().positive()).optional().default([]),
+  accessoryIds: z.array(z.coerce.number().int().positive()).optional().default([]),
+});
+
+const KoshaPackagePatchSchema = KoshaPackageSchema.partial();
+
 function normalizeKoshaAccessories(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map((item) => String(item ?? "").trim()).filter(Boolean);
@@ -1499,6 +1523,11 @@ function normalizeKoshaAccessories(value: unknown): string[] {
 function normalizeKoshaStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
+
+function normalizeIdList(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)));
 }
 
 function koshaOptionImageKind(section: "addon" | "welcome_board" | "accessory") {
@@ -1603,6 +1632,183 @@ async function formatKosha(row: any, includeImages = true) {
   };
 }
 
+async function uniqueKoshaPackageSlug(input: string, ignoreId?: number): Promise<string> {
+  const base = normalizeKoshaSlug(input, "kosha-package");
+  let slug = base;
+  let attempt = 1;
+  while (true) {
+    const existing = await db.query.koshaPackagesTable.findFirst({ where: eq(koshaPackagesTable.slug, slug) });
+    if (!existing || existing.id === ignoreId) return slug;
+    attempt += 1;
+    slug = `${base}-${attempt}`.slice(0, 160);
+  }
+}
+
+async function loadKoshaPackageParts(packageId: number) {
+  const links = await db.query.koshaPackageComponentsTable.findMany({
+    where: eq(koshaPackageComponentsTable.packageId, packageId),
+    orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+  });
+  const ids = (type: string) => links.filter((item) => item.componentType === type).map((item) => item.componentId);
+  const koshaIds = ids("kosha");
+  const addonIds = ids("addon");
+  const boardIds = ids("welcome_board");
+  const accessoryIds = ids("accessory");
+  const [koshas, addons, welcomeBoards, accessories] = await Promise.all([
+    koshaIds.length ? db.query.koshasTable.findMany({ where: inArray(koshasTable.id, koshaIds) }) : Promise.resolve([]),
+    addonIds.length ? db.query.koshaAddonsTable.findMany({ where: inArray(koshaAddonsTable.id, addonIds) }) : Promise.resolve([]),
+    boardIds.length ? db.query.koshaWelcomeBoardsTable.findMany({ where: inArray(koshaWelcomeBoardsTable.id, boardIds) }) : Promise.resolve([]),
+    accessoryIds.length ? db.query.koshaAccessoriesTable.findMany({ where: inArray(koshaAccessoriesTable.id, accessoryIds) }) : Promise.resolve([]),
+  ]);
+  const orderByIds = <T extends { id: number }>(rows: T[], orderedIds: number[]) => orderedIds.map((id) => rows.find((row) => row.id === id)).filter(Boolean) as T[];
+  const orderedKoshas = orderByIds(koshas, koshaIds);
+  const defaultLink = links.find((item) => item.componentType === "kosha" && item.isDefault);
+  return {
+    koshas: orderedKoshas,
+    addons: orderByIds(addons, addonIds),
+    welcomeBoards: orderByIds(welcomeBoards, boardIds),
+    accessories: orderByIds(accessories, accessoryIds),
+    defaultKosha: orderedKoshas.find((item) => item.id === defaultLink?.componentId) ?? orderedKoshas[0] ?? null,
+  };
+}
+
+async function formatKoshaPackageFromParts(row: any, parts: Awaited<ReturnType<typeof loadKoshaPackageParts>>, includeInactiveParts = false) {
+  const koshas = await Promise.all(parts.koshas.filter((item) => includeInactiveParts || item.isActive).map((item) => formatKosha(item, false)));
+  const addons = parts.addons.filter((item) => includeInactiveParts || item.isActive).map((item) => formatKoshaOptionProduct(item, "addon"));
+  const welcomeBoards = parts.welcomeBoards.filter((item) => includeInactiveParts || item.isActive).map((item) => formatKoshaOptionProduct(item, "welcome_board"));
+  const accessories = parts.accessories.filter((item) => includeInactiveParts || item.isActive).map((item) => formatKoshaOptionProduct(item, "accessory"));
+  const defaultKosha = koshas.find((item) => item.id === parts.defaultKosha?.id) ?? koshas[0] ?? null;
+  const componentsTotal = [defaultKosha, ...addons, ...welcomeBoards, ...accessories]
+    .reduce((sum, item) => sum + Number(item?.price ?? 0), 0);
+  const configuredPrice = Number.parseFloat(String(row.price ?? "0")) || 0;
+  const effectivePrice = configuredPrice > 0 ? configuredPrice : componentsTotal;
+  const featureList = normalizeKoshaAccessories(row.features);
+  const generatedFeatures = [
+    defaultKosha?.name,
+    ...addons.map((item) => item.name),
+    ...welcomeBoards.map((item) => item.name),
+    ...accessories.map((item) => item.name),
+  ].filter(Boolean) as string[];
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description ?? "",
+    price: effectivePrice,
+    configuredPrice,
+    oldPrice: row.oldPrice ? Number.parseFloat(String(row.oldPrice)) : null,
+    mainImage: publicMediaValue("kosha-package", row, row.mainImage) || defaultKosha?.mainImage || null,
+    features: featureList.length ? featureList : generatedFeatures,
+    badgeText: row.badgeText ?? null,
+    isFeatured: row.isFeatured ?? false,
+    isActive: row.isActive ?? true,
+    sortOrder: row.sortOrder ?? 0,
+    defaultKosha,
+    koshas,
+    addons,
+    welcomeBoards,
+    accessories,
+    componentsTotal,
+    createdAt: row.createdAt?.toISOString?.() ?? String(row.createdAt ?? ""),
+    updatedAt: row.updatedAt?.toISOString?.() ?? String(row.updatedAt ?? ""),
+  };
+}
+
+async function formatKoshaPackage(row: any, includeInactiveParts = false) {
+  return formatKoshaPackageFromParts(row, await loadKoshaPackageParts(row.id), includeInactiveParts);
+}
+
+async function formatKoshaPackages(rows: any[], includeInactiveParts = false) {
+  if (!rows.length) return [];
+  const packageIds = rows.map((row) => row.id);
+  const links = await db.query.koshaPackageComponentsTable.findMany({
+    where: inArray(koshaPackageComponentsTable.packageId, packageIds),
+    orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+  });
+  const componentIds = (type: string) => Array.from(new Set(links.filter((item) => item.componentType === type).map((item) => item.componentId)));
+  const koshaIds = componentIds("kosha");
+  const addonIds = componentIds("addon");
+  const boardIds = componentIds("welcome_board");
+  const accessoryIds = componentIds("accessory");
+  const [koshas, addons, welcomeBoards, accessories] = await Promise.all([
+    koshaIds.length ? db.query.koshasTable.findMany({ where: inArray(koshasTable.id, koshaIds) }) : Promise.resolve([]),
+    addonIds.length ? db.query.koshaAddonsTable.findMany({ where: inArray(koshaAddonsTable.id, addonIds) }) : Promise.resolve([]),
+    boardIds.length ? db.query.koshaWelcomeBoardsTable.findMany({ where: inArray(koshaWelcomeBoardsTable.id, boardIds) }) : Promise.resolve([]),
+    accessoryIds.length ? db.query.koshaAccessoriesTable.findMany({ where: inArray(koshaAccessoriesTable.id, accessoryIds) }) : Promise.resolve([]),
+  ]);
+  const partsFor = (packageId: number) => {
+    const packageLinks = links.filter((item) => item.packageId === packageId);
+    const ids = (type: string) => packageLinks.filter((item) => item.componentType === type).map((item) => item.componentId);
+    const orderedRows = <T extends { id: number }>(source: T[], orderedIds: number[]) => orderedIds.map((id) => source.find((row) => row.id === id)).filter(Boolean) as T[];
+    const orderedKoshas = orderedRows(koshas, ids("kosha"));
+    const defaultLink = packageLinks.find((item) => item.componentType === "kosha" && item.isDefault);
+    return {
+      koshas: orderedKoshas,
+      addons: orderedRows(addons, ids("addon")),
+      welcomeBoards: orderedRows(welcomeBoards, ids("welcome_board")),
+      accessories: orderedRows(accessories, ids("accessory")),
+      defaultKosha: orderedKoshas.find((item) => item.id === defaultLink?.componentId) ?? orderedKoshas[0] ?? null,
+    };
+  };
+  return Promise.all(rows.map((row) => formatKoshaPackageFromParts(row, partsFor(row.id), includeInactiveParts)));
+}
+
+const KOSHA_PACKAGES_CACHE_TAG = "kosha-packages";
+const getCachedPublicKoshaPackages = unstable_cache(async () => {
+  await ensureKoshaTables();
+  const rows = await db.query.koshaPackagesTable.findMany({
+    where: eq(koshaPackagesTable.isActive, true),
+    orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+  });
+  return (await formatKoshaPackages(rows, false)).filter((item) => item.defaultKosha);
+}, ["public-kosha-packages-v1"], { revalidate: 120, tags: [KOSHA_PACKAGES_CACHE_TAG] });
+
+async function koshaPackageValuesFromData(data: any, existingId?: number) {
+  const name = textFallback(data.name, existingId ? undefined : "باقة جديدة");
+  const values: any = { updatedAt: new Date() };
+  if (data.name !== undefined || !existingId) values.name = name;
+  if (data.slug !== undefined || data.name !== undefined || !existingId) values.slug = await uniqueKoshaPackageSlug(data.slug || name, existingId);
+  if (data.description !== undefined) values.description = nullableText(data.description);
+  if (data.price !== undefined || !existingId) values.price = String(money(data.price));
+  if (data.oldPrice !== undefined) values.oldPrice = money(data.oldPrice) > 0 ? String(money(data.oldPrice)) : null;
+  if (data.mainImage !== undefined) values.mainImage = await persistMediaValue(data.mainImage, "koshas/packages");
+  if (data.features !== undefined || !existingId) values.features = normalizeKoshaAccessories(data.features);
+  if (data.badgeText !== undefined) values.badgeText = nullableText(data.badgeText);
+  if (data.isFeatured !== undefined || !existingId) values.isFeatured = Boolean(data.isFeatured);
+  if (data.isActive !== undefined || !existingId) values.isActive = data.isActive !== false;
+  if (data.sortOrder !== undefined || !existingId) values.sortOrder = Number.isFinite(Number(data.sortOrder)) ? Number(data.sortOrder) : 0;
+  return values;
+}
+
+async function replaceKoshaPackageParts(packageId: number, data: any) {
+  const koshaIds = normalizeIdList(data.koshaIds);
+  const defaultKoshaId = Number(data.defaultKoshaId) || koshaIds[0] || null;
+  if (defaultKoshaId && !koshaIds.includes(defaultKoshaId)) koshaIds.unshift(defaultKoshaId);
+  const addonIds = normalizeIdList(data.addonIds);
+  const welcomeBoardIds = normalizeIdList(data.welcomeBoardIds).slice(0, 1);
+  const accessoryIds = normalizeIdList(data.accessoryIds);
+  const checks = await Promise.all([
+    koshaIds.length ? db.query.koshasTable.findMany({ where: inArray(koshasTable.id, koshaIds) }) : Promise.resolve([]),
+    addonIds.length ? db.query.koshaAddonsTable.findMany({ where: inArray(koshaAddonsTable.id, addonIds) }) : Promise.resolve([]),
+    welcomeBoardIds.length ? db.query.koshaWelcomeBoardsTable.findMany({ where: inArray(koshaWelcomeBoardsTable.id, welcomeBoardIds) }) : Promise.resolve([]),
+    accessoryIds.length ? db.query.koshaAccessoriesTable.findMany({ where: inArray(koshaAccessoriesTable.id, accessoryIds) }) : Promise.resolve([]),
+  ]);
+  if (checks[0].length !== koshaIds.length) throw new Error("إحدى الكوشات المختارة غير موجودة");
+  if (checks[1].length !== addonIds.length) throw new Error("إحدى الخدمات الإضافية غير موجودة");
+  if (checks[2].length !== welcomeBoardIds.length) throw new Error("بورد الترحيب المختار غير موجود");
+  if (checks[3].length !== accessoryIds.length) throw new Error("أحد الاكسسوارات المختارة غير موجود");
+  const rows = [
+    ...koshaIds.map((componentId, index) => ({ packageId, componentType: "kosha", componentId, isDefault: componentId === defaultKoshaId, sortOrder: index })),
+    ...addonIds.map((componentId, index) => ({ packageId, componentType: "addon", componentId, isDefault: false, sortOrder: 100 + index })),
+    ...welcomeBoardIds.map((componentId, index) => ({ packageId, componentType: "welcome_board", componentId, isDefault: false, sortOrder: 200 + index })),
+    ...accessoryIds.map((componentId, index) => ({ packageId, componentType: "accessory", componentId, isDefault: false, sortOrder: 300 + index })),
+  ];
+  await db.transaction(async (tx) => {
+    await tx.delete(koshaPackageComponentsTable).where(eq(koshaPackageComponentsTable.packageId, packageId));
+    if (rows.length) await tx.insert(koshaPackageComponentsTable).values(rows);
+  });
+}
+
 async function replaceKoshaImages(koshaId: number, galleryImages: unknown) {
   if (!Array.isArray(galleryImages)) return;
   const rows: Array<{ koshaId: number; imageUrl: string; imageMetadata: Record<string, unknown>; sortOrder: number }> = [];
@@ -1658,6 +1864,9 @@ async function formatKoshaBooking(row: any) {
     koshaId: row.koshaId ?? null,
     koshaName: kosha?.name ?? null,
     koshaSlug: kosha?.slug ?? null,
+    packageId: row.packageId ?? row.package_id ?? null,
+    packageName: row.packageName ?? row.package_name ?? null,
+    packagePrice: row.packagePrice == null && row.package_price == null ? null : Number(row.packagePrice ?? row.package_price),
     customerName: row.customerName,
     phone: formatIraqiPhone(row.phone) ?? row.phone,
     brideName: row.brideName ?? row.bride_name ?? "",
@@ -2804,9 +3013,29 @@ async function ensureKoshaTables(): Promise<void> {
         "created_at" timestamp not null default now()
       );
 
+      create table if not exists "kosha_packages" (
+        "id" serial primary key,
+        "name" text not null,
+        "slug" varchar(160) not null unique,
+        "description" text,
+        "price" numeric(14,2) not null default 0,
+        "old_price" numeric(14,2),
+        "main_image" text,
+        "features" jsonb not null default '[]'::jsonb,
+        "badge_text" varchar(80),
+        "is_featured" boolean not null default false,
+        "is_active" boolean not null default true,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+
       create table if not exists "kosha_bookings" (
         "id" serial primary key,
         "kosha_id" integer references "koshas" ("id") on delete set null,
+        "package_id" integer references "kosha_packages" ("id") on delete set null,
+        "package_name" text,
+        "package_price" numeric(14,2),
         "customer_name" text not null,
         "phone" varchar(20) not null,
         "bride_name" text,
@@ -2862,6 +3091,9 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "selected_accessories" jsonb not null default '[]'::jsonb,
         add column if not exists "venue_images" jsonb not null default '[]'::jsonb,
         add column if not exists "booking_details" jsonb not null default '{}'::jsonb,
+        add column if not exists "package_id" integer references "kosha_packages" ("id") on delete set null,
+        add column if not exists "package_name" text,
+        add column if not exists "package_price" numeric(14,2),
         add column if not exists "execution_stage" varchar(30) not null default 'preparing',
         add column if not exists "assigned_staff_id" integer,
         add column if not exists "archived_at" timestamp;
@@ -2916,6 +3148,16 @@ async function ensureKoshaTables(): Promise<void> {
         "updated_at" timestamp not null default now()
       );
 
+      create table if not exists "kosha_package_components" (
+        "id" serial primary key,
+        "package_id" integer not null references "kosha_packages" ("id") on delete cascade,
+        "component_type" varchar(30) not null,
+        "component_id" integer not null,
+        "is_default" boolean not null default false,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now()
+      );
+
       create index if not exists "koshas_active_sort_idx" on "koshas" ("is_active", "sort_order", "id");
       create index if not exists "koshas_featured_idx" on "koshas" ("is_featured", "is_active");
       create index if not exists "kosha_images_kosha_sort_idx" on "kosha_images" ("kosha_id", "sort_order", "id");
@@ -2928,6 +3170,10 @@ async function ensureKoshaTables(): Promise<void> {
       create index if not exists "kosha_addons_active_sort_idx" on "kosha_addons" ("is_active", "sort_order", "id");
       create index if not exists "kosha_welcome_boards_active_sort_idx" on "kosha_welcome_boards" ("is_active", "sort_order", "id");
       create index if not exists "kosha_provinces_active_sort_idx" on "kosha_provinces" ("is_active", "sort_order", "id");
+      create unique index if not exists "kosha_package_components_unique_idx" on "kosha_package_components" ("package_id", "component_type", "component_id");
+      create index if not exists "kosha_packages_active_sort_idx" on "kosha_packages" ("is_active", "sort_order", "id");
+      create index if not exists "kosha_package_components_package_idx" on "kosha_package_components" ("package_id", "sort_order", "id");
+      create index if not exists "kosha_bookings_package_idx" on "kosha_bookings" ("package_id", "created_at");
 
       insert into "kosha_addons" ("name", "sort_order")
       values
@@ -2936,7 +3182,9 @@ async function ensureKoshaTables(): Promise<void> {
         ('فيديو مختصر', 30),
         ('دي جي', 40),
         ('إضاءة إضافية', 50),
-        ('توصيل وتركيب', 60)
+        ('توصيل وتركيب', 60),
+        ('تنسيق بسيط', 70),
+        ('تنسيق VIP كامل', 80)
       on conflict ("name") do nothing;
 
       insert into "kosha_welcome_boards" ("name", "sort_order")
@@ -2971,6 +3219,58 @@ async function ensureKoshaTables(): Promise<void> {
         ('ديالى', 60),
         ('نينوى', 70)
       on conflict ("name") do nothing;
+
+      insert into "kosha_packages" ("name", "slug", "description", "features", "badge_text", "is_featured", "sort_order")
+      values
+        ('الباقة الفضية', 'silver-package', 'اختيار متوازن للحفلات الأنيقة بتنسيق أساسي متكامل.', '["كوشة أساسية","بورد ترحيب","ستاند حلقات","تنسيق بسيط"]'::jsonb, null, false, 10),
+        ('الباقة الذهبية', 'gold-package', 'باقة فاخرة تجمع أهم تفاصيل ليلة الحنة في اختيار واحد.', '["كوشة فاخرة","بورد ترحيب","ستاند حلقات","دفوف حنة","مبخرة","مهفة"]'::jsonb, 'الأكثر طلباً', true, 20),
+        ('باقة VIP', 'vip-package', 'التجربة الملكية الكاملة مع جميع تفاصيل التنسيق والإكسسوارات المميزة.', '["كوشة ملكية","بورد ترحيب فاخر","ستاند حلقات","دفوف حنة","مبخرة","مهفة","شال المهر","وثيقة","قصاصات","تنسيق VIP كامل"]'::jsonb, 'VIP', false, 30)
+      on conflict ("slug") do nothing;
+
+      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "is_default", "sort_order")
+      select p.id, 'kosha', k.id, true, 0
+      from "kosha_packages" p
+      cross join lateral (
+        select ranked.id
+        from (
+          select id, row_number() over (order by "sort_order", "id") as position
+          from "koshas"
+          where "is_active" = true
+        ) ranked
+        order by case when ranked.position = case p.slug when 'silver-package' then 1 when 'gold-package' then 2 else 3 end then 0 else 1 end, ranked.position
+        limit 1
+      ) k
+      where p.slug in ('silver-package', 'gold-package', 'vip-package')
+      on conflict do nothing;
+
+      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
+      select p.id, 'welcome_board', b.id, 10
+      from "kosha_packages" p
+      join "kosha_welcome_boards" b on b.name = case p.slug
+        when 'silver-package' then 'بورد ترحيب كلاسيك'
+        when 'gold-package' then 'بورد ترحيب ذهبي'
+        else 'بورد مرآة'
+      end
+      where p.slug in ('silver-package', 'gold-package', 'vip-package')
+      on conflict do nothing;
+
+      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
+      select p.id, 'addon', a.id, 20
+      from "kosha_packages" p
+      join "kosha_addons" a on a.name = case when p.slug = 'vip-package' then 'تنسيق VIP كامل' else 'تنسيق بسيط' end
+      where p.slug in ('silver-package', 'gold-package', 'vip-package')
+      on conflict do nothing;
+
+      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
+      select p.id, 'accessory', a.id, 30 + a.sort_order
+      from "kosha_packages" p
+      join "kosha_accessories" a on (
+        (p.slug = 'silver-package' and a.name in ('ستاند حلقات')) or
+        (p.slug = 'gold-package' and a.name in ('ستاند حلقات', 'دفوف حنة', 'مبخرة', 'مهفة')) or
+        (p.slug = 'vip-package' and a.name in ('ستاند حلقات', 'دفوف حنة', 'مبخرة', 'مهفة', 'شال المهر', 'وثيقة', 'قصاصات'))
+      )
+      where p.slug in ('silver-package', 'gold-package', 'vip-package')
+      on conflict do nothing;
     `).then(() => undefined).catch((err) => {
       koshaTablesPromise = null;
       throw err;
@@ -4386,6 +4686,24 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureKoshaTables();
 
+  if (method === "GET" && parts[1] === "packages") {
+    const raw = parts[2];
+    if (raw) {
+      const parsedId = int(raw);
+      const row = await db.query.koshaPackagesTable.findFirst({
+        where: and(
+          parsedId ? eq(koshaPackagesTable.id, parsedId) : eq(koshaPackagesTable.slug, raw),
+          eq(koshaPackagesTable.isActive, true),
+        ),
+      });
+      if (!row) return error("الباقة غير موجودة", 404);
+      const formatted = await formatKoshaPackage(row, false);
+      if (!formatted.defaultKosha) return error("الباقة غير جاهزة للحجز حالياً", 409);
+      return json(formatted);
+    }
+    return json(await getCachedPublicKoshaPackages());
+  }
+
   if (method === "GET" && parts.length === 1) {
     const params = req.nextUrl.searchParams;
     const featured = params.get("featured") === "1" || params.get("featured") === "true";
@@ -4452,13 +4770,22 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       where: and(eq(koshasTable.id, data.koshaId), eq(koshasTable.isActive, true)),
     });
     if (!kosha) return error("الكوشة غير موجودة", 404);
+    let packageDetails: Awaited<ReturnType<typeof formatKoshaPackage>> | null = null;
+    if (data.packageId) {
+      const packageRow = await db.query.koshaPackagesTable.findFirst({
+        where: and(eq(koshaPackagesTable.id, data.packageId), eq(koshaPackagesTable.isActive, true)),
+      });
+      if (!packageRow) return error("الباقة المختارة غير متاحة", 404);
+      packageDetails = await formatKoshaPackage(packageRow, false);
+      if (!packageDetails.koshas.some((item) => item.id === kosha.id)) return error("الكوشة لا تنتمي إلى الباقة المختارة", 400);
+    }
     const phone = normalizeIraqiPhone(data.phone || data.bridePhone || data.groomPhone || data.alternatePhone);
     if (!phone) return error("أدخل رقم هاتف عراقي صحيح", 400);
     const customerName = textFallback(data.customerName, [data.brideName, data.groomName].filter(Boolean).join(" و ") || "زبون");
     const venueImages = await persistMediaList(data.venueImages ?? [], "koshas/bookings");
-    const selectedAddons = normalizeKoshaStringList(data.selectedAddons);
-    const welcomeBoards = normalizeKoshaStringList(data.welcomeBoards);
-    const selectedAccessories = normalizeKoshaStringList(data.selectedAccessories);
+    const selectedAddons = packageDetails ? packageDetails.addons.map((item) => item.name) : normalizeKoshaStringList(data.selectedAddons);
+    const welcomeBoards = packageDetails ? packageDetails.welcomeBoards.map((item) => item.name) : normalizeKoshaStringList(data.welcomeBoards);
+    const selectedAccessories = packageDetails ? packageDetails.accessories.map((item) => item.name) : normalizeKoshaStringList(data.selectedAccessories);
     const [addonRows, boardRows, accessoryRows] = await Promise.all([
       db.query.koshaAddonsTable.findMany({ orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)] }),
       db.query.koshaWelcomeBoardsTable.findMany({ orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)] }),
@@ -4469,9 +4796,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     const accessoryDetails = koshaOptionSummary(accessoryRows.map((item) => formatKoshaOptionProduct(item, "accessory")), selectedAccessories);
     const optionsTotal = [...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].reduce((sum, item) => sum + (Number(item.price) || 0), 0);
     const koshaPrice = Number.parseFloat(String(kosha.price ?? "0")) || 0;
-    const bookingTotal = koshaPrice + optionsTotal;
+    const bookingTotal = packageDetails ? packageDetails.price : koshaPrice + optionsTotal;
     const [booking] = await db.insert(koshaBookingsTable).values({
       koshaId: kosha.id,
+      packageId: packageDetails?.id ?? null,
+      packageName: packageDetails?.name ?? null,
+      packagePrice: packageDetails ? String(packageDetails.price) : null,
       customerName,
       phone,
       brideName: nullableText(data.brideName),
@@ -4499,6 +4829,10 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       bookingDetails: {
         koshaName: kosha.name,
         koshaPrice,
+        packageId: packageDetails?.id ?? null,
+        packageName: packageDetails?.name ?? null,
+        packagePrice: packageDetails?.price ?? null,
+        packageFeatures: packageDetails?.features ?? [],
         selectedAddons,
         welcomeBoards,
         selectedAccessories,
@@ -4520,7 +4854,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       audienceType: "admin",
       type: "kosha_booking",
       title: "حجز كوشة جديد",
-      body: `${customerName} - ${kosha.name}`,
+      body: `${customerName} - ${packageDetails?.name ?? kosha.name}`,
       entityType: "kosha_booking",
       entityId: booking.id,
       href: "/admin/kosha-bookings",
@@ -4528,7 +4862,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     void notifyTelegramKoshaBooking({
       id: booking.id,
       reference: `KB-${booking.id}`,
-      koshaName: kosha.name,
+      koshaName: packageDetails ? `${packageDetails.name} - ${kosha.name}` : kosha.name,
       customerName: booking.customerName,
       phone: booking.phone,
       eventDate: booking.eventDate,
@@ -4539,10 +4873,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       address: [booking.province, booking.area, booking.mahalla, booking.nearestPoint].filter(Boolean).join(" - "),
       notes: booking.notes,
       qrDataUrl: bookingQr.dataUrl,
-      items: [
-        { productName: kosha.name, quantity: 1, unitPrice: koshaPrice, total: koshaPrice },
-        ...[...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].map((item) => ({ productName: item.name, quantity: 1, unitPrice: item.price, total: item.price })),
-      ],
+      items: packageDetails
+        ? [{ productName: packageDetails.name, quantity: 1, unitPrice: packageDetails.price, total: packageDetails.price }]
+        : [
+            { productName: kosha.name, quantity: 1, unitPrice: koshaPrice, total: koshaPrice },
+            ...[...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].map((item) => ({ productName: item.name, quantity: 1, unitPrice: item.price, total: item.price })),
+          ],
     });
     return json(await formatKoshaBooking(booking), 201);
   }
@@ -4619,6 +4955,11 @@ async function handleMedia(req: NextRequest, parts: string[]) {
   if (kind === "kosha-image") {
     const item = await db.query.koshaImagesTable.findFirst({ where: eq(koshaImagesTable.id, id) }) as any;
     return mediaResponseFromValue(req, await upgradeStoredMedia("kosha-image", id, item?.imageUrl ?? item?.image_url));
+  }
+
+  if (kind === "kosha-package") {
+    const item = await db.query.koshaPackagesTable.findFirst({ where: eq(koshaPackagesTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("kosha-package", id, item?.mainImage ?? item?.main_image));
   }
 
   if (kind === "kosha-addon") {
@@ -6415,12 +6756,119 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
   if (
     section !== "koshas" &&
     section !== "kosha-bookings" &&
+    section !== "kosha-packages" &&
     section !== "kosha-addons" &&
     section !== "kosha-welcome-boards" &&
     section !== "kosha-accessories" &&
     section !== "kosha-provinces"
   ) return null;
   await ensureKoshaTables();
+
+  if (section === "kosha-packages") {
+    const auth = await requirePermission(req, "services");
+    if (isResponse(auth)) return auth;
+    const rawId = parts[2];
+
+    if (method === "GET" && rawId === "stats") {
+      const packages = await db.query.koshaPackagesTable.findMany({ orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)] });
+      const aggregates = await db.select({
+        packageId: koshaBookingsTable.packageId,
+        bookingCount: sql<number>`count(*)::int`,
+        revenue: sql<string>`coalesce(sum(${koshaBookingsTable.totalAmount}), 0)`,
+      }).from(koshaBookingsTable).where(and(
+        sql`${koshaBookingsTable.packageId} is not null`,
+        sql`${koshaBookingsTable.archivedAt} is null`,
+        sql`${koshaBookingsTable.status} <> 'cancelled'`,
+      )).groupBy(koshaBookingsTable.packageId);
+      const totalBookings = aggregates.reduce((sum, item) => sum + Number(item.bookingCount ?? 0), 0);
+      const rows = packages.map((item) => {
+        const aggregate = aggregates.find((entry) => entry.packageId === item.id);
+        const bookingCount = Number(aggregate?.bookingCount ?? 0);
+        return {
+          packageId: item.id,
+          packageName: item.name,
+          bookingCount,
+          revenue: Number(aggregate?.revenue ?? 0),
+          selectionRate: totalBookings > 0 ? (bookingCount / totalBookings) * 100 : 0,
+        };
+      });
+      const bestSeller = [...rows].sort((a, b) => b.bookingCount - a.bookingCount)[0] ?? null;
+      return json({ totalBookings, totalRevenue: rows.reduce((sum, item) => sum + item.revenue, 0), bestSeller, packages: rows });
+    }
+
+    if (method === "GET" && parts.length === 2) {
+      const rows = await db.query.koshaPackagesTable.findMany({ orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)] });
+      return json(await formatKoshaPackages(rows, true));
+    }
+
+    if (method === "POST" && parts.length === 2) {
+      const parsed = KoshaPackageSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("admin.kosha-packages.create", parsed);
+      if (!parsed.data.name.trim()) return error("اسم الباقة مطلوب", 400);
+      try {
+        if (parsed.data.isFeatured) await db.update(koshaPackagesTable).set({ isFeatured: false, updatedAt: new Date() });
+        const [row] = await db.insert(koshaPackagesTable).values(await koshaPackageValuesFromData(parsed.data)).returning();
+        await replaceKoshaPackageParts(row.id, parsed.data);
+        revalidateTag(KOSHA_PACKAGES_CACHE_TAG, "max");
+        void logAdminActivity(req, "kosha_package_created", "kosha_package", row.id, { name: row.name });
+        return json(await formatKoshaPackage(row, true), 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("اسم أو رابط الباقة مستخدم مسبقاً", 409);
+        if (String(err?.message ?? "").includes("غير موجود")) return error(err.message, 400);
+        throw err;
+      }
+    }
+
+    if (rawId) {
+      const id = int(rawId);
+      if (!id) return error("معرف الباقة غير صحيح", 400);
+      const existing = await db.query.koshaPackagesTable.findFirst({ where: eq(koshaPackagesTable.id, id) });
+      if (!existing) return error("الباقة غير موجودة", 404);
+      if (method === "GET") return json(await formatKoshaPackage(existing, true));
+
+      if (method === "PATCH" || method === "PUT") {
+        const parsed = KoshaPackagePatchSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("admin.kosha-packages.update", parsed);
+        if (parsed.data.name !== undefined && !parsed.data.name.trim()) return error("اسم الباقة مطلوب", 400);
+        try {
+          if (parsed.data.isFeatured) await db.update(koshaPackagesTable).set({ isFeatured: false, updatedAt: new Date() });
+          const [row] = await db.update(koshaPackagesTable).set(await koshaPackageValuesFromData(parsed.data, id)).where(eq(koshaPackagesTable.id, id)).returning();
+          const componentFields = ["koshaIds", "defaultKoshaId", "addonIds", "welcomeBoardIds", "accessoryIds"];
+          if (componentFields.some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key))) {
+            const current = await formatKoshaPackage(existing, true);
+            await replaceKoshaPackageParts(id, {
+              koshaIds: parsed.data.koshaIds ?? current.koshas.map((item) => item.id),
+              defaultKoshaId: parsed.data.defaultKoshaId ?? current.defaultKosha?.id ?? null,
+              addonIds: parsed.data.addonIds ?? current.addons.map((item) => item.id),
+              welcomeBoardIds: parsed.data.welcomeBoardIds ?? current.welcomeBoards.map((item) => item.id),
+              accessoryIds: parsed.data.accessoryIds ?? current.accessories.map((item) => item.id),
+            });
+          }
+          revalidateTag(KOSHA_PACKAGES_CACHE_TAG, "max");
+          void logAdminActivity(req, "kosha_package_updated", "kosha_package", id, { fields: Object.keys(parsed.data) });
+          return json(await formatKoshaPackage(row, true));
+        } catch (err: any) {
+          if (err?.code === "23505") return error("اسم أو رابط الباقة مستخدم مسبقاً", 409);
+          if (String(err?.message ?? "").includes("غير موجود")) return error(err.message, 400);
+          throw err;
+        }
+      }
+
+      if (method === "DELETE") {
+        const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(koshaBookingsTable).where(eq(koshaBookingsTable.packageId, id));
+        if (Number(count ?? 0) > 0) {
+          await db.update(koshaPackagesTable).set({ isActive: false, updatedAt: new Date() }).where(eq(koshaPackagesTable.id, id));
+          revalidateTag(KOSHA_PACKAGES_CACHE_TAG, "max");
+          void logAdminActivity(req, "kosha_package_disabled", "kosha_package", id, { reason: "linked_bookings" });
+          return json({ message: "تم إيقاف الباقة للحفاظ على الحجوزات القديمة", disabled: true });
+        }
+        await db.delete(koshaPackagesTable).where(eq(koshaPackagesTable.id, id));
+        revalidateTag(KOSHA_PACKAGES_CACHE_TAG, "max");
+        void logAdminActivity(req, "kosha_package_deleted", "kosha_package", id, { name: existing.name });
+        return json({ message: "تم حذف الباقة" });
+      }
+    }
+  }
 
   if (section === "kosha-addons" || section === "kosha-welcome-boards" || section === "kosha-accessories") {
     const auth = await requirePermission(req, "services");
@@ -6671,8 +7119,18 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         if (parsed.data.status !== undefined) update.status = parsed.data.status;
         if (parsed.data.internalNotes !== undefined) update.internalNotes = nullableText(parsed.data.internalNotes);
         if (parsed.data.dueDate !== undefined) update.dueDate = parsed.data.dueDate;
-        const selectionChanged = parsed.data.koshaId !== undefined || parsed.data.selectedAddons !== undefined || parsed.data.welcomeBoards !== undefined || parsed.data.selectedAccessories !== undefined;
+        const sameStringList = (left: unknown, right: unknown) => JSON.stringify(normalizeKoshaStringList(left)) === JSON.stringify(normalizeKoshaStringList(right));
+        const selectionChanged =
+          (parsed.data.koshaId !== undefined && parsed.data.koshaId !== existing.koshaId) ||
+          (parsed.data.selectedAddons !== undefined && !sameStringList(parsed.data.selectedAddons, existing.selectedAddons)) ||
+          (parsed.data.welcomeBoards !== undefined && !sameStringList(parsed.data.welcomeBoards, existing.welcomeBoards)) ||
+          (parsed.data.selectedAccessories !== undefined && !sameStringList(parsed.data.selectedAccessories, existing.selectedAccessories));
         if (selectionChanged) {
+          if (existing.packageId) {
+            update.packageId = null;
+            update.packageName = null;
+            update.packagePrice = null;
+          }
           const kosha = await db.query.koshasTable.findFirst({ where: eq(koshasTable.id, update.koshaId ?? existing.koshaId ?? 0) });
           if (!kosha) return error("الكوشة المرتبطة غير موجودة", 404);
           const [addonRows, boardRows, accessoryRows] = await Promise.all([
@@ -6689,6 +7147,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
           update.totalAmount = String(totalAmount);
           update.bookingDetails = {
             ...(existing.bookingDetails as Record<string, unknown> ?? {}), koshaName: kosha.name, koshaPrice: Number(kosha.price ?? 0),
+            ...(existing.packageId ? { packageId: null, packageName: null, packagePrice: null, packageFeatures: [] } : {}),
             selectedAddons, welcomeBoards, selectedAccessories, addonDetails, welcomeBoardDetails, accessoryDetails, optionsTotal, total: totalAmount,
           };
         }

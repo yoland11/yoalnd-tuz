@@ -16,6 +16,7 @@ const QrOrdersPage = lazy(() => import("./qr-orders"));
 const ArchivePage = lazy(() => import("./archive"));
 const ServicesPage = lazy(() => import("./services"));
 const AdminKoshasPage = lazy(() => import("./koshas"));
+const KoshaPackagesPage = lazy(() => import("./kosha-packages"));
 const AdminKoshaBookingsPage = lazy(() => import("./koshas").then((module) => ({ default: module.AdminKoshaBookingsPage })));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
@@ -125,6 +126,7 @@ export default function Admin() {
           <Route path="/admin/koshas/new">{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
           <Route path="/admin/koshas/:id/edit">{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
           <Route path="/admin/koshas"    >{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
+          <Route path="/admin/kosha-packages">{() => <Guard me={me} perm="services"><KoshaPackagesPage /></Guard>}</Route>
           <Route path="/admin/kosha-bookings">{() => <Guard me={me} perm="orders"><AdminKoshaBookingsPage /></Guard>}</Route>
           <Route path="/admin/kosha-collections">{() => <Guard me={me} perm="accounting"><KoshaCollectionsPage /></Guard>}</Route>
           <Route path="/admin/products"  >{() => <Guard me={me} perm="products"   ><ProductsPage   /></Guard>}</Route>

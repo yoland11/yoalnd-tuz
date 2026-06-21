@@ -7,7 +7,7 @@ import {
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer, WalletCards,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
-  Bell, Bot, CircleDollarSign, Menu, X,
+  Bell, Bot, CircleDollarSign, Menu, PackageCheck, X,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   { href: "/admin/archive",        label: "الأرشيف",           icon: Archive,        perm: "orders" },
   { href: "/admin/services",       label: "الخدمات",            icon: Sparkles,        perm: "services" },
   { href: "/admin/koshas",         label: "إدارة الكوشات",       icon: Sparkles,        perm: "services" },
+  { href: "/admin/kosha-packages", label: "إدارة الباقات",       icon: PackageCheck,    perm: "services" },
   { href: "/admin/kosha-bookings", label: "حجوزات الكوشات",      icon: CalendarDays,    perm: "orders" },
   { href: "/admin/kosha-collections", label: "تحصيلات الكوشات",   icon: CircleDollarSign, perm: "accounting" },
   { href: "/admin/products",       label: "المتجر",             icon: Package,         perm: "products" },
@@ -94,6 +95,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/archive"),
       navItem("/admin/services"),
       navItem("/admin/koshas"),
+      navItem("/admin/kosha-packages"),
       navItem("/admin/kosha-bookings"),
       navItem("/admin/products"),
       navItem("/admin/categories"),

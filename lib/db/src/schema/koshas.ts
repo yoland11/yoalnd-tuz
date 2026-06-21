@@ -35,9 +35,29 @@ export const koshaImagesTable = pgTable("kosha_images", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const koshaPackagesTable = pgTable("kosha_packages", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: varchar("slug", { length: 160 }).notNull().unique(),
+  description: text("description"),
+  price: numeric("price", { precision: 14, scale: 2 }).notNull().default("0"),
+  oldPrice: numeric("old_price", { precision: 14, scale: 2 }),
+  mainImage: text("main_image"),
+  features: jsonb("features").$type<string[]>().notNull().default([]),
+  badgeText: varchar("badge_text", { length: 80 }),
+  isFeatured: boolean("is_featured").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export const koshaBookingsTable = pgTable("kosha_bookings", {
   id: serial("id").primaryKey(),
   koshaId: integer("kosha_id").references(() => koshasTable.id, { onDelete: "set null" }),
+  packageId: integer("package_id").references(() => koshaPackagesTable.id, { onDelete: "set null" }),
+  packageName: text("package_name"),
+  packagePrice: numeric("package_price", { precision: 14, scale: 2 }),
   customerName: text("customer_name").notNull(),
   phone: varchar("phone", { length: 20 }).notNull(),
   brideName: text("bride_name"),
@@ -124,6 +144,16 @@ export const koshaProvincesTable = pgTable("kosha_provinces", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export const koshaPackageComponentsTable = pgTable("kosha_package_components", {
+  id: serial("id").primaryKey(),
+  packageId: integer("package_id").notNull().references(() => koshaPackagesTable.id, { onDelete: "cascade" }),
+  componentType: varchar("component_type", { length: 30 }).notNull(),
+  componentId: integer("component_id").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertKoshaSchema = createInsertSchema(koshasTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaImageSchema = createInsertSchema(koshaImagesTable).omit({ id: true, createdAt: true });
 export const insertKoshaBookingSchema = createInsertSchema(koshaBookingsTable).omit({ id: true, createdAt: true, updatedAt: true });
@@ -131,6 +161,8 @@ export const insertKoshaAccessorySchema = createInsertSchema(koshaAccessoriesTab
 export const insertKoshaAddonSchema = createInsertSchema(koshaAddonsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaWelcomeBoardSchema = createInsertSchema(koshaWelcomeBoardsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaProvinceSchema = createInsertSchema(koshaProvincesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaPackageSchema = createInsertSchema(koshaPackagesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaPackageComponentSchema = createInsertSchema(koshaPackageComponentsTable).omit({ id: true, createdAt: true });
 
 export type Kosha = typeof koshasTable.$inferSelect;
 export type KoshaImage = typeof koshaImagesTable.$inferSelect;
@@ -139,6 +171,8 @@ export type KoshaAccessory = typeof koshaAccessoriesTable.$inferSelect;
 export type KoshaAddon = typeof koshaAddonsTable.$inferSelect;
 export type KoshaWelcomeBoard = typeof koshaWelcomeBoardsTable.$inferSelect;
 export type KoshaProvince = typeof koshaProvincesTable.$inferSelect;
+export type KoshaPackage = typeof koshaPackagesTable.$inferSelect;
+export type KoshaPackageComponent = typeof koshaPackageComponentsTable.$inferSelect;
 export type InsertKosha = z.infer<typeof insertKoshaSchema>;
 export type InsertKoshaImage = z.infer<typeof insertKoshaImageSchema>;
 export type InsertKoshaBooking = z.infer<typeof insertKoshaBookingSchema>;
@@ -146,3 +180,5 @@ export type InsertKoshaAccessory = z.infer<typeof insertKoshaAccessorySchema>;
 export type InsertKoshaAddon = z.infer<typeof insertKoshaAddonSchema>;
 export type InsertKoshaWelcomeBoard = z.infer<typeof insertKoshaWelcomeBoardSchema>;
 export type InsertKoshaProvince = z.infer<typeof insertKoshaProvinceSchema>;
+export type InsertKoshaPackage = z.infer<typeof insertKoshaPackageSchema>;
+export type InsertKoshaPackageComponent = z.infer<typeof insertKoshaPackageComponentSchema>;
