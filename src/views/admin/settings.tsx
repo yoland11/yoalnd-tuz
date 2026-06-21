@@ -7,7 +7,7 @@ import { adminFetch, fileToDataUrl } from "./_lib";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
-import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings } from "@/lib/appearance";
+import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings, normalizeAppearanceSettings, FONT_OPTIONS, googleFontsHref } from "@/lib/appearance";
 import { THEME_PRESETS, matchPresetId, type ThemePreset } from "@/lib/theme-presets";
 import { type SeasonalTheme, normalizeSeasonalThemes, findActiveSeason } from "@/lib/seasonal-themes";
 import { cn } from "@/lib/utils";
@@ -85,6 +85,7 @@ export default function SettingsPage() {
     queryFn: () => adminFetch<Settings>("/admin/settings"),
   });
   const [form, setForm] = useState<Settings | null>(null);
+  const [customFont, setCustomFont] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
   const { data: notificationSettings, isLoading: notificationsLoading } = useQuery({
     queryKey: ["admin", "notification-settings"],
@@ -204,6 +205,11 @@ export default function SettingsPage() {
   const patchSeason = (id: string, patch: Partial<SeasonalTheme>) =>
     updateSeasons(seasonalThemes.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   const removeSeason = (id: string) => updateSeasons(seasonalThemes.filter((s) => s.id !== id));
+
+  const ap = form.appearanceSettings;
+  const headingFont = ap.headingFont ?? "Cairo";
+  const bodyFont = ap.bodyFont ?? "Cairo";
+  const baseFontPx = ap.baseFontPx ?? 16;
 
   return (
     <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
@@ -333,7 +339,7 @@ export default function SettingsPage() {
             <ColorField
               key={field.key}
               label={field.label}
-              value={form.appearanceSettings[field.key]}
+              value={form.appearanceSettings[field.key] as string}
               onChange={(value) => setForm(f => ({
                 ...f!,
                 appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, [field.key]: value }),
@@ -341,6 +347,73 @@ export default function SettingsPage() {
             />
           ))}
         </div>
+
+        {/* Typography — fonts + base size, controlled from the panel */}
+        <div className="border-t border-border/20 pt-4 space-y-3">
+          <link rel="stylesheet" href={googleFontsHref(headingFont, bodyFont)} />
+          <p className="text-xs text-muted-foreground">الخطوط وحجم النص</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block space-y-1">
+              <span className="text-xs text-muted-foreground">خط العناوين</span>
+              <select
+                value={headingFont}
+                onChange={(e) => setForm(f => ({ ...f!, appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, headingFont: e.target.value }) }))}
+                className="w-full rounded-lg border border-border bg-background p-2 text-sm"
+              >
+                {!FONT_OPTIONS.some(o => o.value === headingFont) && (
+                  <option value={headingFont}>{headingFont} (مخصّص)</option>
+                )}
+                {FONT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="block space-y-1">
+              <span className="text-xs text-muted-foreground">خط النص</span>
+              <select
+                value={bodyFont}
+                onChange={(e) => setForm(f => ({ ...f!, appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, bodyFont: e.target.value }) }))}
+                className="w-full rounded-lg border border-border bg-background p-2 text-sm"
+              >
+                {!FONT_OPTIONS.some(o => o.value === bodyFont) && (
+                  <option value={bodyFont}>{bodyFont} (مخصّص)</option>
+                )}
+                {FONT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+          </div>
+          <div>
+            <span className="text-xs text-muted-foreground">حجم النص الأساسي — {baseFontPx}px</span>
+            <input
+              type="range" min={13} max={20} value={baseFontPx}
+              onChange={(e) => setForm(f => ({ ...f!, appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, baseFontPx: Number(e.target.value) }) }))}
+              className="mt-1 w-full accent-primary"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <span className="text-xs text-muted-foreground">إضافة خط مخصّص (اسم خط من Google Fonts)</span>
+            <div className="flex flex-wrap gap-2">
+              <input
+                value={customFont}
+                onChange={(e) => setCustomFont(e.target.value)}
+                placeholder="مثال: Noto Kufi Arabic"
+                className="min-w-[180px] flex-1 rounded-lg border border-border bg-background p-2 text-sm"
+              />
+              <Button type="button" variant="outline" disabled={!customFont.trim()}
+                onClick={() => setForm(f => ({ ...f!, appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, headingFont: customFont.trim() }) }))}>
+                للعناوين
+              </Button>
+              <Button type="button" variant="outline" disabled={!customFont.trim()}
+                onClick={() => setForm(f => ({ ...f!, appearanceSettings: normalizeAppearanceSettings({ ...f!.appearanceSettings, bodyFont: customFont.trim() }) }))}>
+                للنص
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">اكتب الاسم تمامًا كما في fonts.google.com (حسّاس لحالة الأحرف).</p>
+          </div>
+          <div className="rounded-lg border border-border/25 p-3" style={{ backgroundColor: form.appearanceSettings.cards }}>
+            <p className="font-bold" style={{ fontFamily: `'${headingFont}', sans-serif`, color: form.appearanceSettings.headings, fontSize: baseFontPx + 8 }}>مجموعة علي جان نهاد</p>
+            <p style={{ fontFamily: `'${bodyFont}', sans-serif`, color: form.appearanceSettings.text, fontSize: baseFontPx }}>للمناسبات والتجهيزات — معاينة النص الأساسي قبل الحفظ.</p>
+          </div>
+        </div>
+
         <div
           className="rounded-xl border border-border/25 p-4 space-y-3"
           style={{ backgroundColor: form.appearanceSettings.background, color: form.appearanceSettings.text }}

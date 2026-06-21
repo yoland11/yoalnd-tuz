@@ -10,7 +10,54 @@ export type AppearanceSettings = {
   cards: string;
   links: string;
   hover: string;
+  // Typography — fully controllable from the admin panel (optional: filled by normalize).
+  headingFont?: string;
+  bodyFont?: string;
+  baseFontPx?: number;
 };
+
+/** Curated Arabic-capable Google Fonts the admin can pick from (and add custom names). */
+export const FONT_OPTIONS: { value: string; label: string }[] = [
+  { value: "Cairo", label: "Cairo — كايرو" },
+  { value: "Tajawal", label: "Tajawal — تجوال" },
+  { value: "Almarai", label: "Almarai — المراعي" },
+  { value: "IBM Plex Sans Arabic", label: "IBM Plex Sans Arabic" },
+  { value: "El Messiri", label: "El Messiri — الميصري" },
+  { value: "Reem Kufi", label: "Reem Kufi — ريم كوفي" },
+  { value: "Aref Ruqaa", label: "Aref Ruqaa — عارف رقعة" },
+  { value: "Amiri", label: "Amiri — أميري" },
+  { value: "Changa", label: "Changa — تشانغا" },
+  { value: "Markazi Text", label: "Markazi — مركزي" },
+  { value: "Mada", label: "Mada — مدى" },
+  { value: "Lateef", label: "Lateef — لطيف" },
+  { value: "Lalezar", label: "Lalezar — لاله‌زار" },
+  { value: "Rakkas", label: "Rakkas — ركّاز" },
+];
+
+export function fontStack(name: string): string {
+  const safe = String(name || "Cairo").replace(/["';{}<>]/g, "").trim() || "Cairo";
+  return `'${safe}', 'Cairo', system-ui, sans-serif`;
+}
+
+export function normalizeFontName(value: unknown, fallback: string): string {
+  const raw = String(value ?? "").trim();
+  if (!raw || /["';{}<>]/.test(raw) || raw.length > 40) return fallback;
+  return raw;
+}
+
+export function normalizeFontPx(value: unknown, fallback: number): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(20, Math.max(13, n));
+}
+
+/** Build a Google Fonts stylesheet URL that loads the chosen heading + body fonts. */
+export function googleFontsHref(headingFont?: string, bodyFont?: string): string {
+  const fams = Array.from(new Set([headingFont, bodyFont].map((f) => String(f || "").trim()).filter(Boolean)));
+  if (fams.length === 0) return "";
+  const q = fams.map((f) => `family=${encodeURIComponent(f).replace(/%20/g, "+")}:wght@400;500;600;700`).join("&");
+  return `https://fonts.googleapis.com/css2?${q}&display=swap`;
+}
 
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   background: "#0B0B12",
@@ -24,6 +71,9 @@ export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   cards: "#1A1C25",
   links: "#D4B15A",
   hover: "#E7D6A0",
+  headingFont: "Cairo",
+  bodyFont: "Cairo",
+  baseFontPx: 16,
 };
 
 const LEGACY_DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
@@ -38,6 +88,9 @@ const LEGACY_DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   cards: "#121212",
   links: "#D4AF37",
   hover: "#D4AF37",
+  headingFont: "Cairo",
+  bodyFont: "Cairo",
+  baseFontPx: 16,
 };
 
 const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
@@ -66,6 +119,9 @@ export function normalizeAppearanceSettings(value: unknown): AppearanceSettings 
     cards: normalizeHexColor(source.cards, DEFAULT_APPEARANCE_SETTINGS.cards),
     links: normalizeHexColor(source.links, DEFAULT_APPEARANCE_SETTINGS.links),
     hover: normalizeHexColor(source.hover, DEFAULT_APPEARANCE_SETTINGS.hover),
+    headingFont: normalizeFontName(source.headingFont, DEFAULT_APPEARANCE_SETTINGS.headingFont ?? "Cairo"),
+    bodyFont: normalizeFontName(source.bodyFont, DEFAULT_APPEARANCE_SETTINGS.bodyFont ?? "Cairo"),
+    baseFontPx: normalizeFontPx(source.baseFontPx, DEFAULT_APPEARANCE_SETTINGS.baseFontPx ?? 16),
   };
   return sameAppearance(normalized, LEGACY_DEFAULT_APPEARANCE_SETTINGS) ? { ...DEFAULT_APPEARANCE_SETTINGS } : normalized;
 }
@@ -183,6 +239,10 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     "--status-success": hexToHslTriplet(appearance.primaryButton),
     "--status-danger": isLightTheme ? "0 75% 42%" : "0 84% 70%",
     "--status-warning": "41 50% 48%",
+    // Typography (admin-controlled): heading font, body font, base size.
+    "--font-heading": fontStack(appearance.headingFont ?? "Cairo"),
+    "--font-sans": fontStack(appearance.bodyFont ?? "Cairo"),
+    "font-size": `${appearance.baseFontPx ?? 16}px`,
   };
 }
 
@@ -222,5 +282,8 @@ export function deriveAlternateAppearance(value: unknown): AppearanceSettings {
     primaryButton: appearance.primaryButton,
     links: appearance.links,
     hover: appearance.hover,
+    headingFont: appearance.headingFont,
+    bodyFont: appearance.bodyFont,
+    baseFontPx: appearance.baseFontPx,
   });
 }
