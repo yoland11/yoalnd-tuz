@@ -5615,53 +5615,6 @@ async function handleDashboard(req: NextRequest, parts: string[]) {
   const auth = await requirePermission(req, "dashboard");
   if (isResponse(auth)) return auth;
 
-  // Consolidated "الصندوق الرئيسي": all site finance + product/inventory value.
-  if (parts[1] === "master-summary") {
-    let finance: Awaited<ReturnType<typeof getMasterCashDashboard>> | null = null;
-    try { finance = await getMasterCashDashboard(); } catch { finance = null; }
-    const inv = await db.execute(sql`
-      SELECT
-        coalesce(count(*) FILTER (WHERE is_active),0)::int AS product_count,
-        coalesce(sum(stock) FILTER (WHERE shared_stock_product_id IS NULL),0)::int AS total_qty,
-        coalesce(sum(stock::numeric * cost_price::numeric) FILTER (WHERE shared_stock_product_id IS NULL),0)::float AS cost_value,
-        coalesce(sum(stock::numeric * price::numeric) FILTER (WHERE shared_stock_product_id IS NULL),0)::float AS sale_value,
-        coalesce(sum(CASE WHEN min_stock > 0 AND stock <= min_stock THEN 1 ELSE 0 END) FILTER (WHERE is_active),0)::int AS low_stock
-      FROM products
-    `);
-    const r: any = (inv.rows ?? [])[0] ?? {};
-    const costValue = Math.round(Number(r.cost_value ?? 0));
-    const saleValue = Math.round(Number(r.sale_value ?? 0));
-    const inventory = {
-      productCount: Number(r.product_count ?? 0),
-      totalQuantity: Number(r.total_qty ?? 0),
-      costValue,
-      saleValue,
-      expectedProfit: saleValue - costValue,
-      lowStock: Number(r.low_stock ?? 0),
-    };
-    const cash = finance ? Number(finance.cashBox.currentBalance) : 0;
-    const outstanding = finance ? Number(finance.outstanding) : 0;
-    return json({
-      finance: finance ? {
-        currentBalance: Number(finance.cashBox.currentBalance),
-        totalRevenue: Number(finance.cashBox.totalRevenue),
-        totalExpenses: Number(finance.cashBox.totalExpenses),
-        netProfit: Number(finance.cashBox.netProfit),
-        todayRevenue: Number(finance.today.revenue),
-        todayNet: Number(finance.today.net),
-        pendingCount: finance.pending.count,
-        pendingAmount: Number(finance.pending.amount),
-        outstanding,
-        overdue: Number(finance.overdue),
-        departments: finance.departments,
-        trend: finance.trend,
-      } : null,
-      inventory,
-      // إجمالي الصندوق الرئيسي = نقد + قيمة المخزون (سعر البيع) + الذمم المستحقة
-      grandTotal: cash + saleValue + outstanding,
-    });
-  }
-
   if (parts[1] === "stats") {
     const today = new Date();
     today.setHours(0, 0, 0, 0);

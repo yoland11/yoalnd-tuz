@@ -131,42 +131,30 @@ async function fetchKoshaOptions(): Promise<KoshaWizardOptions> {
 export function KoshaCard({ kosha, index = 0 }: { kosha: Kosha; index?: number }) {
   const image = kosha.mainImage || kosha.galleryImages?.[0]?.imageUrl || "/images/kosha.png";
   return (
-    <Link href={`/koshas/${kosha.slug || kosha.id}`} className="animate-fade-up" style={{ animationDelay: `${Math.min(index * 60, 360)}ms` }}>
-      <Card className="group h-full overflow-hidden border-border bg-card transition-colors hover:border-primary/50">
-        <div className="relative aspect-[4/3] overflow-hidden bg-muted">
-          <img
-            src={image}
-            alt={kosha.name}
-            width={560}
-            height={420}
-            loading="lazy"
-            decoding="async"
-            className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
-          />
-          {Number(kosha.discountPercentage ?? 0) > 0 && (
-            <span className="absolute right-3 top-3 rounded-full bg-primary px-3 py-1 text-xs font-bold text-primary-foreground">
-              خصم {kosha.discountPercentage}%
-            </span>
-          )}
+    <Link href={`/koshas/${kosha.slug || kosha.id}`} className="group block animate-fade-up" style={{ animationDelay: `${Math.min(index * 60, 360)}ms` }}>
+      <div className="relative aspect-[3/4] overflow-hidden rounded-2xl border border-border bg-muted transition-colors group-hover:border-primary/40">
+        <img
+          src={image}
+          alt={kosha.name}
+          width={560}
+          height={747}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+        />
+        {Number(kosha.discountPercentage ?? 0) > 0 && (
+          <span className="absolute right-3 top-3 rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">
+            خصم {kosha.discountPercentage}%
+          </span>
+        )}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent p-4 pt-10">
+          <h3 className="text-base font-semibold text-white">{kosha.name}</h3>
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span className="text-sm font-bold text-primary">{formatKoshaPrice(kosha.price)}</span>
+            {kosha.oldPrice ? <span className="text-xs text-white/50 line-through">{formatKoshaPrice(kosha.oldPrice)}</span> : null}
+          </div>
         </div>
-        <CardContent className="flex min-h-56 flex-col p-4">
-          <div className="mb-2 flex items-baseline gap-2">
-            <span className="text-lg font-bold text-primary">{formatKoshaPrice(kosha.price)}</span>
-            {kosha.oldPrice ? <span className="text-xs text-muted-foreground line-through">{formatKoshaPrice(kosha.oldPrice)}</span> : null}
-          </div>
-          <h3 className="text-lg font-bold text-foreground transition-colors group-hover:text-primary">{kosha.name}</h3>
-          {shortText(kosha.description) ? <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">{shortText(kosha.description)}</p> : null}
-          <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
-            {kosha.numberOfPieces ? <span className="rounded-full bg-muted px-2.5 py-1">{kosha.numberOfPieces} قطعة</span> : null}
-            {kosha.mainColor ? <span className="rounded-full bg-muted px-2.5 py-1">{kosha.mainColor}</span> : null}
-            {kosha.koshaSpace ? <span className="rounded-full bg-muted px-2.5 py-1">{kosha.koshaSpace}</span> : null}
-          </div>
-          <Button className="mt-auto w-full gap-2">
-            عرض التفاصيل
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </CardContent>
-      </Card>
+      </div>
     </Link>
   );
 }
