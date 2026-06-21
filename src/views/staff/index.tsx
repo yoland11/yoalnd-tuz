@@ -270,7 +270,6 @@ export default function StaffPortal() {
     canStaff && { href: "/staff/koshas", label: "الرئيسية", icon: Home, match: location === "/staff/koshas" },
     canStaff && { href: "/staff/koshas/list/all", label: "الحجوزات", icon: ClipboardList, match: location.startsWith("/staff/koshas/list") },
     canStaff && { href: "/staff/koshas/reports", label: "تقاريري", icon: BarChart3, match: location === "/staff/koshas/reports" },
-    isManager && { href: "/staff/koshas/approvals", label: "الموافقات", icon: ShieldCheck, match: location === "/staff/koshas/approvals" },
     { href: "/staff/koshas/notifications", label: "الإشعارات", icon: Bell, match: location === "/staff/koshas/notifications", badge: unread },
   ].filter(Boolean) as Array<{ href: string; label: string; icon: any; match: boolean; badge?: number }>;
 
@@ -299,9 +298,8 @@ export default function StaffPortal() {
           <Route path="/staff/koshas/list"><BookingsList bucket="all" /></Route>
           <Route path="/staff/koshas/notifications"><Notifications /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
-          <Route path="/staff/koshas/approvals"><Approvals /></Route>
           <Route path="/staff/koshas"><Dashboard /></Route>
-          <Route>{canStaff ? <Dashboard /> : <Approvals />}</Route>
+          <Route><Dashboard /></Route>
         </Switch>
       </main>
 

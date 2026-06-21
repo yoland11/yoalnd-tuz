@@ -11986,7 +11986,19 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
       bookingId: id, staffId: auth.id, staffName: auth.fullName || auth.username, amount: String(amount), note: note || null, status: "pending",
     }).returning();
     await addKoshaEvent({ bookingId: id, staff: auth, type: "payment_request", note: note || null, meta: { amount } });
-    await addKoshaNotification({ audience: "manager", type: "payment_request", title: "طلب تحصيل ميداني", body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع — ${booking.customerName}`, href: "/staff/koshas/approvals", bookingId: id });
+    await addKoshaNotification({ audience: "manager", type: "payment_request", title: "طلب تحصيل ميداني", body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع — ${booking.customerName}`, href: "/admin/kosha-collections", bookingId: id });
+    // Surface the request inside the site admin panel (notifications bell + manager push).
+    try {
+      await createNotification({
+        audienceType: "admin",
+        type: "kosha_collection_request",
+        title: "طلب تحصيل كوشة",
+        body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع من ${booking.customerName} — بانتظار اعتمادك`,
+        entityType: "kosha_payment_request",
+        entityId: reqRow.id,
+        href: "/admin/kosha-collections",
+      });
+    } catch { /* notification is best-effort */ }
     return json({ ok: true, request: { ...reqRow, amount: Number(reqRow.amount) } }, 201);
   }
 
