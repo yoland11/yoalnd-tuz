@@ -406,8 +406,8 @@ export default function KoshasPage() {
       <section id="koshas-list" className="scroll-mt-24">
         <Stepper step={step} />
         {isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, item) => <Skeleton key={item} className="h-80 rounded-xl" />)}
+          <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, item) => <Skeleton key={item} className="aspect-[3/4] rounded-2xl" />)}
           </div>
         ) : isError ? (
           <Card className="border-border bg-card">
@@ -426,7 +426,7 @@ export default function KoshasPage() {
                     <h2 className="text-2xl font-bold text-foreground">اختيار الكوشة</h2>
                     <p className="mt-1 text-sm text-muted-foreground">اختر الكوشة المناسبة، بعدها نكمل الحجز خطوة بخطوة.</p>
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                     {data.map((kosha) => {
                       const selected = selectedKosha?.id === kosha.id;
                       const image = kosha.mainImage || kosha.galleryImages?.[0]?.imageUrl || "/images/kosha.png";
@@ -438,19 +438,21 @@ export default function KoshasPage() {
                             setSelectedKosha(kosha);
                             window.setTimeout(() => setStep(1), 320);
                           }}
-                          className={`group relative overflow-hidden rounded-xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"}`}
+                          className={`group relative block overflow-hidden rounded-2xl border bg-muted text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"}`}
                         >
                           <SelectionMark selected={selected} />
-                          <div className="aspect-[4/3] overflow-hidden bg-muted">
+                          <div className="relative aspect-[3/4] overflow-hidden">
                             <img src={image} alt={kosha.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                          </div>
-                          <div className="space-y-2 p-4">
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-lg font-bold text-primary">{formatKoshaPrice(kosha.price)}</span>
-                              {kosha.oldPrice ? <span className="text-xs text-muted-foreground line-through">{formatKoshaPrice(kosha.oldPrice)}</span> : null}
+                            {Number(kosha.discountPercentage ?? 0) > 0 && (
+                              <span className="absolute right-3 top-3 rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">خصم {kosha.discountPercentage}%</span>
+                            )}
+                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent p-4 pt-12">
+                              <h3 className="text-base font-semibold text-white">{kosha.name}</h3>
+                              <div className="mt-0.5 flex items-baseline gap-2">
+                                <span className="text-sm font-bold text-primary">{formatKoshaPrice(kosha.price)}</span>
+                                {kosha.oldPrice ? <span className="text-xs text-white/50 line-through">{formatKoshaPrice(kosha.oldPrice)}</span> : null}
+                              </div>
                             </div>
-                            <h3 className="font-bold text-foreground">{kosha.name}</h3>
-                            {shortText(kosha.description) ? <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{shortText(kosha.description)}</p> : null}
                           </div>
                         </button>
                       );
