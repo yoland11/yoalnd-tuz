@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
-  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode,
+  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode, Printer,
 } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
@@ -284,6 +284,10 @@ const STATUS_TONES: Record<string, string> = {
   shipped: "text-primary border-primary/30 bg-primary/10",
   delivered: "text-status-success border-status-success/30 bg-status-success/10",
   completed: "text-status-success border-status-success/30 bg-status-success/10",
+  registered: "text-status-warning border-status-warning/30 bg-status-warning/10",
+  editing: "text-primary border-primary/30 bg-primary/10",
+  ready_print: "text-primary border-primary/30 bg-primary/10",
+  ready_pickup: "text-primary border-primary/30 bg-primary/10",
   cancelled: "text-status-danger border-status-danger/30 bg-status-danger/10",
 };
 
@@ -296,6 +300,10 @@ function StatusIcon({ status, className }: { status: string; className?: string 
     shipped: Truck,
     delivered: PackageCheck,
     completed: PackageCheck,
+    registered: ClipboardCheck,
+    editing: Sparkles,
+    ready_print: Printer,
+    ready_pickup: PackageCheck,
     cancelled: XCircle,
   };
   const Icon = icons[status] ?? CheckCircle;

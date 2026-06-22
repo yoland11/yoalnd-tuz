@@ -29,9 +29,9 @@ type Editing = {
 };
 
 const ROLE_PRESETS: Record<string, string[]> = {
-  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks"],
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks", "photography"],
   booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
-  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
+  photographer: ["photography"],
   accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
   employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],

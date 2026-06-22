@@ -20,6 +20,14 @@ export const PHOTO_STAGES: Stage[] = [
   { id: "delivered",  label: "تم التسليم" },
 ];
 
+export const PHOTOGRAPHY_PORTAL_STAGES: Stage[] = [
+  { id: "registered",   label: "تم التسجيل" },
+  { id: "editing",      label: "قيد المونتاج" },
+  { id: "ready_print",  label: "جاهز للطباعة" },
+  { id: "ready_pickup", label: "جاهز للاستلام" },
+  { id: "delivered",    label: "تم التسليم" },
+];
+
 export const KOSHA_STAGES: Stage[] = [
   { id: "pending",    label: "تم الحجز" },
   { id: "following",  label: "قيد المتابعة" },
@@ -66,6 +74,7 @@ export const DISTRIBUTION_STAGES: Stage[] = [
 ];
 
 export function getStagesFor(serviceType: string | null | undefined, kind?: string | null): Stage[] {
+  if (kind === "photography") return PHOTOGRAPHY_PORTAL_STAGES;
   if (!serviceType || kind === "product") return PRODUCT_STAGES;
   const t = serviceType.toLowerCase();
   if (t.includes("photo") || t === "تصوير")           return PHOTO_STAGES;

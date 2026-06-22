@@ -237,6 +237,18 @@ export async function ensureMasterCashBoxTables() {
         END IF;
       END $triggers$;
     `).then(async () => {
+      // Reversal / adjustment linkage columns (additive, idempotent).
+      await db.execute(sql`
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_transaction_id" integer;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_txn_id" integer;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_reason" text;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by" integer;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by_name" text;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_at" timestamp;
+        ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
+        ALTER TABLE "service_orders" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
+        ALTER TABLE "sales_invoices" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
+      `);
       for (const [code, nameAr, accountType, department] of ACCOUNT_SEEDS) {
         await db.insert(financialAccountsTable).values({ code, nameAr, accountType, department }).onConflictDoNothing();
       }
@@ -565,6 +577,140 @@ export async function rejectFinancialTransaction(id: number, actor: FinancialAct
   }
   await addAudit(id, "rejected", actor, snapshot(existing as any), snapshot(saved as any), cleanReason);
   return saved;
+}
+
+/**
+ * Reverse (void) an executed transaction by creating an opposite adjustment entry.
+ * Never deletes. Net effect = 0. Admin/Manager only. Cannot reverse twice.
+ */
+export async function reverseFinancialTransaction(id: number, actor: FinancialActor, reason: string) {
+  await ensureMasterCashBoxTables();
+  if (!canApproveFinancialTransactions(actor)) throw new Error("عكس الحركة المالية متاح للمدير فقط");
+  const cleanReason = String(reason ?? "").trim();
+  if (cleanReason.length < 3) throw new Error("سبب العكس مطلوب");
+
+  return await db.transaction(async (tx) => {
+    const [original] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.id, id)).limit(1);
+    if (!original) throw new Error("المعاملة غير موجودة");
+    if (original.approvalStatus !== "executed") throw new Error("يمكن عكس الحركات المنفّذة فقط");
+    if (original.transactionType.endsWith("_reversal")) throw new Error("لا يمكن عكس حركة عكسية");
+    if (original.reversedAt || original.reversalTxnId) throw new Error("تم عكس هذه الحركة مسبقًا");
+
+    const lock = await tx.execute(sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`);
+    const cashRaw = (lock.rows?.[0] ?? {}) as any;
+    if (!cashRaw.id) throw new Error("الصندوق الرئيسي غير مهيأ");
+
+    const reverseDir: "revenue" | "expense" = original.direction === "revenue" ? "expense" : "revenue";
+    const amount = money(original.amount);
+    const before = money(cashRaw.current_balance);
+    const after = money(reverseDir === "revenue" ? before + amount : before - amount);
+    const now = new Date();
+
+    const [cashAccount] = await tx.select().from(financialAccountsTable).where(eq(financialAccountsTable.code, "1000")).limit(1);
+    const counterCode = counterAccountCode(reverseDir, original.department, original.transactionType);
+    const [counterAccount] = await tx.select().from(financialAccountsTable).where(eq(financialAccountsTable.code, counterCode)).limit(1);
+    if (!cashAccount || !counterAccount) throw new Error("دليل الحسابات غير مكتمل");
+
+    // 1) Create the reverse (adjustment) entry — executed immediately.
+    const [insertedRaw] = await tx.insert(financialTransactionsTable).values({
+      transactionNo: `FIN-TMP-${randomUUID()}`,
+      transactionDate: todayBaghdad(),
+      direction: reverseDir,
+      amount: String(amount),
+      department: original.department,
+      transactionType: "manual_reversal",
+      description: `عكس الحركة ${original.transactionNo}: ${cleanReason}`,
+      paymentMethod: original.paymentMethod,
+      sourceType: original.sourceType,
+      sourceId: original.sourceId,
+      sourceEvent: "reversal",
+      idempotencyKey: `reversal:${original.id}`,
+      approvalStatus: "executed",
+      requestedBy: actor.id, requestedByName: actor.name,
+      approvedBy: actor.id, approvedByName: actor.name, approvedAt: now,
+      executedBy: actor.id, executedByName: actor.name, executedAt: now,
+      balanceBefore: String(before), balanceAfter: String(after),
+      reversedTransactionId: original.id,
+      reversalReason: cleanReason,
+      reversedBy: actor.id, reversedByName: actor.name, reversedAt: now,
+      createdAt: now, updatedAt: now,
+    }).returning();
+    const [reverse] = await tx.update(financialTransactionsTable)
+      .set({ transactionNo: transactionNumber(insertedRaw.id, now) })
+      .where(eq(financialTransactionsTable.id, insertedRaw.id)).returning();
+
+    // 2) Double-entry ledger (flipped sides).
+    await tx.insert(financialLedgerEntriesTable).values(reverseDir === "revenue" ? [
+      { transactionId: reverse.id, accountId: cashAccount.id, entrySide: "debit", amount: String(amount), description: reverse.description },
+      { transactionId: reverse.id, accountId: counterAccount.id, entrySide: "credit", amount: String(amount), description: reverse.description },
+    ] : [
+      { transactionId: reverse.id, accountId: counterAccount.id, entrySide: "debit", amount: String(amount), description: reverse.description },
+      { transactionId: reverse.id, accountId: cashAccount.id, entrySide: "credit", amount: String(amount), description: reverse.description },
+    ]).onConflictDoNothing();
+
+    // 3) Flag the original as reversed (kept forever).
+    await tx.update(financialTransactionsTable).set({
+      reversalTxnId: reverse.id,
+      reversalReason: cleanReason,
+      reversedBy: actor.id, reversedByName: actor.name, reversedAt: now,
+      updatedAt: now,
+    }).where(eq(financialTransactionsTable.id, original.id));
+
+    // 4) Recompute master balance from executed entries (_reversal nets to zero).
+    const [tot] = await tx.select({
+      revenue: sql<number>`coalesce(sum(case
+        when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+        else 0 end),0)::float`,
+      expenses: sql<number>`coalesce(sum(case
+        when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='expense' and ${financialTransactionsTable.transactionType} not like '%_reversal' then ${financialTransactionsTable.amount}::numeric
+        when ${financialTransactionsTable.approvalStatus}='executed' and ${financialTransactionsTable.direction}='revenue' and ${financialTransactionsTable.transactionType} like '%_reversal' then -${financialTransactionsTable.amount}::numeric
+        else 0 end),0)::float`,
+    }).from(financialTransactionsTable);
+    const revenue = money(tot?.revenue);
+    const expenses = money(tot?.expenses);
+    const current = money(money(cashRaw.opening_balance) + revenue - expenses);
+    await tx.update(masterCashBoxTable).set({
+      currentBalance: String(current),
+      availableBalance: String(current),
+      totalRevenue: String(revenue),
+      totalExpenses: String(expenses),
+      netProfit: String(money(revenue - expenses)),
+      version: Number(cashRaw.version ?? 0) + 1,
+      updatedBy: actor.id, updatedByName: actor.name, updatedAt: now,
+    }).where(eq(masterCashBoxTable.id, Number(cashRaw.id)));
+
+    // 5) Flag the linked source (order / service order / sales invoice / kosha) — never deleted, excluded from net.
+    const sid = Number(original.sourceId);
+    let sourceFlagged: { type: string; id: number } | null = null;
+    if (Number.isInteger(sid) && sid > 0) {
+      if (original.sourceType === "kosha_booking") {
+        await tx.execute(sql`UPDATE kosha_bookings SET booking_details = jsonb_set(coalesce(booking_details, '{}'::jsonb), '{financiallyReversed}', 'true'::jsonb, true), updated_at = now() WHERE id = ${sid}`);
+        sourceFlagged = { type: "kosha_booking", id: sid };
+      } else if (original.sourceType === "order") {
+        await tx.execute(sql`UPDATE orders SET financially_reversed = true, updated_at = now() WHERE id = ${sid}`);
+        sourceFlagged = { type: "order", id: sid };
+      } else if (original.sourceType === "service_order") {
+        await tx.execute(sql`UPDATE service_orders SET financially_reversed = true WHERE id = ${sid}`);
+        sourceFlagged = { type: "service_order", id: sid };
+      } else if (original.sourceType === "sales_invoice") {
+        await tx.execute(sql`UPDATE sales_invoices SET financially_reversed = true WHERE id = ${sid}`);
+        sourceFlagged = { type: "sales_invoice", id: sid };
+      }
+    }
+
+    // 6) Audit on both records (+ a dedicated entry for the flagged source).
+    const auditRows: Array<typeof financialAuditLogsTable.$inferInsert> = [
+      { transactionId: original.id, action: "reversed", actorId: actor.id, actorName: actor.name, oldValues: snapshot(original as any), newValues: { reversalTxnId: reverse.id, reversedAt: now.toISOString(), sourceFlagged }, reason: cleanReason },
+      { transactionId: reverse.id, action: "reversal_created", actorId: actor.id, actorName: actor.name, oldValues: { reversedTransactionId: original.id }, newValues: snapshot(reverse as any), reason: cleanReason },
+    ];
+    if (sourceFlagged) {
+      auditRows.push({ transactionId: original.id, action: "source_financially_reversed", actorId: actor.id, actorName: actor.name, oldValues: {}, newValues: { source: sourceFlagged }, reason: cleanReason });
+    }
+    await tx.insert(financialAuditLogsTable).values(auditRows);
+
+    return { original, reverse };
+  });
 }
 
 export async function listFinancialTransactions(input: unknown) {

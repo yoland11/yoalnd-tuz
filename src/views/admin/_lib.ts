@@ -3,7 +3,7 @@ import { fileToDataUrl, processImageFile, type ImageProcessOptions } from "@/lib
 // ───── Cookie-based admin auth client ─────
 export const ALL_PERMISSIONS = [
   "dashboard","orders","bookings","services","products","gallery",
-  "delivery","customers","staff","settings","invoices","whatsapp","accounting","backup","tasks","koshas",
+  "delivery","customers","staff","settings","invoices","whatsapp","accounting","backup","tasks","koshas","photography",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -24,6 +24,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   backup: "النسخ الاحتياطي والتصدير",
   tasks: "إدارة المهام",
   koshas: "بوابة كادر الكوشات",
+  photography: "بوابة المصورين",
 };
 
 export type AdminMe = {

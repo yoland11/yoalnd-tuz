@@ -47,6 +47,7 @@ export const serviceOrdersTable = pgTable("service_orders", {
   confirmationAt: timestamp("confirmation_at"),
   preRescheduleStatus: varchar("pre_reschedule_status", { length: 30 }),
   archivedAt: timestamp("archived_at"),
+  financiallyReversed: boolean("financially_reversed").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

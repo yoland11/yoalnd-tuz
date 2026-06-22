@@ -24,6 +24,7 @@ const Invoice = lazy(() => import("@/views/admin/invoice"));
 
 // Kosha Staff Portal — lazy, separate restricted app (field crew)
 const StaffPortal = lazy(() => import("@/views/staff/index"));
+const PhotographyStaffPortal = lazy(() => import("@/views/staff/photography/index"));
 
 // Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
 const ProductDetail = lazy(() => import("@/views/store/id"));
@@ -136,6 +137,17 @@ function Router() {
       </Route>
 
       {/* Kosha Staff Portal — lazy, outside Layout */}
+      <Route path="/staff/photography/*">
+        <Suspense fallback={<AdminSpinner />}>
+          <PhotographyStaffPortal />
+        </Suspense>
+      </Route>
+      <Route path="/staff/photography">
+        <Suspense fallback={<AdminSpinner />}>
+          <PhotographyStaffPortal />
+        </Suspense>
+      </Route>
+
       <Route path="/staff/koshas/*">
         <Suspense fallback={<AdminSpinner />}>
           <StaffPortal />

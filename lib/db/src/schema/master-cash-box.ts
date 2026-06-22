@@ -92,6 +92,13 @@ export const financialTransactionsTable = pgTable("financial_transactions", {
   responsibleUserName: text("responsible_user_name"),
   notes: text("notes"),
   attachments: jsonb("attachments").$type<string[]>().notNull().default([]),
+  // Reversal / adjustment linkage — no transaction is ever deleted.
+  reversedTransactionId: integer("reversed_transaction_id"),
+  reversalTxnId: integer("reversal_txn_id"),
+  reversalReason: text("reversal_reason"),
+  reversedBy: integer("reversed_by"),
+  reversedByName: text("reversed_by_name"),
+  reversedAt: timestamp("reversed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => ({

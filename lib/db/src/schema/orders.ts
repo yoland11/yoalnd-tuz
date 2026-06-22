@@ -1,4 +1,4 @@
-import { date, pgTable, serial, text, numeric, integer, timestamp, varchar, jsonb } from "drizzle-orm/pg-core";
+import { date, pgTable, serial, text, numeric, integer, timestamp, varchar, jsonb, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { customersTable } from "./customers";
@@ -33,6 +33,7 @@ export const ordersTable = pgTable("orders", {
   notes: text("notes"),
   internalNotes: text("internal_notes"),
   archivedAt: timestamp("archived_at"),
+  financiallyReversed: boolean("financially_reversed").notNull().default(false),
   stockApplied: integer("stock_applied").notNull().default(1),
   stockRestoredAt: timestamp("stock_restored_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

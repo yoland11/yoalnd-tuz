@@ -147,6 +147,12 @@ export default function Invoice() {
         </div>
       </div>
 
+      {data.financiallyReversed && (
+        <div className="print:hidden border-y border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm font-semibold text-destructive">
+          تم عكس الأثر المالي لهذا {isBooking ? "الحجز" : "الطلب"} — لا يُحتسب ضمن الإيرادات الصافية
+        </div>
+      )}
+
       {/* ===== Thermal receipt sheet (80mm) ===== */}
       <div ref={sheetRef} className="inv-sheet">
         <div className="ih-head">

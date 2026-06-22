@@ -42,12 +42,17 @@ import {
   koshaPaymentRequestsTable,
   koshaStaffNotificationsTable,
   KOSHA_EXECUTION_STAGES,
+  PHOTOGRAPHY_ORDER_STAGES,
   koshaImagesTable,
   koshaPackageComponentsTable,
   koshaPackagesTable,
   koshaProvincesTable,
   koshaWelcomeBoardsTable,
   koshasTable,
+  photographyEventsTable,
+  photographyOrdersTable,
+  photographyOrderEventsTable,
+  photographyPaymentRequestsTable,
   loyaltyPointsTable,
   messageRepliesTable,
   messageThreadsTable,
@@ -117,6 +122,7 @@ import {
   listFinancialTransactions,
   recalculateMasterCashBox,
   rejectFinancialTransaction,
+  reverseFinancialTransaction,
   submitFinancialTransaction,
   syncSourcePaymentTarget,
   syncSourceFinancialRequest,
@@ -217,6 +223,7 @@ export const ALL_PERMISSIONS = [
   "backup",
   "tasks",
   "koshas",
+  "photography",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -264,6 +271,7 @@ let accountingTablesPromise: Promise<void> | null = null;
 let stockTrackingTablesPromise: Promise<void> | null = null;
 let koshaTablesPromise: Promise<void> | null = null;
 let koshaStaffTablesPromise: Promise<void> | null = null;
+let photographyStaffTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<string, { expiresAt: number; payload: any[] }>();
 const STORE_CATEGORIES_TTL_MS = 60_000;
 
@@ -814,7 +822,7 @@ function publicQrTarget(_entityType: string, _entity: any, req: NextRequest, tok
   return `${base}/track/${encodeURIComponent(token)}`;
 }
 
-async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice" | "kosha_booking", entity: any, req: NextRequest) {
+async function ensureQrForEntity(entityType: "order" | "service_order" | "invoice" | "kosha_booking" | "photography_order", entity: any, req: NextRequest) {
   await ensureAdminExtensionsTables();
   const existing = await db.query.qrTokensTable.findFirst({
     where: and(eq(qrTokensTable.entityType, entityType), eq(qrTokensTable.entityId, entity.id)),
@@ -3364,6 +3372,93 @@ async function ensureKoshaStaffTables(): Promise<void> {
   await koshaStaffTablesPromise;
 }
 
+async function ensurePhotographyStaffTables(): Promise<void> {
+  if (!photographyStaffTablesPromise) {
+    photographyStaffTablesPromise = db.execute(sql`
+      create table if not exists "photography_events" (
+        "id" serial primary key,
+        "client_token" varchar(64) not null unique,
+        "groom_name" text not null,
+        "event_name" text,
+        "event_date" date not null,
+        "location" text,
+        "assigned_staff_id" integer references "staff" ("id") on delete set null,
+        "assigned_staff_name" text not null default '',
+        "status" varchar(20) not null default 'active',
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_orders" (
+        "id" serial primary key,
+        "client_token" varchar(64) not null unique,
+        "order_no" varchar(40) not null unique,
+        "event_id" integer not null references "photography_events" ("id") on delete restrict,
+        "assigned_staff_id" integer references "staff" ("id") on delete set null,
+        "customer_name" text not null,
+        "phone" varchar(20) not null,
+        "copies" integer not null default 1,
+        "print_type" varchar(30) not null default '10x15',
+        "total_amount" numeric(14,2) not null default 0,
+        "paid_amount" numeric(14,2) not null default 0,
+        "remaining_amount" numeric(14,2) not null default 0,
+        "payment_status" varchar(20) not null default 'unpaid',
+        "photo_number" varchar(120),
+        "notes" text,
+        "reference_image" text,
+        "status" varchar(30) not null default 'registered',
+        "created_by" integer references "staff" ("id") on delete set null,
+        "delivered_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_order_events" (
+        "id" serial primary key,
+        "order_id" integer not null references "photography_orders" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "type" varchar(40) not null,
+        "from_status" varchar(30),
+        "to_status" varchar(30),
+        "note" text,
+        "created_at" timestamp not null default now()
+      );
+      alter table "photography_orders" add column if not exists "client_token" varchar(64);
+      update "photography_orders" set "client_token" = md5(random()::text || clock_timestamp()::text || "id"::text) where "client_token" is null;
+      alter table "photography_orders" alter column "client_token" set not null;
+      create unique index if not exists "photography_orders_client_token_idx" on "photography_orders" ("client_token");
+      create table if not exists "photography_payment_requests" (
+        "id" serial primary key,
+        "order_id" integer not null references "photography_orders" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "amount" numeric(14,2) not null,
+        "note" text,
+        "status" varchar(20) not null default 'pending',
+        "financial_transaction_id" integer,
+        "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
+        "reviewed_by_name" text,
+        "reviewed_at" timestamp,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "photography_events_staff_date_idx" on "photography_events" ("assigned_staff_id", "event_date", "id");
+      create index if not exists "photography_orders_event_idx" on "photography_orders" ("event_id", "created_at");
+      create index if not exists "photography_orders_staff_status_idx" on "photography_orders" ("assigned_staff_id", "status", "created_at");
+      create index if not exists "photography_orders_phone_idx" on "photography_orders" ("phone");
+      create index if not exists "photography_order_events_order_idx" on "photography_order_events" ("order_id", "created_at");
+      create index if not exists "photography_payment_requests_status_idx" on "photography_payment_requests" ("status", "created_at");
+      create unique index if not exists "photography_payment_requests_financial_idx" on "photography_payment_requests" ("financial_transaction_id") where "financial_transaction_id" is not null;
+      update "staff" set "permissions" = '["photography"]'::jsonb where "role" = 'photographer';
+      update "staff" set "permissions" = coalesce("permissions", '[]'::jsonb) || '["photography"]'::jsonb
+      where "role" = 'manager' and not (coalesce("permissions", '[]'::jsonb) ? 'photography');
+    `).then(() => undefined).catch((err) => {
+      photographyStaffTablesPromise = null;
+      throw err;
+    });
+  }
+  await photographyStaffTablesPromise;
+}
+
 async function ensureStoreCategoryColumns(): Promise<void> {
   if (!storeCategoryColumnsPromise) {
     storeCategoryColumnsPromise = db.execute(sql`
@@ -4016,6 +4111,7 @@ async function formatOrder(order: any) {
     paymentStatus: order.paymentStatus ?? "unpaid",
     rewardPointsAwarded: Number(order.rewardPointsAwarded ?? 0),
     archivedAt: order.archivedAt ? order.archivedAt.toISOString() : null,
+    financiallyReversed: !!order.financiallyReversed,
     governorate: order.governorate ?? null,
     address: order.address ?? null,
     notes: order.notes ?? null,
@@ -4960,6 +5056,12 @@ async function handleMedia(req: NextRequest, parts: string[]) {
   if (kind === "kosha-package") {
     const item = await db.query.koshaPackagesTable.findFirst({ where: eq(koshaPackagesTable.id, id) }) as any;
     return mediaResponseFromValue(req, await upgradeStoredMedia("kosha-package", id, item?.mainImage ?? item?.main_image));
+  }
+
+  if (kind === "photography-order") {
+    await ensurePhotographyStaffTables();
+    const item = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.id, id) }) as any;
+    return mediaResponseFromValue(req, await upgradeStoredMedia("photography-order", id, item?.referenceImage ?? item?.reference_image));
   }
 
   if (kind === "kosha-addon") {
@@ -6031,9 +6133,9 @@ function normalizePayment(v: unknown): "cod" | "transfer" | "paid" | null {
 
 const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
   admin: [...ALL_PERMISSIONS],
-  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks"],
+  manager: ["dashboard", "orders", "bookings", "services", "products", "gallery", "delivery", "customers", "staff", "settings", "invoices", "whatsapp", "accounting", "tasks", "photography"],
   booking_staff: ["dashboard", "orders", "bookings", "customers", "invoices", "whatsapp", "tasks"],
-  photographer: ["dashboard", "orders", "bookings", "gallery", "services", "whatsapp", "tasks"],
+  photographer: ["photography"],
   accountant: ["dashboard", "orders", "bookings", "customers", "invoices", "accounting", "tasks"],
   employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
@@ -6649,6 +6751,33 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
       createdAt: booking.createdAt.toISOString(),
       updatedAt: booking.updatedAt.toISOString(),
       statusHistory: [{ status: booking.status, createdAt: booking.updatedAt.toISOString() }],
+    };
+  }
+
+  if (row.entityType === "photography_order") {
+    await ensurePhotographyStaffTables();
+    const order = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.id, row.entityId) });
+    if (!order) throw Object.assign(new Error("لم يتم العثور على طلب التصوير"), { status: 404 });
+    const event = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.id, order.eventId) });
+    const history = await db.query.photographyOrderEventsTable.findMany({
+      where: eq(photographyOrderEventsTable.orderId, order.id),
+      orderBy: [desc(photographyOrderEventsTable.createdAt)],
+      limit: 12,
+    });
+    return {
+      kind: "photography",
+      trackingCode: order.orderNo,
+      customerName: order.customerName,
+      serviceName: event?.eventName || `مناسبة ${event?.groomName || "تصوير"}`,
+      serviceType: "photography",
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      createdAt: order.createdAt.toISOString(),
+      updatedAt: order.updatedAt.toISOString(),
+      statusHistory: (history.length ? history : [{ toStatus: order.status, createdAt: order.createdAt }]).map((item: any) => ({
+        status: item.toStatus || order.status,
+        createdAt: item.createdAt.toISOString(),
+      })),
     };
   }
 
@@ -10078,6 +10207,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         deposit,
         balance,
         paymentStatus: booking.paymentStatus ?? "unpaid",
+        financiallyReversed: !!(booking as any).financiallyReversed,
         customFields: cf,
         qr,
         createdAt: booking.createdAt.toISOString(),
@@ -10100,6 +10230,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
       remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
       paymentStatus: order.paymentStatus ?? "unpaid",
+      financiallyReversed: !!(order as any).financiallyReversed,
       notes: order.notes ?? null,
       deliveryFee: Number.parseFloat(order.deliveryFee),
       total: Number.parseFloat(order.total),
@@ -12110,6 +12241,465 @@ async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$infer
   }, financeActorValue);
 }
 
+const PhotographyEventCreateSchema = z.object({
+  clientToken: z.string().trim().min(16).max(64),
+  groomName: z.string().trim().min(1, "اسم العريس مطلوب"),
+  eventName: z.string().trim().optional().default(""),
+  eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ المناسبة غير صحيح"),
+  location: z.string().trim().optional().default(""),
+  assignedStaffId: z.coerce.number().int().positive().optional().nullable(),
+});
+
+const PhotographyOrderCreateSchema = z.object({
+  clientToken: z.string().trim().min(16).max(64),
+  customerName: z.string().trim().min(1, "اسم الزبون مطلوب"),
+  phone: z.string().trim().min(1, "رقم الهاتف مطلوب"),
+  copies: z.coerce.number().int().min(1).max(999),
+  printType: z.enum(["10x15", "15x20", "20x30", "album"]),
+  totalAmount: z.coerce.number().positive(),
+  paidAmount: z.coerce.number().nonnegative().optional().default(0),
+  photoNumber: z.string().trim().optional().default(""),
+  notes: z.string().trim().optional().default(""),
+  referenceImage: z.string().optional().nullable(),
+});
+
+const PhotographyStatusSchema = z.object({
+  status: z.enum(PHOTOGRAPHY_ORDER_STAGES),
+  note: z.string().trim().optional().default(""),
+});
+
+const PhotographyCollectSchema = z.object({
+  amount: z.coerce.number().positive(),
+  note: z.string().trim().optional().default(""),
+});
+
+function isPhotographyManager(user: AdminUser) {
+  return user.role === "admin" || user.role === "manager";
+}
+
+function photographyStaffName(user: AdminUser) {
+  return user.fullName || user.username;
+}
+
+async function getPhotographyEventByRef(value: string) {
+  const numericId = int(value);
+  return db.query.photographyEventsTable.findFirst({
+    where: numericId ? eq(photographyEventsTable.id, numericId) : eq(photographyEventsTable.clientToken, value),
+  });
+}
+
+function canAccessPhotographyEvent(user: AdminUser, event: typeof photographyEventsTable.$inferSelect) {
+  return isPhotographyManager(user) || event.assignedStaffId === user.id;
+}
+
+async function photographyPendingAmount(orderId: number) {
+  const [row] = await db.select({ total: sql<string>`coalesce(sum(${photographyPaymentRequestsTable.amount}), 0)` })
+    .from(photographyPaymentRequestsTable)
+    .where(and(eq(photographyPaymentRequestsTable.orderId, orderId), eq(photographyPaymentRequestsTable.status, "pending")));
+  return Number(row?.total ?? 0);
+}
+
+async function formatPhotographyEvent(row: typeof photographyEventsTable.$inferSelect) {
+  const [count] = await db.select({ total: sql<number>`count(*)::int` }).from(photographyOrdersTable).where(eq(photographyOrdersTable.eventId, row.id));
+  return {
+    ...row,
+    orderCount: Number(count?.total ?? 0),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+async function formatPhotographyEvents(rows: Array<typeof photographyEventsTable.$inferSelect>) {
+  if (!rows.length) return [];
+  const counts = await db.select({ eventId: photographyOrdersTable.eventId, total: sql<number>`count(*)::int` })
+    .from(photographyOrdersTable)
+    .where(inArray(photographyOrdersTable.eventId, rows.map((row) => row.id)))
+    .groupBy(photographyOrdersTable.eventId);
+  return rows.map((row) => ({
+    ...row,
+    orderCount: Number(counts.find((item) => item.eventId === row.id)?.total ?? 0),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }));
+}
+
+function photographyOrderJson(
+  row: typeof photographyOrdersTable.$inferSelect,
+  event: typeof photographyEventsTable.$inferSelect | null | undefined,
+  pendingAmount: number,
+  qr: Awaited<ReturnType<typeof ensureQrForEntity>> | null = null,
+) {
+  return {
+    ...row,
+    phone: formatIraqiPhone(row.phone) ?? row.phone,
+    totalAmount: Number(row.totalAmount),
+    paidAmount: Number(row.paidAmount),
+    remainingAmount: Number(row.remainingAmount),
+    pendingAmount,
+    event: event ? {
+      id: event.id,
+      clientToken: event.clientToken,
+      groomName: event.groomName,
+      eventName: event.eventName,
+      eventDate: event.eventDate,
+      location: event.location,
+      assignedStaffName: event.assignedStaffName,
+    } : null,
+    referenceImage: publicMediaValue("photography-order", row, row.referenceImage),
+    qr,
+    deliveredAt: row.deliveredAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+async function formatPhotographyOrder(row: typeof photographyOrdersTable.$inferSelect, includeQr = false, req?: NextRequest) {
+  const [event, pendingAmount] = await Promise.all([
+    db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.id, row.eventId) }),
+    photographyPendingAmount(row.id),
+  ]);
+  const qr = includeQr && req ? await ensureQrForEntity("photography_order", row, req) : null;
+  return photographyOrderJson(row, event, pendingAmount, qr);
+}
+
+async function formatPhotographyOrders(rows: Array<typeof photographyOrdersTable.$inferSelect>) {
+  if (!rows.length) return [];
+  const orderIds = rows.map((row) => row.id);
+  const eventIds = Array.from(new Set(rows.map((row) => row.eventId)));
+  const [events, pending] = await Promise.all([
+    db.query.photographyEventsTable.findMany({ where: inArray(photographyEventsTable.id, eventIds) }),
+    db.select({ orderId: photographyPaymentRequestsTable.orderId, total: sql<string>`coalesce(sum(${photographyPaymentRequestsTable.amount}), 0)` })
+      .from(photographyPaymentRequestsTable)
+      .where(and(inArray(photographyPaymentRequestsTable.orderId, orderIds), eq(photographyPaymentRequestsTable.status, "pending")))
+      .groupBy(photographyPaymentRequestsTable.orderId),
+  ]);
+  return rows.map((row) => photographyOrderJson(
+    row,
+    events.find((event) => event.id === row.eventId),
+    Number(pending.find((item) => item.orderId === row.id)?.total ?? 0),
+  ));
+}
+
+async function addPhotographyOrderEvent(input: {
+  orderId: number;
+  staff: AdminUser;
+  type: string;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+  note?: string | null;
+}) {
+  const [row] = await db.insert(photographyOrderEventsTable).values({
+    orderId: input.orderId,
+    staffId: input.staff.id,
+    staffName: photographyStaffName(input.staff),
+    type: input.type,
+    fromStatus: input.fromStatus ?? null,
+    toStatus: input.toStatus ?? null,
+    note: input.note ?? null,
+  }).returning();
+  return row;
+}
+
+async function photographyOrderForUser(orderId: number, user: AdminUser) {
+  const order = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.id, orderId) });
+  if (!order) return null;
+  if (!isPhotographyManager(user) && order.assignedStaffId !== user.id) return null;
+  return order;
+}
+
+async function createPhotographyCollectionRequest(order: typeof photographyOrdersTable.$inferSelect, user: AdminUser, amount: number, note: string) {
+  const pending = await photographyPendingAmount(order.id);
+  const available = Math.max(0, Number(order.remainingAmount) - pending);
+  if (amount > available) throw new Error(`المبلغ أكبر من المتبقي المتاح (${available.toLocaleString("ar-IQ")} د.ع)`);
+  const [request] = await db.insert(photographyPaymentRequestsTable).values({
+    orderId: order.id,
+    staffId: user.id,
+    staffName: photographyStaffName(user),
+    amount: String(amount),
+    note: nullableText(note),
+    status: "pending",
+  }).returning();
+  try {
+    const transaction = await createSourceFinancialRequest({
+      transactionDate: baghdadToday(),
+      direction: "revenue",
+      amount,
+      department: "photography",
+      transactionType: "photography_collection",
+      description: `تحصيل طلب تصوير ${order.orderNo}`,
+      paymentMethod: "cash",
+      sourceType: "photography_order",
+      sourceId: String(order.id),
+      sourceEvent: `collection:${request.id}`,
+      customerName: order.customerName,
+      customerPhone: order.phone,
+      notes: note || `طلب تحصيل من ${photographyStaffName(user)}`,
+      idempotencyKey: `photography:${order.id}:collection:${request.id}`,
+    }, financialActor(user));
+    await db.update(photographyPaymentRequestsTable).set({ financialTransactionId: transaction.id }).where(eq(photographyPaymentRequestsTable.id, request.id));
+    await addPhotographyOrderEvent({ orderId: order.id, staff: user, type: "payment_requested", note, fromStatus: order.status, toStatus: order.status });
+    void createNotification({
+      type: "photography_payment_request",
+      title: "طلب تحصيل تصوير بانتظار الاعتماد",
+      body: `${photographyStaffName(user)} - ${order.orderNo} - ${amount.toLocaleString("ar-IQ")} د.ع`,
+      entityType: "financial_transaction",
+      entityId: transaction.id,
+      href: "/admin/finance/master-cash",
+    });
+    return { ...request, financialTransactionId: transaction.id };
+  } catch (err) {
+    await db.delete(photographyPaymentRequestsTable).where(eq(photographyPaymentRequestsTable.id, request.id));
+    throw err;
+  }
+}
+
+async function finalizePhotographyPaymentRequest(transaction: any, approved: boolean, reviewer: FinancialActor, reason?: string | null) {
+  if (transaction?.sourceType !== "photography_order") return;
+  await ensurePhotographyStaffTables();
+  const request = await db.query.photographyPaymentRequestsTable.findFirst({
+    where: eq(photographyPaymentRequestsTable.financialTransactionId, transaction.id),
+  });
+  if (!request || request.status !== "pending") return;
+  const order = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.id, request.orderId) });
+  if (!order) return;
+  const reviewerId = reviewer.id ?? null;
+  if (!approved) {
+    await db.update(photographyPaymentRequestsTable).set({
+      status: "rejected",
+      reviewedByStaffId: reviewerId,
+      reviewedByName: reviewer.name,
+      reviewedAt: new Date(),
+    }).where(eq(photographyPaymentRequestsTable.id, request.id));
+    await db.insert(photographyOrderEventsTable).values({
+      orderId: order.id, staffId: reviewerId, staffName: reviewer.name, type: "payment_rejected", fromStatus: order.status, toStatus: order.status, note: reason ?? null,
+    });
+    void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_rejected", title: "تم رفض دفعة التصوير", body: `${order.orderNo} - ${Number(request.amount).toLocaleString("ar-IQ")} د.ع`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+    return;
+  }
+  const amount = Number(request.amount);
+  const paidAmount = Math.min(Number(order.totalAmount), Number(order.paidAmount) + amount);
+  const remainingAmount = Math.max(0, Number(order.totalAmount) - paidAmount);
+  const paymentStatus = remainingAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+  await db.transaction(async (tx) => {
+    await tx.update(photographyOrdersTable).set({ paidAmount: String(paidAmount), remainingAmount: String(remainingAmount), paymentStatus, updatedAt: new Date() }).where(eq(photographyOrdersTable.id, order.id));
+    await tx.update(photographyPaymentRequestsTable).set({ status: "approved", reviewedByStaffId: reviewerId, reviewedByName: reviewer.name, reviewedAt: new Date() }).where(eq(photographyPaymentRequestsTable.id, request.id));
+    await tx.insert(photographyOrderEventsTable).values({ orderId: order.id, staffId: reviewerId, staffName: reviewer.name, type: "payment_approved", fromStatus: order.status, toStatus: order.status, note: reason ?? null });
+  });
+  void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_approved", title: "تم اعتماد دفعة التصوير", body: `${order.orderNo} - ${amount.toLocaleString("ar-IQ")} د.ع`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+}
+
+function telegramText(value: unknown) {
+  return String(value ?? "").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char] ?? char));
+}
+
+async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): Promise<NextResponse | null> {
+  if (parts[1] !== "photography") return null;
+  await ensurePhotographyStaffTables();
+  const auth = await requirePermission(req, "photography");
+  if (isResponse(auth)) return auth;
+  const method = req.method;
+  const resource = parts[2] ?? "dashboard";
+  const ref = parts[3] ? decodeURIComponent(parts[3]) : null;
+  const action = parts[4];
+  const manager = isPhotographyManager(auth);
+  const own = <T extends { assignedStaffId: number | null }>(rows: T[]) => manager ? rows : rows.filter((row) => row.assignedStaffId === auth.id);
+
+  if (resource === "photographers" && method === "GET") {
+    const rows = await db.query.staffTable.findMany({ where: eq(staffTable.isActive, true), orderBy: [asc(staffTable.fullName), asc(staffTable.id)] });
+    const photographers = rows.filter((row) => row.role === "admin" || row.role === "manager" || (Array.isArray(row.permissions) && row.permissions.includes("photography")));
+    return json((manager ? photographers : photographers.filter((row) => row.id === auth.id)).map((row) => ({ id: row.id, name: row.fullName || row.username })));
+  }
+
+  if (resource === "events") {
+    if (method === "GET" && !ref) {
+      const search = (req.nextUrl.searchParams.get("search") || "").trim().toLowerCase();
+      let rows = own(await db.query.photographyEventsTable.findMany({ orderBy: [desc(photographyEventsTable.eventDate), desc(photographyEventsTable.id)], limit: 300 }));
+      if (search) rows = rows.filter((row) => `${row.groomName} ${row.eventName ?? ""} ${row.location ?? ""}`.toLowerCase().includes(search));
+      return json(await formatPhotographyEvents(rows));
+    }
+    if (method === "POST" && !ref) {
+      const parsed = PhotographyEventCreateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.events.create", parsed);
+      const data = parsed.data;
+      const assignedId = manager && data.assignedStaffId ? data.assignedStaffId : auth.id;
+      const assigned = await db.query.staffTable.findFirst({ where: and(eq(staffTable.id, assignedId), eq(staffTable.isActive, true)) });
+      if (!assigned || (!manager && assigned.id !== auth.id)) return error("المصور المسؤول غير صحيح", 400);
+      const existing = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.clientToken, data.clientToken) });
+      if (existing) return json(await formatPhotographyEvent(existing));
+      const [row] = await db.insert(photographyEventsTable).values({
+        clientToken: data.clientToken,
+        groomName: data.groomName,
+        eventName: nullableText(data.eventName),
+        eventDate: data.eventDate,
+        location: nullableText(data.location),
+        assignedStaffId: assigned.id,
+        assignedStaffName: assigned.fullName || assigned.username,
+        createdBy: auth.id,
+      }).returning();
+      void logAdminActivity(req, "photography_event_created", "photography_event", row.id, { groomName: row.groomName, assignedStaffId: assigned.id });
+      void createNotification({ audienceType: "admin", staffId: assigned.id, type: "photography_event_new", title: "مناسبة تصوير جديدة", body: `${row.groomName} - ${row.eventDate}`, entityType: "photography_event", entityId: row.id, href: `/staff/photography/events/${row.clientToken}/register` });
+      return json(await formatPhotographyEvent(row), 201);
+    }
+    if (method === "GET" && ref && !action) {
+      const event = await getPhotographyEventByRef(ref);
+      if (!event || !canAccessPhotographyEvent(auth, event)) return error("المناسبة غير موجودة", 404);
+      return json(await formatPhotographyEvent(event));
+    }
+    if (method === "POST" && ref && action === "orders") {
+      const event = await getPhotographyEventByRef(ref);
+      if (!event || !canAccessPhotographyEvent(auth, event)) return error("المناسبة غير موجودة", 404);
+      const parsed = PhotographyOrderCreateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.orders.create", parsed);
+      const data = parsed.data;
+      const phone = normalizeIraqiPhone(data.phone);
+      if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+      if (data.paidAmount > data.totalAmount) return error("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الكلي", 400);
+      const existingOrder = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.clientToken, data.clientToken) });
+      if (existingOrder) {
+        if (data.paidAmount > 0) {
+          const existingPayment = await db.query.photographyPaymentRequestsTable.findFirst({
+            where: eq(photographyPaymentRequestsTable.orderId, existingOrder.id),
+          });
+          if (!existingPayment && Number(existingOrder.paidAmount) === 0) {
+            await createPhotographyCollectionRequest(existingOrder, auth, data.paidAmount, "دفعة أولية عند تسجيل طلب التصوير");
+          }
+        }
+        return json(await formatPhotographyOrder(existingOrder, true, req));
+      }
+      const referenceImage = data.referenceImage ? await persistMediaValue(data.referenceImage, `photography/orders/${event.id}`) : null;
+      const [created] = await db.insert(photographyOrdersTable).values({
+        clientToken: data.clientToken,
+        orderNo: `TMP-${randomUUID()}`,
+        eventId: event.id,
+        assignedStaffId: event.assignedStaffId ?? auth.id,
+        customerName: data.customerName,
+        phone,
+        copies: data.copies,
+        printType: data.printType,
+        totalAmount: String(money(data.totalAmount)),
+        paidAmount: "0",
+        remainingAmount: String(money(data.totalAmount)),
+        paymentStatus: "unpaid",
+        photoNumber: nullableText(data.photoNumber),
+        notes: nullableText(data.notes),
+        referenceImage,
+        status: "registered",
+        createdBy: auth.id,
+      }).returning();
+      const day = event.eventDate.replaceAll("-", "");
+      const orderNo = `PH-${day}-${String(created.id).padStart(4, "0")}`;
+      const [order] = await db.update(photographyOrdersTable).set({ orderNo }).where(eq(photographyOrdersTable.id, created.id)).returning();
+      await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "created", toStatus: "registered", note: data.notes });
+      const qr = await ensureQrForEntity("photography_order", order, req);
+      if (data.paidAmount > 0) await createPhotographyCollectionRequest(order, auth, data.paidAmount, "دفعة أولية عند تسجيل طلب التصوير");
+      void logAdminActivity(req, "photography_order_created", "photography_order", order.id, { orderNo, eventId: event.id, totalAmount: data.totalAmount, requestedPaidAmount: data.paidAmount });
+      void createNotification({ audienceType: "admin", staffId: order.assignedStaffId, type: "photography_order_new", title: "طلب صور جديد", body: `${orderNo} - ${order.customerName}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+      void sendTelegramMessage(`📷 <b>طلب تصوير جديد</b>\nرقم الطلب: ${telegramText(orderNo)}\nالمناسبة: ${telegramText(event.groomName)}\nالزبون: ${telegramText(order.customerName)}\nالهاتف: ${telegramText(formatIraqiPhone(order.phone) ?? order.phone)}\nالمصور: ${telegramText(event.assignedStaffName)}\nالمبلغ: ${Number(order.totalAmount).toLocaleString("en-US")} د.ع\nالمدفوع المطلوب اعتماده: ${Number(data.paidAmount).toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/staff/photography/orders/${order.id}`);
+      return json({ ...(await formatPhotographyOrder(order, false)), qr }, 201);
+    }
+  }
+
+  if (resource === "orders") {
+    if (method === "GET" && !ref) {
+      const search = (req.nextUrl.searchParams.get("search") || "").trim();
+      const status = (req.nextUrl.searchParams.get("status") || "").trim();
+      let rows = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 400 }));
+      if (status && (PHOTOGRAPHY_ORDER_STAGES as readonly string[]).includes(status)) rows = rows.filter((row) => row.status === status);
+      if (search) {
+        const token = /(?:\/track\/|\/api\/qr\/)?([a-f0-9]{32,80})/i.exec(search)?.[1];
+        let qrEntityId: number | null = null;
+        if (token) {
+          const qr = await db.query.qrTokensTable.findFirst({ where: and(eq(qrTokensTable.token, token), eq(qrTokensTable.entityType, "photography_order")) });
+          qrEntityId = qr?.entityId ?? null;
+        }
+        const q = search.toLowerCase();
+        rows = rows.filter((row) => row.id === qrEntityId || `${row.orderNo} ${row.customerName} ${row.phone} ${row.photoNumber ?? ""}`.toLowerCase().includes(q));
+      }
+      return json(await formatPhotographyOrders(rows));
+    }
+    const orderId = ref ? int(ref) : null;
+    if (!orderId) return error("رقم الطلب غير صحيح", 400);
+    const order = await photographyOrderForUser(orderId, auth);
+    if (!order) return error("الطلب غير موجود", 404);
+    if (method === "GET" && !action) {
+      const [formatted, timeline, payments] = await Promise.all([
+        formatPhotographyOrder(order, true, req),
+        db.query.photographyOrderEventsTable.findMany({ where: eq(photographyOrderEventsTable.orderId, order.id), orderBy: [asc(photographyOrderEventsTable.createdAt)] }),
+        db.query.photographyPaymentRequestsTable.findMany({ where: eq(photographyPaymentRequestsTable.orderId, order.id), orderBy: [desc(photographyPaymentRequestsTable.createdAt)] }),
+      ]);
+      return json({ ...formatted, timeline: timeline.map((item) => ({ ...item, createdAt: item.createdAt.toISOString() })), paymentRequests: payments.map((item) => ({ ...item, amount: Number(item.amount), createdAt: item.createdAt.toISOString(), reviewedAt: item.reviewedAt?.toISOString() ?? null })) });
+    }
+    if (method === "POST" && action === "status") {
+      const parsed = PhotographyStatusSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.orders.status", parsed);
+      const { status, note } = parsed.data;
+      const [updated] = await db.update(photographyOrdersTable).set({ status, deliveredAt: status === "delivered" ? new Date() : order.deliveredAt, updatedAt: new Date() }).where(eq(photographyOrdersTable.id, order.id)).returning();
+      await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: status === "delivered" ? "delivered" : "status", fromStatus: order.status, toStatus: status, note });
+      void logAdminActivity(req, status === "delivered" ? "photography_order_delivered" : "photography_order_status_updated", "photography_order", order.id, { from: order.status, to: status });
+      void createNotification({ audienceType: "admin", staffId: order.assignedStaffId, type: `photography_${status}`, title: status === "ready_print" ? "طلب جاهز للطباعة" : status === "ready_pickup" ? "طلب جاهز للاستلام" : status === "delivered" ? "تم تسليم طلب التصوير" : "تحديث طلب تصوير", body: `${order.orderNo} - ${order.customerName}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+      if (status === "ready_pickup") void whatsappSend(order.phone, `صورك للطلب ${order.orderNo} جاهزة للاستلام.`, "booking_ready");
+      void sendTelegramMessage(`📷 <b>تحديث طلب تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالزبون: ${telegramText(order.customerName)}\nالحالة: ${telegramText(status)}\nبواسطة: ${telegramText(photographyStaffName(auth))}`);
+      return json(await formatPhotographyOrder(updated, true, req));
+    }
+    if (method === "POST" && action === "collect") {
+      const parsed = PhotographyCollectSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.orders.collect", parsed);
+      try {
+        const request = await createPhotographyCollectionRequest(order, auth, parsed.data.amount, parsed.data.note);
+        void logAdminActivity(req, "photography_payment_requested", "photography_order", order.id, { amount: parsed.data.amount, requestId: request.id });
+        void sendTelegramMessage(`💵 <b>طلب اعتماد دفعة تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالمصور: ${telegramText(photographyStaffName(auth))}\nالمبلغ: ${parsed.data.amount.toLocaleString("en-US")} د.ع`);
+        return json({ ok: true, requestId: request.id }, 201);
+      } catch (err: any) {
+        return error(err?.message || "تعذر إرسال طلب التحصيل", 400);
+      }
+    }
+    if (method === "POST" && action === "printed") {
+      await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "receipt_printed", fromStatus: order.status, toStatus: order.status });
+      void logAdminActivity(req, "photography_receipt_printed", "photography_order", order.id);
+      return json({ ok: true });
+    }
+  }
+
+  if (resource === "dashboard" && method === "GET") {
+    const events = own(await db.query.photographyEventsTable.findMany({ orderBy: [desc(photographyEventsTable.eventDate)], limit: 200 }));
+    const orders = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 400 }));
+    const today = baghdadToday();
+    const todayOrders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) === today);
+    return json({
+      today,
+      counts: { events: events.filter((event) => event.eventDate === today).length, orders: todayOrders.length, ready: orders.filter((order) => order.status === "ready_pickup").length, delivered: todayOrders.filter((order) => order.status === "delivered").length },
+      recentEvents: await formatPhotographyEvents(events.slice(0, 5)),
+      recentOrders: await formatPhotographyOrders(orders.slice(0, 6)),
+    });
+  }
+
+  if (resource === "reports" && method === "GET") {
+    const orders = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 1000 }));
+    const today = baghdadToday();
+    const todayOrders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) === today);
+    return json({
+      orders: todayOrders.length,
+      delivered: todayOrders.filter((order) => order.status === "delivered").length,
+      inProgress: todayOrders.filter((order) => order.status !== "delivered").length,
+      received: todayOrders.reduce((sum, order) => sum + Number(order.paidAmount), 0),
+      remaining: todayOrders.reduce((sum, order) => sum + Number(order.remainingAmount), 0),
+    });
+  }
+
+  if (resource === "notifications") {
+    if (method === "GET") {
+      const rows = await db.query.notificationsTable.findMany({ where: and(eq(notificationsTable.staffId, auth.id), like(notificationsTable.type, "photography_%"), sql`${notificationsTable.archivedAt} is null`), orderBy: [desc(notificationsTable.createdAt)], limit: 100 });
+      return json(rows.map(formatNotification));
+    }
+    if (method === "POST" && ref === "read-all") {
+      await db.update(notificationsTable).set({ readAt: new Date() }).where(and(eq(notificationsTable.staffId, auth.id), like(notificationsTable.type, "photography_%"), sql`${notificationsTable.readAt} is null`));
+      return json({ ok: true });
+    }
+  }
+
+  return error("المسار غير موجود", 404);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Kosha Staff Portal API  (/api/staff/koshas/*)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -12232,6 +12822,7 @@ async function loadKoshaBookingDetail(bookingId: number) {
 }
 
 async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<NextResponse | null> {
+  if (parts[1] === "photography") return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;
   const method = req.method;
   const resource = parts[2];           // dashboard | bookings | notifications | reports | payment-requests
@@ -12608,6 +13199,7 @@ async function handleMasterCash(req: NextRequest, parts: string[], section: stri
         if (!canApproveFinancialTransactions(financeUser)) return error("اعتماد المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await approveAndExecuteFinancialTransaction(id, financeUser, nullableText(payload?.note));
+        await finalizePhotographyPaymentRequest(row, true, financeUser, nullableText(payload?.note));
         void logAdminActivity(req, "financial_transaction_executed", "financial_transaction", id, {
           transactionNo: row.transactionNo,
           balanceBefore: row.balanceBefore,
@@ -12632,8 +13224,38 @@ async function handleMasterCash(req: NextRequest, parts: string[], section: stri
         if (!canApproveFinancialTransactions(financeUser)) return error("رفض المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await rejectFinancialTransaction(id, financeUser, String(payload?.reason ?? ""));
+        await finalizePhotographyPaymentRequest(row, false, financeUser, row.rejectionReason);
         void logAdminActivity(req, "financial_transaction_rejected", "financial_transaction", id, { reason: row.rejectionReason });
         return json(row);
+      }
+
+      if (method === "POST" && action === "reverse") {
+        if (!canApproveFinancialTransactions(financeUser)) return error("عكس الحركة المالية متاح للمدير فقط", 403);
+        const payload = await body(req);
+        try {
+          const { original, reverse } = await reverseFinancialTransaction(id, financeUser, String(payload?.reason ?? ""));
+          const amountText = Number(original.amount).toLocaleString("en-US");
+          void logAdminActivity(req, "financial_transaction_reversed", "financial_transaction", id, {
+            originalNo: original.transactionNo, reverseNo: reverse.transactionNo, amount: original.amount, reason: reverse.reversalReason,
+          });
+          try {
+            await createNotification({
+              audienceType: "admin",
+              type: "financial_transaction_reversed",
+              title: "تم عكس حركة مالية",
+              body: `عكس ${financeUser.name} الحركة ${original.transactionNo} بمبلغ ${amountText} د.ع — السبب: ${reverse.reversalReason ?? ""}`,
+              entityType: "financial_transaction",
+              entityId: id,
+              href: "/admin/finance/master-cash",
+            });
+          } catch { /* notification is best-effort */ }
+          try {
+            await sendTelegramMessage(`🔁 <b>تم عكس حركة مالية</b>\nالأصل: ${original.transactionNo}\nالعكسية: ${reverse.transactionNo}\nالمبلغ: ${amountText} د.ع\nبواسطة: ${financeUser.name}\nالسبب: ${reverse.reversalReason ?? ""}`);
+          } catch { /* telegram is best-effort */ }
+          return json({ ok: true, original, reverse });
+        } catch (err: any) {
+          return error(err?.message || "تعذر عكس الحركة المالية", 400);
+        }
       }
     }
 
@@ -13454,8 +14076,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
       (root === "messages" || root === "activity" || root === "qr" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
       (root === "koshas" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
-      (root === "staff") ? ensureKoshaStaffTables() : undefined,
-      (root === "orders" || root === "service-orders" || root === "koshas" || (!isAdminAuth && root === "admin"))
+      (root === "staff" && parts[1] === "koshas") ? ensureKoshaStaffTables() : undefined,
+      (root === "staff" && parts[1] === "photography") ? ensurePhotographyStaffTables() : undefined,
+      (root === "orders" || root === "service-orders" || root === "koshas" || (root === "staff" && parts[1] === "photography") || (!isAdminAuth && root === "admin"))
         ? ensureMasterCashBoxTables() : undefined,
     ].filter(Boolean));
 
