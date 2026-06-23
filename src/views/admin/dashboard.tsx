@@ -68,6 +68,35 @@ const STATUS_LABELS: Record<string, string> = {
 
 const PIE_COLORS = ["#C9A84C", "#E5C77B", "#8B7355", "#4A4A4A", "#6B5A3E", "#A88B4F"];
 
+type KpiCard = { label: string; value: string; icon: typeof Clock; color: string };
+
+// Signature device: a short gold tick marks every section, encoding "this is a distinct group".
+function SectionHeader({ icon: Icon, title, hint }: { icon?: typeof Clock; title: string; hint?: string }) {
+  return (
+    <div className="mb-3 flex items-center gap-2.5">
+      <span className="h-4 w-1 rounded-full bg-primary" aria-hidden />
+      {Icon ? <Icon className="h-4 w-4 text-primary" /> : null}
+      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+      {hint ? <span className="text-xs text-muted-foreground">• {hint}</span> : null}
+    </div>
+  );
+}
+
+// Metric card: the number leads, the label supports — so a row of cards scans as data, not chrome.
+function KpiGrid({ cards }: { cards: KpiCard[] }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {cards.map((c) => (
+        <div key={c.label} className="rounded-xl border border-border/30 bg-card p-4 transition-colors hover:border-primary/30">
+          <c.icon className={`h-4 w-4 ${c.color}`} />
+          <p className="mt-3 text-xl font-bold leading-none text-foreground">{c.value}</p>
+          <p className="mt-1.5 text-[11px] text-muted-foreground">{c.label}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "dashboard"],
@@ -97,26 +126,38 @@ export default function DashboardPage() {
     );
   }
 
-  const cards = [
-    { label: "إجمالي الطلبات", value: data.totalOrders, icon: ShoppingBag, color: "text-blue-400" },
-    { label: "الطلبات النشطة", value: data.activeOrders, icon: Clock, color: "text-yellow-400" },
-    { label: "المسلَّمة", value: data.deliveredOrders, icon: Truck, color: "text-status-success" },
-    { label: "الملغية", value: data.cancelledOrders, icon: XCircle, color: "text-status-danger" },
-    { label: "طلبات الخدمات", value: data.serviceOrders, icon: Sparkles, color: "text-pink-400" },
-    { label: "المنتجات", value: data.totalProducts, icon: Package, color: "text-purple-400" },
-    { label: "العملاء", value: data.totalCustomers, icon: Users, color: "text-cyan-400" },
-    { label: "الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
-    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success" },
-    { label: "المتبقي", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning" },
+  const fmtNum = (n: number) => Number(n || 0).toLocaleString("ar-IQ");
+  const net = data.financialSummary?.todayNetTotal ?? 0;
+  const todaySales = data.financialSummary?.todaySales ?? data.dailyCash?.totalSales ?? 0;
+  const todayExpenses = data.financialSummary?.todayExpenses ?? data.dailyCash?.totalExpenses ?? 0;
+  const cashBalance = data.financialSummary?.cashBalance ?? data.dailyCash?.expectedCashBalance ?? 0;
+  const dateLabel = new Date().toLocaleDateString("ar-IQ", { weekday: "long", day: "numeric", month: "long" });
+  const heroStats = [
+    { label: "مبيعات اليوم", value: formatCurrency(todaySales), icon: DollarSign, tone: "text-status-success" },
+    { label: "مصاريف اليوم", value: formatCurrency(todayExpenses), icon: CreditCard, tone: "text-status-danger" },
+    { label: "رصيد الكاش", value: formatCurrency(cashBalance), icon: CreditCard, tone: "text-primary" },
+  ];
+
+  const orderCards: KpiCard[] = [
+    { label: "إجمالي الطلبات", value: fmtNum(data.totalOrders), icon: ShoppingBag, color: "text-blue-400" },
+    { label: "الطلبات النشطة", value: fmtNum(data.activeOrders), icon: Clock, color: "text-yellow-400" },
+    { label: "المسلَّمة", value: fmtNum(data.deliveredOrders), icon: Truck, color: "text-status-success" },
+    { label: "الملغية", value: fmtNum(data.cancelledOrders), icon: XCircle, color: "text-status-danger" },
+    { label: "طلبات الخدمات", value: fmtNum(data.serviceOrders), icon: Sparkles, color: "text-pink-400" },
+    { label: "المنتجات", value: fmtNum(data.totalProducts), icon: Package, color: "text-purple-400" },
+    { label: "العملاء", value: fmtNum(data.totalCustomers), icon: Users, color: "text-cyan-400" },
+  ];
+  const cashCards: KpiCard[] = [
     { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary" },
     { label: "رصيد الصندوق المتوقع", value: formatCurrency(data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
     { label: "فرق الجرد", value: data.dailyCash?.difference == null ? "غير مجرود" : formatCurrency(data.dailyCash.difference), icon: CreditCard, color: data.dailyCash?.status === "shortage" ? "text-status-danger" : "text-primary" },
-    { label: "مبيعات اليوم", value: formatCurrency(data.financialSummary?.todaySales ?? data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-status-success" },
-    { label: "مصاريف اليوم", value: formatCurrency(data.financialSummary?.todayExpenses ?? data.dailyCash?.totalExpenses ?? 0), icon: CreditCard, color: "text-status-danger" },
-    { label: "صافي اليوم", value: formatCurrency(data.financialSummary?.todayNetTotal ?? 0), icon: DollarSign, color: "text-primary" },
-    { label: "مصاريف الشهر", value: formatCurrency(data.financialSummary?.monthlyExpenses ?? 0), icon: CreditCard, color: "text-status-warning" },
-    { label: "رصيد الكاش", value: formatCurrency(data.financialSummary?.cashBalance ?? data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
     { label: "توصيل اليوم", value: formatCurrency(data.financialSummary?.deliveryFeesTotal ?? 0), icon: Truck, color: "text-primary" },
+  ];
+  const monthCards: KpiCard[] = [
+    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success" },
+    { label: "مصاريف الشهر", value: formatCurrency(data.financialSummary?.monthlyExpenses ?? 0), icon: CreditCard, color: "text-status-warning" },
+    { label: "المتبقي على الزبائن", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning" },
+    { label: "إجمالي الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({
@@ -156,52 +197,60 @@ export default function DashboardPage() {
   ].slice(0, 7);
 
   return (
-    <div className="space-y-6">
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="truncate text-2xl font-bold text-foreground">لوحة التحكم</h1>
+    <div className="space-y-8">
+      {/* Hero — the day's headline figure leads, with the brand's gold as a single hairline accent. */}
+      <section className="relative overflow-hidden rounded-2xl border border-border/40 bg-gradient-to-bl from-primary/10 via-card to-card p-6">
+        <span className="absolute inset-x-0 top-0 h-px bg-gradient-to-l from-transparent via-primary/70 to-transparent" aria-hidden />
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-primary">لوحة الإدارة</p>
+            <p className="mt-1 text-sm text-muted-foreground">{dateLabel}</p>
+            <p className="mt-5 text-sm text-muted-foreground">صافي اليوم</p>
+            <p className="mt-1 text-4xl font-bold leading-none text-foreground sm:text-5xl">{formatCurrency(net)}</p>
+          </div>
+          <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-3 lg:w-auto">
+            {heroStats.map((s) => (
+              <div key={s.label} className="rounded-xl border border-border/30 bg-background/40 p-3 lg:min-w-[150px]">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><s.icon className="h-3.5 w-3.5" />{s.label}</div>
+                <p className={`mt-1.5 text-base font-bold ${s.tone}`}>{s.value}</p>
+              </div>
+            ))}
+          </div>
         </div>
-        <p className="shrink-0 text-sm text-muted-foreground">إيرادات اليوم: <span className="text-primary font-semibold">{formatCurrency(data.todayRevenue)}</span></p>
-      </div>
-
-      <div className="bg-card rounded-xl border border-border/30 p-4">
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+        <div className="mt-6 flex flex-wrap gap-2 border-t border-border/30 pt-4">
           {shortcuts.map((item) => (
-            <Link
-              key={item.label}
-              href={item.href}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2.5 text-xs text-foreground hover:border-primary/40 hover:text-primary transition-colors"
-            >
-              <item.icon className="w-4 h-4" />
+            <Link key={item.label} href={item.href} className="inline-flex items-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2 text-xs text-foreground transition-colors hover:border-primary/40 hover:text-primary">
+              <item.icon className="h-4 w-4 text-primary" />
               <span className="truncate">{item.label}</span>
             </Link>
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        {[
-          { label: "مهامي اليوم", value: data.adminOperations?.todayTasks ?? data.todayTasks?.internalTasks ?? 0, icon: Clock },
-          { label: "رسائل جديدة", value: data.adminOperations?.newMessages ?? 0, icon: MessageCircle },
-          { label: "إشعارات جديدة", value: data.adminOperations?.newNotifications ?? 0, icon: Bell },
-          { label: "حجوزات اليوم", value: data.adminOperations?.todayBookings ?? data.todayTasks?.bookings ?? 0, icon: CalendarDays },
-          { label: "حاضرون الآن", value: data.adminOperations?.presentStaffNow ?? 0, icon: UserCheck },
-          { label: "تحتاج متابعة", value: data.adminOperations?.ordersNeedingFollowup ?? 0, icon: Activity },
-        ].map((item) => (
-          <div key={item.label} className="bg-card rounded-xl border border-border/30 p-4">
-            <div className="flex items-center gap-2 text-primary mb-2">
-              <item.icon className="w-4 h-4" />
-              <span className="text-xs text-muted-foreground">{item.label}</span>
+      <section>
+        <SectionHeader icon={Activity} title="نبض العمليات" hint="الآن" />
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {[
+            { label: "مهامي اليوم", value: data.adminOperations?.todayTasks ?? data.todayTasks?.internalTasks ?? 0, icon: Clock },
+            { label: "رسائل جديدة", value: data.adminOperations?.newMessages ?? 0, icon: MessageCircle },
+            { label: "إشعارات جديدة", value: data.adminOperations?.newNotifications ?? 0, icon: Bell },
+            { label: "حجوزات اليوم", value: data.adminOperations?.todayBookings ?? data.todayTasks?.bookings ?? 0, icon: CalendarDays },
+            { label: "حاضرون الآن", value: data.adminOperations?.presentStaffNow ?? 0, icon: UserCheck },
+            { label: "تحتاج متابعة", value: data.adminOperations?.ordersNeedingFollowup ?? 0, icon: Activity },
+          ].map((item) => (
+            <div key={item.label} className="rounded-xl border border-border/30 bg-card p-4 transition-colors hover:border-primary/30">
+              <div className="mb-2 flex items-center gap-2 text-primary">
+                <item.icon className="h-4 w-4" />
+                <span className="text-xs text-muted-foreground">{item.label}</span>
+              </div>
+              <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ")}</p>
             </div>
-            <p className="text-xl font-bold text-foreground">{Number(item.value).toLocaleString("ar-IQ")}</p>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </section>
 
-      <div className="bg-card rounded-xl border border-border/30 p-5">
-        <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-          <Clock className="w-4 h-4 text-primary" /> قائمة عمل اليوم
-        </h3>
+      <section className="rounded-xl border border-border/30 bg-card p-5">
+        <SectionHeader icon={Clock} title="قائمة عمل اليوم" />
         {todayWorkItems.length === 0 ? <EmptyState message="لا توجد مهام عاجلة اليوم" /> : (
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {todayWorkItems.map((item) => (
@@ -212,19 +261,11 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {cards.map(c => (
-          <div key={c.label} className="bg-card rounded-xl border border-border/30 p-5">
-            <div className={`flex items-center gap-2 mb-3 ${c.color}`}>
-              <c.icon className="w-5 h-5" />
-              <span className="text-xs text-muted-foreground">{c.label}</span>
-            </div>
-            <p className="text-2xl font-bold text-foreground">{c.value}</p>
-          </div>
-        ))}
-      </div>
+      <section><SectionHeader icon={ShoppingBag} title="الطلبات والمخزون" /><KpiGrid cards={orderCards} /></section>
+      <section><SectionHeader icon={CreditCard} title="الصندوق وتوصيل اليوم" /><KpiGrid cards={cashCards} /></section>
+      <section><SectionHeader icon={DollarSign} title="الشهر والإجمالي" /><KpiGrid cards={monthCards} /></section>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-card rounded-xl border border-border/30 p-5">

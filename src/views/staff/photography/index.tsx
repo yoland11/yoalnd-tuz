@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { processImageFile } from "@/lib/image-tools";
 import { fetchAdminMe, hasPerm, loginAdmin, logoutAdmin, type AdminMe } from "@/views/admin/_lib";
+import { thermalReceiptCss, printWhenImagesReadyScript } from "@/views/admin/print-helpers";
 import { countOps, flushQueue, isQueued } from "../offline";
 import {
   PHOTO_STAGES, PHOTO_STAGE_LABEL, newClientToken, photographyApi, photoMoney,
@@ -353,8 +354,36 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
   function printReceipt() {
     if (!order) return; void photographyApi.markPrinted(order.id).catch(() => {});
     const win = window.open("", "_blank", "width=420,height=720"); if (!win) return;
-    const qr = order.qr?.dataUrl ? `<img class="qr" src="${order.qr.dataUrl}" alt="QR">` : "";
-    win.document.write(`<html dir="rtl"><head><meta charset="utf-8"><title>${order.orderNo}</title><style>@page{size:80mm auto;margin:3mm}*{box-sizing:border-box}body{width:74mm;margin:0;font-family:Arial,sans-serif;color:#000;font-size:12px;font-weight:600}.c{text-align:center}.row{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #000;padding:5px 0}.qr{display:block;width:120px;height:120px;margin:10px auto;image-rendering:pixelated}h1{font-size:18px;margin:4px}p{margin:3px}</style></head><body><div class="c"><h1>AJN</h1><p>وصل طلب تصوير</p><p>${order.orderNo}</p></div>${[["المناسبة", order.event?.eventName || order.event?.groomName], ["الزبون", order.customerName], ["الهاتف", phoneDisplay(order.phone)], ["النسخ", order.copies], ["سعر النسخة", photoMoney(order.unitPrice)], ["المبلغ", photoMoney(order.totalAmount)], ["المدفوع", photoMoney(order.paidAmount)], ["المتبقي", photoMoney(order.remainingAmount)]].map(([a,b]) => `<div class="row"><span>${a}</span><strong>${b ?? "-"}</strong></div>`).join("")}${qr}<div class="c"><p>امسح QR لمتابعة الطلب</p></div><script>window.onload=()=>setTimeout(()=>window.print(),250)</script></body></html>`); win.document.close();
+    const date = new Date(order.createdAt).toLocaleDateString("ar-IQ");
+    const rows = [
+      ["المناسبة", order.event?.eventName || order.event?.groomName || "-"],
+      ["الزبون", order.customerName],
+      ["الهاتف", phoneDisplay(order.phone)],
+      ["النسخ", String(order.copies)],
+      ["سعر النسخة", `${photoMoney(order.unitPrice)} د.ع`],
+    ].map(([k, v]) => `<div class="kv"><span>${k}</span><span class="v num">${v ?? "-"}</span></div>`).join("");
+    const qrBlock = order.qr?.dataUrl ? `<div class="qr"><img src="${order.qr.dataUrl}" alt="QR"><div class="cap">امسح لمتابعة الطلب</div></div>` : "";
+    win.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${order.orderNo}</title>
+      <style>${thermalReceiptCss("80mm")}</style></head><body>
+      <div class="receipt">
+        <div class="r-head">
+          <div class="r-company">مجموعة علي جان نهاد</div>
+          <div class="r-sub">وصل طلب تصوير</div>
+          <div class="r-sub num">${order.orderNo} · ${date}</div>
+        </div>
+        <hr class="rule">
+        ${rows}
+        <hr class="rule dashed">
+        <div class="totals">
+          <div class="grand"><span>الإجمالي</span><span class="num">${photoMoney(order.totalAmount)} د.ع</span></div>
+          <div class="payline"><span>المدفوع</span><span class="num">${photoMoney(order.paidAmount)} د.ع</span></div>
+          <div class="payline remain"><span>المتبقي</span><span class="num">${photoMoney(order.remainingAmount)} د.ع</span></div>
+        </div>
+        ${qrBlock}
+        <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
+      </div>
+      ${printWhenImagesReadyScript()}
+    </body></html>`); win.document.close();
   }
   if (!order) return <Loading />;
   const availableToCollect = Math.max(0, order.remainingAmount - order.pendingAmount);
