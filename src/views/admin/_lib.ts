@@ -68,6 +68,20 @@ export async function adminFetch<T = any>(path: string, init: RequestInit = {}):
   return ct.includes("json") ? res.json() : (res.text() as any);
 }
 
+// adminFetch throws Error("HTTP <status>: <arabic message>"). Never show that raw string to a
+// user — strip the technical prefix so toasts read as a clean Arabic sentence.
+export function apiErrorMessage(err: unknown, fallback = "حدث خطأ غير متوقع، حاول مرة أخرى"): string {
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  const cleaned = raw.replace(/^HTTP\s+\d+:\s*/i, "").trim();
+  return cleaned || fallback;
+}
+
+// The HTTP status code (409, 404, …) so callers can branch on it (e.g. show a recovery action).
+export function apiErrorStatus(err: unknown): number | undefined {
+  const status = (err as { status?: unknown })?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
 export async function loginAdmin(username: string, password: string): Promise<AdminMe> {
   const r = await adminFetch<{ user: AdminMe }>("/admin/auth/login", {
     method: "POST",

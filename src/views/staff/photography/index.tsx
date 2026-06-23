@@ -9,9 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import { processImageFile } from "@/lib/image-tools";
-import { fetchAdminMe, hasPerm, loginAdmin, logoutAdmin, type AdminMe } from "@/views/admin/_lib";
+import { apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm, loginAdmin, logoutAdmin, type AdminMe } from "@/views/admin/_lib";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "@/views/admin/print-helpers";
 import { countOps, flushQueue, isQueued } from "../offline";
 import {
@@ -113,7 +114,7 @@ function EventForm({ me }: { me: AdminMe }) {
       if (!isQueued(result)) saveLocalEvent(result);
       toast({ title: isQueued(result) ? "تم حفظ المناسبة دون اتصال" : "تم بدء المناسبة", description: isQueued(result) ? "ستتم مزامنتها عند عودة الإنترنت." : "يمكنك الآن تسجيل طلبات الصور بسرعة." });
       navigate(`/staff/photography/events/${clientToken}/register`);
-    } catch (err: any) { toast({ title: "تعذر بدء المناسبة", description: err?.message, variant: "destructive" }); }
+    } catch (err: any) { toast({ title: "تعذر بدء المناسبة", description: apiErrorMessage(err), variant: "destructive" }); }
     finally { setBusy(false); }
   }
   return (
@@ -172,21 +173,21 @@ function EventManagerBar({ event, onChanged }: { event: PhotographyEvent; onChan
     try {
       await photographyApi.updateEvent(event.clientToken, { groomName: form.groomName, eventName: form.eventName, eventDate: form.eventDate, location: form.location, assignedStaffId: form.assignedStaffId || undefined });
       toast({ title: "تم تحديث المناسبة" }); setOpen(false); onChanged();
-    } catch (err: any) { toast({ title: "تعذر التحديث", description: err?.message, variant: "destructive" }); }
+    } catch (err: any) { toast({ title: "تعذر التحديث", description: apiErrorMessage(err), variant: "destructive" }); }
     finally { setBusy(false); }
   }
   async function archive() {
     if (!window.confirm(event.status === "archived" ? "إلغاء أرشفة هذه المناسبة؟" : "أرشفة هذه المناسبة؟")) return;
     setBusy(true);
     try { await photographyApi.archiveEvent(event.clientToken); toast({ title: event.status === "archived" ? "تم إلغاء الأرشفة" : "تمت الأرشفة" }); onChanged(); }
-    catch (err: any) { toast({ title: "تعذر التنفيذ", description: err?.message, variant: "destructive" }); }
+    catch (err: any) { toast({ title: "تعذر التنفيذ", description: apiErrorMessage(err), variant: "destructive" }); }
     finally { setBusy(false); }
   }
   async function remove() {
     if (!window.confirm("حذف هذه المناسبة نهائياً؟ لا يمكن التراجع.")) return;
     setBusy(true);
     try { await photographyApi.deleteEvent(event.clientToken); toast({ title: "تم حذف المناسبة" }); navigate("/staff/photography/events"); }
-    catch (err: any) { toast({ title: "تعذر الحذف", description: err?.message, variant: "destructive" }); }
+    catch (err: any) { toast({ title: "تعذر الحذف", description: apiErrorMessage(err), variant: "destructive" }); }
     finally { setBusy(false); }
   }
   return (
@@ -242,7 +243,7 @@ function RegistrationPage({ eventRef, me }: { eventRef: string; me: AdminMe }) {
       setForm(EMPTY_ORDER); setPaid(false);
       clientTokenRef.current = newClientToken();
       if (!isQueued(result)) loadDetail();
-    } catch (err: any) { toast({ title: "تعذر حفظ الطلب", description: err?.message, variant: "destructive" }); }
+    } catch (err: any) { toast({ title: "تعذر حفظ الطلب", description: apiErrorMessage(err), variant: "destructive" }); }
     finally { setBusy(false); }
   }
   if (!event) return <Loading />;
@@ -348,9 +349,31 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
   const { toast } = useToast(); const manager = isPhotoManager(me); const [order, setOrder] = useState<PhotographyOrder | null>(null); const [collect, setCollect] = useState(""); const [note, setNote] = useState(""); const [busy, setBusy] = useState(false);
   const load = useCallback(() => photographyApi.order(id).then(setOrder).catch(() => setOrder(null)), [id]);
   useEffect(() => { load(); }, [load]);
-  async function status(value: PhotographyStage) { setBusy(true); try { const result = await photographyApi.setStatus(id, value); if (!isQueued(result)) setOrder(result); toast({ title: isQueued(result) ? "تم حفظ التحديث دون اتصال" : "تم تحديث المرحلة" }); } catch (err: any) { toast({ title: "تعذر تحديث المرحلة", description: err?.message, variant: "destructive" }); } finally { setBusy(false); } }
-  async function requestPayment() { const amount = Number(collect); if (!amount) return; setBusy(true); try { const result = await photographyApi.collect(id, amount, note); toast({ title: isQueued(result) ? "تم حفظ طلب التحصيل دون اتصال" : "تم إرسال الدفعة للاعتماد" }); setCollect(""); setNote(""); if (!isQueued(result)) load(); } catch (err: any) { toast({ title: "تعذر إرسال الدفعة", description: err?.message, variant: "destructive" }); } finally { setBusy(false); } }
-  async function cancelOrder() { if (!order) return; if (!window.confirm(`إلغاء الطلب ${order.orderNo}؟`)) return; setBusy(true); try { const result = await photographyApi.cancelOrder(order.id); setOrder(result); toast({ title: "تم إلغاء الطلب" }); } catch (err: any) { toast({ title: "تعذر إلغاء الطلب", description: err?.message, variant: "destructive" }); } finally { setBusy(false); } }
+  async function status(value: PhotographyStage) { setBusy(true); try { const result = await photographyApi.setStatus(id, value); if (!isQueued(result)) setOrder(result); toast({ title: isQueued(result) ? "تم حفظ التحديث دون اتصال" : "تم تحديث المرحلة" }); } catch (err: any) { toast({ title: "تعذر تحديث المرحلة", description: apiErrorMessage(err), variant: "destructive" }); } finally { setBusy(false); } }
+  async function requestPayment() { const amount = Number(collect); if (!amount) return; setBusy(true); try { const result = await photographyApi.collect(id, amount, note); toast({ title: isQueued(result) ? "تم حفظ طلب التحصيل دون اتصال" : "تم إرسال الدفعة للاعتماد" }); setCollect(""); setNote(""); if (!isQueued(result)) load(); } catch (err: any) { toast({ title: "تعذر إرسال الدفعة", description: apiErrorMessage(err), variant: "destructive" }); } finally { setBusy(false); } }
+  async function cancelOrder() {
+    if (!order) return;
+    if (!window.confirm(`إلغاء الطلب ${order.orderNo}؟`)) return;
+    setBusy(true);
+    try {
+      const result = await photographyApi.cancelOrder(order.id);
+      setOrder(result);
+      toast({ title: "تم إلغاء الطلب" });
+    } catch (err) {
+      // 409 = the order still has approved/pending money. Don't dump "HTTP 409" on the user —
+      // explain the cause and hand them a one-click route to reverse the cash entry first.
+      if (apiErrorStatus(err) === 409) {
+        toast({
+          variant: "destructive",
+          title: "لا يمكن إلغاء الطلب",
+          description: "هذا الطلب عليه دفعات معتمدة أو قيد الاعتماد. اعكس الحركة المالية أولاً من الصندوق الرئيسي، ثم أعد الإلغاء.",
+          action: <ToastAction altText="الذهاب إلى الصندوق الرئيسي" onClick={() => { window.location.href = "/admin/finance/master-cash"; }}>الصندوق الرئيسي</ToastAction>,
+        });
+      } else {
+        toast({ title: "تعذر إلغاء الطلب", description: apiErrorMessage(err), variant: "destructive" });
+      }
+    } finally { setBusy(false); }
+  }
   function printReceipt() {
     if (!order) return; void photographyApi.markPrinted(order.id).catch(() => {});
     const win = window.open("", "_blank", "width=420,height=720"); if (!win) return;
@@ -392,7 +415,17 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
     <div className="space-y-4 p-4"><button type="button" onClick={() => window.history.back()} className="inline-flex items-center text-sm text-muted-foreground"><ChevronRight className="ml-1 h-4 w-4" /> رجوع</button>{cancelled ? <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm font-bold text-destructive">تم إلغاء هذا الطلب — للعرض والتدقيق فقط.</div> : null}<div className="rounded-xl border border-border/30 bg-card p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="font-mono font-bold text-primary">{order.orderNo}</div><h1 className="mt-1 text-lg font-bold text-foreground">{order.customerName}</h1><p className="mt-1 text-xs text-muted-foreground">{order.event?.eventName || order.event?.groomName}</p><div className="mt-2"><PaymentBadge order={order} /></div></div><button type="button" onClick={printReceipt} className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-lg border border-border/30 text-primary" aria-label="طباعة الوصل"><Printer className="h-5 w-5" /></button></div>{order.referenceImage ? <img src={order.referenceImage} alt="صورة المجموعة" className="mt-4 h-44 w-full rounded-lg object-contain bg-background" /> : null}<div className="mt-4 grid grid-cols-2 gap-2 text-sm"><Info label="الهاتف" value={phoneDisplay(order.phone)} /><Info label="النسخ" value={String(order.copies)} /><Info label="سعر النسخة" value={`${photoMoney(order.unitPrice)} د.ع`} /><Info label="الإجمالي" value={`${photoMoney(order.totalAmount)} د.ع`} /></div></div>
       <div className="rounded-xl border border-border/30 bg-card p-4"><h2 className="mb-3 font-bold">مراحل الطلب</h2><div className="space-y-2">{PHOTO_STAGES.map((item, index) => { const current = PHOTO_STAGES.findIndex((stage) => stage.key === order.status); const done = index <= current; return <button key={item.key} type="button" disabled={busy || cancelled || item.key === order.status} onClick={() => status(item.key)} className={`flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 text-right text-sm disabled:opacity-60 ${item.key === order.status ? "border-primary bg-primary/10 text-primary" : done ? "border-green-500/30 bg-green-500/5 text-foreground" : "border-border/30 bg-background text-muted-foreground"}`}><span className={`grid h-6 w-6 place-items-center rounded-full ${done ? "bg-primary text-primary-foreground" : "border border-border"}`}>{done ? <Check className="h-3.5 w-3.5" /> : index + 1}</span>{item.label}</button>; })}</div></div>
       <div className="rounded-xl border border-border/30 bg-card p-4"><h2 className="mb-3 font-bold">الدفع</h2><div className="grid grid-cols-3 gap-2"><Info label="المبلغ" value={photoMoney(order.totalAmount)} /><Info label="المدفوع" value={photoMoney(order.paidAmount)} /><Info label="المتبقي" value={photoMoney(order.remainingAmount)} /></div>{order.pendingAmount > 0 ? <div className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-500">{photoMoney(order.pendingAmount)} د.ع قيد اعتماد المدير</div> : null}{!cancelled && availableToCollect > 0 ? <div className="mt-4 space-y-2"><Input type="number" min="1" max={availableToCollect} value={collect} onChange={(e) => setCollect(e.target.value)} placeholder={`استلام دفعة حتى ${photoMoney(availableToCollect)}`} /><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة الدفعة" /><Button className="w-full" onClick={requestPayment} disabled={busy || Number(collect) <= 0 || Number(collect) > availableToCollect}><WalletCards className="ml-2 h-4 w-4" /> استلام دفعة وإرسالها للاعتماد</Button></div> : null}</div>
-      {manager && !cancelled ? <button type="button" onClick={cancelOrder} disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm font-bold text-destructive"><Ban className="h-4 w-4" /> إلغاء الطلب (مدير)</button> : null}
+      {manager && !cancelled ? (
+        <div className="space-y-2">
+          {order.paidAmount > 0 || order.pendingAmount > 0 ? (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-500">
+              لإلغاء هذا الطلب يجب أولاً عكس الحركة المالية لدفعاته من الصندوق الرئيسي.
+              <a href="/admin/finance/master-cash" className="mt-1 flex items-center gap-1 font-bold text-primary">الذهاب إلى الصندوق الرئيسي لعكس الحركة <ChevronRight className="h-3 w-3" /></a>
+            </div>
+          ) : null}
+          <button type="button" onClick={cancelOrder} disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm font-bold text-destructive"><Ban className="h-4 w-4" /> إلغاء الطلب (مدير)</button>
+        </div>
+      ) : null}
       {order.qr?.dataUrl ? <div className="rounded-xl border border-border/30 bg-card p-4 text-center"><img src={order.qr.dataUrl} alt="QR الطلب" className="mx-auto h-36 w-36 object-contain" /><p className="mt-2 text-xs text-muted-foreground">QR آمن لتتبع طلب الزبون</p></div> : null}
     </div>
   );

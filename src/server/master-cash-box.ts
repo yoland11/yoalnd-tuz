@@ -696,6 +696,21 @@ export async function reverseFinancialTransaction(id: number, actor: FinancialAc
       } else if (original.sourceType === "sales_invoice") {
         await tx.execute(sql`UPDATE sales_invoices SET financially_reversed = true WHERE id = ${sid}`);
         sourceFlagged = { type: "sales_invoice", id: sid };
+      } else if (original.sourceType === "photography_order") {
+        // Restore the photography order so it can be cancelled once its collection is reversed:
+        // mark the linked approved payment request as reversed, then recompute paid/remaining from
+        // whatever approved requests remain. Without this the order keeps paid_amount > 0 forever
+        // and "إلغاء الطلب" stays blocked even after the manager reverses the cash entry.
+        await tx.execute(sql`UPDATE photography_payment_requests SET status = 'reversed', reviewed_at = now() WHERE financial_transaction_id = ${original.id} AND status = 'approved'`);
+        await tx.execute(sql`
+          UPDATE photography_orders o SET
+            paid_amount = sub.paid,
+            remaining_amount = GREATEST(o.total_amount::numeric - sub.paid, 0),
+            payment_status = CASE WHEN sub.paid <= 0 THEN 'unpaid' WHEN sub.paid >= o.total_amount::numeric THEN 'paid' ELSE 'partial' END,
+            updated_at = now()
+          FROM (SELECT COALESCE(SUM(amount::numeric), 0) AS paid FROM photography_payment_requests WHERE order_id = ${sid} AND status = 'approved') sub
+          WHERE o.id = ${sid}`);
+        sourceFlagged = { type: "photography_order", id: sid };
       }
     }
 
