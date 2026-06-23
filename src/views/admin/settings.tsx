@@ -579,7 +579,62 @@ export default function SettingsPage() {
         isSaving={saveNotificationSettings.isPending}
         onSave={(settings) => saveNotificationSettings.mutate(settings)}
       />
+
+      <PhotographyPricesSection />
     </form>
+  );
+}
+
+type PhotoPrice = { id: string; amount: number; active: boolean };
+
+function PhotographyPricesSection() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "photography-prices"],
+    queryFn: () => adminFetch<{ items: PhotoPrice[] }>("/admin/settings/photography-prices"),
+  });
+  const [items, setItems] = useState<PhotoPrice[] | null>(null);
+  useEffect(() => { if (data?.items && !items) setItems(data.items); }, [data, items]);
+  const save = useMutation({
+    mutationFn: (next: PhotoPrice[]) => adminFetch<{ items: PhotoPrice[] }>("/admin/settings/photography-prices", { method: "PUT", body: JSON.stringify({ items: next }) }),
+    onSuccess: (res) => { qc.invalidateQueries({ queryKey: ["admin", "photography-prices"] }); setItems(res.items); toast({ title: "تم حفظ أسعار التصوير" }); },
+    onError: (err: any) => toast({ title: "تعذر حفظ الأسعار", description: err?.message, variant: "destructive" }),
+  });
+  const list = items ?? [];
+  const update = (idx: number, patch: Partial<PhotoPrice>) => setItems(list.map((item, i) => (i === idx ? { ...item, ...patch } : item)));
+  const remove = (idx: number) => setItems(list.filter((_, i) => i !== idx));
+  const move = (idx: number, dir: -1 | 1) => { const j = idx + dir; if (j < 0 || j >= list.length) return; const copy = [...list]; const [moved] = copy.splice(idx, 1); copy.splice(j, 0, moved); setItems(copy); };
+  const add = () => setItems([...list, { id: `p${Date.now()}`, amount: 0, active: true }]);
+  return (
+    <Section title="إعدادات أسعار التصوير">
+      {isLoading || !items ? (
+        <div className="space-y-2"><Skeleton className="h-10 rounded-lg" /><Skeleton className="h-10 rounded-lg" /></div>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">تظهر هذه الأسعار كأزرار اختيار داخل بوابة المصورين، ويُحسب المبلغ تلقائياً (السعر × عدد النسخ).</p>
+          <div className="space-y-2">
+            {list.map((item, idx) => (
+              <div key={idx} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/30 bg-background p-2">
+                <input type="number" min="0" value={item.amount} onChange={(e) => update(idx, { amount: Math.max(0, Number(e.target.value) || 0) })} className="h-9 w-28 rounded-md border border-input bg-card px-2 text-sm" />
+                <span className="text-xs text-muted-foreground">د.ع</span>
+                <label className="flex items-center gap-1 text-xs text-muted-foreground"><input type="checkbox" checked={item.active} onChange={(e) => update(idx, { active: e.target.checked })} className="h-4 w-4" /> مفعّل</label>
+                <div className="ms-auto flex items-center gap-1">
+                  <button type="button" onClick={() => move(idx, -1)} disabled={idx === 0} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أعلى">↑</button>
+                  <button type="button" onClick={() => move(idx, 1)} disabled={idx === list.length - 1} className="grid h-8 w-8 place-items-center rounded-md border border-border/40 text-sm disabled:opacity-40" aria-label="أسفل">↓</button>
+                  <button type="button" onClick={() => remove(idx)} className="grid h-8 w-8 place-items-center rounded-md border border-destructive/40 text-destructive" aria-label="حذف"><X className="h-4 w-4" /></button>
+                </div>
+              </div>
+            ))}
+            {!list.length ? <p className="text-xs text-muted-foreground">لا توجد أسعار — أضف سعراً واحداً على الأقل.</p> : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" onClick={add}><Plus className="ml-1 h-4 w-4" /> إضافة سعر</Button>
+            <Button type="button" onClick={() => save.mutate(list.filter((item) => item.amount > 0))} disabled={save.isPending}><Save className="ml-1 h-4 w-4" /> حفظ الأسعار</Button>
+          </div>
+        </>
+      )}
+    </Section>
   );
 }
 

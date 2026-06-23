@@ -3427,6 +3427,9 @@ async function ensurePhotographyStaffTables(): Promise<void> {
       update "photography_orders" set "client_token" = md5(random()::text || clock_timestamp()::text || "id"::text) where "client_token" is null;
       alter table "photography_orders" alter column "client_token" set not null;
       create unique index if not exists "photography_orders_client_token_idx" on "photography_orders" ("client_token");
+      alter table "photography_orders" add column if not exists "unit_price" numeric(14,2) not null default 0;
+      alter table "photography_orders" add column if not exists "cancelled_at" timestamp;
+      alter table "photography_orders" add column if not exists "cancelled_by" integer references "staff" ("id") on delete set null;
       create table if not exists "photography_payment_requests" (
         "id" serial primary key,
         "order_id" integer not null references "photography_orders" ("id") on delete cascade,
@@ -3931,6 +3934,45 @@ async function savePrinterSettings(input: unknown): Promise<PrinterSettings> {
     .values({ key: "printerSettings", value: settings as any })
     .onConflictDoUpdate({ target: settingsTable.key, set: { value: settings as any, updatedAt: new Date() } });
   return settings;
+}
+
+// ── Photography unit-price catalogue (manager-managed from admin settings) ──────
+type PhotographyPrice = { id: string; amount: number; active: boolean };
+const DEFAULT_PHOTOGRAPHY_PRICES: PhotographyPrice[] = [
+  { id: "p3000", amount: 3000, active: true },
+  { id: "p4000", amount: 4000, active: true },
+  { id: "p5000", amount: 5000, active: true },
+  { id: "p10000", amount: 10000, active: true },
+];
+
+function normalizePhotographyPrices(value: unknown): PhotographyPrice[] {
+  const raw = Array.isArray(value) ? value : Array.isArray((value as any)?.items) ? (value as any).items : null;
+  if (!raw) return DEFAULT_PHOTOGRAPHY_PRICES.map((item) => ({ ...item }));
+  const seen = new Set<string>();
+  const items: PhotographyPrice[] = [];
+  for (const entry of raw) {
+    const amount = Math.round(Number((entry as any)?.amount));
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    let id = String((entry as any)?.id ?? `p${amount}`).trim().slice(0, 40) || `p${amount}`;
+    while (seen.has(id)) id = `${id}_`;
+    seen.add(id);
+    items.push({ id, amount, active: (entry as any)?.active !== false });
+  }
+  return items.length ? items : DEFAULT_PHOTOGRAPHY_PRICES.map((item) => ({ ...item }));
+}
+
+async function getPhotographyPrices(): Promise<PhotographyPrice[]> {
+  const row = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "photographyPrices") });
+  return normalizePhotographyPrices(row?.value ?? null);
+}
+
+async function savePhotographyPrices(input: unknown): Promise<PhotographyPrice[]> {
+  const items = normalizePhotographyPrices(input);
+  await db
+    .insert(settingsTable)
+    .values({ key: "photographyPrices", value: { items } as any })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value: { items } as any, updatedAt: new Date() } });
+  return items;
 }
 
 async function getLoyaltySettings(): Promise<LoyaltySettings> {
@@ -8874,6 +8916,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return json(settings);
       }
     }
+    if (parts[2] === "photography-prices") {
+      if (method === "GET") return json({ items: await getPhotographyPrices() });
+      if (method === "PATCH" || method === "PUT") {
+        const b = await body(req);
+        const items = await savePhotographyPrices(b?.items ?? b);
+        void logAdminActivity(req, "photography_prices_updated", "settings", undefined, { count: items.length });
+        return json({ items });
+      }
+    }
     if (method === "GET") {
       return json(await loadSiteSettings());
     }
@@ -10528,10 +10579,13 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const status = req.nextUrl.searchParams.get("status") ?? undefined;
     const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
     const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
+    const reversed = req.nextUrl.searchParams.get("reversed") ?? undefined; // "true" | "false" | undefined(all)
     const conds: any[] = [sql`${salesInvoicesTable.status} != 'deleted'`];
     if (from) conds.push(gte(salesInvoicesTable.date, from));
     if (to) conds.push(lte(salesInvoicesTable.date, to));
     if (status) conds.push(eq(salesInvoicesTable.status, status));
+    if (reversed === "true") conds.push(eq(salesInvoicesTable.financiallyReversed, true));
+    else if (reversed === "false") conds.push(eq(salesInvoicesTable.financiallyReversed, false));
     const rows = await db.select().from(salesInvoicesTable)
       .where(and(...conds) as any)
       .orderBy(desc(salesInvoicesTable.date), desc(salesInvoicesTable.id))
@@ -10683,6 +10737,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const a = actor(auth);
     const existing = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
     if (!existing) return error("الفاتورة غير موجودة", 404);
+    if ((existing as any).financiallyReversed) return error("هذه الفاتورة تم عكس أثرها المالي — للعرض والتدقيق فقط، ولا يمكن تعديلها أو إضافة دفعات أو تحصيل", 409);
     const oldItems = await db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
     const parsedItems = b.items !== undefined ? salesInvoiceItems(b.items) : null;
     if (parsedItems && parsedItems.length === 0) return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
@@ -11093,6 +11148,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
           COUNT(*) FILTER (WHERE payment_status <> 'paid')::int AS pending_payments
         FROM sales_invoices
         WHERE status = 'active'
+          AND financially_reversed = false
           AND date = ${date}
           AND (${paymentMethod} = '' OR payment_method = ${paymentMethod})
           AND (${status} = '' OR payment_status = ${status} OR status = ${status})
@@ -11103,6 +11159,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         FROM sales_invoice_items sii
         JOIN sales_invoices si ON si.id = sii.invoice_id
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date = ${date}
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
           AND (${status} = '' OR si.payment_status = ${status} OR si.status = ${status})
@@ -11351,6 +11408,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
           GROUP BY invoice_id
         ) item_stats ON item_stats.invoice_id = si.id
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11401,6 +11459,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11428,6 +11487,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
           SUM(si.remaining_amount)::text AS remaining_amount
         FROM sales_invoices si
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11470,6 +11530,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11500,6 +11561,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11530,6 +11592,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
           WHERE sii.invoice_id = si.id
         ) item_profit ON true
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -11576,6 +11639,7 @@ async function handleReports(req: NextRequest, parts: string[], section: string 
           WHERE sii.invoice_id = si.id
         ) item_profit ON true
         WHERE si.status = 'active'
+          AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
@@ -12253,14 +12317,34 @@ const PhotographyEventCreateSchema = z.object({
 const PhotographyOrderCreateSchema = z.object({
   clientToken: z.string().trim().min(16).max(64),
   customerName: z.string().trim().min(1, "اسم الزبون مطلوب"),
-  phone: z.string().trim().min(1, "رقم الهاتف مطلوب"),
+  phone: z.string().trim().optional().default(""),
   copies: z.coerce.number().int().min(1).max(999),
-  printType: z.enum(["10x15", "15x20", "20x30", "album"]),
-  totalAmount: z.coerce.number().positive(),
+  unitPrice: z.coerce.number().positive("اختر السعر"),
+  // Legacy/optional — total is computed server-side from unitPrice × copies.
+  printType: z.string().trim().optional().default(""),
+  totalAmount: z.coerce.number().nonnegative().optional(),
+  // Payment intent: true = "مدفوع" (full amount sent for manager approval), false/undefined = "غير مدفوع".
+  paid: z.boolean().optional(),
   paidAmount: z.coerce.number().nonnegative().optional().default(0),
   photoNumber: z.string().trim().optional().default(""),
   notes: z.string().trim().optional().default(""),
   referenceImage: z.string().optional().nullable(),
+});
+
+const PhotographyEventUpdateSchema = z.object({
+  groomName: z.string().trim().min(1).optional(),
+  eventName: z.string().trim().optional(),
+  eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  location: z.string().trim().optional(),
+  assignedStaffId: z.coerce.number().int().positive().optional().nullable(),
+});
+
+const PhotographyOrderUpdateSchema = z.object({
+  customerName: z.string().trim().min(1).optional(),
+  phone: z.string().trim().optional(),
+  copies: z.coerce.number().int().min(1).max(999).optional(),
+  unitPrice: z.coerce.number().positive().optional(),
+  notes: z.string().trim().optional(),
 });
 
 const PhotographyStatusSchema = z.object({
@@ -12282,10 +12366,14 @@ function photographyStaffName(user: AdminUser) {
 }
 
 async function getPhotographyEventByRef(value: string) {
-  const numericId = int(value);
-  return db.query.photographyEventsTable.findFirst({
-    where: numericId ? eq(photographyEventsTable.id, numericId) : eq(photographyEventsTable.clientToken, value),
+  // A real server id is short and all-digits; a clientToken is a 32-char hex string that may
+  // START with a digit. We MUST NOT parseInt the token (that resolves to a wrong event → 404).
+  const isNumericId = /^\d+$/.test(value) && value.length <= 12;
+  const event = await db.query.photographyEventsTable.findFirst({
+    where: isNumericId ? eq(photographyEventsTable.id, Number(value)) : eq(photographyEventsTable.clientToken, value),
   });
+  if (!event) console.warn("[photography] event lookup miss", { ref: value, isNumericId });
+  return event;
 }
 
 function canAccessPhotographyEvent(user: AdminUser, event: typeof photographyEventsTable.$inferSelect) {
@@ -12323,19 +12411,52 @@ async function formatPhotographyEvents(rows: Array<typeof photographyEventsTable
   }));
 }
 
+// Event detail: the event plus ONLY its own (non-cancelled) orders and their financial aggregates.
+async function formatPhotographyEventDetail(event: typeof photographyEventsTable.$inferSelect) {
+  const orderRows = await db.query.photographyOrdersTable.findMany({
+    where: and(eq(photographyOrdersTable.eventId, event.id), sql`${photographyOrdersTable.cancelledAt} is null`),
+    orderBy: [desc(photographyOrdersTable.createdAt)],
+  });
+  const orders = await formatPhotographyOrders(orderRows);
+  const summary = {
+    orders: orders.length,
+    copies: orders.reduce((sum, order) => sum + order.copies, 0),
+    total: orders.reduce((sum, order) => sum + order.totalAmount, 0),
+    paid: orders.reduce((sum, order) => sum + order.paidAmount, 0),
+    remaining: orders.reduce((sum, order) => sum + order.remainingAmount, 0),
+    paidCount: orders.filter((order) => order.paymentStatus === "paid").length,
+    unpaidCount: orders.filter((order) => order.paymentStatus !== "paid").length,
+  };
+  return {
+    ...event,
+    orderCount: orders.length,
+    createdAt: event.createdAt.toISOString(),
+    updatedAt: event.updatedAt.toISOString(),
+    orders,
+    summary,
+  };
+}
+
 function photographyOrderJson(
   row: typeof photographyOrdersTable.$inferSelect,
   event: typeof photographyEventsTable.$inferSelect | null | undefined,
   pendingAmount: number,
   qr: Awaited<ReturnType<typeof ensureQrForEntity>> | null = null,
 ) {
+  const totalAmount = Number(row.totalAmount);
+  const paidAmount = Number(row.paidAmount);
+  const remainingAmount = Number(row.remainingAmount);
+  const paymentLabel = row.paymentStatus === "paid" ? "مدفوع" : pendingAmount > 0 ? "بانتظار الاعتماد" : paidAmount > 0 ? "مدفوع جزئياً" : "غير مدفوع";
   return {
     ...row,
-    phone: formatIraqiPhone(row.phone) ?? row.phone,
-    totalAmount: Number(row.totalAmount),
-    paidAmount: Number(row.paidAmount),
-    remainingAmount: Number(row.remainingAmount),
+    phone: row.phone ? (formatIraqiPhone(row.phone) ?? row.phone) : "",
+    unitPrice: Number(row.unitPrice),
+    totalAmount,
+    paidAmount,
+    remainingAmount,
     pendingAmount,
+    paymentLabel,
+    cancelledAt: row.cancelledAt?.toISOString() ?? null,
     event: event ? {
       id: event.id,
       clientToken: event.clientToken,
@@ -12512,8 +12633,17 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
 
   if (resource === "events") {
     if (method === "GET" && !ref) {
-      const search = (req.nextUrl.searchParams.get("search") || "").trim().toLowerCase();
+      const params = req.nextUrl.searchParams;
+      const search = (params.get("search") || "").trim().toLowerCase();
+      const includeArchived = params.get("archived") === "1";
+      const photographerId = manager ? int(params.get("photographerId") || "") : null;
+      const from = params.get("from") || "";
+      const to = params.get("to") || "";
       let rows = own(await db.query.photographyEventsTable.findMany({ orderBy: [desc(photographyEventsTable.eventDate), desc(photographyEventsTable.id)], limit: 300 }));
+      if (!includeArchived) rows = rows.filter((row) => row.status !== "archived");
+      if (photographerId) rows = rows.filter((row) => row.assignedStaffId === photographerId);
+      if (from) rows = rows.filter((row) => row.eventDate >= from);
+      if (to) rows = rows.filter((row) => row.eventDate <= to);
       if (search) rows = rows.filter((row) => `${row.groomName} ${row.eventName ?? ""} ${row.location ?? ""}`.toLowerCase().includes(search));
       return json(await formatPhotographyEvents(rows));
     }
@@ -12543,25 +12673,31 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
     if (method === "GET" && ref && !action) {
       const event = await getPhotographyEventByRef(ref);
       if (!event || !canAccessPhotographyEvent(auth, event)) return error("المناسبة غير موجودة", 404);
-      return json(await formatPhotographyEvent(event));
+      return json(await formatPhotographyEventDetail(event));
     }
     if (method === "POST" && ref && action === "orders") {
       const event = await getPhotographyEventByRef(ref);
       if (!event || !canAccessPhotographyEvent(auth, event)) return error("المناسبة غير موجودة", 404);
+      if (event.status === "archived") return error("المناسبة مؤرشفة — لا يمكن إضافة طلبات إليها", 409);
       const parsed = PhotographyOrderCreateSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("staff.photography.orders.create", parsed);
       const data = parsed.data;
-      const phone = normalizeIraqiPhone(data.phone);
-      if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
-      if (data.paidAmount > data.totalAmount) return error("المبلغ المدفوع لا يمكن أن يتجاوز المبلغ الكلي", 400);
+      // Phone is optional. If provided, normalize it; keep the raw digits if it isn't a valid Iraqi number
+      // rather than blocking the save (an empty phone is shown as "غير مسجل" in the UI).
+      const phoneInput = (data.phone ?? "").trim();
+      const phone = phoneInput ? (normalizeIraqiPhone(phoneInput) ?? phoneInput.replace(/\D/g, "")) : "";
+      // Total is authoritative server-side: selected unit price × number of copies.
+      const total = money(data.unitPrice * data.copies);
+      // Payment intent: "مدفوع" → full amount sent for manager approval; "غير مدفوع" → nothing collected.
+      const paidRequested = data.paid !== undefined ? (data.paid ? total : 0) : Math.min(money(data.paidAmount ?? 0), total);
       const existingOrder = await db.query.photographyOrdersTable.findFirst({ where: eq(photographyOrdersTable.clientToken, data.clientToken) });
       if (existingOrder) {
-        if (data.paidAmount > 0) {
+        if (paidRequested > 0) {
           const existingPayment = await db.query.photographyPaymentRequestsTable.findFirst({
             where: eq(photographyPaymentRequestsTable.orderId, existingOrder.id),
           });
           if (!existingPayment && Number(existingOrder.paidAmount) === 0) {
-            await createPhotographyCollectionRequest(existingOrder, auth, data.paidAmount, "دفعة أولية عند تسجيل طلب التصوير");
+            await createPhotographyCollectionRequest(existingOrder, auth, paidRequested, "دفعة أولية عند تسجيل طلب التصوير");
           }
         }
         return json(await formatPhotographyOrder(existingOrder, true, req));
@@ -12575,10 +12711,11 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
         customerName: data.customerName,
         phone,
         copies: data.copies,
-        printType: data.printType,
-        totalAmount: String(money(data.totalAmount)),
+        printType: data.printType || "10x15",
+        unitPrice: String(money(data.unitPrice)),
+        totalAmount: String(total),
         paidAmount: "0",
-        remainingAmount: String(money(data.totalAmount)),
+        remainingAmount: String(total),
         paymentStatus: "unpaid",
         photoNumber: nullableText(data.photoNumber),
         notes: nullableText(data.notes),
@@ -12591,20 +12728,74 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
       const [order] = await db.update(photographyOrdersTable).set({ orderNo }).where(eq(photographyOrdersTable.id, created.id)).returning();
       await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "created", toStatus: "registered", note: data.notes });
       const qr = await ensureQrForEntity("photography_order", order, req);
-      if (data.paidAmount > 0) await createPhotographyCollectionRequest(order, auth, data.paidAmount, "دفعة أولية عند تسجيل طلب التصوير");
-      void logAdminActivity(req, "photography_order_created", "photography_order", order.id, { orderNo, eventId: event.id, totalAmount: data.totalAmount, requestedPaidAmount: data.paidAmount });
+      if (paidRequested > 0) await createPhotographyCollectionRequest(order, auth, paidRequested, "دفعة كاملة عند تسجيل طلب التصوير");
+      void logAdminActivity(req, "photography_order_created", "photography_order", order.id, { orderNo, eventId: event.id, totalAmount: total, requestedPaidAmount: paidRequested });
       void createNotification({ audienceType: "admin", staffId: order.assignedStaffId, type: "photography_order_new", title: "طلب صور جديد", body: `${orderNo} - ${order.customerName}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
-      void sendTelegramMessage(`📷 <b>طلب تصوير جديد</b>\nرقم الطلب: ${telegramText(orderNo)}\nالمناسبة: ${telegramText(event.groomName)}\nالزبون: ${telegramText(order.customerName)}\nالهاتف: ${telegramText(formatIraqiPhone(order.phone) ?? order.phone)}\nالمصور: ${telegramText(event.assignedStaffName)}\nالمبلغ: ${Number(order.totalAmount).toLocaleString("en-US")} د.ع\nالمدفوع المطلوب اعتماده: ${Number(data.paidAmount).toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/staff/photography/orders/${order.id}`);
+      void sendTelegramMessage(`📷 <b>طلب تصوير جديد</b>\nرقم الطلب: ${telegramText(orderNo)}\nالمناسبة: ${telegramText(event.groomName)}\nالزبون: ${telegramText(order.customerName)}\nالهاتف: ${telegramText(phone ? (formatIraqiPhone(phone) ?? phone) : "غير مسجل")}\nالمصور: ${telegramText(event.assignedStaffName)}\nالسعر: ${Number(order.unitPrice).toLocaleString("en-US")} × ${order.copies}\nالمبلغ: ${total.toLocaleString("en-US")} د.ع\nالمدفوع المطلوب اعتماده: ${paidRequested.toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/staff/photography/orders/${order.id}`);
       return json({ ...(await formatPhotographyOrder(order, false)), qr }, 201);
+    }
+    if (method === "PATCH" && ref && !action) {
+      if (!manager) return error("هذا الإجراء يخص المدير فقط", 403);
+      const event = await getPhotographyEventByRef(ref);
+      if (!event) return error("المناسبة غير موجودة", 404);
+      const parsed = PhotographyEventUpdateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.events.update", parsed);
+      const data = parsed.data;
+      const patch: Partial<typeof photographyEventsTable.$inferInsert> = { updatedAt: new Date() };
+      if (data.groomName !== undefined) patch.groomName = data.groomName;
+      if (data.eventName !== undefined) patch.eventName = nullableText(data.eventName);
+      if (data.eventDate !== undefined) patch.eventDate = data.eventDate;
+      if (data.location !== undefined) patch.location = nullableText(data.location);
+      if (data.assignedStaffId) {
+        const assigned = await db.query.staffTable.findFirst({ where: and(eq(staffTable.id, data.assignedStaffId), eq(staffTable.isActive, true)) });
+        if (!assigned) return error("المصور المسؤول غير صحيح", 400);
+        patch.assignedStaffId = assigned.id;
+        patch.assignedStaffName = assigned.fullName || assigned.username;
+        await db.update(photographyOrdersTable).set({ assignedStaffId: assigned.id }).where(eq(photographyOrdersTable.eventId, event.id));
+      }
+      const [updated] = await db.update(photographyEventsTable).set(patch).where(eq(photographyEventsTable.id, event.id)).returning();
+      void logAdminActivity(req, "photography_event_updated", "photography_event", event.id, { fields: Object.keys(data) });
+      return json(await formatPhotographyEvent(updated));
+    }
+    if (method === "POST" && ref && action === "archive") {
+      if (!manager) return error("هذا الإجراء يخص المدير فقط", 403);
+      const event = await getPhotographyEventByRef(ref);
+      if (!event) return error("المناسبة غير موجودة", 404);
+      const next = event.status === "archived" ? "active" : "archived";
+      const [updated] = await db.update(photographyEventsTable).set({ status: next, updatedAt: new Date() }).where(eq(photographyEventsTable.id, event.id)).returning();
+      void logAdminActivity(req, next === "archived" ? "photography_event_archived" : "photography_event_unarchived", "photography_event", event.id);
+      return json(await formatPhotographyEvent(updated));
+    }
+    if (method === "DELETE" && ref && !action) {
+      if (!manager) return error("هذا الإجراء يخص المدير فقط", 403);
+      const event = await getPhotographyEventByRef(ref);
+      if (!event) return error("المناسبة غير موجودة", 404);
+      const [count] = await db.select({ total: sql<number>`count(*)::int` }).from(photographyOrdersTable).where(eq(photographyOrdersTable.eventId, event.id));
+      if (Number(count?.total ?? 0) > 0) return error("لا يمكن حذف مناسبة تحتوي على طلبات — استخدم الأرشفة بدلاً من ذلك", 409);
+      await db.delete(photographyEventsTable).where(eq(photographyEventsTable.id, event.id));
+      void logAdminActivity(req, "photography_event_deleted", "photography_event", event.id, { groomName: event.groomName });
+      return json({ ok: true });
     }
   }
 
   if (resource === "orders") {
     if (method === "GET" && !ref) {
-      const search = (req.nextUrl.searchParams.get("search") || "").trim();
-      const status = (req.nextUrl.searchParams.get("status") || "").trim();
+      const params = req.nextUrl.searchParams;
+      const search = (params.get("search") || "").trim();
+      const status = (params.get("status") || "").trim();
+      const includeCancelled = params.get("cancelled") === "1";
+      const photographerId = manager ? int(params.get("photographerId") || "") : null;
+      const eventRefParam = (params.get("eventRef") || "").trim();
+      let eventFilterId: number | null = null;
+      if (eventRefParam) {
+        const ev = await getPhotographyEventByRef(eventRefParam);
+        if (ev && canAccessPhotographyEvent(auth, ev)) eventFilterId = ev.id; else eventFilterId = -1;
+      }
       let rows = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 400 }));
+      if (!includeCancelled) rows = rows.filter((row) => !row.cancelledAt);
       if (status && (PHOTOGRAPHY_ORDER_STAGES as readonly string[]).includes(status)) rows = rows.filter((row) => row.status === status);
+      if (photographerId) rows = rows.filter((row) => row.assignedStaffId === photographerId);
+      if (eventFilterId !== null) rows = rows.filter((row) => row.eventId === eventFilterId);
       if (search) {
         const token = /(?:\/track\/|\/api\/qr\/)?([a-f0-9]{32,80})/i.exec(search)?.[1];
         let qrEntityId: number | null = null;
@@ -12637,7 +12828,7 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
       await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: status === "delivered" ? "delivered" : "status", fromStatus: order.status, toStatus: status, note });
       void logAdminActivity(req, status === "delivered" ? "photography_order_delivered" : "photography_order_status_updated", "photography_order", order.id, { from: order.status, to: status });
       void createNotification({ audienceType: "admin", staffId: order.assignedStaffId, type: `photography_${status}`, title: status === "ready_print" ? "طلب جاهز للطباعة" : status === "ready_pickup" ? "طلب جاهز للاستلام" : status === "delivered" ? "تم تسليم طلب التصوير" : "تحديث طلب تصوير", body: `${order.orderNo} - ${order.customerName}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
-      if (status === "ready_pickup") void whatsappSend(order.phone, `صورك للطلب ${order.orderNo} جاهزة للاستلام.`, "booking_ready");
+      if (status === "ready_pickup" && order.phone) void whatsappSend(order.phone, `صورك للطلب ${order.orderNo} جاهزة للاستلام.`, "booking_ready");
       void sendTelegramMessage(`📷 <b>تحديث طلب تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالزبون: ${telegramText(order.customerName)}\nالحالة: ${telegramText(status)}\nبواسطة: ${telegramText(photographyStaffName(auth))}`);
       return json(await formatPhotographyOrder(updated, true, req));
     }
@@ -12658,11 +12849,58 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
       void logAdminActivity(req, "photography_receipt_printed", "photography_order", order.id);
       return json({ ok: true });
     }
+    if (method === "PATCH" && !action) {
+      if (!manager) return error("تعديل الطلب يخص المدير فقط", 403);
+      const parsed = PhotographyOrderUpdateSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("staff.photography.orders.update", parsed);
+      const data = parsed.data;
+      const patch: Partial<typeof photographyOrdersTable.$inferInsert> = { updatedAt: new Date() };
+      if (data.customerName !== undefined) patch.customerName = data.customerName;
+      if (data.notes !== undefined) patch.notes = nullableText(data.notes);
+      if (data.phone !== undefined) {
+        const trimmed = data.phone.trim();
+        patch.phone = trimmed ? (normalizeIraqiPhone(trimmed) ?? trimmed.replace(/\D/g, "")) : "";
+      }
+      // Money fields can only change while nothing has been collected/approved on this order.
+      const wantsMoneyChange = data.copies !== undefined || data.unitPrice !== undefined;
+      if (wantsMoneyChange) {
+        const pending = await photographyPendingAmount(order.id);
+        if (Number(order.paidAmount) > 0 || pending > 0) return error("لا يمكن تعديل السعر أو عدد النسخ بعد وجود دفعات معتمدة أو قيد الاعتماد", 409);
+        const copies = data.copies ?? order.copies;
+        const unitPrice = data.unitPrice ?? Number(order.unitPrice);
+        const total = money(unitPrice * copies);
+        patch.copies = copies;
+        patch.unitPrice = String(money(unitPrice));
+        patch.totalAmount = String(total);
+        patch.remainingAmount = String(total);
+      }
+      const [updated] = await db.update(photographyOrdersTable).set(patch).where(eq(photographyOrdersTable.id, order.id)).returning();
+      await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "edited", fromStatus: order.status, toStatus: order.status, note: `تعديل: ${Object.keys(data).join(", ")}` });
+      void logAdminActivity(req, "photography_order_updated", "photography_order", order.id, { fields: Object.keys(data) });
+      return json(await formatPhotographyOrder(updated, true, req));
+    }
+    if (method === "POST" && action === "cancel") {
+      if (!manager) return error("إلغاء الطلب يخص المدير فقط", 403);
+      if (order.cancelledAt) return error("الطلب ملغى بالفعل", 409);
+      const pending = await photographyPendingAmount(order.id);
+      if (Number(order.paidAmount) > 0 || pending > 0) return error("لا يمكن إلغاء طلب عليه دفعات معتمدة أو قيد الاعتماد — اعكس الحركة المالية أولاً من الصندوق الرئيسي", 409);
+      const cancelBody = await body(req).catch(() => ({} as any));
+      const [updated] = await db.update(photographyOrdersTable).set({ cancelledAt: new Date(), cancelledBy: auth.id, updatedAt: new Date() }).where(eq(photographyOrdersTable.id, order.id)).returning();
+      await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "cancelled", fromStatus: order.status, toStatus: order.status, note: nullableText((cancelBody as any)?.note) });
+      void logAdminActivity(req, "photography_order_cancelled", "photography_order", order.id, { orderNo: order.orderNo });
+      void sendTelegramMessage(`🚫 <b>إلغاء طلب تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالزبون: ${telegramText(order.customerName)}\nبواسطة: ${telegramText(photographyStaffName(auth))}`);
+      return json(await formatPhotographyOrder(updated, false));
+    }
+  }
+
+  if (resource === "prices" && method === "GET") {
+    const items = (await getPhotographyPrices()).filter((item) => item.active).map((item) => ({ id: item.id, amount: item.amount }));
+    return json(items);
   }
 
   if (resource === "dashboard" && method === "GET") {
-    const events = own(await db.query.photographyEventsTable.findMany({ orderBy: [desc(photographyEventsTable.eventDate)], limit: 200 }));
-    const orders = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 400 }));
+    const events = own(await db.query.photographyEventsTable.findMany({ orderBy: [desc(photographyEventsTable.eventDate)], limit: 200 })).filter((event) => event.status !== "archived");
+    const orders = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 400 })).filter((order) => !order.cancelledAt);
     const today = baghdadToday();
     const todayOrders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) === today);
     return json({
@@ -12674,15 +12912,30 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
   }
 
   if (resource === "reports" && method === "GET") {
-    const orders = own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 1000 }));
+    const params = req.nextUrl.searchParams;
+    const scope = manager && params.get("scope") === "all";
+    const photographerId = manager ? int(params.get("photographerId") || "") : null;
+    const from = params.get("from") || "";
+    const to = params.get("to") || "";
+    let orders = (scope ? await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 2000 }) : own(await db.query.photographyOrdersTable.findMany({ orderBy: [desc(photographyOrdersTable.createdAt)], limit: 2000 }))).filter((order) => !order.cancelledAt);
+    let events = (scope ? await db.query.photographyEventsTable.findMany({ limit: 1000 }) : own(await db.query.photographyEventsTable.findMany({ limit: 1000 }))).filter((event) => event.status !== "archived");
+    if (photographerId) { orders = orders.filter((order) => order.assignedStaffId === photographerId); events = events.filter((event) => event.assignedStaffId === photographerId); }
+    if (from) { orders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) >= from); events = events.filter((event) => event.eventDate >= from); }
+    if (to) { orders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) <= to); events = events.filter((event) => event.eventDate <= to); }
+    const ranged = from || to;
     const today = baghdadToday();
-    const todayOrders = orders.filter((order) => order.createdAt.toISOString().slice(0, 10) === today);
+    const scoped = ranged ? orders : orders.filter((order) => order.createdAt.toISOString().slice(0, 10) === today);
+    const paidOrders = scoped.filter((order) => order.paymentStatus === "paid");
+    const unpaidOrders = scoped.filter((order) => order.paymentStatus !== "paid");
     return json({
-      orders: todayOrders.length,
-      delivered: todayOrders.filter((order) => order.status === "delivered").length,
-      inProgress: todayOrders.filter((order) => order.status !== "delivered").length,
-      received: todayOrders.reduce((sum, order) => sum + Number(order.paidAmount), 0),
-      remaining: todayOrders.reduce((sum, order) => sum + Number(order.remainingAmount), 0),
+      events: events.length,
+      orders: scoped.length,
+      delivered: scoped.filter((order) => order.status === "delivered").length,
+      inProgress: scoped.filter((order) => order.status !== "delivered").length,
+      paidCount: paidOrders.length,
+      unpaidCount: unpaidOrders.length,
+      received: scoped.reduce((sum, order) => sum + Number(order.paidAmount), 0),
+      remaining: scoped.reduce((sum, order) => sum + Number(order.remainingAmount), 0),
     });
   }
 

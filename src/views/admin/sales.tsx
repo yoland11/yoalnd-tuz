@@ -25,6 +25,7 @@ type SalesInvoice = {
   subtotal: string; discountAmount: string; taxAmount: string; total: string;
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
+  financiallyReversed?: boolean;
   items?: CartItem[];
   qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
 };
@@ -75,6 +76,7 @@ export default function SalesPage() {
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
+  const [listReversed, setListReversed] = useState(""); // "" all | "false" active | "true" reversed
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -96,9 +98,9 @@ export default function SalesPage() {
 
   // Invoices list
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo],
+    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed],
     queryFn: () => adminFetch<{ data: SalesInvoice[]; total: number }>(
-      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
+      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${listReversed ? `&reversed=${listReversed}` : ""}`
     ),
     enabled: listMode,
   });
@@ -283,6 +285,7 @@ export default function SalesPage() {
           page={listPage} onPage={setListPage}
           from={listFrom} to={listTo}
           onFrom={setListFrom} onTo={setListTo}
+          reversed={listReversed} onReversed={setListReversed}
           onBack={() => setListMode(false)}
           onOpen={setSelectedInvoiceId}
         />
@@ -661,10 +664,11 @@ export default function SalesPage() {
 
 // ── Invoice List Sub-View ──────────────────────────────────────────────────
 function InvoiceListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, onBack, onOpen,
+  invoices, total, page, onPage, from, to, onFrom, onTo, reversed, onReversed, onBack, onOpen,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
+  reversed: string; onReversed: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
@@ -691,6 +695,15 @@ function InvoiceListView({
           <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">الحالة المالية</label>
+          <select value={reversed} onChange={e => { onReversed(e.target.value); onPage(1); }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value="">الكل</option>
+            <option value="false">الفعّالة</option>
+            <option value="true">المعكوسة مالياً</option>
+          </select>
+        </div>
       </div>
       {/* Table */}
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
@@ -713,7 +726,7 @@ function InvoiceListView({
                 ? <tr><td colSpan={8} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
-                      <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}</td>
+                      <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold text-orange-500">تم عكس الأثر المالي</span>}</td>
                       <td className="px-4 py-3 text-muted-foreground">{inv.date}</td>
                       <td className="px-4 py-3">{inv.customerName || "—"}</td>
                       <td className="px-4 py-3 text-center font-medium">{formatCurrency(inv.total)}</td>
@@ -943,6 +956,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           <div>
             <h2 className="text-lg font-bold text-foreground">تفاصيل الفاتورة</h2>
             <p className="text-xs text-muted-foreground">{invoice?.invoiceNo ?? "جاري التحميل..."}</p>
+            {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] font-bold text-orange-500">تم عكس الأثر المالي</span>}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
@@ -965,6 +979,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           <div className="py-20 text-center text-muted-foreground">تعذر تحميل الفاتورة</div>
         ) : (
           <div className="overflow-y-auto max-h-[calc(92vh-76px)] p-5 space-y-4">
+            {invoice.financiallyReversed && (
+              <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-sm font-semibold text-orange-600">
+                هذه الفاتورة تم عكس أثرها المالي ولا تدخل ضمن الإيرادات الصافية — للعرض والتدقيق فقط (لا يمكن تعديلها أو إضافة دفعات أو تحصيل).
+              </div>
+            )}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-3">
                 <h3 className="font-semibold text-sm">بيانات العميل</h3>
@@ -1166,7 +1185,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
 
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Button variant="outline" onClick={onClose}>إلغاء</Button>
-              <Button onClick={saveChanges} disabled={saving} className="bg-primary text-black hover:bg-primary/90 font-bold">
+              <Button onClick={saveChanges} disabled={saving || !!invoice?.financiallyReversed} title={invoice?.financiallyReversed ? "الفاتورة معكوسة مالياً — للعرض فقط" : undefined} className="bg-primary text-black hover:bg-primary/90 font-bold">
                 {saving ? <><RefreshCw className="w-4 h-4 ml-2 animate-spin" />جاري الحفظ...</> : <><Save className="w-4 h-4 ml-2" />حفظ التعديل</>}
               </Button>
             </div>
