@@ -366,7 +366,7 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
         toast({
           variant: "destructive",
           title: "لا يمكن إلغاء الطلب",
-          description: "هذا الطلب عليه دفعات معتمدة أو قيد الاعتماد. اعكس الحركة المالية أولاً من الصندوق الرئيسي، ثم أعد الإلغاء.",
+          description: apiErrorMessage(err),
           action: <ToastAction altText="الذهاب إلى الصندوق الرئيسي" onClick={() => { window.location.href = "/admin/finance/master-cash"; }}>الصندوق الرئيسي</ToastAction>,
         });
       } else {

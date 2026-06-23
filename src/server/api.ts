@@ -12882,9 +12882,50 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
     if (method === "POST" && action === "cancel") {
       if (!manager) return error("إلغاء الطلب يخص المدير فقط", 403);
       if (order.cancelledAt) return error("الطلب ملغى بالفعل", 409);
-      const pending = await photographyPendingAmount(order.id);
-      if (Number(order.paidAmount) > 0 || pending > 0) return error("لا يمكن إلغاء طلب عليه دفعات معتمدة أو قيد الاعتماد — اعكس الحركة المالية أولاً من الصندوق الرئيسي", 409);
       const cancelBody = await body(req).catch(() => ({} as any));
+
+      // Cancellability is decided from the SOURCE OF TRUTH — the linked financial transactions and
+      // payment requests, by status — NOT the order.paid_amount snapshot (which lags a reversal and
+      // wrongly blocks cancel even after the cash entry shows "reversed"). A transaction blocks only
+      // while it is genuinely live money: status pending/approved/executed, AND not reversed, AND not
+      // itself a reversal entry. reversed / rejected / cancelled never block (requirements 2, 3, 6).
+      const BLOCKING_TXN_STATUS = new Set(["pending", "approved", "executed"]);
+      const [linkedTxns, payReqs] = await Promise.all([
+        db.query.financialTransactionsTable.findMany({ where: and(eq(financialTransactionsTable.sourceType, "photography_order"), eq(financialTransactionsTable.sourceId, String(order.id))) }),
+        db.query.photographyPaymentRequestsTable.findMany({ where: eq(photographyPaymentRequestsTable.orderId, order.id) }),
+      ]);
+      const blockers: Array<{ ref: string; status: string }> = [];
+      const seen = new Set<string>();
+      for (const txn of linkedTxns) {
+        const isReversalEntry = txn.transactionType.endsWith("_reversal");
+        const reversed = !!(txn.reversedAt || txn.reversalTxnId);
+        if (isReversalEntry || reversed || !BLOCKING_TXN_STATUS.has(txn.approvalStatus)) continue;
+        const status = txn.approvalStatus === "pending" ? "pending" : "approved";
+        if (!seen.has(txn.transactionNo)) { seen.add(txn.transactionNo); blockers.push({ ref: txn.transactionNo, status }); }
+      }
+      // A still-pending approval request blocks too — even if the original transaction was reversed (requirement 7).
+      for (const reqRow of payReqs) {
+        if (reqRow.status !== "pending") continue;
+        const ref = linkedTxns.find((t) => t.id === reqRow.financialTransactionId)?.transactionNo ?? `طلب-تحصيل-${reqRow.id}`;
+        if (!seen.has(ref)) { seen.add(ref); blockers.push({ ref, status: "pending" }); }
+      }
+
+      console.info("[photography] cancel check", {
+        orderNo: order.orderNo,
+        orderId: order.id,
+        eventId: order.eventId,
+        linkedTransactions: linkedTxns.length,
+        transactionStatuses: linkedTxns.map((t) => ({ no: t.transactionNo, approval: t.approvalStatus, reversed: !!(t.reversedAt || t.reversalTxnId), type: t.transactionType })),
+        pendingPaymentRequests: payReqs.filter((r) => r.status === "pending").length,
+        blockers,
+      });
+
+      if (blockers.length) {
+        const b = blockers[0];
+        const statusAr = b.status === "approved" ? "معتمدة (approved)" : "قيد الاعتماد (pending)";
+        return error(`لا يمكن إلغاء الطلب بسبب الحركة المالية: ${b.ref} — الحالة: ${statusAr}. اعكس هذه الحركة من الصندوق الرئيسي ثم أعد المحاولة.`, 409);
+      }
+
       const [updated] = await db.update(photographyOrdersTable).set({ cancelledAt: new Date(), cancelledBy: auth.id, updatedAt: new Date() }).where(eq(photographyOrdersTable.id, order.id)).returning();
       await addPhotographyOrderEvent({ orderId: order.id, staff: auth, type: "cancelled", fromStatus: order.status, toStatus: order.status, note: nullableText((cancelBody as any)?.note) });
       void logAdminActivity(req, "photography_order_cancelled", "photography_order", order.id, { orderNo: order.orderNo });
