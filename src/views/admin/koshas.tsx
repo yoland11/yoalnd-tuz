@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency } from "./_lib";
+import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
 
@@ -50,6 +51,8 @@ type KoshaBooking = {
   bookingDetails: Record<string, unknown>;
   notes: string;
   status: string;
+  trackingCode?: string | null;
+  trackingStatus?: string;
   internalNotes: string;
   totalAmount: number;
   paidAmount: number;
@@ -91,6 +94,16 @@ const EMPTY_KOSHA: KoshaFormState = {
   sortOrder: 0,
   categoryId: null,
 };
+
+const KOSHA_TRACKING_STAGES: Array<{ key: string; label: string }> = [
+  { key: "booked", label: "تم الحجز" },
+  { key: "preparing", label: "قيد التجهيز" },
+  { key: "accessories", label: "تجهيز الإكسسوارات" },
+  { key: "welcome_board", label: "تجهيز البورد الترحيبي" },
+  { key: "ready", label: "جاهزة للتنفيذ" },
+  { key: "executed", label: "تم التنفيذ" },
+  { key: "completed", label: "مكتمل" },
+];
 
 const STATUS_LABELS: Record<string, string> = {
   new: "جديد",
@@ -782,6 +795,7 @@ export function AdminKoshaBookingsPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [editing, setEditing] = useState<KoshaBooking | null>(null);
+  const [detailing, setDetailing] = useState<KoshaBooking | null>(null);
   const { data = [], isLoading } = useQuery({
     queryKey: ["admin", "kosha-bookings", search, status],
     queryFn: () => adminFetch<KoshaBooking[]>(`/admin/kosha-bookings?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
@@ -808,33 +822,98 @@ export function AdminKoshaBookingsPage() {
     URL.revokeObjectURL(url);
   }
 
-  function printBooking(item: KoshaBooking) {
-    const win = window.open("", "_blank", "width=420,height=640");
+  async function printBooking(item: KoshaBooking, format: "a4" | "thermal") {
+    // Open synchronously (avoids popup blocking) then fill once the QR is fetched.
+    const win = window.open("", "_blank", format === "thermal" ? "width=420,height=720" : "width=860,height=1040");
     if (!win) return;
-    win.document.write(`<html dir="rtl"><head><title>حجز كوشة</title><style>body{font-family:Arial;padding:24px;color:#000}h1{font-size:20px}.row{margin:10px 0;border-bottom:1px solid #ddd;padding-bottom:8px}</style></head><body><h1>تفاصيل حجز الكوشة</h1>${[
-      ["الباقة", item.packageName ?? "-"],
-      ["الكوشة", item.koshaName ?? "-"],
-      ["الزبون", item.customerName],
-      ["الهاتف", item.phone],
-      ["العروس", item.brideName],
-      ["العريس", item.groomName],
-      ["التاريخ", item.eventDate],
-      ["الوقت", item.eventTime],
-      ["نوع الحفل", item.eventType],
-      ["مستوى الخدمة", item.serviceLevel],
-      ["نوع المكان", item.venueType],
-      ["لون الثيم", item.themeColor],
-      ["المحافظة", item.province],
-      ["المنطقة", item.area || item.cityArea],
-      ["المحلة", item.mahalla],
-      ["أقرب نقطة", item.nearestPoint || item.hallLocation],
-      ["الخدمات الإضافية", item.selectedAddons?.join("، ")],
-      ["بورد الترحيب", item.welcomeBoards?.join("، ")],
-      ["الاكسسوارات", item.selectedAccessories?.join("، ")],
-      ["الإجمالي", koshaBookingTotal(item.bookingDetails) ? formatCurrency(koshaBookingTotal(item.bookingDetails) ?? 0) : "-"],
-      ["الحالة", STATUS_LABELS[item.status] ?? item.status],
-      ["ملاحظات", item.notes],
-    ].map(([label, value]) => `<div class="row"><strong>${label}</strong><br>${value || "-"}</div>`).join("")}<script>window.onload=()=>window.print()</script></body></html>`);
+    win.document.write('<!doctype html><meta charset="utf-8"><div dir="rtl" style="font-family:sans-serif;padding:24px">جاري تحضير الفاتورة…</div>');
+    let full: KoshaBooking & { qr?: { dataUrl?: string } } = item;
+    let qrDataUrl = "";
+    try {
+      const res = await adminFetch<KoshaBooking & { qr?: { dataUrl?: string } }>(`/admin/kosha-bookings/${item.id}`);
+      full = res;
+      qrDataUrl = res.qr?.dataUrl ?? "";
+    } catch { /* fall back to row data without QR */ }
+    const details = (full.bookingDetails ?? {}) as Record<string, any>;
+    const money = (value: number) => Number(value || 0).toLocaleString("en-US");
+    const lineItems = [
+      { name: full.koshaName ?? details.koshaName ?? "كوشة", price: Number(details.koshaPrice ?? 0) },
+      ...(Array.isArray(details.addonDetails) ? details.addonDetails : []),
+      ...(Array.isArray(details.welcomeBoardDetails) ? details.welcomeBoardDetails : []),
+      ...(Array.isArray(details.accessoryDetails) ? details.accessoryDetails : []),
+    ].map((row: any) => ({ name: String(row.name ?? ""), price: Number(row.price ?? 0) }));
+    const total = Number(full.totalAmount ?? koshaBookingTotal(details) ?? 0);
+    const paid = Number(full.paidAmount ?? 0);
+    const remaining = Number(full.remainingAmount ?? Math.max(0, total - paid));
+    const trackingCode = full.trackingCode ?? `KB-${full.id}`;
+    const dateLine = [full.eventDate, full.eventTime].filter(Boolean).join(" ") || "—";
+    const qrCaption = "امسح الكود لمتابعة حالة الكوشة";
+
+    let html = "";
+    if (format === "thermal") {
+      const rows = lineItems.map((it) => `<tr><td class="name">${it.name}</td><td class="num">${money(it.price)}</td></tr>`).join("");
+      const qrBlock = qrDataUrl ? `<div class="qr"><img src="${qrDataUrl}" alt="QR"><div class="cap">${qrCaption}</div></div>` : "";
+      html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${trackingCode}</title>
+        <style>${thermalReceiptCss("80mm")}</style></head><body>
+        <div class="receipt">
+          <div class="r-head"><div class="r-company">مجموعة علي جان نهاد</div><div class="r-sub">فاتورة حجز كوشة</div><div class="r-sub num">${trackingCode} · ${dateLine}</div></div>
+          <hr class="rule">
+          <div class="kv"><span>الزبون</span><span class="v">${full.customerName}</span></div>
+          <div class="kv"><span>الهاتف</span><span class="v num">${full.phone || "—"}</span></div>
+          <hr class="rule dashed">
+          <table class="items"><thead><tr><th class="name">البند</th><th>السعر</th></tr></thead><tbody>${rows}</tbody></table>
+          <div class="totals">
+            <div class="grand"><span>الإجمالي</span><span class="num">${money(total)} د.ع</span></div>
+            <div class="payline"><span>الواصل</span><span class="num">${money(paid)} د.ع</span></div>
+            <div class="payline remain"><span>المتبقي</span><span class="num">${money(remaining)} د.ع</span></div>
+          </div>
+          ${qrBlock}
+          <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
+        </div>
+        ${printWhenImagesReadyScript()}
+      </body></html>`;
+    } else {
+      const rows = lineItems.map((it) => `<tr><td>${it.name}</td><td class="ltr">${money(it.price)}</td></tr>`).join("");
+      const qrBlock = qrDataUrl ? `<div class="qr"><img src="${qrDataUrl}" alt="QR"><div class="cap">${qrCaption}</div></div>` : "";
+      html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${trackingCode}</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+          @page { size: A4; margin: 14mm; }
+          * { box-sizing: border-box; }
+          body { direction: rtl; font-family: Cairo, Tahoma, Arial, sans-serif; color:#111; font-size:12px; margin:0; }
+          .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #C9A84C; padding-bottom:12px; margin-bottom:16px; }
+          .company { font-size:22px; font-weight:800; } .sub { font-size:12px; color:#555; margin-top:2px; }
+          .doc { text-align:left; } .doc .title { font-size:20px; font-weight:800; } .doc .meta { font-size:12px; color:#555; }
+          .parties { display:flex; justify-content:space-between; gap:20px; margin-bottom:16px; font-size:13px; line-height:1.9; }
+          table { width:100%; border-collapse:collapse; margin-bottom:16px; font-size:13px; }
+          th { background:#f3f3f3; border:1px solid #ccc; padding:9px 10px; text-align:right; font-weight:700; }
+          td { border:1px solid #ddd; padding:9px 10px; } td.ltr { direction:ltr; text-align:left; }
+          .totals { width:300px; margin-right:auto; font-size:13px; }
+          .totals .row { display:flex; justify-content:space-between; padding:6px 2px; }
+          .totals .grand { display:flex; justify-content:space-between; border:2px solid #111; padding:9px 10px; font-size:17px; font-weight:800; margin-top:4px; }
+          .foot { display:flex; justify-content:space-between; align-items:center; border-top:1px solid #ddd; margin-top:22px; padding-top:14px; }
+          .qr { text-align:center; } .qr img { width:120px; height:120px; image-rendering:pixelated; } .qr .cap { font-size:12px; font-weight:700; margin-top:4px; }
+        </style></head><body>
+        <div class="head">
+          <div><div class="company">مجموعة علي جان نهاد</div><div class="sub">فاتورة حجز كوشة</div></div>
+          <div class="doc"><div class="title">فاتورة</div><div class="meta">${trackingCode}</div><div class="meta">${dateLine}</div></div>
+        </div>
+        <div class="parties">
+          <div><strong>الزبون:</strong> ${full.customerName}<br><strong>الهاتف:</strong> <span style="direction:ltr">${full.phone || "—"}</span></div>
+          <div><strong>الموعد:</strong> ${dateLine}<br><strong>الحالة:</strong> ${STATUS_LABELS[full.status] ?? full.status}</div>
+        </div>
+        <table><thead><tr><th>البند</th><th style="text-align:left">السعر (د.ع)</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="totals">
+          <div class="row"><span>الإجمالي</span><strong>${money(total)} د.ع</strong></div>
+          <div class="row"><span>الواصل</span><strong>${money(paid)} د.ع</strong></div>
+          <div class="grand"><span>المتبقي</span><span>${money(remaining)} د.ع</span></div>
+        </div>
+        <div class="foot">${qrBlock}<div style="font-size:12px;color:#555">شكراً لاختياركم مجموعة علي جان نهاد</div></div>
+        ${printWhenImagesReadyScript()}
+      </body></html>`;
+    }
+    win.document.open();
+    win.document.write(html);
     win.document.close();
   }
 
@@ -894,9 +973,11 @@ export function AdminKoshaBookingsPage() {
                       </select>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setDetailing(item)} className="gap-1"><Eye className="h-3.5 w-3.5" /> عرض التفاصيل</Button>
                         <Button size="sm" variant="outline" onClick={() => setEditing(item)} className="gap-1"><Edit2 className="h-3.5 w-3.5" /> تعديل</Button>
-                        <Button size="sm" variant="outline" onClick={() => printBooking(item)} className="gap-1"><Printer className="h-3.5 w-3.5" /> طباعة</Button>
+                        <Button size="sm" variant="outline" onClick={() => printBooking(item, "a4")} className="gap-1"><Printer className="h-3.5 w-3.5" /> A4</Button>
+                        <Button size="sm" variant="outline" onClick={() => printBooking(item, "thermal")} className="gap-1"><Printer className="h-3.5 w-3.5" /> حراري</Button>
                         <Button
                           size="sm"
                           variant="outline"
@@ -925,6 +1006,150 @@ export function AdminKoshaBookingsPage() {
             queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
           }}
         />
+      )}
+      {detailing && <KoshaBookingDetailsModal booking={detailing} onClose={() => setDetailing(null)} />}
+    </div>
+  );
+}
+
+function resolveKoshaOptions(names: string[], catalog: KoshaOption[]) {
+  return (names ?? []).map((name) => {
+    const match = catalog.find((item) => item.name === name);
+    return { name, mainImage: match?.mainImage ?? null, price: match?.price ?? null };
+  });
+}
+
+function KoshaDetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return <div className="mt-4 border-t border-border/20 pt-4 first:mt-0 first:border-0 first:pt-0"><h3 className="mb-2 text-sm font-semibold text-primary">{title}</h3>{children}</div>;
+}
+
+function KoshaDetailGrid({ items }: { items: Array<[string, string | null | undefined]> }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.map(([label, value], index) => (
+        <div key={index} className="rounded-lg border border-border/30 bg-background/50 p-2.5">
+          <div className="text-[11px] text-muted-foreground">{label}</div>
+          <div className="mt-0.5 text-sm text-foreground">{value && String(value).trim() ? value : "—"}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function KoshaOptionTile({ name, mainImage, price, onZoom }: { name: string; mainImage?: string | null; price?: number | null; onZoom: (src: string) => void }) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border/30 bg-background/50 p-2">
+      {mainImage ? (
+        <button type="button" onClick={() => onZoom(mainImage)} className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-md border border-border/30"><img src={mainImage} alt={name} loading="lazy" decoding="async" className="h-full w-full object-cover" /></button>
+      ) : (
+        <span className="grid h-12 w-12 flex-shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"><ImageIcon className="h-5 w-5" /></span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-foreground">{name}</div>
+        {price != null ? <div className="text-xs text-primary">{formatCurrency(price)}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function KoshaNoExtras() {
+  return <p className="rounded-lg border border-dashed border-border/40 bg-background/40 p-3 text-center text-sm text-muted-foreground">لا توجد إضافات مختارة</p>;
+}
+
+function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  const [trackingStatus, setTrackingStatus] = useState(booking.trackingStatus ?? "booked");
+  const updateTracking = useMutation({
+    mutationFn: (next: string) => adminFetch(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم تحديث حالة التتبع" }); },
+    onError: (err: any) => toast({ title: "تعذر تحديث الحالة", description: err?.message, variant: "destructive" }),
+  });
+  const koshasQuery = useQuery({ queryKey: ["admin", "koshas"], queryFn: () => adminFetch<Kosha[]>("/admin/koshas") });
+  const addonsQuery = useQuery({ queryKey: ["admin", "kosha-addons"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-addons") });
+  const boardsQuery = useQuery({ queryKey: ["admin", "kosha-welcome-boards"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-welcome-boards") });
+  const accessoriesQuery = useQuery({ queryKey: ["admin", "kosha-accessories"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-accessories") });
+
+  const kosha = (koshasQuery.data ?? []).find((item) => item.id === booking.koshaId) ?? null;
+  const addons = resolveKoshaOptions(booking.selectedAddons, addonsQuery.data ?? []);
+  const boards = resolveKoshaOptions(booking.welcomeBoards, boardsQuery.data ?? []);
+  const accessories = resolveKoshaOptions(booking.selectedAccessories, accessoriesQuery.data ?? []);
+  const galleryImages = [
+    kosha?.mainImage ?? null,
+    ...accessories.map((item) => item.mainImage),
+    ...boards.map((item) => item.mainImage),
+    ...addons.map((item) => item.mainImage),
+    ...(booking.venueImages ?? []),
+  ].filter((src): src is string => Boolean(src));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="my-6 w-full max-w-3xl rounded-2xl border border-border/40 bg-card p-5" dir="rtl" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-foreground">تفاصيل الحجز</h2>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">{booking.koshaName ?? "كوشة"}{booking.packageName ? ` • ${booking.packageName}` : ""}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+        </div>
+
+        <KoshaDetailSection title="بيانات الحجز">
+          <KoshaDetailGrid items={[["اسم الزبون", booking.customerName], ["رقم الهاتف", booking.phone], ["تاريخ الحجز", booking.eventDate], ["وقت الحجز", booking.eventTime], ["حالة الطلب", STATUS_LABELS[booking.status] ?? booking.status], ["الملاحظات", booking.notes]]} />
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="التتبع وحالة الكوشة">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">رقم التتبع:</span>
+            <span className="font-mono font-bold text-primary">{booking.trackingCode ?? "—"}</span>
+            {booking.trackingCode ? <a href={`/kosha-tracking/${booking.trackingCode}`} target="_blank" rel="noreferrer" className="text-xs text-primary underline">فتح صفحة التتبع</a> : null}
+          </div>
+          <div className="mt-2">
+            <label className="mb-1 block text-xs text-muted-foreground">حالة التتبع (تظهر للزبون)</label>
+            <select value={trackingStatus} disabled={updateTracking.isPending} onChange={(event) => { setTrackingStatus(event.target.value); updateTracking.mutate(event.target.value); }} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm sm:w-72">
+              {KOSHA_TRACKING_STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}
+            </select>
+          </div>
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="الكوشة المختارة">
+          <KoshaOptionTile name={booking.koshaName ?? kosha?.name ?? "—"} mainImage={kosha?.mainImage ?? null} price={kosha?.price ?? null} onZoom={setLightbox} />
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="الإكسسوارات المختارة">
+          {accessories.length ? <div className="grid gap-2 sm:grid-cols-2">{accessories.map((item, index) => <KoshaOptionTile key={index} {...item} onZoom={setLightbox} />)}</div> : <KoshaNoExtras />}
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="بورد الترحيب">
+          {boards.length ? <div className="grid gap-2 sm:grid-cols-2">{boards.map((item, index) => <KoshaOptionTile key={index} {...item} onZoom={setLightbox} />)}</div> : <KoshaNoExtras />}
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="الخدمات الإضافية">
+          {addons.length ? <div className="grid gap-2 sm:grid-cols-2">{addons.map((item, index) => <KoshaOptionTile key={index} {...item} onZoom={setLightbox} />)}</div> : <KoshaNoExtras />}
+        </KoshaDetailSection>
+
+        {galleryImages.length > 0 && (
+          <KoshaDetailSection title="معرض الصور">
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {galleryImages.map((src, index) => (
+                <button key={index} type="button" onClick={() => setLightbox(src)} className="aspect-square overflow-hidden rounded-lg border border-border/30 bg-background">
+                  <img src={src} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-300 hover:scale-105" />
+                </button>
+              ))}
+            </div>
+          </KoshaDetailSection>
+        )}
+
+        <KoshaDetailSection title="المبالغ">
+          <KoshaDetailGrid items={[["الإجمالي", formatCurrency(booking.totalAmount ?? 0)], ["الواصل", formatCurrency(booking.paidAmount ?? 0)], ["المتبقي", formatCurrency(booking.remainingAmount ?? 0)]]} />
+        </KoshaDetailSection>
+      </div>
+
+      {lightbox && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4" onClick={(event) => { event.stopPropagation(); setLightbox(null); }}>
+          <img src={lightbox} alt="" className="max-h-[88vh] max-w-full rounded-lg object-contain" />
+          <button type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+        </div>
       )}
     </div>
   );

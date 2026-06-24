@@ -100,6 +100,9 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   bookingDetails: jsonb("booking_details").$type<Record<string, unknown>>().notNull().default({}),
   notes: text("notes"),
   status: varchar("status", { length: 30 }).notNull().default("new"),
+  // Customer-facing tracking: a readable code (AJN-KOSHA-0001) + a 7-step tracking stage.
+  trackingCode: varchar("tracking_code", { length: 40 }),
+  trackingStatus: varchar("tracking_status", { length: 40 }).notNull().default("booked"),
   totalAmount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   paidAmount: numeric("paid_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   remainingAmount: numeric("remaining_amount", { precision: 14, scale: 2 }).notNull().default("0"),

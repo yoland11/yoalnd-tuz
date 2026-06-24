@@ -43,6 +43,8 @@ import {
   koshaPaymentRequestsTable,
   koshaStaffNotificationsTable,
   KOSHA_EXECUTION_STAGES,
+  KOSHA_TRACKING_STAGES,
+  KOSHA_TRACKING_KEYS,
   PHOTOGRAPHY_ORDER_STAGES,
   koshaImagesTable,
   koshaPackageComponentsTable,
@@ -818,8 +820,10 @@ function baseUrlFromReq(req: NextRequest): string {
   return process.env.APP_BASE_URL?.replace(/\/$/, "") || req.nextUrl.origin;
 }
 
-function publicQrTarget(_entityType: string, _entity: any, req: NextRequest, token: string): string {
+function publicQrTarget(entityType: string, _entity: any, req: NextRequest, token: string): string {
   const base = baseUrlFromReq(req);
+  // Kosha bookings have their own customer tracking page; everything else uses order tracking.
+  if (entityType === "kosha_booking") return `${base}/kosha-tracking/${encodeURIComponent(token)}`;
   return `${base}/track/${encodeURIComponent(token)}`;
 }
 
@@ -1475,6 +1479,7 @@ const KoshaBookingUpdateSchema = z.object({
   selectedAccessories: z.array(z.string()).optional(),
   notes: z.string().optional().nullable(),
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
+  trackingStatus: z.enum(KOSHA_TRACKING_KEYS as unknown as [string, ...string[]]).optional(),
   internalNotes: z.string().optional().nullable(),
   totalAmount: z.coerce.number().nonnegative().optional(),
   paidAmount: z.coerce.number().nonnegative().optional(),
@@ -1907,6 +1912,8 @@ async function formatKoshaBooking(row: any) {
     bookingDetails: row.bookingDetails ?? row.booking_details ?? {},
     notes: row.notes ?? "",
     status: row.status ?? "new",
+    trackingCode: row.trackingCode ?? row.tracking_code ?? null,
+    trackingStatus: row.trackingStatus ?? row.tracking_status ?? "booked",
     totalAmount: Number(row.totalAmount ?? row.total_amount ?? 0),
     paidAmount: Number(row.paidAmount ?? row.paid_amount ?? 0),
     remainingAmount: Number(row.remainingAmount ?? row.remaining_amount ?? 0),
@@ -3109,7 +3116,11 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "package_price" numeric(14,2),
         add column if not exists "execution_stage" varchar(30) not null default 'preparing',
         add column if not exists "assigned_staff_id" integer,
-        add column if not exists "archived_at" timestamp;
+        add column if not exists "archived_at" timestamp,
+        add column if not exists "tracking_code" varchar(40),
+        add column if not exists "tracking_status" varchar(40) not null default 'booked';
+      update "kosha_bookings" set "tracking_code" = 'AJN-KOSHA-' || lpad("id"::text, 4, '0') where "tracking_code" is null;
+      create unique index if not exists "kosha_bookings_tracking_code_idx" on "kosha_bookings" ("tracking_code");
 
       create table if not exists "kosha_accessories" (
         "id" serial primary key,
@@ -4894,6 +4905,42 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     return json(await getCachedPublicKoshaPackages());
   }
 
+  // Public kosha tracking — resolve by readable code (AJN-KOSHA-0001) OR the scanned QR token,
+  // so the customer never types anything. Mirrors order tracking.
+  if (method === "GET" && parts[1] === "track" && parts[2]) {
+    await ensureAdminExtensionsTables();
+    const ref = decodeURIComponent(parts[2]).trim();
+    let booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.trackingCode, ref) });
+    if (!booking) {
+      const qr = await db.query.qrTokensTable.findFirst({ where: and(eq(qrTokensTable.entityType, "kosha_booking"), eq(qrTokensTable.token, ref)) });
+      if (qr) booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, qr.entityId) });
+    }
+    if (!booking) return error("لم يتم العثور على الحجز", 404);
+    const formatted = await formatKoshaBooking(booking);
+    const currentIndex = Math.max(0, KOSHA_TRACKING_KEYS.indexOf(formatted.trackingStatus));
+    const steps = KOSHA_TRACKING_STAGES.map((stage, index) => ({
+      key: stage.key,
+      label: stage.label,
+      done: index < currentIndex,
+      current: index === currentIndex,
+    }));
+    return json({
+      trackingCode: formatted.trackingCode,
+      koshaName: formatted.koshaName,
+      packageName: formatted.packageName,
+      customerName: formatted.customerName,
+      eventDate: formatted.eventDate,
+      eventTime: formatted.eventTime,
+      trackingStatus: formatted.trackingStatus,
+      currentStep: currentIndex,
+      steps,
+      totalAmount: formatted.totalAmount,
+      paidAmount: formatted.paidAmount,
+      remainingAmount: formatted.remainingAmount,
+      createdAt: formatted.createdAt,
+    });
+  }
+
   if (method === "GET" && parts.length === 1) {
     const params = req.nextUrl.searchParams;
     const featured = params.get("featured") === "1" || params.get("featured") === "true";
@@ -5046,6 +5093,9 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       notes: nullableText(data.notes),
       status: "new",
     }).returning();
+    const trackingCode = `AJN-KOSHA-${String(booking.id).padStart(4, "0")}`;
+    await db.update(koshaBookingsTable).set({ trackingCode }).where(eq(koshaBookingsTable.id, booking.id));
+    booking.trackingCode = trackingCode;
     const bookingQr = await ensureQrForEntity("kosha_booking", booking, req);
     void createNotification({
       audienceType: "admin",
@@ -7408,7 +7458,10 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
       const existing = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
       if (!existing) return error("الحجز غير موجود", 404);
 
-      if (method === "GET") return json(await formatKoshaBooking(existing));
+      if (method === "GET") {
+        const qr = await ensureQrForEntity("kosha_booking", existing, req).catch(() => null);
+        return json({ ...(await formatKoshaBooking(existing)), qr });
+      }
 
       if (method === "PATCH") {
         const parsed = KoshaBookingUpdateSchema.safeParse(await body(req));
@@ -7445,6 +7498,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         if (parsed.data.welcomeBoards !== undefined) update.welcomeBoards = normalizeKoshaStringList(parsed.data.welcomeBoards).slice(0, 1);
         if (parsed.data.selectedAccessories !== undefined) update.selectedAccessories = normalizeKoshaStringList(parsed.data.selectedAccessories);
         if (parsed.data.status !== undefined) update.status = parsed.data.status;
+        if (parsed.data.trackingStatus !== undefined) update.trackingStatus = parsed.data.trackingStatus;
         if (parsed.data.internalNotes !== undefined) update.internalNotes = nullableText(parsed.data.internalNotes);
         if (parsed.data.dueDate !== undefined) update.dueDate = parsed.data.dueDate;
         const sameStringList = (left: unknown, right: unknown) => JSON.stringify(normalizeKoshaStringList(left)) === JSON.stringify(normalizeKoshaStringList(right));

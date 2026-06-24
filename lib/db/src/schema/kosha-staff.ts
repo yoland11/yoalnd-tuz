@@ -20,6 +20,19 @@ export const KOSHA_EXECUTION_STAGES = [
 ] as const;
 export type KoshaExecutionStage = (typeof KOSHA_EXECUTION_STAGES)[number];
 
+// Customer-facing kosha tracking — the 7 steps shown on the public tracking page and in admin.
+export const KOSHA_TRACKING_STAGES = [
+  { key: "booked", label: "تم الحجز" },
+  { key: "preparing", label: "قيد التجهيز" },
+  { key: "accessories", label: "تجهيز الإكسسوارات" },
+  { key: "welcome_board", label: "تجهيز البورد الترحيبي" },
+  { key: "ready", label: "جاهزة للتنفيذ" },
+  { key: "executed", label: "تم التنفيذ" },
+  { key: "completed", label: "مكتمل" },
+] as const;
+export const KOSHA_TRACKING_KEYS = KOSHA_TRACKING_STAGES.map((stage) => stage.key) as readonly string[];
+export type KoshaTrackingStage = (typeof KOSHA_TRACKING_STAGES)[number]["key"];
+
 // Timeline / audit log — one row per meaningful action on a booking.
 export const koshaBookingEventsTable = pgTable("kosha_booking_events", {
   id: serial("id").primaryKey(),

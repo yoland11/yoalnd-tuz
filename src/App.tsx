@@ -29,6 +29,7 @@ const PhotographyStaffPortal = lazy(() => import("@/views/staff/photography/inde
 // Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
 const ProductDetail = lazy(() => import("@/views/store/id"));
 const Track = lazy(() => import("@/views/track"));
+const KoshaTracking = lazy(() => import("@/views/kosha-tracking"));
 const Checkout = lazy(() => import("@/views/checkout"));
 const Gallery = lazy(() => import("@/views/gallery"));
 const Favorites = lazy(() => import("@/views/favorites"));
@@ -192,6 +193,9 @@ function Router() {
               </Route>
               <Route path="/track">
                 <Suspense fallback={<PageSpinner />}><Track /></Suspense>
+              </Route>
+              <Route path="/kosha-tracking/:token">
+                <Suspense fallback={<PageSpinner />}><KoshaTracking /></Suspense>
               </Route>
               <Route path="/gallery">
                 <Suspense fallback={<PageSpinner />}><Gallery /></Suspense>
