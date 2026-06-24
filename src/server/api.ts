@@ -35,6 +35,7 @@ import {
   galleryItemsTable,
   koshaAddonsTable,
   koshaAccessoriesTable,
+  koshaCategoriesTable,
   koshaBookingsTable,
   koshaBookingEventsTable,
   koshaMediaTable,
@@ -1387,6 +1388,7 @@ const KoshaMutationSchema = z.object({
   isFeatured: z.preprocess(looseBoolean, z.boolean()).optional().default(false),
   isActive: z.preprocess(looseBoolean, z.boolean()).optional().default(true),
   sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional().default(0),
+  categoryId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional().nullable(),
   galleryImages: z.array(KoshaImageInputSchema).optional().default([]),
 });
 
@@ -1412,6 +1414,7 @@ const KoshaPatchSchema = z.object({
   isFeatured: z.preprocess((value) => value === undefined ? undefined : looseBoolean(value), z.boolean().optional()),
   isActive: z.preprocess((value) => value === undefined ? undefined : looseBoolean(value), z.boolean().optional()),
   sortOrder: z.preprocess(blankToZero, z.coerce.number().int()).optional(),
+  categoryId: z.preprocess(blankToNull, z.coerce.number().int().positive().nullable()).optional().nullable(),
   galleryImages: z.array(KoshaImageInputSchema).optional(),
 });
 
@@ -1635,6 +1638,7 @@ async function formatKosha(row: any, includeImages = true) {
     isFeatured: row.isFeatured ?? false,
     isActive: row.isActive ?? true,
     sortOrder: row.sortOrder ?? 0,
+    categoryId: row.categoryId ?? null,
     createdAt: row.createdAt?.toISOString?.() ?? String(row.createdAt ?? ""),
     updatedAt: row.updatedAt?.toISOString?.() ?? String(row.updatedAt ?? ""),
   };
@@ -1860,6 +1864,7 @@ async function koshaValuesFromData(data: any, existingId?: number) {
   if (data.isFeatured !== undefined || !existingId) values.isFeatured = Boolean(data.isFeatured);
   if (data.isActive !== undefined || !existingId) values.isActive = data.isActive !== false;
   if (data.sortOrder !== undefined || !existingId) values.sortOrder = Number.isFinite(Number(data.sortOrder)) ? Number(data.sortOrder) : 0;
+  if (data.categoryId !== undefined) values.categoryId = data.categoryId === null || data.categoryId === "" ? null : Number(data.categoryId) || null;
   return values;
 }
 
@@ -3156,6 +3161,24 @@ async function ensureKoshaTables(): Promise<void> {
         "updated_at" timestamp not null default now()
       );
 
+      create table if not exists "kosha_categories" (
+        "id" serial primary key,
+        "name" text not null unique,
+        "slug" varchar(160) not null unique,
+        "icon" varchar(60),
+        "image" text,
+        "is_active" boolean not null default true,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      alter table "koshas" add column if not exists "category_id" integer references "kosha_categories" ("id") on delete set null;
+      create index if not exists "koshas_category_idx" on "koshas" ("category_id");
+      insert into "kosha_categories" ("name","slug","sort_order") values
+        ('حنة','hanna',1),('خطوبة','khotoba',2),('عرس','wedding',3),
+        ('عيد ميلاد','birthday',4),('تخرج','graduation',5),('مناسبات أخرى','other',6)
+      on conflict ("name") do nothing;
+
       create table if not exists "kosha_package_components" (
         "id" serial primary key,
         "package_id" integer not null references "kosha_packages" ("id") on delete cascade,
@@ -3822,17 +3845,21 @@ async function findCustomerByPhone(phone: string) {
   });
 }
 
-async function ensureCustomerForPhone(phone: string) {
+async function ensureCustomerForPhone(phone: string, name?: string) {
   await ensureCustomerProfileColumns();
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) return null;
   const existing = await findCustomerByPhone(normalized);
   if (existing) {
-    if (existing.phone !== normalized) {
+    // Backfill a real name onto a customer that was created as a bare phone placeholder,
+    // so the customers page shows "حسين" instead of the phone once we know it.
+    const cleanName = (name ?? "").trim();
+    const hasRealName = !!(existing.fullName || (existing.name && existing.name !== formatIraqiPhone(existing.phone) && existing.name !== existing.phone));
+    if ((existing.phone !== normalized) || (cleanName && !hasRealName)) {
       try {
         const [updated] = await db
           .update(customersTable)
-          .set({ phone: normalized, updatedAt: new Date() })
+          .set({ phone: normalized, ...(cleanName && !hasRealName ? { name: cleanName } : {}), updatedAt: new Date() })
           .where(eq(customersTable.id, existing.id))
           .returning();
         return updated;
@@ -3842,11 +3869,34 @@ async function ensureCustomerForPhone(phone: string) {
     }
     return existing;
   }
+  const cleanName = (name ?? "").trim();
   const [created] = await db
     .insert(customersTable)
-    .values({ phone: normalized, name: formatIraqiPhone(normalized), fullName: "" })
+    .values({ phone: normalized, name: cleanName || formatIraqiPhone(normalized), fullName: cleanName || "" })
     .returning();
   return created;
+}
+
+let customerBackfillPromise: Promise<void> | null = null;
+// One-time (per process) reconciliation: create a customers row for every phone that already has an
+// order / kosha booking / service order but no customer yet, so historical records appear on the page.
+// Idempotent — safe to call repeatedly; cheap after the first run since matching rows then disappear.
+async function ensureCustomerBackfill(): Promise<void> {
+  if (!customerBackfillPromise) {
+    customerBackfillPromise = db.execute(sql`
+      INSERT INTO customers (phone, name, full_name)
+      SELECT phone, COALESCE(NULLIF(MAX(name), ''), phone) AS name, '' AS full_name
+      FROM (
+        SELECT customer_phone AS phone, customer_name AS name FROM orders
+        UNION ALL SELECT phone, customer_name FROM kosha_bookings
+        UNION ALL SELECT phone, customer_name FROM service_orders
+      ) s
+      WHERE phone ~ '^[0-9]{10,}$' AND phone NOT IN (SELECT phone FROM customers)
+      GROUP BY phone
+      ON CONFLICT (phone) DO NOTHING
+    `).then(() => undefined).catch((err) => { customerBackfillPromise = null; throw err; });
+  }
+  await customerBackfillPromise;
 }
 
 function publicCustomer(customer: any) {
@@ -4327,6 +4377,8 @@ async function findBookingConflict(input: {
 async function insertServiceOrderWithTracking(values: Omit<typeof serviceOrdersTable.$inferInsert, "trackingCode" | "phoneLast4">) {
   await ensureTrackingColumns();
   await ensurePaymentWorkflowColumns();
+  // Surface the service customer on /admin/customers — create-or-link by phone.
+  if (values.phone) await ensureCustomerForPhone(values.phone, (values as any).customerName);
   const payment = paymentSummary((values as any).totalAmount, (values as any).depositAmount, (values as any).paymentStatus);
   const [row] = await db
     .insert(serviceOrdersTable)
@@ -4860,7 +4912,7 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "options") {
-    const [addons, welcomeBoards, accessories, provinces] = await Promise.all([
+    const [addons, welcomeBoards, accessories, provinces, categories] = await Promise.all([
       db.query.koshaAddonsTable.findMany({
         where: eq(koshaAddonsTable.isActive, true),
         orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
@@ -4877,12 +4929,17 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
         where: eq(koshaProvincesTable.isActive, true),
         orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
       }),
+      db.query.koshaCategoriesTable.findMany({
+        where: eq(koshaCategoriesTable.isActive, true),
+        orderBy: (item, { asc }) => [asc(item.sortOrder), asc(item.id)],
+      }),
     ]);
     return json({
       addons: addons.map((item) => formatKoshaOptionProduct(item, "addon")),
       welcomeBoards: welcomeBoards.map((item) => formatKoshaOptionProduct(item, "welcome_board")),
       accessories: accessories.map((item) => formatKoshaOptionProduct(item, "accessory")),
       provinces: provinces.map((item) => ({ id: item.id, name: item.name })),
+      categories: categories.map((item) => ({ id: item.id, name: item.name, slug: item.slug, icon: item.icon })),
     });
   }
 
@@ -4935,6 +4992,8 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
     const optionsTotal = [...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].reduce((sum, item) => sum + (Number(item.price) || 0), 0);
     const koshaPrice = Number.parseFloat(String(kosha.price ?? "0")) || 0;
     const bookingTotal = packageDetails ? packageDetails.price : koshaPrice + optionsTotal;
+    // Surface the booking's customer on /admin/customers — create-or-link by phone.
+    await ensureCustomerForPhone(phone, customerName);
     const [booking] = await db.insert(koshaBookingsTable).values({
       koshaId: kosha.id,
       packageId: packageDetails?.id ?? null,
@@ -5711,12 +5770,16 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const total = Math.max(subtotal + deliveryFee - couponDiscountAmount - loyaltyDiscountAmount, 0);
     const paymentMethod = data.paymentMethod && ["cod", "transfer", "paid"].includes(data.paymentMethod) ? data.paymentMethod : "cod";
     const payment = paymentSummary(total, paymentMethod === "paid" ? total : 0, paymentMethod === "paid" ? "paid" : "unpaid");
+    // Every order must surface a customer on /admin/customers. Create-or-link by phone
+    // (the session id wins if the buyer was logged in; otherwise we resolve/create one).
+    const orderCustomer = customerPhone ? await ensureCustomerForPhone(customerPhone, safeCustomerName) : null;
+    const orderCustomerId = customerId ?? orderCustomer?.id ?? undefined;
     const [order] = await db
       .insert(ordersTable)
       .values({
         trackingCode: trackingCodeForPhone(customerPhone),
         phoneLast4: phoneLast4(customerPhone),
-        customerId: customerId ?? undefined,
+        customerId: orderCustomerId,
         customerName: safeCustomerName,
         customerPhone,
         status: "pending",
@@ -6922,6 +6985,27 @@ async function handleNotifications(req: NextRequest, parts: string[]) {
   return null;
 }
 
+function slugifyKoshaCategory(value: string) {
+  return String(value ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9؀-ۿ]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 140);
+}
+
+async function uniqueKoshaCategorySlug(name: string, provided?: string, existingId?: number) {
+  const base = slugifyKoshaCategory(provided || name) || "category";
+  let slug = base;
+  let n = 1;
+  while (true) {
+    const found = await db.query.koshaCategoriesTable.findFirst({ where: eq(koshaCategoriesTable.slug, slug) });
+    if (!found || found.id === existingId) return slug;
+    n += 1;
+    slug = `${base}-${n}`;
+  }
+}
+
 async function handleAdminKoshas(req: NextRequest, parts: string[], section: string | undefined) {
   const method = req.method;
   if (
@@ -6931,7 +7015,8 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
     section !== "kosha-addons" &&
     section !== "kosha-welcome-boards" &&
     section !== "kosha-accessories" &&
-    section !== "kosha-provinces"
+    section !== "kosha-provinces" &&
+    section !== "kosha-categories"
   ) return null;
   await ensureKoshaTables();
 
@@ -7161,6 +7246,78 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
       if (!row) return error(`${title} غير موجود`, 404);
       void logAdminActivity(req, `${entity}_deleted`, entity, id);
       return json({ message: "تم الحذف" });
+    }
+  }
+
+  if (section === "kosha-categories") {
+    const auth = await requirePermission(req, "services");
+    if (isResponse(auth)) return auth;
+    const id = parts[2] ? int(parts[2]) : null;
+
+    if (method === "GET" && parts.length === 2) {
+      const rows = await db.select().from(koshaCategoriesTable).orderBy(asc(koshaCategoriesTable.sortOrder), asc(koshaCategoriesTable.id));
+      const counts = await db
+        .select({ categoryId: koshasTable.categoryId, count: sql<number>`count(*)::int` })
+        .from(koshasTable)
+        .groupBy(koshasTable.categoryId);
+      const countMap = new Map(counts.map((c) => [c.categoryId, c.count]));
+      return json(rows.map((row) => ({
+        id: row.id, name: row.name, slug: row.slug, icon: row.icon, image: row.image,
+        isActive: row.isActive, sortOrder: row.sortOrder, koshaCount: countMap.get(row.id) ?? 0,
+      })));
+    }
+
+    if (method === "POST" && parts.length === 2) {
+      const b = await body(req);
+      const name = textFallback(b?.name, "");
+      if (!name) return error("اسم القسم مطلوب", 400);
+      try {
+        const [row] = await db.insert(koshaCategoriesTable).values({
+          name,
+          slug: await uniqueKoshaCategorySlug(name, b?.slug),
+          icon: nullableText(b?.icon),
+          image: b?.image ? await persistMediaValue(b.image, "koshas/categories") : null,
+          isActive: b?.isActive !== false,
+          sortOrder: Number.isFinite(Number(b?.sortOrder)) ? Number(b.sortOrder) : 0,
+        }).returning();
+        void logAdminActivity(req, "kosha_category_created", "kosha_category", row.id, { name });
+        return json(row, 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("اسم القسم مستخدم مسبقاً", 409);
+        throw err;
+      }
+    }
+
+    if ((method === "PATCH" || method === "PUT") && id) {
+      const b = await body(req);
+      const existing = await db.query.koshaCategoriesTable.findFirst({ where: eq(koshaCategoriesTable.id, id) });
+      if (!existing) return error("القسم غير موجود", 404);
+      const update: any = { updatedAt: new Date() };
+      if (b?.name !== undefined) {
+        update.name = textFallback(b.name, "");
+        if (!update.name) return error("اسم القسم مطلوب", 400);
+        update.slug = await uniqueKoshaCategorySlug(update.name, b?.slug, id);
+      }
+      if (b?.icon !== undefined) update.icon = nullableText(b.icon);
+      if (b?.image !== undefined) update.image = b.image ? await persistMediaValue(b.image, "koshas/categories") : null;
+      if (b?.isActive !== undefined) update.isActive = Boolean(b.isActive);
+      if (b?.sortOrder !== undefined) update.sortOrder = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : 0;
+      try {
+        const [row] = await db.update(koshaCategoriesTable).set(update).where(eq(koshaCategoriesTable.id, id)).returning();
+        void logAdminActivity(req, "kosha_category_updated", "kosha_category", id, { fields: Object.keys(b ?? {}) });
+        return json(row);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("اسم القسم مستخدم مسبقاً", 409);
+        throw err;
+      }
+    }
+
+    if (method === "DELETE" && id) {
+      // Koshas are kept; their category_id is nulled by the FK (ON DELETE SET NULL).
+      const [row] = await db.delete(koshaCategoriesTable).where(eq(koshaCategoriesTable.id, id)).returning();
+      if (!row) return error("القسم غير موجود", 404);
+      void logAdminActivity(req, "kosha_category_deleted", "kosha_category", id);
+      return json({ message: "تم حذف القسم" });
     }
   }
 
@@ -9233,6 +9390,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     await Promise.all([ensureCustomerAddressTables(), ensureAdminExtensionsTables(), ensureCustomerRewards()]);
     if (method === "GET" && !parts[2]) {
+      // Reconcile any historical orders/bookings/services that predate auto-customer-creation.
+      try { await ensureCustomerBackfill(); } catch { /* non-fatal: still show whatever customers exist */ }
       const search = req.nextUrl.searchParams.get("search")?.trim();
       const customers = await db.query.customersTable.findMany({
         orderBy: (c, { desc }) => [desc(c.id)],

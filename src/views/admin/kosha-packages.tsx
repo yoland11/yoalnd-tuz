@@ -205,7 +205,7 @@ export default function KoshaPackagesPage() {
                 return (
                   <button key={item.id} type="button" onClick={() => setForm(fromPackage(item))} className={`w-full rounded-lg border p-3 text-right transition-colors ${form.id === item.id ? "border-primary bg-primary/10" : "border-border/30 bg-background/45 hover:border-primary/40"}`}>
                     <div className="flex items-start justify-between gap-2"><span className="font-semibold text-foreground">{item.name}</span>{item.isFeatured ? <Star className="h-4 w-4 flex-shrink-0 text-primary" /> : null}</div>
-                    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground"><span>{rowStats?.bookingCount ?? 0} حجز</span><span>{formatCurrency(item.price)}</span></div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>{rowStats?.bookingCount ?? 0} حجز</span><span className="text-primary">{formatCurrency(rowStats?.revenue ?? 0)} إيراد</span><span className="ms-auto font-medium text-foreground">{formatCurrency(item.price)}</span></div>
                   </button>
                 );
               })}

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Plus, Printer, Save, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Package, Plus, Printer, Save, Sparkles, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -9,7 +9,7 @@ import { ImageUploadEditor, type ImageEditResult } from "@/components/image-uplo
 import { usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
-import type { Kosha, KoshaImage } from "@/views/koshas";
+import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
 
 type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
   id?: number;
@@ -89,6 +89,7 @@ const EMPTY_KOSHA: KoshaFormState = {
   isFeatured: false,
   isActive: true,
   sortOrder: 0,
+  categoryId: null,
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -186,6 +187,7 @@ function cleanKoshaPayload(form: KoshaFormState) {
     isFeatured: Boolean(form.isFeatured),
     isActive: form.isActive !== false,
     sortOrder: Math.floor(numberOrZero(form.sortOrder)),
+    categoryId: form.categoryId ?? null,
     galleryImages: (form.galleryImages ?? []).map((image, index) => ({
       imageUrl: image.imageUrl || "",
       imageMetadata: image.imageMetadata && typeof image.imageMetadata === "object" ? image.imageMetadata : {},
@@ -375,7 +377,7 @@ function KoshaOptionsManager({
 }: {
   title: string;
   description: string;
-  endpoint: "kosha-accessories" | "kosha-provinces";
+  endpoint: "kosha-accessories" | "kosha-provinces" | "kosha-categories";
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -460,6 +462,10 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
     queryFn: () => adminFetch<Kosha>(`/admin/koshas/${id}`),
     enabled: mode === "edit" && id > 0,
   });
+  const { data: categories = [] } = useQuery({
+    queryKey: ["admin", "kosha-categories"],
+    queryFn: () => adminFetch<KoshaCategory[]>("/admin/kosha-categories"),
+  });
   const [form, setForm] = useState<KoshaFormState>(EMPTY_KOSHA);
 
   useEffect(() => {
@@ -533,8 +539,8 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
         <div className="space-y-4 rounded-xl border border-border/30 bg-card p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="اسم الكوشة" value={form.name} onChange={(value) => setForm((f) => ({ ...f, name: value }))} />
-            <Field label="Slug" value={form.slug} onChange={(value) => setForm((f) => ({ ...f, slug: value }))} />
             <Field label="السعر" type="number" value={form.price} onChange={(value) => setForm((f) => ({ ...f, price: Number(value) || 0 }))} />
+            <Field label="Slug" value={form.slug} onChange={(value) => setForm((f) => ({ ...f, slug: value }))} />
             <Field label="السعر القديم" type="number" value={form.oldPrice} onChange={(value) => setForm((f) => ({ ...f, oldPrice: value ? Number(value) : null }))} />
             <Field label="نسبة الخصم" type="number" value={form.discountPercentage} onChange={(value) => setForm((f) => ({ ...f, discountPercentage: Number(value) || 0 }))} />
             <Field label="عدد القطع" type="number" value={form.numberOfPieces} onChange={(value) => setForm((f) => ({ ...f, numberOfPieces: value ? Number(value) : null }))} />
@@ -547,6 +553,13 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
           <Field label="الملحقات المشمولة (كل ملحق بسطر)" textarea value={(form.accessories ?? []).join("\n")} onChange={(value) => setForm((f) => ({ ...f, accessories: value.split(/\n|،|,/).map((item) => item.trim()).filter(Boolean) }))} />
           <Field label="ملاحظات" textarea value={form.notes} onChange={(value) => setForm((f) => ({ ...f, notes: value }))} />
           <div className="grid gap-3 md:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">القسم</label>
+              <select value={form.categoryId ?? ""} onChange={(event) => setForm((f) => ({ ...f, categoryId: event.target.value ? Number(event.target.value) : null }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+                <option value="">بدون قسم</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
+            </div>
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">حالة التوفر</label>
               <select value={form.availabilityStatus} onChange={(event) => setForm((f) => ({ ...f, availabilityStatus: event.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
@@ -608,18 +621,77 @@ function KoshaForm({ mode }: { mode: "new" | "edit" }) {
   );
 }
 
-export default function AdminKoshasPage() {
-  const [location] = useLocation();
+function useKoshaListCount(endpoint: string) {
+  const { data } = useQuery({ queryKey: ["admin", endpoint], queryFn: () => adminFetch<unknown[]>(`/admin/${endpoint}`) });
+  return Array.isArray(data) ? data.length : 0;
+}
+
+function KoshaBackBar({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <Link href="/admin/koshas"><Button type="button" size="sm" variant="outline" className="gap-1"><ArrowRight className="h-4 w-4" /> رجوع</Button></Link>
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-bold text-foreground">{title}</h1>
+          {subtitle ? <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p> : null}
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function KoshaHubCard({ title, description, count, icon: Icon, href }: { title: string; description: string; count: number; icon: typeof Plus; href: string }) {
+  return (
+    <div className="flex flex-col rounded-xl border border-border/30 bg-card p-5 transition-colors hover:border-primary/40">
+      <div className="flex items-start justify-between gap-3">
+        <span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><Icon className="h-5 w-5" /></span>
+        <span className="text-2xl font-bold text-foreground">{count}</span>
+      </div>
+      <h3 className="mt-4 font-bold text-foreground">{title}</h3>
+      <p className="mt-1 flex-1 text-xs leading-5 text-muted-foreground">{description}</p>
+      <Link href={href} className="mt-4 block"><Button type="button" size="sm" variant="outline" className="w-full justify-center gap-2">إدارة <ArrowLeft className="h-4 w-4" /></Button></Link>
+    </div>
+  );
+}
+
+function KoshaHub() {
+  const koshas = useKoshaListCount("koshas");
+  const categories = useKoshaListCount("kosha-categories");
+  const addons = useKoshaListCount("kosha-addons");
+  const boards = useKoshaListCount("kosha-welcome-boards");
+  const accessories = useKoshaListCount("kosha-accessories");
+  const packages = useKoshaListCount("kosha-packages");
+  const provinces = useKoshaListCount("kosha-provinces");
+  const cards = [
+    { title: "الكوشات", description: "إضافة وتعديل وحذف الكوشات الرئيسية.", count: koshas, icon: LayoutGrid, href: "/admin/koshas/items" },
+    { title: "أقسام الكوشات", description: "أقسام المناسبات (حنة، خطوبة، عرس…) لفلترة العميل.", count: categories, icon: Layers, href: "/admin/koshas/categories" },
+    { title: "الخدمات الإضافية", description: "خدمات اختيارية تُضاف للحجز مع الصورة والسعر.", count: addons, icon: Sparkles, href: "/admin/koshas/addons" },
+    { title: "بورد الترحيب", description: "بوردات الترحيب، يختار الزبون واحداً منها.", count: boards, icon: ImageIcon, href: "/admin/koshas/welcome-boards" },
+    { title: "الإكسسوارات", description: "إكسسوارات إضافية باختيار متعدد.", count: accessories, icon: Gift, href: "/admin/koshas/accessories" },
+    { title: "إدارة الباقات", description: "الباقات الجاهزة، مكوّناتها وأسعارها.", count: packages, icon: Package, href: "/admin/kosha-packages" },
+    { title: "محافظات الكوشات", description: "محافظات تظهر في نموذج بيانات الحجز.", count: provinces, icon: MapPin, href: "/admin/koshas/provinces" },
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">إدارة الكوشات</h1>
+          <p className="mt-1 text-sm text-muted-foreground">اختر القسم الذي تريد إدارته — كل قسم في صفحة مستقلة.</p>
+        </div>
+        <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {cards.map((card) => <KoshaHubCard key={card.title} {...card} />)}
+      </div>
+    </div>
+  );
+}
+
+function KoshaItemsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const normalizedLocation = location.replace(/\/+$/, "");
-  const isNew = normalizedLocation === "/admin/koshas/new";
-  const isEdit = /\/admin\/koshas\/\d+\/edit$/.test(normalizedLocation);
-  const { data = [], isLoading } = useQuery({
-    queryKey: ["admin", "koshas"],
-    queryFn: () => adminFetch<Kosha[]>("/admin/koshas"),
-    enabled: !isNew && !isEdit,
-  });
+  const { data = [], isLoading } = useQuery({ queryKey: ["admin", "koshas"], queryFn: () => adminFetch<Kosha[]>("/admin/koshas") });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/koshas/${id}`, { method: "DELETE" }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "koshas"] }); toast({ title: "تم حذف الكوشة" }); },
@@ -629,46 +701,9 @@ export default function AdminKoshasPage() {
     mutationFn: (kosha: Kosha) => adminFetch(`/admin/koshas/${kosha.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !kosha.isActive }) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", "koshas"] }),
   });
-
-  if (isNew) return <KoshaForm mode="new" />;
-  if (isEdit) return <KoshaForm mode="edit" />;
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">إدارة الكوشات</h1>
-          <p className="mt-1 text-sm text-muted-foreground">كتالوج مستقل عن المتجر والمنتجات.</p>
-        </div>
-        <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-3">
-        <KoshaCatalogOptionsManager
-          title="إدارة الخدمات الإضافية"
-          description="تظهر كمنتجات مصغرة في خطوة الخدمات الإضافية مع الصورة والسعر."
-          endpoint="kosha-addons"
-        />
-        <KoshaCatalogOptionsManager
-          title="إدارة بورد الترحيب"
-          description="تظهر في خطوة بورد الترحيب، والزبون يختار بورد واحد فقط."
-          endpoint="kosha-welcome-boards"
-        />
-        <KoshaCatalogOptionsManager
-          title="إدارة الاكسسوارات"
-          description="تظهر كمنتجات مستقلة في خطوة الاكسسوارات مع اختيار متعدد."
-          endpoint="kosha-accessories"
-        />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <KoshaOptionsManager
-          title="إدارة محافظات الكوشات"
-          description="هذه المحافظات تظهر في نموذج بيانات الحجز داخل صفحة الكوشات."
-          endpoint="kosha-provinces"
-        />
-      </div>
-
+      <KoshaBackBar title="الكوشات" subtitle="إضافة وتعديل وحذف الكوشات الرئيسية." action={<Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>} />
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">{[1, 2, 3].map((item) => <Skeleton key={item} className="h-72 rounded-xl" />)}</div>
       ) : data.length === 0 ? <EmptyState /> : (
@@ -704,6 +739,41 @@ export default function AdminKoshasPage() {
       )}
     </div>
   );
+}
+
+function KoshaLookupPage({ title, subtitle, managerTitle, managerDescription, endpoint }: { title: string; subtitle: string; managerTitle: string; managerDescription: string; endpoint: "kosha-categories" | "kosha-provinces" }) {
+  return (
+    <div className="space-y-4">
+      <KoshaBackBar title={title} subtitle={subtitle} />
+      <div className="max-w-2xl">
+        <KoshaOptionsManager title={managerTitle} description={managerDescription} endpoint={endpoint} />
+      </div>
+    </div>
+  );
+}
+
+function KoshaCatalogPage({ title, subtitle, managerTitle, managerDescription, endpoint }: { title: string; subtitle: string; managerTitle: string; managerDescription: string; endpoint: KoshaCatalogEndpoint }) {
+  return (
+    <div className="space-y-4">
+      <KoshaBackBar title={title} subtitle={subtitle} />
+      <KoshaCatalogOptionsManager title={managerTitle} description={managerDescription} endpoint={endpoint} />
+    </div>
+  );
+}
+
+export default function AdminKoshasPage() {
+  const [location] = useLocation();
+  const normalizedLocation = location.replace(/\/+$/, "");
+  if (normalizedLocation === "/admin/koshas/new") return <KoshaForm mode="new" />;
+  if (/\/admin\/koshas\/\d+\/edit$/.test(normalizedLocation)) return <KoshaForm mode="edit" />;
+  const sub = normalizedLocation.replace(/^\/admin\/koshas\/?/, "");
+  if (sub === "items") return <KoshaItemsPage />;
+  if (sub === "categories") return <KoshaLookupPage title="أقسام الكوشات" subtitle="أقسام المناسبات لفلترة العميل — أضف أي قسم جديد بلا كود." managerTitle="الأقسام" managerDescription="حنة، خطوبة، عرس، عيد ميلاد، تخرج… تُربط بكل كوشة من نموذج الكوشة." endpoint="kosha-categories" />;
+  if (sub === "provinces") return <KoshaLookupPage title="محافظات الكوشات" subtitle="تظهر في نموذج بيانات الحجز داخل صفحة الكوشات." managerTitle="المحافظات" managerDescription="أضف المحافظات التي تخدمها." endpoint="kosha-provinces" />;
+  if (sub === "addons") return <KoshaCatalogPage title="الخدمات الإضافية" subtitle="تظهر في خطوة الخدمات الإضافية مع الصورة والسعر." managerTitle="الخدمات الإضافية" managerDescription="خدمات اختيارية يضيفها الزبون لحجزه." endpoint="kosha-addons" />;
+  if (sub === "welcome-boards") return <KoshaCatalogPage title="بورد الترحيب" subtitle="تظهر في خطوة بورد الترحيب، ويختار الزبون واحداً." managerTitle="بورد الترحيب" managerDescription="بوردات الترحيب المتاحة للزبون." endpoint="kosha-welcome-boards" />;
+  if (sub === "accessories") return <KoshaCatalogPage title="الإكسسوارات" subtitle="تظهر كمنتجات مستقلة باختيار متعدد." managerTitle="الإكسسوارات" managerDescription="إكسسوارات إضافية للحجز." endpoint="kosha-accessories" />;
+  return <KoshaHub />;
 }
 
 export function AdminKoshaBookingsPage() {

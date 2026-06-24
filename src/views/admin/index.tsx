@@ -126,6 +126,7 @@ export default function Admin() {
           <Route path="/admin/koshas/new">{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
           <Route path="/admin/koshas/:id/edit">{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
           <Route path="/admin/koshas"    >{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
+          <Route path="/admin/koshas/:section">{() => <Guard me={me} perm="services"><AdminKoshasPage /></Guard>}</Route>
           <Route path="/admin/kosha-packages">{() => <Guard me={me} perm="services"><KoshaPackagesPage /></Guard>}</Route>
           <Route path="/admin/kosha-bookings">{() => <Guard me={me} perm="orders"><AdminKoshaBookingsPage /></Guard>}</Route>
           <Route path="/admin/kosha-collections">{() => <Guard me={me} perm="accounting"><KoshaCollectionsPage /></Guard>}</Route>

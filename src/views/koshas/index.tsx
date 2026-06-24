@@ -40,6 +40,18 @@ export type Kosha = {
   isFeatured?: boolean;
   isActive?: boolean;
   sortOrder?: number;
+  categoryId?: number | null;
+};
+
+export type KoshaCategory = {
+  id: number;
+  name: string;
+  slug: string;
+  icon?: string | null;
+  image?: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+  koshaCount?: number;
 };
 
 export function formatKoshaPrice(value: number | null | undefined) {
@@ -95,6 +107,7 @@ type KoshaWizardOptions = {
   welcomeBoards: KoshaOptionProduct[];
   accessories: KoshaOptionProduct[];
   provinces: { id: number; name: string }[];
+  categories: { id: number; name: string; slug?: string; icon?: string | null }[];
 };
 type WizardStep = 0 | 1 | 2 | 3 | 4 | 5;
 type BookingForm = {
@@ -408,6 +421,7 @@ export default function KoshasPage() {
   const [flowView, setFlowView] = useState<"chooser" | "packages" | "wizard">("chooser");
   const [step, setStep] = useState<WizardStep>(0);
   const [selectedKosha, setSelectedKosha] = useState<Kosha | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [selectedPackage, setSelectedPackage] = useState<KoshaPackage | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<string[]>([]);
   const [selectedBoards, setSelectedBoards] = useState<string[]>([]);
@@ -415,7 +429,10 @@ export default function KoshasPage() {
   const [form, setForm] = useState<BookingForm>(EMPTY_BOOKING_FORM);
   const [venueImages, setVenueImages] = useState<string[]>(["", "", ""]);
 
-  const options = optionsQuery.data ?? { addons: [], welcomeBoards: [], accessories: [], provinces: [] };
+  const options = optionsQuery.data ?? { addons: [], welcomeBoards: [], accessories: [], provinces: [], categories: [] };
+  // Only show categories that actually contain at least one visible kosha, so the bar never offers an empty filter.
+  const koshaCategories = (options.categories ?? []).filter((category) => data.some((kosha) => kosha.categoryId === category.id));
+  const filteredKoshas = selectedCategory == null ? data : data.filter((kosha) => kosha.categoryId === selectedCategory);
   const allAccessoryNames = options.accessories.map((item) => item.name);
   const selectedAddonItems = useMemo(() => selectedOptionItems(options.addons, selectedAddons), [options.addons, selectedAddons]);
   const selectedBoardItems = useMemo(() => selectedOptionItems(options.welcomeBoards, selectedBoards), [options.welcomeBoards, selectedBoards]);
@@ -591,26 +608,44 @@ export default function KoshasPage() {
                 <>
                   <div>
                     <h2 className="text-2xl font-bold text-foreground">اختيار الكوشة</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">اختر الكوشة المناسبة، بعدها نكمل الحجز خطوة بخطوة.</p>
+                    <p className="mt-1 text-sm text-muted-foreground">اختر القسم ثم الكوشة المناسبة، بعدها نكمل الحجز خطوة بخطوة.</p>
                   </div>
+                  {koshaCategories.length > 0 && (
+                    <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      {[{ id: null as number | null, name: "الكل" }, ...koshaCategories].map((category) => {
+                        const active = selectedCategory === category.id;
+                        return (
+                          <button
+                            key={category.id ?? "all"}
+                            type="button"
+                            onClick={() => setSelectedCategory(category.id)}
+                            className={`shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-all duration-200 active:scale-[0.97] ${active ? "border-[#A97B8B] bg-[#A97B8B] text-white shadow-[0_4px_12px_rgba(169,123,139,0.28)]" : "border-border/40 bg-background text-muted-foreground hover:border-[#A97B8B]/50 hover:text-foreground"}`}
+                          >
+                            {category.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-                    {data.map((kosha) => {
+                    {filteredKoshas.map((kosha) => {
                       const selected = selectedKosha?.id === kosha.id;
                       const image = kosha.mainImage || kosha.galleryImages?.[0]?.imageUrl || "/images/kosha.png";
                       return (
                         <button
                           key={kosha.id}
                           type="button"
+                          aria-pressed={selected}
                           onClick={() => {
                             setSelectedKosha(kosha);
                             window.setTimeout(() => setStep(1), 320);
                           }}
-                          className={`group relative block overflow-hidden rounded-2xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"}`}
+                          className={`group relative block overflow-hidden rounded-2xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${selected ? "border-[#A97B8B] bg-[#A97B8B]/5 shadow-[0_10px_26px_-10px_rgba(169,123,139,0.5)]" : "border-border/40 hover:border-primary/50"}`}
                         >
                           <SelectionMark selected={selected} />
                           <div className="relative aspect-[4/5] overflow-hidden bg-muted">
                             <img src={image} alt={kosha.name} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
-                            {Number(kosha.discountPercentage ?? 0) > 0 && (
+                            {Number(kosha.discountPercentage ?? 0) > 0 && !selected && (
                               <span className="absolute right-3 top-3 rounded-full bg-primary px-2.5 py-1 text-xs font-bold text-primary-foreground">خصم {kosha.discountPercentage}%</span>
                             )}
                           </div>
@@ -624,6 +659,9 @@ export default function KoshasPage() {
                         </button>
                       );
                     })}
+                    {filteredKoshas.length === 0 && (
+                      <p className="col-span-full rounded-xl border border-border/30 bg-background/60 p-6 text-center text-sm text-muted-foreground">لا توجد كوشات في هذا القسم حالياً.</p>
+                    )}
                   </div>
                 </>
               )}

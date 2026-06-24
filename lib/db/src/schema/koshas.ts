@@ -22,6 +22,21 @@ export const koshasTable = pgTable("koshas", {
   isFeatured: boolean("is_featured").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
+  categoryId: integer("category_id").references(() => koshaCategoriesTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Occasion categories for koshas (حنة / خطوبة / عرس / عيد ميلاد / تخرج / مناسبات أخرى …),
+// fully manager-managed so new occasions can be added without code changes.
+export const koshaCategoriesTable = pgTable("kosha_categories", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  slug: varchar("slug", { length: 160 }).notNull().unique(),
+  icon: varchar("icon", { length: 60 }),
+  image: text("image"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -161,6 +176,7 @@ export const insertKoshaAccessorySchema = createInsertSchema(koshaAccessoriesTab
 export const insertKoshaAddonSchema = createInsertSchema(koshaAddonsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaWelcomeBoardSchema = createInsertSchema(koshaWelcomeBoardsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaProvinceSchema = createInsertSchema(koshaProvincesTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertKoshaCategorySchema = createInsertSchema(koshaCategoriesTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaPackageSchema = createInsertSchema(koshaPackagesTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaPackageComponentSchema = createInsertSchema(koshaPackageComponentsTable).omit({ id: true, createdAt: true });
 
@@ -171,6 +187,7 @@ export type KoshaAccessory = typeof koshaAccessoriesTable.$inferSelect;
 export type KoshaAddon = typeof koshaAddonsTable.$inferSelect;
 export type KoshaWelcomeBoard = typeof koshaWelcomeBoardsTable.$inferSelect;
 export type KoshaProvince = typeof koshaProvincesTable.$inferSelect;
+export type KoshaCategory = typeof koshaCategoriesTable.$inferSelect;
 export type KoshaPackage = typeof koshaPackagesTable.$inferSelect;
 export type KoshaPackageComponent = typeof koshaPackageComponentsTable.$inferSelect;
 export type InsertKosha = z.infer<typeof insertKoshaSchema>;
