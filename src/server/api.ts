@@ -13310,6 +13310,62 @@ async function saveKoshaMedia(input: {
   return saved;
 }
 
+// Resolve a booking's selections into full visual items (image + price) for the crew portal.
+// Reuses the same catalogs/formatters the admin uses — no new logic invented.
+async function koshaBookingSetup(booking: any) {
+  const koshaId = booking.koshaId ?? booking.kosha_id ?? null;
+  const packageId = booking.packageId ?? booking.package_id ?? null;
+  const [koshaRow, addonRows, boardRows, accessoryRows] = await Promise.all([
+    koshaId ? db.query.koshasTable.findFirst({ where: eq(koshasTable.id, koshaId) }) : Promise.resolve(null),
+    db.query.koshaAddonsTable.findMany(),
+    db.query.koshaWelcomeBoardsTable.findMany(),
+    db.query.koshaAccessoriesTable.findMany(),
+  ]);
+  const resolve = (names: unknown, rows: any[], section: "addon" | "welcome_board" | "accessory") => {
+    const catalog = rows.map((row) => formatKoshaOptionProduct(row, section));
+    return (Array.isArray(names) ? names : []).map((name: string) => {
+      const match = catalog.find((item) => item.name === name);
+      return { name, image: match?.mainImage ?? null, price: match?.price ?? null, description: match?.description ?? null };
+    });
+  };
+  let pkg: { name: string; image: string | null; price: number; contents: string[] } | null = null;
+  if (packageId) {
+    const packageRow = await db.query.koshaPackagesTable.findFirst({ where: eq(koshaPackagesTable.id, packageId) });
+    if (packageRow) {
+      const formatted = await formatKoshaPackage(packageRow, true);
+      pkg = {
+        name: formatted.name,
+        image: formatted.mainImage ?? null,
+        price: formatted.price,
+        contents: [
+          ...formatted.koshas.map((item: any) => item.name),
+          ...formatted.addons.map((item: any) => item.name),
+          ...formatted.welcomeBoards.map((item: any) => item.name),
+          ...formatted.accessories.map((item: any) => item.name),
+        ].filter(Boolean),
+      };
+    }
+  }
+  return {
+    kosha: koshaRow ? {
+      name: koshaRow.name,
+      image: publicMediaValue("kosha", koshaRow, koshaRow.mainImage),
+      price: Number(koshaRow.price ?? 0),
+      specs: [
+        koshaRow.numberOfPieces ? `${koshaRow.numberOfPieces} قطعة` : null,
+        koshaRow.mainColor || null,
+        koshaRow.flowerColor ? `ورد ${koshaRow.flowerColor}` : null,
+        koshaRow.koshaSpace ? `مساحة ${koshaRow.koshaSpace}` : null,
+        koshaRow.sideConsoleSpace ? `سايد ${koshaRow.sideConsoleSpace}` : null,
+      ].filter(Boolean) as string[],
+    } : null,
+    welcomeBoards: resolve(booking.welcomeBoards ?? booking.welcome_boards, boardRows, "welcome_board"),
+    addons: resolve(booking.selectedAddons ?? booking.selected_addons, addonRows, "addon"),
+    accessories: resolve(booking.selectedAccessories ?? booking.selected_accessories, accessoryRows, "accessory"),
+    package: pkg,
+  };
+}
+
 async function loadKoshaBookingDetail(bookingId: number) {
   const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, bookingId) });
   if (!booking) return null;
@@ -13321,6 +13377,7 @@ async function loadKoshaBookingDetail(bookingId: number) {
   ]);
   return {
     booking: await formatKoshaBookingForCrew(booking),
+    setup: await koshaBookingSetup(booking),
     timeline: events.map((e: any) => ({ ...e, createdAt: e.createdAt?.toISOString?.() ?? String(e.createdAt) })),
     media: media.map((m: any) => ({ ...m, createdAt: m.createdAt?.toISOString?.() ?? String(m.createdAt) })),
     delivery: delivery ? { ...delivery, compensationAmount: Number(delivery.compensationAmount), createdAt: delivery.createdAt?.toISOString?.() ?? String(delivery.createdAt) } : null,

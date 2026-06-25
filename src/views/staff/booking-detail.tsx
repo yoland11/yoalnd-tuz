@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video } from "lucide-react";
 import {
   STAGES, STAGE_LABEL, stageRank, money, mapsUrl, filesToMedia, staffApi,
-  type BookingDetail, type StageKey, type MediaInput,
+  type BookingDetail, type StageKey, type MediaInput, type SetupItem,
 } from "./lib";
 import { isQueued } from "./offline";
 
@@ -87,6 +87,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [panel, setPanel] = useState<null | "checklist" | "executed" | "delivered">(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try { setData(await staffApi.booking(id)); setErr(null); }
@@ -99,6 +100,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   if (err || !data) return <div className="p-6 text-center text-muted-foreground">{err ?? "غير موجود"}<div className="mt-3"><button onClick={onBack} className="text-primary underline">رجوع</button></div></div>;
 
   const b = data.booking;
+  const setup = data.setup;
   const current = b.executionStage as StageKey;
   const next = STAGES[stageRank(current) + 1]?.key as StageKey | undefined;
   const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
@@ -162,6 +164,41 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
             </div>
           ))}
         </div>
+
+        {/* تفاصيل تجهيز الكوشة */}
+        {setup && (
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="mb-3 text-sm font-bold">تفاصيل تجهيز الكوشة</div>
+
+            {setup.package && (
+              <div className="mb-3 flex gap-3 rounded-xl border border-primary/40 bg-primary/5 p-3">
+                <SetupThumb src={setup.package.image} alt={setup.package.name} onZoom={setLightbox} size="h-16 w-16" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2"><span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">باقة</span><span className="truncate font-bold">{setup.package.name}</span></div>
+                  {setup.package.price > 0 ? <div className="mt-1 text-xs font-bold text-primary">{money(setup.package.price)} د.ع</div> : null}
+                  {setup.package.contents.length > 0 ? <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{setup.package.contents.join(" · ")}</div> : null}
+                </div>
+              </div>
+            )}
+
+            {setup.kosha && (
+              <div className="overflow-hidden rounded-xl border border-border">
+                <button type="button" onClick={() => setup.kosha?.image && setLightbox(setup.kosha.image)} className="block w-full">
+                  {setup.kosha.image ? <img src={setup.kosha.image} alt={setup.kosha.name} loading="lazy" decoding="async" className="h-48 w-full object-cover" /> : <SetupPlaceholder className="h-48" />}
+                </button>
+                <div className="p-3">
+                  <div className="font-bold">{setup.kosha.name}</div>
+                  {setup.kosha.price > 0 ? <div className="text-sm font-bold text-primary">{money(setup.kosha.price)} د.ع</div> : null}
+                  {setup.kosha.specs.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-1">{setup.kosha.specs.map((s, i) => <span key={i} className="rounded-full bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">{s}</span>)}</div> : null}
+                </div>
+              </div>
+            )}
+
+            <SetupGroup title="بورد الترحيب" items={setup.welcomeBoards} onZoom={setLightbox} />
+            <SetupGroup title="الخدمات الإضافية" items={setup.addons} onZoom={setLightbox} />
+            <SetupGroup title="الإكسسوارات" items={setup.accessories} onZoom={setLightbox} />
+          </div>
+        )}
 
         {/* Stage stepper */}
         <div className="rounded-xl border border-border bg-card p-3">
@@ -255,6 +292,44 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
             </ol>
           )}
         </div>
+      </div>
+      {lightbox && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4" onClick={() => setLightbox(null)}>
+          <img src={lightbox} alt="" className="max-h-[88vh] max-w-full rounded-lg object-contain" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SetupPlaceholder({ className = "" }: { className?: string }) {
+  return <div className={`flex w-full items-center justify-center bg-muted/40 text-muted-foreground ${className}`}><ImageIcon className="h-6 w-6" /></div>;
+}
+
+function SetupThumb({ src, alt, onZoom, size }: { src: string | null; alt: string; onZoom: (s: string) => void; size: string }) {
+  return src
+    ? <button type="button" onClick={() => onZoom(src)} className={`flex-shrink-0 overflow-hidden rounded-lg border border-border ${size}`}><img src={src} alt={alt} loading="lazy" decoding="async" className="h-full w-full object-cover" /></button>
+    : <div className={`flex flex-shrink-0 items-center justify-center rounded-lg bg-muted/40 text-muted-foreground ${size}`}><ImageIcon className="h-5 w-5" /></div>;
+}
+
+function SetupGroup({ title, items, onZoom }: { title: string; items: SetupItem[]; onZoom: (s: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <div className="mt-3">
+      <div className="mb-2 text-xs font-bold text-muted-foreground">{title}</div>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map((it, i) => (
+          <div key={i} className="overflow-hidden rounded-lg border border-border bg-background">
+            <button type="button" onClick={() => it.image && onZoom(it.image)} className="block w-full">
+              {it.image ? <img src={it.image} alt={it.name} loading="lazy" decoding="async" className="h-24 w-full object-cover" /> : <SetupPlaceholder className="h-24" />}
+            </button>
+            <div className="p-2">
+              <div className="truncate text-xs font-medium">{it.name}</div>
+              {it.price != null && it.price > 0 ? <div className="text-[11px] font-bold text-primary">{money(it.price)} د.ع</div> : null}
+              {it.description ? <div className="truncate text-[10px] text-muted-foreground">{it.description}</div> : null}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

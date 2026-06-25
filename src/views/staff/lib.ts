@@ -57,7 +57,15 @@ export type MediaRow = { id: number; url: string; kind: "image" | "video"; purpo
 export type TimelineRow = { id: number; type: string; staffName: string; fromStage: string | null; toStage: string | null; note: string | null; meta: Record<string, unknown>; createdAt: string };
 export type DeliveryRow = { id: number; hasLoss: boolean; hasBreakage: boolean; note: string | null; compensationAmount: number; signatureUrl: string | null; createdAt: string } | null;
 export type PaymentReq = { id: number; amount: number; note: string | null; status: "pending" | "approved" | "rejected"; staffName: string; reviewedByName: string | null; createdAt: string; reviewedAt: string | null };
-export type BookingDetail = { booking: CrewBooking; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[] };
+export type SetupItem = { name: string; image: string | null; price: number | null; description?: string | null };
+export type KoshaSetup = {
+  kosha: { name: string; image: string | null; price: number; specs: string[] } | null;
+  welcomeBoards: SetupItem[];
+  addons: SetupItem[];
+  accessories: SetupItem[];
+  package: { name: string; image: string | null; price: number; contents: string[] } | null;
+};
+export type BookingDetail = { booking: CrewBooking; setup?: KoshaSetup; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[] };
 
 export type MediaInput = { url: string; kind: "image" | "video" };
 
