@@ -7,11 +7,13 @@ import {
   Boxes,
   CheckCircle2,
   Database,
+  Download,
   FileText,
   Gauge,
   History,
   LifeBuoy,
   Package,
+  RotateCcw,
   Search,
   ShieldCheck,
   Wrench,
@@ -632,6 +634,34 @@ export function DisasterRecoveryPage() {
     },
     onError: (err) => toast({ title: "تعذر إنشاء اللقطة", description: apiErrorMessage(err), variant: "destructive" }),
   });
+  const restore = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/disaster-recovery/${id}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: "AJN-RESTORE-CONFIRMED" }),
+    }),
+    onSuccess: () => {
+      toast({ title: "تم استرجاع النسخة" });
+      qc.invalidateQueries({ queryKey: ["admin", "disaster-recovery"] });
+    },
+    onError: (err) => toast({ title: "تعذر الاسترجاع", description: apiErrorMessage(err), variant: "destructive" }),
+  });
+  async function downloadSnapshot(row: any) {
+    try {
+      const res = await fetch(`/api/admin/disaster-recovery/${row.id}/download`, { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${row.snapshotNo || "ajn-backup"}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({ title: "تعذر تحميل النسخة", description: apiErrorMessage(err), variant: "destructive" });
+    }
+  }
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader icon={Database} title="الطوارئ والاسترجاع" description="سجل لقطات الطوارئ ومؤشرات النسخ الحالية." action={<Button onClick={() => create.mutate()} className="gap-2"><Database className="h-4 w-4" /> إنشاء لقطة</Button>} />
@@ -644,7 +674,21 @@ export function DisasterRecoveryPage() {
                   <p className="font-semibold text-foreground">{row.snapshotNo}</p>
                   <p className="text-xs text-muted-foreground">{row.createdByName || "النظام"} · {formatDate(row.createdAt)}</p>
                 </div>
-                <span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span>
+                  <Button variant="outline" size="sm" className="gap-1" onClick={() => downloadSnapshot(row)}><Download className="h-3.5 w-3.5" /> تنزيل</Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                    disabled={restore.isPending}
+                    onClick={() => {
+                      if (window.confirm("سيتم استرجاع البيانات المفقودة من هذه النسخة دون حذف البيانات الحالية. هل تريد المتابعة؟")) restore.mutate(row.id);
+                    }}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> استرجاع
+                  </Button>
+                </div>
               </div>
               <div className="mt-3"><JsonPreview value={row.summary} /></div>
             </Card>
@@ -663,8 +707,8 @@ export function TimelinesPage() {
   const financeEnabled = Boolean(finance.entityType || finance.entityId);
   const inventoryEnabled = Boolean(productId);
   const entityTimeline = useQuery<{ data: TimelineRow[] }>({
-    queryKey: ["admin", "entity-timeline", entity],
-    queryFn: () => adminFetch(`/admin/entity-timeline?entityType=${encodeURIComponent(entity.entityType)}&entityId=${encodeURIComponent(entity.entityId)}`),
+    queryKey: ["admin", "activity-timeline", entity],
+    queryFn: () => adminFetch(`/admin/activity-timeline?entityType=${encodeURIComponent(entity.entityType)}&entityId=${encodeURIComponent(entity.entityId)}`),
     enabled: entityEnabled,
   });
   const financialTimeline = useQuery<any>({
@@ -700,12 +744,12 @@ export function TimelinesPage() {
             <input value={finance.entityType} onChange={(e) => setFinance({ ...finance, entityType: e.target.value })} placeholder="نوع المصدر" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
             <input value={finance.entityId} onChange={(e) => setFinance({ ...finance, entityId: e.target.value })} placeholder="رقم المصدر" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
           </div>
-          <TimelineList rows={(financialTimeline.data?.data ?? []).map((row: any) => ({ id: row.id, title: row.description || row.transactionNo, body: `${row.direction} · ${formatCurrency(row.amount)}`, actorName: row.status, createdAt: row.createdAt }))} loading={financialTimeline.isFetching} empty={financeEnabled ? "لا توجد حركات مالية" : "حدد المصدر لعرض الحركات"} />
+          <TimelineList rows={(financialTimeline.data?.data ?? []).map((row: any) => ({ id: row.id, title: row.description || row.transactionNo, body: `${row.sourceEvent || row.type} · ${row.direction} · ${formatCurrency(row.amount)}${row.reversalTxnId || row.reversedTransactionId ? " · عكس مالي" : ""}`, actorName: row.executedByName || row.approvedByName || row.requestedByName || row.status, createdAt: row.createdAt }))} loading={financialTimeline.isFetching} empty={financeEnabled ? "لا توجد حركات مالية" : "حدد المصدر لعرض الحركات"} />
         </Card>
         <Card>
           <h2 className="mb-3 font-semibold text-foreground">خط المخزون</h2>
           <input value={productId} onChange={(e) => setProductId(e.target.value.replace(/\D/g, ""))} placeholder="رقم المنتج" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
-          <TimelineList rows={(inventoryTimeline.data?.data ?? []).map((row: any) => ({ id: row.id, title: row.reason, body: `التغيير ${row.quantityChange} · المنتج ${row.productId}`, actorName: row.createdByName, createdAt: row.createdAt }))} loading={inventoryTimeline.isFetching} empty={inventoryEnabled ? "لا توجد حركات مخزون" : "أدخل رقم المنتج"} />
+          <TimelineList rows={(inventoryTimeline.data?.data ?? []).map((row: any) => ({ id: row.id, title: row.eventLabel || row.reason, body: `${row.reason} · التغيير ${row.quantityChange} · ${row.productName || `المنتج ${row.productId}`}${row.stockSourceProductName ? ` · المصدر ${row.stockSourceProductName}` : ""}`, actorName: row.createdByName, createdAt: row.createdAt }))} loading={inventoryTimeline.isFetching} empty={inventoryEnabled ? "لا توجد حركات مخزون" : "أدخل رقم المنتج"} />
         </Card>
       </div>
     </div>

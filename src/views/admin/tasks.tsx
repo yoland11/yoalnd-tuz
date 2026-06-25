@@ -19,6 +19,7 @@ type Task = {
   assignedStaff: Staff[];
   relatedType: string | null;
   relatedId: number | null;
+  entityProgress?: { total: number; completed: number; percent: number } | null;
   notes: string;
   createdAt: string | null;
 };
@@ -249,6 +250,17 @@ export default function TasksPage() {
                         <span className="inline-flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {formatDate(task.dueAt)}</span>
                         {task.assignedStaff.map((staff) => <span key={staff.id}>{staff.fullName || staff.username}</span>)}
                       </div>
+                      {task.entityProgress && task.entityProgress.total > 0 && (
+                        <div className="mt-3 max-w-xs">
+                          <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span>إنجاز الحجز المرتبط</span>
+                            <span>{task.entityProgress.percent}%</span>
+                          </div>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-background">
+                            <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${task.entityProgress.percent}%` }} />
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {task.status !== "completed" && (
