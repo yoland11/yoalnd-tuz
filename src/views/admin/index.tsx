@@ -56,6 +56,17 @@ const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
 const PrinterSettingsPage = lazy(() => import("./printer-settings"));
 const InvoiceDesignerPage = lazy(() => import("./invoice-designer"));
+const ApprovalCenterPage = lazy(() => import("./operations"));
+const DocumentCenterPage = lazy(() => import("./operations").then((module) => ({ default: module.DocumentCenterPage })));
+const LiveOperationsPage = lazy(() => import("./operations").then((module) => ({ default: module.LiveOperationsPage })));
+const SmartSearchPage = lazy(() => import("./operations").then((module) => ({ default: module.SmartSearchPage })));
+const BusinessAnalyticsPage = lazy(() => import("./operations").then((module) => ({ default: module.BusinessAnalyticsPage })));
+const WarehouseTransfersPage = lazy(() => import("./operations").then((module) => ({ default: module.WarehouseTransfersPage })));
+const AssetsPage = lazy(() => import("./operations").then((module) => ({ default: module.AssetsPage })));
+const MaintenanceSchedulerPage = lazy(() => import("./operations").then((module) => ({ default: module.MaintenanceSchedulerPage })));
+const PurchaseComparisonPage = lazy(() => import("./operations").then((module) => ({ default: module.PurchaseComparisonPage })));
+const DisasterRecoveryPage = lazy(() => import("./operations").then((module) => ({ default: module.DisasterRecoveryPage })));
+const TimelinesPage = lazy(() => import("./operations").then((module) => ({ default: module.TimelinesPage })));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
@@ -162,11 +173,22 @@ export default function Admin() {
           <Route path="/admin/activity-log">{() => <Guard me={me} perm="staff"  ><ActivityLogPage /></Guard>}</Route>
           <Route path="/admin/tasks"     >{() => <Guard me={me} perm="tasks"    ><TasksPage      /></Guard>}</Route>
           <Route path="/admin/attendance">{() => <Guard me={me} perm="tasks"    ><AttendancePage /></Guard>}</Route>
+          <Route path="/admin/approvals">{() => <Guard me={me} perm="tasks"><ApprovalCenterPage /></Guard>}</Route>
+          <Route path="/admin/documents">{() => <Guard me={me} perm="orders"><DocumentCenterPage /></Guard>}</Route>
+          <Route path="/admin/live-operations">{() => <Guard me={me} perm="dashboard"><LiveOperationsPage /></Guard>}</Route>
+          <Route path="/admin/smart-search">{() => <Guard me={me} perm="dashboard"><SmartSearchPage /></Guard>}</Route>
+          <Route path="/admin/timelines">{() => <Guard me={me} perm="dashboard"><TimelinesPage /></Guard>}</Route>
           <Route path="/admin/messages"  >{() => <Guard me={me} perm="customers"><MessagesPage   /></Guard>}</Route>
           <Route path="/admin/customer-activity">{() => <Guard me={me} perm="customers"><CustomerActivityPage /></Guard>}</Route>
           <Route path="/admin/accounting">{() => <Guard me={me} perm="accounting"><AccountingPage/></Guard>}</Route>
+          <Route path="/admin/business-analytics">{() => <Guard me={me} perm="accounting"><BusinessAnalyticsPage /></Guard>}</Route>
+          <Route path="/admin/warehouse-transfers">{() => <Guard me={me} perm="products"><WarehouseTransfersPage /></Guard>}</Route>
+          <Route path="/admin/assets">{() => <Guard me={me} perm="products"><AssetsPage /></Guard>}</Route>
+          <Route path="/admin/maintenance-scheduler">{() => <Guard me={me} perm="products"><MaintenanceSchedulerPage /></Guard>}</Route>
+          <Route path="/admin/purchase-comparison">{() => <Guard me={me} perm="accounting"><PurchaseComparisonPage /></Guard>}</Route>
           <Route path="/admin/whatsapp"  >{() => <Guard me={me} perm="whatsapp" ><WhatsappPage   /></Guard>}</Route>
           <Route path="/admin/backup"    >{() => <Guard me={me} perm="backup"   ><BackupPage     /></Guard>}</Route>
+          <Route path="/admin/disaster-recovery">{() => <Guard me={me} perm="backup"><DisasterRecoveryPage /></Guard>}</Route>
           <Route path="/admin/invoice-designer">{() => <Guard me={me} perm="settings"><InvoiceDesignerPage /></Guard>}</Route>
           <Route path="/admin/settings/printer">{() => <Guard me={me} perm="settings"><PrinterSettingsPage /></Guard>}</Route>
           <Route path="/admin/settings/telegram">{() => <Guard me={me} perm="settings"><TelegramSettingsPage /></Guard>}</Route>

@@ -1,0 +1,398 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-popover-border: hsl(var(--popover-border));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-border: var(--primary-border);
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-secondary-border: var(--secondary-border);
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-muted-border: var(--muted-border);
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-accent-border: var(--accent-border);
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-destructive-border: var(--destructive-border);
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --color-status-success: hsl(var(--status-success));
+  --color-status-danger: hsl(var(--status-danger));
+  --color-status-warning: hsl(var(--status-warning));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-primary-border: var(--sidebar-primary-border);
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-accent-border: var(--sidebar-accent-border);
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --font-sans: var(--font-cairo), sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --animate-fade-up: ajn-fade-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-scale-in: ajn-scale-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in: ajn-slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* AJN Unified Premium Theme */
+:root {
+  color-scheme: dark;
+  --button-outline: rgba(212, 177, 90, .22);
+  --badge-outline: rgba(212, 177, 90, .16);
+
+  --opaque-button-border-intensity: 7;
+
+  --elevate-1: rgba(212, 177, 90, .055);
+  --elevate-2: rgba(212, 177, 90, .10);
+
+  /* Background #0B0B12 */
+  --background: 240 24% 6%;
+  /* Text Primary #FFFFFF */
+  --foreground: 0 0% 100%;
+  
+  /* Border #2A2D36 */
+  --border: 225 13% 19%;
+
+  /* Card #1A1C25 */
+  --card: 229 17% 12%;
+  --card-foreground: 0 0% 100%;
+  --card-border: 225 13% 19%;
+
+  /* Surface #12131A */
+  --sidebar: 233 18% 9%;
+  --sidebar-foreground: 0 0% 100%;
+  --sidebar-border: 225 13% 19%;
+  --sidebar-primary: 43 59% 59%;
+  --sidebar-primary-foreground: 240 24% 6%;
+  --sidebar-accent: 229 17% 12%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-ring: 43 59% 59%;
+
+  --popover: 229 17% 12%;
+  --popover-foreground: 0 0% 100%;
+  --popover-border: 225 13% 19%;
+
+  /* Primary Gold #D4B15A */
+  --primary: 43 59% 59%;
+  --primary-foreground: 240 24% 6%;
+
+  /* Surface #12131A */
+  --secondary: 233 18% 9%;
+  --secondary-foreground: 0 0% 100%;
+
+  --muted: 229 17% 12%;
+  --muted-foreground: 224 11% 81%;
+
+  /* Accent Rose #A97B8B */
+  --accent: 339 21% 57%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 72% 58%;
+  --destructive-foreground: 0 0% 100%;
+
+  --input: 225 13% 19%;
+  --ring: 43 59% 59%;
+  
+  --chart-1: 43 59% 59%;
+  --chart-2: 339 21% 57%;
+  --chart-3: 46 60% 77%;
+  --chart-4: 224 11% 81%;
+  --chart-5: 41 50% 48%;
+
+  --ajn-header: 233 18% 9%;
+  --ajn-footer: 233 18% 9%;
+  --ajn-heading: 0 0% 100%;
+  --ajn-link: 43 59% 59%;
+  --ajn-hover: 46 60% 77%;
+  /* ألوان موحّدة لعناصر القائمة العلوية (Navbar) — توكن واحد لكل الحالات */
+  --ajn-nav-link: #FFFFFF;
+  --ajn-nav-link-active: #D4B15A;
+  --status-success: 43 59% 59%;
+  --status-danger: 0 72% 58%;
+  --status-warning: 41 50% 48%;
+
+  --radius: 0.75rem;
+  
+  --shadow-2xs: 0 1px 2px 0 rgba(212, 177, 90, .05); 
+  --shadow-xs: 0 1px 3px 0 rgba(212, 177, 90, .06); 
+  --shadow-sm: 0 4px 10px -8px rgba(212, 177, 90, .22), 0 1px 2px -1px rgba(0, 0, 0, .5);
+  --shadow: 0 10px 24px -18px rgba(212, 177, 90, .22), 0 1px 3px -1px rgba(0, 0, 0, .55);
+  --shadow-md: 0 14px 32px -22px rgba(212, 177, 90, .26), 0 2px 6px -2px rgba(0, 0, 0, .55);
+  --shadow-lg: 0 20px 44px -28px rgba(212, 177, 90, .30), 0 4px 10px -4px rgba(0, 0, 0, .6);
+  --shadow-xl: 0 28px 56px -34px rgba(212, 177, 90, .34), 0 8px 18px -10px rgba(0, 0, 0, .65);
+  --shadow-2xl: 0 34px 70px -38px rgba(212, 177, 90, .38);
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+
+  --sidebar-primary-border: hsl(from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --sidebar-accent-border: hsl(from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --primary-border: hsl(from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --secondary-border: hsl(from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --muted-border: hsl(from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --accent-border: hsl(from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+  --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: hsl(var(--ajn-heading));
+  font-family: var(--font-heading, var(--font-sans));
+}
+
+a:hover {
+  color: hsl(var(--ajn-hover));
+}
+
+/* ===== توحيد ألوان عناصر القائمة العلوية (Navbar) ===== */
+/* توكن واحد للجميع — النص + أيقونة الـ SVG يأخذان نفس اللون بصراحة (لا اعتماد على الوراثة فقط) */
+/* القواعد خارج أي @layer فتتفوّق على أي utility من Tailwind بصرف النظر عن الـ specificity */
+.ajn-nav-link {
+  position: relative;
+  transition: color 200ms ease;
+}
+.ajn-nav-icon {
+  transition: color 200ms ease;
+}
+/* الحالة الافتراضية: أبيض موحّد للنص وكل أيقونة داخله */
+.ajn-nav-link,
+.ajn-nav-link svg,
+.ajn-nav-icon,
+.ajn-nav-icon svg {
+  color: var(--ajn-nav-link);
+}
+/* الحالة النشِطة + Hover + Focus: ذهبي موحّد للنص والأيقونة */
+.ajn-nav-link:hover,
+.ajn-nav-link:hover svg,
+.ajn-nav-link:focus-visible,
+.ajn-nav-link:focus-visible svg,
+.ajn-nav-link.is-active,
+.ajn-nav-link.is-active svg,
+.ajn-nav-icon:hover,
+.ajn-nav-icon:hover svg,
+.ajn-nav-icon:focus-visible,
+.ajn-nav-icon:focus-visible svg,
+.ajn-nav-icon.is-active,
+.ajn-nav-icon.is-active svg {
+  color: var(--ajn-nav-link-active);
+}
+/* الخط السفلي للعنصر النشِط فقط (الأزرار الأيقونية بلا خط سفلي) */
+.ajn-nav-link.is-active::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ajn-nav-link-active);
+}
+
+/* أزرار الهيرو في الصفحة الرئيسية — نمط موحّد لجميعها (أبيض + Hover ذهبي) */
+.ajn-hero-btn {
+  background-color: transparent;
+  color: var(--ajn-nav-link);
+  border-color: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(2px);
+  transition: color 200ms ease, border-color 200ms ease, background-color 200ms ease;
+}
+.ajn-hero-btn:hover,
+.ajn-hero-btn:focus-visible {
+  color: var(--ajn-nav-link-active);
+  border-color: var(--ajn-nav-link-active);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.dark {
+  /* Using same variables as root for true dark mode */
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}
+
+/**
+ * Using the elevate system.
+ * Automatic contrast adjustment.
+ *
+ * <element className="hover-elevate" />
+ * <element className="active-elevate-2" />
+ *
+ * // Using the tailwind utility when a data attribute is "on"
+ * <element className="toggle-elevate data-[state=on]:toggle-elevated" />
+ * // Or manually controlling the toggle state
+ * <element className="toggle-elevate toggle-elevated" />
+ *
+ * Elevation systems have to handle many states.
+ * - not-hovered, vs. hovered vs. active  (three mutually exclusive states)
+ * - toggled or not
+ * - focused or not (this is not handled with these utilities)
+ *
+ * Even without handling focused or not, this is six possible combinations that
+ * need to be distinguished from eachother visually.
+ */
+@layer utilities {
+
+  /* Hide ugly search cancel button in Chrome until we can style it properly */
+  input[type="search"]::-webkit-search-cancel-button {
+    @apply hidden;
+  }
+
+  /* Placeholder styling for contentEditable div */
+  [contenteditable][data-placeholder]:empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
+  }
+
+  /* .no-default-hover-elevate/no-default-active-elevate is an escape hatch so consumers of
+   * buttons/badges can remove the automatic brightness adjustment on interactions
+   * and program their own. */
+  .no-default-hover-elevate {}
+
+  .no-default-active-elevate {}
+
+
+  /**
+   * Toggleable backgrounds go behind the content. Hoverable/active goes on top.
+   * This way they can stack/compound. Both will overlap the parent's borders!
+   * So borders will be automatically adjusted both on toggle, and hover/active,
+   * and they will be compounded.
+   */
+  .toggle-elevate::before,
+  .toggle-elevate-2::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    /*border-radius: inherit;   match rounded corners */
+    border-radius: inherit;
+    z-index: -1;
+    /* sits behind content but above backdrop */
+  }
+
+  .toggle-elevate.toggle-elevated::before {
+    background-color: var(--elevate-2);
+  }
+
+  /* If there's a 1px border, adjust the inset so that it covers that parent's border */
+  .border.toggle-elevate::before {
+    inset: -1px;
+  }
+
+  /* Does not work on elements with overflow:hidden! */
+  .hover-elevate:not(.no-default-hover-elevate),
+  .active-elevate:not(.no-default-active-elevate),
+  .hover-elevate-2:not(.no-default-hover-elevate),
+  .active-elevate-2:not(.no-default-active-elevate) {
+    position: relative;
+    z-index: 0;
+  }
+
+  .hover-elevate:not(.no-default-hover-elevate)::after,
+  .active-elevate:not(.no-default-active-elevate)::after,
+  .hover-elevate-2:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:not(.no-default-active-elevate)::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    /*border-radius: inherit;   match rounded corners */
+    border-radius: inherit;
+    z-index: 999;
+    /* sits in front of content */
+  }
+
+  .hover-elevate:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-1);
+  }
+
+  .hover-elevate-2:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-2);
+  }
+
+  /* If there's a 1px border, adjust the inset so that it covers that parent's border */
+  .border.hover-elevate:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate:not(.no-active-interaction-elevate)::after,
+  .border.hover-elevate-2:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate-2:not(.no-active-interaction-elevate)::after,
+  .border.hover-elevate:not(.no-hover-interaction-elevate)::after {
+    inset: -1px;
+  }
+}
+
+@keyframes ajn-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ajn-scale-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ajn-slide-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

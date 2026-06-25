@@ -4,7 +4,7 @@ import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search } 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
@@ -100,7 +100,7 @@ function ReceiptsTab() {
       setEditing(null);
       printReceipt(row);
     },
-    onError: (err: any) => toast({ title: "تعذر حفظ سند القبض", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => toast({ title: "تعذر حفظ سند القبض", description: apiErrorMessage(err, "تعذر حفظ سند القبض"), variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/receipt-vouchers/${id}`, { method: "DELETE" }),
@@ -189,7 +189,7 @@ function PaymentsTab() {
       setEditing(null);
       printPayment(row);
     },
-    onError: (err: any) => toast({ title: "تعذر حفظ سند الصرف", description: err?.message, variant: "destructive" }),
+    onError: (err: any) => toast({ title: "تعذر حفظ سند الصرف", description: apiErrorMessage(err, "تعذر حفظ سند الصرف"), variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: number) => adminFetch(`/admin/payment-vouchers/${id}`, { method: "DELETE" }),

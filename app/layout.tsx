@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import { Cairo } from "next/font/google";
+import localFont from "next/font/local";
 import "@/index.css";
 import { getCachedPublicSettings } from "@/server/public-settings";
 
-const cairo = Cairo({
-  subsets: ["arabic", "latin"],
-  weight: ["400", "500", "600", "700"],
+const cairo = localFont({
+  src: [
+    { path: "../public/fonts/Cairo-Variable.ttf", weight: "400 700", style: "normal" },
+  ],
   variable: "--font-cairo",
   display: "swap",
 });
