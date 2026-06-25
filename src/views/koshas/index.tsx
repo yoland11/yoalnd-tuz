@@ -320,8 +320,8 @@ function Stepper({ step }: { step: WizardStep }) {
 function SelectionMark({ selected }: { selected: boolean }) {
   if (!selected) return null;
   return (
-    <span className="absolute right-3 top-3 grid h-7 w-7 animate-kosha-check-pop place-items-center rounded-full bg-[#A97B8B] text-white shadow-[0_3px_10px_rgba(169,123,139,0.28)]">
-      <Check className="h-4 w-4" />
+    <span className="absolute right-3 top-3 z-20 grid h-8 w-8 animate-kosha-check-pop place-items-center rounded-full border-2 border-white bg-[#A97B8B] text-white shadow-[0_3px_12px_rgba(169,123,139,0.45)]">
+      <Check className="h-5 w-5" strokeWidth={3} />
     </span>
   );
 }
@@ -360,8 +360,8 @@ function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct
     <button
       type="button"
       onClick={onClick}
-      className={`group relative block overflow-hidden rounded-2xl border bg-card text-right transition-all duration-300 active:scale-[0.99] ${
-        selected ? "border-[#A97B8B] shadow-[0_0_0_1px_rgba(169,123,139,0.22)]" : "border-border/40 hover:border-primary/50"
+      className={`group relative block overflow-hidden rounded-2xl border-2 bg-card text-right transition-all duration-300 active:scale-[0.99] ${
+        selected ? "border-[#A97B8B] bg-[#A97B8B]/5 shadow-[0_10px_26px_-10px_rgba(169,123,139,0.5)]" : "border-border/40 hover:border-primary/50"
       }`}
     >
       <SelectionMark selected={selected} />
