@@ -523,6 +523,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   products: any[];
 }) {
   const [busy, setBusy] = useState(false);
+  const [activeTab, setActiveTab] = useState<"details" | "rentals">("details");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
@@ -545,6 +546,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
     setSharedStockEnabled(Boolean(form.sharedStockProductId));
     setStockSearch("");
     setLinkedSearch("");
+    setActiveTab("details");
   }, [form.id]);
   const selectedParent = form.categoryId
     ? parentCats.find(p => p.id === form.categoryId)
@@ -736,6 +738,125 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
 
+        {form.id && (
+          <div className="flex rounded-xl border border-border/30 bg-background/40 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("details")}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "details" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              تفاصيل المنتج
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("rentals")}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "rentals" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              حجوزات الإيجار
+            </button>
+          </div>
+        )}
+
+        {activeTab === "rentals" ? (
+          <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">حجوزات الإيجار</h4>
+                <p className="mt-1 text-[11px] text-muted-foreground">الحجوزات المرتبطة بهذا المنتج أو بمصدر مخزونه المشترك.</p>
+              </div>
+              <span className="text-[11px] text-muted-foreground">{rentalBookings.length} حجز</span>
+            </div>
+            {rentalBookings.length === 0 ? (
+              <div className="rounded-lg border border-border/25 bg-card/50 p-3 text-xs text-muted-foreground">
+                لا توجد حجوزات إيجار لهذا المنتج حتى الآن.
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto rounded-lg border border-border/25 divide-y divide-border/20">
+                {rentalBookings.map((booking) => {
+                  const active = booking.status === "active";
+                  const returned = booking.status === "returned";
+                  const cancelled = booking.status === "cancelled";
+                  return (
+                    <div key={booking.id} className="bg-card/60 p-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs font-semibold text-foreground">{booking.orderNo}</p>
+                          <p className="mt-1 text-sm text-foreground">{booking.customerName || "زبون"} · {booking.customerPhone}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {booking.startDate} ← {booking.endDate} · {booking.days} يوم · {formatCurrency(booking.total)}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full border px-2 py-1 text-[11px] ${
+                            active ? "border-status-success/30 bg-status-success/10 text-status-success"
+                              : returned ? "border-primary/30 bg-primary/10 text-primary"
+                              : "border-status-danger/30 bg-status-danger/10 text-status-danger"
+                          }`}>
+                            {active ? "active" : returned ? "returned" : cancelled ? "cancelled" : booking.status}
+                          </span>
+                          {active ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={rentalStatusBusy === booking.id}
+                                onClick={() => void updateRentalStatus(booking.id, "returned")}
+                                className="rounded-lg border border-primary/30 px-2.5 py-1.5 text-[11px] text-primary hover:bg-primary/10 disabled:opacity-50"
+                              >
+                                إرجاع
+                              </button>
+                              <button
+                                type="button"
+                                disabled={rentalStatusBusy === booking.id}
+                                onClick={() => void updateRentalStatus(booking.id, "cancelled")}
+                                className="rounded-lg border border-status-danger/30 px-2.5 py-1.5 text-[11px] text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
+                              >
+                                إلغاء
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={rentalStatusBusy === booking.id}
+                              onClick={() => void updateRentalStatus(booking.id, "active")}
+                              className="rounded-lg border border-border/40 px-2.5 py-1.5 text-[11px] text-foreground hover:text-primary disabled:opacity-50"
+                            >
+                              إعادة تفعيل
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-3">
+          <h4 className="text-sm font-semibold text-foreground">إعدادات الإيجار</h4>
+          <label className="inline-flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={form.isRental === true}
+              onChange={(event) => onChange({
+                ...form,
+                isRental: event.target.checked,
+                pricePerDay: event.target.checked ? form.pricePerDay ?? form.price ?? "0" : form.pricePerDay ?? "0",
+                stock: event.target.checked && (!form.stock || form.stock === "0") ? "1" : form.stock,
+              })}
+              className="accent-primary"
+            />
+            منتج للإيجار
+          </label>
+          {form.isRental && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Inp label="سعر الإيجار لليوم" type="number" value={form.pricePerDay ?? "0"} onChange={v => onChange({ ...form, pricePerDay: v })} />
+              <Inp label="الكمية" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <Inp label="الاسم بالعربي" value={form.nameAr} onChange={v => onChange({ ...form, nameAr: v })} />
           <Inp label="الاسم بالإنجليزي" value={form.name} onChange={v => onChange({ ...form, name: v })} />
@@ -747,42 +868,6 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
           <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />
           <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
-          <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
-            <h4 className="text-sm font-semibold text-foreground">إعدادات الإيجار</h4>
-            <div className="flex items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2 text-sm text-foreground">
-                <input
-                  type="checkbox"
-                  checked={form.isRental === true}
-                  onChange={(event) => onChange({
-                    ...form,
-                    isRental: event.target.checked,
-                    pricePerDay: event.target.checked ? form.pricePerDay ?? form.price ?? "0" : form.pricePerDay ?? "0",
-                    stock: event.target.checked && (!form.stock || form.stock === "0") ? "1" : form.stock,
-                  })}
-                  className="accent-primary"
-                />
-                منتج للإيجار؟
-              </label>
-              <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
-                Number(form.stock ?? 0) > 0
-                  ? "border-status-success/30 bg-status-success/10 text-status-success"
-                  : "border-amber-400/30 bg-amber-400/10 text-amber-400"
-              }`}>
-                <CalendarDays className="h-3.5 w-3.5" />
-                {Number(form.stock ?? 0) > 0 ? "متاح للإيجار" : "محجوز حالياً"}
-              </span>
-            </div>
-            {form.isRental && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Inp label="سعر الإيجار لليوم" type="number" value={form.pricePerDay ?? "0"} onChange={v => onChange({ ...form, pricePerDay: v })} />
-                <Inp label="كمية الإيجار المتوفرة" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
-              </div>
-            )}
-            <p className="text-[11px] leading-5 text-muted-foreground">
-              عند تفعيل الإيجار سيظهر للزبون اختيار تاريخ البداية والنهاية بدل زر الشراء العادي.
-            </p>
-          </div>
           <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
             <label className="flex items-center justify-between gap-3 text-sm text-foreground">
               <span className="inline-flex items-center gap-2">
@@ -1176,82 +1261,6 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           )}
         </div>
 
-        {form.id && form.isRental && (
-          <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h4 className="text-sm font-semibold text-foreground">حجوزات الإيجار</h4>
-                <p className="mt-1 text-[11px] text-muted-foreground">الحجوزات المرتبطة بهذا المنتج أو بمصدر مخزونه المشترك.</p>
-              </div>
-              <span className="text-[11px] text-muted-foreground">{rentalBookings.length} حجز</span>
-            </div>
-            {rentalBookings.length === 0 ? (
-              <div className="rounded-lg border border-border/25 bg-card/50 p-3 text-xs text-muted-foreground">
-                لا توجد حجوزات إيجار لهذا المنتج حتى الآن.
-              </div>
-            ) : (
-              <div className="max-h-72 overflow-y-auto rounded-lg border border-border/25 divide-y divide-border/20">
-                {rentalBookings.map((booking) => {
-                  const active = booking.status === "active";
-                  const returned = booking.status === "returned";
-                  const cancelled = booking.status === "cancelled";
-                  return (
-                    <div key={booking.id} className="bg-card/60 p-3">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
-                          <p className="font-mono text-xs font-semibold text-foreground">{booking.orderNo}</p>
-                          <p className="mt-1 text-sm text-foreground">{booking.customerName || "زبون"} · {booking.customerPhone}</p>
-                          <p className="mt-1 text-[11px] text-muted-foreground">
-                            {booking.startDate} ← {booking.endDate} · {booking.days} يوم · {formatCurrency(booking.total)}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full border px-2 py-1 text-[11px] ${
-                            active ? "border-status-success/30 bg-status-success/10 text-status-success"
-                              : returned ? "border-primary/30 bg-primary/10 text-primary"
-                              : "border-status-danger/30 bg-status-danger/10 text-status-danger"
-                          }`}>
-                            {active ? "active" : returned ? "returned" : cancelled ? "cancelled" : booking.status}
-                          </span>
-                          {active ? (
-                            <>
-                              <button
-                                type="button"
-                                disabled={rentalStatusBusy === booking.id}
-                                onClick={() => void updateRentalStatus(booking.id, "returned")}
-                                className="rounded-lg border border-primary/30 px-2.5 py-1.5 text-[11px] text-primary hover:bg-primary/10 disabled:opacity-50"
-                              >
-                                إرجاع
-                              </button>
-                              <button
-                                type="button"
-                                disabled={rentalStatusBusy === booking.id}
-                                onClick={() => void updateRentalStatus(booking.id, "cancelled")}
-                                className="rounded-lg border border-status-danger/30 px-2.5 py-1.5 text-[11px] text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
-                              >
-                                إلغاء
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={rentalStatusBusy === booking.id}
-                              onClick={() => void updateRentalStatus(booking.id, "active")}
-                              className="rounded-lg border border-border/40 px-2.5 py-1.5 text-[11px] text-foreground hover:text-primary disabled:opacity-50"
-                            >
-                              إعادة تفعيل
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.isFeatured} onChange={e => onChange({ ...form, isFeatured: e.target.checked })} className="accent-primary" />
@@ -1264,6 +1273,8 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
         </div>
 
         <Button type="submit" disabled={busy} className="w-full">{busy ? "جاري الحفظ..." : "حفظ"}</Button>
+          </>
+        )}
       </form>
       {previewImage && (
         <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}>
