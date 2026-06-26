@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart } from "lucide-react";
+import { CalendarDays, Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart, Loader2 } from "lucide-react";
 import { ColorDot } from "@/components/product-colors";
 import { useWishlist } from "@/lib/wishlist";
 import { useT } from "@/lib/i18n";
@@ -35,6 +35,8 @@ export default function ProductDetail() {
   const cl = useContentLocalizer();
   const productName = product ? cl.name(product) : "";
   const productDescription = product ? cl.description(product) : "";
+  const isRental = Boolean((product as any)?.isRental);
+  const rentalPricePerDay = Number((product as any)?.pricePerDay ?? product?.price ?? 0);
 
   const [selectedImage, setSelectedImage] = useState(0);
   const [selectedColor, setSelectedColor] = useState<ProductColor | null>(null);
@@ -44,6 +46,14 @@ export default function ProductDetail() {
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const [addedToCart, setAddedToCart] = useState(false);
+  const [rentalStartDate, setRentalStartDate] = useState("");
+  const [rentalEndDate, setRentalEndDate] = useState("");
+  const [rentalCustomerName, setRentalCustomerName] = useState("");
+  const [rentalPhone, setRentalPhone] = useState("");
+  const [rentalNotes, setRentalNotes] = useState("");
+  const [rentalSaving, setRentalSaving] = useState(false);
+  const [rentalMessage, setRentalMessage] = useState("");
+  const [rentalError, setRentalError] = useState("");
 
   const createReview = useCreateReview();
 
@@ -53,6 +63,14 @@ export default function ProductDetail() {
   const videos = product?.videos?.filter(Boolean) ?? [];
   const imageMetadata = product?.imageMetadata ?? [];
   const colors = useMemo(() => normalizeColors(product?.colors ?? []), [product?.colors]);
+  const rentalDaysCount = useMemo(() => {
+    if (!rentalStartDate || !rentalEndDate) return 0;
+    const start = Date.parse(`${rentalStartDate}T00:00:00`);
+    const end = Date.parse(`${rentalEndDate}T00:00:00`);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+    return Math.max(1, Math.floor((end - start) / 86_400_000) + 1);
+  }, [rentalStartDate, rentalEndDate]);
+  const rentalTotal = rentalDaysCount * rentalPricePerDay;
   const productModelUrl = useMemo(() => {
     const metadata = imageMetadata.find((entry: any) => entry?.modelUrl);
     return metadata?.modelUrl ? String(metadata.modelUrl) : "";
@@ -70,6 +88,7 @@ export default function ProductDetail() {
 
   function handleAddToCart() {
     if (!product) return;
+    if (isRental) return;
     if (colors.length > 0 && !selectedColor) return;
     addToCart.mutate(
       { data: { productId: product.id, quantity, selectedColor: selectedColor?.name, selectedColorData: selectedColor ?? undefined } },
@@ -88,6 +107,43 @@ export default function ProductDetail() {
         },
       }
     );
+  }
+
+  async function handleRentalSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!product || !isRental || rentalSaving) return;
+    setRentalSaving(true);
+    setRentalError("");
+    setRentalMessage("");
+    try {
+      const res = await fetch("/api/rental-orders", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: product.id,
+          customerName: rentalCustomerName,
+          phone: rentalPhone,
+          startDate: rentalStartDate,
+          endDate: rentalEndDate,
+          notes: rentalNotes,
+          paymentMethod: "cash",
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.error || "تعذر إنشاء حجز الإيجار");
+      setRentalMessage(`تم إنشاء حجز الإيجار ${payload.orderNo ?? ""}`);
+      setRentalCustomerName("");
+      setRentalPhone("");
+      setRentalStartDate("");
+      setRentalEndDate("");
+      setRentalNotes("");
+      queryClient.invalidateQueries({ queryKey: getGetProductQueryKey(product.id) });
+    } catch (err: any) {
+      setRentalError(err?.message || "تعذر إنشاء حجز الإيجار");
+    } finally {
+      setRentalSaving(false);
+    }
   }
 
   function handleSelectColor(color: ProductColor) {
@@ -211,15 +267,23 @@ export default function ProductDetail() {
 
             {/* Price */}
             <div className="flex items-baseline justify-center gap-3">
-              <span className="text-4xl font-bold text-primary">{Number(product.price).toLocaleString('ar-IQ')} د.ع</span>
-              {product.originalPrice && (
+              <span className="text-4xl font-bold text-primary">
+                {Number(isRental ? rentalPricePerDay : product.price).toLocaleString('ar-IQ')} د.ع{isRental ? " / يوم" : ""}
+              </span>
+              {!isRental && product.originalPrice && (
                 <span className="text-lg text-muted-foreground line-through">{Number(product.originalPrice).toLocaleString('ar-IQ')}</span>
               )}
             </div>
 
             {/* Stock */}
             <div className="text-center">
-              {product.stock > 0 ? (
+              {isRental ? (
+                product.stock > 0 ? (
+                  <span className="text-status-success text-sm font-medium">{t("متاح للإيجار")}</span>
+                ) : (
+                  <span className="text-amber-400 text-sm font-medium">{t("محجوز حالياً")}</span>
+                )
+              ) : product.stock > 0 ? (
                 <span className="text-status-success text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>
               ) : (
                 <span className="text-status-danger text-sm font-medium">{t("نفذت الكمية")}</span>
@@ -263,41 +327,87 @@ export default function ProductDetail() {
               </div>
             )}
 
-            {/* Quantity */}
-            <div className="flex items-center justify-center gap-4">
-              <span className="text-sm font-medium text-foreground">{t("الكمية")}:</span>
-              <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setQuantity(q => Math.max(1, q - 1))}
-                  aria-label={t("تقليل الكمية")}
-                  disabled={quantity <= 1}
-                  className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Minus className="w-4 h-4" />
-                </button>
-                <span className="px-4 py-2 text-foreground font-medium" aria-live="polite">{quantity}</span>
-                <button
-                  onClick={() => setQuantity(q => Math.min(product.stock, q + 1))}
-                  aria-label={t("زيادة الكمية")}
-                  disabled={quantity >= product.stock}
-                  className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+            {!isRental ? (
+              <>
+                {/* Quantity */}
+                <div className="flex items-center justify-center gap-4">
+                  <span className="text-sm font-medium text-foreground">{t("الكمية")}:</span>
+                  <div className="flex items-center gap-2 border border-border/40 rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                      aria-label={t("تقليل الكمية")}
+                      disabled={quantity <= 1}
+                      className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+                    <span className="px-4 py-2 text-foreground font-medium" aria-live="polite">{quantity}</span>
+                    <button
+                      onClick={() => setQuantity(q => Math.min(product.stock, q + 1))}
+                      aria-label={t("زيادة الكمية")}
+                      disabled={quantity >= product.stock}
+                      className="px-3 py-2 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
 
-            {/* Add to Cart Button */}
-            <div className="flex justify-center">
-              <Button
-                className="w-1/2 py-6 text-lg gap-2"
-                disabled={product.stock === 0 || addToCart.isPending || (colors.length > 0 && !selectedColor)}
-                onClick={handleAddToCart}
-              >
-                <ShoppingCart className="w-5 h-5" />
-                {addedToCart ? t("تمت الإضافة!") : addToCart.isPending ? t("جاري الإضافة...") : colors.length > 0 && !selectedColor ? t("اختر اللون أولاً") : t("أضف إلى السلة")}
-              </Button>
-            </div>
+                {/* Add to Cart Button */}
+                <div className="flex justify-center">
+                  <Button
+                    className="w-1/2 py-6 text-lg gap-2"
+                    disabled={product.stock === 0 || addToCart.isPending || (colors.length > 0 && !selectedColor)}
+                    onClick={handleAddToCart}
+                  >
+                    <ShoppingCart className="w-5 h-5" />
+                    {addedToCart ? t("تمت الإضافة!") : addToCart.isPending ? t("جاري الإضافة...") : colors.length > 0 && !selectedColor ? t("اختر اللون أولاً") : t("أضف إلى السلة")}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <form onSubmit={handleRentalSubmit} className="rounded-2xl border border-border/30 bg-card p-4 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <CalendarDays className="h-4 w-4 text-primary" />
+                  {t("حجز المنتج للإيجار")}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="block text-xs text-muted-foreground mb-1">{t("اسم العميل")}</span>
+                    <input value={rentalCustomerName} onChange={(e) => setRentalCustomerName(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-xs text-muted-foreground mb-1">{t("رقم الهاتف")}</span>
+                    <input value={rentalPhone} onChange={(e) => setRentalPhone(e.target.value)} inputMode="tel" className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-xs text-muted-foreground mb-1">{t("تاريخ البداية")}</span>
+                    <input type="date" value={rentalStartDate} onChange={(e) => setRentalStartDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-xs text-muted-foreground mb-1">{t("تاريخ النهاية")}</span>
+                    <input type="date" value={rentalEndDate} onChange={(e) => setRentalEndDate(e.target.value)} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="block text-xs text-muted-foreground mb-1">{t("ملاحظات")}</span>
+                  <textarea value={rentalNotes} onChange={(e) => setRentalNotes(e.target.value)} rows={2} className="w-full bg-background border border-border/40 rounded-xl px-4 py-3 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+                </label>
+                <div className="rounded-xl border border-border/25 bg-background/60 p-3 text-sm text-muted-foreground">
+                  {rentalDaysCount > 0 ? (
+                    <span>{rentalDaysCount} {t("يوم")} × {rentalPricePerDay.toLocaleString("ar-IQ")} = <strong className="text-primary">{rentalTotal.toLocaleString("ar-IQ")} د.ع</strong></span>
+                  ) : (
+                    <span>{t("اختر تاريخ البداية والنهاية لاحتساب السعر.")}</span>
+                  )}
+                </div>
+                {rentalError && <p className="text-sm text-status-danger">{rentalError}</p>}
+                {rentalMessage && <p className="text-sm text-status-success">{rentalMessage}</p>}
+                <Button type="submit" className="w-full py-6 text-lg gap-2" disabled={product.stock === 0 || rentalSaving || !rentalStartDate || !rentalEndDate || !rentalPhone || rentalDaysCount <= 0}>
+                  {rentalSaving ? <Loader2 className="h-5 w-5 animate-spin" /> : <CalendarDays className="h-5 w-5" />}
+                  {rentalSaving ? t("جاري الحجز...") : t("تأكيد حجز الإيجار")}
+                </Button>
+              </form>
+            )}
           </div>
         </div>
 

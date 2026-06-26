@@ -49,6 +49,8 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: "ملغي",
   ready: "جاهز",
   completed: "مكتمل",
+  active: "نشط",
+  returned: "تم الإرجاع",
 };
 
 type Customer = {
@@ -268,8 +270,8 @@ export default function Profile() {
     };
   }, [navigate]);
 
-  const productOrders = useMemo(() => orders.filter((order) => order.kind !== "service"), [orders]);
-  const serviceOrders = useMemo(() => orders.filter((order) => order.kind === "service"), [orders]);
+  const productOrders = useMemo(() => orders.filter((order) => order.kind === "order"), [orders]);
+  const serviceOrders = useMemo(() => orders.filter((order) => order.kind === "service" || order.kind === "rental"), [orders]);
   const latestCompletedOrder = useMemo(
     () => orders.find((order) => ["delivered", "completed"].includes(order.status)),
     [orders],
@@ -837,6 +839,11 @@ function OrderList({
               <p className="text-xs text-muted-foreground mt-1">
                 {new Date(order.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}
               </p>
+              {order.kind === "rental" && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {order.productName} · {order.startDate} ← {order.endDate}
+                </p>
+              )}
               {["delivered", "completed"].includes(order.status) && (
                 <p className="text-xs text-status-success mt-1">{t("شكراً لك، اكتمل الطلب بنجاح.")}</p>
               )}
@@ -864,7 +871,7 @@ function OrderList({
                   <p className="text-xs text-muted-foreground">{t("المتبقي:")} {Number(order.remainingAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
                 )}
               </div>
-              {order.kind !== "service" && (
+              {order.kind === "order" && (
                 <button type="button" onClick={() => onReorder?.(order)} className="hidden sm:inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                   <RefreshCcw className="w-4 h-4" />
                 </button>
@@ -872,9 +879,15 @@ function OrderList({
               <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
                 <MessageCircle className="w-4 h-4" />
               </a>
-              <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
-                {t("عرض التفاصيل")}
-              </Link>
+              {order.kind === "rental" ? (
+                <span className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-muted-foreground">
+                  {t("حجز إيجار")}
+                </span>
+              ) : (
+                <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
+                  {t("عرض التفاصيل")}
+                </Link>
+              )}
             </div>
           </div>
           {order.kind === "service" && order.eventDate && (
@@ -893,7 +906,7 @@ function OrderList({
 }
 
 function OrderThumb({ order }: { order: any }) {
-  const image = order.kind === "service" ? order.serviceImage : order.items?.[0]?.image;
+  const image = order.kind === "service" ? order.serviceImage : order.kind === "rental" ? order.productImage : order.items?.[0]?.image;
   return (
     <div className="w-14 h-14 rounded-xl bg-card border border-border/30 overflow-hidden flex items-center justify-center shrink-0">
       {image ? <img src={image} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" /> : <Package className="w-6 h-6 text-primary" />}

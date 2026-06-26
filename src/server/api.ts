@@ -74,6 +74,7 @@ import {
   otpCodesTable,
   paymentVouchersTable,
   productsTable,
+  rentalOrdersTable,
   receiptVouchersTable,
   reviewsTable,
   serviceOrdersTable,
@@ -100,6 +101,7 @@ import {
   masterCashBoxTable,
   warehouseTransfersTable,
   warehousesTable,
+  warehouseStockTable,
   taskCommentsTable,
   tasksTable,
 } from "@workspace/db";
@@ -1246,6 +1248,100 @@ async function createApprovalRequest(input: {
   return row;
 }
 
+async function executeApprovedApprovalRequest(row: typeof approvalRequestsTable.$inferSelect, actor: ErpActor | null) {
+  const financeActorValue: FinancialActor = { id: actor?.id ?? null, name: actor?.name ?? "النظام", role: "system" };
+  if (row.type === "delete_document") {
+    const documentId = optionalPositiveId((row.oldValues as any)?.documentId) ?? row.entityId;
+    if (!documentId) return { executed: false, reason: "missing_document" };
+    const existing = await db.query.entityDocumentsTable.findFirst({ where: eq(entityDocumentsTable.id, documentId) });
+    if (!existing) return { executed: false, reason: "document_not_found" };
+    if (existing.archivedAt) return { executed: false, reason: "already_archived" };
+    const [archived] = await db.update(entityDocumentsTable).set({ archivedAt: new Date() }).where(eq(entityDocumentsTable.id, documentId)).returning();
+    await addEntityTimeline({
+      entityType: archived.entityType,
+      entityId: archived.entityId,
+      type: "document_deleted_approved",
+      title: "تم حذف المستند بعد الموافقة",
+      body: archived.title,
+      actor,
+      metadata: { approvalRequestId: row.id, documentId },
+    });
+    return { executed: true, documentId };
+  }
+  if (row.type === "delete_product") {
+    const productId = row.entityId ?? optionalPositiveId((row.oldValues as any)?.id);
+    if (!productId) return { executed: false, reason: "missing_product" };
+    const existing = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }) as any;
+    if (!existing) return { executed: false, reason: "product_not_found" };
+    await db.delete(productsTable).where(eq(productsTable.id, productId));
+    await addEntityTimeline({
+      entityType: "product",
+      entityId: productId,
+      type: "product_deleted_approved",
+      title: "تم حذف المادة بعد موافقة المدير",
+      body: existing.nameAr || existing.name || String(productId),
+      actor,
+      metadata: { approvalRequestId: row.id },
+    });
+    return { executed: true, productId };
+  }
+  if (row.type === "warehouse_transfer" || row.entityType === "warehouse_transfer") {
+    const transferId = row.entityId ?? optionalPositiveId((row.newValues as any)?.transferId);
+    if (!transferId) return { executed: false, reason: "missing_transfer" };
+    const transfer = await db.query.warehouseTransfersTable.findFirst({ where: eq(warehouseTransfersTable.id, transferId) });
+    if (!transfer) return { executed: false, reason: "transfer_not_found" };
+    const approved = transfer.status === "approved"
+      ? transfer
+      : (await db.update(warehouseTransfersTable).set({
+        status: "approved",
+        reviewedBy: actor?.id ?? null,
+        reviewedByName: actor?.name ?? "النظام",
+        reviewedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(warehouseTransfersTable.id, transfer.id)).returning())[0];
+    return executeWarehouseTransfer(approved, actor);
+  }
+  if (row.type === "cancel_kosha_booking") {
+    const id = row.entityId;
+    if (!id) return { executed: false, reason: "missing_booking" };
+    const existing = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!existing) return { executed: false, reason: "booking_not_found" };
+    if (existing.status === "cancelled") return { executed: false, reason: "already_cancelled" };
+    await syncKoshaFinancialPayment({ ...existing, status: "cancelled" }, financeActorValue);
+    const [archived] = await db.update(koshaBookingsTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id)).returning();
+    await syncAutomaticTasksForEntityStatus({ entityType: "kosha_booking", entityId: id, status: "cancelled", actor });
+    await addEntityTimeline({ entityType: "kosha_booking", entityId: id, type: "cancelled_approved", title: "تم إلغاء الحجز بعد موافقة المدير", body: archived.customerName, actor, metadata: { approvalRequestId: row.id } });
+    return { executed: true, bookingId: id };
+  }
+  if (row.type === "cancel_service_order") {
+    const id = row.entityId;
+    if (!id) return { executed: false, reason: "missing_service_order" };
+    const existing = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
+    if (!existing) return { executed: false, reason: "service_order_not_found" };
+    if (existing.status === "cancelled") return { executed: false, reason: "already_cancelled" };
+    await syncServiceOrderFinancialPayment({ ...existing, status: "cancelled" }, financeActorValue);
+    const [archived] = await db.update(serviceOrdersTable).set({ status: "cancelled", archivedAt: new Date() }).where(eq(serviceOrdersTable.id, id)).returning();
+    await db.insert(serviceOrderStatusHistoryTable).values({ serviceOrderId: id, status: "cancelled", notes: "إلغاء بعد موافقة المدير" });
+    await syncAutomaticTasksForEntityStatus({ entityType: "service_order", entityId: id, status: "cancelled", actor });
+    await addEntityTimeline({ entityType: "service_order", entityId: id, type: "cancelled_approved", title: "تم إلغاء الحجز بعد موافقة المدير", body: archived.customerName, actor, metadata: { approvalRequestId: row.id } });
+    return { executed: true, serviceOrderId: id };
+  }
+  if (row.type === "cancel_order") {
+    const id = row.entityId;
+    if (!id) return { executed: false, reason: "missing_order" };
+    const existing = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) });
+    if (!existing) return { executed: false, reason: "order_not_found" };
+    if (existing.status === "cancelled") return { executed: false, reason: "already_cancelled" };
+    await syncOrderFinancialPayment({ ...existing, status: "cancelled" }, financeActorValue);
+    const [archived] = await db.update(ordersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(ordersTable.id, id)).returning();
+    await syncOrderStockState(archived, { id: actor?.id ?? null, name: actor?.name ?? "النظام" });
+    await db.insert(orderStatusHistoryTable).values({ orderId: id, status: "cancelled", notes: "إلغاء بعد موافقة المدير" });
+    await addEntityTimeline({ entityType: "order", entityId: id, type: "cancelled_approved", title: "تم إلغاء الطلب بعد موافقة المدير", body: archived.customerName, actor, metadata: { approvalRequestId: row.id } });
+    return { executed: true, orderId: id };
+  }
+  return { executed: false, reason: "no_executor" };
+}
+
 async function createSmartBookingNotifications(input: {
   entityType: string;
   entityId: number;
@@ -1925,6 +2021,8 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     originalPrice: p.originalPrice ? Number.parseFloat(p.originalPrice) : null,
     stock: Number(p.effectiveStock ?? p.stock ?? 0),
     ownStock: Number(p.ownStock ?? p.stock ?? 0),
+    isRental: Boolean(p.isRental ?? p.is_rental ?? false),
+    pricePerDay: Number.parseFloat(String(p.pricePerDay ?? p.price_per_day ?? "0")) || 0,
     minStock: Number(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? 0),
     sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
     sharedStockProductName: p.sharedStockProductName ?? p.shared_stock_product_name ?? null,
@@ -2686,6 +2784,30 @@ async function recordStockMovement(resolved: { product: any; stockProduct: any }
       createdBy: meta.createdBy ?? null,
       createdByName: meta.createdByName ?? "",
     } as any);
+    const kind = stockMovementKind(meta.reason);
+    const usageProductId = Number(resolved.stockProduct?.id ?? resolved.product?.id ?? 0);
+    if (usageProductId && ["out", "damage", "replacement"].includes(kind.type)) {
+      const existingProfile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, usageProductId) });
+      if (existingProfile) {
+        const nextUsage = Math.max(0, Number(existingProfile.usageCount ?? 0) + Math.max(1, Math.abs(Math.floor(Number(delta) || 1))));
+        const purchasePrice = Number(existingProfile.purchasePrice ?? resolved.stockProduct?.costPrice ?? 0);
+        const expectedLifeUses = Number(existingProfile.expectedLifeUses ?? 50) || 50;
+        const currentValue = Math.max(0, purchasePrice - (purchasePrice * Math.min(nextUsage, expectedLifeUses) / expectedLifeUses));
+        await db.update(assetProfilesTable).set({ usageCount: nextUsage, currentValue: String(currentValue), updatedAt: new Date() }).where(eq(assetProfilesTable.id, existingProfile.id));
+      } else if (Number(resolved.stockProduct?.costPrice ?? 0) > 0) {
+        const cost = Number(resolved.stockProduct.costPrice ?? 0);
+        await db.insert(assetProfilesTable).values({
+          productId: usageProductId,
+          purchasePrice: String(cost),
+          expectedLifeUses: 50,
+          usageCount: Math.max(1, Math.abs(Math.floor(Number(delta) || 1))),
+          maintenanceEveryUses: 50,
+          currentValue: String(cost),
+          status: "active",
+          notes: "تم إنشاء ملف الأصل تلقائياً من حركة المخزون",
+        }).onConflictDoNothing();
+      }
+    }
   } catch (err) {
     console.warn("stock movement log failed", {
       reason: meta.reason,
@@ -2720,6 +2842,71 @@ async function setProductStock(productId: number, stock: number, meta?: StockMov
   const delta = nextStock - previousStock;
   if (delta !== 0) await recordStockMovement(resolved, delta, meta);
   return resolved.stockProduct.id;
+}
+
+async function adjustWarehouseStock(productId: number, warehouseId: number | null | undefined, delta: number) {
+  if (!warehouseId || !productId || !Number.isFinite(delta) || delta === 0) return null;
+  await ensureAdminExtensionsTables();
+  const resolved = await getStockOwnerProduct(productId);
+  const stockProductId = resolved?.stockProduct?.id ?? productId;
+  const [existing] = await db
+    .select()
+    .from(warehouseStockTable)
+    .where(and(eq(warehouseStockTable.productId, stockProductId), eq(warehouseStockTable.warehouseId, warehouseId)))
+    .limit(1);
+  if (existing) {
+    const next = Math.max(0, Number(existing.quantity ?? 0) + delta);
+    const [row] = await db
+      .update(warehouseStockTable)
+      .set({ quantity: String(next), updatedAt: new Date() })
+      .where(eq(warehouseStockTable.id, existing.id))
+      .returning();
+    return row;
+  }
+  const [row] = await db.insert(warehouseStockTable).values({
+    warehouseId,
+    productId: stockProductId,
+    quantity: String(Math.max(0, delta)),
+  }).returning();
+  return row;
+}
+
+async function executeWarehouseTransfer(row: typeof warehouseTransfersTable.$inferSelect, actor: ErpActor | null) {
+  if (row.status === "approved") {
+    const productId = Number(row.productId ?? 0);
+    const quantity = Number(row.quantity ?? 0);
+    if (!productId || quantity <= 0) return { executed: false, reason: "missing_product_or_quantity" };
+    const marker = await db.query.stockMovementsTable.findFirst({
+      where: and(
+        eq(stockMovementsTable.relatedType, "warehouse_transfer"),
+        eq(stockMovementsTable.relatedId, row.id),
+        eq(stockMovementsTable.reason, "warehouse_transfer_executed"),
+      ),
+    });
+    if (marker) return { executed: false, reason: "already_executed" };
+    const resolved = await getStockOwnerProduct(productId);
+    if (!resolved) return { executed: false, reason: "product_not_found" };
+    await adjustWarehouseStock(productId, row.fromWarehouseId, -quantity);
+    await adjustWarehouseStock(productId, row.toWarehouseId, quantity);
+    await recordStockMovement(resolved, 0, {
+      reason: "warehouse_transfer_executed",
+      relatedType: "warehouse_transfer",
+      relatedId: row.id,
+      createdBy: actor?.id ?? null,
+      createdByName: actor?.name ?? "النظام",
+    });
+    await addEntityTimeline({
+      entityType: "warehouse_transfer",
+      entityId: row.id,
+      type: "warehouse_transfer_executed",
+      title: "تم تنفيذ التحويل المخزني",
+      body: `${row.productName} × ${quantity}`,
+      actor,
+      metadata: { fromWarehouseId: row.fromWarehouseId, toWarehouseId: row.toWarehouseId, productId },
+    });
+    return { executed: true };
+  }
+  return { executed: false, reason: "not_approved" };
 }
 
 function normalizeSharedStockLinkedIds(value: unknown, sourceId: number): number[] {
@@ -3531,6 +3718,8 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
       alter table "products" add column if not exists "min_stock" integer not null default 0;
       alter table "products" add column if not exists "shared_stock_product_id" integer;
+      alter table "products" add column if not exists "is_rental" boolean not null default false;
+      alter table "products" add column if not exists "price_per_day" numeric(12,2) not null default 0;
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
       do $$
       begin
@@ -3548,9 +3737,58 @@ async function ensureAdminProductsColumns(): Promise<void> {
       create index if not exists "products_barcode_idx" on "products" ("barcode") where "barcode" is not null;
       create index if not exists "products_stock_min_stock_idx" on "products" ("stock", "min_stock");
       create index if not exists "products_shared_stock_product_id_idx" on "products" ("shared_stock_product_id");
+      create index if not exists "products_is_rental_active_idx" on "products" ("is_rental", "is_active");
     `).then(() => undefined).catch(() => { adminProductsColumnsPromise = null; });
   }
   await adminProductsColumnsPromise;
+}
+
+let rentalProductsTablesPromise: Promise<void> | null = null;
+async function ensureRentalProductsTables(): Promise<void> {
+  await ensureAdminProductsColumns();
+  if (!rentalProductsTablesPromise) {
+    rentalProductsTablesPromise = db.execute(sql`
+      create table if not exists "rental_orders" (
+        "id" serial primary key,
+        "order_no" varchar(40) not null unique,
+        "product_id" integer not null references "products" ("id") on delete restrict,
+        "stock_source_product_id" integer references "products" ("id") on delete set null,
+        "customer_id" integer references "customers" ("id") on delete set null,
+        "customer_name" text not null default '',
+        "phone" varchar(30) not null,
+        "phone_last4" varchar(4),
+        "start_date" date not null,
+        "end_date" date not null,
+        "days" integer not null default 1,
+        "price_per_day" numeric(12,2) not null default 0,
+        "total_amount" numeric(12,2) not null default 0,
+        "paid_amount" numeric(12,2) not null default 0,
+        "remaining_amount" numeric(12,2) not null default 0,
+        "payment_method" varchar(20) not null default 'cash',
+        "payment_status" varchar(20) not null default 'paid',
+        "status" varchar(20) not null default 'active',
+        "notes" text,
+        "stock_applied" integer not null default 1,
+        "stock_restored_at" timestamp,
+        "financial_transaction_id" integer,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_by_name" text not null default '',
+        "returned_at" timestamp,
+        "cancelled_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "rental_orders_product_dates_idx" on "rental_orders" ("product_id", "start_date", "end_date", "status");
+      create index if not exists "rental_orders_stock_source_dates_idx" on "rental_orders" ("stock_source_product_id", "start_date", "end_date", "status");
+      create index if not exists "rental_orders_phone_idx" on "rental_orders" ("phone");
+      create index if not exists "rental_orders_customer_idx" on "rental_orders" ("customer_id");
+      create index if not exists "rental_orders_status_created_idx" on "rental_orders" ("status", "created_at");
+    `).then(() => undefined).catch((err) => {
+      rentalProductsTablesPromise = null;
+      throw err;
+    });
+  }
+  await rentalProductsTablesPromise;
 }
 
 async function ensureStockTrackingTables(): Promise<void> {
@@ -4381,6 +4619,14 @@ async function ensureAdminExtensionsTables(): Promise<void> {
       insert into "warehouses" ("name")
       select 'المخزن الرئيسي'
       where not exists (select 1 from "warehouses");
+      create table if not exists "warehouse_stock" (
+        "id" serial primary key,
+        "warehouse_id" integer not null references "warehouses" ("id"),
+        "product_id" integer not null,
+        "quantity" numeric(12,3) not null default 0,
+        "updated_at" timestamp not null default now(),
+        "created_at" timestamp not null default now()
+      );
       create table if not exists "warehouse_transfers" (
         "id" serial primary key,
         "transfer_no" varchar(50) not null unique,
@@ -4431,6 +4677,9 @@ async function ensureAdminExtensionsTables(): Promise<void> {
       create index if not exists "approval_requests_entity_idx" on "approval_requests" ("entity_type", "entity_id");
       create index if not exists "entity_documents_entity_idx" on "entity_documents" ("entity_type", "entity_id", "created_at");
       create index if not exists "entity_timeline_entity_idx" on "entity_timeline" ("entity_type", "entity_id", "created_at");
+      create unique index if not exists "warehouse_stock_product_warehouse_idx" on "warehouse_stock" ("product_id", "warehouse_id");
+      create index if not exists "warehouse_stock_warehouse_idx" on "warehouse_stock" ("warehouse_id");
+      create index if not exists "warehouse_stock_product_idx" on "warehouse_stock" ("product_id");
       create index if not exists "warehouse_transfers_status_idx" on "warehouse_transfers" ("status", "created_at");
       create index if not exists "asset_profiles_status_idx" on "asset_profiles" ("status", "updated_at");
       create index if not exists "disaster_recovery_snapshots_created_idx" on "disaster_recovery_snapshots" ("created_at");
@@ -5398,6 +5647,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         stock: sharedStock.id ? 0 : Number.isFinite(Number(data.stock)) ? Number(data.stock) : 0,
         minStock: sharedStock.id ? 0 : Number.isFinite(Number(data.minStock)) ? Number(data.minStock) : 0,
         sharedStockProductId: sharedStock.id,
+        isRental: data.isRental === true,
+        pricePerDay: String(money(data.pricePerDay)),
         barcode: requestedBarcode || null,
         categoryId: productCategories.categoryId,
         subcategoryId: productCategories.subcategoryId,
@@ -5480,6 +5731,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "isActive",
       "sortOrder",
       "minStock",
+      "isRental",
       "barcode",
       "categoryId",
       "subcategoryId",
@@ -5558,6 +5810,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (data.price !== undefined) update.price = data.price.toString();
     if (data.originalPrice !== undefined) update.originalPrice = money(data.originalPrice) > 0 ? String(money(data.originalPrice)) : null;
     if (data.costPrice !== undefined) update.costPrice = String(money(data.costPrice));
+    if (data.pricePerDay !== undefined) update.pricePerDay = String(money(data.pricePerDay));
     Object.assign(update, pickContentTranslations(rawBody, true));
     const [product] = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
     if (!product) return error("المنتج غير موجود", 404);
@@ -5590,6 +5843,19 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     const id = int(parts[1]);
     if (!id) return error("معرف غير صحيح", 400);
+    const existing = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) }) as any;
+    if (!existing) return error("المنتج غير موجود", 404);
+    if (!(auth.role === "admin" || auth.role === "manager")) {
+      const approval = await createApprovalRequest({
+        type: "delete_product",
+        title: `حذف مادة: ${existing.nameAr || existing.name || id}`,
+        entityType: "product",
+        entityId: id,
+        oldValues: { id, name: existing.name, nameAr: existing.nameAr, stock: productStockAmount(existing) },
+        actor: erpActorFromAdmin(auth),
+      });
+      return json({ message: "تم إرسال طلب حذف المادة للموافقة", approval: formatApprovalRequest(approval) }, 202);
+    }
     await db.delete(productsTable).where(eq(productsTable.id, id));
     void logAdminActivity(req, "product_deleted", "product", id);
     clearStoreCategoriesCache();
@@ -6427,6 +6693,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   if (method === "GET" && parts[1] === "my") {
     const customerId = getCurrentCustomerId(req);
     if (!customerId) return error("غير مخول", 401);
+    await ensureRentalProductsTables();
     const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
     const phoneVariants = iraqiPhoneVariants(customer?.phone);
     const orders = await db.query.ordersTable.findMany({
@@ -6441,6 +6708,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           orderBy: [desc(serviceOrdersTable.createdAt)],
         })
       : [];
+    const rentalOrders = phoneVariants.length > 0
+      ? await db.query.rentalOrdersTable.findMany({
+          where: or(eq(rentalOrdersTable.customerId, customerId), inArray(rentalOrdersTable.phone, phoneVariants)),
+          orderBy: [desc(rentalOrdersTable.createdAt)],
+        })
+      : await db.query.rentalOrdersTable.findMany({
+          where: eq(rentalOrdersTable.customerId, customerId),
+          orderBy: [desc(rentalOrdersTable.createdAt)],
+        });
     const services = serviceOrders.length > 0 ? await db.query.servicesTable.findMany() : [];
     const serviceMap = new Map(services.map((s) => [s.id, s]));
     const rows = [
@@ -6464,6 +6740,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         eventLocation: booking.eventLocation ?? null,
         createdAt: booking.createdAt.toISOString(),
       })),
+      ...(await Promise.all(rentalOrders.map(formatRentalOrder))),
     ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return json(rows);
   }
@@ -8437,6 +8714,17 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
       }
 
       if (method === "DELETE") {
+        if (!(auth.role === "admin" || auth.role === "manager")) {
+          const approval = await createApprovalRequest({
+            type: "cancel_kosha_booking",
+            title: `إلغاء حجز كوشة: ${existing.customerName}`,
+            entityType: "kosha_booking",
+            entityId: id,
+            oldValues: { status: existing.status, customerName: existing.customerName, eventDate: existing.eventDate },
+            actor: erpActorFromAdmin(auth),
+          });
+          return json({ message: "تم إرسال طلب الإلغاء للموافقة", approval: formatApprovalRequest(approval) }, 202);
+        }
         await syncKoshaFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
         const [archived] = await db.update(koshaBookingsTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id)).returning();
         await syncAutomaticTasksForEntityStatus({
@@ -8790,6 +9078,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         reviewedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(approvalRequestsTable.id, id)).returning();
+      let execution: unknown = null;
+      if (next === "approved") {
+        execution = await executeApprovedApprovalRequest(row, erpActorFromAdmin(auth));
+      }
       if (row.entityType && row.entityId) {
         void addEntityTimeline({
           entityType: row.entityType,
@@ -8798,11 +9090,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           title: next === "approved" ? "تمت الموافقة" : "تم الرفض",
           body: row.title,
           actor: erpActorFromAdmin(auth),
-          metadata: { approvalRequestId: row.id, status: next },
+          metadata: { approvalRequestId: row.id, status: next, execution },
         });
       }
       void logAdminActivity(req, next === "approved" ? "approval_request_approved" : "approval_request_rejected", "approval_request", row.id, { requestNo: row.requestNo });
-      return json(formatApprovalRequest(row));
+      return json({ ...formatApprovalRequest(row), execution });
     }
   }
 
@@ -9063,6 +9355,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         limit: 80,
       }),
     ]);
+    const vehicleTasks = tasks.filter((row) => /تحميل|توصيل|سيارة|خارج|ميدان|نقل/i.test(`${row.title} ${row.description ?? ""}`));
     return json({
       koshas: koshas.map((row) => {
         const details = (row.bookingDetails ?? {}) as Record<string, unknown>;
@@ -9076,11 +9369,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         };
       }),
       photographers: photos.map((row) => ({ id: row.id, title: row.eventName || row.groomName, date: row.eventDate, location: row.location, staff: row.assignedStaffName, href: `/staff/photography/events/${row.clientToken}/register` })),
+      vehicles: vehicleTasks.map((row) => ({ id: row.id, title: row.title, status: row.status, date: row.dueAt ? iso(row.dueAt) : null, staff: (row.assignedStaffIds ?? []).join(", "), href: "/admin/tasks" })),
       tasks: tasks.map((row) => formatTask(row)),
       summary: {
         date: today,
         koshasActive: koshas.length,
         photographersField: photos.filter((row) => row.eventDate === today).length,
+        vehiclesOutside: vehicleTasks.length,
         tasksOpen: tasks.length,
         finishedBookings: koshas.filter((row) => row.eventDate && row.eventDate < today).length,
       },
@@ -9134,11 +9429,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
     if (method === "GET") {
-      const [rows, warehouses] = await Promise.all([
+      const [rows, warehouses, warehouseStock] = await Promise.all([
         db.query.warehouseTransfersTable.findMany({ orderBy: [desc(warehouseTransfersTable.createdAt)], limit: 200 }),
         db.query.warehousesTable.findMany({ orderBy: [asc(warehousesTable.id)] }),
+        db.query.warehouseStockTable.findMany({ orderBy: [desc(warehouseStockTable.updatedAt)], limit: 500 }),
       ]);
-      return json({ data: rows.map(formatWarehouseTransfer), warehouses });
+      return json({ data: rows.map(formatWarehouseTransfer), warehouses, warehouseStock: warehouseStock.map((row) => ({ ...row, quantity: Number(row.quantity), createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) })) });
     }
     if (method === "POST") {
       const b = await body(req);
@@ -9169,7 +9465,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const next = String(b?.status ?? "").toLowerCase() === "approved" ? "approved" : "rejected";
       const [row] = await db.update(warehouseTransfersTable).set({ status: next, reviewedBy: auth.id, reviewedByName: auth.fullName || auth.username, reviewedAt: new Date(), updatedAt: new Date() }).where(eq(warehouseTransfersTable.id, id)).returning();
       if (!row) return error("التحويل غير موجود", 404);
-      return json(formatWarehouseTransfer(row));
+      const execution = next === "approved" ? await executeWarehouseTransfer(row, erpActorFromAdmin(auth)) : null;
+      void logAdminActivity(req, next === "approved" ? "warehouse_transfer_approved" : "warehouse_transfer_rejected", "warehouse_transfer", row.id, { transferNo: row.transferNo, execution });
+      return json({ ...formatWarehouseTransfer(row), execution });
     }
   }
 
@@ -9299,6 +9597,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const summary: Record<string, unknown> = {
         counts,
         mediaCount: payload.mediaManifest.length,
+        mediaArchivedCount: payload.mediaFiles?.length ?? 0,
+        mediaSkippedCount: payload.mediaSkipped?.length ?? 0,
+        mediaSkipped: payload.mediaSkipped ?? [],
         exportedAt: payload.meta.exportedAt,
         storage: fileUrl ? "supabase" : "inline",
       };
@@ -10234,6 +10535,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         stock: String(productStockAmount(p)),
         ownStock: String(p.ownStock ?? p.stock ?? "0"),
         minStock: String(p.effectiveMinStock ?? p.minStock ?? p.min_stock ?? "0"),
+        isRental: Boolean(p.isRental ?? p.is_rental ?? false),
+        pricePerDay: Number.parseFloat(String(p.pricePerDay ?? p.price_per_day ?? "0")) || 0,
         sharedStockProductId: p.sharedStockProductId ?? p.shared_stock_product_id ?? null,
         sharedStockProductName: p.sharedStockProductName ?? null,
         sharedStockLinkedProducts: Array.isArray(p.sharedStockLinkedProducts) ? p.sharedStockLinkedProducts : [],
@@ -11547,6 +11850,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!id) return error("معرف غير صحيح", 400);
       const existing = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, id) });
       if (!existing) return error("غير موجود", 404);
+      if (!(auth.role === "admin" || auth.role === "manager")) {
+        const approval = await createApprovalRequest({
+          type: "cancel_service_order",
+          title: `إلغاء حجز خدمة: ${existing.customerName}`,
+          entityType: "service_order",
+          entityId: id,
+          oldValues: { status: existing.status, customerName: existing.customerName, eventDate: existing.eventDate },
+          actor: erpActorFromAdmin(auth),
+        });
+        return json({ message: "تم إرسال طلب الإلغاء للموافقة", approval: formatApprovalRequest(approval) }, 202);
+      }
       await syncServiceOrderFinancialPayment({ ...existing, status: "cancelled" }, financialActor(auth));
       const [archived] = await db.update(serviceOrdersTable).set({ status: "cancelled", archivedAt: new Date() }).where(eq(serviceOrdersTable.id, id)).returning();
       await db.insert(serviceOrderStatusHistoryTable).values({ serviceOrderId: id, status: "cancelled", notes: "إلغاء وأرشفة من لوحة الإدارة" });
@@ -11876,6 +12190,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const current = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, id) }) as any;
       if (!current) return error("غير موجود", 404);
       const currentItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
+      if (!(auth.role === "admin" || auth.role === "manager")) {
+        const approval = await createApprovalRequest({
+          type: "cancel_order",
+          title: `إلغاء طلب متجر: ${current.customerName}`,
+          entityType: "order",
+          entityId: id,
+          oldValues: orderSnapshot(current, currentItems),
+          actor: erpActorFromAdmin(auth),
+        });
+        return json({ message: "تم إرسال طلب الإلغاء للموافقة", approval: formatApprovalRequest(approval) }, 202);
+      }
       await restoreOrderStockBeforeDelete(current, orderActor);
       await syncOrderFinancialPayment({ ...current, status: "cancelled" }, financialActor(auth));
       const [archived] = await db.update(ordersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(ordersTable.id, id)).returning();
@@ -14053,6 +14378,237 @@ async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$infer
   }, financeActorValue);
 }
 
+const RENTAL_ACTIVE_STATUS = "active";
+const RENTAL_CLOSED_STATUSES = new Set(["returned", "cancelled"]);
+
+const RentalOrderCreateSchema = z.object({
+  productId: z.coerce.number().int().positive("المنتج مطلوب"),
+  customerName: z.string().trim().max(200).optional().default(""),
+  phone: z.string().trim().min(1, "رقم الهاتف مطلوب"),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ البداية غير صحيح"),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ النهاية غير صحيح"),
+  paidAmount: z.coerce.number().min(0).optional(),
+  paymentMethod: z.enum(["cash", "card", "transfer"]).optional().default("cash"),
+  notes: z.string().trim().max(2000).optional().default(""),
+});
+
+function rentalDays(startDate: string, endDate: string): number {
+  const start = Date.parse(`${startDate}T00:00:00.000Z`);
+  const end = Date.parse(`${endDate}T00:00:00.000Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.max(1, Math.floor((end - start) / 86_400_000) + 1);
+}
+
+function rentalOrderNo(phone: string): string {
+  const tail = phoneLast4(phone) || "0000";
+  return `RNT-${tail}-${Date.now().toString(36).toUpperCase()}`;
+}
+
+async function findRentalOverlap(stockSourceProductId: number, startDate: string, endDate: string, excludeId?: number | null) {
+  return db.query.rentalOrdersTable.findFirst({
+    where: and(
+      eq(rentalOrdersTable.stockSourceProductId, stockSourceProductId),
+      eq(rentalOrdersTable.status, RENTAL_ACTIVE_STATUS),
+      lte(rentalOrdersTable.startDate, endDate),
+      gte(rentalOrdersTable.endDate, startDate),
+      excludeId ? sql`${rentalOrdersTable.id} <> ${excludeId}` : undefined,
+    ),
+  });
+}
+
+async function syncRentalFinancialPayment(order: typeof rentalOrdersTable.$inferSelect, financeActorValue: FinancialActor) {
+  const targetPaid = order.status === "cancelled" ? 0 : Number(order.paidAmount);
+  return syncSourcePaymentTarget({
+    sourceType: "rental_order",
+    sourceId: order.id,
+    sourceEvent: "payment",
+    targetAmount: targetPaid,
+    normalDirection: "revenue",
+    transactionDate: order.createdAt.toISOString().slice(0, 10),
+    department: "store",
+    transactionType: "rental_order",
+    description: `دفعة حجز إيجار ${order.orderNo}`,
+    paymentMethod: order.paymentMethod === "transfer" ? "transfer" : order.paymentMethod === "card" ? "card" : "cash",
+    customerId: order.customerId,
+    customerName: order.customerName,
+    customerPhone: order.phone,
+    notes: order.notes,
+  }, financeActorValue);
+}
+
+async function formatRentalOrder(row: typeof rentalOrdersTable.$inferSelect) {
+  const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, row.productId) });
+  return {
+    id: row.id,
+    orderNo: row.orderNo,
+    trackingCode: row.orderNo,
+    kind: "rental",
+    productId: row.productId,
+    productName: product?.nameAr || product?.name || "منتج إيجار",
+    productImage: product ? publicMediaValue("product", product, product.images?.[0], 0) : null,
+    customerName: row.customerName,
+    customerPhone: row.phone,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    days: row.days,
+    pricePerDay: Number(row.pricePerDay),
+    total: Number(row.totalAmount),
+    paidAmount: Number(row.paidAmount),
+    remainingAmount: Number(row.remainingAmount),
+    paymentMethod: row.paymentMethod,
+    paymentStatus: row.paymentStatus,
+    status: row.status,
+    notes: row.notes ?? "",
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+async function handleRentalOrders(req: NextRequest, parts: string[]) {
+  const method = req.method;
+  await ensureRentalProductsTables();
+
+  if (method === "POST" && parts.length === 1) {
+    const parsed = RentalOrderCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("rental-orders.create", parsed);
+    const data = parsed.data;
+    const days = rentalDays(data.startDate, data.endDate);
+    if (!days) return error("تاريخ النهاية يجب أن يكون بعد أو بنفس تاريخ البداية", 400);
+
+    const product = await db.query.productsTable.findFirst({
+      where: and(eq(productsTable.id, data.productId), eq(productsTable.isActive, true)),
+    }) as any;
+    if (!product || !Boolean(product.isRental ?? product.is_rental)) return error("هذا المنتج غير متاح للإيجار", 404);
+
+    const phone = normalizeIraqiPhone(data.phone);
+    if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const customerName = textFallback(data.customerName, formatIraqiPhone(phone), "زبون");
+    const customer = await ensureCustomerForPhone(phone, customerName);
+    const stockOwner = await getStockOwnerProduct(product.id);
+    if (!stockOwner) return error("المنتج غير موجود", 404);
+    const stockSource = stockOwner.stockProduct;
+    if (Number(stockSource.stock ?? 0) <= 0) return error("المنتج محجوز حالياً أو غير متوفر للإيجار", 409);
+    const overlap = await findRentalOverlap(stockSource.id, data.startDate, data.endDate);
+    if (overlap) return error("يوجد حجز إيجار لنفس المنتج ضمن هذه الفترة", 409);
+
+    const pricePerDay = Number(product.pricePerDay ?? product.price_per_day ?? 0) || Number(product.price ?? 0) || 0;
+    if (pricePerDay <= 0) return error("سعر الإيجار اليومي غير محدد لهذا المنتج", 400);
+    const total = days * pricePerDay;
+    const paid = Math.min(total, Math.max(0, Number(data.paidAmount ?? total) || 0));
+    const remaining = Math.max(0, total - paid);
+    const [order] = await db.insert(rentalOrdersTable).values({
+      orderNo: rentalOrderNo(phone),
+      productId: product.id,
+      stockSourceProductId: stockSource.id,
+      customerId: customer?.id ?? null,
+      customerName,
+      phone,
+      phoneLast4: phoneLast4(phone),
+      startDate: data.startDate,
+      endDate: data.endDate,
+      days,
+      pricePerDay: String(pricePerDay),
+      totalAmount: String(total),
+      paidAmount: String(paid),
+      remainingAmount: String(remaining),
+      paymentMethod: data.paymentMethod,
+      paymentStatus: remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid",
+      status: RENTAL_ACTIVE_STATUS,
+      notes: data.notes,
+      stockApplied: 1,
+    }).returning();
+
+    await adjustProductStock(product.id, -1, {
+      reason: "rental_stock_deducted",
+      relatedType: "rental_order",
+      relatedId: order.id,
+    });
+    const financialTransaction = await syncRentalFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    if (financialTransaction?.id) {
+      await db.update(rentalOrdersTable).set({ financialTransactionId: financialTransaction.id, updatedAt: new Date() }).where(eq(rentalOrdersTable.id, order.id));
+    }
+    void logAdminActivity(req, "rental_order_created", "rental_order", order.id, { orderNo: order.orderNo, productId: product.id });
+    void createNotification({
+      type: "rental_order_new",
+      title: "حجز إيجار جديد",
+      body: `${customerName} - ${order.orderNo}`,
+      entityType: "rental_order",
+      entityId: order.id,
+      href: "/admin/products",
+    });
+    return json(await formatRentalOrder({ ...order, financialTransactionId: financialTransaction?.id ?? order.financialTransactionId }), 201);
+  }
+
+  if (method === "GET" && parts.length === 1) {
+    const auth = await requireAnyPermission(req, ["products", "orders", "accounting"]);
+    if (isResponse(auth)) return auth;
+    const productId = int(req.nextUrl.searchParams.get("productId") ?? "");
+    const status = req.nextUrl.searchParams.get("status")?.trim();
+    const where = and(
+      productId ? or(eq(rentalOrdersTable.productId, productId), eq(rentalOrdersTable.stockSourceProductId, productId)) : undefined,
+      status ? eq(rentalOrdersTable.status, status) : undefined,
+    );
+    const rows = await db.query.rentalOrdersTable.findMany({
+      where,
+      orderBy: [desc(rentalOrdersTable.createdAt)],
+      limit: 300,
+    });
+    return json(await Promise.all(rows.map(formatRentalOrder)));
+  }
+
+  if (method === "PATCH" && parts[1]) {
+    const auth = await requireAnyPermission(req, ["products", "orders"]);
+    if (isResponse(auth)) return auth;
+    const id = int(parts[1]);
+    if (!id) return error("معرف غير صحيح", 400);
+    const data = await body(req);
+    const nextStatus = String(data?.status ?? "").trim();
+    if (!["active", "returned", "cancelled"].includes(nextStatus)) return error("حالة الإيجار غير صحيحة", 400);
+    const existing = await db.query.rentalOrdersTable.findFirst({ where: eq(rentalOrdersTable.id, id) });
+    if (!existing) return error("حجز الإيجار غير موجود", 404);
+    const update: any = { status: nextStatus, updatedAt: new Date() };
+    if (existing.status === RENTAL_ACTIVE_STATUS && RENTAL_CLOSED_STATUSES.has(nextStatus) && Number(existing.stockApplied ?? 1) === 1) {
+      await adjustProductStock(existing.productId, 1, {
+        reason: nextStatus === "cancelled" ? "rental_cancelled_stock_restored" : "rental_returned_stock_restored",
+        relatedType: "rental_order",
+        relatedId: existing.id,
+        createdBy: auth.id ?? null,
+        createdByName: auth.fullName || auth.username,
+      });
+      update.stockApplied = 0;
+      update.stockRestoredAt = new Date();
+      if (nextStatus === "returned") update.returnedAt = new Date();
+      if (nextStatus === "cancelled") update.cancelledAt = new Date();
+    } else if (RENTAL_CLOSED_STATUSES.has(existing.status) && nextStatus === RENTAL_ACTIVE_STATUS && Number(existing.stockApplied ?? 0) === 0) {
+      const stockOwner = await getStockOwnerProduct(existing.productId);
+      if (!stockOwner || Number(stockOwner.stockProduct.stock ?? 0) <= 0) return error("لا يوجد مخزون متاح لإعادة تفعيل الحجز", 409);
+      const overlap = await findRentalOverlap(stockOwner.stockProduct.id, String(existing.startDate), String(existing.endDate), existing.id);
+      if (overlap) return error("يوجد حجز إيجار آخر ضمن نفس الفترة", 409);
+      await adjustProductStock(existing.productId, -1, {
+        reason: "rental_reactivated_stock_deducted",
+        relatedType: "rental_order",
+        relatedId: existing.id,
+        createdBy: auth.id ?? null,
+        createdByName: auth.fullName || auth.username,
+      });
+      update.stockApplied = 1;
+      update.stockRestoredAt = null;
+      update.returnedAt = null;
+      update.cancelledAt = null;
+    }
+    const [row] = await db.update(rentalOrdersTable).set(update).where(eq(rentalOrdersTable.id, id)).returning();
+    if (!row) return error("حجز الإيجار غير موجود", 404);
+    const financialTransaction = row ? await syncRentalFinancialPayment(row, financialActor(auth)) : null;
+    if (financialTransaction?.id) {
+      await db.update(rentalOrdersTable).set({ financialTransactionId: financialTransaction.id, updatedAt: new Date() }).where(eq(rentalOrdersTable.id, id));
+    }
+    void logAdminActivity(req, "rental_order_status_updated", "rental_order", id, { from: existing.status, to: nextStatus });
+    const fresh = await db.query.rentalOrdersTable.findFirst({ where: eq(rentalOrdersTable.id, id) });
+    return json(await formatRentalOrder(fresh ?? row));
+  }
+
+  return null;
+}
+
 const PhotographyEventCreateSchema = z.object({
   clientToken: z.string().trim().min(16).max(64),
   groomName: z.string().trim().min(1, "اسم العريس مطلوب"),
@@ -16196,6 +16752,7 @@ const BACKUP_ENTITIES = {
   service_orders: serviceOrdersTable,
   service_order_status_history: serviceOrderStatusHistoryTable,
   products: productsTable,
+  rental_orders: rentalOrdersTable,
   stock_movements: stockMovementsTable,
   categories: categoriesTable,
   customers: customersTable,
@@ -16224,6 +16781,7 @@ const BACKUP_ENTITIES = {
   entity_timeline: entityTimelineTable,
   asset_profiles: assetProfilesTable,
   warehouses: warehousesTable,
+  warehouse_stock: warehouseStockTable,
   warehouse_transfers: warehouseTransfersTable,
   expense_categories: expenseCategoriesTable,
   receipt_vouchers: receiptVouchersTable,
@@ -16245,6 +16803,7 @@ const BACKUP_IMPORT_ORDER: BackupEntity[] = [
   "categories",
   "services",
   "products",
+  "rental_orders",
   "stock_movements",
   "delivery_zones",
   "gallery_items",
@@ -16270,6 +16829,7 @@ const BACKUP_IMPORT_ORDER: BackupEntity[] = [
   "entity_timeline",
   "asset_profiles",
   "warehouses",
+  "warehouse_stock",
   "warehouse_transfers",
   "expense_categories",
   "orders",
@@ -16296,9 +16856,13 @@ type BackupPayload = {
     version: number;
     exportedAt: string;
     mediaCount: number;
+    mediaArchivedCount?: number;
+    mediaSkippedCount?: number;
   };
   data: Record<string, any[]>;
   mediaManifest: string[];
+  mediaFiles?: Array<{ url: string; path: string | null; contentType: string; base64: string; size: number }>;
+  mediaSkipped?: Array<{ url: string; reason: string }>;
 };
 
 function collectBackupMedia(rows: any[]) {
@@ -16334,16 +16898,117 @@ async function buildBackupPayload(): Promise<BackupPayload> {
       data[name] = [];
     }
   }
+  const mediaArchive = await buildBackupMediaArchive(Array.from(media));
   return {
-    meta: { app: "ajn-platform", version: 2, exportedAt: new Date().toISOString(), mediaCount: media.size },
+    meta: {
+      app: "ajn-platform",
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      mediaCount: media.size,
+      mediaArchivedCount: mediaArchive.files.length,
+      mediaSkippedCount: mediaArchive.skipped.length,
+    },
     data,
     mediaManifest: Array.from(media),
+    mediaFiles: mediaArchive.files,
+    mediaSkipped: mediaArchive.skipped,
   };
+}
+
+function storagePathFromPublicUrl(url: string) {
+  if (!STORAGE_URL) return null;
+  const marker = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+  const index = url.indexOf(marker);
+  if (index < 0) return null;
+  try {
+    return decodeURIComponent(url.slice(index + marker.length));
+  } catch {
+    return url.slice(index + marker.length);
+  }
+}
+
+async function buildBackupMediaArchive(urls: string[]) {
+  const maxBytes = Number(process.env.AJN_BACKUP_MEDIA_MAX_BYTES ?? 25_000_000);
+  const maxFileBytes = Number(process.env.AJN_BACKUP_MEDIA_MAX_FILE_BYTES ?? 5_000_000);
+  const files: BackupPayload["mediaFiles"] = [];
+  const skipped: BackupPayload["mediaSkipped"] = [];
+  let totalBytes = 0;
+  for (const url of urls) {
+    if (!/^https?:\/\//i.test(url)) {
+      skipped.push({ url, reason: "not_remote_url" });
+      continue;
+    }
+    try {
+      const head = await fetch(url, { method: "HEAD" }).catch(() => null);
+      const sizeFromHead = Number(head?.headers.get("content-length") ?? 0);
+      if (sizeFromHead && sizeFromHead > maxFileBytes) {
+        skipped.push({ url, reason: "file_too_large" });
+        continue;
+      }
+      if (sizeFromHead && totalBytes + sizeFromHead > maxBytes) {
+        skipped.push({ url, reason: "backup_media_limit_reached" });
+        continue;
+      }
+      const res = await fetch(url);
+      if (!res.ok) {
+        skipped.push({ url, reason: `http_${res.status}` });
+        continue;
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (bytes.length > maxFileBytes || totalBytes + bytes.length > maxBytes) {
+        skipped.push({ url, reason: "backup_media_limit_reached" });
+        continue;
+      }
+      totalBytes += bytes.length;
+      files.push({
+        url,
+        path: storagePathFromPublicUrl(url),
+        contentType: res.headers.get("content-type") ?? "application/octet-stream",
+        base64: bytes.toString("base64"),
+        size: bytes.length,
+      });
+    } catch (err: any) {
+      skipped.push({ url, reason: err?.message ?? "fetch_failed" });
+    }
+  }
+  return { files, skipped };
+}
+
+async function restoreBackupMediaFiles(payload: BackupPayload) {
+  const mediaFiles = Array.isArray(payload.mediaFiles) ? payload.mediaFiles : [];
+  if (!mediaFiles.length) return { restored: 0, skipped: 0 };
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY) return { restored: 0, skipped: mediaFiles.length };
+  let restored = 0;
+  let skipped = 0;
+  for (const file of mediaFiles) {
+    if (!file?.path || !file.base64) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const upload = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${file.path}`, {
+        method: "POST",
+        headers: {
+          apikey: STORAGE_SERVICE_KEY,
+          authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+          "content-type": file.contentType || "application/octet-stream",
+          "x-upsert": "true",
+        },
+        body: bodyFromBuffer(Buffer.from(file.base64, "base64")),
+      });
+      if (upload.ok) restored += 1;
+      else skipped += 1;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { restored, skipped };
 }
 
 async function importBackupPayload(payload: any) {
   const data: Record<string, any[]> = (payload?.data ?? payload ?? {}) as any;
   if (!data || typeof data !== "object") throw new Error("صيغة النسخة الاحتياطية غير صحيحة");
+  const mediaReport = await restoreBackupMediaFiles(payload as BackupPayload);
   const report: Record<string, { inserted: number; skipped: number; errors: number }> = {};
   for (const name of BACKUP_IMPORT_ORDER) {
     const rows = Array.isArray(data[name]) ? data[name] : [];
@@ -16370,7 +17035,7 @@ async function importBackupPayload(payload: any) {
     }
     report[name] = stats;
   }
-  return report;
+  return { ...report, __media: { inserted: mediaReport.restored, skipped: mediaReport.skipped, errors: 0 } };
 }
 
 async function uploadBackupPayload(payload: BackupPayload, snapshotNo: string) {
@@ -16459,6 +17124,15 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz") return json({ status: "ok" });
+    if (root === "cron" && parts[1] === "smart-notifications" && req.method === "GET") {
+      const secret = process.env.CRON_SECRET;
+      if (secret) {
+        const auth = req.headers.get("authorization") ?? "";
+        if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
+      }
+      const summary = await runSmartNotificationsSweep();
+      return json({ ok: true, summary });
+    }
 
     // Run all schema ensures in parallel — they are singleton-promise guarded, so
     // after first resolution each subsequent await is a microtask (effectively free).
@@ -16481,7 +17155,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       (root === "koshas" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
       (root === "staff" && parts[1] === "koshas") ? ensureKoshaStaffTables() : undefined,
       (root === "staff" && parts[1] === "photography") ? ensurePhotographyStaffTables() : undefined,
-      (root === "orders" || root === "service-orders" || root === "koshas" || (root === "staff" && parts[1] === "photography") || (!isAdminAuth && root === "admin"))
+      (root === "rental-orders") ? ensureRentalProductsTables() : undefined,
+      (root === "orders" || root === "service-orders" || root === "koshas" || root === "rental-orders" || (root === "staff" && parts[1] === "photography") || (!isAdminAuth && root === "admin"))
         ? ensureMasterCashBoxTables() : undefined,
     ].filter(Boolean));
 
@@ -16504,6 +17179,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
                 ? await handleNotifications(req, parts)
         : root === "products"
           ? await handleProducts(req, parts)
+          : root === "rental-orders"
+            ? await handleRentalOrders(req, parts)
           : root === "koshas"
             ? await handleKoshas(req, parts)
           : root === "offers"

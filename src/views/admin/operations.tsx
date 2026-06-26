@@ -341,13 +341,14 @@ export function LiveOperationsPage() {
       <div className="grid gap-3 md:grid-cols-4">
         <StatCard icon={Package} label="كوشات فعالة" value={summary.koshasActive ?? 0} />
         <StatCard icon={Gauge} label="مصورو اليوم" value={summary.photographersField ?? 0} />
+        <StatCard icon={Boxes} label="سيارات بالخارج" value={summary.vehiclesOutside ?? 0} />
         <StatCard icon={CheckCircle2} label="مهام مفتوحة" value={summary.tasksOpen ?? 0} />
-        <StatCard icon={AlertTriangle} label="حجوزات متأخرة" value={summary.finishedBookings ?? 0} />
       </div>
       {isLoading ? <LoadingRows /> : (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-4">
           <OperationList title="الكوشات المنصبة أو القادمة" rows={data?.koshas ?? []} />
           <OperationList title="المصورون بالميدان" rows={data?.photographers ?? []} />
+          <OperationList title="السيارات بالخارج" rows={data?.vehicles ?? []} />
           <OperationList title="مهام اليوم" rows={data?.tasks ?? []} />
         </div>
       )}

@@ -286,6 +286,8 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
   const cl = useContentLocalizer();
   const productName = cl.name(product);
   const description = shortProductDescription(cl.description(product));
+  const isRental = Boolean((product as any).isRental);
+  const rentalPrice = Number((product as any).pricePerDay ?? product.price ?? 0);
   return (
     <Link href={`/store/${product.id}`} className="animate-fade-up block" style={{ animationDelay: `${Math.min(index * 45, 360)}ms` }}>
       <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-[colors,shadow] duration-200 hover:shadow-lg hover:shadow-black/10 h-full flex flex-col">
@@ -297,7 +299,12 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
             style={{ objectFit: String(product.imageMetadata?.[0]?.objectFit ?? "cover") as any }}
             loading="lazy"
           />
-          {product.stock <= 0 && (
+          {isRental && (
+            <div className="absolute top-2 right-2 bg-primary/90 text-primary-foreground text-xs font-bold px-2 py-1 rounded backdrop-blur-sm">
+              {t("للإيجار")}
+            </div>
+          )}
+          {!isRental && product.stock <= 0 && (
             <div className="absolute top-2 right-2 bg-destructive/90 text-destructive-foreground text-xs font-bold px-2 py-1 rounded backdrop-blur-sm">
               {t("نفذت الكمية")}
             </div>
@@ -332,8 +339,10 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
 
           <div className="mt-auto pt-4 flex items-center justify-between">
             <div className="flex flex-col">
-              <span className="font-bold text-primary">{product.price.toLocaleString("en-US")} د.ع</span>
-              {product.originalPrice && product.originalPrice > product.price && (
+              <span className="font-bold text-primary">
+                {(isRental ? rentalPrice : product.price).toLocaleString("en-US")} د.ع{isRental ? " / يوم" : ""}
+              </span>
+              {!isRental && product.originalPrice && product.originalPrice > product.price && (
                 <span className="text-xs text-muted-foreground line-through">
                   {product.originalPrice.toLocaleString("en-US")} د.ع
                 </span>

@@ -4,7 +4,7 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -27,6 +27,7 @@ type ProductForm = {
   descriptionKu?: string; descriptionTr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
+  isRental?: boolean; pricePerDay?: string;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
   categoryId?: number | null; subcategoryId?: number | null;
@@ -36,8 +37,21 @@ type ProductForm = {
   isFeatured: boolean; isActive?: boolean;
 };
 
+type RentalBookingRow = {
+  id: number;
+  orderNo: string;
+  customerName: string;
+  customerPhone: string;
+  startDate: string;
+  endDate: string;
+  days: number;
+  total: number;
+  status: "active" | "returned" | "cancelled" | string;
+};
+
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
+  isRental: false, pricePerDay: "0",
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
@@ -192,6 +206,8 @@ export default function ProductsPage() {
       costPrice: parseFloat(form.costPrice ?? "0") || 0,
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
+      isRental: form.isRental === true,
+      pricePerDay: parseFloat(form.pricePerDay ?? "0") || 0,
       sharedStockProductId: form.sharedStockProductId ?? null,
       ...(form.id && !form.sharedStockProductId ? { sharedStockLinkedProductIds: form.sharedStockLinkedProductIds ?? [] } : {}),
       barcode: form.barcode?.trim() ?? "",
@@ -471,6 +487,7 @@ export default function ProductsPage() {
                             price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                             costPrice: p.costPrice ? String(p.costPrice) : "0",
                             stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
+                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0",
                             sharedStockProductId: (p as any).sharedStockProductId ?? null,
                             sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
                             categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
@@ -514,7 +531,16 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const [sharedStockEnabled, setSharedStockEnabled] = useState(Boolean(form.sharedStockProductId));
   const [stockSearch, setStockSearch] = useState("");
   const [linkedSearch, setLinkedSearch] = useState("");
+  const [rentalStatusBusy, setRentalStatusBusy] = useState<number | null>(null);
   const { data: publicSettings } = usePublicSettings();
+  const {
+    data: rentalBookings = [],
+    refetch: refetchRentalBookings,
+  } = useQuery({
+    queryKey: ["admin", "rental-orders", form.id],
+    queryFn: () => adminFetch<RentalBookingRow[]>(`/rental-orders?productId=${form.id}`),
+    enabled: Boolean(form.id && form.isRental),
+  });
   useEffect(() => {
     setSharedStockEnabled(Boolean(form.sharedStockProductId));
     setStockSearch("");
@@ -570,6 +596,19 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
     if (current.has(productId)) current.delete(productId);
     else current.add(productId);
     onChange({ ...form, sharedStockLinkedProductIds: Array.from(current) });
+  }
+
+  async function updateRentalStatus(id: number, status: "active" | "returned" | "cancelled") {
+    setRentalStatusBusy(id);
+    try {
+      await adminFetch(`/rental-orders/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+      await refetchRentalBookings();
+    } finally {
+      setRentalStatusBusy(null);
+    }
   }
 
   function addImages(results: ImageEditResult[]) {
@@ -708,6 +747,42 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <Inp label="المخزون" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
           <Inp label="حد التنبيه للمخزون" type="number" value={form.minStock ?? "0"} onChange={v => onChange({ ...form, minStock: v })} />
           <Inp label="الباركود (اختياري)" value={form.barcode ?? ""} onChange={v => onChange({ ...form, barcode: v })} />
+          <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+            <h4 className="text-sm font-semibold text-foreground">إعدادات الإيجار</h4>
+            <div className="flex items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.isRental === true}
+                  onChange={(event) => onChange({
+                    ...form,
+                    isRental: event.target.checked,
+                    pricePerDay: event.target.checked ? form.pricePerDay ?? form.price ?? "0" : form.pricePerDay ?? "0",
+                    stock: event.target.checked && (!form.stock || form.stock === "0") ? "1" : form.stock,
+                  })}
+                  className="accent-primary"
+                />
+                منتج للإيجار؟
+              </label>
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
+                Number(form.stock ?? 0) > 0
+                  ? "border-status-success/30 bg-status-success/10 text-status-success"
+                  : "border-amber-400/30 bg-amber-400/10 text-amber-400"
+              }`}>
+                <CalendarDays className="h-3.5 w-3.5" />
+                {Number(form.stock ?? 0) > 0 ? "متاح للإيجار" : "محجوز حالياً"}
+              </span>
+            </div>
+            {form.isRental && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Inp label="سعر الإيجار لليوم" type="number" value={form.pricePerDay ?? "0"} onChange={v => onChange({ ...form, pricePerDay: v })} />
+                <Inp label="كمية الإيجار المتوفرة" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
+              </div>
+            )}
+            <p className="text-[11px] leading-5 text-muted-foreground">
+              عند تفعيل الإيجار سيظهر للزبون اختيار تاريخ البداية والنهاية بدل زر الشراء العادي.
+            </p>
+          </div>
           <div className="col-span-2 rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
             <label className="flex items-center justify-between gap-3 text-sm text-foreground">
               <span className="inline-flex items-center gap-2">
@@ -1100,6 +1175,82 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             </div>
           )}
         </div>
+
+        {form.id && form.isRental && (
+          <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">حجوزات الإيجار</h4>
+                <p className="mt-1 text-[11px] text-muted-foreground">الحجوزات المرتبطة بهذا المنتج أو بمصدر مخزونه المشترك.</p>
+              </div>
+              <span className="text-[11px] text-muted-foreground">{rentalBookings.length} حجز</span>
+            </div>
+            {rentalBookings.length === 0 ? (
+              <div className="rounded-lg border border-border/25 bg-card/50 p-3 text-xs text-muted-foreground">
+                لا توجد حجوزات إيجار لهذا المنتج حتى الآن.
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto rounded-lg border border-border/25 divide-y divide-border/20">
+                {rentalBookings.map((booking) => {
+                  const active = booking.status === "active";
+                  const returned = booking.status === "returned";
+                  const cancelled = booking.status === "cancelled";
+                  return (
+                    <div key={booking.id} className="bg-card/60 p-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs font-semibold text-foreground">{booking.orderNo}</p>
+                          <p className="mt-1 text-sm text-foreground">{booking.customerName || "زبون"} · {booking.customerPhone}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {booking.startDate} ← {booking.endDate} · {booking.days} يوم · {formatCurrency(booking.total)}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full border px-2 py-1 text-[11px] ${
+                            active ? "border-status-success/30 bg-status-success/10 text-status-success"
+                              : returned ? "border-primary/30 bg-primary/10 text-primary"
+                              : "border-status-danger/30 bg-status-danger/10 text-status-danger"
+                          }`}>
+                            {active ? "active" : returned ? "returned" : cancelled ? "cancelled" : booking.status}
+                          </span>
+                          {active ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={rentalStatusBusy === booking.id}
+                                onClick={() => void updateRentalStatus(booking.id, "returned")}
+                                className="rounded-lg border border-primary/30 px-2.5 py-1.5 text-[11px] text-primary hover:bg-primary/10 disabled:opacity-50"
+                              >
+                                إرجاع
+                              </button>
+                              <button
+                                type="button"
+                                disabled={rentalStatusBusy === booking.id}
+                                onClick={() => void updateRentalStatus(booking.id, "cancelled")}
+                                className="rounded-lg border border-status-danger/30 px-2.5 py-1.5 text-[11px] text-status-danger hover:bg-status-danger/10 disabled:opacity-50"
+                              >
+                                إلغاء
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={rentalStatusBusy === booking.id}
+                              onClick={() => void updateRentalStatus(booking.id, "active")}
+                              className="rounded-lg border border-border/40 px-2.5 py-1.5 text-[11px] text-foreground hover:text-primary disabled:opacity-50"
+                            >
+                              إعادة تفعيل
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm">

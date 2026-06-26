@@ -60,6 +60,8 @@ export interface Product {
   costPrice?: number;
   stock: number;
   ownStock?: number;
+  isRental?: boolean;
+  pricePerDay?: number;
   /** @nullable */
   sharedStockProductId?: number | null;
   /** @nullable */
@@ -102,6 +104,8 @@ export interface ProductInput {
   originalPrice?: number;
   costPrice?: number;
   stock?: number;
+  isRental?: boolean;
+  pricePerDay?: number;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
   minStock?: number;
@@ -128,6 +132,8 @@ export interface ProductUpdate {
   originalPrice?: number;
   costPrice?: number;
   stock?: number;
+  isRental?: boolean;
+  pricePerDay?: number;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
   minStock?: number;

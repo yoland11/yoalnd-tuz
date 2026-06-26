@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, timestamp, varchar, jsonb } from "drizzle-orm/pg-core";
+import { index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
 
@@ -96,6 +96,19 @@ export const warehousesTable = pgTable("warehouses", {
   isActive: integer("is_active").notNull().default(1),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const warehouseStockTable = pgTable("warehouse_stock", {
+  id: serial("id").primaryKey(),
+  warehouseId: integer("warehouse_id").notNull().references(() => warehousesTable.id),
+  productId: integer("product_id").notNull(),
+  quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull().default("0"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  productWarehouseUnique: uniqueIndex("warehouse_stock_product_warehouse_idx").on(table.productId, table.warehouseId),
+  warehouseIdx: index("warehouse_stock_warehouse_idx").on(table.warehouseId),
+  productIdx: index("warehouse_stock_product_idx").on(table.productId),
+}));
 
 export const warehouseTransfersTable = pgTable("warehouse_transfers", {
   id: serial("id").primaryKey(),
@@ -264,6 +277,7 @@ export type ApprovalRequest = typeof approvalRequestsTable.$inferSelect;
 export type EntityDocument = typeof entityDocumentsTable.$inferSelect;
 export type EntityTimelineRow = typeof entityTimelineTable.$inferSelect;
 export type Warehouse = typeof warehousesTable.$inferSelect;
+export type WarehouseStock = typeof warehouseStockTable.$inferSelect;
 export type WarehouseTransfer = typeof warehouseTransfersTable.$inferSelect;
 export type AssetProfile = typeof assetProfilesTable.$inferSelect;
 export type DisasterRecoverySnapshot = typeof disasterRecoverySnapshotsTable.$inferSelect;
