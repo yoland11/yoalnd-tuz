@@ -10,6 +10,12 @@ export const PRODUCT_STAGES: Stage[] = [
   { id: "delivered",  label: "تم التوصيل" },
 ];
 
+export const RENTAL_STAGES: Stage[] = [
+  { id: "active",    label: "نشط" },
+  { id: "returned",  label: "تم الإرجاع" },
+  { id: "cancelled", label: "ملغي" },
+];
+
 export const PHOTO_STAGES: Stage[] = [
   { id: "pending",    label: "تم الحجز" },
   { id: "following",  label: "جاري المتابعة" },
@@ -75,6 +81,7 @@ export const DISTRIBUTION_STAGES: Stage[] = [
 
 export function getStagesFor(serviceType: string | null | undefined, kind?: string | null): Stage[] {
   if (kind === "photography") return PHOTOGRAPHY_PORTAL_STAGES;
+  if (String(serviceType ?? "").toLowerCase() === "rental") return RENTAL_STAGES;
   if (!serviceType || kind === "product") return PRODUCT_STAGES;
   const t = serviceType.toLowerCase();
   if (t.includes("photo") || t === "تصوير")           return PHOTO_STAGES;

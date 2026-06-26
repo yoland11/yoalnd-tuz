@@ -5169,6 +5169,32 @@ async function formatOrder(order: any) {
   const items = await db.query.orderItemsTable.findMany({
     where: eq(orderItemsTable.orderId, order.id),
   });
+  const rentalRow = isRentalStoreOrder(order) ? await findRentalByStoreOrder(order) : null;
+  const rentalFromItem = items.map((item) => parseRentalCustomization(item.customization)).find(Boolean) ?? null;
+  const rental = rentalRow
+    ? {
+        id: rentalRow.id,
+        orderNo: rentalRow.orderNo,
+        startDate: String(rentalRow.startDate),
+        endDate: String(rentalRow.endDate),
+        days: Number(rentalRow.days),
+        pricePerDay: Number(rentalRow.pricePerDay),
+        totalAmount: Number(rentalRow.totalAmount),
+        status: rentalRow.status,
+      }
+    : rentalFromItem
+      ? {
+          id: Number(rentalFromItem.rentalOrderId ?? 0) || null,
+          orderNo: String(rentalFromItem.orderNo ?? order.trackingCode ?? ""),
+          startDate: String(rentalFromItem.startDate ?? ""),
+          endDate: String(rentalFromItem.endDate ?? ""),
+          days: Number(rentalFromItem.days ?? 0) || 0,
+          pricePerDay: Number(rentalFromItem.pricePerDay ?? 0) || 0,
+          totalAmount: Number(rentalFromItem.totalAmount ?? order.total ?? 0) || 0,
+          status: String(rentalFromItem.status ?? order.status ?? "active"),
+        }
+      : null;
+  const rentalItem = rental ? items[0] : null;
   return {
     id: order.id,
     trackingCode: order.trackingCode,
@@ -5199,6 +5225,16 @@ async function formatOrder(order: any) {
     area: order.area ?? null,
     mapsUrl: order.mapsUrl ?? null,
     attachments: order.attachments ?? [],
+    rental,
+    ...(rental ? {
+      productId: rentalItem?.productId ?? null,
+      productName: rentalItem?.productNameAr || rentalItem?.productName || "منتج إيجار",
+      productImage: rentalItem ? publicMediaValue("order-item", rentalItem, rentalItem.image) : null,
+      startDate: rental.startDate,
+      endDate: rental.endDate,
+      days: rental.days,
+      pricePerDay: rental.pricePerDay,
+    } : {}),
     items: items.map((i) => ({
       id: i.id,
       productId: i.productId,
@@ -5209,6 +5245,7 @@ async function formatOrder(order: any) {
       selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
       selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
+      rental: parseRentalCustomization(i.customization),
       image: publicMediaValue("order-item", i, i.image),
     })),
     createdAt: order.createdAt.toISOString(),
@@ -5224,6 +5261,31 @@ async function buildTracking(order: any) {
     where: eq(orderStatusHistoryTable.orderId, order.id),
     orderBy: [desc(orderStatusHistoryTable.createdAt)],
   });
+  const rentalRow = isRentalStoreOrder(order) ? await findRentalByStoreOrder(order) : null;
+  const rentalFromItem = items.map((item) => parseRentalCustomization(item.customization)).find(Boolean) ?? null;
+  const rental = rentalRow
+    ? {
+        id: rentalRow.id,
+        orderNo: rentalRow.orderNo,
+        startDate: String(rentalRow.startDate),
+        endDate: String(rentalRow.endDate),
+        days: Number(rentalRow.days),
+        pricePerDay: Number(rentalRow.pricePerDay),
+        totalAmount: Number(rentalRow.totalAmount),
+        status: rentalRow.status,
+      }
+    : rentalFromItem
+      ? {
+          id: Number(rentalFromItem.rentalOrderId ?? 0) || null,
+          orderNo: String(rentalFromItem.orderNo ?? order.trackingCode ?? ""),
+          startDate: String(rentalFromItem.startDate ?? ""),
+          endDate: String(rentalFromItem.endDate ?? ""),
+          days: Number(rentalFromItem.days ?? 0) || 0,
+          pricePerDay: Number(rentalFromItem.pricePerDay ?? 0) || 0,
+          totalAmount: Number(rentalFromItem.totalAmount ?? order.total ?? 0) || 0,
+          status: String(rentalFromItem.status ?? order.status ?? "active"),
+        }
+      : null;
   const qrScanUrl = order.qrToken ? `${process.env.APP_BASE_URL?.replace(/\/$/, "") || ""}/api/qr/${order.qrToken}` : null;
   const qrDataUrl = qrScanUrl ? await QRCode.toDataURL(qrScanUrl, { margin: 1, width: 180 }) : null;
   return {
@@ -5237,7 +5299,8 @@ async function buildTracking(order: any) {
     customerName: order.customerName,
     customerPhone: order.customerPhone ?? null,
     serviceType: order.serviceType ?? null,
-    kind: "product",
+    kind: isRentalStoreOrder(order) ? "rental" : "product",
+    rental,
     total: Number.parseFloat(order.total),
     couponCode: order.couponCode ?? null,
     couponDiscountAmount: Number.parseFloat(order.couponDiscountAmount ?? "0"),
@@ -5258,6 +5321,7 @@ async function buildTracking(order: any) {
       selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
       selectedColorData: selectedColorPayload(i.selectedColorData, i.selectedColor),
       customization: i.customization ?? null,
+      rental: parseRentalCustomization(i.customization),
       image: publicMediaValue("order-item", i, i.image),
     })),
     statusHistory: history.map((h) => ({
@@ -6730,8 +6794,13 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         });
     const services = serviceOrders.length > 0 ? await db.query.servicesTable.findMany() : [];
     const serviceMap = new Map(services.map((s) => [s.id, s]));
+    const mirroredRentalCodes = new Set(orders.filter((order) => isRentalStoreOrder(order)).map((order) => String(order.trackingCode)));
+    const legacyRentalOrders = rentalOrders.filter((order) => !mirroredRentalCodes.has(String(order.orderNo)));
     const rows = [
-      ...(await Promise.all(orders.map(async (order) => ({ ...(await formatOrder(order)), kind: "order" })))),
+      ...(await Promise.all(orders.map(async (order) => {
+        const formatted = await formatOrder(order);
+        return { ...formatted, kind: isRentalStoreOrder(order) ? "rental" : "order" };
+      }))),
       ...serviceOrders.map((booking) => ({
         id: booking.id,
         kind: "service",
@@ -6751,7 +6820,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         eventLocation: booking.eventLocation ?? null,
         createdAt: booking.createdAt.toISOString(),
       })),
-      ...(await Promise.all(rentalOrders.map(formatRentalOrder))),
+      ...(await Promise.all(legacyRentalOrders.map(formatRentalOrder))),
     ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return json(rows);
   }
@@ -7883,14 +7952,26 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
       orderBy: [desc(orderStatusHistoryTable.createdAt)],
       limit: 12,
     });
+    const rental = isRentalStoreOrder(order) ? await findRentalByStoreOrder(order) : null;
     return {
-      kind: "order",
+      kind: isRentalStoreOrder(order) ? "rental" : "order",
+      serviceType: order.serviceType ?? null,
       trackingCode: order.trackingCode,
       customerName: order.customerName,
       status: order.status,
       paymentStatus: order.paymentStatus ?? "unpaid",
       createdAt: order.createdAt.toISOString(),
       updatedAt: order.createdAt.toISOString(),
+      rental: rental ? {
+        id: rental.id,
+        orderNo: rental.orderNo,
+        startDate: String(rental.startDate),
+        endDate: String(rental.endDate),
+        days: Number(rental.days),
+        pricePerDay: Number(rental.pricePerDay),
+        totalAmount: Number(rental.totalAmount),
+        status: rental.status,
+      } : null,
       statusHistory: history.map((item) => ({
         status: item.status,
         createdAt: item.createdAt.toISOString(),
@@ -12070,6 +12151,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.status !== undefined) {
         const nextStatusValue = String(b.status ?? "").trim();
         if (!nextStatusValue) return error("حالة الطلب غير صالحة", 400);
+        if (isRentalStoreOrder(current) && !["active", "returned", "cancelled"].includes(nextStatusValue)) return error("حالة الإيجار غير صحيحة", 400);
         update.status = nextStatusValue;
       }
       if (update.customerName !== undefined && !String(update.customerName).trim()) update.customerName = current.customerName;
@@ -12120,12 +12202,22 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.archived !== undefined) {
         if (Boolean(b.archived)) {
           const statusToArchive = String(update.status ?? current.status);
-          if (!["delivered", "completed", "cancelled"].includes(statusToArchive)) return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
+          const archivableStatuses = isRentalStoreOrder(current) ? ["returned", "cancelled"] : ["delivered", "completed", "cancelled"];
+          if (!archivableStatuses.includes(statusToArchive)) return error("يمكن أرشفة الطلبات المكتملة أو الملغية فقط", 409);
           update.archivedAt = new Date();
         } else update.archivedAt = null;
       }
 
       const nextStatus = String(update.status ?? current.status);
+      if (isRentalStoreOrder(current) && update.status === RENTAL_ACTIVE_STATUS && !hasAppliedStock(current)) {
+        const rental = await findRentalByStoreOrder(current);
+        if (rental) {
+          const stockOwner = await getStockOwnerProduct(rental.productId);
+          if (!stockOwner || Number(stockOwner.stockProduct.stock ?? 0) <= 0) return error("لا يوجد مخزون متاح لإعادة تفعيل حجز الإيجار", 409);
+          const overlap = await findRentalOverlap(stockOwner.stockProduct.id, String(rental.startDate), String(rental.endDate), rental.id);
+          if (overlap) return error("يوجد حجز إيجار آخر ضمن نفس الفترة", 409);
+        }
+      }
       const inventoryChanges = hasItemsUpdate
         ? await buildOrderInventoryChanges(oldItems, nextItems, hasAppliedStock(current), consumesStockStatus(nextStatus))
         : [];
@@ -12173,6 +12265,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         })));
       } else if (update.status !== undefined) {
         await syncOrderStockState(row, orderActor);
+      }
+      if (isRentalStoreOrder(row)) {
+        await syncRentalRowFromStoreOrder((await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, row.id) })) ?? row);
       }
       if (update.paymentStatus !== undefined || update.remainingAmount !== undefined) {
         void notifyOrderNeedsFollowup({
@@ -12250,6 +12345,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       await restoreOrderStockBeforeDelete(current, orderActor);
       await syncOrderFinancialPayment({ ...current, status: "cancelled" }, financialActor(auth));
       const [archived] = await db.update(ordersTable).set({ status: "cancelled", archivedAt: new Date(), updatedAt: new Date() }).where(eq(ordersTable.id, id)).returning();
+      if (archived && isRentalStoreOrder(current)) {
+        await syncRentalRowFromStoreOrder(archived);
+      }
       await db.insert(orderStatusHistoryTable).values({ orderId: id, status: "cancelled", notes: "إلغاء وأرشفة من لوحة الإدارة" });
       void logAdminActivity(req, "order_cancelled_and_archived", "order", id, { oldValues: orderSnapshot(current, currentItems) });
       return json({ message: "تم إلغاء الطلب وأرشفته دون حذف البيانات", order: archived });
@@ -14363,6 +14461,7 @@ function serviceDepartment(service: { type?: string | null; name?: string | null
 async function syncOrderFinancialPayment(order: typeof ordersTable.$inferSelect, financeActorValue: FinancialActor) {
   const productAmount = Math.max(Number(order.total) - Number(order.deliveryFee), 0);
   const targetPaid = order.status === "cancelled" ? 0 : Math.min(Number(order.depositAmount), productAmount);
+  const isRental = isRentalStoreOrder(order);
   return syncSourcePaymentTarget({
     sourceType: "order",
     sourceId: order.id,
@@ -14371,8 +14470,8 @@ async function syncOrderFinancialPayment(order: typeof ordersTable.$inferSelect,
     normalDirection: "revenue",
     transactionDate: order.createdAt.toISOString().slice(0, 10),
     department: "store",
-    transactionType: "store_order",
-    description: `دفعة طلب ${order.trackingCode}`,
+    transactionType: isRental ? "rental_order" : "store_order",
+    description: `${isRental ? "دفعة حجز إيجار" : "دفعة طلب"} ${order.trackingCode}`,
     paymentMethod: order.paymentMethod === "transfer" ? "transfer" : "cash",
     customerId: order.customerId,
     customerName: order.customerName,
@@ -14426,6 +14525,70 @@ async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$infer
 
 const RENTAL_ACTIVE_STATUS = "active";
 const RENTAL_CLOSED_STATUSES = new Set(["returned", "cancelled"]);
+
+function isRentalStoreOrder(order: any): boolean {
+  return String(order?.serviceType ?? order?.service_type ?? "").toLowerCase() === "rental";
+}
+
+function rentalStatusFromStoreStatus(status: unknown): "active" | "returned" | "cancelled" {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (value === "returned" || value === "delivered" || value === "completed") return "returned";
+  if (value === "cancelled" || value === "canceled") return "cancelled";
+  return "active";
+}
+
+function rentalStorePaymentMethod(method: unknown, paid: number, total: number): "cod" | "transfer" | "paid" {
+  if (paid >= total && total > 0) return "paid";
+  return method === "transfer" ? "transfer" : "cod";
+}
+
+function rentalCustomization(input: {
+  rentalOrderId: number;
+  orderNo: string;
+  startDate: string;
+  endDate: string;
+  days: number;
+  pricePerDay: number;
+  totalAmount: number;
+  status: string;
+}) {
+  return JSON.stringify({ type: "rental", ...input });
+}
+
+function parseRentalCustomization(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && parsed.type === "rental" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function findRentalByStoreOrder(order: any) {
+  if (!order || !isRentalStoreOrder(order)) return null;
+  return db.query.rentalOrdersTable.findFirst({ where: eq(rentalOrdersTable.orderNo, order.trackingCode) });
+}
+
+async function syncRentalRowFromStoreOrder(order: typeof ordersTable.$inferSelect) {
+  if (!isRentalStoreOrder(order)) return null;
+  const rental = await findRentalByStoreOrder(order);
+  if (!rental) return null;
+  const nextStatus = rentalStatusFromStoreStatus(order.status);
+  const update: any = {
+    status: nextStatus,
+    paidAmount: order.depositAmount,
+    remainingAmount: order.remainingAmount,
+    paymentStatus: order.paymentStatus,
+    updatedAt: new Date(),
+    stockApplied: Number(order.stockApplied ?? 1),
+    stockRestoredAt: order.stockRestoredAt ?? null,
+  };
+  if (nextStatus === "returned") update.returnedAt = rental.returnedAt ?? new Date();
+  if (nextStatus === "cancelled") update.cancelledAt = rental.cancelledAt ?? new Date();
+  const [row] = await db.update(rentalOrdersTable).set(update).where(eq(rentalOrdersTable.id, rental.id)).returning();
+  return row;
+}
 
 const RentalOrderCreateSchema = z.object({
   productId: z.coerce.number().int().positive("المنتج مطلوب"),
@@ -14541,8 +14704,10 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
     const total = days * pricePerDay;
     const paid = Math.min(total, Math.max(0, Number(data.paidAmount ?? total) || 0));
     const remaining = Math.max(0, total - paid);
-    const [order] = await db.insert(rentalOrdersTable).values({
-      orderNo: rentalOrderNo(phone),
+    const orderNo = rentalOrderNo(phone);
+    const paymentStatus = remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+    const [rentalOrder] = await db.insert(rentalOrdersTable).values({
+      orderNo,
       productId: product.id,
       stockSourceProductId: stockSource.id,
       customerId: customer?.id ?? null,
@@ -14557,31 +14722,90 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
       paidAmount: String(paid),
       remainingAmount: String(remaining),
       paymentMethod: data.paymentMethod,
-      paymentStatus: remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid",
+      paymentStatus,
       status: RENTAL_ACTIVE_STATUS,
       notes: data.notes,
       stockApplied: 1,
     }).returning();
 
+    const orderPaymentMethod = rentalStorePaymentMethod(data.paymentMethod, paid, total);
+    const [storeOrder] = await db.insert(ordersTable).values({
+      trackingCode: orderNo,
+      phoneLast4: phoneLast4(phone),
+      customerId: customer?.id ?? undefined,
+      customerName,
+      customerPhone: phone,
+      status: RENTAL_ACTIVE_STATUS,
+      serviceType: "rental",
+      total: String(total),
+      deliveryFee: "0",
+      paymentMethod: orderPaymentMethod,
+      depositAmount: String(paid),
+      remainingAmount: String(remaining),
+      paymentStatus,
+      notes: data.notes || null,
+      stockApplied: 1,
+    }).returning();
+    const rentalDetails = rentalCustomization({
+      rentalOrderId: rentalOrder.id,
+      orderNo,
+      startDate: data.startDate,
+      endDate: data.endDate,
+      days,
+      pricePerDay,
+      totalAmount: total,
+      status: RENTAL_ACTIVE_STATUS,
+    });
+    await db.insert(orderItemsTable).values({
+      orderId: storeOrder.id,
+      productId: product.id,
+      productName: product.name ?? "",
+      productNameAr: product.nameAr ?? product.name ?? "",
+      quantity: 1,
+      price: String(total),
+      customization: rentalDetails,
+      image: publicMediaValue("product", product, product.images?.[0], 0),
+    });
+
     await adjustProductStock(product.id, -1, {
       reason: "rental_stock_deducted",
-      relatedType: "rental_order",
-      relatedId: order.id,
+      relatedType: "order",
+      relatedId: storeOrder.id,
     });
-    const financialTransaction = await syncRentalFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    const financialTransaction = await syncOrderFinancialPayment(storeOrder, SYSTEM_FINANCIAL_ACTOR);
     if (financialTransaction?.id) {
-      await db.update(rentalOrdersTable).set({ financialTransactionId: financialTransaction.id, updatedAt: new Date() }).where(eq(rentalOrdersTable.id, order.id));
+      await db.update(rentalOrdersTable).set({ financialTransactionId: financialTransaction.id, updatedAt: new Date() }).where(eq(rentalOrdersTable.id, rentalOrder.id));
     }
-    void logAdminActivity(req, "rental_order_created", "rental_order", order.id, { orderNo: order.orderNo, productId: product.id });
+    await db.insert(orderStatusHistoryTable).values({ orderId: storeOrder.id, status: RENTAL_ACTIVE_STATUS, notes: "تم إنشاء حجز الإيجار" });
+    const orderQr = await ensureQrForEntity("order", storeOrder, req);
+    void logAdminActivity(req, "rental_order_created", "order", storeOrder.id, { orderNo, rentalOrderId: rentalOrder.id, productId: product.id });
     void createNotification({
-      type: "rental_order_new",
+      type: "order_new",
       title: "حجز إيجار جديد",
-      body: `${customerName} - ${order.orderNo}`,
-      entityType: "rental_order",
-      entityId: order.id,
-      href: "/admin/products",
+      body: `${customerName} - ${orderNo}`,
+      entityType: "order",
+      entityId: storeOrder.id,
+      href: "/admin/orders",
     });
-    return json(await formatRentalOrder({ ...order, financialTransactionId: financialTransaction?.id ?? order.financialTransactionId }), 201);
+    void notifyLowStockForProductIds([product.id]);
+    void notifyTelegramOrder({
+      kind: "store",
+      id: storeOrder.id,
+      reference: storeOrder.trackingCode,
+      customerName: storeOrder.customerName,
+      phone: storeOrder.customerPhone,
+      createdByName: "المتجر الإلكتروني",
+      createdAt: storeOrder.createdAt,
+      paymentMethod: storeOrder.paymentMethod,
+      total: storeOrder.total,
+      paid: storeOrder.depositAmount,
+      remaining: storeOrder.remainingAmount,
+      status: "إيجار نشط",
+      notes: storeOrder.notes,
+      qrDataUrl: orderQr.dataUrl,
+      items: [{ productName: product.nameAr || product.name || "منتج إيجار", quantity: 1, unitPrice: total, total }],
+    });
+    return json({ ...(await formatOrder(storeOrder)), orderNo, rentalOrderId: rentalOrder.id }, 201);
   }
 
   if (method === "GET" && parts.length === 1) {
@@ -14643,7 +14867,23 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
     }
     const [row] = await db.update(rentalOrdersTable).set(update).where(eq(rentalOrdersTable.id, id)).returning();
     if (!row) return error("حجز الإيجار غير موجود", 404);
-    const financialTransaction = row ? await syncRentalFinancialPayment(row, financialActor(auth)) : null;
+    const storeOrder = await db.query.ordersTable.findFirst({ where: eq(ordersTable.trackingCode, existing.orderNo) });
+    let financialTransaction: any = null;
+    if (storeOrder) {
+      const [updatedStoreOrder] = await db.update(ordersTable).set({
+        status: nextStatus,
+        depositAmount: row.paidAmount,
+        remainingAmount: row.remainingAmount,
+        paymentStatus: row.paymentStatus,
+        stockApplied: update.stockApplied ?? storeOrder.stockApplied,
+        stockRestoredAt: update.stockRestoredAt ?? storeOrder.stockRestoredAt,
+        updatedAt: new Date(),
+      } as any).where(eq(ordersTable.id, storeOrder.id)).returning();
+      await db.insert(orderStatusHistoryTable).values({ orderId: storeOrder.id, status: nextStatus, notes: "تحديث حالة الإيجار" });
+      financialTransaction = updatedStoreOrder ? await syncOrderFinancialPayment(updatedStoreOrder, financialActor(auth)) : null;
+    } else {
+      financialTransaction = row ? await syncRentalFinancialPayment(row, financialActor(auth)) : null;
+    }
     if (financialTransaction?.id) {
       await db.update(rentalOrdersTable).set({ financialTransactionId: financialTransaction.id, updatedAt: new Date() }).where(eq(rentalOrdersTable.id, id));
     }

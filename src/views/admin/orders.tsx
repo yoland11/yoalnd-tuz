@@ -67,13 +67,29 @@ const PAYMENT_COLORS: Record<string, string> = {
 const STATUS_FILTERS = [
   { value: "", label: "الكل" },
   { value: "pending", label: "قيد الانتظار" },
+  { value: "active", label: "إيجار نشط" },
   { value: "reschedule_pending", label: "طلب تغيير موعد" },
   { value: "confirmed", label: "مؤكد" },
   { value: "processing", label: "قيد التجهيز" },
   { value: "shipped", label: "في الطريق" },
   { value: "delivered", label: "تم التوصيل" },
+  { value: "returned", label: "تم إرجاع الإيجار" },
   { value: "cancelled", label: "ملغي" },
 ];
+
+const RENTAL_STATUS_LABELS: Record<string, string> = {
+  active: "Active",
+  returned: "Returned",
+  cancelled: "Cancelled",
+};
+
+function isRentalOrder(order: any) {
+  return String(order?.serviceType ?? "").toLowerCase() === "rental" || order?.rental;
+}
+
+function rentalDetails(order: any) {
+  return order?.rental ?? order?.items?.map((item: any) => item?.rental).find(Boolean) ?? null;
+}
 
 export default function OrdersPage() {
   const queryClient = useQueryClient();
@@ -354,16 +370,23 @@ export default function OrdersPage() {
         : filteredProducts.length === 0 ? <EmptyState message="لا توجد طلبات" /> : (
           <div className="space-y-3">
             {filteredProducts.map(order => {
-              const stages = getStagesFor(order.serviceType, "product");
+              const rental = rentalDetails(order);
+              const rentalOrder = isRentalOrder(order);
+              const stages = getStagesFor(rentalOrder ? "rental" : order.serviceType, "product");
               const phone = order.customerPhone ?? "";
               const trackUrl = `${window.location.origin}/track?code=${order.trackingCode ?? ""}`;
               const waMsg = `مرحبا ${order.customerName}، رمز تتبع طلبك: ${order.trackingCode ?? ""}\n${trackUrl}`;
-              const canArchive = ["delivered", "completed", "cancelled"].includes(order.status);
+              const canArchive = ["delivered", "completed", "returned", "cancelled"].includes(order.status);
               return (
                 <div key={order.id} className="bg-card rounded-xl border border-border/30 p-4">
                   <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
                     <div>
-                      <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+                        {rentalOrder && (
+                          <span className="rounded-full border border-primary/35 bg-primary/10 px-2.5 py-0.5 text-[11px] font-bold text-primary">إيجار</span>
+                        )}
+                      </div>
                       <p className="text-sm text-muted-foreground">{order.customerName} — {formatIraqiPhone(phone)}</p>
                       {order.governorate && <p className="text-xs text-muted-foreground">{order.governorate}{order.area ? ` • ${order.area}` : ""} {order.address ? `• ${order.address}` : ""}</p>}
                     </div>
@@ -391,10 +414,20 @@ export default function OrdersPage() {
                         className="bg-background border border-border/40 rounded-lg px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         {stages.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-                        <option value="cancelled">ملغي</option>
+                        {!rentalOrder && <option value="cancelled">ملغي</option>}
                       </select>
                     </div>
                   </div>
+                  {rentalOrder && rental && (
+                    <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs sm:grid-cols-3 lg:grid-cols-6">
+                      <div><p className="text-muted-foreground">تاريخ البداية</p><p className="mt-1 font-semibold text-foreground">{rental.startDate || "—"}</p></div>
+                      <div><p className="text-muted-foreground">تاريخ النهاية</p><p className="mt-1 font-semibold text-foreground">{rental.endDate || "—"}</p></div>
+                      <div><p className="text-muted-foreground">عدد الأيام</p><p className="mt-1 font-semibold text-foreground">{Number(rental.days ?? 0).toLocaleString("en-US")}</p></div>
+                      <div><p className="text-muted-foreground">سعر اليوم</p><p className="mt-1 font-semibold text-foreground">{formatCurrency(Number(rental.pricePerDay ?? 0))}</p></div>
+                      <div><p className="text-muted-foreground">السعر الكلي</p><p className="mt-1 font-semibold text-foreground">{formatCurrency(Number(rental.totalAmount ?? order.total ?? 0))}</p></div>
+                      <div><p className="text-muted-foreground">حالة الإيجار</p><p className="mt-1 font-semibold text-primary">{RENTAL_STATUS_LABELS[String(rental.status ?? order.status)] ?? String(rental.status ?? order.status)}</p></div>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 flex-wrap">
                     <a href={buildWhatsAppLink(phone, waMsg)} target="_blank" rel="noreferrer"
                       className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-status-success/10 text-status-success border border-status-success/30 hover:bg-status-success/20">

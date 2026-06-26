@@ -247,6 +247,8 @@ function SecureQrTrackingCard({ tracking }: { tracking: any }) {
         </div>
       </div>
 
+      <RentalTrackingDetails tracking={tracking} embedded />
+
       {tracking.statusHistory && tracking.statusHistory.length > 0 && (
         <div className="border-t border-border/30 pt-5">
           <h3 className="font-semibold text-foreground mb-4">{t("سجل الحالة")}</h3>
@@ -277,6 +279,8 @@ function formatTrackDate(iso: string): string {
 }
 
 const STATUS_TONES: Record<string, string> = {
+  active: "text-primary border-primary/30 bg-primary/10",
+  returned: "text-status-success border-status-success/30 bg-status-success/10",
   pending: "text-status-warning border-status-warning/30 bg-status-warning/10",
   confirmed: "text-primary border-primary/30 bg-primary/10",
   processing: "text-primary border-primary/30 bg-primary/10",
@@ -293,6 +297,8 @@ const STATUS_TONES: Record<string, string> = {
 
 function StatusIcon({ status, className }: { status: string; className?: string }) {
   const icons: Record<string, typeof CircleDot> = {
+    active: CalendarClock,
+    returned: PackageCheck,
     pending: CircleDot,
     confirmed: ClipboardCheck,
     processing: Sparkles,
@@ -308,6 +314,50 @@ function StatusIcon({ status, className }: { status: string; className?: string 
   };
   const Icon = icons[status] ?? CheckCircle;
   return <Icon className={className} />;
+}
+
+const RENTAL_STATUS_LABELS: Record<string, string> = {
+  active: "Active",
+  returned: "Returned",
+  cancelled: "Cancelled",
+};
+
+function rentalDetailsFromTracking(tracking: any) {
+  return tracking?.rental ?? tracking?.items?.map((item: any) => item?.rental).find(Boolean) ?? null;
+}
+
+function formatTrackMoney(value: unknown) {
+  return `${Number(value ?? 0).toLocaleString("ar-IQ")} د.ع`;
+}
+
+function RentalTrackingDetails({ tracking, embedded = false }: { tracking: any; embedded?: boolean }) {
+  const t = useT();
+  const rental = rentalDetailsFromTracking(tracking);
+  const isRental = tracking?.kind === "rental" || String(tracking?.serviceType ?? "").toLowerCase() === "rental";
+  if (!isRental || !rental) return null;
+  const rows = [
+    { label: "تاريخ البداية", value: rental.startDate || "—" },
+    { label: "تاريخ النهاية", value: rental.endDate || "—" },
+    { label: "عدد الأيام", value: Number(rental.days ?? 0).toLocaleString("en-US") },
+    { label: "سعر اليوم", value: formatTrackMoney(rental.pricePerDay) },
+    { label: "السعر الكلي", value: formatTrackMoney(rental.totalAmount ?? tracking.total) },
+    { label: "حالة الإيجار", value: RENTAL_STATUS_LABELS[String(rental.status ?? tracking.status)] ?? String(rental.status ?? tracking.status ?? "—") },
+  ];
+  return (
+    <div className={embedded ? "border-t border-border/30 pt-5" : "bg-card rounded-2xl border border-primary/20 p-6"}>
+      <h3 className="text-sm font-semibold text-foreground mb-5 flex items-center gap-2">
+        <CalendarClock className="w-4 h-4 text-primary" /> {t("تفاصيل الإيجار")}
+      </h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {rows.map((row) => (
+          <div key={row.label} className="rounded-lg bg-background/60 border border-border/25 p-3">
+            <p className="text-xs text-muted-foreground mb-1">{t(row.label)}</p>
+            <p className="text-sm font-semibold text-foreground break-words">{row.value}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: string }) {
@@ -455,6 +505,8 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
           </div>
         )}
       </div>
+
+      <RentalTrackingDetails tracking={tracking} />
 
       {isBooking && tracking.eventDate && (
         <EventCountdown targetDate={tracking.eventDate} title={t("متبقي على موعد الحجز")} />

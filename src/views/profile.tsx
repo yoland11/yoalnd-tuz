@@ -879,14 +879,19 @@ function OrderList({
               <a href={buildWhatsAppLink(contactPhone || "07701234567", `استفسار بخصوص الطلب ${order.trackingCode}`)} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success hover:bg-status-success/20 transition-colors">
                 <MessageCircle className="w-4 h-4" />
               </a>
-              {order.kind === "rental" ? (
-                <span className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-muted-foreground">
+              {order.kind === "rental" && (
+                <span className="inline-flex items-center justify-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm font-semibold text-primary">
                   {t("حجز إيجار")}
                 </span>
-              ) : (
+              )}
+              {order.kind !== "service" ? (
                 <Link href={`/track?code=${order.trackingCode}`} className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-foreground hover:text-primary transition-colors">
                   {t("عرض التفاصيل")}
                 </Link>
+              ) : (
+                <span className="inline-flex items-center justify-center rounded-lg border border-border/40 px-3 py-2 text-sm text-muted-foreground">
+                  {t("حجز خدمة")}
+                </span>
               )}
             </div>
           </div>
