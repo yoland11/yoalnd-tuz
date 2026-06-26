@@ -15,6 +15,7 @@ const STAGES = [
 const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 const stageRank = (k: string) => Math.max(0, STAGES.findIndex((s) => s.key === k));
 const money = (n: unknown) => Number(n || 0).toLocaleString("en-US");
+const isPendingPricing = (paymentStatus: string, totalAmount?: number) => paymentStatus === "pending_pricing" || Number(totalAmount ?? 0) <= 0;
 
 type CBooking = { id: number; koshaName: string | null; eventDate: string; eventTime: string; eventType: string; executionStage: string; totalAmount: number; paidAmount: number; remainingAmount: number; paymentStatus: string };
 type CDetail = CBooking & { koshaImage: string | null; customerName: string; province: string; area: string; cityArea: string; hallLocation: string; media: { id: number; url: string; kind: string }[]; stages: { stage: string; at: string }[]; confirmation: { confirmedAt: string; rating: number; note: string | null } | null };
@@ -79,7 +80,11 @@ export default function AccountKoshas() {
                   </div>
                   <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary">{STAGE_LABEL[b.executionStage] ?? "—"}</span>
                 </div>
-                {b.remainingAmount > 0 && <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>}
+                {isPendingPricing(b.paymentStatus, b.totalAmount) ? (
+                  <div className="mt-2 text-xs font-medium text-primary">بانتظار تحديد السعر من الإدارة</div>
+                ) : b.remainingAmount > 0 ? (
+                  <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>
+                ) : null}
               </button>
             ))}
           </div>
@@ -168,15 +173,19 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
         {/* Payment */}
         <div className="rounded-2xl border border-border/30 bg-card p-4">
           <h2 className="mb-3 font-bold text-foreground">الدفع</h2>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            {[["الكلي", d.totalAmount], ["المدفوع", d.paidAmount], ["المتبقي", d.remainingAmount]].map(([l, v]) => (
-              <div key={l as string} className="rounded-lg bg-muted/40 p-2">
-                <div className="text-[11px] text-muted-foreground">{l as string}</div>
-                <div className="text-sm font-bold text-foreground">{money(v as number)}</div>
-              </div>
-            ))}
-          </div>
-          {d.remainingAmount > 0 && waLink && (
+          {isPendingPricing(d.paymentStatus, d.totalAmount) ? (
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-center text-sm text-muted-foreground">بانتظار تحديد السعر من الإدارة</div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              {[["الكلي", d.totalAmount], ["المدفوع", d.paidAmount], ["المتبقي", d.remainingAmount]].map(([l, v]) => (
+                <div key={l as string} className="rounded-lg bg-muted/40 p-2">
+                  <div className="text-[11px] text-muted-foreground">{l as string}</div>
+                  <div className="text-sm font-bold text-foreground">{money(v as number)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!isPendingPricing(d.paymentStatus, d.totalAmount) && d.remainingAmount > 0 && waLink && (
             <a href={waLink} target="_blank" rel="noreferrer" className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-primary/40 py-2.5 text-sm font-bold text-primary">
               <MessageCircle className="h-4 w-4" /> تواصل بخصوص الدفع
             </a>

@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, CheckCircle2, ChevronRight, CircleCheck, ClipboardList, DoorOpen, Flower2, Gem, Grid3X3, ImagePlus, Layers3, SlidersHorizontal, Star, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -337,15 +337,6 @@ function SelectablePill({ label, selected, onClick, tone = "default" }: { label:
   );
 }
 
-function selectedOptionItems(options: KoshaOptionProduct[], selectedNames: string[]) {
-  const selected = new Set(selectedNames);
-  return options.filter((item) => selected.has(item.name));
-}
-
-function optionsTotal(items: KoshaOptionProduct[]) {
-  return items.reduce((sum, item) => sum + (Number(item.price ?? 0) || 0), 0);
-}
-
 function KoshaOptionCard({ item, selected, onClick }: { item: KoshaOptionProduct; selected: boolean; onClick: () => void }) {
   const image = item.mainImage || "";
   return (
@@ -426,12 +417,6 @@ export default function KoshasPage() {
   const koshaCategories = (options.categories ?? []).filter((category) => data.some((kosha) => kosha.categoryId === category.id));
   const filteredKoshas = selectedCategory == null ? data : data.filter((kosha) => kosha.categoryId === selectedCategory);
   const allAccessoryNames = options.accessories.map((item) => item.name);
-  const selectedAddonItems = useMemo(() => selectedOptionItems(options.addons, selectedAddons), [options.addons, selectedAddons]);
-  const selectedBoardItems = useMemo(() => selectedOptionItems(options.welcomeBoards, selectedBoards), [options.welcomeBoards, selectedBoards]);
-  const selectedAccessoryItems = useMemo(() => selectedOptionItems(options.accessories, selectedAccessories), [options.accessories, selectedAccessories]);
-  const koshaBasePrice = Number(selectedKosha?.price ?? 0) || 0;
-  const selectedOptionsTotal = optionsTotal([...selectedAddonItems, ...selectedBoardItems, ...selectedAccessoryItems]);
-  const bookingTotal = selectedPackage ? Number(selectedPackage.price ?? 0) : koshaBasePrice + selectedOptionsTotal;
   const packages = packagesQuery.data ?? [];
   const upgradePackage = selectedPackage
     ? packages.find((item) => item.sortOrder > selectedPackage.sortOrder) ?? null

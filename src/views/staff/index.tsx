@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff } from "lucide-react";
 import { fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
-import { BUCKET_LABEL, STAGE_LABEL, money, staffApi, type Bucket, type CrewBooking } from "./lib";
+import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
 import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 
@@ -59,7 +59,11 @@ function BookingCard({ b }: { b: CrewBooking }) {
         </div>
         <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${STAGE_BADGE[b.executionStage] ?? "bg-muted"}`}>{STAGE_LABEL[b.executionStage]}</span>
       </div>
-      {b.remainingAmount > 0 && <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>}
+      {isKoshaPendingPricing(b) ? (
+        <div className="mt-2 text-xs font-medium text-primary">بانتظار التسعير من الإدارة</div>
+      ) : b.remainingAmount > 0 ? (
+        <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>
+      ) : null}
     </Link>
   );
 }

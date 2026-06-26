@@ -18,6 +18,10 @@ export function stageRank(key: string): number {
   return i < 0 ? 0 : i;
 }
 
+export function isKoshaPendingPricing(booking: { paymentStatus?: string; totalAmount?: number }) {
+  return booking.paymentStatus === "pending_pricing" || Number(booking.totalAmount ?? 0) <= 0;
+}
+
 export type Bucket = "today" | "tomorrow" | "upcoming" | "late" | "completed";
 export const BUCKET_LABEL: Record<Bucket, string> = {
   today: "حجوزات اليوم",

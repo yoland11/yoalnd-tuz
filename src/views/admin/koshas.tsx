@@ -119,6 +119,14 @@ function koshaBookingTotal(details: Record<string, unknown> | null | undefined) 
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function isKoshaPendingPricing(booking: Pick<KoshaBooking, "paymentStatus" | "totalAmount">) {
+  return booking.paymentStatus === "pending_pricing" || Number(booking.totalAmount ?? 0) <= 0;
+}
+
+function koshaBookingAmountLabel(booking: Pick<KoshaBooking, "paymentStatus" | "totalAmount">) {
+  return isKoshaPendingPricing(booking) ? "بانتظار التسعير" : formatCurrency(booking.totalAmount);
+}
+
 type KoshaCatalogEndpoint = "kosha-addons" | "kosha-welcome-boards" | "kosha-accessories";
 
 const EMPTY_KOSHA_OPTION = {
@@ -808,7 +816,7 @@ export function AdminKoshaBookingsPage() {
 
   const csv = useMemo(() => {
     const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الإجمالي", "الحالة"];
-    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingTotal(item.bookingDetails) ?? "", STATUS_LABELS[item.status] ?? item.status]);
+    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingAmountLabel(item), STATUS_LABELS[item.status] ?? item.status]);
     return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   }, [data]);
 
@@ -823,6 +831,10 @@ export function AdminKoshaBookingsPage() {
   }
 
   async function printBooking(item: KoshaBooking, format: "a4" | "thermal") {
+    if (isKoshaPendingPricing(item)) {
+      toast({ title: "الحجز بانتظار التسعير", description: "أدخل السعر أولاً قبل طباعة الفاتورة النهائية.", variant: "destructive" });
+      return;
+    }
     // Open synchronously (avoids popup blocking) then fill once the QR is fetched.
     const win = window.open("", "_blank", format === "thermal" ? "width=420,height=720" : "width=860,height=1040");
     if (!win) return;
@@ -836,15 +848,18 @@ export function AdminKoshaBookingsPage() {
     } catch { /* fall back to row data without QR */ }
     const details = (full.bookingDetails ?? {}) as Record<string, any>;
     const money = (value: number) => Number(value || 0).toLocaleString("en-US");
-    const lineItems = [
-      { name: full.koshaName ?? details.koshaName ?? "كوشة", price: Number(details.koshaPrice ?? 0) },
-      ...(Array.isArray(details.addonDetails) ? details.addonDetails : []),
-      ...(Array.isArray(details.welcomeBoardDetails) ? details.welcomeBoardDetails : []),
-      ...(Array.isArray(details.accessoryDetails) ? details.accessoryDetails : []),
-    ].map((row: any) => ({ name: String(row.name ?? ""), price: Number(row.price ?? 0) }));
     const total = Number(full.totalAmount ?? koshaBookingTotal(details) ?? 0);
     const paid = Number(full.paidAmount ?? 0);
     const remaining = Number(full.remainingAmount ?? Math.max(0, total - paid));
+    const pricing = (details.pricing ?? {}) as Record<string, any>;
+    const pricedLines = [
+      { name: "سعر الكوشة", price: Number(pricing.koshaPrice ?? 0) },
+      { name: "سعر بورد الترحيب", price: Number(pricing.welcomeBoardPrice ?? 0) },
+      { name: "سعر الإكسسوارات", price: Number(pricing.accessoriesPrice ?? 0) },
+      { name: "سعر الخدمات الإضافية", price: Number(pricing.addonsPrice ?? 0) },
+      { name: "الخصم", price: -Number(pricing.discountAmount ?? 0) },
+    ].filter((row) => Number(row.price) !== 0);
+    const lineItems = pricedLines.length ? pricedLines : [{ name: "إجمالي الحجز حسب الاتفاق", price: total }];
     const trackingCode = full.trackingCode ?? `KB-${full.id}`;
     const dateLine = [full.eventDate, full.eventTime].filter(Boolean).join(" ") || "—";
     const qrCaption = "امسح الكود لمتابعة حالة الكوشة";
@@ -959,7 +974,7 @@ export function AdminKoshaBookingsPage() {
                     </td>
                     <td className="px-4 py-3" dir="ltr">{item.phone}</td>
                     <td className="px-4 py-3">{item.eventDate || "-"} {item.eventTime || ""}</td>
-                    <td className="px-4 py-3 font-bold text-primary">{koshaBookingTotal(item.bookingDetails) ? formatCurrency(koshaBookingTotal(item.bookingDetails) ?? 0) : "-"}</td>
+                    <td className={`px-4 py-3 font-bold ${isKoshaPendingPricing(item) ? "text-amber-500" : "text-primary"}`}>{koshaBookingAmountLabel(item)}</td>
                     <td className="px-4 py-3">
                       <div className="max-w-64 text-xs leading-6 text-muted-foreground">
                         {[item.eventType, item.serviceLevel, item.venueType, item.themeColor].filter(Boolean).join(" · ") || "-"}
@@ -1141,7 +1156,11 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
         )}
 
         <KoshaDetailSection title="المبالغ">
-          <KoshaDetailGrid items={[["الإجمالي", formatCurrency(booking.totalAmount ?? 0)], ["الواصل", formatCurrency(booking.paidAmount ?? 0)], ["المتبقي", formatCurrency(booking.remainingAmount ?? 0)]]} />
+          {isKoshaPendingPricing(booking) ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm font-semibold text-amber-500">بانتظار تحديد السعر من الإدارة</div>
+          ) : (
+            <KoshaDetailGrid items={[["الإجمالي", formatCurrency(booking.totalAmount ?? 0)], ["الواصل", formatCurrency(booking.paidAmount ?? 0)], ["المتبقي", formatCurrency(booking.remainingAmount ?? 0)]]} />
+          )}
         </KoshaDetailSection>
       </div>
 
@@ -1158,6 +1177,8 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
   const [previewReady, setPreviewReady] = useState(false);
+  const savedPricing = ((booking.bookingDetails ?? {}) as any).pricing ?? {};
+  const textNumber = (value: unknown) => String(Number(value ?? 0) || 0);
   const [form, setForm] = useState({
     koshaId: booking.koshaId ?? 0,
     customerName: booking.customerName ?? "",
@@ -1183,31 +1204,56 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     selectedAccessories: booking.selectedAccessories ?? [],
     notes: booking.notes ?? "",
     internalNotes: booking.internalNotes ?? "",
+    koshaPrice: textNumber(savedPricing.koshaPrice),
+    welcomeBoardPrice: textNumber(savedPricing.welcomeBoardPrice),
+    accessoriesPrice: textNumber(savedPricing.accessoriesPrice),
+    addonsPrice: textNumber(savedPricing.addonsPrice),
+    discountAmount: textNumber(savedPricing.discountAmount),
+    totalAmount: textNumber(booking.totalAmount ?? savedPricing.totalAmount),
     paidAmount: String(booking.paidAmount ?? 0),
-    paymentStatus: booking.paymentStatus ?? "unpaid",
+    financialNotes: String(savedPricing.financialNotes ?? ""),
   });
   useEffect(() => setPreviewReady(false), [form]);
   const { data: koshas = [] } = useQuery<Kosha[]>({ queryKey: ["admin", "koshas", "booking-editor"], queryFn: () => adminFetch("/admin/koshas") });
   const { data: options } = useQuery<{ addons: KoshaOption[]; welcomeBoards: KoshaOption[]; accessories: KoshaOption[]; provinces: Array<{ id: number; name: string }> }>({
     queryKey: ["koshas", "options", "booking-editor"], queryFn: () => fetch("/api/koshas/options").then((response) => response.json()),
   });
+  const paidAmount = Number(form.paidAmount || 0) || 0;
+  const breakdownTotal = Math.max(0,
+    (Number(form.koshaPrice || 0) || 0) +
+    (Number(form.welcomeBoardPrice || 0) || 0) +
+    (Number(form.accessoriesPrice || 0) || 0) +
+    (Number(form.addonsPrice || 0) || 0) -
+    (Number(form.discountAmount || 0) || 0),
+  );
+  const pricedTotal = (Number(form.totalAmount || 0) || 0) > 0 ? Number(form.totalAmount || 0) || 0 : breakdownTotal;
+  const remainingAmount = Math.max(0, pricedTotal - paidAmount);
+  const computedPaymentStatus = pricedTotal <= 0 ? "pending_pricing" : remainingAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
   const save = useMutation({
-    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ ...form, paidAmount: Number(form.paidAmount || 0) }) }),
+    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        ...form,
+        totalAmount: pricedTotal,
+        paidAmount,
+        paymentStatus: computedPaymentStatus,
+        pricing: {
+          koshaPrice: Number(form.koshaPrice || 0) || 0,
+          welcomeBoardPrice: Number(form.welcomeBoardPrice || 0) || 0,
+          accessoriesPrice: Number(form.accessoriesPrice || 0) || 0,
+          addonsPrice: Number(form.addonsPrice || 0) || 0,
+          discountAmount: Number(form.discountAmount || 0) || 0,
+          totalAmount: pricedTotal,
+          paidAmount,
+          remainingAmount,
+          financialNotes: form.financialNotes,
+        },
+      }),
+    }),
     onSuccess: () => { toast({ title: "تم حفظ تعديل حجز الكوشة" }); onSaved(); },
     onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
   });
-  const chosenKosha = koshas.find((item) => item.id === Number(form.koshaId));
-  const optionTotal = [
-    ...(options?.addons ?? []).filter((item) => form.selectedAddons.includes(item.name)),
-    ...(options?.welcomeBoards ?? []).filter((item) => form.welcomeBoards.includes(item.name)),
-    ...(options?.accessories ?? []).filter((item) => form.selectedAccessories.includes(item.name)),
-  ].reduce((sum, item) => sum + Number(item.price ?? 0), 0);
-  const packageSelectionsUnchanged = Boolean(booking.packageId)
-    && Number(form.koshaId) === Number(booking.koshaId)
-    && JSON.stringify(form.selectedAddons) === JSON.stringify(booking.selectedAddons)
-    && JSON.stringify(form.welcomeBoards) === JSON.stringify(booking.welcomeBoards)
-    && JSON.stringify(form.selectedAccessories) === JSON.stringify(booking.selectedAccessories);
-  const projectedTotal = packageSelectionsUnchanged ? Number(booking.totalAmount) : Number(chosenKosha?.price ?? booking.totalAmount ?? 0) + optionTotal;
+  const projectedTotal = pricedTotal;
 
   function toggle(key: "selectedAddons" | "selectedAccessories", name: string) {
     setForm((current) => ({ ...current, [key]: current[key].includes(name) ? current[key].filter((item) => item !== name) : [...current[key], name] }));
@@ -1247,9 +1293,39 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           <KoshaBookingOptionPicker title="بورد الترحيب" options={options?.welcomeBoards ?? []} selected={form.welcomeBoards} single onToggle={(name) => setForm({ ...form, welcomeBoards: form.welcomeBoards.includes(name) ? [] : [name] })} />
           <KoshaBookingOptionPicker title="الإكسسوارات" options={options?.accessories ?? []} selected={form.selectedAccessories} onToggle={(name) => toggle("selectedAccessories", name)} />
 
+          <div className="space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-foreground">تسعير الحجز</h4>
+                <p className="mt-1 text-xs text-muted-foreground">الزبون لا يرى الأسعار قبل حفظ التسعير من هنا.</p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${computedPaymentStatus === "pending_pricing" ? "bg-amber-500/15 text-amber-500" : "bg-primary/10 text-primary"}`}>
+                {computedPaymentStatus === "pending_pricing" ? "بانتظار التسعير" : "تم التسعير"}
+              </span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Field label="سعر الكوشة" type="number" value={form.koshaPrice} onChange={(value) => setForm({ ...form, koshaPrice: value })} />
+              <Field label="سعر بورد الترحيب" type="number" value={form.welcomeBoardPrice} onChange={(value) => setForm({ ...form, welcomeBoardPrice: value })} />
+              <Field label="سعر الإكسسوارات" type="number" value={form.accessoriesPrice} onChange={(value) => setForm({ ...form, accessoriesPrice: value })} />
+              <Field label="سعر الخدمات الإضافية" type="number" value={form.addonsPrice} onChange={(value) => setForm({ ...form, addonsPrice: value })} />
+              <Field label="خصم إن وجد" type="number" value={form.discountAmount} onChange={(value) => setForm({ ...form, discountAmount: value })} />
+              <Field label="المبلغ الكلي" type="number" value={form.totalAmount} onChange={(value) => setForm({ ...form, totalAmount: value })} />
+              <Field label="المبلغ المدفوع" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
+              <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2">
+                <div className="text-xs text-muted-foreground">المبلغ المتبقي</div>
+                <div className="mt-1 text-sm font-bold text-foreground">{formatCurrency(remainingAmount)}</div>
+              </div>
+              <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2">
+                <div className="text-xs text-muted-foreground">حالة الدفع</div>
+                <div className="mt-1 text-sm font-bold text-primary">{computedPaymentStatus === "paid" ? "مدفوع" : computedPaymentStatus === "partial" ? "جزئي" : computedPaymentStatus === "pending_pricing" ? "بانتظار التسعير" : "غير مدفوع"}</div>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-3">
+                <Field label="ملاحظات مالية" value={form.financialNotes} onChange={(value) => setForm({ ...form, financialNotes: value })} textarea />
+              </div>
+            </div>
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="المبلغ المدفوع" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
-            <div><label className="mb-1 block text-xs text-muted-foreground">حالة الدفع</label><select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="unpaid">غير مدفوع</option><option value="partial">جزئي</option><option value="paid">مدفوع</option></select></div>
             <Field label="ملاحظات الزبون" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} textarea />
             <Field label="ملاحظات داخلية" value={form.internalNotes} onChange={(value) => setForm({ ...form, internalNotes: value })} textarea />
           </div>

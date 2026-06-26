@@ -2185,7 +2185,18 @@ const KoshaBookingUpdateSchema = z.object({
   internalNotes: z.string().optional().nullable(),
   totalAmount: z.coerce.number().nonnegative().optional(),
   paidAmount: z.coerce.number().nonnegative().optional(),
-  paymentStatus: z.enum(["paid", "partial", "unpaid"]).optional(),
+  paymentStatus: z.enum(["paid", "partial", "unpaid", "pending_pricing"]).optional(),
+  pricing: z.object({
+    koshaPrice: z.coerce.number().nonnegative().optional().default(0),
+    welcomeBoardPrice: z.coerce.number().nonnegative().optional().default(0),
+    accessoriesPrice: z.coerce.number().nonnegative().optional().default(0),
+    addonsPrice: z.coerce.number().nonnegative().optional().default(0),
+    discountAmount: z.coerce.number().nonnegative().optional().default(0),
+    totalAmount: z.coerce.number().nonnegative().optional(),
+    paidAmount: z.coerce.number().nonnegative().optional(),
+    remainingAmount: z.coerce.number().nonnegative().optional(),
+    financialNotes: z.string().optional().nullable(),
+  }).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
 });
 
@@ -8647,26 +8658,56 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
           const welcomeBoardDetails = koshaOptionSummary(boardRows.map((item) => formatKoshaOptionProduct(item, "welcome_board")), welcomeBoards);
           const accessoryDetails = koshaOptionSummary(accessoryRows.map((item) => formatKoshaOptionProduct(item, "accessory")), selectedAccessories);
           const optionsTotal = [...addonDetails, ...welcomeBoardDetails, ...accessoryDetails].reduce((sum, item) => sum + Number(item.price || 0), 0);
-          const totalAmount = Number(kosha.price ?? 0) + optionsTotal;
-          update.totalAmount = String(totalAmount);
+          const catalogTotal = Number(kosha.price ?? 0) + optionsTotal;
           update.bookingDetails = {
             ...(existing.bookingDetails as Record<string, unknown> ?? {}), koshaName: kosha.name, koshaPrice: Number(kosha.price ?? 0),
             ...(existing.packageId ? { packageId: null, packageName: null, packagePrice: null, packageFeatures: [] } : {}),
-            selectedAddons, welcomeBoards, selectedAccessories, addonDetails, welcomeBoardDetails, accessoryDetails, optionsTotal, total: totalAmount,
+            selectedAddons, welcomeBoards, selectedAccessories, addonDetails, welcomeBoardDetails, accessoryDetails, optionsTotal, catalogTotal,
           };
         }
-        if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined) {
-          const totalAmount = parsed.data.totalAmount ?? Number(update.totalAmount ?? existing.totalAmount);
-          const payment = paymentSummary(totalAmount, parsed.data.paidAmount ?? existing.paidAmount, parsed.data.paymentStatus ?? existing.paymentStatus);
-          update.totalAmount = String(money(totalAmount));
-          update.paidAmount = String(payment.deposit);
-          update.remainingAmount = String(payment.remaining);
-          update.paymentStatus = payment.status;
-        } else if (update.totalAmount !== undefined) {
-          const payment = paymentSummary(update.totalAmount, existing.paidAmount, existing.paymentStatus);
-          update.paidAmount = String(payment.deposit);
-          update.remainingAmount = String(payment.remaining);
-          update.paymentStatus = payment.status;
+        if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined || parsed.data.pricing !== undefined) {
+          const pricing = parsed.data.pricing;
+          const totalAmount = money(parsed.data.totalAmount ?? pricing?.totalAmount ?? existing.totalAmount);
+          const paidAmount = money(parsed.data.paidAmount ?? pricing?.paidAmount ?? existing.paidAmount);
+          const pendingPricing = parsed.data.paymentStatus === "pending_pricing" || totalAmount <= 0;
+          if (pendingPricing) {
+            if (paidAmount > 0) return error("أدخل السعر الكلي قبل تسجيل أي مبلغ مدفوع", 400);
+            update.totalAmount = "0";
+            update.paidAmount = "0";
+            update.remainingAmount = "0";
+            update.paymentStatus = "pending_pricing";
+          } else {
+            const payment = paymentSummary(totalAmount, paidAmount, parsed.data.paymentStatus);
+            update.totalAmount = String(totalAmount);
+            update.paidAmount = String(payment.deposit);
+            update.remainingAmount = String(payment.remaining);
+            update.paymentStatus = payment.status;
+          }
+          if (pricing !== undefined) {
+            const existingDetails = (existing.bookingDetails as Record<string, unknown> ?? {});
+            const detailsPatch = (update.bookingDetails as Record<string, unknown> | undefined) ?? {};
+            const finalTotal = Number(update.totalAmount ?? 0);
+            const finalPaid = Number(update.paidAmount ?? 0);
+            const finalRemaining = Number(update.remainingAmount ?? 0);
+            update.bookingDetails = {
+              ...existingDetails,
+              ...detailsPatch,
+              pricingStatus: update.paymentStatus === "pending_pricing" ? "pending_pricing" : "priced",
+              pricing: {
+                koshaPrice: money(pricing.koshaPrice),
+                welcomeBoardPrice: money(pricing.welcomeBoardPrice),
+                accessoriesPrice: money(pricing.accessoriesPrice),
+                addonsPrice: money(pricing.addonsPrice),
+                discountAmount: money(pricing.discountAmount),
+                totalAmount: finalTotal,
+                paidAmount: finalPaid,
+                remainingAmount: finalRemaining,
+                financialNotes: nullableText(pricing.financialNotes),
+                pricedAt: update.paymentStatus === "pending_pricing" ? null : new Date().toISOString(),
+                pricedBy: auth.fullName || auth.username,
+              },
+            };
+          }
         }
         const [row] = await db.update(koshaBookingsTable).set(update).where(eq(koshaBookingsTable.id, id)).returning();
         if (update.status !== undefined && row.status !== existing.status) {
@@ -8687,6 +8728,11 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
           });
         }
         await syncKoshaFinancialPayment(row, financialActor(auth));
+        const wasPendingPricing = existing.paymentStatus === "pending_pricing" || Number(existing.totalAmount) <= 0;
+        const isNowPriced = row.paymentStatus !== "pending_pricing" && Number(row.totalAmount) > 0;
+        if (wasPendingPricing && isNowPriced) {
+          void sendTelegramMessage(`💐 <b>تم تسعير حجز الكوشة</b>\nرقم الحجز: KB-${row.id}\nالعميل: ${telegramText(row.customerName)}\nالمبلغ الكلي: ${Number(row.totalAmount).toLocaleString("en-US")} د.ع\nالمدفوع: ${Number(row.paidAmount).toLocaleString("en-US")} د.ع\nالمتبقي: ${Number(row.remainingAmount).toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/admin/kosha-bookings?booking=${row.id}`);
+        }
         const koshaPaymentDelta = Number(row.paidAmount) - Number(existing.paidAmount);
         if (koshaPaymentDelta > 0) {
           void notifyTelegramPayment({
@@ -15764,6 +15810,7 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
     const note = String(data?.note ?? "").trim();
     const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
     if (!booking) return error("الحجز غير موجود", 404);
+    if (booking.paymentStatus === "pending_pricing" || Number(booking.totalAmount) <= 0) return error("يجب تسعير الحجز من الإدارة قبل تسجيل أي تحصيل", 400);
     const remaining = Number(booking.remainingAmount);
     if (!(amount > 0)) return error("أدخل مبلغًا صحيحًا", 400);
     if (amount > remaining) return error("المبلغ أكبر من المتبقي على العميل", 400);

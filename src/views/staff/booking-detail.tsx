@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video } from "lucide-react";
 import {
-  STAGES, STAGE_LABEL, stageRank, money, mapsUrl, filesToMedia, staffApi,
+  STAGES, STAGE_LABEL, isKoshaPendingPricing, stageRank, money, mapsUrl, filesToMedia, staffApi,
   type BookingDetail, type StageKey, type MediaInput, type SetupItem,
 } from "./lib";
 import { isQueued } from "./offline";
@@ -104,6 +104,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   const current = b.executionStage as StageKey;
   const next = STAGES[stageRank(current) + 1]?.key as StageKey | undefined;
   const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
+  const pendingPricing = isKoshaPendingPricing(b);
 
   async function run(fn: () => Promise<any>) {
     setBusy(true); setErr(null); setNotice(null);
@@ -156,14 +157,18 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
         </div>
 
         {/* Money */}
-        <div className="grid grid-cols-3 gap-2 text-center">
-          {[["الكلي", b.totalAmount], ["المدفوع", b.paidAmount], ["المتبقي", b.remainingAmount]].map(([l, v]) => (
-            <div key={l as string} className="rounded-lg bg-muted/40 p-2">
-              <div className="text-[11px] text-muted-foreground">{l as string}</div>
-              <div className="text-sm font-bold">{money(v as number)}</div>
-            </div>
-          ))}
-        </div>
+        {pendingPricing ? (
+          <Banner kind="info">بانتظار تحديد السعر من الإدارة. تظهر لك تفاصيل التجهيز فقط.</Banner>
+        ) : (
+          <div className="grid grid-cols-3 gap-2 text-center">
+            {[["الكلي", b.totalAmount], ["المدفوع", b.paidAmount], ["المتبقي", b.remainingAmount]].map(([l, v]) => (
+              <div key={l as string} className="rounded-lg bg-muted/40 p-2">
+                <div className="text-[11px] text-muted-foreground">{l as string}</div>
+                <div className="text-sm font-bold">{money(v as number)}</div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* تفاصيل تجهيز الكوشة */}
         {setup && (
@@ -175,7 +180,6 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
                 <SetupThumb src={setup.package.image} alt={setup.package.name} onZoom={setLightbox} size="h-16 w-16" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2"><span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">باقة</span><span className="truncate font-bold">{setup.package.name}</span></div>
-                  {setup.package.price > 0 ? <div className="mt-1 text-xs font-bold text-primary">{money(setup.package.price)} د.ع</div> : null}
                   {setup.package.contents.length > 0 ? <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{setup.package.contents.join(" · ")}</div> : null}
                 </div>
               </div>
@@ -188,15 +192,14 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
                 </button>
                 <div className="p-3">
                   <div className="font-bold">{setup.kosha.name}</div>
-                  {setup.kosha.price > 0 ? <div className="text-sm font-bold text-primary">{money(setup.kosha.price)} د.ع</div> : null}
                   {setup.kosha.specs.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-1">{setup.kosha.specs.map((s, i) => <span key={i} className="rounded-full bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">{s}</span>)}</div> : null}
                 </div>
               </div>
             )}
 
-            <SetupGroup title="بورد الترحيب" items={setup.welcomeBoards} onZoom={setLightbox} />
-            <SetupGroup title="الخدمات الإضافية" items={setup.addons} onZoom={setLightbox} />
-            <SetupGroup title="الإكسسوارات" items={setup.accessories} onZoom={setLightbox} />
+            <SetupGroup title="بورد الترحيب" items={setup.welcomeBoards} onZoom={setLightbox} showPrices={false} />
+            <SetupGroup title="الخدمات الإضافية" items={setup.addons} onZoom={setLightbox} showPrices={false} />
+            <SetupGroup title="الإكسسوارات" items={setup.accessories} onZoom={setLightbox} showPrices={false} />
           </div>
         )}
 
@@ -236,7 +239,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
         {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload))} />}
 
         {/* Collect remaining */}
-        {current === "delivered" && b.remainingAmount > 0 && (
+        {!pendingPricing && current === "delivered" && b.remainingAmount > 0 && (
           pendingPay
             ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> طلب تحصيل {money(pendingPay.amount)} د.ع بانتظار موافقة المدير.</Banner>
             : <CollectPanel remaining={b.remainingAmount} busy={busy} onSubmit={(amount, note) => run(() => staffApi.collect(id, amount, note))} />
@@ -312,7 +315,7 @@ function SetupThumb({ src, alt, onZoom, size }: { src: string | null; alt: strin
     : <div className={`flex flex-shrink-0 items-center justify-center rounded-lg bg-muted/40 text-muted-foreground ${size}`}><ImageIcon className="h-5 w-5" /></div>;
 }
 
-function SetupGroup({ title, items, onZoom }: { title: string; items: SetupItem[]; onZoom: (s: string) => void }) {
+function SetupGroup({ title, items, onZoom, showPrices }: { title: string; items: SetupItem[]; onZoom: (s: string) => void; showPrices: boolean }) {
   if (!items.length) return null;
   return (
     <div className="mt-3">
@@ -325,7 +328,7 @@ function SetupGroup({ title, items, onZoom }: { title: string; items: SetupItem[
             </button>
             <div className="p-2">
               <div className="truncate text-xs font-medium">{it.name}</div>
-              {it.price != null && it.price > 0 ? <div className="text-[11px] font-bold text-primary">{money(it.price)} د.ع</div> : null}
+              {showPrices && it.price != null && it.price > 0 ? <div className="text-[11px] font-bold text-primary">{money(it.price)} د.ع</div> : null}
               {it.description ? <div className="truncate text-[10px] text-muted-foreground">{it.description}</div> : null}
             </div>
           </div>
