@@ -1,3 +1,5 @@
+import { formatCurrency } from "@/lib/money";
+
 export type ThermalPaperSize = "58mm" | "80mm" | "a4" | "pdf";
 
 export function thermalPageWidth(size: ThermalPaperSize) {
@@ -210,7 +212,7 @@ export function openQrPrintWindow({
   }
   const amountText = amount === null || amount === undefined || amount === ""
     ? ""
-    : `${Number(amount).toLocaleString("ar-IQ")} د.ع`;
+    : formatCurrency(amount);
   const safeName = customerName?.trim() || "عميل";
   const html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8">
     <title>${title}</title>

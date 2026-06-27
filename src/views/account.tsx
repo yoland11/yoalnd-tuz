@@ -16,6 +16,7 @@ import { User, Package, LogOut, Phone, CheckCircle, ShoppingCart, Armchair, Chev
 import { Link } from "wouter";
 import { clearAuthToken, getAuthToken, setAuthToken } from "@/lib/api-session";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
+import { formatCurrency } from "@/lib/money";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار",
@@ -155,7 +156,7 @@ export default function Account() {
                 <p className="text-xs text-muted-foreground">{cart?.items?.length ?? 0} منتج</p>
               </div>
             </div>
-            <p className="text-primary font-bold">{Number(cart?.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+            <p className="text-primary font-bold">{formatCurrency(cart?.total)}</p>
           </div>
 
           <Link href="/account/koshas" className="bg-card rounded-2xl border border-border/30 p-5 mb-6 flex items-center justify-between gap-4 hover:border-primary/40 transition-colors">
@@ -193,7 +194,7 @@ export default function Account() {
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-primary font-bold">{Number(order.total).toLocaleString('ar-IQ')} د.ع</p>
+                      <p className="text-primary font-bold">{formatCurrency(order.total)}</p>
                       <span className={`text-xs px-2 py-0.5 rounded-full border ${
                         order.status === "delivered" ? "border-status-success/30 text-status-success" :
                         order.status === "cancelled" ? "border-status-danger/30 text-status-danger" :

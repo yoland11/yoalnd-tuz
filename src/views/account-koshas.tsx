@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { Armchair, ChevronLeft, MapPin, CheckCircle2, Loader2, Video, Star, MessageCircle, Clock, LogIn } from "lucide-react";
 import { usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
+import { formatCurrency } from "@/lib/money";
 
 const STAGES = [
   { key: "preparing", label: "قيد التجهيز" },
@@ -14,7 +15,6 @@ const STAGES = [
 ];
 const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 const stageRank = (k: string) => Math.max(0, STAGES.findIndex((s) => s.key === k));
-const money = (n: unknown) => Number(n || 0).toLocaleString("en-US");
 const isPendingPricing = (paymentStatus: string, totalAmount?: number) => paymentStatus === "pending_pricing" || Number(totalAmount ?? 0) <= 0;
 
 type CBooking = { id: number; koshaName: string | null; eventDate: string; eventTime: string; eventType: string; executionStage: string; totalAmount: number; paidAmount: number; remainingAmount: number; paymentStatus: string };
@@ -83,7 +83,7 @@ export default function AccountKoshas() {
                 {isPendingPricing(b.paymentStatus, b.totalAmount) ? (
                   <div className="mt-2 text-xs font-medium text-primary">بانتظار تحديد السعر من الإدارة</div>
                 ) : b.remainingAmount > 0 ? (
-                  <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>
+                  <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {formatCurrency(b.remainingAmount)}</div>
                 ) : null}
               </button>
             ))}
@@ -180,7 +180,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
               {[["الكلي", d.totalAmount], ["المدفوع", d.paidAmount], ["المتبقي", d.remainingAmount]].map(([l, v]) => (
                 <div key={l as string} className="rounded-lg bg-muted/40 p-2">
                   <div className="text-[11px] text-muted-foreground">{l as string}</div>
-                  <div className="text-sm font-bold text-foreground">{money(v as number)}</div>
+                  <div className="text-sm font-bold text-foreground">{formatCurrency(v as number)}</div>
                 </div>
               ))}
             </div>

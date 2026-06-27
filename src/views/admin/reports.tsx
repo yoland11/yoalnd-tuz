@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { downloadElementPdf } from "@/lib/pdf";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type ReportType =
@@ -762,7 +762,7 @@ function toNumber(value: unknown): number {
 }
 
 function formatNumber(value: number) {
-  return value.toLocaleString("ar-IQ", { maximumFractionDigits: 3 });
+  return formatMoney(value);
 }
 
 function formatCell(value: unknown, type: ColumnType = "text") {

@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db, settingsTable } from "@workspace/db";
 import { formatIraqiPhone } from "@/lib/phone";
+import { formatCurrency, formatMoney } from "@/lib/money";
 
 export const TELEGRAM_EVENT_KEYS = [
   "storeOrder",
@@ -232,14 +233,11 @@ function escapeHtml(value: unknown) {
 }
 
 function amount(value: unknown) {
-  const number = Number.parseFloat(String(value ?? 0));
-  return `${(Number.isFinite(number) ? number : 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} د.ع`;
+  return formatCurrency(value as number | string | null | undefined);
 }
 
 function pdfAmount(value: unknown) {
-  const number = Number.parseFloat(String(value ?? 0));
-  const formatted = (Number.isFinite(number) ? number : 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
-  return `${formatted} IQD`;
+  return `${formatMoney(value as number | string | null | undefined)} IQD`;
 }
 
 function paymentLabel(value: unknown) {

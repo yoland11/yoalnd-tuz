@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
 
 type DailyReportPayload = {
@@ -138,7 +138,7 @@ export default function DailyFinancialReportPage() {
                   <p className="text-xs text-muted-foreground">{card.label}</p>
                   <card.icon className="w-4 h-4 text-primary" />
                 </div>
-                <p className="text-lg font-bold text-foreground">{card.plain ? Number(card.value ?? 0).toLocaleString("ar-IQ") : formatCurrency(card.value ?? 0)}</p>
+                <p className="text-lg font-bold text-foreground">{card.plain ? formatMoney(card.value ?? 0) : formatCurrency(card.value ?? 0)}</p>
               </div>
             ))}
           </div>
@@ -215,7 +215,7 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
 }
 
 function buildDailyPrintHtml(data: DailyReportPayload, logo: string, thermal: boolean) {
-  const cards = Object.entries(data.summary).map(([key, value]) => `<div class="total"><span>${labelForSummary(key)}</span><strong>${Number(value).toLocaleString("ar-IQ")} د.ع</strong></div>`).join("");
+  const cards = Object.entries(data.summary).map(([key, value]) => `<div class="total"><span>${labelForSummary(key)}</span><strong>${formatCurrency(value)}</strong></div>`).join("");
   const rows = flattenRows(data).map((row) => `<tr>${row.slice(0, thermal ? 5 : 7).map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
     @page{size:${thermal ? "80mm auto" : "A4"};margin:${thermal ? "4mm" : "12mm"}}

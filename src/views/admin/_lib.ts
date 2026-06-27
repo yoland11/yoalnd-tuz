@@ -1,4 +1,5 @@
 import { fileToDataUrl, processImageFile, type ImageProcessOptions } from "@/lib/image-tools";
+export { formatCurrency, formatMoney } from "@/lib/money";
 
 // ───── Cookie-based admin auth client ─────
 export const ALL_PERMISSIONS = [
@@ -134,10 +135,4 @@ export { fileToDataUrl };
 
 export async function compressImageFile(file: File, maxSize = 1600, quality = 0.82, options: ImageProcessOptions = {}): Promise<string> {
   return processImageFile(file, { ...options, maxSize, quality });
-}
-
-export function formatCurrency(n: number | string | null | undefined): string {
-  const v = typeof n === "string" ? parseFloat(n) : (n ?? 0);
-  if (!Number.isFinite(v)) return "0 د.ع";
-  return `${v.toLocaleString("ar-IQ")} د.ع`;
 }

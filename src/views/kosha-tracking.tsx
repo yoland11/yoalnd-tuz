@@ -1,6 +1,7 @@
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, Check, Loader2 } from "lucide-react";
+import { formatCurrency } from "@/lib/money";
 
 type KoshaTrackingStep = { key: string; label: string; done: boolean; current: boolean };
 
@@ -20,8 +21,6 @@ type KoshaTracking = {
   remainingAmount: number;
   createdAt: string;
 };
-
-const money = (value: number) => Number(value || 0).toLocaleString("en-US");
 
 export default function KoshaTrackingPage() {
   const [, params] = useRoute("/kosha-tracking/:token");
@@ -90,9 +89,9 @@ export default function KoshaTrackingPage() {
 
       {data.priced ? (
         <div className="mt-5 grid grid-cols-3 gap-2">
-          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">الإجمالي</p><p className="mt-1 text-sm font-bold text-foreground">{money(data.totalAmount)}</p></div>
-          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">الواصل</p><p className="mt-1 text-sm font-bold text-status-success">{money(data.paidAmount)}</p></div>
-          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">المتبقي</p><p className="mt-1 text-sm font-bold text-status-danger">{money(data.remainingAmount)}</p></div>
+          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">الإجمالي</p><p className="mt-1 text-sm font-bold text-foreground">{formatCurrency(data.totalAmount)}</p></div>
+          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">الواصل</p><p className="mt-1 text-sm font-bold text-status-success">{formatCurrency(data.paidAmount)}</p></div>
+          <div className="rounded-xl border border-border/30 bg-card p-3 text-center"><p className="text-[11px] text-muted-foreground">المتبقي</p><p className="mt-1 text-sm font-bold text-status-danger">{formatCurrency(data.remainingAmount)}</p></div>
         </div>
       ) : (
         <div className="mt-5 rounded-xl border border-primary/30 bg-primary/5 p-4 text-center text-sm text-muted-foreground">بانتظار تحديد السعر من الإدارة</div>

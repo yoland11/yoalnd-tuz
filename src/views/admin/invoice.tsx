@@ -7,6 +7,7 @@ import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { downloadElementPdf } from "@/lib/pdf";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
+import { formatCurrency, formatMoney } from "@/lib/money";
 
 type InvoiceData = any;
 
@@ -20,8 +21,6 @@ const PAYMENT_STATUS_AR: Record<string, string> = {
   partial: "جزئي",
   paid: "مدفوع",
 };
-
-const money = (n: unknown) => Number(n || 0).toLocaleString("en-US");
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
@@ -196,8 +195,8 @@ export default function Invoice() {
                       <SelectedColorLabel color={item.selectedColorData} fallback={item.selectedColor} className="mr-1 inline-flex" />
                     </td>
                     <td className="c num">{item.quantity}</td>
-                    <td className="c num">{money(item.price)}</td>
-                    <td className="l num">{money(item.price * item.quantity)}</td>
+                    <td className="c num">{formatMoney(item.price)}</td>
+                    <td className="l num">{formatMoney(item.price * item.quantity)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -208,20 +207,20 @@ export default function Invoice() {
         <hr className="ih-rule" />
         {isBooking ? (
           <>
-            <div className="ih-row"><span>السعر المتفق عليه</span><span className="num">{data.price > 0 ? `${money(data.price)} د.ع` : "—"}</span></div>
-            <div className="ih-row"><span>العربون المدفوع</span><span className="num">{data.deposit > 0 ? `${money(data.deposit)} د.ع` : "—"}</span></div>
+            <div className="ih-row"><span>السعر المتفق عليه</span><span className="num">{data.price > 0 ? formatCurrency(data.price) : "—"}</span></div>
+            <div className="ih-row"><span>العربون المدفوع</span><span className="num">{data.deposit > 0 ? formatCurrency(data.deposit) : "—"}</span></div>
             <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
-            <div className="ih-grand"><span>الإجمالي</span><span className="num">{money(data.price)} د.ع</span></div>
-            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{money(data.balance)} د.ع</span></div>
+            <div className="ih-grand"><span>الإجمالي</span><span className="num">{formatCurrency(data.price)}</span></div>
+            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{formatCurrency(data.balance)}</span></div>
           </>
         ) : (
           <>
-            <div className="ih-row"><span>المجموع</span><span className="num">{money(subtotal)} د.ع</span></div>
-            <div className="ih-row"><span>رسوم التوصيل</span><span className="num">{money(data.deliveryFee)} د.ع</span></div>
-            {Number(data.depositAmount) > 0 && <div className="ih-row"><span>العربون</span><span className="num">{money(data.depositAmount)} د.ع</span></div>}
+            <div className="ih-row"><span>المجموع</span><span className="num">{formatCurrency(subtotal)}</span></div>
+            <div className="ih-row"><span>رسوم التوصيل</span><span className="num">{formatCurrency(data.deliveryFee)}</span></div>
+            {Number(data.depositAmount) > 0 && <div className="ih-row"><span>العربون</span><span className="num">{formatCurrency(data.depositAmount)}</span></div>}
             <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
-            <div className="ih-grand"><span>الإجمالي</span><span className="num">{money(data.total)} د.ع</span></div>
-            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{money(data.remainingAmount ?? data.total)} د.ع</span></div>
+            <div className="ih-grand"><span>الإجمالي</span><span className="num">{formatCurrency(data.total)}</span></div>
+            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{formatCurrency(data.remainingAmount ?? data.total)}</span></div>
           </>
         )}
 

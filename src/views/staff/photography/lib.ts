@@ -1,5 +1,6 @@
 import { adminFetch } from "@/views/admin/_lib";
 import { mutateOrQueue, type QueuedResult } from "../offline";
+import { formatMoney } from "@/lib/money";
 
 export type PhotographyStage = "registered" | "editing" | "ready_print" | "ready_pickup" | "delivered";
 
@@ -133,7 +134,7 @@ export const photographyApi = {
 };
 
 export function photoMoney(value: number | string | null | undefined) {
-  return Number(value || 0).toLocaleString("en-US");
+  return formatMoney(value);
 }
 
 export function printTypeLabel(value: string) {

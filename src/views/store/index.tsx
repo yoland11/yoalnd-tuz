@@ -13,6 +13,7 @@ import { useWishlist } from "@/lib/wishlist";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
 import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/money";
 
 type StoreCategory = {
   id: number;
@@ -340,11 +341,11 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
           <div className="mt-auto pt-4 flex items-center justify-between">
             <div className="flex flex-col">
               <span className="font-bold text-primary">
-                {(isRental ? rentalPrice : product.price).toLocaleString("en-US")} د.ع{isRental ? " / يوم" : ""}
+                {formatCurrency(isRental ? rentalPrice : product.price)}{isRental ? " / يوم" : ""}
               </span>
               {!isRental && product.originalPrice && product.originalPrice > product.price && (
                 <span className="text-xs text-muted-foreground line-through">
-                  {product.originalPrice.toLocaleString("en-US")} د.ع
+                  {formatCurrency(product.originalPrice)}
                 </span>
               )}
             </div>

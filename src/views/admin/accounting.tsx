@@ -4,7 +4,7 @@ import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search } 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
@@ -558,7 +558,7 @@ function PnLTab() {
                     <BarChart data={data.expensesByCategory}>
                       <CartesianGrid stroke="rgba(255,255,255,0.05)" />
                       <XAxis dataKey="categoryName" stroke="rgba(255,255,255,0.5)" fontSize={12} />
-                      <YAxis stroke="rgba(255,255,255,0.5)" fontSize={11} />
+                      <YAxis stroke="rgba(255,255,255,0.5)" fontSize={11} tickFormatter={(value) => formatMoney(Number(value))} />
                       <Tooltip
                         contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(201,168,76,0.3)", borderRadius: 8 }}
                         formatter={(v: number) => formatCurrency(v)} />
@@ -647,7 +647,7 @@ function buildVoucherHtml(opts: {
   notes: string | null;
   createdByName: string;
 }): string {
-  const amountFmt = new Intl.NumberFormat("ar-IQ").format(parseFloat(opts.amount));
+  const amountFmt = formatCurrency(opts.amount);
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
 <title>سند ${opts.kind} ${opts.voucherNo}</title>
 <style>
@@ -683,7 +683,7 @@ function buildVoucherHtml(opts: {
   ${opts.reference ? `<div class="row"><span>المرجع</span><b>${escapeHtml(opts.reference)}</b></div>` : ""}
   <div class="amount">
     <div class="label">المبلغ</div>
-    <div class="v">${amountFmt} د.ع</div>
+    <div class="v">${amountFmt}</div>
   </div>
   ${opts.notes ? `<div class="notes"><b>ملاحظات:</b> ${escapeHtml(opts.notes)}</div>` : ""}
   <div class="foot">

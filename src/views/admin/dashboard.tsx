@@ -9,7 +9,7 @@ import {
   PieChart, Pie, Cell, Legend,
 } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone } from "@/lib/phone";
 
@@ -346,7 +346,7 @@ export default function DashboardPage() {
               <LineChart data={data.revenueByDay}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
                 <XAxis dataKey="day" stroke="#888" fontSize={11} tickFormatter={d => d.slice(5)} />
-                <YAxis stroke="#888" fontSize={11} />
+                <YAxis stroke="#888" fontSize={11} tickFormatter={(value) => formatMoney(Number(value))} />
                 <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid #C9A84C", borderRadius: 8 }} />
                 <Line type="monotone" dataKey="total" stroke="#C9A84C" strokeWidth={2} dot={{ fill: "#C9A84C" }} name="الإيرادات" />
               </LineChart>

@@ -25,7 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { downloadElementPdf } from "@/lib/pdf";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 
 type PageMode = "reports" | "reconciliation";
 type CashStatus = "balanced" | "surplus" | "shortage" | "not_reconciled";
@@ -328,7 +328,7 @@ function DailyCashPage({ mode }: { mode: PageMode }) {
                 <BarChart data={cashQuery.data.chart.slice(-45)}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.35)" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" tickFormatter={(value) => Number(value).toLocaleString("ar-IQ")} />
+                  <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" tickFormatter={(value) => formatMoney(Number(value))} />
                   <Tooltip formatter={(value) => formatCurrency(Number(value))} labelStyle={{ color: "#111827" }} />
                   <Bar dataKey="sales" name="المبيعات" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="expenses" name="المصاريف" fill="#ef4444" radius={[4, 4, 0, 0]} />

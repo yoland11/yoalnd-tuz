@@ -21,6 +21,7 @@ import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { logCustomerActivity } from "@/lib/customer-activity";
 import { useT } from "@/lib/i18n";
+import { formatCurrency, formatMoney } from "@/lib/money";
 
 type Mode = "code" | "phone";
 
@@ -327,7 +328,7 @@ function rentalDetailsFromTracking(tracking: any) {
 }
 
 function formatTrackMoney(value: unknown) {
-  return `${Number(value ?? 0).toLocaleString("ar-IQ")} د.ع`;
+  return formatCurrency(value as number | string | null | undefined);
 }
 
 function RentalTrackingDetails({ tracking, embedded = false }: { tracking: any; embedded?: boolean }) {
@@ -338,7 +339,7 @@ function RentalTrackingDetails({ tracking, embedded = false }: { tracking: any; 
   const rows = [
     { label: "تاريخ البداية", value: rental.startDate || "—" },
     { label: "تاريخ النهاية", value: rental.endDate || "—" },
-    { label: "عدد الأيام", value: Number(rental.days ?? 0).toLocaleString("en-US") },
+    { label: "عدد الأيام", value: formatMoney(rental.days ?? 0) },
     { label: "سعر اليوم", value: formatTrackMoney(rental.pricePerDay) },
     { label: "السعر الكلي", value: formatTrackMoney(rental.totalAmount ?? tracking.total) },
     { label: "حالة الإيجار", value: RENTAL_STATUS_LABELS[String(rental.status ?? tracking.status)] ?? String(rental.status ?? tracking.status ?? "—") },
@@ -447,18 +448,18 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
         <div className="flex items-center justify-between text-sm text-muted-foreground flex-wrap gap-2">
           <span>{tracking.customerName}</span>
           {tracking.total > 0 && (
-            <span className="text-primary font-bold">{Number(tracking.total).toLocaleString('ar-IQ')} د.ع</span>
+            <span className="text-primary font-bold">{formatCurrency(tracking.total)}</span>
           )}
         </div>
         {(Number(tracking.depositAmount ?? 0) > 0 || Number(tracking.remainingAmount ?? 0) > 0) && (
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
             <div className="rounded-lg bg-background/60 border border-border/25 p-3">
               <p className="text-muted-foreground mb-1">{t("العربون")}</p>
-              <p className="text-foreground font-semibold">{Number(tracking.depositAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+              <p className="text-foreground font-semibold">{formatCurrency(tracking.depositAmount)}</p>
             </div>
             <div className="rounded-lg bg-background/60 border border-border/25 p-3">
               <p className="text-muted-foreground mb-1">{t("المتبقي")}</p>
-              <p className="text-primary font-semibold">{Number(tracking.remainingAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+              <p className="text-primary font-semibold">{formatCurrency(tracking.remainingAmount)}</p>
             </div>
             <div className="rounded-lg bg-background/60 border border-border/25 p-3">
               <p className="text-muted-foreground mb-1">{t("حالة الدفع")}</p>
@@ -636,7 +637,7 @@ function OrderCard({ tracking, contactPhone }: { tracking: any; contactPhone?: s
                 </div>
                 <div className="text-right">
                   <p className="text-foreground text-sm">× {item.quantity}</p>
-                  <p className="text-primary text-xs">{Number(item.price).toLocaleString('ar-IQ')} د.ع</p>
+                  <p className="text-primary text-xs">{formatCurrency(item.price)}</p>
                 </div>
               </div>
             ))}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { Sparkles } from "lucide-react";
+import { formatCurrency } from "@/lib/money";
 
 type ProductSuggestion = {
   id: number;
@@ -133,7 +134,7 @@ export function SmartSuggestions({
         description: shortSuggestionDescription(product.descriptionAr || product.description),
         image: product.images?.[0],
         href: `/store/${product.id}`,
-        meta: product.price ? `${Number(product.price).toLocaleString("ar-IQ")} د.ع` : "منتج مقترح",
+        meta: product.price ? formatCurrency(product.price) : "منتج مقترح",
       })),
     ].slice(0, max);
   }, [contextServiceType, loaded.products, loaded.services, max, packages, products, services]);

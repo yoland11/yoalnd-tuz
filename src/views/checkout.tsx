@@ -16,6 +16,7 @@ import { LocationMapCard } from "@/components/interactive/location-map-card";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { useToast } from "@/hooks/use-toast";
 import { useT } from "@/lib/i18n";
+import { formatCurrency } from "@/lib/money";
 
 export default function Checkout() {
   const [, navigate] = useLocation();
@@ -173,7 +174,7 @@ export default function Checkout() {
             <p className="text-3xl font-mono font-bold text-primary tracking-widest">{completedOrder.trackingCode}</p>
           </div>
           <p className="text-muted-foreground text-sm mb-8">
-            {t("إجمالي الطلب:")} <span className="text-foreground font-bold">{completedOrder.total.toLocaleString('ar-IQ')} د.ع</span>
+            {t("إجمالي الطلب:")} <span className="text-foreground font-bold">{formatCurrency(completedOrder.total)}</span>
           </p>
           <div className="flex gap-3">
             <Button className="flex-1" onClick={() => navigate(`/track?code=${completedOrder.trackingCode}`)}>
@@ -239,7 +240,7 @@ export default function Checkout() {
                 <option value={0}>{t("اختر المحافظة")}</option>
                 {zones?.filter(z => z.isActive).map(z => (
                   <option key={z.id} value={z.id}>
-                    {z.governorateAr} — {Number(z.price).toLocaleString('ar-IQ')} د.ع ({z.estimatedDays} {t("أيام")})
+                    {z.governorateAr} — {formatCurrency(z.price)} ({z.estimatedDays} {t("أيام")})
                   </option>
                 ))}
               </select>
@@ -355,23 +356,23 @@ export default function Checkout() {
                     <span className="block truncate">{item.product?.nameAr ?? "—"} × {item.quantity}</span>
                     <SelectedColorLabel color={(item as any).selectedColorData} fallback={item.selectedColor} className="mt-1 flex text-[11px] text-muted-foreground" />
                   </span>
-                  <span className="text-foreground">{(Number(item.price) * item.quantity).toLocaleString('ar-IQ')}</span>
+                  <span className="text-foreground">{formatCurrency(Number(item.price) * item.quantity)}</span>
                 </div>
               ))}
             </div>
             <div className="border-t border-border/30 pt-3 space-y-2">
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">{t("المجموع الفرعي")}</span>
-                <span>{subtotal.toLocaleString('ar-IQ')} د.ع</span>
+                <span>{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">{t("التوصيل")}</span>
-                <span>{Number(deliveryFee).toLocaleString('ar-IQ')} د.ع</span>
+                <span>{formatCurrency(deliveryFee)}</span>
               </div>
               {coupon && (
                 <div className="flex justify-between text-sm text-status-success">
                   <span>{t("كوبون")} {coupon.code}</span>
-                  <span>- {coupon.discountAmount.toLocaleString("ar-IQ")} د.ع</span>
+                  <span>- {formatCurrency(coupon.discountAmount)}</span>
                 </div>
               )}
               {rewards && rewards.points > 0 && (
@@ -393,7 +394,7 @@ export default function Checkout() {
                   {redeemDiscount > 0 && (
                     <div className="flex justify-between text-sm text-primary">
                       <span>{t("خصم النقاط")}</span>
-                      <span>- {redeemDiscount.toLocaleString("ar-IQ")} د.ع</span>
+                      <span>- {formatCurrency(redeemDiscount)}</span>
                     </div>
                   )}
                 </div>
@@ -421,7 +422,7 @@ export default function Checkout() {
               </div>
               <div className="flex justify-between font-bold text-lg border-t border-border/30 pt-2 mt-2">
                 <span className="text-foreground">{t("الإجمالي")}</span>
-                <span className="text-primary">{total.toLocaleString('ar-IQ')} د.ع</span>
+                <span className="text-primary">{formatCurrency(total)}</span>
               </div>
               {total > 0 && (
                 <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">

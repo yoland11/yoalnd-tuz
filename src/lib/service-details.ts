@@ -1,5 +1,6 @@
 export { normalizePhoneDigits } from "@/lib/phone";
 import { fileToDataUrl, processImageFile } from "@/lib/image-tools";
+import { formatCurrency } from "@/lib/money";
 
 export type CrewOption = {
   id: number;
@@ -159,7 +160,7 @@ export function serviceDetailsToRows(serviceType: string | null | undefined, det
     })
     .filter(Boolean) as { key: string; label: string; value: string }[];
   if (normalizeServiceType(serviceType) === "gifts" && Number(source.wrappingFee) > 0) {
-    rows.push({ key: "wrappingFee", label: "إضافة التغليف", value: `${Number(source.wrappingFee).toLocaleString("ar-IQ")} دينار` });
+    rows.push({ key: "wrappingFee", label: "إضافة التغليف", value: formatCurrency(source.wrappingFee as number | string) });
   }
   return rows;
 }

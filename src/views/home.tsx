@@ -10,6 +10,7 @@ import { ProductColorDots } from "@/components/product-colors";
 import { useT } from "@/lib/i18n";
 import { useContentLocalizer } from "@/lib/content-i18n";
 import { FeaturedKoshasSection } from "@/views/koshas";
+import { formatCurrency } from "@/lib/money";
 
 export default function Home() {
   const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
@@ -196,7 +197,7 @@ export default function Home() {
                   <ProductColorDots colors={product.colors} />
                   <div className="mt-auto flex items-center justify-between">
                     <span className="font-bold text-primary">
-                      {Number(product.price || 0).toLocaleString("en-US")} د.ع
+                      {formatCurrency(product.price)}
                     </span>
                     <ChevronLeft className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                   </div>

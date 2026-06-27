@@ -14,6 +14,7 @@ import { colorImage, colorKey, normalizeColors, type ProductColor } from "@/lib/
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { logCustomerActivity } from "@/lib/customer-activity";
+import { formatCurrency, formatMoney } from "@/lib/money";
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -268,10 +269,10 @@ export default function ProductDetail() {
             {/* Price */}
             <div className="flex items-baseline justify-center gap-3">
               <span className="text-4xl font-bold text-primary">
-                {Number(isRental ? rentalPricePerDay : product.price).toLocaleString('ar-IQ')} د.ع{isRental ? " / يوم" : ""}
+                {formatCurrency(isRental ? rentalPricePerDay : product.price)}{isRental ? " / يوم" : ""}
               </span>
               {!isRental && product.originalPrice && (
-                <span className="text-lg text-muted-foreground line-through">{Number(product.originalPrice).toLocaleString('ar-IQ')}</span>
+                <span className="text-lg text-muted-foreground line-through">{formatCurrency(product.originalPrice)}</span>
               )}
             </div>
 
@@ -395,7 +396,7 @@ export default function ProductDetail() {
                 </label>
                 <div className="rounded-xl border border-border/25 bg-background/60 p-3 text-sm text-muted-foreground">
                   {rentalDaysCount > 0 ? (
-                    <span>{rentalDaysCount} {t("يوم")} × {rentalPricePerDay.toLocaleString("ar-IQ")} = <strong className="text-primary">{rentalTotal.toLocaleString("ar-IQ")} د.ع</strong></span>
+                    <span>{rentalDaysCount} {t("يوم")} × {formatMoney(rentalPricePerDay)} = <strong className="text-primary">{formatCurrency(rentalTotal)}</strong></span>
                   ) : (
                     <span>{t("اختر تاريخ البداية والنهاية لاحتساب السعر.")}</span>
                   )}

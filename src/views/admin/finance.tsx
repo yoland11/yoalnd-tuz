@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency, type AdminMe } from "./_lib";
+import { adminFetch, formatCurrency, formatMoney, type AdminMe } from "./_lib";
 import { EmptyState } from "./_layout";
 
 const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50";
@@ -338,7 +338,7 @@ export function FinanceReportsPage() {
 
   function buildTableHtml() {
     const head = `<tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr>`;
-    const body = rows.map((r) => `<tr><td>${r.reportDate}</td><td>${r.openingBalance.toLocaleString("ar-IQ")}</td><td>${r.totalSales.toLocaleString("ar-IQ")}</td><td>${r.totalExpenses.toLocaleString("ar-IQ")}</td><td>${r.closingBalance.toLocaleString("ar-IQ")}</td><td>${r.actualCashInDrawer == null ? "—" : r.actualCashInDrawer.toLocaleString("ar-IQ")}</td><td>${r.difference == null ? "—" : r.difference.toLocaleString("ar-IQ")}</td><td>${STATUS_LABEL[r.status] ?? r.status}</td></tr>`).join("");
+    const body = rows.map((r) => `<tr><td>${r.reportDate}</td><td>${formatMoney(r.openingBalance)}</td><td>${formatMoney(r.totalSales)}</td><td>${formatMoney(r.totalExpenses)}</td><td>${formatMoney(r.closingBalance)}</td><td>${r.actualCashInDrawer == null ? "—" : formatMoney(r.actualCashInDrawer)}</td><td>${r.difference == null ? "—" : formatMoney(r.difference)}</td><td>${STATUS_LABEL[r.status] ?? r.status}</td></tr>`).join("");
     return `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   }
 

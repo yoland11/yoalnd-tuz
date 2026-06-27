@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
+import { formatMoney } from "@/lib/money";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -256,7 +257,6 @@ function openPrintWindow(
   const companyAddress = settings?.address ?? "";
   const esc = (s: unknown) =>
     String(s ?? "").replace(/[&<>"]/g, (c) => (({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]));
-  const money = (n: number) => Number(n || 0).toLocaleString("en-US");
 
   let html: string;
 
@@ -266,8 +266,8 @@ function openPrintWindow(
       ? `<tr><th class="name">الصنف</th><th>المبلغ</th></tr>`
       : `<tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>`;
     const itemRows = cart.map((i) => size === "58mm"
-      ? `<tr><td class="name" colspan="2">${esc(i.productName)}</td></tr><tr class="ln2"><td class="num">${money(i.quantity)} × ${money(i.unitPrice)}</td><td class="num" style="text-align:left">${money(i.total)}</td></tr>`
-      : `<tr><td class="name">${esc(i.productName)}</td><td class="num center">${money(i.quantity)}</td><td class="num center">${money(i.unitPrice)}</td><td class="num" style="text-align:left">${money(i.total)}</td></tr>`
+      ? `<tr><td class="name" colspan="2">${esc(i.productName)}</td></tr><tr class="ln2"><td class="num">${formatMoney(i.quantity)} × ${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`
+      : `<tr><td class="name">${esc(i.productName)}</td><td class="num center">${formatMoney(i.quantity)}</td><td class="num center">${formatMoney(i.unitPrice)}</td><td class="num" style="text-align:left">${formatMoney(i.total)}</td></tr>`
     ).join("");
 
     html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>فاتورة ${esc(invoiceNo)}</title>
@@ -288,12 +288,12 @@ function openPrintWindow(
       <table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>
       <hr class="rule" />
       <div class="totals">
-        <div class="row"><span>المجموع الفرعي</span><span class="num">${money(totals.subtotal)} د.ع</span></div>
-        ${totals.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${money(totals.discount)} د.ع</span></div>` : ""}
-        ${totals.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${money(totals.tax)} د.ع</span></div>` : ""}
-        <div class="grand"><span>الإجمالي</span><span class="num">${money(totals.grand)} د.ع</span></div>
-        <div class="payline"><span>المدفوع</span><span class="num">${money(totals.paid)} د.ع</span></div>
-        <div class="payline remain"><span>المتبقي</span><span class="num">${money(totals.remaining)} د.ع</span></div>
+        <div class="row"><span>المجموع الفرعي</span><span class="num">${formatCurrency(totals.subtotal)}</span></div>
+        ${totals.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${formatCurrency(totals.discount)}</span></div>` : ""}
+        ${totals.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${formatCurrency(totals.tax)}</span></div>` : ""}
+        <div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(totals.grand)}</span></div>
+        <div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(totals.paid)}</span></div>
+        <div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(totals.remaining)}</span></div>
       </div>
       ${form.notes ? `<hr class="rule dashed" /><div class="kv"><span>ملاحظات</span><span class="v">${esc(form.notes)}</span></div>` : ""}
       ${options.qrDataUrl ? `<div class="qr"><img src="${options.qrDataUrl}" alt="QR" /><div class="cap">امسح الرمز لعرض الفاتورة</div></div>` : ""}
@@ -309,7 +309,7 @@ function openPrintWindow(
 
   // ─── A4 / PDF sheet (unchanged) ───
   const rows = cart.map(i =>
-    `<tr><td>${esc(i.productName)}</td><td style="text-align:center">${i.quantity.toLocaleString("ar-IQ")}</td><td style="text-align:center">${i.unitPrice.toLocaleString("ar-IQ")}</td><td style="text-align:center">${i.discount > 0 ? i.discount.toLocaleString("ar-IQ") : "—"}</td><td style="text-align:left">${i.total.toLocaleString("ar-IQ")}</td></tr>`
+    `<tr><td>${esc(i.productName)}</td><td style="text-align:center">${formatMoney(i.quantity)}</td><td style="text-align:center">${formatMoney(i.unitPrice)}</td><td style="text-align:center">${i.discount > 0 ? formatMoney(i.discount) : "—"}</td><td style="text-align:left">${formatMoney(i.total)}</td></tr>`
   ).join("");
   const tableHeader = `<tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>خصم</th><th>الإجمالي</th></tr>`;
 
@@ -348,12 +348,12 @@ function openPrintWindow(
   <table><thead>${tableHeader}</thead><tbody>${rows}</tbody></table>
   <hr class="divider" />
   <table class="totals">
-    <tr><td>المجموع الفرعي</td><td>${totals.subtotal.toLocaleString("ar-IQ")} د.ع</td></tr>
-    ${totals.discount > 0 ? `<tr><td>الخصم</td><td>- ${totals.discount.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
-    ${totals.tax > 0 ? `<tr><td>الضريبة</td><td>${totals.tax.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
-    <tr class="grand"><td>الإجمالي الكلي</td><td>${totals.grand.toLocaleString("ar-IQ")} د.ع</td></tr>
-    <tr><td>المدفوع</td><td>${totals.paid.toLocaleString("ar-IQ")} د.ع</td></tr>
-    ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${totals.remaining.toLocaleString("ar-IQ")} د.ع</td></tr>` : ""}
+    <tr><td>المجموع الفرعي</td><td>${formatCurrency(totals.subtotal)}</td></tr>
+    ${totals.discount > 0 ? `<tr><td>الخصم</td><td>- ${formatCurrency(totals.discount)}</td></tr>` : ""}
+    ${totals.tax > 0 ? `<tr><td>الضريبة</td><td>${formatCurrency(totals.tax)}</td></tr>` : ""}
+    <tr class="grand"><td>الإجمالي الكلي</td><td>${formatCurrency(totals.grand)}</td></tr>
+    <tr><td>المدفوع</td><td>${formatCurrency(totals.paid)}</td></tr>
+    ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${formatCurrency(totals.remaining)}</td></tr>` : ""}
   </table>
   ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${esc(form.notes)}</div>` : ""}
   ${options.qrDataUrl ? `<div class="qr"><img class="qr-code" src="${options.qrDataUrl}" alt="QR" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}

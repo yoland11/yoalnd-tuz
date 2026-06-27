@@ -12,6 +12,7 @@ import {
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import webpush from "web-push";
+import { formatCurrency, formatMoney } from "@/lib/money";
 import { z } from "zod/v4";
 import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import {
@@ -1036,7 +1037,7 @@ async function notifyOrderNeedsFollowup(input: {
   return createNotificationOnce({
     type: "order_followup",
     title: isLate ? "طلب يحتاج متابعة" : "طلب يحتاج متابعة مالية",
-    body: `${input.customerName || "زبون"} - ${input.trackingCode || `#${input.id}`}${remaining > 0 ? ` - المتبقي ${remaining.toLocaleString("ar-IQ")} د.ع` : ""}`,
+    body: `${input.customerName || "زبون"} - ${input.trackingCode || `#${input.id}`}${remaining > 0 ? ` - المتبقي ${formatCurrency(remaining)}` : ""}`,
     entityType: input.kind,
     entityId: input.id,
     href: "/admin/orders",
@@ -1355,7 +1356,7 @@ async function createSmartBookingNotifications(input: {
     await createNotificationOnce({
       type: "payment_remaining",
       title: "دفعة متبقية",
-      body: `${input.customerName || input.title} - المتبقي ${remaining.toLocaleString("ar-IQ")} د.ع`,
+      body: `${input.customerName || input.title} - المتبقي ${formatCurrency(remaining)}`,
       entityType: input.entityType,
       entityId: input.entityId,
       href: erpEntityHref(input.entityType, input.entityId),
@@ -1677,7 +1678,7 @@ async function runSmartNotificationsSweep() {
     await add({
       type: "payment_overdue",
       title: "دفعة متجر متأخرة",
-      body: `${row.customerName} - المتبقي ${Number(row.remainingAmount).toLocaleString("ar-IQ")} د.ع`,
+      body: `${row.customerName} - المتبقي ${formatCurrency(row.remainingAmount)}`,
       entityType: "order",
       entityId: row.id,
       href: "/admin/orders",
@@ -1689,7 +1690,7 @@ async function runSmartNotificationsSweep() {
     await add({
       type: "payment_overdue",
       title: "دفعة حجز خدمة متأخرة",
-      body: `${row.customerName} - المتبقي ${Number(row.remainingAmount).toLocaleString("ar-IQ")} د.ع`,
+      body: `${row.customerName} - المتبقي ${formatCurrency(row.remainingAmount)}`,
       entityType: "service_order",
       entityId: row.id,
       href: "/admin/orders",
@@ -1701,7 +1702,7 @@ async function runSmartNotificationsSweep() {
     await add({
       type: "payment_overdue",
       title: "دفعة كوشة متأخرة",
-      body: `${row.customerName} - المتبقي ${Number(row.remainingAmount).toLocaleString("ar-IQ")} د.ع`,
+      body: `${row.customerName} - المتبقي ${formatCurrency(row.remainingAmount)}`,
       entityType: "kosha_booking",
       entityId: row.id,
       href: "/admin/kosha-bookings",
@@ -4757,7 +4758,7 @@ async function calculateCouponDiscount(codeInput: unknown, subtotalInput: unknow
   const deliveryFee = money(deliveryFeeInput);
   const minOrder = Number.parseFloat(String(coupon.minOrderAmount ?? "0")) || 0;
   if (subtotal < minOrder) {
-    return { ok: false as const, status: 400, message: `الحد الأدنى للكوبون ${minOrder.toLocaleString("ar-IQ")} د.ع` };
+    return { ok: false as const, status: 400, message: `الحد الأدنى للكوبون ${formatCurrency(minOrder)}` };
   }
   const value = Number.parseFloat(String(coupon.value ?? "0")) || 0;
   const baseTotal = subtotal + deliveryFee;
@@ -6457,7 +6458,7 @@ async function handleOffers(req: NextRequest, parts: string[]) {
       image: pair.find((entry) => entry.image)?.image ?? null,
       href: pair[0].href,
       items: pair.map((entry) => ({ kind: entry.kind, id: entry.id, title: entry.title, href: entry.href })),
-      totalLabel: total > 0 ? `${total.toLocaleString("ar-IQ")} د.ع` : "حسب تفاصيل الطلب",
+      totalLabel: total > 0 ? formatCurrency(total) : "حسب تفاصيل الطلب",
     };
   });
 
@@ -8812,7 +8813,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
         const wasPendingPricing = existing.paymentStatus === "pending_pricing" || Number(existing.totalAmount) <= 0;
         const isNowPriced = row.paymentStatus !== "pending_pricing" && Number(row.totalAmount) > 0;
         if (wasPendingPricing && isNowPriced) {
-          void sendTelegramMessage(`💐 <b>تم تسعير حجز الكوشة</b>\nرقم الحجز: KB-${row.id}\nالعميل: ${telegramText(row.customerName)}\nالمبلغ الكلي: ${Number(row.totalAmount).toLocaleString("en-US")} د.ع\nالمدفوع: ${Number(row.paidAmount).toLocaleString("en-US")} د.ع\nالمتبقي: ${Number(row.remainingAmount).toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/admin/kosha-bookings?booking=${row.id}`);
+          void sendTelegramMessage(`💐 <b>تم تسعير حجز الكوشة</b>\nرقم الحجز: KB-${row.id}\nالعميل: ${telegramText(row.customerName)}\nالمبلغ الكلي: ${formatCurrency(row.totalAmount)}\nالمدفوع: ${formatCurrency(row.paidAmount)}\nالمتبقي: ${formatCurrency(row.remainingAmount)}\n${baseUrlFromReq(req)}/admin/kosha-bookings?booking=${row.id}`);
         }
         const koshaPaymentDelta = Number(row.paidAmount) - Number(existing.paidAmount);
         if (koshaPaymentDelta > 0) {
@@ -15121,7 +15122,7 @@ async function photographyOrderForUser(orderId: number, user: AdminUser) {
 async function createPhotographyCollectionRequest(order: typeof photographyOrdersTable.$inferSelect, user: AdminUser, amount: number, note: string) {
   const pending = await photographyPendingAmount(order.id);
   const available = Math.max(0, Number(order.remainingAmount) - pending);
-  if (amount > available) throw new Error(`المبلغ أكبر من المتبقي المتاح (${available.toLocaleString("ar-IQ")} د.ع)`);
+  if (amount > available) throw new Error(`المبلغ أكبر من المتبقي المتاح (${formatCurrency(available)})`);
   const [request] = await db.insert(photographyPaymentRequestsTable).values({
     orderId: order.id,
     staffId: user.id,
@@ -15152,7 +15153,7 @@ async function createPhotographyCollectionRequest(order: typeof photographyOrder
     void createNotification({
       type: "photography_payment_request",
       title: "طلب تحصيل تصوير بانتظار الاعتماد",
-      body: `${photographyStaffName(user)} - ${order.orderNo} - ${amount.toLocaleString("ar-IQ")} د.ع`,
+      body: `${photographyStaffName(user)} - ${order.orderNo} - ${formatCurrency(amount)}`,
       entityType: "financial_transaction",
       entityId: transaction.id,
       href: "/admin/finance/master-cash",
@@ -15184,7 +15185,7 @@ async function finalizePhotographyPaymentRequest(transaction: any, approved: boo
     await db.insert(photographyOrderEventsTable).values({
       orderId: order.id, staffId: reviewerId, staffName: reviewer.name, type: "payment_rejected", fromStatus: order.status, toStatus: order.status, note: reason ?? null,
     });
-    void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_rejected", title: "تم رفض دفعة التصوير", body: `${order.orderNo} - ${Number(request.amount).toLocaleString("ar-IQ")} د.ع`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+    void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_rejected", title: "تم رفض دفعة التصوير", body: `${order.orderNo} - ${formatCurrency(request.amount)}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
     return;
   }
   const amount = Number(request.amount);
@@ -15196,7 +15197,7 @@ async function finalizePhotographyPaymentRequest(transaction: any, approved: boo
     await tx.update(photographyPaymentRequestsTable).set({ status: "approved", reviewedByStaffId: reviewerId, reviewedByName: reviewer.name, reviewedAt: new Date() }).where(eq(photographyPaymentRequestsTable.id, request.id));
     await tx.insert(photographyOrderEventsTable).values({ orderId: order.id, staffId: reviewerId, staffName: reviewer.name, type: "payment_approved", fromStatus: order.status, toStatus: order.status, note: reason ?? null });
   });
-  void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_approved", title: "تم اعتماد دفعة التصوير", body: `${order.orderNo} - ${amount.toLocaleString("ar-IQ")} د.ع`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
+  void createNotification({ audienceType: "admin", staffId: request.staffId, type: "photography_payment_approved", title: "تم اعتماد دفعة التصوير", body: `${order.orderNo} - ${formatCurrency(amount)}`, entityType: "photography_order", entityId: order.id, href: `/staff/photography/orders/${order.id}` });
 }
 
 function telegramText(value: unknown) {
@@ -15365,7 +15366,7 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
         eventDate: event.eventDate,
         remainingAmount: order.remainingAmount,
       }).catch((err) => console.error("photography smart notifications failed", { orderId: order.id, message: err?.message }));
-      void sendTelegramMessage(`📷 <b>طلب تصوير جديد</b>\nرقم الطلب: ${telegramText(orderNo)}\nالمناسبة: ${telegramText(event.groomName)}\nالزبون: ${telegramText(order.customerName)}\nالهاتف: ${telegramText(phone ? (formatIraqiPhone(phone) ?? phone) : "غير مسجل")}\nالمصور: ${telegramText(event.assignedStaffName)}\nالسعر: ${Number(order.unitPrice).toLocaleString("en-US")} × ${order.copies}\nالمبلغ: ${total.toLocaleString("en-US")} د.ع\nالمدفوع المطلوب اعتماده: ${paidRequested.toLocaleString("en-US")} د.ع\n${baseUrlFromReq(req)}/staff/photography/orders/${order.id}`);
+      void sendTelegramMessage(`📷 <b>طلب تصوير جديد</b>\nرقم الطلب: ${telegramText(orderNo)}\nالمناسبة: ${telegramText(event.groomName)}\nالزبون: ${telegramText(order.customerName)}\nالهاتف: ${telegramText(phone ? (formatIraqiPhone(phone) ?? phone) : "غير مسجل")}\nالمصور: ${telegramText(event.assignedStaffName)}\nالسعر: ${formatMoney(order.unitPrice)} × ${order.copies}\nالمبلغ: ${formatCurrency(total)}\nالمدفوع المطلوب اعتماده: ${formatCurrency(paidRequested)}\n${baseUrlFromReq(req)}/staff/photography/orders/${order.id}`);
       return json({ ...(await formatPhotographyOrder(order, false)), qr }, 201);
     }
     if (method === "PATCH" && ref && !action) {
@@ -15487,7 +15488,7 @@ async function handlePhotographyStaffPortal(req: NextRequest, parts: string[]): 
       try {
         const request = await createPhotographyCollectionRequest(order, auth, parsed.data.amount, parsed.data.note);
         void logAdminActivity(req, "photography_payment_requested", "photography_order", order.id, { amount: parsed.data.amount, requestId: request.id });
-        void sendTelegramMessage(`💵 <b>طلب اعتماد دفعة تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالمصور: ${telegramText(photographyStaffName(auth))}\nالمبلغ: ${parsed.data.amount.toLocaleString("en-US")} د.ع`);
+        void sendTelegramMessage(`💵 <b>طلب اعتماد دفعة تصوير</b>\nالطلب: ${telegramText(order.orderNo)}\nالمصور: ${telegramText(photographyStaffName(auth))}\nالمبلغ: ${formatCurrency(parsed.data.amount)}`);
         return json({ ok: true, requestId: request.id }, 201);
       } catch (err: any) {
         return error(err?.message || "تعذر إرسال طلب التحصيل", 400);
@@ -15890,7 +15891,7 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
           status: "rejected", reviewedByStaffId: auth.id, reviewedByName: auth.fullName || auth.username, reviewedAt: new Date(),
         }).where(eq(koshaPaymentRequestsTable.id, id));
         await addKoshaEvent({ bookingId: booking.id, staff: auth, type: "payment_rejected", note: reqRow.note, meta: { amount: Number(reqRow.amount) } });
-        await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_rejected", title: "رُفض تحصيل المبلغ", body: `رفض المدير تحصيل ${Number(reqRow.amount).toLocaleString("en-US")} د.ع`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
+        await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_rejected", title: "رُفض تحصيل المبلغ", body: `رفض المدير تحصيل ${formatCurrency(reqRow.amount)}`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
         return json({ ok: true, status: "rejected" });
       }
 
@@ -15911,7 +15912,7 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
         console.error("kosha payment finance sync failed", { bookingId: booking.id, error: err instanceof Error ? err.message : "unknown" });
       }
       await addKoshaEvent({ bookingId: booking.id, staff: auth, type: "payment_approved", note: reqRow.note, meta: { amount } });
-      await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_approved", title: "اعتُمد تحصيل المبلغ", body: `وافق المدير على تحصيل ${amount.toLocaleString("en-US")} د.ع ودخل النظام`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
+      await addKoshaNotification({ staffId: reqRow.staffId, audience: "staff", type: "payment_approved", title: "اعتُمد تحصيل المبلغ", body: `وافق المدير على تحصيل ${formatCurrency(amount)} ودخل النظام`, href: `/staff/koshas/booking/${booking.id}`, bookingId: booking.id });
       return json({ ok: true, status: "approved", paidAmount: newPaid, remainingAmount: newRemaining });
     }
     return error("المسار غير موجود", 404);
@@ -16061,14 +16062,14 @@ async function handleStaffPortal(req: NextRequest, parts: string[]): Promise<Nex
       bookingId: id, staffId: auth.id, staffName: auth.fullName || auth.username, amount: String(amount), note: note || null, status: "pending",
     }).returning();
     await addKoshaEvent({ bookingId: id, staff: auth, type: "payment_request", note: note || null, meta: { amount } });
-    await addKoshaNotification({ audience: "manager", type: "payment_request", title: "طلب تحصيل ميداني", body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع — ${booking.customerName}`, href: "/admin/kosha-collections", bookingId: id });
+    await addKoshaNotification({ audience: "manager", type: "payment_request", title: "طلب تحصيل ميداني", body: `${auth.fullName || auth.username} استلم ${formatCurrency(amount)} — ${booking.customerName}`, href: "/admin/kosha-collections", bookingId: id });
     // Surface the request inside the site admin panel (notifications bell + manager push).
     try {
       await createNotification({
         audienceType: "admin",
         type: "kosha_collection_request",
         title: "طلب تحصيل كوشة",
-        body: `${auth.fullName || auth.username} استلم ${amount.toLocaleString("en-US")} د.ع من ${booking.customerName} — بانتظار اعتمادك`,
+        body: `${auth.fullName || auth.username} استلم ${formatCurrency(amount)} من ${booking.customerName} — بانتظار اعتمادك`,
         entityType: "kosha_payment_request",
         entityId: reqRow.id,
         href: "/admin/kosha-collections",
@@ -16259,7 +16260,7 @@ async function handleMasterCash(req: NextRequest, parts: string[], section: stri
         const payload = await body(req);
         try {
           const { original, reverse } = await reverseFinancialTransaction(id, financeUser, String(payload?.reason ?? ""));
-          const amountText = Number(original.amount).toLocaleString("en-US");
+          const amountText = formatCurrency(original.amount);
           void logAdminActivity(req, "financial_transaction_reversed", "financial_transaction", id, {
             originalNo: original.transactionNo, reverseNo: reverse.transactionNo, amount: original.amount, reason: reverse.reversalReason,
           });
@@ -16268,14 +16269,14 @@ async function handleMasterCash(req: NextRequest, parts: string[], section: stri
               audienceType: "admin",
               type: "financial_transaction_reversed",
               title: "تم عكس حركة مالية",
-              body: `عكس ${financeUser.name} الحركة ${original.transactionNo} بمبلغ ${amountText} د.ع — السبب: ${reverse.reversalReason ?? ""}`,
+              body: `عكس ${financeUser.name} الحركة ${original.transactionNo} بمبلغ ${amountText} — السبب: ${reverse.reversalReason ?? ""}`,
               entityType: "financial_transaction",
               entityId: id,
               href: "/admin/finance/master-cash",
             });
           } catch { /* notification is best-effort */ }
           try {
-            await sendTelegramMessage(`🔁 <b>تم عكس حركة مالية</b>\nالأصل: ${original.transactionNo}\nالعكسية: ${reverse.transactionNo}\nالمبلغ: ${amountText} د.ع\nبواسطة: ${financeUser.name}\nالسبب: ${reverse.reversalReason ?? ""}`);
+            await sendTelegramMessage(`🔁 <b>تم عكس حركة مالية</b>\nالأصل: ${original.transactionNo}\nالعكسية: ${reverse.transactionNo}\nالمبلغ: ${amountText}\nبواسطة: ${financeUser.name}\nالسبب: ${reverse.reversalReason ?? ""}`);
           } catch { /* telegram is best-effort */ }
           return json({ ok: true, original, reverse });
         } catch (err: any) {
@@ -16392,7 +16393,14 @@ const paymentVoucherMutationSchema = z.object({
 });
 
 function accountingMutationError(err: unknown, fallback: string): { message: string; status: number } {
-  const message = String((err as any)?.message ?? "");
+  const messages: string[] = [];
+  let current: any = err;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (current.message) messages.push(String(current.message));
+    if (current.detail) messages.push(String(current.detail));
+    current = current.cause;
+  }
+  const message = messages.join("\n");
   if (/رصيد الصندوق غير كاف|الصندوق الرئيسي غير مهيأ|دليل الحسابات غير مكتمل/.test(message)) {
     return { message, status: 409 };
   }
@@ -16408,7 +16416,13 @@ function accountingMutationError(err: unknown, fallback: string): { message: str
   if (/relation .* does not exist|column .* does not exist/i.test(message)) {
     return { message: "قاعدة البيانات تحتاج تحديث جداول الحسابات. شغّل migrations أو اسمح للتطبيق بتجهيز الجداول.", status: 500 };
   }
-  if (/invalid input syntax|invalid date|NaN/i.test(message)) {
+  if (/value too long|character varying\(\d+\)/i.test(message)) {
+    return { message: "إحدى القيم أطول من الحد المسموح. اختصر المرجع أو الاسم ثم حاول مرة أخرى.", status: 400 };
+  }
+  if (/numeric field overflow|out of range/i.test(message)) {
+    return { message: "المبلغ أكبر من الحد المسموح.", status: 400 };
+  }
+  if (/invalid input syntax|invalid date|\bNaN\b/i.test(message)) {
     return { message: "تحقق من المبلغ أو التاريخ ثم حاول مرة أخرى.", status: 400 };
   }
   return { message: fallback, status: 500 };
@@ -16475,6 +16489,12 @@ function fmtVoucherNo(prefix: string, id: number, createdAt: Date): string {
   const y = createdAt.getFullYear().toString().slice(-2);
   const m = String(createdAt.getMonth() + 1).padStart(2, "0");
   return `${prefix}-${y}${m}-${String(id).padStart(4, "0")}`;
+}
+
+function temporaryVoucherNo(): string {
+  // voucher_no is varchar(30); a full UUID with the TMP prefix is 40 characters.
+  // Twenty random hex characters keep the temporary value compact and collision-safe.
+  return `TMP-${randomUUID().replaceAll("-", "").slice(0, 20)}`;
 }
 
 async function handleAccounting(req: NextRequest, parts: string[], section: string | undefined) {
@@ -16572,7 +16592,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         const [row] = await db
           .insert(receiptVouchersTable)
           .values({
-            voucherNo: `TMP-${randomUUID()}`,
+            voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
             payerName: textFallback(b.payerName, "زبون"),
@@ -16680,7 +16700,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         const [row] = await db
           .insert(paymentVouchersTable)
           .values({
-            voucherNo: `TMP-${randomUUID()}`,
+            voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
             payeeName: textFallback(b.payeeName, "مستلم"),

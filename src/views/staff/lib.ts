@@ -1,5 +1,6 @@
 import { adminFetch, compressImageFile, fileToDataUrl } from "@/views/admin/_lib";
 import { mutateOrQueue, type QueuedResult } from "./offline";
+import { formatMoney } from "@/lib/money";
 
 export type StageKey =
   | "preparing" | "out_of_warehouse" | "on_the_way" | "executing" | "executed" | "delivered";
@@ -109,7 +110,7 @@ export const staffApi = {
 };
 
 export function money(n: number | string | null | undefined) {
-  return Number(n || 0).toLocaleString("en-US");
+  return formatMoney(n);
 }
 
 export function mapsUrl(b: CrewBooking): string {

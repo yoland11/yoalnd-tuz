@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Download, ExternalLink, Printer, QrCode, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch } from "./_lib";
+import { adminFetch, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 
@@ -157,7 +157,7 @@ function QrDetailsModal({ row, onClose }: { row: QrRow; onClose: () => void }) {
             <DetailRow label="النوع" value={KIND_LABELS[row.kind] ?? row.kind} />
             <DetailRow label="الرقم" value={row.label ?? `#${row.id}`} mono />
             <DetailRow label="العميل" value={row.customerName || "بدون اسم"} />
-            <DetailRow label="المبلغ" value={row.amount ? `${row.amount.toLocaleString("ar-IQ")} د.ع` : "—"} />
+            <DetailRow label="المبلغ" value={row.amount ? formatCurrency(row.amount) : "—"} />
             <DetailRow label="الحالة" value={row.status || "—"} />
             <DetailRow label="الدفع" value={PAYMENT_LABELS[row.paymentStatus ?? ""] ?? row.paymentStatus ?? "—"} />
             <DetailRow label="التاريخ" value={new Date(row.date).toLocaleString("ar-IQ")} />

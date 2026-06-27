@@ -7,6 +7,7 @@ import { ShoppingCart, Trash2, Minus, Plus, ArrowLeft } from "lucide-react";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { SmartSuggestions } from "@/components/interactive/smart-suggestions";
 import { useT } from "@/lib/i18n";
+import { formatCurrency } from "@/lib/money";
 
 export default function Cart() {
   const [, navigate] = useLocation();
@@ -88,7 +89,7 @@ export default function Cart() {
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-foreground truncate">{item.product?.nameAr}</p>
                     <SelectedColorLabel color={(item as any).selectedColorData} fallback={item.selectedColor} className="mt-0.5 flex text-xs text-muted-foreground" />
-                    <p className="text-primary font-bold mt-1">{Number(item.price).toLocaleString('ar-IQ')} د.ع</p>
+                    <p className="text-primary font-bold mt-1">{formatCurrency(item.price)}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <button
@@ -109,8 +110,7 @@ export default function Cart() {
                     </button>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="font-bold text-foreground">{(Number(item.price) * item.quantity).toLocaleString('ar-IQ')}</p>
-                    <p className="text-xs text-muted-foreground">د.ع</p>
+                    <p className="font-bold text-foreground">{formatCurrency(Number(item.price) * item.quantity)}</p>
                   </div>
                   <button
                     onClick={() => handleRemove(item.id)}
@@ -130,7 +130,7 @@ export default function Cart() {
                 <div className="space-y-3 mb-6">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">{t("المجموع الفرعي")}</span>
-                    <span className="text-foreground">{Number(cart?.total ?? 0).toLocaleString('ar-IQ')} د.ع</span>
+                    <span className="text-foreground">{formatCurrency(cart?.total)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">{t("التوصيل")}</span>
@@ -138,7 +138,7 @@ export default function Cart() {
                   </div>
                   <div className="border-t border-border/30 pt-3 flex justify-between font-bold text-lg">
                     <span className="text-foreground">{t("الإجمالي")}</span>
-                    <span className="text-primary">{Number(cart?.total ?? 0).toLocaleString('ar-IQ')} د.ع</span>
+                    <span className="text-primary">{formatCurrency(cart?.total)}</span>
                   </div>
                 </div>
                 <Button className="w-full py-5 text-base gap-2" onClick={() => navigate("/checkout")}>

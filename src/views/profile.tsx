@@ -33,6 +33,7 @@ import { getCartSessionId } from "@/lib/api-session";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { SelectedColorLabel } from "@/components/product-colors";
+import { formatCurrency } from "@/lib/money";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
 import { EventCountdown } from "@/components/interactive/event-countdown";
 import { subscribeToPushNotifications } from "@/lib/pwa";
@@ -596,7 +597,7 @@ export default function Profile() {
             <Section title={t("السلة")} icon={ShoppingBag}>
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">{cart?.itemCount ?? cart?.items?.length ?? 0} {t("منتج")}</p>
-                <p className="font-bold text-primary">{Number(cart?.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+                <p className="font-bold text-primary">{formatCurrency(cart?.total)}</p>
               </div>
               <Link href="/cart" className="mt-4 inline-flex text-sm text-primary font-medium">{t("فتح السلة")}</Link>
             </Section>
@@ -865,10 +866,10 @@ function OrderList({
             </div>
             <div className="flex items-center gap-3 sm:justify-end">
               <div className="text-right">
-                <p className="font-bold text-primary">{Number(order.total ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+                <p className="font-bold text-primary">{formatCurrency(order.total)}</p>
                 <p className="text-xs text-muted-foreground">{t(STATUS_LABELS[order.status] ?? order.status)}</p>
                 {Number(order.remainingAmount ?? 0) > 0 && (
-                  <p className="text-xs text-muted-foreground">{t("المتبقي:")} {Number(order.remainingAmount ?? 0).toLocaleString("ar-IQ")} د.ع</p>
+                  <p className="text-xs text-muted-foreground">{t("المتبقي:")} {formatCurrency(order.remainingAmount)}</p>
                 )}
               </div>
               {order.kind === "order" && (

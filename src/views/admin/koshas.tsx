@@ -11,6 +11,7 @@ import { adminFetch, formatCurrency } from "./_lib";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
+import { formatMoney } from "@/lib/money";
 
 type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
   id?: number;
@@ -847,7 +848,6 @@ export function AdminKoshaBookingsPage() {
       qrDataUrl = res.qr?.dataUrl ?? "";
     } catch { /* fall back to row data without QR */ }
     const details = (full.bookingDetails ?? {}) as Record<string, any>;
-    const money = (value: number) => Number(value || 0).toLocaleString("en-US");
     const total = Number(full.totalAmount ?? koshaBookingTotal(details) ?? 0);
     const paid = Number(full.paidAmount ?? 0);
     const remaining = Number(full.remainingAmount ?? Math.max(0, total - paid));
@@ -866,7 +866,7 @@ export function AdminKoshaBookingsPage() {
 
     let html = "";
     if (format === "thermal") {
-      const rows = lineItems.map((it) => `<tr><td class="name">${it.name}</td><td class="num">${money(it.price)}</td></tr>`).join("");
+      const rows = lineItems.map((it) => `<tr><td class="name">${it.name}</td><td class="num">${formatMoney(it.price)}</td></tr>`).join("");
       const qrBlock = qrDataUrl ? `<div class="qr"><img src="${qrDataUrl}" alt="QR"><div class="cap">${qrCaption}</div></div>` : "";
       html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${trackingCode}</title>
         <style>${thermalReceiptCss("80mm")}</style></head><body>
@@ -878,9 +878,9 @@ export function AdminKoshaBookingsPage() {
           <hr class="rule dashed">
           <table class="items"><thead><tr><th class="name">البند</th><th>السعر</th></tr></thead><tbody>${rows}</tbody></table>
           <div class="totals">
-            <div class="grand"><span>الإجمالي</span><span class="num">${money(total)} د.ع</span></div>
-            <div class="payline"><span>الواصل</span><span class="num">${money(paid)} د.ع</span></div>
-            <div class="payline remain"><span>المتبقي</span><span class="num">${money(remaining)} د.ع</span></div>
+            <div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(total)}</span></div>
+            <div class="payline"><span>الواصل</span><span class="num">${formatCurrency(paid)}</span></div>
+            <div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(remaining)}</span></div>
           </div>
           ${qrBlock}
           <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
@@ -888,7 +888,7 @@ export function AdminKoshaBookingsPage() {
         ${printWhenImagesReadyScript()}
       </body></html>`;
     } else {
-      const rows = lineItems.map((it) => `<tr><td>${it.name}</td><td class="ltr">${money(it.price)}</td></tr>`).join("");
+      const rows = lineItems.map((it) => `<tr><td>${it.name}</td><td class="ltr">${formatMoney(it.price)}</td></tr>`).join("");
       const qrBlock = qrDataUrl ? `<div class="qr"><img src="${qrDataUrl}" alt="QR"><div class="cap">${qrCaption}</div></div>` : "";
       html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${trackingCode}</title>
         <style>
@@ -919,9 +919,9 @@ export function AdminKoshaBookingsPage() {
         </div>
         <table><thead><tr><th>البند</th><th style="text-align:left">السعر (د.ع)</th></tr></thead><tbody>${rows}</tbody></table>
         <div class="totals">
-          <div class="row"><span>الإجمالي</span><strong>${money(total)} د.ع</strong></div>
-          <div class="row"><span>الواصل</span><strong>${money(paid)} د.ع</strong></div>
-          <div class="grand"><span>المتبقي</span><span>${money(remaining)} د.ع</span></div>
+          <div class="row"><span>الإجمالي</span><strong>${formatCurrency(total)}</strong></div>
+          <div class="row"><span>الواصل</span><strong>${formatCurrency(paid)}</strong></div>
+          <div class="grand"><span>المتبقي</span><span>${formatCurrency(remaining)}</span></div>
         </div>
         <div class="foot">${qrBlock}<div style="font-size:12px;color:#555">شكراً لاختياركم مجموعة علي جان نهاد</div></div>
         ${printWhenImagesReadyScript()}
