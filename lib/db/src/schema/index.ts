@@ -30,3 +30,4 @@ export * from "./koshas";
 export * from "./kosha-staff";
 export * from "./photography-staff";
 export * from "./master-cash-box";
+export * from "./enterprise";

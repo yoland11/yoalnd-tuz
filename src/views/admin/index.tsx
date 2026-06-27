@@ -67,6 +67,7 @@ const MaintenanceSchedulerPage = lazy(() => import("./operations").then((module)
 const PurchaseComparisonPage = lazy(() => import("./operations").then((module) => ({ default: module.PurchaseComparisonPage })));
 const DisasterRecoveryPage = lazy(() => import("./operations").then((module) => ({ default: module.DisasterRecoveryPage })));
 const TimelinesPage = lazy(() => import("./operations").then((module) => ({ default: module.TimelinesPage })));
+const EnterpriseCommandCenterPage = lazy(() => import("./enterprise"));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
@@ -128,6 +129,7 @@ export default function Admin() {
       <Suspense fallback={<AdminPageLoader />}>
         <Switch>
           <Route path="/admin/dashboard" >{() => <Guard me={me} perm="dashboard"><DashboardPage /></Guard>}</Route>
+          <Route path="/admin/command-center">{() => <Guard me={me} perm="dashboard"><EnterpriseCommandCenterPage /></Guard>}</Route>
           <Route path="/admin/notifications">{() => <Guard me={me} perm="dashboard"><NotificationsPage /></Guard>}</Route>
           <Route path="/admin/orders"    >{() => <Guard me={me} perm="orders"   ><OrdersPage     /></Guard>}</Route>
           <Route path="/admin/calendar"  >{() => <Guard me={me} perm="orders"   ><CalendarPage   /></Guard>}</Route>

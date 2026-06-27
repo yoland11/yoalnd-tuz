@@ -105,6 +105,25 @@ import {
   warehouseStockTable,
   taskCommentsTable,
   tasksTable,
+  enterpriseBranchesTable,
+  branchEntityAssignmentsTable,
+  fleetVehiclesTable,
+  fieldLocationsTable,
+  dispatchAssignmentsTable,
+  internalChannelsTable,
+  internalMessagesTable,
+  customerQueueEntriesTable,
+  lostTimeEntriesTable,
+  assetPassportsTable,
+  equipmentCustodyTable,
+  eventCostEstimatesTable,
+  warehouseCameraSnapshotsTable,
+  designLibraryItemsTable,
+  dailyClosingChecklistsTable,
+  knowledgeArticlesTable,
+  knowledgeCasesTable,
+  managementDecisionsTable,
+  customerAttributionsTable,
 } from "@workspace/db";
 import {
   dailyCashListQuerySchema,
@@ -280,6 +299,7 @@ let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
 let storeCategoryColumnsPromise: Promise<void> | null = null;
 let adminExtensionsTablesPromise: Promise<void> | null = null;
+let enterprisePhase5TablesPromise: Promise<void> | null = null;
 let accountingTablesPromise: Promise<void> | null = null;
 let stockTrackingTablesPromise: Promise<void> | null = null;
 let koshaTablesPromise: Promise<void> | null = null;
@@ -4717,6 +4737,164 @@ async function ensureAdminExtensionsTables(): Promise<void> {
     });
   }
   await adminExtensionsTablesPromise;
+}
+
+async function ensureEnterprisePhase5Tables(): Promise<void> {
+  if (!enterprisePhase5TablesPromise) {
+    enterprisePhase5TablesPromise = db.execute(sql`select to_regclass('public.enterprise_branches') as table_name`).then(async (probe: any) => {
+      if (probe?.rows?.[0]?.table_name) return;
+      await ensureAdminExtensionsTables();
+      await db.execute(sql`
+      create table if not exists "enterprise_branches" (
+        "id" serial primary key, "code" varchar(30) not null unique, "name" text not null,
+        "city" text, "address" text, "map_url" text, "latitude" numeric(10,7), "longitude" numeric(10,7),
+        "is_active" boolean not null default true, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      insert into "enterprise_branches" ("code", "name") values ('MAIN', 'الفرع الرئيسي') on conflict ("code") do nothing;
+      create table if not exists "branch_entity_assignments" (
+        "id" serial primary key, "branch_id" integer not null references "enterprise_branches" ("id") on delete cascade,
+        "entity_type" varchar(40) not null, "entity_id" integer not null, "created_at" timestamp not null default now()
+      );
+      create unique index if not exists "branch_entity_assignments_entity_idx" on "branch_entity_assignments" ("entity_type", "entity_id");
+      create index if not exists "branch_entity_assignments_branch_idx" on "branch_entity_assignments" ("branch_id", "entity_type");
+      create table if not exists "fleet_vehicles" (
+        "id" serial primary key, "branch_id" integer references "enterprise_branches" ("id") on delete set null,
+        "name" text not null, "plate_number" varchar(40) not null unique, "status" varchar(24) not null default 'available',
+        "capacity" integer not null default 1, "latitude" numeric(10,7), "longitude" numeric(10,7), "notes" text,
+        "last_location_at" timestamp, "is_active" boolean not null default true,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create index if not exists "fleet_vehicles_status_idx" on "fleet_vehicles" ("status", "is_active");
+      create table if not exists "field_locations" (
+        "id" serial primary key, "resource_type" varchar(24) not null, "resource_id" integer not null,
+        "resource_name" text not null default '', "branch_id" integer references "enterprise_branches" ("id") on delete set null,
+        "entity_type" varchar(40), "entity_id" integer, "latitude" numeric(10,7) not null, "longitude" numeric(10,7) not null,
+        "accuracy_meters" numeric(10,2), "status" varchar(30) not null default 'available',
+        "recorded_by" integer references "staff" ("id") on delete set null, "recorded_at" timestamp not null default now()
+      );
+      create index if not exists "field_locations_resource_idx" on "field_locations" ("resource_type", "resource_id", "recorded_at");
+      create table if not exists "dispatch_assignments" (
+        "id" serial primary key, "entity_type" varchar(40) not null, "entity_id" integer not null,
+        "branch_id" integer references "enterprise_branches" ("id") on delete set null,
+        "crew_id" integer references "crews" ("id") on delete set null,
+        "vehicle_id" integer references "fleet_vehicles" ("id") on delete set null,
+        "warehouse_id" integer references "warehouses" ("id") on delete set null,
+        "score" numeric(6,2) not null default 0, "status" varchar(24) not null default 'assigned',
+        "suggestions" jsonb not null default '{}'::jsonb, "notes" text,
+        "assigned_by" integer references "staff" ("id") on delete set null, "assigned_by_name" text not null default '',
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create unique index if not exists "dispatch_assignments_entity_idx" on "dispatch_assignments" ("entity_type", "entity_id");
+      create table if not exists "internal_channels" (
+        "id" serial primary key, "title" text not null, "department" varchar(40) not null default 'general',
+        "entity_type" varchar(40), "entity_id" integer, "participant_staff_ids" jsonb not null default '[]'::jsonb,
+        "created_by" integer references "staff" ("id") on delete set null, "archived_at" timestamp,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "internal_messages" (
+        "id" serial primary key, "channel_id" integer not null references "internal_channels" ("id") on delete cascade,
+        "sender_id" integer references "staff" ("id") on delete set null, "sender_name" text not null default '',
+        "body" text, "voice_url" text, "voice_duration" integer, "created_at" timestamp not null default now()
+      );
+      create index if not exists "internal_messages_channel_idx" on "internal_messages" ("channel_id", "created_at");
+      create table if not exists "customer_queue_entries" (
+        "id" serial primary key, "queue_no" varchar(40) not null unique, "customer_id" integer references "customers" ("id") on delete set null,
+        "customer_name" text not null default '', "phone" varchar(30), "service_type" varchar(40) not null default 'general',
+        "branch_id" integer references "enterprise_branches" ("id") on delete set null, "status" varchar(24) not null default 'waiting',
+        "arrived_at" timestamp not null default now(), "service_started_at" timestamp, "completed_at" timestamp, "notes" text,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create index if not exists "customer_queue_entries_status_idx" on "customer_queue_entries" ("status", "arrived_at");
+      create table if not exists "lost_time_entries" (
+        "id" serial primary key, "entity_type" varchar(40), "entity_id" integer, "reason_type" varchar(30) not null,
+        "minutes" integer not null, "description" text, "staff_id" integer references "staff" ("id") on delete set null,
+        "vehicle_id" integer references "fleet_vehicles" ("id") on delete set null,
+        "product_id" integer references "products" ("id") on delete set null,
+        "recorded_by" integer references "staff" ("id") on delete set null,
+        "occurred_at" timestamp not null default now(), "created_at" timestamp not null default now()
+      );
+      create index if not exists "lost_time_entries_reason_idx" on "lost_time_entries" ("reason_type", "occurred_at");
+      create table if not exists "asset_passports" (
+        "id" serial primary key, "product_id" integer not null unique references "products" ("id") on delete cascade,
+        "serial_number" varchar(120) unique, "supplier_name" text, "warranty_until" date,
+        "warehouse_id" integer references "warehouses" ("id") on delete set null, "shelf_code" varchar(40), "image_url" text,
+        "qr_token" varchar(80), "last_staff_id" integer references "staff" ("id") on delete set null, "last_location" text,
+        "revenue_total" numeric(16,2) not null default 0, "maintenance_cost" numeric(16,2) not null default 0,
+        "next_maintenance_date" date, "metadata" jsonb not null default '{}'::jsonb,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create index if not exists "asset_passports_shelf_idx" on "asset_passports" ("warehouse_id", "shelf_code");
+      create table if not exists "equipment_custody" (
+        "id" serial primary key, "product_id" integer not null references "products" ("id") on delete restrict,
+        "staff_id" integer not null references "staff" ("id") on delete restrict, "quantity" integer not null default 1,
+        "status" varchar(24) not null default 'issued', "signature_url" text, "issued_at" timestamp not null default now(),
+        "returned_at" timestamp, "notes" text, "issued_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "event_cost_estimates" (
+        "id" serial primary key, "entity_type" varchar(40) not null, "entity_id" integer not null,
+        "materials_cost" numeric(16,2) not null default 0, "transport_cost" numeric(16,2) not null default 0,
+        "fuel_cost" numeric(16,2) not null default 0, "labor_cost" numeric(16,2) not null default 0,
+        "depreciation_cost" numeric(16,2) not null default 0, "expected_revenue" numeric(16,2) not null default 0,
+        "expected_profit" numeric(16,2) not null default 0, "profit_margin" numeric(7,2) not null default 0,
+        "warning" text, "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create unique index if not exists "event_cost_estimates_entity_idx" on "event_cost_estimates" ("entity_type", "entity_id");
+      create table if not exists "warehouse_camera_snapshots" (
+        "id" serial primary key, "warehouse_id" integer references "warehouses" ("id") on delete set null,
+        "entity_type" varchar(40), "entity_id" integer, "movement_type" varchar(24) not null default 'checkout',
+        "image_url" text not null, "captured_by" integer references "staff" ("id") on delete set null,
+        "captured_at" timestamp not null default now()
+      );
+      create table if not exists "design_library_items" (
+        "id" serial primary key, "type" varchar(30) not null, "name" text not null, "description" text,
+        "images" jsonb not null default '[]'::jsonb, "material_product_ids" jsonb not null default '[]'::jsonb,
+        "execution_cost" numeric(16,2) not null default 0, "execution_minutes" integer not null default 0,
+        "order_count" integer not null default 0, "is_active" boolean not null default true,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "daily_closing_checklists" (
+        "id" serial primary key, "closing_date" date not null, "branch_code" varchar(30) not null default 'MAIN',
+        "equipment_returned" boolean not null default false, "payments_approved" boolean not null default false,
+        "bookings_closed" boolean not null default false, "cash_closed" boolean not null default false,
+        "backup_completed" boolean not null default false, "notes" text, "status" varchar(20) not null default 'open',
+        "closed_by" integer references "staff" ("id") on delete set null, "closed_by_name" text not null default '',
+        "closed_at" timestamp, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create unique index if not exists "daily_closing_checklists_date_branch_idx" on "daily_closing_checklists" ("closing_date", "branch_code");
+      create table if not exists "knowledge_articles" (
+        "id" serial primary key, "category" varchar(40) not null default 'general', "title" text not null,
+        "content" text not null, "video_url" text, "tags" jsonb not null default '[]'::jsonb,
+        "is_active" boolean not null default true, "created_by" integer references "staff" ("id") on delete set null,
+        "created_by_name" text not null default '', "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "knowledge_cases" (
+        "id" serial primary key, "problem" text not null, "solution" text not null, "entity_type" varchar(40), "entity_id" integer,
+        "tags" jsonb not null default '[]'::jsonb, "times_reused" integer not null default 0,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "management_decisions" (
+        "id" serial primary key, "title" text not null, "decision" text not null, "reason" text not null,
+        "entity_type" varchar(40), "entity_id" integer, "decided_by" integer references "staff" ("id") on delete set null,
+        "decided_by_name" text not null default '', "decided_at" timestamp not null default now(), "created_at" timestamp not null default now()
+      );
+      create table if not exists "customer_attributions" (
+        "id" serial primary key, "customer_id" integer references "customers" ("id") on delete cascade, "phone" varchar(30),
+        "source" varchar(30) not null, "campaign" text, "entity_type" varchar(40), "entity_id" integer,
+        "created_by" integer references "staff" ("id") on delete set null, "created_at" timestamp not null default now()
+      );
+      create index if not exists "customer_attributions_source_idx" on "customer_attributions" ("source", "created_at");
+    `);
+    }).catch((err) => {
+      enterprisePhase5TablesPromise = null;
+      throw err;
+    });
+  }
+  await enterprisePhase5TablesPromise;
 }
 
 function normalizeCouponCode(value: unknown): string {
@@ -9207,12 +9385,1134 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
   return null;
 }
 
+const EnterpriseBranchSchema = z.object({
+  code: z.string().trim().min(1).max(30),
+  name: z.string().trim().min(1).max(160),
+  city: z.string().trim().max(160).optional().nullable(),
+  address: z.string().trim().max(500).optional().nullable(),
+  mapUrl: z.string().trim().max(1200).optional().nullable(),
+  latitude: z.coerce.number().min(-90).max(90).optional().nullable(),
+  longitude: z.coerce.number().min(-180).max(180).optional().nullable(),
+  isActive: z.boolean().optional().default(true),
+});
+
+const EnterpriseVehicleSchema = z.object({
+  branchId: z.coerce.number().int().positive().optional().nullable(),
+  name: z.string().trim().min(1).max(160),
+  plateNumber: z.string().trim().min(1).max(40),
+  status: z.enum(["available", "outside", "maintenance", "inactive"]).optional().default("available"),
+  capacity: z.coerce.number().int().min(1).max(100).optional().default(1),
+  notes: z.string().trim().max(1000).optional().nullable(),
+  isActive: z.boolean().optional().default(true),
+});
+
+const EnterpriseLocationSchema = z.object({
+  resourceType: z.enum(["vehicle", "crew", "photography", "kosha", "audio"]),
+  resourceId: z.coerce.number().int().positive(),
+  resourceName: z.string().trim().max(160).optional().default(""),
+  branchId: z.coerce.number().int().positive().optional().nullable(),
+  entityType: z.string().trim().max(40).optional().nullable(),
+  entityId: z.coerce.number().int().positive().optional().nullable(),
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  accuracyMeters: z.coerce.number().nonnegative().max(100000).optional().nullable(),
+  status: z.string().trim().max(30).optional().default("available"),
+});
+
+const EnterpriseDispatchSchema = z.object({
+  entityType: z.string().trim().min(1).max(40),
+  entityId: z.coerce.number().int().positive(),
+  branchId: z.coerce.number().int().positive().optional().nullable(),
+  crewId: z.coerce.number().int().positive().optional().nullable(),
+  vehicleId: z.coerce.number().int().positive().optional().nullable(),
+  warehouseId: z.coerce.number().int().positive().optional().nullable(),
+  score: z.coerce.number().min(0).max(100).optional().default(0),
+  notes: z.string().trim().max(1000).optional().nullable(),
+  suggestions: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+function enterpriseNumber(value: unknown): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function enterpriseDate(value: unknown): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+const ENTERPRISE_COMMAND_CENTER_TAG = "enterprise-command-center";
+
+async function recordEnterpriseMutation(
+  req: NextRequest,
+  auth: AdminUser,
+  action: string,
+  entityType: string,
+  entityId: number,
+  title: string,
+  metadata: Record<string, unknown> = {},
+) {
+  await logAdminActivity(req, action, entityType, entityId, metadata);
+  await addEntityTimeline({
+    entityType,
+    entityId,
+    type: action,
+    title,
+    actor: erpActorFromAdmin(auth),
+    metadata,
+  }).catch(() => null);
+  revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+}
+
+async function enterpriseCommandCenter() {
+  const result: any = await db.execute(sql`
+    with ctx as (
+      select (now() at time zone 'Asia/Baghdad')::date as today
+    ), upcoming_rows as (
+      select id, 'kosha_booking'::text as type, customer_name as title,
+        coalesce(nullif(package_name, ''), 'حجز كوشة') as subtitle,
+        event_date::text as event_at, status, '/admin/kosha-bookings'::text as href
+      from kosha_bookings
+      where archived_at is null and status not in ('completed','cancelled') and event_date is not null and event_date <> ''
+      union all
+      select id, 'photography_event', coalesce(nullif(event_name, ''), groom_name),
+        coalesce(nullif(location, ''), 'تصوير'), event_date::text, status, '/staff/photography'
+      from photography_events
+      where status not in ('archived','completed','cancelled')
+      union all
+      select id, 'service_order', customer_name, coalesce(nullif(event_location, ''), 'حجز خدمة'),
+        event_date::text, status, '/admin/orders'
+      from service_orders
+      where archived_at is null and status not in ('completed','cancelled','delivered') and event_date is not null and event_date <> ''
+    ), upcoming as (
+      select * from upcoming_rows order by event_at asc limit 30
+    ), latest_locations as (
+      select distinct on (resource_type, resource_id)
+        id, resource_type, resource_id, resource_name, status,
+        latitude::float as latitude, longitude::float as longitude, recorded_at
+      from field_locations
+      order by resource_type, resource_id, recorded_at desc
+    )
+    select jsonb_build_object(
+      'generatedAt', now(),
+      'summary', jsonb_build_object(
+        'koshasInstalled', (select count(*) from kosha_bookings where archived_at is null and (status in ('in_progress','installed','executing') or execution_stage in ('installing','executing','executed'))),
+        'photographyTeams', greatest(
+          (select count(*) from crews where is_active = true and name ~* '(تصوير|photo|camera)'),
+          (select count(*) from photography_events, ctx where event_date = ctx.today and status not in ('archived','completed','cancelled'))
+        ),
+        'koshaTeams', greatest(
+          (select count(*) from crews where is_active = true and name ~* '(كوش|تجهيز|تركيب)'),
+          (select count(*) from crews where is_active = true and status <> 'inactive')
+        ),
+        'audioTeams', (select count(*) from crews where is_active = true and name ~* '(صوت|دي[[:space:]]*جي|dj|audio)'),
+        'vehiclesOutside', (select count(*) from fleet_vehicles where is_active = true and status = 'outside'),
+        'bookingsToday',
+          (select count(*) from kosha_bookings, ctx where archived_at is null and case when event_date ~ '^\d{4}-\d{2}-\d{2}' then left(event_date, 10)::date end = ctx.today and status not in ('completed','cancelled')) +
+          (select count(*) from photography_events, ctx where event_date = ctx.today and status not in ('archived','completed','cancelled')) +
+          (select count(*) from service_orders, ctx where archived_at is null and case when event_date ~ '^\d{4}-\d{2}-\d{2}' then left(event_date, 10)::date end = ctx.today and status not in ('completed','cancelled','delivered')),
+        'rentedItems', (select count(*) from rental_orders where status = 'active'),
+        'overdueItems', (select count(*) from rental_orders, ctx where status = 'active' and end_date < ctx.today),
+        'outstandingAmount',
+          (select coalesce(sum(remaining_amount::numeric),0) from orders where archived_at is null and status <> 'cancelled') +
+          (select coalesce(sum(remaining_amount::numeric),0) from service_orders where archived_at is null and status <> 'cancelled') +
+          (select coalesce(sum(remaining_amount::numeric),0) from kosha_bookings where archived_at is null and status <> 'cancelled'),
+        'todayProfit', (select coalesce(total_sales::numeric - total_expenses::numeric,0) from daily_cash_reports, ctx where report_date = ctx.today limit 1),
+        'criticalAlerts', (select count(*) from notifications where audience_type = 'admin' and archived_at is null and read_at is null and type ~* '(critical|overdue|low_stock|maintenance|payment)'),
+        'openTasks', (select count(*) from tasks where archived_at is null and status not in ('completed','cancelled')),
+        'branches', (select count(*) from enterprise_branches where is_active = true)
+      ),
+      'branches', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'code', code, 'name', name, 'city', city, 'address', address, 'mapUrl', map_url,
+        'latitude', latitude::float, 'longitude', longitude::float, 'isActive', is_active
+      ) order by id) from enterprise_branches where is_active = true), '[]'::jsonb),
+      'vehicles', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'branchId', branch_id, 'name', name, 'plateNumber', plate_number, 'status', status,
+        'capacity', capacity, 'latitude', latitude::float, 'longitude', longitude::float,
+        'lastLocationAt', last_location_at, 'isActive', is_active
+      ) order by name) from fleet_vehicles where is_active = true), '[]'::jsonb),
+      'locations', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'resourceType', resource_type, 'resourceId', resource_id, 'resourceName', resource_name,
+        'status', status, 'latitude', latitude, 'longitude', longitude, 'recordedAt', recorded_at
+      ) order by recorded_at desc) from latest_locations), '[]'::jsonb),
+      'upcoming', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'type', type, 'title', title, 'subtitle', subtitle,
+        'eventAt', event_at, 'status', status, 'href', href
+      ) order by event_at) from upcoming), '[]'::jsonb),
+      'tasks', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'title', title, 'status', status, 'priority', priority, 'dueAt', due_at,
+        'relatedType', related_type, 'relatedId', related_id
+      ) order by due_at nulls last, created_at desc) from (
+        select * from tasks where archived_at is null and status not in ('completed','cancelled') order by due_at nulls last, created_at desc limit 20
+      ) task_rows), '[]'::jsonb),
+      'alerts', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', id, 'title', title, 'body', body, 'type', type, 'href', href, 'createdAt', created_at
+      ) order by created_at desc) from (
+        select * from notifications where audience_type = 'admin' and archived_at is null and read_at is null order by created_at desc limit 20
+      ) alert_rows), '[]'::jsonb)
+    ) as payload
+  `);
+  return result?.rows?.[0]?.payload ?? {
+    generatedAt: new Date().toISOString(),
+    summary: {}, branches: [], vehicles: [], locations: [], upcoming: [], tasks: [], alerts: [],
+  };
+}
+
+const getCachedEnterpriseCommandCenter = unstable_cache(
+  enterpriseCommandCenter,
+  [ENTERPRISE_COMMAND_CENTER_TAG],
+  { revalidate: 20, tags: [ENTERPRISE_COMMAND_CENTER_TAG] },
+);
+
+async function enterpriseDispatchSuggestions(entityType: string, entityId: number, latitude?: number | null, longitude?: number | null) {
+  const [crews, vehicles, warehouses, assignments, tasks] = await Promise.all([
+    db.query.crewsTable.findMany({ where: eq(crewsTable.isActive, true), orderBy: [asc(crewsTable.name)] }),
+    db.query.fleetVehiclesTable.findMany({ where: eq(fleetVehiclesTable.isActive, true), orderBy: [asc(fleetVehiclesTable.name)] }),
+    db.query.warehousesTable.findMany({ where: eq(warehousesTable.isActive, 1), orderBy: [asc(warehousesTable.id)] }),
+    db.query.dispatchAssignmentsTable.findMany({ where: sql`${dispatchAssignmentsTable.status} in ('assigned','en_route','active')` }),
+    db.query.tasksTable.findMany({ where: and(sql`${tasksTable.archivedAt} is null`, sql`${tasksTable.status} not in ('completed','cancelled')`) }),
+  ]);
+  const crewLoad = new Map<number, number>();
+  for (const assignment of assignments) if (assignment.crewId) crewLoad.set(assignment.crewId, (crewLoad.get(assignment.crewId) ?? 0) + 1);
+  const crewCandidates = crews.map((crew) => {
+    const load = crewLoad.get(crew.id) ?? 0;
+    const statusScore = crew.status === "available" ? 70 : crew.status === "busy" ? 25 : 10;
+    return { id: crew.id, name: crew.name, status: crew.status, load, score: Math.max(0, statusScore - load * 10) };
+  }).sort((a, b) => b.score - a.score);
+  const vehicleCandidates = vehicles.map((vehicle) => {
+    let distanceKm: number | null = null;
+    if (latitude != null && longitude != null && vehicle.latitude != null && vehicle.longitude != null) {
+      const dx = (Number(vehicle.longitude) - longitude) * Math.cos((latitude * Math.PI) / 180);
+      const dy = Number(vehicle.latitude) - latitude;
+      distanceKm = Math.round(Math.sqrt(dx * dx + dy * dy) * 111 * 10) / 10;
+    }
+    const statusScore = vehicle.status === "available" ? 70 : vehicle.status === "outside" ? 20 : 0;
+    const distanceScore = distanceKm == null ? 15 : Math.max(0, 30 - distanceKm);
+    return { id: vehicle.id, name: vehicle.name, plateNumber: vehicle.plateNumber, status: vehicle.status, distanceKm, score: statusScore + distanceScore };
+  }).sort((a, b) => b.score - a.score);
+  const warehouseCandidates = await Promise.all(warehouses.map(async (warehouse) => {
+    const [stock] = await db.select({ quantity: sql<number>`coalesce(sum(${warehouseStockTable.quantity}::numeric),0)::float` }).from(warehouseStockTable).where(eq(warehouseStockTable.warehouseId, warehouse.id));
+    return { id: warehouse.id, name: warehouse.name, availableQuantity: enterpriseNumber(stock?.quantity), score: Math.min(100, 40 + enterpriseNumber(stock?.quantity)) };
+  }));
+  warehouseCandidates.sort((a, b) => b.score - a.score);
+  const suggestion = {
+    crew: crewCandidates[0] ?? null,
+    vehicle: vehicleCandidates[0] ?? null,
+    warehouse: warehouseCandidates[0] ?? null,
+    workload: { openTasks: tasks.length, activeAssignments: assignments.length },
+  };
+  const scores = [suggestion.crew?.score, suggestion.vehicle?.score, suggestion.warehouse?.score].filter((value): value is number => typeof value === "number");
+  return { entityType, entityId, score: scores.length ? Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length) : 0, suggestion, alternatives: { crews: crewCandidates.slice(0, 6), vehicles: vehicleCandidates.slice(0, 6), warehouses: warehouseCandidates.slice(0, 6) } };
+}
+
+async function handleEnterpriseAdmin(req: NextRequest, parts: string[]): Promise<NextResponse | null> {
+  const auth = await requireAnyPermission(req, ["dashboard", "orders", "tasks", "products", "accounting", "staff"]);
+  if (isResponse(auth)) return auth;
+  await ensureEnterprisePhase5Tables();
+  const section = parts[0] ?? "command-center";
+  const method = req.method;
+
+  if (section === "command-center" && method === "GET") return json(await getCachedEnterpriseCommandCenter());
+
+  if (section === "branches") {
+    if (method === "GET") {
+      const [branches, assignments] = await Promise.all([
+        db.query.enterpriseBranchesTable.findMany({ orderBy: [asc(enterpriseBranchesTable.id)] }),
+        db.query.branchEntityAssignmentsTable.findMany({ orderBy: [desc(branchEntityAssignmentsTable.createdAt)], limit: 1000 }),
+      ]);
+      return json({ data: branches.map((row) => ({ ...row, latitude: row.latitude ? Number(row.latitude) : null, longitude: row.longitude ? Number(row.longitude) : null })), assignments });
+    }
+    if (method === "POST" && !parts[1]) {
+      const parsed = EnterpriseBranchSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.branch.create", parsed);
+      const data = parsed.data;
+      try {
+        const [row] = await db.insert(enterpriseBranchesTable).values({ ...data, latitude: data.latitude == null ? null : String(data.latitude), longitude: data.longitude == null ? null : String(data.longitude) }).returning();
+        await recordEnterpriseMutation(req, auth, "enterprise_branch_created", "enterprise_branch", row.id, "تم إنشاء فرع", { code: row.code, name: row.name });
+        return json(row, 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("رمز الفرع مستخدم مسبقاً", 409);
+        throw err;
+      }
+    }
+    if (method === "PATCH" && parts[1]) {
+      const id = int(parts[1]);
+      if (!id) return error("معرف الفرع غير صحيح", 400);
+      const parsed = EnterpriseBranchSchema.partial().safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.branch.update", parsed);
+      const data = parsed.data;
+      const [row] = await db.update(enterpriseBranchesTable).set({ ...data, latitude: data.latitude === undefined ? undefined : data.latitude == null ? null : String(data.latitude), longitude: data.longitude === undefined ? undefined : data.longitude == null ? null : String(data.longitude), updatedAt: new Date() }).where(eq(enterpriseBranchesTable.id, id)).returning();
+      if (!row) return error("الفرع غير موجود", 404);
+      await recordEnterpriseMutation(req, auth, "enterprise_branch_updated", "enterprise_branch", row.id, "تم تعديل الفرع", { fields: Object.keys(data) });
+      return json(row);
+    }
+    if (method === "POST" && parts[1] === "assign") {
+      const b = await body(req);
+      const branchId = optionalPositiveId(b?.branchId);
+      const entityId = optionalPositiveId(b?.entityId);
+      const entityType = String(b?.entityType ?? "").trim().slice(0, 40);
+      if (!branchId || !entityId || !entityType) return error("بيانات ربط الفرع غير مكتملة", 400);
+      const [row] = await db.insert(branchEntityAssignmentsTable).values({ branchId, entityType, entityId }).onConflictDoUpdate({ target: [branchEntityAssignmentsTable.entityType, branchEntityAssignmentsTable.entityId], set: { branchId } }).returning();
+      await recordEnterpriseMutation(req, auth, "enterprise_branch_assigned", entityType, entityId, "تم ربط السجل بالفرع", { branchId });
+      return json(row);
+    }
+  }
+
+  if (section === "vehicles") {
+    if (method === "GET") {
+      const rows = await db.query.fleetVehiclesTable.findMany({ orderBy: [asc(fleetVehiclesTable.name)] });
+      return json({ data: rows.map((row) => ({ ...row, latitude: row.latitude ? Number(row.latitude) : null, longitude: row.longitude ? Number(row.longitude) : null, lastLocationAt: enterpriseDate(row.lastLocationAt) })) });
+    }
+    if (method === "POST") {
+      const parsed = EnterpriseVehicleSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.vehicle.create", parsed);
+      try {
+        const [row] = await db.insert(fleetVehiclesTable).values(parsed.data).returning();
+        await recordEnterpriseMutation(req, auth, "fleet_vehicle_created", "fleet_vehicle", row.id, "تمت إضافة سيارة", { plateNumber: row.plateNumber });
+        return json(row, 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("رقم اللوحة مستخدم مسبقاً", 409);
+        throw err;
+      }
+    }
+    if (method === "PATCH" && parts[1]) {
+      const id = int(parts[1]);
+      if (!id) return error("معرف السيارة غير صحيح", 400);
+      const parsed = EnterpriseVehicleSchema.partial().safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.vehicle.update", parsed);
+      const [row] = await db.update(fleetVehiclesTable).set({ ...parsed.data, updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, id)).returning();
+      if (!row) return error("السيارة غير موجودة", 404);
+      await recordEnterpriseMutation(req, auth, "fleet_vehicle_updated", "fleet_vehicle", id, "تم تحديث السيارة", { status: row.status });
+      return json(row);
+    }
+  }
+
+  if (section === "locations") {
+    if (method === "GET") {
+      const rows = await db.query.fieldLocationsTable.findMany({ orderBy: [desc(fieldLocationsTable.recordedAt)], limit: 500 });
+      const latest = Array.from(new Map(rows.map((row) => [`${row.resourceType}:${row.resourceId}`, row])).values());
+      return json({ data: latest.map((row) => ({ ...row, latitude: Number(row.latitude), longitude: Number(row.longitude), accuracyMeters: row.accuracyMeters ? Number(row.accuracyMeters) : null, recordedAt: row.recordedAt.toISOString() })) });
+    }
+    if (method === "POST") {
+      const parsed = EnterpriseLocationSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.location.create", parsed);
+      const data = parsed.data;
+      const [row] = await db.insert(fieldLocationsTable).values({ ...data, latitude: String(data.latitude), longitude: String(data.longitude), accuracyMeters: data.accuracyMeters == null ? null : String(data.accuracyMeters), recordedBy: auth.id }).returning();
+      if (data.resourceType === "vehicle") await db.update(fleetVehiclesTable).set({ latitude: String(data.latitude), longitude: String(data.longitude), status: data.status, lastLocationAt: new Date(), updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, data.resourceId));
+      if (data.entityType && data.entityId) await recordEnterpriseMutation(req, auth, "field_location_recorded", data.entityType, data.entityId, "تم تحديث موقع الفريق", { resourceType: data.resourceType, resourceId: data.resourceId });
+      else await logAdminActivity(req, "field_location_recorded", data.resourceType, data.resourceId, { latitude: data.latitude, longitude: data.longitude });
+      return json({ ...row, latitude: Number(row.latitude), longitude: Number(row.longitude) }, 201);
+    }
+  }
+
+  if (section === "dispatch") {
+    if (method === "GET") {
+      const rows = await db.query.dispatchAssignmentsTable.findMany({ orderBy: [desc(dispatchAssignmentsTable.createdAt)], limit: 200 });
+      return json({ data: rows.map((row) => ({ ...row, score: Number(row.score), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() })) });
+    }
+    if (method === "POST" && parts[1] === "suggest") {
+      const b = await body(req);
+      const entityId = optionalPositiveId(b?.entityId);
+      const entityType = String(b?.entityType ?? "").trim();
+      if (!entityId || !entityType) return error("اختر الحجز أولاً", 400);
+      return json(await enterpriseDispatchSuggestions(entityType, entityId, b?.latitude == null ? null : Number(b.latitude), b?.longitude == null ? null : Number(b.longitude)));
+    }
+    if (method === "POST") {
+      const parsed = EnterpriseDispatchSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("enterprise.dispatch.create", parsed);
+      const data = parsed.data;
+      const [row] = await db.insert(dispatchAssignmentsTable).values({ ...data, score: String(data.score), assignedBy: auth.id, assignedByName: auth.fullName || auth.username }).onConflictDoUpdate({
+        target: [dispatchAssignmentsTable.entityType, dispatchAssignmentsTable.entityId],
+        set: { ...data, score: String(data.score), assignedBy: auth.id, assignedByName: auth.fullName || auth.username, status: "assigned", updatedAt: new Date() },
+      }).returning();
+      if (data.crewId) await db.update(crewsTable).set({ status: "busy", updatedAt: new Date() }).where(eq(crewsTable.id, data.crewId));
+      if (data.vehicleId) await db.update(fleetVehiclesTable).set({ status: "outside", updatedAt: new Date() }).where(eq(fleetVehiclesTable.id, data.vehicleId));
+      await recordEnterpriseMutation(req, auth, "smart_dispatch_assigned", data.entityType, data.entityId, "تم توزيع الحجز على الموارد", { assignmentId: row.id, crewId: data.crewId, vehicleId: data.vehicleId, warehouseId: data.warehouseId, score: data.score });
+      await createNotification({ type: "dispatch_assigned", title: "تم توزيع حجز", body: `${data.entityType} #${data.entityId}`, entityType: data.entityType, entityId: data.entityId, href: "/admin/command-center" });
+      return json({ ...row, score: Number(row.score) }, 201);
+    }
+  }
+
+  if (section === "weather" && method === "GET") {
+    const latitude = Number(req.nextUrl.searchParams.get("lat"));
+    const longitude = Number(req.nextUrl.searchParams.get("lng"));
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return error("إحداثيات الطقس غير صحيحة", 400);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    try {
+      const url = new URL("https://api.open-meteo.com/v1/forecast");
+      url.searchParams.set("latitude", String(latitude));
+      url.searchParams.set("longitude", String(longitude));
+      url.searchParams.set("current", "temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_gusts_10m");
+      url.searchParams.set("daily", "temperature_2m_max,precipitation_sum,wind_gusts_10m_max");
+      url.searchParams.set("timezone", "Asia/Baghdad");
+      url.searchParams.set("forecast_days", "3");
+      const response = await fetch(url, { signal: controller.signal, next: { revalidate: 900 } });
+      if (!response.ok) return error("تعذر جلب حالة الطقس", 502);
+      const payload: any = await response.json();
+      const current = payload.current ?? {};
+      const alerts = [
+        Number(current.precipitation ?? 0) > 0 ? { type: "rain", label: "أمطار متوقعة", severity: Number(current.precipitation) >= 5 ? "high" : "medium" } : null,
+        Number(current.temperature_2m ?? 0) >= 43 ? { type: "heat", label: "حرارة مرتفعة", severity: "high" } : null,
+        Number(current.wind_gusts_10m ?? 0) >= 45 ? { type: "wind", label: "رياح قوية", severity: "high" } : null,
+      ].filter(Boolean);
+      return json({ source: "Open-Meteo", current, daily: payload.daily ?? null, alerts });
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") return error("انتهت مهلة خدمة الطقس", 504);
+      return error("تعذر جلب حالة الطقس", 502);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (section === "risks" && method === "GET") {
+    const now = new Date();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const [products, crews, tasks, koshas, services, maintenanceProfiles] = await Promise.all([
+      db.query.productsTable.findMany({ where: eq(productsTable.isActive, true), limit: 500 }),
+      db.query.crewsTable.findMany({ where: eq(crewsTable.isActive, true) }),
+      db.query.tasksTable.findMany({ where: and(sql`${tasksTable.archivedAt} is null`, sql`${tasksTable.status} not in ('completed','cancelled')`), limit: 300 }),
+      db.query.koshaBookingsTable.findMany({ where: and(sql`${koshaBookingsTable.archivedAt} is null`, sql`${koshaBookingsTable.status} not in ('cancelled','completed')`), limit: 300 }),
+      db.query.serviceOrdersTable.findMany({ where: and(sql`${serviceOrdersTable.archivedAt} is null`, sql`${serviceOrdersTable.status} not in ('cancelled','completed','delivered')`), limit: 300 }),
+      db.query.assetProfilesTable.findMany({ limit: 500 }),
+    ]);
+    const risks: any[] = [];
+    const lowStock = products.filter((row) => row.stock <= row.minStock);
+    if (lowStock.length) risks.push({ key: "stock", severity: "high", title: "نقص مواد", count: lowStock.length, solution: "إنشاء طلب شراء أو نقل الكمية من مخزن آخر.", href: "/admin/inventory-alerts" });
+    const availableCrews = crews.filter((row) => row.status === "available").length;
+    const tomorrowText = tomorrow.toISOString().slice(0, 10);
+    const tomorrowBookings = [...koshas, ...services].filter((row: any) => String(row.eventDate ?? "").slice(0, 10) === tomorrowText).length;
+    if (tomorrowBookings > availableCrews) risks.push({ key: "staff", severity: "high", title: "نقص كادر محتمل", count: tomorrowBookings - availableCrews, solution: "إعادة توزيع الحجوزات أو استدعاء كادر احتياطي.", href: "/admin/crews" });
+    const overdueTasks = tasks.filter((row) => row.dueAt && row.dueAt < now);
+    if (overdueTasks.length) risks.push({ key: "delay", severity: "medium", title: "مهام متأخرة", count: overdueTasks.length, solution: "تعيين مسؤول بديل ومراجعة وقت الانطلاق.", href: "/admin/tasks" });
+    const conflicts = new Map<string, number>();
+    for (const row of [...koshas, ...services] as any[]) if (row.eventDate) conflicts.set(String(row.eventDate).slice(0, 10), (conflicts.get(String(row.eventDate).slice(0, 10)) ?? 0) + 1);
+    const busyDays = Array.from(conflicts.entries()).filter(([, count]) => count > Math.max(2, crews.length));
+    if (busyDays.length) risks.push({ key: "schedule", severity: "medium", title: "ازدحام جدول العمل", count: busyDays.length, solution: "قسّم الفرق حسب الفروع وثبّت السيارة والمخزن لكل حجز.", href: "/admin/calendar" });
+    const maintenanceDue = maintenanceProfiles.filter((row) => row.usageCount > 0 && row.usageCount % Math.max(1, row.maintenanceEveryUses) === 0);
+    if (maintenanceDue.length) risks.push({ key: "maintenance", severity: "medium", title: "صيانة مستحقة", count: maintenanceDue.length, solution: "حجز المعدات البديلة قبل إرسال القطع للصيانة.", href: "/admin/maintenance-scheduler" });
+    return json({ generatedAt: now.toISOString(), risks, healthy: risks.length === 0 });
+  }
+
+  if (section === "queue") {
+    if (method === "GET") {
+      const status = req.nextUrl.searchParams.get("status")?.trim();
+      const rows = await db.query.customerQueueEntriesTable.findMany({
+        where: status ? eq(customerQueueEntriesTable.status, status) : undefined,
+        orderBy: [desc(customerQueueEntriesTable.arrivedAt)],
+        limit: 300,
+      });
+      const now = Date.now();
+      return json({
+        data: rows.map((row) => ({
+          ...row,
+          waitMinutes: Math.max(0, Math.floor(((row.serviceStartedAt ?? row.completedAt ?? new Date(now)).getTime() - row.arrivedAt.getTime()) / 60000)),
+        })),
+      });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const customerName = String(data?.customerName ?? "").trim().slice(0, 160);
+      const serviceType = String(data?.serviceType ?? "general").trim().slice(0, 40) || "general";
+      if (!customerName) return error("اسم العميل مطلوب", 400);
+      const queueNo = `Q-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${String(Date.now()).slice(-6)}`;
+      const normalizedPhone = data?.phone ? normalizeIraqiPhone(String(data.phone)) : null;
+      const [row] = await db.insert(customerQueueEntriesTable).values({
+        queueNo,
+        customerName,
+        phone: normalizedPhone || null,
+        customerId: optionalPositiveId(data?.customerId),
+        branchId: optionalPositiveId(data?.branchId),
+        serviceType,
+        notes: nullableText(data?.notes),
+        createdBy: auth.id,
+      }).returning();
+      await recordEnterpriseMutation(req, auth, "customer_arrived", "customer_queue", row.id, "وصل العميل", { queueNo, serviceType });
+      return json(row, 201);
+    }
+    if (method === "PATCH" && parts[1]) {
+      const id = int(parts[1]);
+      if (!id) return error("معرف الطابور غير صحيح", 400);
+      const data = await body(req);
+      const status = String(data?.status ?? "").trim();
+      if (!new Set(["waiting", "serving", "completed", "cancelled"]).has(status)) return error("حالة الطابور غير صحيحة", 400);
+      const now = new Date();
+      const [row] = await db.update(customerQueueEntriesTable).set({
+        status,
+        serviceStartedAt: status === "serving" ? now : undefined,
+        completedAt: status === "completed" ? now : undefined,
+        notes: data?.notes === undefined ? undefined : nullableText(data.notes),
+        updatedAt: now,
+      }).where(eq(customerQueueEntriesTable.id, id)).returning();
+      if (!row) return error("سجل الطابور غير موجود", 404);
+      await recordEnterpriseMutation(req, auth, `customer_queue_${status}`, "customer_queue", id, "تم تحديث حالة خدمة العميل", { status });
+      return json(row);
+    }
+  }
+
+  if (section === "lost-time") {
+    if (method === "GET") {
+      const rows = await db.query.lostTimeEntriesTable.findMany({ orderBy: [desc(lostTimeEntriesTable.occurredAt)], limit: 500 });
+      const byReason = Array.from(rows.reduce((map, row) => map.set(row.reasonType, (map.get(row.reasonType) ?? 0) + row.minutes), new Map<string, number>()).entries())
+        .map(([reasonType, minutes]) => ({ reasonType, minutes }))
+        .sort((a, b) => b.minutes - a.minutes);
+      return json({ data: rows, totalMinutes: rows.reduce((sum, row) => sum + row.minutes, 0), byReason });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const reasonType = String(data?.reasonType ?? "").trim().slice(0, 30);
+      const minutes = Math.round(Number(data?.minutes));
+      if (!reasonType || !Number.isFinite(minutes) || minutes <= 0 || minutes > 43200) return error("سبب ومدة الوقت الضائع مطلوبة", 400);
+      const [row] = await db.insert(lostTimeEntriesTable).values({
+        reasonType,
+        minutes,
+        description: nullableText(data?.description),
+        entityType: nullableText(data?.entityType),
+        entityId: optionalPositiveId(data?.entityId),
+        staffId: optionalPositiveId(data?.staffId),
+        vehicleId: optionalPositiveId(data?.vehicleId),
+        productId: optionalPositiveId(data?.productId),
+        occurredAt: data?.occurredAt ? new Date(data.occurredAt) : new Date(),
+        recordedBy: auth.id,
+      }).returning();
+      if (row.entityType && row.entityId) await recordEnterpriseMutation(req, auth, "lost_time_recorded", row.entityType, row.entityId, "تم تسجيل وقت ضائع", { reasonType, minutes });
+      else await logAdminActivity(req, "lost_time_recorded", "lost_time", row.id, { reasonType, minutes });
+      return json(row, 201);
+    }
+  }
+
+  if (section === "chat") {
+    if (parts[1] === "messages") {
+      const channelId = optionalPositiveId(req.nextUrl.searchParams.get("channelId") ?? (method === "POST" ? (await req.clone().json().catch(() => null))?.channelId : null));
+      if (method === "GET") {
+        if (!channelId) return error("اختر قناة المحادثة", 400);
+        const rows = await db.query.internalMessagesTable.findMany({ where: eq(internalMessagesTable.channelId, channelId), orderBy: [asc(internalMessagesTable.createdAt)], limit: 500 });
+        return json({ data: rows });
+      }
+      if (method === "POST") {
+        const data = await body(req);
+        const safeChannelId = optionalPositiveId(data?.channelId);
+        if (!safeChannelId) return error("اختر قناة المحادثة", 400);
+        const channel = await db.query.internalChannelsTable.findFirst({ where: and(eq(internalChannelsTable.id, safeChannelId), sql`${internalChannelsTable.archivedAt} is null`) });
+        if (!channel) return error("قناة المحادثة غير موجودة", 404);
+        const messageBody = nullableText(data?.body);
+        const voiceUrl = data?.voice ? await persistMediaValue(data.voice, "enterprise/voice-notes") : nullableText(data?.voiceUrl);
+        if (!messageBody && !voiceUrl) return error("اكتب رسالة أو أرفق ملاحظة صوتية", 400);
+        const [row] = await db.insert(internalMessagesTable).values({
+          channelId: safeChannelId,
+          senderId: auth.id,
+          senderName: auth.fullName || auth.username,
+          body: messageBody,
+          voiceUrl,
+          voiceDuration: data?.voiceDuration == null ? null : Math.max(0, Math.round(Number(data.voiceDuration))),
+        }).returning();
+        await db.update(internalChannelsTable).set({ updatedAt: new Date() }).where(eq(internalChannelsTable.id, safeChannelId));
+        if (channel.entityType && channel.entityId) await recordEnterpriseMutation(req, auth, "internal_message_sent", channel.entityType, channel.entityId, "رسالة داخلية جديدة", { channelId: safeChannelId, messageId: row.id, hasVoice: Boolean(voiceUrl) });
+        else await logAdminActivity(req, "internal_message_sent", "internal_channel", safeChannelId, { messageId: row.id, hasVoice: Boolean(voiceUrl) });
+        return json(row, 201);
+      }
+    }
+    if (method === "GET") {
+      const rows = await db.query.internalChannelsTable.findMany({ where: sql`${internalChannelsTable.archivedAt} is null`, orderBy: [desc(internalChannelsTable.updatedAt)], limit: 200 });
+      return json({ data: rows });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const title = String(data?.title ?? "").trim().slice(0, 180);
+      if (!title) return error("عنوان المحادثة مطلوب", 400);
+      const participantStaffIds: number[] = Array.from(new Set<number>((Array.isArray(data?.participantStaffIds) ? data.participantStaffIds : []).map(Number).filter((id: number) => Number.isInteger(id) && id > 0)));
+      const [row] = await db.insert(internalChannelsTable).values({
+        title,
+        department: String(data?.department ?? "general").trim().slice(0, 40) || "general",
+        entityType: nullableText(data?.entityType),
+        entityId: optionalPositiveId(data?.entityId),
+        participantStaffIds,
+        createdBy: auth.id,
+      }).returning();
+      await logAdminActivity(req, "internal_channel_created", "internal_channel", row.id, { title, participantStaffIds });
+      return json(row, 201);
+    }
+  }
+
+  if (section === "assets") {
+    if (method === "GET") {
+      const [passports, products, profiles, custody] = await Promise.all([
+        db.query.assetPassportsTable.findMany({ orderBy: [desc(assetPassportsTable.updatedAt)], limit: 1000 }),
+        db.query.productsTable.findMany({ where: eq(productsTable.isActive, true), limit: 2000 }),
+        db.query.assetProfilesTable.findMany({ limit: 1000 }),
+        db.query.equipmentCustodyTable.findMany({ where: eq(equipmentCustodyTable.status, "issued"), limit: 1000 }),
+      ]);
+      const productMap = new Map(products.map((row) => [row.id, row]));
+      const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+      const custodyMap = new Map<number, typeof custody>();
+      for (const row of custody) custodyMap.set(row.productId, [...(custodyMap.get(row.productId) ?? []), row]);
+      return json({ data: passports.map((passport) => {
+        const product = productMap.get(passport.productId);
+        const profile = profileMap.get(passport.productId);
+        const purchasePrice = enterpriseNumber(profile?.purchasePrice ?? product?.costPrice);
+        const revenue = enterpriseNumber(passport.revenueTotal);
+        const maintenance = enterpriseNumber(passport.maintenanceCost);
+        const profit = revenue - purchasePrice - maintenance;
+        return { ...passport, productName: product?.nameAr || product?.name || `#${passport.productId}`, stock: product?.stock ?? 0, purchasePrice, currentValue: enterpriseNumber(profile?.currentValue), usageCount: profile?.usageCount ?? 0, revenueTotal: revenue, maintenanceCost: maintenance, profit, roi: purchasePrice > 0 ? Number(((profit / purchasePrice) * 100).toFixed(2)) : 0, custody: custodyMap.get(passport.productId) ?? [] };
+      }), products: products.map((row) => ({ id: row.id, name: row.nameAr || row.name, stock: row.stock, costPrice: enterpriseNumber(row.costPrice), price: enterpriseNumber(row.price) })) });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const productId = optionalPositiveId(data?.productId);
+      if (!productId) return error("اختر قطعة المخزون", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("القطعة غير موجودة", 404);
+      const imageUrl = data?.image ? await persistMediaValue(data.image, "enterprise/assets") : nullableText(data?.imageUrl);
+      const values = {
+        productId,
+        serialNumber: nullableText(data?.serialNumber),
+        supplierName: nullableText(data?.supplierName),
+        warrantyUntil: data?.warrantyUntil ? String(data.warrantyUntil).slice(0, 10) : null,
+        warehouseId: optionalPositiveId(data?.warehouseId),
+        shelfCode: nullableText(data?.shelfCode),
+        imageUrl,
+        qrToken: String(data?.qrToken ?? randomBytes(24).toString("hex")).slice(0, 80),
+        lastStaffId: optionalPositiveId(data?.lastStaffId),
+        lastLocation: nullableText(data?.lastLocation),
+        revenueTotal: String(Math.max(0, enterpriseNumber(data?.revenueTotal))),
+        maintenanceCost: String(Math.max(0, enterpriseNumber(data?.maintenanceCost))),
+        nextMaintenanceDate: data?.nextMaintenanceDate ? String(data.nextMaintenanceDate).slice(0, 10) : null,
+        metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : {},
+        updatedAt: new Date(),
+      };
+      try {
+        const [row] = await db.insert(assetPassportsTable).values(values).onConflictDoUpdate({ target: assetPassportsTable.productId, set: values }).returning();
+        await recordEnterpriseMutation(req, auth, "asset_passport_saved", "product", productId, "تم حفظ الجواز الرقمي للقطعة", { passportId: row.id, shelfCode: row.shelfCode });
+        return json(row, 201);
+      } catch (err: any) {
+        if (err?.code === "23505") return error("الرقم التسلسلي مستخدم لقطعة أخرى", 409);
+        throw err;
+      }
+    }
+  }
+
+  if (section === "custody") {
+    if (method === "GET") {
+      const rows = await db.query.equipmentCustodyTable.findMany({ orderBy: [desc(equipmentCustodyTable.issuedAt)], limit: 500 });
+      return json({ data: rows });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const productId = optionalPositiveId(data?.productId);
+      const staffId = optionalPositiveId(data?.staffId);
+      const quantity = Math.max(1, Math.round(Number(data?.quantity ?? 1)));
+      if (!productId || !staffId) return error("اختر الموظف والقطعة", 400);
+      const [product, staff] = await Promise.all([
+        db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
+        db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) }),
+      ]);
+      if (!product || !staff) return error("الموظف أو القطعة غير موجودة", 404);
+      const signatureUrl = data?.signature ? await persistMediaValue(data.signature, "enterprise/signatures") : nullableText(data?.signatureUrl);
+      const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity, signatureUrl, notes: nullableText(data?.notes), issuedBy: auth.id }).returning();
+      await db.update(assetPassportsTable).set({ lastStaffId: staffId, lastLocation: `بعهدة ${staff.fullName || staff.username}`, updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
+      await recordEnterpriseMutation(req, auth, "equipment_issued", "product", productId, "تم تسليم معدات لموظف", { custodyId: row.id, staffId, quantity });
+      await createNotification({ staffId, type: "equipment_custody", title: "معدات جديدة بعهدتك", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/command-center" });
+      return json(row, 201);
+    }
+    if (method === "PATCH" && parts[1]) {
+      const id = int(parts[1]);
+      if (!id) return error("معرف العهدة غير صحيح", 400);
+      const current = await db.query.equipmentCustodyTable.findFirst({ where: eq(equipmentCustodyTable.id, id) });
+      if (!current) return error("العهدة غير موجودة", 404);
+      if (current.status === "returned") return json(current);
+      const [row] = await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, id)).returning();
+      await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, current.productId));
+      await recordEnterpriseMutation(req, auth, "equipment_returned", "product", current.productId, "تم إرجاع المعدات", { custodyId: id, staffId: current.staffId, quantity: current.quantity });
+      return json(row);
+    }
+  }
+
+  if (section === "cost-estimates") {
+    if (method === "GET") {
+      const entityType = req.nextUrl.searchParams.get("entityType")?.trim();
+      const entityId = optionalPositiveId(req.nextUrl.searchParams.get("entityId"));
+      const rows = await db.query.eventCostEstimatesTable.findMany({
+        where: entityType && entityId ? and(eq(eventCostEstimatesTable.entityType, entityType), eq(eventCostEstimatesTable.entityId, entityId)) : undefined,
+        orderBy: [desc(eventCostEstimatesTable.updatedAt)], limit: 300,
+      });
+      return json({ data: rows.map((row) => ({ ...row, materialsCost: enterpriseNumber(row.materialsCost), transportCost: enterpriseNumber(row.transportCost), fuelCost: enterpriseNumber(row.fuelCost), laborCost: enterpriseNumber(row.laborCost), depreciationCost: enterpriseNumber(row.depreciationCost), expectedRevenue: enterpriseNumber(row.expectedRevenue), expectedProfit: enterpriseNumber(row.expectedProfit), profitMargin: enterpriseNumber(row.profitMargin) })) });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const entityType = String(data?.entityType ?? "").trim().slice(0, 40);
+      const entityId = optionalPositiveId(data?.entityId);
+      if (!entityType || !entityId) return error("اختر الحجز لحساب التكلفة", 400);
+      const materialsCost = Math.max(0, enterpriseNumber(data?.materialsCost));
+      const transportCost = Math.max(0, enterpriseNumber(data?.transportCost));
+      const fuelCost = Math.max(0, enterpriseNumber(data?.fuelCost));
+      const laborCost = Math.max(0, enterpriseNumber(data?.laborCost));
+      const depreciationCost = Math.max(0, enterpriseNumber(data?.depreciationCost));
+      const expectedRevenue = Math.max(0, enterpriseNumber(data?.expectedRevenue));
+      const expectedProfit = expectedRevenue - materialsCost - transportCost - fuelCost - laborCost - depreciationCost;
+      const profitMargin = expectedRevenue > 0 ? Number(((expectedProfit / expectedRevenue) * 100).toFixed(2)) : 0;
+      const warning = profitMargin < 15 ? "هامش الربح منخفض ويحتاج مراجعة قبل الاعتماد" : null;
+      const values = { entityType, entityId, materialsCost: String(materialsCost), transportCost: String(transportCost), fuelCost: String(fuelCost), laborCost: String(laborCost), depreciationCost: String(depreciationCost), expectedRevenue: String(expectedRevenue), expectedProfit: String(expectedProfit), profitMargin: String(profitMargin), warning, createdBy: auth.id, updatedAt: new Date() };
+      const [row] = await db.insert(eventCostEstimatesTable).values(values).onConflictDoUpdate({ target: [eventCostEstimatesTable.entityType, eventCostEstimatesTable.entityId], set: values }).returning();
+      await recordEnterpriseMutation(req, auth, "event_cost_calculated", entityType, entityId, "تم حساب تكلفة وربح المناسبة", { expectedRevenue, expectedProfit, profitMargin, warning });
+      return json({ ...row, expectedProfit, profitMargin }, 201);
+    }
+  }
+
+  if (section === "warehouse-snapshots") {
+    if (method === "GET") {
+      const rows = await db.query.warehouseCameraSnapshotsTable.findMany({ orderBy: [desc(warehouseCameraSnapshotsTable.capturedAt)], limit: 300 });
+      return json({ data: rows });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const imageUrl = await persistMediaValue(data?.image ?? data?.imageUrl, "enterprise/warehouse-snapshots");
+      if (!imageUrl) return error("صورة الكاميرا مطلوبة", 400);
+      const [row] = await db.insert(warehouseCameraSnapshotsTable).values({
+        warehouseId: optionalPositiveId(data?.warehouseId),
+        entityType: nullableText(data?.entityType),
+        entityId: optionalPositiveId(data?.entityId),
+        movementType: String(data?.movementType ?? "checkout").trim().slice(0, 24) || "checkout",
+        imageUrl,
+        capturedBy: auth.id,
+      }).returning();
+      if (row.entityType && row.entityId) await recordEnterpriseMutation(req, auth, "warehouse_snapshot_captured", row.entityType, row.entityId, "تم حفظ لقطة حركة المخزن", { snapshotId: row.id, warehouseId: row.warehouseId });
+      else await logAdminActivity(req, "warehouse_snapshot_captured", "warehouse_snapshot", row.id, { warehouseId: row.warehouseId });
+      return json(row, 201);
+    }
+  }
+
+  if (section === "design-library") {
+    if (method === "GET") {
+      const rows = await db.query.designLibraryItemsTable.findMany({ orderBy: [asc(designLibraryItemsTable.type), asc(designLibraryItemsTable.name)], limit: 500 });
+      return json({ data: rows.map((row) => ({ ...row, executionCost: enterpriseNumber(row.executionCost) })) });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const name = String(data?.name ?? "").trim().slice(0, 180);
+      const type = String(data?.type ?? "general").trim().slice(0, 30) || "general";
+      if (!name) return error("اسم التصميم مطلوب", 400);
+      const images = await persistMediaList(Array.isArray(data?.images) ? data.images : [], "enterprise/design-library");
+      const materialProductIds = Array.from(new Set<number>((Array.isArray(data?.materialProductIds) ? data.materialProductIds : []).map(Number).filter((id: number) => Number.isInteger(id) && id > 0)));
+      const [row] = await db.insert(designLibraryItemsTable).values({
+        type,
+        name,
+        description: nullableText(data?.description),
+        images,
+        materialProductIds,
+        executionCost: String(Math.max(0, enterpriseNumber(data?.executionCost))),
+        executionMinutes: Math.max(0, Math.round(Number(data?.executionMinutes ?? 0))),
+        orderCount: Math.max(0, Math.round(Number(data?.orderCount ?? 0))),
+        isActive: data?.isActive !== false,
+        createdBy: auth.id,
+      }).returning();
+      await recordEnterpriseMutation(req, auth, "design_library_item_created", "design_library_item", row.id, "تمت إضافة تصميم إلى المكتبة", { name, type, materialProductIds });
+      return json(row, 201);
+    }
+    if (method === "PATCH" && parts[1]) {
+      const id = int(parts[1]);
+      if (!id) return error("معرف التصميم غير صحيح", 400);
+      const data = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (data?.name !== undefined) update.name = String(data.name).trim().slice(0, 180);
+      if (data?.type !== undefined) update.type = String(data.type).trim().slice(0, 30);
+      if (data?.description !== undefined) update.description = nullableText(data.description);
+      if (data?.images !== undefined) update.images = await persistMediaList(Array.isArray(data.images) ? data.images : [], "enterprise/design-library");
+      if (data?.materialProductIds !== undefined) update.materialProductIds = Array.from(new Set<number>((Array.isArray(data.materialProductIds) ? data.materialProductIds : []).map(Number).filter((value: number) => Number.isInteger(value) && value > 0)));
+      if (data?.executionCost !== undefined) update.executionCost = String(Math.max(0, enterpriseNumber(data.executionCost)));
+      if (data?.executionMinutes !== undefined) update.executionMinutes = Math.max(0, Math.round(Number(data.executionMinutes)));
+      if (data?.isActive !== undefined) update.isActive = Boolean(data.isActive);
+      const [row] = await db.update(designLibraryItemsTable).set(update).where(eq(designLibraryItemsTable.id, id)).returning();
+      if (!row) return error("التصميم غير موجود", 404);
+      await recordEnterpriseMutation(req, auth, "design_library_item_updated", "design_library_item", id, "تم تحديث تصميم المكتبة", { fields: Object.keys(update) });
+      return json(row);
+    }
+  }
+
+  if (section === "daily-closing") {
+    const closingDate = String(req.nextUrl.searchParams.get("date") ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const branchCode = String(req.nextUrl.searchParams.get("branch") ?? "MAIN").trim().slice(0, 30) || "MAIN";
+    const calculateChecks = async () => {
+      const start = new Date(`${closingDate}T00:00:00`);
+      const end = new Date(`${closingDate}T23:59:59.999`);
+      const [issued, pendingPayments, openBookings, cashReport, backup] = await Promise.all([
+        db.select({ count: sql<number>`count(*)::int` }).from(equipmentCustodyTable).where(eq(equipmentCustodyTable.status, "issued")),
+        db.select({ count: sql<number>`count(*)::int` }).from(financialTransactionsTable).where(inArray(financialTransactionsTable.approvalStatus, ["draft", "pending"])),
+        db.execute(sql`select count(*)::int as count from kosha_bookings where archived_at is null and status not in ('completed','cancelled') and event_date is not null and event_date::date <= ${closingDate}::date`),
+        db.query.dailyCashReportsTable.findFirst({ where: eq(dailyCashReportsTable.reportDate, closingDate) }),
+        db.query.disasterRecoverySnapshotsTable.findFirst({ where: and(gte(disasterRecoverySnapshotsTable.createdAt, start), lte(disasterRecoverySnapshotsTable.createdAt, end), eq(disasterRecoverySnapshotsTable.status, "created")) }),
+      ]);
+      return {
+        equipmentReturned: Number(issued[0]?.count ?? 0) === 0,
+        paymentsApproved: Number(pendingPayments[0]?.count ?? 0) === 0,
+        bookingsClosed: Number((openBookings as any).rows?.[0]?.count ?? 0) === 0,
+        cashClosed: cashReport?.status === "closed",
+        backupCompleted: Boolean(backup),
+        details: { equipmentOutstanding: Number(issued[0]?.count ?? 0), pendingPayments: Number(pendingPayments[0]?.count ?? 0), openBookings: Number((openBookings as any).rows?.[0]?.count ?? 0) },
+      };
+    };
+    if (method === "GET") {
+      const checks = await calculateChecks();
+      const row = await db.query.dailyClosingChecklistsTable.findFirst({ where: and(eq(dailyClosingChecklistsTable.closingDate, closingDate), eq(dailyClosingChecklistsTable.branchCode, branchCode)) });
+      return json({ data: row ?? { closingDate, branchCode, status: "open", ...checks }, checks });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const checks = await calculateChecks();
+      const requestedClose = Boolean(data?.close);
+      const complete = checks.equipmentReturned && checks.paymentsApproved && checks.bookingsClosed && checks.cashClosed && checks.backupCompleted;
+      if (requestedClose && !complete) return json({ error: "لا يمكن إغلاق اليوم قبل إكمال جميع عناصر القائمة", details: checks.details }, 409);
+      const values = {
+        closingDate,
+        branchCode,
+        equipmentReturned: checks.equipmentReturned,
+        paymentsApproved: checks.paymentsApproved,
+        bookingsClosed: checks.bookingsClosed,
+        cashClosed: checks.cashClosed,
+        backupCompleted: checks.backupCompleted,
+        notes: nullableText(data?.notes),
+        status: requestedClose ? "closed" : "open",
+        closedBy: requestedClose ? auth.id : null,
+        closedByName: requestedClose ? auth.fullName || auth.username : "",
+        closedAt: requestedClose ? new Date() : null,
+        updatedAt: new Date(),
+      };
+      const [row] = await db.insert(dailyClosingChecklistsTable).values(values).onConflictDoUpdate({ target: [dailyClosingChecklistsTable.closingDate, dailyClosingChecklistsTable.branchCode], set: values }).returning();
+      await recordEnterpriseMutation(req, auth, requestedClose ? "daily_closing_completed" : "daily_closing_checked", "daily_closing", row.id, requestedClose ? "تم إغلاق يوم العمل" : "تم تحديث قائمة إغلاق اليوم", { closingDate, branchCode, checks });
+      return json({ ...row, checks });
+    }
+  }
+
+  if (section === "knowledge") {
+    const subsection = parts[1] ?? "articles";
+    if (subsection === "articles") {
+      if (method === "GET") {
+        const q = req.nextUrl.searchParams.get("q")?.trim();
+        const rows = await db.query.knowledgeArticlesTable.findMany({
+          where: q ? and(eq(knowledgeArticlesTable.isActive, true), or(ilike(knowledgeArticlesTable.title, `%${q}%`), ilike(knowledgeArticlesTable.content, `%${q}%`))) : eq(knowledgeArticlesTable.isActive, true),
+          orderBy: [desc(knowledgeArticlesTable.updatedAt)], limit: 300,
+        });
+        return json({ data: rows });
+      }
+      if (method === "POST") {
+        const data = await body(req);
+        const title = String(data?.title ?? "").trim().slice(0, 220);
+        const content = String(data?.content ?? "").trim();
+        if (!title || !content) return error("عنوان ومحتوى المعرفة مطلوبان", 400);
+        const [row] = await db.insert(knowledgeArticlesTable).values({ category: String(data?.category ?? "general").slice(0, 40), title, content, videoUrl: nullableText(data?.videoUrl), tags: Array.isArray(data?.tags) ? data.tags.map(String).slice(0, 20) : [], createdBy: auth.id, createdByName: auth.fullName || auth.username }).returning();
+        await logAdminActivity(req, "knowledge_article_created", "knowledge_article", row.id, { title });
+        return json(row, 201);
+      }
+      if (method === "PATCH" && parts[2]) {
+        const id = int(parts[2]);
+        if (!id) return error("معرف المقال غير صحيح", 400);
+        const data = await body(req);
+        const [row] = await db.update(knowledgeArticlesTable).set({
+          title: data?.title === undefined ? undefined : String(data.title).trim().slice(0, 220),
+          content: data?.content === undefined ? undefined : String(data.content).trim(),
+          category: data?.category === undefined ? undefined : String(data.category).slice(0, 40),
+          videoUrl: data?.videoUrl === undefined ? undefined : nullableText(data.videoUrl),
+          tags: data?.tags === undefined ? undefined : Array.isArray(data.tags) ? data.tags.map(String).slice(0, 20) : [],
+          isActive: data?.isActive === undefined ? undefined : Boolean(data.isActive),
+          updatedAt: new Date(),
+        }).where(eq(knowledgeArticlesTable.id, id)).returning();
+        if (!row) return error("المقال غير موجود", 404);
+        await logAdminActivity(req, "knowledge_article_updated", "knowledge_article", id, { title: row.title });
+        return json(row);
+      }
+    }
+    if (subsection === "cases") {
+      if (method === "GET") {
+        const q = req.nextUrl.searchParams.get("q")?.trim();
+        const rows = await db.query.knowledgeCasesTable.findMany({ where: q ? or(ilike(knowledgeCasesTable.problem, `%${q}%`), ilike(knowledgeCasesTable.solution, `%${q}%`)) : undefined, orderBy: [desc(knowledgeCasesTable.timesReused), desc(knowledgeCasesTable.updatedAt)], limit: 300 });
+        return json({ data: rows });
+      }
+      if (method === "POST" && parts[2] === "reuse" && parts[3]) {
+        const id = int(parts[3]);
+        if (!id) return error("معرف الحل غير صحيح", 400);
+        const [row] = await db.update(knowledgeCasesTable).set({ timesReused: sql`${knowledgeCasesTable.timesReused} + 1`, updatedAt: new Date() }).where(eq(knowledgeCasesTable.id, id)).returning();
+        return row ? json(row) : error("الحل غير موجود", 404);
+      }
+      if (method === "POST") {
+        const data = await body(req);
+        const problem = String(data?.problem ?? "").trim();
+        const solution = String(data?.solution ?? "").trim();
+        if (!problem || !solution) return error("المشكلة والحل مطلوبان", 400);
+        const [row] = await db.insert(knowledgeCasesTable).values({ problem, solution, entityType: nullableText(data?.entityType), entityId: optionalPositiveId(data?.entityId), tags: Array.isArray(data?.tags) ? data.tags.map(String).slice(0, 20) : [], createdBy: auth.id }).returning();
+        await logAdminActivity(req, "knowledge_case_created", "knowledge_case", row.id, { entityType: row.entityType, entityId: row.entityId });
+        return json(row, 201);
+      }
+    }
+    if (subsection === "suggest" && method === "GET") {
+      const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
+      if (q.length < 2) return json({ data: [] });
+      const rows = await db.query.knowledgeCasesTable.findMany({ where: or(ilike(knowledgeCasesTable.problem, `%${q}%`), ilike(knowledgeCasesTable.solution, `%${q}%`)), orderBy: [desc(knowledgeCasesTable.timesReused)], limit: 8 });
+      return json({ data: rows });
+    }
+  }
+
+  if (section === "decisions") {
+    if (method === "GET") {
+      const rows = await db.query.managementDecisionsTable.findMany({ orderBy: [desc(managementDecisionsTable.decidedAt)], limit: 500 });
+      return json({ data: rows });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const title = String(data?.title ?? "").trim();
+      const decision = String(data?.decision ?? "").trim();
+      const reason = String(data?.reason ?? "").trim();
+      if (!title || !decision || !reason) return error("العنوان والقرار والسبب مطلوبة", 400);
+      const [row] = await db.insert(managementDecisionsTable).values({ title, decision, reason, entityType: nullableText(data?.entityType), entityId: optionalPositiveId(data?.entityId), decidedBy: auth.id, decidedByName: auth.fullName || auth.username }).returning();
+      if (row.entityType && row.entityId) await recordEnterpriseMutation(req, auth, "management_decision_recorded", row.entityType, row.entityId, "تم تسجيل قرار إداري", { decisionId: row.id, title, reason });
+      else await logAdminActivity(req, "management_decision_recorded", "management_decision", row.id, { title, reason });
+      return json(row, 201);
+    }
+  }
+
+  if (section === "attributions") {
+    if (method === "GET") {
+      const rows = await db.query.customerAttributionsTable.findMany({ orderBy: [desc(customerAttributionsTable.createdAt)], limit: 1000 });
+      const bySource = Array.from(rows.reduce((map, row) => map.set(row.source, (map.get(row.source) ?? 0) + 1), new Map<string, number>()).entries()).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
+      return json({ data: rows, bySource });
+    }
+    if (method === "POST") {
+      const data = await body(req);
+      const source = String(data?.source ?? "").trim().slice(0, 30);
+      if (!source) return error("مصدر العميل مطلوب", 400);
+      const phone = data?.phone ? normalizeIraqiPhone(String(data.phone)) : null;
+      const [row] = await db.insert(customerAttributionsTable).values({ customerId: optionalPositiveId(data?.customerId), phone: phone || null, source, campaign: nullableText(data?.campaign), entityType: nullableText(data?.entityType), entityId: optionalPositiveId(data?.entityId), createdBy: auth.id }).returning();
+      await logAdminActivity(req, "customer_attribution_recorded", "customer_attribution", row.id, { source, entityType: row.entityType, entityId: row.entityId });
+      return json(row, 201);
+    }
+  }
+
+  if (section === "planner" && method === "POST") {
+    const data = await body(req);
+    const entityType = String(data?.entityType ?? "").trim().slice(0, 40);
+    const entityId = optionalPositiveId(data?.entityId);
+    if (!entityType || !entityId) return error("اختر المناسبة لإنشاء الخطة", 400);
+    const created = await createAutomaticTasksForEntity({ entityType, entityId, serviceType: nullableText(data?.serviceType), customerName: nullableText(data?.customerName), eventDate: data?.eventDate ?? null, assignedStaffIds: Array.isArray(data?.assignedStaffIds) ? data.assignedStaffIds.map(Number) : [], createdBy: auth.id });
+    await recordEnterpriseMutation(req, auth, "smart_event_plan_created", entityType, entityId, "تم إنشاء خطة تنفيذ تلقائية", { taskCount: created.length });
+    return json({ data: created }, 201);
+  }
+
+  if (section === "repeat-event" && method === "POST") {
+    const data = await body(req);
+    const entityType = String(data?.entityType ?? "").trim();
+    const entityId = optionalPositiveId(data?.entityId);
+    const eventDate = String(data?.eventDate ?? "").trim().slice(0, 10);
+    if (!entityType || !entityId || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return error("اختر الحجز والتاريخ الجديد", 400);
+    if (entityType === "service_order") {
+      const current = await db.query.serviceOrdersTable.findFirst({ where: and(eq(serviceOrdersTable.id, entityId), sql`${serviceOrdersTable.archivedAt} is null`) });
+      if (!current) return error("حجز الخدمة غير موجود", 404);
+      const service = await db.query.servicesTable.findFirst({ where: eq(servicesTable.id, current.serviceId) });
+      const conflict = await findBookingConflict({ serviceId: current.serviceId, eventDate, customFields: (current.customFields as Record<string, unknown>) ?? {} });
+      if (conflict) return error("يوجد حجز متعارض في التاريخ الجديد", 409);
+      const row = await insertServiceOrderWithTracking({
+        serviceId: current.serviceId,
+        customerName: current.customerName,
+        phone: current.phone,
+        eventDate,
+        eventLocation: current.eventLocation,
+        notes: current.notes,
+        customFields: current.customFields,
+        totalAmount: current.totalAmount,
+        depositAmount: "0",
+        remainingAmount: current.totalAmount,
+        paymentStatus: "unpaid",
+        status: "pending",
+        internalNotes: current.internalNotes,
+      });
+      await db.insert(serviceOrderStatusHistoryTable).values({ serviceOrderId: row.id, status: row.status, notes: `تم نسخ الحجز #${current.id}` });
+      await ensureQrForEntity("service_order", row, req);
+      await createAutomaticTasksForEntity({ entityType: "service_order", entityId: row.id, serviceType: service?.type, customerName: row.customerName, eventDate, createdBy: auth.id });
+      await recordEnterpriseMutation(req, auth, "event_repeated", "service_order", row.id, "تم نسخ حجز سابق", { sourceId: current.id, eventDate });
+      return json({ type: entityType, id: row.id, trackingCode: row.trackingCode }, 201);
+    }
+    if (entityType === "kosha_booking") {
+      const current = await db.query.koshaBookingsTable.findFirst({ where: and(eq(koshaBookingsTable.id, entityId), sql`${koshaBookingsTable.archivedAt} is null`) });
+      if (!current) return error("حجز الكوشة غير موجود", 404);
+      const duplicate = await db.query.koshaBookingsTable.findFirst({ where: and(eq(koshaBookingsTable.koshaId, current.koshaId ?? 0), eq(koshaBookingsTable.phone, current.phone), eq(koshaBookingsTable.eventDate, eventDate), sql`${koshaBookingsTable.archivedAt} is null`, sql`${koshaBookingsTable.status} <> 'cancelled'`) });
+      if (duplicate) return error("يوجد حجز كوشة مكرر بنفس العميل والتاريخ", 409);
+      const [row] = await db.insert(koshaBookingsTable).values({
+        koshaId: current.koshaId,
+        packageId: current.packageId,
+        packageName: current.packageName,
+        packagePrice: current.packagePrice,
+        customerName: current.customerName,
+        phone: current.phone,
+        brideName: current.brideName,
+        groomName: current.groomName,
+        eventDate,
+        eventTime: current.eventTime,
+        eventType: current.eventType,
+        serviceLevel: current.serviceLevel,
+        venueType: current.venueType,
+        themeColor: current.themeColor,
+        province: current.province,
+        area: current.area,
+        mahalla: current.mahalla,
+        nearestPoint: current.nearestPoint,
+        addressNotes: current.addressNotes,
+        bridePhone: current.bridePhone,
+        groomPhone: current.groomPhone,
+        alternatePhone: current.alternatePhone,
+        cityArea: current.cityArea,
+        hallLocation: current.hallLocation,
+        selectedAddons: current.selectedAddons,
+        welcomeBoards: current.welcomeBoards,
+        selectedAccessories: current.selectedAccessories,
+        venueImages: current.venueImages,
+        bookingDetails: { ...current.bookingDetails, repeatedFrom: current.id },
+        notes: current.notes,
+        internalNotes: current.internalNotes,
+        status: "new",
+        trackingStatus: "booked",
+        totalAmount: current.totalAmount,
+        paidAmount: "0",
+        remainingAmount: current.totalAmount,
+        paymentStatus: enterpriseNumber(current.totalAmount) > 0 ? "unpaid" : "pending_pricing",
+        executionStage: "preparing",
+      }).returning();
+      const trackingCode = `AJN-KOSHA-${String(row.id).padStart(4, "0")}`;
+      await db.update(koshaBookingsTable).set({ trackingCode }).where(eq(koshaBookingsTable.id, row.id));
+      await ensureQrForEntity("kosha_booking", { ...row, trackingCode }, req);
+      await createAutomaticTasksForEntity({ entityType: "kosha_booking", entityId: row.id, serviceType: "kosha", customerName: row.customerName, eventDate, createdBy: auth.id });
+      await recordEnterpriseMutation(req, auth, "event_repeated", "kosha_booking", row.id, "تم نسخ حجز كوشة سابق", { sourceId: current.id, eventDate });
+      return json({ type: entityType, id: row.id, trackingCode }, 201);
+    }
+    if (entityType === "photography_event") {
+      const current = await db.query.photographyEventsTable.findFirst({ where: eq(photographyEventsTable.id, entityId) });
+      if (!current) return error("مناسبة التصوير غير موجودة", 404);
+      const duplicate = await db.query.photographyEventsTable.findFirst({ where: and(eq(photographyEventsTable.groomName, current.groomName), eq(photographyEventsTable.eventDate, eventDate), sql`${photographyEventsTable.status} <> 'cancelled'`) });
+      if (duplicate) return error("توجد مناسبة تصوير مكررة بنفس الاسم والتاريخ", 409);
+      const [row] = await db.insert(photographyEventsTable).values({
+        clientToken: randomUUID().replaceAll("-", ""),
+        groomName: current.groomName,
+        eventName: current.eventName,
+        eventDate,
+        location: current.location,
+        assignedStaffId: current.assignedStaffId,
+        assignedStaffName: current.assignedStaffName,
+        status: "active",
+        createdBy: auth.id,
+      }).returning();
+      await createAutomaticTasksForEntity({ entityType: "photography_event", entityId: row.id, serviceType: "photography", customerName: row.groomName, eventDate, assignedStaffIds: row.assignedStaffId ? [row.assignedStaffId] : [], createdBy: auth.id });
+      await recordEnterpriseMutation(req, auth, "event_repeated", "photography_event", row.id, "تم نسخ مناسبة تصوير سابقة", { sourceId: current.id, eventDate });
+      return json({ type: entityType, id: row.id }, 201);
+    }
+    return error("نوع الحجز غير مدعوم للنسخ", 400);
+  }
+
+  if (section === "smart-discount" && method === "POST") {
+    const data = await body(req);
+    const customerId = optionalPositiveId(data?.customerId);
+    const phone = data?.phone ? normalizeIraqiPhone(String(data.phone)) : null;
+    const subtotal = Math.max(0, enterpriseNumber(data?.subtotal));
+    const customer = customerId
+      ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) })
+      : phone ? await db.query.customersTable.findFirst({ where: inArray(customersTable.phone, iraqiPhoneVariants(phone)) }) : null;
+    if (!customer) return error("العميل غير موجود", 404);
+    const phones = iraqiPhoneVariants(customer.phone);
+    const [storeCount, serviceCount, koshaCount] = await Promise.all([
+      db.select({ count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(${ordersTable.total}::numeric),0)::float` }).from(ordersTable).where(and(inArray(ordersTable.customerPhone, phones), sql`${ordersTable.status} <> 'cancelled'`, sql`${ordersTable.archivedAt} is null`)),
+      db.select({ count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(${serviceOrdersTable.totalAmount}::numeric),0)::float` }).from(serviceOrdersTable).where(and(inArray(serviceOrdersTable.phone, phones), sql`${serviceOrdersTable.status} <> 'cancelled'`, sql`${serviceOrdersTable.archivedAt} is null`)),
+      db.select({ count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(${koshaBookingsTable.totalAmount}::numeric),0)::float` }).from(koshaBookingsTable).where(and(inArray(koshaBookingsTable.phone, phones), sql`${koshaBookingsTable.status} <> 'cancelled'`, sql`${koshaBookingsTable.archivedAt} is null`)),
+    ]);
+    const orderCount = enterpriseNumber(storeCount[0]?.count) + enterpriseNumber(serviceCount[0]?.count) + enterpriseNumber(koshaCount[0]?.count);
+    const lifetimeValue = enterpriseNumber(storeCount[0]?.total) + enterpriseNumber(serviceCount[0]?.total) + enterpriseNumber(koshaCount[0]?.total);
+    const points = Math.max(0, Number(customer.rewardPoints ?? 0));
+    const percentage = Math.min(15, orderCount >= 10 || lifetimeValue >= 5_000_000 ? 15 : orderCount >= 5 || points >= 1000 ? 10 : orderCount >= 2 ? 5 : 0);
+    const discountAmount = Math.round(subtotal * percentage / 100);
+    return json({ customerId: customer.id, customerName: customer.fullName, orderCount, lifetimeValue, rewardPoints: points, percentage, discountAmount, requiresApproval: percentage > 0, reason: percentage ? `عميل متكرر لديه ${orderCount} عمليات سابقة` : "لا يوجد خصم مقترح حالياً" });
+  }
+
+  if (section === "replay" && method === "GET") {
+    const entityType = req.nextUrl.searchParams.get("entityType")?.trim() ?? "";
+    const entityId = optionalPositiveId(req.nextUrl.searchParams.get("entityId"));
+    if (!entityType || !entityId) return error("اختر السجل المطلوب تشغيله", 400);
+    const [timeline, tasks, documents, dispatch, financial, decisions, messages] = await Promise.all([
+      db.query.entityTimelineTable.findMany({ where: and(eq(entityTimelineTable.entityType, entityType), eq(entityTimelineTable.entityId, entityId)), orderBy: [asc(entityTimelineTable.createdAt)], limit: 1000 }),
+      db.query.tasksTable.findMany({ where: and(eq(tasksTable.relatedType, entityType), eq(tasksTable.relatedId, entityId)), orderBy: [asc(tasksTable.createdAt)], limit: 300 }),
+      db.query.entityDocumentsTable.findMany({ where: and(eq(entityDocumentsTable.entityType, entityType), eq(entityDocumentsTable.entityId, entityId), sql`${entityDocumentsTable.archivedAt} is null`), orderBy: [asc(entityDocumentsTable.createdAt)], limit: 300 }),
+      db.query.dispatchAssignmentsTable.findFirst({ where: and(eq(dispatchAssignmentsTable.entityType, entityType), eq(dispatchAssignmentsTable.entityId, entityId)) }),
+      db.query.financialTransactionsTable.findMany({ where: and(eq(financialTransactionsTable.sourceType, entityType), eq(financialTransactionsTable.sourceId, String(entityId))), orderBy: [asc(financialTransactionsTable.transactionTime)], limit: 300 }),
+      db.query.managementDecisionsTable.findMany({ where: and(eq(managementDecisionsTable.entityType, entityType), eq(managementDecisionsTable.entityId, entityId)), orderBy: [asc(managementDecisionsTable.decidedAt)], limit: 100 }),
+      db.query.internalChannelsTable.findMany({ where: and(eq(internalChannelsTable.entityType, entityType), eq(internalChannelsTable.entityId, entityId), sql`${internalChannelsTable.archivedAt} is null`), limit: 50 }),
+    ]);
+    const events = [
+      ...timeline.map((row) => ({ kind: "timeline", at: row.createdAt, data: row })),
+      ...tasks.map((row) => ({ kind: "task", at: row.createdAt, data: row })),
+      ...documents.map((row) => ({ kind: "document", at: row.createdAt, data: row })),
+      ...financial.map((row) => ({ kind: "financial", at: row.transactionTime, data: { ...row, amount: enterpriseNumber(row.amount) } })),
+      ...decisions.map((row) => ({ kind: "decision", at: row.decidedAt, data: row })),
+    ].sort((a, b) => a.at.getTime() - b.at.getTime());
+    return json({ entityType, entityId, events, dispatch, channels: messages });
+  }
+
+  if (section === "intelligence" && method === "GET") {
+    const [products, profiles, passports, orders, koshas, services, photography, lostTime, attributions, reviews, maintenanceRows] = await Promise.all([
+      db.query.productsTable.findMany({ where: eq(productsTable.isActive, true), limit: 2000 }),
+      db.query.assetProfilesTable.findMany({ limit: 2000 }),
+      db.query.assetPassportsTable.findMany({ limit: 2000 }),
+      db.query.ordersTable.findMany({ where: sql`${ordersTable.archivedAt} is null`, limit: 3000 }),
+      db.query.koshaBookingsTable.findMany({ where: sql`${koshaBookingsTable.archivedAt} is null`, limit: 3000 }),
+      db.query.serviceOrdersTable.findMany({ where: sql`${serviceOrdersTable.archivedAt} is null`, limit: 3000 }),
+      db.query.photographyOrdersTable.findMany({ limit: 3000 }),
+      db.query.lostTimeEntriesTable.findMany({ limit: 3000 }),
+      db.query.customerAttributionsTable.findMany({ limit: 3000 }),
+      db.query.orderReviewsTable.findMany({ limit: 3000 }),
+      db.query.stockMovementsTable.findMany({ limit: 5000 }),
+    ]);
+    const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+    const passportMap = new Map(passports.map((row) => [row.productId, row]));
+    const itemProfit = products.map((product) => {
+      const profile = profileMap.get(product.id);
+      const passport = passportMap.get(product.id);
+      const purchase = enterpriseNumber(profile?.purchasePrice ?? product.costPrice);
+      const revenue = enterpriseNumber(passport?.revenueTotal);
+      const maintenance = enterpriseNumber(passport?.maintenanceCost);
+      const profit = revenue - purchase - maintenance;
+      const uses = profile?.usageCount ?? 0;
+      return { productId: product.id, name: product.nameAr || product.name, uses, stock: product.stock, purchase, revenue, maintenance, profit, roi: purchase > 0 ? Number(((profit / purchase) * 100).toFixed(2)) : 0 };
+    }).sort((a, b) => b.profit - a.profit);
+    const recommendations: any[] = [];
+    for (const item of itemProfit) {
+      if (item.stock <= 0) recommendations.push({ type: "buy", severity: "high", title: `إعادة توفير ${item.name}`, reason: "الكمية نفدت من المخزون", productId: item.productId });
+      else if (item.uses === 0 && item.purchase > 0) recommendations.push({ type: "sell", severity: "low", title: `مراجعة الاحتفاظ بـ ${item.name}`, reason: "أصل غير مستخدم حتى الآن", productId: item.productId });
+      if (item.maintenance > item.revenue && item.maintenance > 0) recommendations.push({ type: "replace", severity: "high", title: `استبدال ${item.name}`, reason: "تكلفة الصيانة أعلى من الإيراد", productId: item.productId });
+    }
+    const revenueValues = [...orders.map((row) => enterpriseNumber(row.total)), ...koshas.map((row) => enterpriseNumber(row.totalAmount)), ...services.map((row) => enterpriseNumber(row.totalAmount)), ...photography.map((row) => enterpriseNumber(row.totalAmount))].filter((value) => value > 0);
+    const completed = [...orders, ...koshas, ...services, ...photography].filter((row: any) => ["completed", "delivered", "returned"].includes(String(row.status))).length;
+    const allWork = orders.length + koshas.length + services.length + photography.length;
+    const sourceCounts = Array.from(attributions.reduce((map, row) => map.set(row.source, (map.get(row.source) ?? 0) + 1), new Map<string, number>()).entries()).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
+    const lostByReason = Array.from(lostTime.reduce((map, row) => map.set(row.reasonType, (map.get(row.reasonType) ?? 0) + row.minutes), new Map<string, number>()).entries()).map(([reason, minutes]) => ({ reason, minutes })).sort((a, b) => b.minutes - a.minutes);
+    const averageRating = reviews.length ? reviews.reduce((sum, row) => sum + Number(row.rating ?? 0), 0) / reviews.length : 0;
+    const priceSummary = revenueValues.length ? { min: Math.min(...revenueValues), max: Math.max(...revenueValues), average: revenueValues.reduce((sum, value) => sum + value, 0) / revenueValues.length } : { min: 0, max: 0, average: 0 };
+    return json({
+      kpis: { totalWork: allWork, completionRate: allWork ? Number(((completed / allWork) * 100).toFixed(2)) : 0, averageRevenue: priceSummary.average, customerSatisfaction: Number(averageRating.toFixed(2)), lostMinutes: lostTime.reduce((sum, row) => sum + row.minutes, 0), stockMovements: maintenanceRows.length },
+      smartPricing: priceSummary,
+      itemProfit: itemProfit.slice(0, 100),
+      recommendations: recommendations.slice(0, 50),
+      marketing: sourceCounts,
+      lostTime: lostByReason,
+    });
+  }
+
+  return null;
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  if (section === "enterprise") {
+    const enterprise = await handleEnterpriseAdmin(req, parts.slice(2));
+    if (enterprise) return enterprise;
+  }
 
   const telegram = await handleTelegram(req, parts, section);
   if (telegram) return telegram;

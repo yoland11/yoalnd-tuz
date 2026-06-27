@@ -165,6 +165,7 @@ export default function DashboardPage() {
     value: s.count,
   }));
   const shortcuts = [
+    { label: "مركز القيادة", href: "/admin/command-center", icon: Activity },
     { label: "إنشاء طلب سريع", href: "/admin/orders?create=product", icon: PlusCircle },
     { label: "إنشاء حجز سريع", href: "/admin/orders?create=service", icon: CalendarPlus },
     { label: "إرسال واتساب سريع", href: "/admin/whatsapp", icon: MessageCircle },

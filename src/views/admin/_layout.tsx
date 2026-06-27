@@ -20,6 +20,7 @@ type NavGroup = { id: string; label: string; icon: any; items: NavEntry[] };
 
 const NAV: NavItem[] = [
   { href: "/admin/dashboard",      label: "الرئيسية",          icon: LayoutDashboard, perm: "dashboard" },
+  { href: "/admin/command-center", label: "مركز القيادة",      icon: Monitor,         perm: "dashboard" },
   { href: "/admin/notifications",  label: "الإشعارات",         icon: Bell,            perm: "dashboard" },
   { href: "/admin/orders",         label: "الطلبات والحجوزات", icon: ShoppingBag,    perm: "orders" },
   { href: "/admin/calendar",       label: "تقويم الحجوزات",     icon: CalendarDays,   perm: "orders" },
@@ -93,7 +94,7 @@ const NAV_GROUPS: NavGroup[] = [
     id: "home",
     label: "الرئيسية",
     icon: Home,
-    items: [navItem("/admin/dashboard"), navItem("/admin/notifications")],
+    items: [navItem("/admin/dashboard"), navItem("/admin/command-center"), navItem("/admin/notifications")],
   },
   {
     id: "store",
