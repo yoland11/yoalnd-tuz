@@ -3,16 +3,18 @@ import { useRoute, useSearch } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useTrackOrder, getTrackOrderQueryKey,
-  useTrackOrdersByPhone, getTrackOrdersByPhoneQueryKey,
 } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
-  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode, Printer,
+  CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode, Printer, Flower2, ShoppingBag,
+  Camera, Images, Music2, GraduationCap, BriefcaseBusiness, ChevronLeft, ExternalLink,
 } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
-import { formatIraqiPhoneInput, normalizePhoneDigits } from "@/lib/phone";
+import { formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { usePublicSettings } from "@/lib/public-settings";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { CelebrationEffect } from "@/components/interactive/celebration-effect";
@@ -24,6 +26,33 @@ import { useT } from "@/lib/i18n";
 import { formatCurrency, formatMoney } from "@/lib/money";
 
 type Mode = "code" | "phone";
+
+type TrackingGroupKey = "koshas" | "storeOrders" | "photographyOrders" | "albums" | "djBookings" | "preparations" | "rentals" | "services";
+
+type UnifiedTrackingItem = {
+  id: number;
+  code: string;
+  type: string;
+  title: string;
+  status: string;
+  date: string;
+  createdAt: string;
+  totalAmount: number | null;
+  paidAmount: number | null;
+  remainingAmount: number | null;
+  paymentStatus: string;
+  deliveryFee?: number;
+  image?: string | null;
+  trackingUrl?: string | null;
+  qrScanUrl?: string | null;
+  details?: Record<string, any>;
+  statusHistory?: Array<{ status: string; createdAt: string }>;
+};
+
+type UnifiedTrackingResponse = {
+  total: number;
+  groups: Record<TrackingGroupKey, UnifiedTrackingItem[]>;
+};
 
 export default function Track() {
   const t = useT();
@@ -38,6 +67,7 @@ export default function Track() {
   const [phone, setPhone] = useState("");
   const [searchCode, setSearchCode] = useState(prefilledCode);
   const [searchPhone, setSearchPhone] = useState("");
+  const [phoneValidationError, setPhoneValidationError] = useState("");
   const { data: settings } = usePublicSettings();
   const { data: secureTracking, isLoading: loadingSecure, error: errorSecure } = useQuery({
     queryKey: ["track", "secure-token", secureToken],
@@ -55,8 +85,17 @@ export default function Track() {
     query: { queryKey: getTrackOrderQueryKey(searchCode || "_"), enabled: !!searchCode, refetchInterval: searchCode ? 30000 : false },
   });
 
-  const { data: phoneResults, isLoading: loadingPhone } = useTrackOrdersByPhone(searchPhone || "_", {
-    query: { queryKey: getTrackOrdersByPhoneQueryKey(searchPhone || "_"), enabled: !!searchPhone, refetchInterval: searchPhone ? 30000 : false },
+  const { data: phoneResults, isLoading: loadingPhone, error: phoneError } = useQuery<UnifiedTrackingResponse>({
+    queryKey: ["track", "by-phone", searchPhone],
+    queryFn: async () => {
+      const response = await fetch(`/api/track/by-phone?phone=${encodeURIComponent(searchPhone)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error ?? t("تعذر البحث عن الطلبات"));
+      return payload as UnifiedTrackingResponse;
+    },
+    enabled: Boolean(searchPhone),
+    refetchInterval: searchPhone ? 30000 : false,
+    retry: false,
   });
   const codeResults = Array.isArray(order) ? order : order ? [order] : [];
 
@@ -67,12 +106,19 @@ export default function Track() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (mode === "code") {
+      setPhoneValidationError("");
       setSearchPhone("");
       setSearchCode(code.trim().toUpperCase());
     } else {
       setSearchCode("");
-      const last4 = normalizePhoneDigits(phone).slice(-4);
-      if (last4.length === 4) setSearchPhone(last4);
+      const normalized = normalizeIraqiPhone(phone);
+      if (!normalized) {
+        setSearchPhone("");
+        setPhoneValidationError(t("أدخل رقم هاتف عراقي صحيح مثل 0770xxxxxxx"));
+        return;
+      }
+      setPhoneValidationError("");
+      setSearchPhone(normalized);
     }
   }
 
@@ -106,7 +152,7 @@ export default function Track() {
         <div className="text-center mb-10 animate-fade-up">
           <Package className="w-12 h-12 text-primary mx-auto mb-3" />
           <h1 className="text-3xl font-bold text-foreground mb-2">{t("تتبع الطلب")}</h1>
-          <p className="text-muted-foreground">{t("أدخل رمز التتبع أو آخر 4 أرقام من رقم هاتفك")}</p>
+          <p className="text-muted-foreground">{t("أدخل رمز التتبع أو رقم هاتفك لعرض جميع طلباتك وحجوزاتك")}</p>
         </div>
 
         {/* Mode tabs */}
@@ -139,8 +185,11 @@ export default function Track() {
           ) : (
             <input
               value={phone}
-              onChange={e => setPhone(formatIraqiPhoneInput(e.target.value))}
-              placeholder={t("آخر 4 أرقام من رقمك")}
+              onChange={e => {
+                setPhone(formatIraqiPhoneInput(e.target.value));
+                if (phoneValidationError) setPhoneValidationError("");
+              }}
+              placeholder="0770xxxxxxx"
               inputMode="numeric"
               className="flex-1 bg-card border border-border/40 rounded-xl px-5 py-4 text-foreground text-lg tracking-wider placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
             />
@@ -150,10 +199,12 @@ export default function Track() {
           </Button>
         </form>
 
-        {/* Loading */}
-        {(loadingCode || loadingPhone) && (
-          <div className="text-center py-12 text-muted-foreground animate-pulse">{t("جاري البحث...")}</div>
+        {mode === "phone" && phoneValidationError && (
+          <p className="-mt-7 mb-8 text-sm text-status-danger" role="alert">{phoneValidationError}</p>
         )}
+
+        {/* Loading */}
+        {(loadingCode || loadingPhone) && <TrackingSearchSkeleton />}
 
         {/* Code mode — single order */}
         {mode === "code" && errorCode && searchCode && (
@@ -177,26 +228,317 @@ export default function Track() {
           </div>
         )}
 
-        {/* Phone mode — list of orders */}
-        {mode === "phone" && phoneResults && phoneResults.length === 0 && (
+        {mode === "phone" && phoneError && searchPhone && (
+          <div className="text-center py-12 bg-card rounded-xl border border-border/30">
+            <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
+            <p className="text-muted-foreground">{phoneError instanceof Error ? phoneError.message : t("تعذر البحث عن الطلبات")}</p>
+          </div>
+        )}
+
+        {/* Phone mode — unified customer orders */}
+        {mode === "phone" && phoneResults && phoneResults.total === 0 && (
           <div className="text-center py-12 bg-card rounded-xl border border-border/30">
             <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
             <p className="text-muted-foreground">{t("لا توجد طلبات مرتبطة بهذا الرقم")}</p>
           </div>
         )}
-        {mode === "phone" && phoneResults && phoneResults.length > 0 && (
-          <div className="space-y-6">
-            <p className="text-sm text-muted-foreground text-center">{t("عدد الطلبات:")} {phoneResults.length}</p>
-            {phoneResults.map((o: any, i: number) => (
-              <div key={`${o.kind ?? "order"}-${o.id ?? i}`} className="animate-scale-in" style={{ animationDelay: `${i * 80}ms` }}>
-                <OrderCard tracking={o as any} contactPhone={settings?.whatsapp || settings?.phone} />
-              </div>
-            ))}
-          </div>
+        {mode === "phone" && phoneResults && phoneResults.total > 0 && (
+          <UnifiedPhoneResults data={phoneResults} contactPhone={settings?.whatsapp || settings?.phone} />
         )}
       </div>
     </div>
   );
+}
+
+const TRACKING_GROUPS: Array<{ key: TrackingGroupKey; label: string; icon: typeof Package }> = [
+  { key: "koshas", label: "كوشات", icon: Flower2 },
+  { key: "storeOrders", label: "المتجر", icon: ShoppingBag },
+  { key: "photographyOrders", label: "تصوير", icon: Camera },
+  { key: "albums", label: "ألبومات", icon: Images },
+  { key: "djBookings", label: "دي جي", icon: Music2 },
+  { key: "preparations", label: "تجهيزات", icon: GraduationCap },
+  { key: "rentals", label: "إيجار", icon: CalendarClock },
+  { key: "services", label: "خدمات أخرى", icon: BriefcaseBusiness },
+];
+
+function TrackingSearchSkeleton() {
+  return (
+    <div className="space-y-4 py-3" aria-label="جاري البحث">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[0, 1, 2, 3].map((item) => <Skeleton key={item} className="h-20 rounded-xl" />)}
+      </div>
+      <Skeleton className="h-36 rounded-2xl" />
+      <Skeleton className="h-36 rounded-2xl" />
+    </div>
+  );
+}
+
+function UnifiedPhoneResults({ data, contactPhone }: { data: UnifiedTrackingResponse; contactPhone?: string }) {
+  const t = useT();
+  const availableGroups = TRACKING_GROUPS.filter((group) => data.groups[group.key]?.length > 0);
+  const [selectedGroup, setSelectedGroup] = useState<TrackingGroupKey>(availableGroups[0]?.key ?? "storeOrders");
+  const [selectedItem, setSelectedItem] = useState<UnifiedTrackingItem | null>(null);
+  const activeGroup = data.groups[selectedGroup]?.length ? selectedGroup : (availableGroups[0]?.key ?? selectedGroup);
+  const rows = data.groups[activeGroup] ?? [];
+  return (
+    <div className="space-y-5 animate-fade-up pb-10">
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-border/30 bg-card px-4 py-3">
+        <p className="text-sm text-muted-foreground">{t("جميع الطلبات والحجوزات المرتبطة برقمك")}</p>
+        <span className="shrink-0 rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">{data.total}</span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="tablist" aria-label={t("أنواع الطلبات")}>
+        {availableGroups.map((group) => {
+          const Icon = group.icon;
+          const active = activeGroup === group.key;
+          return (
+            <button
+              key={group.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setSelectedGroup(group.key)}
+              className={`min-w-0 rounded-xl border p-3 text-right transition-colors ${active ? "border-primary/60 bg-primary/10 text-primary" : "border-border/30 bg-card text-muted-foreground hover:border-primary/35 hover:text-foreground"}`}
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <Icon className="h-5 w-5 shrink-0" />
+                <span className={`rounded-full px-2 py-0.5 text-xs ${active ? "bg-primary text-primary-foreground" : "bg-background text-foreground"}`}>
+                  {data.groups[group.key].length}
+                </span>
+              </div>
+              <span className="block truncate text-sm font-semibold">{t(group.label)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="space-y-3" role="tabpanel">
+        {rows.map((item, index) => (
+          <UnifiedTrackingCard
+            key={`${item.type}-${item.id}-${item.code}`}
+            item={item}
+            onOpen={() => setSelectedItem(item)}
+            style={{ animationDelay: `${Math.min(index, 8) * 60}ms` }}
+          />
+        ))}
+      </div>
+
+      <Dialog open={Boolean(selectedItem)} onOpenChange={(open) => !open && setSelectedItem(null)}>
+        <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>{t("تفاصيل الطلب")}</DialogTitle>
+            <DialogDescription className="sr-only">{t("تفاصيل التتبع والدفع المسموح بعرضها لهذا الطلب")}</DialogDescription>
+          </DialogHeader>
+          {selectedItem && <UnifiedTrackingDetails item={selectedItem} contactPhone={contactPhone} />}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function UnifiedTrackingCard({ item, onOpen, style }: { item: UnifiedTrackingItem; onOpen: () => void; style?: React.CSSProperties }) {
+  const t = useT();
+  return (
+    <article className="animate-scale-in rounded-2xl border border-border/30 bg-card p-4 sm:p-5" style={style}>
+      <div className="flex items-start gap-4">
+        <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/30 bg-background">
+          {item.image ? <img src={item.image} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <Package className="h-7 w-7 text-primary" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="truncate font-semibold text-foreground">{item.title}</h2>
+              <p className="mt-1 font-mono text-xs text-muted-foreground" dir="ltr">{item.code}</p>
+            </div>
+            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${STATUS_TONES[item.status] ?? "border-border/30 bg-background text-foreground"}`}>
+              <StatusIcon status={item.status} className="h-3.5 w-3.5" />
+              {t(trackingStatusLabel(item.status))}
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5" />{formatTrackDate(item.date)}</span>
+            {item.totalAmount !== null && <span className="font-semibold text-primary">{formatCurrency(item.totalAmount)}</span>}
+            {item.totalAmount === null && <span>{t("بانتظار تحديد السعر")}</span>}
+          </div>
+        </div>
+      </div>
+      <Button type="button" variant="outline" className="mt-4 w-full justify-between" onClick={onOpen}>
+        {t("عرض التفاصيل")}
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+    </article>
+  );
+}
+
+function UnifiedTrackingDetails({ item, contactPhone }: { item: UnifiedTrackingItem; contactPhone?: string }) {
+  const t = useT();
+  const details = item.details ?? {};
+  const whatsappLink = buildWhatsAppLink(contactPhone || "07701234567", `استفسار عن الطلب ${item.code}`);
+  const images = Array.from(new Set([item.image, ...(Array.isArray(details.venueImages) ? details.venueImages : [])].filter(Boolean))) as string[];
+  const detailRows = unifiedDetailRows(item);
+  const selectedLists = [
+    { label: "الخدمات الإضافية", values: details.addons },
+    { label: "بورد الترحيب", values: details.welcomeBoards },
+    { label: "الإكسسوارات", values: details.accessories },
+  ].filter((row) => Array.isArray(row.values) && row.values.length > 0);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl border border-border/30 bg-background/60 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-semibold text-foreground">{item.title}</p>
+            <p className="mt-1 font-mono text-sm text-muted-foreground" dir="ltr">{item.code}</p>
+          </div>
+          <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${STATUS_TONES[item.status] ?? "border-border/30 bg-card text-foreground"}`}>
+            <StatusIcon status={item.status} className="h-4 w-4" /> {t(trackingStatusLabel(item.status))}
+          </span>
+        </div>
+      </div>
+
+      {images.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {images.slice(0, 8).map((src) => <img key={src} src={src} alt="" loading="lazy" className="h-20 w-20 shrink-0 rounded-lg border border-border/30 object-cover" />)}
+        </div>
+      )}
+
+      {item.totalAmount !== null ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <MoneySummary label={t("المبلغ الكلي")} value={item.totalAmount} />
+          <MoneySummary label={t("المدفوع")} value={item.paidAmount ?? 0} />
+          <MoneySummary label={t("المتبقي")} value={item.remainingAmount ?? 0} accent />
+        </div>
+      ) : (
+        <div className="rounded-xl border border-primary/25 bg-primary/10 p-4 text-sm text-primary">{t("بانتظار تحديد السعر من الإدارة")}</div>
+      )}
+
+      {detailRows.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {detailRows.map((row) => (
+            <div key={row.label} className="rounded-xl border border-border/30 bg-background/50 p-3">
+              <p className="text-xs text-muted-foreground">{t(row.label)}</p>
+              <p className="mt-1 break-words text-sm font-medium text-foreground">{row.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {Array.isArray(details.items) && details.items.length > 0 && (
+        <div>
+          <h3 className="mb-3 text-sm font-semibold text-foreground">{t("المنتجات")}</h3>
+          <div className="space-y-2">
+            {details.items.map((product: any, index: number) => (
+              <div key={product.id ?? index} className="flex items-center gap-3 rounded-xl border border-border/30 bg-background/50 p-3">
+                {product.image && <img src={product.image} alt="" className="h-11 w-11 rounded-lg object-cover" />}
+                <p className="min-w-0 flex-1 truncate text-sm text-foreground">{product.productNameAr || product.productName}</p>
+                <span className="shrink-0 text-sm text-muted-foreground">× {product.quantity}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selectedLists.map((list) => (
+        <div key={list.label}>
+          <h3 className="mb-2 text-sm font-semibold text-foreground">{t(list.label)}</h3>
+          <div className="flex flex-wrap gap-2">
+            {(list.values as unknown[]).map((value, index) => (
+              <span key={`${String(value)}-${index}`} className="rounded-full border border-border/30 bg-background px-3 py-1.5 text-xs text-foreground">
+                {typeof value === "object" && value ? String((value as any).name ?? (value as any).title ?? "عنصر مختار") : String(value)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {item.statusHistory && item.statusHistory.length > 0 && (
+        <div>
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground"><Clock className="h-4 w-4 text-primary" />{t("مراحل الطلب")}</h3>
+          <ol className="space-y-3 border-r border-border/50 pr-4">
+            {item.statusHistory.map((history, index) => (
+              <li key={`${history.status}-${history.createdAt}-${index}`} className="relative">
+                <span className={`absolute -right-[1.18rem] top-1.5 h-2.5 w-2.5 rounded-full ${index === 0 ? "bg-primary ring-4 ring-primary/15" : "bg-border"}`} />
+                <p className={`text-sm ${index === 0 ? "font-semibold text-primary" : "text-foreground"}`}>{t(trackingStatusLabel(history.status))}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{formatTrackDate(history.createdAt)}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <a href={whatsappLink} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-lg border border-status-success/30 bg-status-success/10 px-4 py-2.5 text-sm font-medium text-status-success hover:bg-status-success/20">
+          <MessageCircle className="h-4 w-4" /> {t("تواصل بخصوص الطلب")}
+        </a>
+        {(item.trackingUrl || item.qrScanUrl) && (
+          <a href={item.trackingUrl || item.qrScanUrl || "#"} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm font-medium text-primary hover:bg-primary/20">
+            {item.qrScanUrl ? <QrCode className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />} {t("فتح التتبع المباشر")}
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MoneySummary({ label, value, accent = false }: { label: string; value: number; accent?: boolean }) {
+  return (
+    <div className="rounded-xl border border-border/30 bg-background/60 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={`mt-1 text-sm font-semibold ${accent ? "text-primary" : "text-foreground"}`}>{formatCurrency(value)}</p>
+    </div>
+  );
+}
+
+function unifiedDetailRows(item: UnifiedTrackingItem): Array<{ label: string; value: string }> {
+  const details = item.details ?? {};
+  const rows: Array<{ label: string; value: unknown }> = [
+    { label: "التاريخ", value: formatTrackDate(String(details.eventDate || details.startDate || item.date)) },
+    { label: "الوقت", value: details.eventTime },
+    { label: "نوع المناسبة", value: details.eventType },
+    { label: "الموقع", value: details.location || details.eventLocation },
+    { label: "الباقة", value: details.packageName },
+    { label: "عدد النسخ", value: details.copies },
+    { label: "نوع الطباعة", value: details.printType },
+    { label: "رقم الصورة", value: details.photoNumber },
+    { label: "تاريخ البداية", value: details.startDate },
+    { label: "تاريخ النهاية", value: details.endDate },
+    { label: "عدد الأيام", value: details.days },
+    { label: "سعر اليوم", value: details.pricePerDay !== undefined ? formatCurrency(details.pricePerDay) : null },
+    { label: "التوصيل", value: item.deliveryFee ? formatCurrency(item.deliveryFee) : null },
+  ];
+  return rows.filter((row) => row.value !== null && row.value !== undefined && row.value !== "").map((row) => ({ label: row.label, value: String(row.value) }));
+}
+
+function trackingStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    new: "جديد",
+    booked: "تم الحجز",
+    pending: "قيد الانتظار",
+    pending_pricing: "بانتظار التسعير",
+    contacted: "تم التواصل",
+    confirmed: "مؤكد",
+    preparing: "جاري التجهيز",
+    out_of_warehouse: "خرج من المخزن",
+    on_the_way: "بالطريق",
+    executing: "جاري التنفيذ",
+    executed: "تم التنفيذ",
+    return_pending: "بانتظار الإرجاع",
+    processing: "قيد التنفيذ",
+    in_progress: "قيد التنفيذ",
+    en_route: "بالطريق",
+    installed: "تم التنصيب",
+    editing: "قيد المونتاج",
+    ready_print: "جاهز للطباعة",
+    ready_pickup: "جاهز للاستلام",
+    shipped: "تم الشحن",
+    active: "نشط",
+    returned: "تم الإرجاع",
+    delivered: "تم التسليم",
+    completed: "مكتمل",
+    cancelled: "ملغي",
+    registered: "تم التسجيل",
+  };
+  return labels[status] ?? status;
 }
 
 function SecureQrTrackingCard({ tracking }: { tracking: any }) {

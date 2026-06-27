@@ -5406,6 +5406,46 @@ function stripPii<T extends { customerName: string; customerPhone: string | null
   return { ...t, customerName: maskName(t.customerName), customerPhone: null };
 }
 
+type UnifiedTrackingGroup =
+  | "koshas"
+  | "storeOrders"
+  | "photographyOrders"
+  | "albums"
+  | "djBookings"
+  | "preparations"
+  | "rentals"
+  | "services";
+
+function phoneBelongsToLookup(value: unknown, normalizedPhone: string): boolean {
+  return normalizeIraqiPhone(String(value ?? "")) === normalizedPhone;
+}
+
+function serviceTrackingGroup(service: { type?: string | null; name?: string | null; nameAr?: string | null } | null | undefined): UnifiedTrackingGroup {
+  const value = [service?.type, service?.name, service?.nameAr].filter(Boolean).join(" ").toLowerCase();
+  if (/album|ألبوم|البوم/.test(value)) return "albums";
+  if (/\bdj\b|دي\s*جي|صوت|audio/.test(value)) return "djBookings";
+  if (/تجهيز|تخرج|graduation|preparation/.test(value)) return "preparations";
+  if (/كوش|kosha/.test(value)) return "koshas";
+  if (/تصوير|photo|camera/.test(value)) return "photographyOrders";
+  return "services";
+}
+
+function publicTrackingDetails(tracking: any) {
+  const safe = stripPii(tracking);
+  return {
+    ...safe,
+    customerPhone: null,
+    statusHistory: Array.isArray(safe.statusHistory)
+      ? safe.statusHistory.map((item: any) => ({ status: item.status, createdAt: item.createdAt }))
+      : [],
+  };
+}
+
+function qrTrackingUrl(_req: NextRequest, token: string | null | undefined, fallback: string | null = null) {
+  if (token) return `/track/${encodeURIComponent(token)}`;
+  return fallback;
+}
+
 async function findBookingConflict(input: {
   serviceId: number;
   eventDate?: string | null;
@@ -7155,6 +7195,294 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   }
 
   return null;
+}
+
+async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
+  if (req.method !== "GET" || parts[1] !== "by-phone") return null;
+
+  const rawPhone = req.nextUrl.searchParams.get("phone") ?? "";
+  const normalizedPhone = normalizeIraqiPhone(rawPhone);
+  if (!normalizedPhone) return error("أدخل رقم هاتف عراقي صحيح مثل 0770xxxxxxx", 400);
+  if (rollingRateLimited(phoneLookupHits, ip(req), 10, 60_000)) {
+    return error("محاولات كثيرة، حاول لاحقاً", 429);
+  }
+
+  await Promise.all([
+    ensureTrackingColumns(),
+    ensureAdminExtensionsTables(),
+    ensureKoshaTables(),
+    ensureKoshaStaffTables(),
+    ensurePhotographyStaffTables(),
+    ensureRentalProductsTables(),
+  ]);
+
+  const variants = iraqiPhoneVariants(normalizedPhone);
+  const last4 = normalizedPhone.slice(-4);
+  const [orderCandidates, serviceCandidates, koshaCandidates, photographyCandidates, rentalCandidates] = await Promise.all([
+    db.query.ordersTable.findMany({
+      where: or(inArray(ordersTable.customerPhone, variants), eq(ordersTable.phoneLast4, last4), like(ordersTable.customerPhone, `%${last4}`)),
+      orderBy: [desc(ordersTable.createdAt)],
+      limit: 100,
+    }),
+    db.query.serviceOrdersTable.findMany({
+      where: or(inArray(serviceOrdersTable.phone, variants), eq(serviceOrdersTable.phoneLast4, last4), like(serviceOrdersTable.phone, `%${last4}`)),
+      orderBy: [desc(serviceOrdersTable.createdAt)],
+      limit: 100,
+    }),
+    db.query.koshaBookingsTable.findMany({
+      where: or(
+        inArray(koshaBookingsTable.phone, variants),
+        inArray(koshaBookingsTable.bridePhone, variants),
+        inArray(koshaBookingsTable.groomPhone, variants),
+        inArray(koshaBookingsTable.alternatePhone, variants),
+        like(koshaBookingsTable.phone, `%${last4}`),
+        like(koshaBookingsTable.bridePhone, `%${last4}`),
+        like(koshaBookingsTable.groomPhone, `%${last4}`),
+        like(koshaBookingsTable.alternatePhone, `%${last4}`),
+      ),
+      orderBy: [desc(koshaBookingsTable.createdAt)],
+      limit: 100,
+    }),
+    db.query.photographyOrdersTable.findMany({
+      where: or(inArray(photographyOrdersTable.phone, variants), like(photographyOrdersTable.phone, `%${last4}`)),
+      orderBy: [desc(photographyOrdersTable.createdAt)],
+      limit: 100,
+    }),
+    db.query.rentalOrdersTable.findMany({
+      where: or(inArray(rentalOrdersTable.phone, variants), eq(rentalOrdersTable.phoneLast4, last4), like(rentalOrdersTable.phone, `%${last4}`)),
+      orderBy: [desc(rentalOrdersTable.createdAt)],
+      limit: 100,
+    }),
+  ]);
+
+  // The SQL last-four fallback finds legacy values containing spaces or symbols.
+  // Exact normalization here prevents another customer with the same final digits from leaking into the result.
+  const orders = orderCandidates.filter((row) => phoneBelongsToLookup(row.customerPhone, normalizedPhone));
+  const serviceOrders = serviceCandidates.filter((row) => phoneBelongsToLookup(row.phone, normalizedPhone));
+  const koshaBookings = koshaCandidates.filter((row) =>
+    [row.phone, row.bridePhone, row.groomPhone, row.alternatePhone].some((value) => phoneBelongsToLookup(value, normalizedPhone)),
+  );
+  const photographyOrders = photographyCandidates.filter((row) => phoneBelongsToLookup(row.phone, normalizedPhone));
+  const rentalOrders = rentalCandidates.filter((row) => phoneBelongsToLookup(row.phone, normalizedPhone));
+
+  const serviceIds = Array.from(new Set(serviceOrders.map((row) => row.serviceId)));
+  const koshaIds = Array.from(new Set(koshaBookings.map((row) => row.koshaId).filter((id): id is number => Boolean(id))));
+  const photographyEventIds = Array.from(new Set(photographyOrders.map((row) => row.eventId)));
+  const rentalProductIds = Array.from(new Set(rentalOrders.map((row) => row.productId)));
+  const koshaBookingIds = koshaBookings.map((row) => row.id);
+  const photographyOrderIds = photographyOrders.map((row) => row.id);
+  const qrEntityIds = Array.from(new Set([
+    ...orders.map((row) => row.id),
+    ...serviceOrders.map((row) => row.id),
+    ...koshaBookingIds,
+    ...photographyOrderIds,
+  ]));
+
+  const [services, koshas, photographyEvents, rentalProducts, koshaEvents, photographyEventsHistory, qrRows] = await Promise.all([
+    serviceIds.length ? db.query.servicesTable.findMany({ where: inArray(servicesTable.id, serviceIds) }) : Promise.resolve([]),
+    koshaIds.length ? db.query.koshasTable.findMany({ where: inArray(koshasTable.id, koshaIds) }) : Promise.resolve([]),
+    photographyEventIds.length ? db.query.photographyEventsTable.findMany({ where: inArray(photographyEventsTable.id, photographyEventIds) }) : Promise.resolve([]),
+    rentalProductIds.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, rentalProductIds) }) : Promise.resolve([]),
+    koshaBookingIds.length ? db.query.koshaBookingEventsTable.findMany({
+      where: inArray(koshaBookingEventsTable.bookingId, koshaBookingIds),
+      orderBy: [desc(koshaBookingEventsTable.createdAt)],
+    }) : Promise.resolve<Array<typeof koshaBookingEventsTable.$inferSelect>>([]),
+    photographyOrderIds.length ? db.query.photographyOrderEventsTable.findMany({
+      where: inArray(photographyOrderEventsTable.orderId, photographyOrderIds),
+      orderBy: [desc(photographyOrderEventsTable.createdAt)],
+    }) : Promise.resolve<Array<typeof photographyOrderEventsTable.$inferSelect>>([]),
+    qrEntityIds.length ? db.query.qrTokensTable.findMany({
+      where: and(
+        inArray(qrTokensTable.entityType, ["order", "service_order", "kosha_booking", "photography_order"]),
+        inArray(qrTokensTable.entityId, qrEntityIds),
+      ),
+      orderBy: [desc(qrTokensTable.createdAt)],
+    }) : Promise.resolve<Array<typeof qrTokensTable.$inferSelect>>([]),
+  ]);
+
+  const serviceMap = new Map(services.map((row) => [row.id, row]));
+  const koshaMap = new Map(koshas.map((row) => [row.id, row]));
+  const photographyEventMap = new Map(photographyEvents.map((row) => [row.id, row]));
+  const rentalProductMap = new Map(rentalProducts.map((row) => [row.id, row]));
+  const qrMap = new Map(qrRows.map((row) => [`${row.entityType}:${row.entityId}`, row]));
+  const groups: Record<UnifiedTrackingGroup, any[]> = {
+    koshas: [],
+    storeOrders: [],
+    photographyOrders: [],
+    albums: [],
+    djBookings: [],
+    preparations: [],
+    rentals: [],
+    services: [],
+  };
+
+  const formattedOrders = await Promise.all(orders.map(buildTracking));
+  for (let index = 0; index < orders.length; index += 1) {
+    const row = orders[index];
+    const tracking = publicTrackingDetails(formattedOrders[index]);
+    const isRental = isRentalStoreOrder(row);
+    const itemNames = tracking.items.map((item: any) => item.productNameAr || item.productName).filter(Boolean);
+    const qr = qrMap.get(`order:${row.id}`);
+    groups[isRental ? "rentals" : "storeOrders"].push({
+      id: row.id,
+      code: row.trackingCode,
+      type: isRental ? "rental" : "store",
+      title: isRental ? (itemNames[0] || "حجز إيجار") : (itemNames.slice(0, 2).join("، ") || "طلب متجر"),
+      status: row.status,
+      date: row.createdAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      totalAmount: Number(row.total),
+      paidAmount: Math.max(0, Number(row.total) - Number(row.remainingAmount ?? 0)),
+      remainingAmount: Number(row.remainingAmount ?? 0),
+      paymentStatus: row.paymentStatus ?? "unpaid",
+      deliveryFee: Number(row.deliveryFee ?? 0),
+      image: tracking.items[0]?.image ?? null,
+      trackingUrl: qrTrackingUrl(req, row.qrToken || qr?.token, `/track?code=${encodeURIComponent(row.trackingCode)}`),
+      qrScanUrl: row.qrToken || qr?.token ? `/api/qr/${encodeURIComponent(row.qrToken || qr!.token)}` : null,
+      details: {
+        items: tracking.items,
+        deliveryFee: Number(row.deliveryFee ?? 0),
+        rental: tracking.rental ?? null,
+      },
+      statusHistory: tracking.statusHistory,
+      trackingDetails: tracking,
+    });
+  }
+
+  const formattedServices = await Promise.all(serviceOrders.map(buildServiceTracking));
+  for (let index = 0; index < serviceOrders.length; index += 1) {
+    const row = serviceOrders[index];
+    const service = serviceMap.get(row.serviceId);
+    const group = serviceTrackingGroup(service);
+    const tracking = publicTrackingDetails(formattedServices[index]);
+    const qr = qrMap.get(`service_order:${row.id}`);
+    groups[group].push({
+      id: row.id,
+      code: row.trackingCode ?? `SRV-${row.id}`,
+      type: group === "albums" ? "album" : group === "djBookings" ? "dj" : group === "preparations" ? "preparation" : group === "photographyOrders" ? "photography" : group === "koshas" ? "kosha" : "service",
+      title: service?.nameAr ?? service?.name ?? "حجز خدمة",
+      status: row.status,
+      date: row.eventDate ?? row.createdAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      totalAmount: Number(row.totalAmount ?? 0),
+      paidAmount: Number(row.depositAmount ?? 0),
+      remainingAmount: Number(row.remainingAmount ?? 0),
+      paymentStatus: row.paymentStatus ?? "unpaid",
+      image: tracking.serviceImage ?? null,
+      trackingUrl: qrTrackingUrl(req, row.qrToken || qr?.token, `/track?code=${encodeURIComponent(row.trackingCode ?? `SRV-${row.id}`)}`),
+      qrScanUrl: row.qrToken || qr?.token ? `/api/qr/${encodeURIComponent(row.qrToken || qr!.token)}` : null,
+      details: { eventDate: row.eventDate, eventLocation: row.eventLocation, customFields: row.customFields ?? {} },
+      statusHistory: tracking.statusHistory,
+      trackingDetails: tracking,
+    });
+  }
+
+  for (const row of koshaBookings) {
+    const kosha = row.koshaId ? koshaMap.get(row.koshaId) : null;
+    const qr = qrMap.get(`kosha_booking:${row.id}`);
+    const priced = row.paymentStatus !== "pending_pricing" && Number(row.totalAmount ?? 0) > 0;
+    const history = koshaEvents
+      .filter((item) => item.bookingId === row.id && item.type === "stage")
+      .map((item) => ({ status: item.toStage || row.trackingStatus || row.status, createdAt: item.createdAt.toISOString() }));
+    const code = row.trackingCode ?? `AJN-KOSHA-${String(row.id).padStart(4, "0")}`;
+    const currentStatus = history[0]?.status || row.trackingStatus || row.status;
+    groups.koshas.push({
+      id: row.id,
+      code,
+      type: "kosha",
+      title: kosha?.name ?? row.packageName ?? "حجز كوشة",
+      status: currentStatus,
+      date: row.eventDate ?? row.createdAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      totalAmount: priced ? Number(row.totalAmount) : null,
+      paidAmount: priced ? Number(row.paidAmount) : null,
+      remainingAmount: priced ? Number(row.remainingAmount) : null,
+      paymentStatus: row.paymentStatus ?? "pending_pricing",
+      image: kosha ? publicMediaValue("kosha", kosha, kosha.mainImage) : null,
+      trackingUrl: qrTrackingUrl(req, qr?.token, `/kosha-tracking/${encodeURIComponent(code)}`),
+      qrScanUrl: qr?.token ? `/api/qr/${encodeURIComponent(qr.token)}` : null,
+      details: {
+        eventDate: row.eventDate,
+        eventTime: row.eventTime,
+        eventType: row.eventType,
+        location: [row.province, row.area, row.mahalla, row.hallLocation].filter(Boolean).join(" / "),
+        packageName: row.packageName,
+        addons: row.selectedAddons ?? [],
+        welcomeBoards: row.welcomeBoards ?? [],
+        accessories: row.selectedAccessories ?? [],
+        venueImages: row.venueImages ?? [],
+      },
+      statusHistory: history.length ? history : [{ status: currentStatus, createdAt: row.updatedAt.toISOString() }],
+    });
+  }
+
+  for (const row of photographyOrders) {
+    const event = photographyEventMap.get(row.eventId);
+    const qr = qrMap.get(`photography_order:${row.id}`);
+    const history = photographyEventsHistory
+      .filter((item) => item.orderId === row.id)
+      .map((item) => ({ status: item.toStatus || row.status, createdAt: item.createdAt.toISOString() }));
+    groups.photographyOrders.push({
+      id: row.id,
+      code: row.orderNo,
+      type: "photography",
+      title: event?.eventName || (event?.groomName ? `مناسبة ${event.groomName}` : "طلب تصوير"),
+      status: row.status,
+      date: event?.eventDate ?? row.createdAt.toISOString(),
+      createdAt: row.createdAt.toISOString(),
+      totalAmount: Number(row.totalAmount),
+      paidAmount: Number(row.paidAmount),
+      remainingAmount: Number(row.remainingAmount),
+      paymentStatus: row.paymentStatus,
+      image: publicMediaValue("photography-order", row, row.referenceImage),
+      trackingUrl: qrTrackingUrl(req, qr?.token),
+      qrScanUrl: qr?.token ? `/api/qr/${encodeURIComponent(qr.token)}` : null,
+      details: {
+        eventName: event?.eventName ?? null,
+        eventDate: event?.eventDate ?? null,
+        location: event?.location ?? null,
+        copies: row.copies,
+        printType: row.printType,
+        photoNumber: row.photoNumber,
+      },
+      statusHistory: history.length ? history : [{ status: row.status, createdAt: row.updatedAt.toISOString() }],
+    });
+  }
+
+  const mirroredRentalCodes = new Set(orders.filter(isRentalStoreOrder).map((row) => String(row.trackingCode)));
+  for (const row of rentalOrders.filter((item) => !mirroredRentalCodes.has(String(item.orderNo)))) {
+    const product = rentalProductMap.get(row.productId);
+    groups.rentals.push({
+      id: row.id,
+      code: row.orderNo,
+      type: "rental",
+      title: product?.nameAr || product?.name || "منتج إيجار",
+      status: row.status,
+      date: String(row.startDate),
+      createdAt: row.createdAt.toISOString(),
+      totalAmount: Number(row.totalAmount),
+      paidAmount: Number(row.paidAmount),
+      remainingAmount: Number(row.remainingAmount),
+      paymentStatus: row.paymentStatus,
+      image: product ? publicMediaValue("product", product, product.images?.[0], 0) : null,
+      trackingUrl: null,
+      qrScanUrl: null,
+      details: {
+        startDate: String(row.startDate),
+        endDate: String(row.endDate),
+        days: row.days,
+        pricePerDay: Number(row.pricePerDay),
+        rentalStatus: row.status,
+      },
+      statusHistory: [{ status: row.status, createdAt: row.updatedAt.toISOString() }],
+    });
+  }
+
+  for (const key of Object.keys(groups) as UnifiedTrackingGroup[]) {
+    groups[key].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  }
+  const total = Object.values(groups).reduce((sum, rows) => sum + rows.length, 0);
+  return json({ total, groups });
 }
 
 async function handleGallery(req: NextRequest, parts: string[]) {
@@ -17444,7 +17772,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     // Run all schema ensures in parallel — they are singleton-promise guarded, so
     // after first resolution each subsequent await is a microtask (effectively free).
     await Promise.all([
-      (root === "auth" || root === "orders" || (!isAdminAuth && root === "admin") || root === "dashboard" || root === "customer")
+      (root === "auth" || root === "orders" || root === "track" || (!isAdminAuth && root === "admin") || root === "dashboard" || root === "customer")
         ? ensureCustomerProfileColumns() : undefined,
       (root === "products" || root === "services" || root === "gallery" || (!isAdminAuth && root === "admin") || root === "auth" || root === "customer" || root === "settings")
         ? ensureImageMetadataColumns() : undefined,
@@ -17452,14 +17780,14 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         ? ensureProductColorColumns() : undefined,
       (root === "customer" || root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "auth")
         ? ensureCustomerRewards() : undefined,
-      (root === "orders" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "dashboard")
+      (root === "orders" || root === "track" || root === "service-orders" || (!isAdminAuth && root === "admin") || root === "dashboard")
         ? Promise.all([ensureTrackingColumns(), ensurePaymentWorkflowColumns(), ensureArchiveColumns(), ensurePerformanceIndexes()]) : undefined,
       (root === "admin") ? ensureStaffActivityColumn() : undefined,
       (root === "admin") ? ensureAdminProductsColumns() : undefined,
       (root === "products" || (!isAdminAuth && root === "admin")) ? ensureStoreCategoryColumns() : undefined,
       (root === "coupons" || (!isAdminAuth && root === "admin")) ? ensureCouponsTables() : undefined,
-      (root === "messages" || root === "activity" || root === "qr" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
-      (root === "koshas" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
+      (root === "messages" || root === "activity" || root === "qr" || root === "track" || root === "notifications" || (!isAdminAuth && root === "admin")) ? ensureAdminExtensionsTables() : undefined,
+      (root === "koshas" || root === "track" || (!isAdminAuth && root === "admin")) ? ensureKoshaTables() : undefined,
       (root === "staff" && parts[1] === "koshas") ? ensureKoshaStaffTables() : undefined,
       (root === "staff" && parts[1] === "photography") ? ensurePhotographyStaffTables() : undefined,
       (root === "rental-orders") ? ensureRentalProductsTables() : undefined,
@@ -17482,6 +17810,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
             ? await handleCustomerActivity(req, parts)
             : root === "qr"
               ? await handleQr(req, parts)
+              : root === "track"
+                ? await handleUnifiedTracking(req, parts)
               : root === "notifications"
                 ? await handleNotifications(req, parts)
         : root === "products"
