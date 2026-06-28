@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -15,10 +15,13 @@ import {
   Clock3,
   CloudRain,
   Gauge,
+  History,
+  Images,
   Loader2,
   MapPin,
   MessageSquare,
   PackageCheck,
+  PenLine,
   RefreshCw,
   Route,
   Search,
@@ -26,18 +29,22 @@ import {
   ShieldAlert,
   Sparkles,
   Timer,
+  Trash2,
+  Upload,
   UserRound,
   Users,
   Wallet,
   Warehouse,
   Wrench,
+  X,
+  HeartPulse,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, compressImageFile, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 
 type CommandCenter = {
@@ -52,7 +59,7 @@ type CommandCenter = {
 };
 
 type QueueRow = { id: number; queueNo: string; customerName: string; phone?: string | null; serviceType: string; status: string; waitMinutes: number; arrivedAt: string };
-type AssetRow = { id: number; productId: number; productName: string; stock: number; shelfCode?: string | null; lastLocation?: string | null; usageCount: number; revenueTotal: number; maintenanceCost: number; profit: number; roi: number };
+type AssetRow = { id: number; productId: number; productName: string; stock: number; shelfCode?: string | null; lastLocation?: string | null; usageCount: number; revenueTotal: number; maintenanceCost: number; profit: number; roi: number; purchasePrice?: number; currentValue?: number; assetStatus?: string; custody?: Array<{ staffName?: string | null; staffId?: number | null }> };
 type Intelligence = {
   kpis: { totalWork: number; completionRate: number; averageRevenue: number; customerSatisfaction: number; lostMinutes: number; stockMovements: number };
   smartPricing: { min: number; max: number; average: number };
@@ -359,13 +366,539 @@ function QueueTab({ active }: { active: boolean }) {
   </div>;
 }
 
-function AssetsTab({ active }: { active: boolean }) {
-  const query = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "enterprise", "assets"], queryFn: () => adminFetch("/admin/enterprise/assets"), enabled: active, staleTime: 30_000 });
-  return <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-3"><Metric icon={Boxes} label="الأصول المسجلة" value={query.data?.data.length ?? 0} /><Metric icon={Wallet} label="إجمالي ربح الأصول" value={formatCurrency(query.data?.data.reduce((sum, row) => sum + row.profit, 0) ?? 0)} /><Metric icon={Wrench} label="تكلفة الصيانة" value={formatCurrency(query.data?.data.reduce((sum, row) => sum + row.maintenanceCost, 0) ?? 0)} /></div><Panel><SectionTitle icon={Warehouse} title="الجواز الرقمي ومواقع الرفوف" description="القطعة، مكانها، استخداماتها، صيانتها وربحها الحقيقي في سجل واحد." />{query.isLoading ? <Skeleton className="h-72 rounded-lg" /> : !query.data?.data.length ? <Empty message="لم تُسجل جوازات رقمية للأصول بعد" /> : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-background/50 text-muted-foreground"><tr><th className="p-3 text-right">القطعة</th><th className="p-3 text-right">الموقع</th><th className="p-3 text-right">الاستخدام</th><th className="p-3 text-right">الإيراد</th><th className="p-3 text-right">الصيانة</th><th className="p-3 text-right">الربح</th><th className="p-3 text-right">ROI</th></tr></thead><tbody className="divide-y divide-border/20">{query.data.data.map((row) => <tr key={row.id}><td className="p-3 font-medium">{row.productName}</td><td className="p-3 text-muted-foreground">{row.shelfCode || row.lastLocation || "غير محدد"}</td><td className="p-3">{row.usageCount}</td><td className="p-3">{formatCurrency(row.revenueTotal)}</td><td className="p-3">{formatCurrency(row.maintenanceCost)}</td><td className="p-3 font-semibold">{formatCurrency(row.profit)}</td><td className="p-3"><span className={row.roi >= 0 ? "text-primary" : "text-destructive"}>{row.roi.toLocaleString("ar-IQ")}%</span></td></tr>)}</tbody></table></div>}</Panel><QuickAssetLinks /></div>;
+function assetHealth(row: AssetRow) {
+  const purchase = Number(row.purchasePrice ?? 0);
+  const value = Number(row.currentValue ?? purchase);
+  const maintRatio = purchase > 0 ? Math.min(1, row.maintenanceCost / purchase) : 0;
+  const valueRatio = purchase > 0 ? Math.min(1, Math.max(0, value / purchase)) : 1;
+  const usagePenalty = Math.min(300, Math.max(0, row.usageCount)) / 300;
+  const score = Math.max(0, Math.min(100, Math.round(100 - maintRatio * 55 - (1 - valueRatio) * 25 - usagePenalty * 15)));
+  if (score >= 70) return { score, emoji: "🟢", label: "ممتاز", tone: "bg-status-success/15 text-status-success", bar: "bg-status-success" };
+  if (score >= 40) return { score, emoji: "🟡", label: "جيد", tone: "bg-status-warning/15 text-status-warning", bar: "bg-status-warning" };
+  return { score, emoji: "🔴", label: "يحتاج صيانة", tone: "bg-status-danger/15 text-status-danger", bar: "bg-status-danger" };
 }
 
+function PassportStat({ label, value, tone = "text-foreground" }: { label: string; value: string; tone?: string }) {
+  return <div className="rounded-lg border border-border/30 bg-background/50 p-2.5 text-center"><div className="text-[11px] text-muted-foreground">{label}</div><div className={`mt-1 text-sm font-bold ${tone}`}>{value}</div></div>;
+}
+
+function AssetPassportModal({ row, onClose }: { row: AssetRow; onClose: () => void }) {
+  const [tab, setTab] = useState<"overview" | "advisor" | "timeline" | "photos" | "damage" | "signature">("overview");
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [lockReason, setLockReason] = useState("");
+  const locked = row.assetStatus === "locked";
+  const lock = useMutation({
+    mutationFn: (payload: { locked: boolean; reason?: string }) => adminFetch("/admin/assets/lock", { method: "POST", body: JSON.stringify({ productId: row.productId, ...payload }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] }); qc.invalidateQueries({ queryKey: ["asset-timeline", row.productId] }); toast({ title: locked ? "تم إلغاء القفل" : "تم قفل الأصل" }); onClose(); },
+    onError: (e) => toast({ title: "تعذّر تنفيذ القفل", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const purchaseSource = useQuery<{ data: Array<{ supplierName: string | null; costPrice: string | number; date: string }>; summary: { lastPrice: number; bestPrice: number; bestSupplier: string } }>({
+    queryKey: ["asset-purchase-source", row.productId],
+    queryFn: () => adminFetch(`/admin/purchase-comparison?productId=${row.productId}`),
+    retry: false,
+    enabled: tab === "overview",
+  });
+  const health = assetHealth(row);
+  const purchase = Number(row.purchasePrice ?? 0);
+  const value = Number(row.currentValue ?? purchase);
+  const custody = row.custody ?? [];
+  const status = custody.length
+    ? { label: "بعهدة موظف", tone: "bg-blue-500/15 text-blue-400" }
+    : (row.lastLocation && /صيان/.test(row.lastLocation) ? { label: "صيانة", tone: "bg-status-warning/15 text-status-warning" } : { label: "متاح", tone: "bg-status-success/15 text-status-success" });
+  const tabs: Array<{ key: typeof tab; label: string; icon: typeof BarChart3 }> = [
+    { key: "overview", label: "نظرة عامة", icon: BarChart3 },
+    { key: "advisor", label: "المستشار", icon: BrainCircuit },
+    { key: "timeline", label: "الخط الزمني", icon: History },
+    { key: "photos", label: "الألبوم", icon: Images },
+    { key: "damage", label: "الأضرار", icon: AlertTriangle },
+    { key: "signature", label: "التوقيع", icon: PenLine },
+  ];
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="my-6 w-full max-w-2xl rounded-2xl border border-border/40 bg-card p-5" dir="rtl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-foreground">جواز الأصل</h2>
+            <p className="mt-0.5 truncate text-sm text-muted-foreground">{row.productName} · {row.shelfCode || "بدون رف"}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="mb-4 flex flex-wrap gap-1.5 border-b border-border/30 pb-3">
+          {tabs.map(({ key, label, icon: Icon }) => (
+            <button key={key} type="button" onClick={() => setTab(key)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-background/60"}`}>
+              <Icon className="h-3.5 w-3.5" /> {label}
+            </button>
+          ))}
+        </div>
+
+        {locked && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-status-danger/40 bg-status-danger/10 px-4 py-3 text-sm font-semibold text-status-danger">
+            <ShieldAlert className="h-5 w-5 shrink-0" /> هذا الأصل مقفول (قفل طارئ) — خارج الخدمة حتى إلغاء القفل.
+          </div>
+        )}
+
+        {tab === "advisor" && <AssetAdvisorPanel productId={row.productId} />}
+        {tab === "timeline" && <AssetTimelinePanel productId={row.productId} />}
+        {tab === "photos" && <AssetPhotosPanel productId={row.productId} />}
+        {tab === "damage" && <AssetDamagePanel productId={row.productId} />}
+        {tab === "signature" && <AssetSignaturePanel productId={row.productId} />}
+
+        {tab === "overview" && (<>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-border/30 bg-background/50 p-4">
+            <div className="flex items-center justify-between"><span className="flex items-center gap-1.5 text-sm text-muted-foreground"><HeartPulse className="h-4 w-4" /> الحالة الصحية</span><span className="text-2xl">{health.emoji}</span></div>
+            <div className="mt-2 flex items-baseline gap-2"><span className="text-3xl font-bold text-foreground">{health.score}</span><span className="text-sm text-muted-foreground">/ 100 · {health.label}</span></div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full ${health.bar}`} style={{ width: `${health.score}%` }} /></div>
+          </div>
+          <div className="rounded-xl border border-border/30 bg-background/50 p-4">
+            <div className="text-sm text-muted-foreground">الحالة الحالية والموقع</div>
+            <div className="mt-2"><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${status.tone}`}>{status.label}</span></div>
+            <div className="mt-2 flex items-center gap-1.5 text-sm text-foreground"><MapPin className="h-4 w-4 text-muted-foreground" />{row.lastLocation || row.shelfCode || "داخل المخزن"}</div>
+            {custody.length ? <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><UserRound className="h-3.5 w-3.5" />بعهدة: {custody.map((c) => c.staffName).filter(Boolean).join("، ")}</div> : null}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-primary"><BarChart3 className="h-4 w-4" /> العائد والاستخدام (ROI)</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <PassportStat label="سعر الشراء" value={formatCurrency(purchase)} />
+            <PassportStat label="القيمة الحالية" value={formatCurrency(value)} />
+            <PassportStat label="إجمالي الإيراد" value={formatCurrency(row.revenueTotal)} tone="text-status-success" />
+            <PassportStat label="تكلفة الصيانة" value={formatCurrency(row.maintenanceCost)} tone="text-status-danger" />
+            <PassportStat label="صافي الربح" value={formatCurrency(row.profit)} tone={row.profit >= 0 ? "text-primary" : "text-destructive"} />
+            <PassportStat label="نسبة العائد ROI" value={`${row.roi.toLocaleString("ar-IQ")}%`} tone={row.roi >= 0 ? "text-primary" : "text-destructive"} />
+            <PassportStat label="مرات الاستخدام" value={row.usageCount.toLocaleString("ar-IQ")} />
+            <PassportStat label="المخزون" value={String(row.stock)} />
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-border/30 bg-background/50 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><PackageCheck className="h-4 w-4 text-primary" /> مصدر الشراء</div>
+            {purchaseSource.isLoading ? <Skeleton className="h-12 rounded-lg" />
+              : purchaseSource.isError || !purchaseSource.data?.data?.length ? <p className="text-xs text-muted-foreground">لا توجد فاتورة شراء مرتبطة بهذا الأصل.</p>
+              : (
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between gap-2"><span className="text-muted-foreground">المورّد</span><span className="font-medium text-foreground">{purchaseSource.data.data[0].supplierName || "—"}</span></div>
+                  <div className="flex justify-between gap-2"><span className="text-muted-foreground">آخر سعر شراء</span><span className="font-medium text-foreground">{formatCurrency(purchaseSource.data.summary.lastPrice)}</span></div>
+                  <div className="flex justify-between gap-2"><span className="text-muted-foreground">التاريخ</span><span className="font-medium text-foreground">{purchaseSource.data.data[0].date ? new Date(purchaseSource.data.data[0].date).toLocaleDateString("ar-IQ") : "—"}</span></div>
+                  <Link href="/admin/purchases" onClick={onClose} className="mt-1 inline-block text-xs text-primary hover:underline">فتح المشتريات ←</Link>
+                </div>
+              )}
+          </div>
+
+          <div className={`rounded-xl border p-4 ${locked ? "border-status-success/30 bg-status-success/5" : "border-status-danger/30 bg-status-danger/5"}`}>
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><ShieldAlert className={`h-4 w-4 ${locked ? "text-status-success" : "text-status-danger"}`} /> {locked ? "إلغاء القفل الطارئ" : "قفل طارئ"}</div>
+            {locked ? (
+              <p className="mb-2 text-xs text-muted-foreground">سيعيد الأصل إلى الخدمة.</p>
+            ) : (
+              <input value={lockReason} onChange={(e) => setLockReason(e.target.value)} placeholder="سبب القفل (اختياري)" className="mb-2 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+            )}
+            <Button
+              variant={locked ? "outline" : "destructive"}
+              size="sm"
+              disabled={lock.isPending}
+              onClick={() => lock.mutate({ locked: !locked, reason: lockReason.trim() || undefined })}
+              className="w-full gap-1"
+            >
+              <ShieldAlert className="h-4 w-4" /> {locked ? "إلغاء القفل وإعادة للخدمة" : "قفل الأصل فوراً"}
+            </Button>
+          </div>
+        </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+const ASSET_TIMELINE_ICON: Record<string, typeof History> = {
+  depreciation_updated: Gauge,
+  damage: AlertTriangle,
+  document_added: Images,
+  signature_added: PenLine,
+  note: History,
+};
+
+type AssetTimelineRow = { id: number; type: string; title: string; body: string; actorName: string; metadata: Record<string, any>; createdAt: string };
+type AssetDocRow = { id: number; documentType: string; title: string; fileUrl: string; uploadedByName: string; metadata: Record<string, any>; createdAt: string };
+
+function fmtAssetDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("ar-IQ", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function AssetTimelinePanel({ productId }: { productId: number }) {
+  const { data, isLoading } = useQuery<{ data: AssetTimelineRow[] }>({
+    queryKey: ["asset-timeline", productId],
+    queryFn: () => adminFetch(`/admin/entity-timeline?entityType=asset&entityId=${productId}`),
+  });
+  const rows = data?.data ?? [];
+  if (isLoading) return <Skeleton className="h-40 rounded-xl" />;
+  if (!rows.length) return <EmptyState message="لا توجد أحداث على هذا الأصل بعد" />;
+  return (
+    <div className="space-y-3">
+      {rows.map((row) => {
+        const Icon = ASSET_TIMELINE_ICON[row.type] ?? History;
+        return (
+          <div key={row.id} className="flex gap-3">
+            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Icon className="h-3.5 w-3.5" /></div>
+            <div className="min-w-0 flex-1 border-b border-border/20 pb-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-semibold text-foreground">{row.title}</p>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{fmtAssetDate(row.createdAt)}</span>
+              </div>
+              {row.body ? <p className="mt-0.5 text-xs text-muted-foreground">{row.body}</p> : null}
+              {row.actorName ? <p className="mt-0.5 text-[11px] text-muted-foreground">بواسطة: {row.actorName}</p> : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AssetPhotosPanel({ productId }: { productId: number }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ data: AssetDocRow[] }>({
+    queryKey: ["asset-docs", productId],
+    queryFn: () => adminFetch(`/admin/documents?entityType=asset&entityId=${productId}`),
+  });
+  const photos = (data?.data ?? []).filter((d) => d.documentType === "photo");
+  const upload = useMutation({
+    mutationFn: async (files: FileList) => {
+      for (const file of Array.from(files)) {
+        const fileUrl = await compressImageFile(file, 1600, 0.82);
+        await adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, documentType: "photo", title: file.name || "صورة", fileName: file.name, mimeType: file.type, fileUrl }) });
+      }
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["asset-docs", productId] }); qc.invalidateQueries({ queryKey: ["asset-timeline", productId] }); toast({ title: "تمت إضافة الصور" }); },
+    onError: (e) => toast({ title: "تعذّر رفع الصور", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  return (
+    <div className="space-y-3">
+      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-border/50 bg-background/40 py-4 text-sm text-muted-foreground hover:border-primary hover:text-primary">
+        <Upload className="h-4 w-4" /> {upload.isPending ? "جارٍ الرفع..." : "إضافة صور للأصل"}
+        <input type="file" accept="image/*" multiple className="hidden" disabled={upload.isPending} onChange={(e) => { if (e.target.files?.length) upload.mutate(e.target.files); e.target.value = ""; }} />
+      </label>
+      {isLoading ? <Skeleton className="h-32 rounded-xl" /> : !photos.length ? <EmptyState message="لا توجد صور بعد" /> : (
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          {photos.map((p) => (
+            <a key={p.id} href={p.fileUrl} target="_blank" rel="noreferrer" className="group relative aspect-square overflow-hidden rounded-lg border border-border/30">
+              <img src={p.fileUrl} alt={p.title} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetDamagePanel({ productId }: { productId: number }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ data: AssetTimelineRow[] }>({
+    queryKey: ["asset-timeline", productId],
+    queryFn: () => adminFetch(`/admin/entity-timeline?entityType=asset&entityId=${productId}`),
+  });
+  const damages = (data?.data ?? []).filter((r) => r.type === "damage");
+  const [desc, setDesc] = useState("");
+  const [cost, setCost] = useState("");
+  const [severity, setSeverity] = useState("minor");
+  const inputClass = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none";
+  const log = useMutation({
+    mutationFn: () => adminFetch("/admin/entity-timeline", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, type: "damage", title: severity === "major" ? "ضرر جسيم" : "ضرر طفيف", body: desc.trim(), metadata: { cost: Number(cost) || 0, severity } }) }),
+    onSuccess: () => { setDesc(""); setCost(""); setSeverity("minor"); qc.invalidateQueries({ queryKey: ["asset-timeline", productId] }); toast({ title: "تم تسجيل الضرر" }); },
+    onError: (e) => toast({ title: "تعذّر التسجيل", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2 rounded-xl border border-border/30 bg-background/40 p-3">
+        <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={2} placeholder="وصف الضرر..." className={inputClass} />
+        <div className="grid grid-cols-2 gap-2">
+          <input type="number" min={0} value={cost} onChange={(e) => setCost(e.target.value)} placeholder="تكلفة الإصلاح" className={inputClass} />
+          <select value={severity} onChange={(e) => setSeverity(e.target.value)} className={inputClass}>
+            <option value="minor">ضرر طفيف</option>
+            <option value="major">ضرر جسيم</option>
+          </select>
+        </div>
+        <Button disabled={log.isPending || !desc.trim()} onClick={() => log.mutate()} className="w-full gap-1">
+          <AlertTriangle className="h-4 w-4" /> تسجيل ضرر
+        </Button>
+      </div>
+      {isLoading ? <Skeleton className="h-24 rounded-xl" /> : !damages.length ? <EmptyState message="لا توجد أضرار مسجلة" /> : (
+        <div className="space-y-2">
+          {damages.map((d) => (
+            <div key={d.id} className="rounded-lg border border-status-danger/20 bg-status-danger/5 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground"><AlertTriangle className="h-4 w-4 text-status-danger" /> {d.title}</span>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{fmtAssetDate(d.createdAt)}</span>
+              </div>
+              {d.body ? <p className="mt-1 text-xs text-muted-foreground">{d.body}</p> : null}
+              {Number(d.metadata?.cost) > 0 ? <p className="mt-1 text-xs text-status-danger">تكلفة الإصلاح: {formatCurrency(Number(d.metadata.cost))}</p> : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetSignaturePanel({ productId }: { productId: number }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawing = useRef(false);
+  const inked = useRef(false);
+  const { data, isLoading } = useQuery<{ data: AssetDocRow[] }>({
+    queryKey: ["asset-docs", productId],
+    queryFn: () => adminFetch(`/admin/documents?entityType=asset&entityId=${productId}`),
+  });
+  const signatures = (data?.data ?? []).filter((d) => d.documentType === "signature");
+
+  function pos(e: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * (canvas.width / rect.width), y: (e.clientY - rect.top) * (canvas.height / rect.height) };
+  }
+  function start(e: React.PointerEvent<HTMLCanvasElement>) {
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    drawing.current = true;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    canvasRef.current?.setPointerCapture(e.pointerId);
+  }
+  function move(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!drawing.current) return;
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    const p = pos(e);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#111827";
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    inked.current = true;
+  }
+  function end() { drawing.current = false; }
+  function clear() {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    inked.current = false;
+  }
+
+  const save = useMutation({
+    mutationFn: () => {
+      const fileUrl = canvasRef.current!.toDataURL("image/png");
+      return adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, documentType: "signature", title: "توقيع", mimeType: "image/png", fileUrl }) });
+    },
+    onSuccess: () => { clear(); qc.invalidateQueries({ queryKey: ["asset-docs", productId] }); qc.invalidateQueries({ queryKey: ["asset-timeline", productId] }); toast({ title: "تم حفظ التوقيع" }); },
+    onError: (e) => toast({ title: "تعذّر حفظ التوقيع", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2 rounded-xl border border-border/30 bg-background/40 p-3">
+        <p className="text-xs text-muted-foreground">وقّع داخل الإطار ثم احفظ:</p>
+        <canvas
+          ref={canvasRef}
+          width={500}
+          height={150}
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerLeave={end}
+          className="h-[150px] w-full touch-none rounded-lg border border-border/40 bg-white"
+        />
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={clear} className="gap-1"><Trash2 className="h-3.5 w-3.5" /> مسح</Button>
+          <Button size="sm" disabled={save.isPending} onClick={() => { if (!inked.current) { toast({ title: "الرجاء التوقيع أولاً", variant: "destructive" }); return; } save.mutate(); }} className="flex-1 gap-1"><PenLine className="h-3.5 w-3.5" /> حفظ التوقيع</Button>
+        </div>
+      </div>
+      {isLoading ? <Skeleton className="h-24 rounded-xl" /> : !signatures.length ? <EmptyState message="لا توجد توقيعات محفوظة" /> : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {signatures.map((s) => (
+            <div key={s.id} className="rounded-lg border border-border/30 bg-white p-2">
+              <img src={s.fileUrl} alt="توقيع" className="h-16 w-full object-contain" />
+              <p className="mt-1 text-center text-[11px] text-muted-foreground">{fmtAssetDate(s.createdAt)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type AdvisorResponse = {
+  productId: number;
+  suggestions: Array<{ severity: "high" | "medium" | "low"; title: string; detail: string }>;
+  replacement: { recommended: boolean; reason: string; estimatedCost: number };
+  related: Array<{ productId: number; name: string; usageCount: number; expectedLifeUses: number; status: string; stock: number }>;
+  availability: { status: string; holderName: string | null; since: string | null; nextMaintenance: string | null; warrantyUntil: string | null; stock: number };
+};
+
+const SEVERITY_TONE: Record<string, string> = {
+  high: "border-status-danger/30 bg-status-danger/5",
+  medium: "border-status-warning/30 bg-status-warning/5",
+  low: "border-border/30 bg-background/40",
+};
+const AVAILABILITY_LABEL: Record<string, { label: string; tone: string }> = {
+  available: { label: "متاح", tone: "bg-status-success/15 text-status-success" },
+  in_custody: { label: "بعهدة موظف", tone: "bg-blue-500/15 text-blue-400" },
+  locked: { label: "مقفول", tone: "bg-status-danger/15 text-status-danger" },
+  out_of_stock: { label: "غير متوفر", tone: "bg-status-warning/15 text-status-warning" },
+};
+const CHECKLIST_ITEMS = ["النظافة العامة", "سلامة الأجزاء والوصلات", "اختبار التشغيل", "اكتمال الملحقات", "تصوير الحالة قبل التسليم"];
+
+function AssetAdvisorPanel({ productId }: { productId: number }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<AdvisorResponse>({ queryKey: ["asset-advisor", productId], queryFn: () => adminFetch(`/admin/assets/advisor?productId=${productId}`) });
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const checkCount = Object.values(checked).filter(Boolean).length;
+  const submitChecklist = useMutation({
+    mutationFn: () => adminFetch("/admin/entity-timeline", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, type: "checklist", title: "قائمة الفحص قبل الاستخدام", body: CHECKLIST_ITEMS.filter((i) => checked[i]).join(" · "), metadata: { items: CHECKLIST_ITEMS.map((i) => ({ item: i, ok: !!checked[i] })) } }) }),
+    onSuccess: () => { setChecked({}); qc.invalidateQueries({ queryKey: ["asset-timeline", productId] }); toast({ title: "تم حفظ قائمة الفحص" }); },
+    onError: (e) => toast({ title: "تعذّر الحفظ", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+
+  if (isLoading || !data) return <Skeleton className="h-60 rounded-xl" />;
+  const avail = AVAILABILITY_LABEL[data.availability.status] ?? AVAILABILITY_LABEL.available;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-primary"><Sparkles className="h-4 w-4" /> اقتراحات المستشار</div>
+        <div className="space-y-2">
+          {data.suggestions.map((s, i) => (
+            <div key={i} className={`rounded-lg border p-3 ${SEVERITY_TONE[s.severity]}`}>
+              <p className="text-sm font-semibold text-foreground">{s.title}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{s.detail}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className={`rounded-xl border p-4 ${data.replacement.recommended ? "border-status-danger/30 bg-status-danger/5" : "border-border/30 bg-background/40"}`}>
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-foreground"><RefreshCw className="h-4 w-4 text-primary" /> الاستبدال الذكي</div>
+          <p className={`text-sm font-bold ${data.replacement.recommended ? "text-status-danger" : "text-status-success"}`}>{data.replacement.recommended ? "يُنصح بالاستبدال" : "لا حاجة للاستبدال"}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{data.replacement.reason}</p>
+          {data.replacement.recommended ? <p className="mt-1 text-xs text-foreground">تكلفة تقديرية للبديل: {formatCurrency(data.replacement.estimatedCost)}</p> : null}
+        </div>
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-foreground"><CalendarClock className="h-4 w-4 text-primary" /> التوفر</div>
+          <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${avail.tone}`}>{avail.label}</span>
+          {data.availability.holderName ? <p className="mt-1 text-xs text-muted-foreground">بعهدة: {data.availability.holderName}{data.availability.since ? ` · منذ ${new Date(data.availability.since).toLocaleDateString("ar-IQ")}` : ""}</p> : null}
+          {data.availability.nextMaintenance ? <p className="mt-1 text-xs text-muted-foreground">الصيانة القادمة: {new Date(data.availability.nextMaintenance).toLocaleDateString("ar-IQ")}</p> : null}
+          {data.availability.warrantyUntil ? <p className="mt-1 text-xs text-muted-foreground">الضمان حتى: {new Date(data.availability.warrantyUntil).toLocaleDateString("ar-IQ")}</p> : null}
+          <p className="mt-1 text-xs text-muted-foreground">المخزون: {data.availability.stock}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><ClipboardCheck className="h-4 w-4 text-primary" /> قائمة الفحص الذكية</div>
+        <div className="space-y-1.5">
+          {CHECKLIST_ITEMS.map((item) => (
+            <label key={item} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={!!checked[item]} onChange={(e) => setChecked((p) => ({ ...p, [item]: e.target.checked }))} className="h-4 w-4 rounded border-border/50" />
+              {item}
+            </label>
+          ))}
+        </div>
+        <Button size="sm" disabled={submitChecklist.isPending || checkCount === 0} onClick={() => submitChecklist.mutate()} className="mt-3 w-full gap-1"><CheckCircle2 className="h-4 w-4" /> تأكيد الفحص ({checkCount}/{CHECKLIST_ITEMS.length})</Button>
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><Boxes className="h-4 w-4 text-primary" /> معدات مرتبطة (نفس الفئة)</div>
+        {!data.related.length ? <p className="text-xs text-muted-foreground">لا توجد معدات بنفس الفئة.</p> : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {data.related.map((r) => (
+              <div key={r.productId} className="rounded-lg border border-border/30 bg-background/40 p-3">
+                <p className="text-sm font-medium text-foreground">{r.name}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">الاستخدام {r.usageCount}/{r.expectedLifeUses} · المخزون {r.stock}{r.status === "locked" ? " · 🔒 مقفول" : ""}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssetsTab({ active }: { active: boolean }) {
+  const query = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "enterprise", "assets"], queryFn: () => adminFetch("/admin/enterprise/assets"), enabled: active, staleTime: 30_000 });
+  const [selected, setSelected] = useState<AssetRow | null>(null);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric icon={Boxes} label="الأصول المسجلة" value={query.data?.data.length ?? 0} />
+        <Metric icon={Wallet} label="إجمالي ربح الأصول" value={formatCurrency(query.data?.data.reduce((sum, row) => sum + row.profit, 0) ?? 0)} />
+        <Metric icon={Wrench} label="تكلفة الصيانة" value={formatCurrency(query.data?.data.reduce((sum, row) => sum + row.maintenanceCost, 0) ?? 0)} />
+      </div>
+      <Panel>
+        <SectionTitle icon={Warehouse} title="الجواز الرقمي ومواقع الرفوف" description="اضغط أي قطعة لفتح جوازها الكامل: الحالة الصحية، الموقع، العهدة، والعائد." />
+        {query.isLoading ? <Skeleton className="h-72 rounded-lg" /> : !query.data?.data.length ? <Empty message="لم تُسجل جوازات رقمية للأصول بعد" /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-sm">
+              <thead className="bg-background/50 text-muted-foreground"><tr><th className="p-3 text-right">القطعة</th><th className="p-3 text-right">الصحة</th><th className="p-3 text-right">الموقع</th><th className="p-3 text-right">الاستخدام</th><th className="p-3 text-right">الإيراد</th><th className="p-3 text-right">الصيانة</th><th className="p-3 text-right">الربح</th><th className="p-3 text-right">ROI</th></tr></thead>
+              <tbody className="divide-y divide-border/20">
+                {query.data.data.map((row) => {
+                  const health = assetHealth(row);
+                  return (
+                    <tr key={row.id} onClick={() => setSelected(row)} className="cursor-pointer transition-colors hover:bg-background/40">
+                      <td className="p-3 font-medium">{row.productName}</td>
+                      <td className="p-3"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold ${health.tone}`}>{health.emoji} {health.score}</span></td>
+                      <td className="p-3 text-muted-foreground">{row.shelfCode || row.lastLocation || "غير محدد"}</td>
+                      <td className="p-3">{row.usageCount}</td>
+                      <td className="p-3">{formatCurrency(row.revenueTotal)}</td>
+                      <td className="p-3">{formatCurrency(row.maintenanceCost)}</td>
+                      <td className="p-3 font-semibold">{formatCurrency(row.profit)}</td>
+                      <td className="p-3"><span className={row.roi >= 0 ? "text-primary" : "text-destructive"}>{row.roi.toLocaleString("ar-IQ")}%</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      <QuickAssetLinks />
+      {selected && <AssetPassportModal row={selected} onClose={() => setSelected(null)} />}
+    </div>
+  );
+}
+
+const OPERATION_LINKS: Array<{ href: string; icon: typeof PackageCheck; title: string; description: string }> = [
+  { href: "/admin/assets", icon: PackageCheck, title: "إهلاك الأصول", description: "القيمة الحالية والعمر المتوقع." },
+  { href: "/admin/maintenance-scheduler", icon: Wrench, title: "جدولة الصيانة", description: "المواعيد حسب الاستخدام." },
+  { href: "/admin/purchase-comparison", icon: Search, title: "مقارنة المشتريات", description: "أفضل مورّد وأقل سعر." },
+  { href: "/admin/purchases", icon: Wallet, title: "المشتريات", description: "فواتير الشراء والموردين." },
+  { href: "/admin/warehouse-transfers", icon: Warehouse, title: "تحويل المخازن", description: "نقل المواد باعتماد المدير." },
+];
+
 function QuickAssetLinks() {
-  return <div className="grid gap-3 sm:grid-cols-3"><Link href="/admin/assets"><Panel className="transition-colors hover:border-primary/40"><SectionTitle icon={PackageCheck} title="إهلاك الأصول" description="القيمة الحالية والعمر المتوقع." /></Panel></Link><Link href="/admin/maintenance-scheduler"><Panel className="transition-colors hover:border-primary/40"><SectionTitle icon={Wrench} title="جدولة الصيانة" description="المواعيد حسب الاستخدام." /></Panel></Link><Link href="/admin/warehouse-transfers"><Panel className="transition-colors hover:border-primary/40"><SectionTitle icon={Warehouse} title="تحويل المخازن" description="نقل المواد باعتماد المدير." /></Panel></Link></div>;
+  return (
+    <Panel>
+      <SectionTitle icon={Route} title="العمليات" description="روابط سريعة لإدارة الأصول والصيانة والمشتريات." />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {OPERATION_LINKS.map(({ href, icon: Icon, title, description }) => (
+          <Link key={href} href={href}>
+            <div className="flex items-start gap-3 rounded-xl border border-border/30 bg-background/40 p-3 transition-colors hover:border-primary/40 hover:bg-background/60">
+              <Icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+              <div className="min-w-0"><p className="text-sm font-semibold text-foreground">{title}</p><p className="mt-0.5 text-xs text-muted-foreground">{description}</p></div>
+            </div>
+          </Link>
+        ))}
+      </div>
+    </Panel>
+  );
 }
 
 function IntelligenceTab({ active }: { active: boolean }) {

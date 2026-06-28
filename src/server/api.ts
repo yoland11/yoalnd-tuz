@@ -2,6 +2,7 @@ import { revalidateTag, unstable_cache } from "next/cache";
 import { autoTranslate, autoTranslateStatus } from "@/server/translate";
 import { after, NextResponse, type NextRequest } from "next/server";
 import {
+  createHash,
   createHmac,
   randomBytes,
   randomInt,
@@ -14,7 +15,7 @@ import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
 import { z } from "zod/v4";
-import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   adminSessionsTable,
   adminActivityLogsTable,
@@ -877,6 +878,40 @@ async function ensureQrForEntity(entityType: "order" | "service_order" | "invoic
     if (entityType === "order") await db.update(ordersTable).set({ qrToken: token }).where(eq(ordersTable.id, entity.id));
     if (entityType === "service_order") await db.update(serviceOrdersTable).set({ qrToken: token }).where(eq(serviceOrdersTable.id, entity.id));
     if (entityType === "invoice") await db.update(salesInvoicesTable).set({ qrToken: token }).where(eq(salesInvoicesTable.id, entity.id));
+  }
+  const scanUrl = `${baseUrlFromReq(req)}/api/qr/${token}`;
+  const dataUrl = await QRCode.toDataURL(scanUrl, { margin: 1, width: 240 });
+  return { token, targetUrl, scanUrl, dataUrl };
+}
+
+// Digital DNA — deterministic identity fingerprint for an asset, derived from its
+// immutable attributes. Same inputs always yield the same code, so it doubles as a
+// tamper-evident signature printed on the asset.
+function assetDigitalDna(
+  productId: number,
+  serialNumber: string | null | undefined,
+  purchaseDate: Date | string | null | undefined,
+  purchasePrice: number | string,
+): string {
+  const dateKey = purchaseDate ? new Date(purchaseDate).toISOString().slice(0, 10) : "";
+  const seed = `${productId}|${(serialNumber ?? "").trim().toUpperCase()}|${dateKey}|${purchasePrice}`;
+  const hash = createHash("sha256").update(seed).digest("hex").slice(0, 12).toUpperCase();
+  return `AJN-A${productId}-${hash}`;
+}
+
+// Scan&Go — a stable QR per asset that resolves through the public /track gateway
+// to a safe, financial-free asset status card. Reuses the shared qr_tokens table.
+async function ensureAssetQr(productId: number, req: NextRequest) {
+  await ensureAdminExtensionsTables();
+  const existing = await db.query.qrTokensTable.findFirst({
+    where: and(eq(qrTokensTable.entityType, "asset"), eq(qrTokensTable.entityId, productId)),
+  });
+  const token = existing?.token || randomBytes(32).toString("hex");
+  const targetUrl = publicQrTarget("asset", { id: productId }, req, token);
+  if (!existing) {
+    await db.insert(qrTokensTable).values({ entityType: "asset", entityId: productId, token, targetUrl });
+  } else if (existing.targetUrl !== targetUrl) {
+    await db.update(qrTokensTable).set({ targetUrl }).where(eq(qrTokensTable.id, existing.id));
   }
   const scanUrl = `${baseUrlFromReq(req)}/api/qr/${token}`;
   const dataUrl = await QRCode.toDataURL(scanUrl, { margin: 1, width: 240 });
@@ -4691,6 +4726,7 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "updated_at" timestamp not null default now(),
         "created_at" timestamp not null default now()
       );
+      alter table "asset_profiles" add column if not exists "serial_number" varchar(120);
       create table if not exists "disaster_recovery_snapshots" (
         "id" serial primary key,
         "snapshot_no" varchar(50) not null unique,
@@ -8577,6 +8613,32 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
     };
   }
 
+  if (row.entityType === "asset") {
+    await ensureAdminExtensionsTables();
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, row.entityId) });
+    if (!product) throw Object.assign(new Error("لم يتم العثور على الأصل"), { status: 404 });
+    const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, row.entityId) });
+    const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
+    const usageCount = Number(profile?.usageCount ?? 0);
+    const lifePct = Math.max(0, Math.min(100, Math.round((1 - Math.min(usageCount, expectedLifeUses) / expectedLifeUses) * 100)));
+    const purchasePrice = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
+    return {
+      kind: "asset",
+      // No financial figures are exposed on the public gateway — only identity + health.
+      trackingCode: assetDigitalDna(product.id, profile?.serialNumber, profile?.purchaseDate, purchasePrice),
+      assetName: product.nameAr || product.name,
+      serialNumber: profile?.serialNumber ?? null,
+      category: product.category ?? null,
+      image: Array.isArray(product.images) && product.images.length ? product.images[0] : null,
+      status: profile?.status ?? "active",
+      usageCount,
+      expectedLifeUses,
+      lifePct,
+      createdAt: (profile?.createdAt ?? product.createdAt).toISOString(),
+      updatedAt: (profile?.updatedAt ?? product.updatedAt).toISOString(),
+    };
+  }
+
   throw Object.assign(new Error("نوع QR غير مدعوم"), { status: 400 });
 }
 
@@ -9954,7 +10016,7 @@ async function handleEnterpriseAdmin(req: NextRequest, parts: string[]): Promise
         const revenue = enterpriseNumber(passport.revenueTotal);
         const maintenance = enterpriseNumber(passport.maintenanceCost);
         const profit = revenue - purchasePrice - maintenance;
-        return { ...passport, productName: product?.nameAr || product?.name || `#${passport.productId}`, stock: product?.stock ?? 0, purchasePrice, currentValue: enterpriseNumber(profile?.currentValue), usageCount: profile?.usageCount ?? 0, revenueTotal: revenue, maintenanceCost: maintenance, profit, roi: purchasePrice > 0 ? Number(((profit / purchasePrice) * 100).toFixed(2)) : 0, custody: custodyMap.get(passport.productId) ?? [] };
+        return { ...passport, productName: product?.nameAr || product?.name || `#${passport.productId}`, stock: product?.stock ?? 0, purchasePrice, currentValue: enterpriseNumber(profile?.currentValue), usageCount: profile?.usageCount ?? 0, revenueTotal: revenue, maintenanceCost: maintenance, profit, roi: purchasePrice > 0 ? Number(((profit / purchasePrice) * 100).toFixed(2)) : 0, assetStatus: profile?.status ?? "active", custody: custodyMap.get(passport.productId) ?? [] };
       }), products: products.map((row) => ({ id: row.id, name: row.nameAr || row.name, stock: row.stock, costPrice: enterpriseNumber(row.costPrice), price: enterpriseNumber(row.price) })) });
     }
     if (method === "POST") {
@@ -10923,6 +10985,24 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requireAnyPermission(req, ["dashboard", "orders", "bookings", "tasks"]);
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
+    if (method === "POST") {
+      const b = await body(req);
+      const entityType = textFallback(b?.entityType).slice(0, 60);
+      const entityId = optionalPositiveId(b?.entityId);
+      const title = textFallback(b?.title);
+      if (!entityType || !entityId || !title) return error("النوع والسجل والعنوان مطلوبة", 400);
+      const row = await addEntityTimeline({
+        entityType,
+        entityId,
+        type: textFallback(b?.type, "note").slice(0, 60),
+        title,
+        body: nullableText(b?.body),
+        actor: erpActorFromAdmin(auth),
+        metadata: typeof b?.metadata === "object" && b.metadata ? b.metadata : {},
+      });
+      void logAdminActivity(req, "entity_timeline_added", entityType, entityId, { type: row.type, title: row.title });
+      return json(formatTimelineRow(row), 201);
+    }
     const entityType = req.nextUrl.searchParams.get("entityType")?.trim();
     const entityId = optionalPositiveId(req.nextUrl.searchParams.get("entityId"));
     if (!entityType || !entityId) return error("حدد نوع ورقم السجل", 400);
@@ -11231,6 +11311,211 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
+
+    // Scan&Go — printable QR for a single asset (resolves through the public /track gateway).
+    if (parts[2] === "qr") {
+      const productId = int(String(req.nextUrl.searchParams.get("productId") ?? "")) ?? 0;
+      if (!productId) return error("معرّف الأصل مطلوب", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+      const qr = await ensureAssetQr(productId, req);
+      const dna = assetDigitalDna(productId, profile?.serialNumber, profile?.purchaseDate, Number(profile?.purchasePrice ?? product.costPrice ?? 0));
+      return json({ productId, name: product.nameAr || product.name, serialNumber: profile?.serialNumber ?? null, dna, ...qr });
+    }
+
+    // Emergency Lock — instantly take an asset out of service (or restore it).
+    if (parts[2] === "lock" && method === "POST") {
+      const b = await body(req);
+      const productId = int(String(b?.productId ?? "")) ?? 0;
+      if (!productId) return error("معرّف الأصل مطلوب", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      const locked = b?.locked !== false;
+      const reason = nullableText(b?.reason);
+      const nextStatus = locked ? "locked" : "active";
+      const existing = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+      if (existing) {
+        await db.update(assetProfilesTable).set({ status: nextStatus, updatedAt: new Date() }).where(eq(assetProfilesTable.id, existing.id));
+      } else {
+        const cost = String(Number(product.costPrice ?? 0));
+        await db.insert(assetProfilesTable)
+          .values({ productId, purchasePrice: cost, currentValue: cost, status: nextStatus })
+          .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: nextStatus, updatedAt: new Date() } });
+      }
+      void logAdminActivity(req, locked ? "asset_emergency_locked" : "asset_unlocked", "product", productId, { name: product.nameAr || product.name, reason });
+      void addEntityTimeline({
+        entityType: "asset",
+        entityId: productId,
+        type: locked ? "emergency_lock" : "unlock",
+        title: locked ? "🔒 قفل طارئ للأصل" : "🔓 إلغاء القفل الطارئ",
+        body: reason,
+        actor: erpActorFromAdmin(auth),
+        metadata: { locked },
+      });
+      return json({ ok: true, productId, status: nextStatus });
+    }
+
+    // Smart advisor — rule-based suggestions, replacement, related equipment, availability.
+    if (parts[2] === "advisor") {
+      const productId = int(String(req.nextUrl.searchParams.get("productId") ?? "")) ?? 0;
+      if (!productId) return error("معرّف الأصل مطلوب", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      const [profile, passport, custodyRows] = await Promise.all([
+        db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) }),
+        db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) }),
+        db.query.equipmentCustodyTable.findMany({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)], limit: 20 }),
+      ]);
+      const purchasePrice = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
+      const expectedLife = Number(profile?.expectedLifeUses ?? 50) || 50;
+      const usageCount = Number(profile?.usageCount ?? 0);
+      const usageRatio = Math.min(1, usageCount / expectedLife);
+      const maintenanceCost = Number(passport?.maintenanceCost ?? 0);
+      const revenueTotal = Number(passport?.revenueTotal ?? 0);
+      const maintenanceEvery = Number(profile?.maintenanceEveryUses ?? 50) || 50;
+      const status = profile?.status ?? "active";
+
+      const suggestions: Array<{ severity: "high" | "medium" | "low"; title: string; detail: string }> = [];
+      if (status === "locked") suggestions.push({ severity: "high", title: "الأصل مقفول (قفل طارئ)", detail: "راجع سبب القفل في الخط الزمني قبل إعادته للخدمة." });
+      if (usageRatio >= 0.9) suggestions.push({ severity: "high", title: "اقترب من نهاية العمر الافتراضي", detail: `استُخدم ${usageCount} من ${expectedLife} مرة — جهّز بديلاً.` });
+      else if (usageRatio >= 0.7) suggestions.push({ severity: "medium", title: "استهلاك متقدم", detail: `بلغ ${Math.round(usageRatio * 100)}% من عمره الافتراضي.` });
+      if (purchasePrice > 0 && maintenanceCost >= purchasePrice * 0.4) suggestions.push({ severity: "high", title: "تكلفة صيانة مرتفعة", detail: `الصيانة ${formatCurrency(maintenanceCost)} تعادل ${Math.round((maintenanceCost / purchasePrice) * 100)}% من سعر الشراء.` });
+      if (usageCount > 0 && usageCount % maintenanceEvery === 0) suggestions.push({ severity: "medium", title: "موعد صيانة دورية", detail: `الصيانة كل ${maintenanceEvery} استخدام.` });
+      if (passport?.warrantyUntil) {
+        const d = new Date(passport.warrantyUntil);
+        const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+        if (days < 0) suggestions.push({ severity: "medium", title: "انتهى الضمان", detail: `انتهى في ${d.toLocaleDateString("ar-IQ")}.` });
+        else if (days <= 30) suggestions.push({ severity: "medium", title: "الضمان قارب الانتهاء", detail: `يتبقى ${days} يوم على انتهاء الضمان.` });
+      }
+      if (usageCount > 0 && revenueTotal === 0) suggestions.push({ severity: "low", title: "بلا إيراد مسجل", detail: "أصل مستخدم لكن لا إيراد مسجل — راجع التسعير وربط الإيرادات." });
+      if (!suggestions.length) suggestions.push({ severity: "low", title: "الأصل بحالة جيدة", detail: "لا توجد إجراءات عاجلة مطلوبة حالياً." });
+
+      const replaceRecommended = usageRatio >= 0.85 || (purchasePrice > 0 && maintenanceCost >= purchasePrice * 0.4);
+      const replacement = {
+        recommended: replaceRecommended,
+        reason: replaceRecommended ? (usageRatio >= 0.85 ? "تجاوز 85% من عمره الافتراضي." : "تكلفة الصيانة تتجاوز 40% من سعر الشراء.") : "لا حاجة للاستبدال حالياً.",
+        estimatedCost: purchasePrice,
+      };
+
+      const relatedProducts = await db.query.productsTable.findMany({
+        where: and(
+          eq(productsTable.isActive, true),
+          product.categoryId ? eq(productsTable.categoryId, product.categoryId) : eq(productsTable.category, product.category ?? "—"),
+          ne(productsTable.id, productId),
+        ),
+        limit: 6,
+      });
+      const relatedProfiles = relatedProducts.length
+        ? await db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, relatedProducts.map((p) => p.id)) })
+        : [];
+      const relProfileMap = new Map(relatedProfiles.map((p) => [p.productId, p]));
+      const related = relatedProducts.map((p) => {
+        const rp = relProfileMap.get(p.id);
+        return {
+          productId: p.id,
+          name: p.nameAr || p.name,
+          usageCount: Number(rp?.usageCount ?? 0),
+          expectedLifeUses: Number(rp?.expectedLifeUses ?? 50) || 50,
+          status: rp?.status ?? "active",
+          stock: p.stock,
+        };
+      });
+
+      const inCustody = custodyRows.length > 0;
+      let holderName: string | null = null;
+      if (inCustody) {
+        const staff = await db.query.staffTable.findFirst({ where: eq(staffTable.id, custodyRows[0].staffId) });
+        holderName = staff?.fullName || staff?.username || null;
+      }
+      const availability = {
+        status: status === "locked" ? "locked" : inCustody ? "in_custody" : (product.stock > 0 ? "available" : "out_of_stock"),
+        holderName,
+        since: inCustody ? iso(custodyRows[0].issuedAt) : null,
+        nextMaintenance: passport?.nextMaintenanceDate ?? null,
+        warrantyUntil: passport?.warrantyUntil ?? null,
+        stock: product.stock,
+      };
+
+      return json({ productId, suggestions, replacement, related, availability });
+    }
+
+    if (method === "POST" || method === "PATCH") {
+      const payload = await body(req);
+      const productId = int(String(payload?.productId ?? "")) ?? 0;
+      if (!productId) return error("معرّف الأصل مطلوب", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      const existing = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+      const usageCount = Number(existing?.usageCount ?? 0);
+      const hasValue = (v: unknown) => v !== undefined && v !== null && v !== "";
+
+      // Duplicate-serial protection: a serial number may belong to only one asset.
+      let serialNumber: string | null = existing?.serialNumber ?? null;
+      if (payload?.serialNumber !== undefined) {
+        const raw = String(payload.serialNumber ?? "").trim();
+        serialNumber = raw ? raw.slice(0, 120) : null;
+        if (serialNumber) {
+          const clash = await db.query.assetProfilesTable.findFirst({
+            where: and(
+              sql`lower(${assetProfilesTable.serialNumber}) = ${serialNumber.toLowerCase()}`,
+              ne(assetProfilesTable.productId, productId),
+            ),
+          });
+          if (clash) return error("الرقم التسلسلي مستخدم مسبقاً لأصل آخر", 409);
+        }
+      }
+
+      const purchasePrice = hasValue(payload?.purchasePrice)
+        ? Math.max(0, Number(payload.purchasePrice) || 0)
+        : Number(existing?.purchasePrice ?? product.costPrice ?? 0);
+      const expectedLifeUses = hasValue(payload?.expectedLifeUses)
+        ? Math.max(1, Math.floor(Number(payload.expectedLifeUses) || 1))
+        : (Number(existing?.expectedLifeUses ?? 50) || 50);
+      const computedValue = Math.max(0, purchasePrice - (purchasePrice * Math.min(usageCount, expectedLifeUses) / expectedLifeUses));
+      const recalculate = payload?.recalculate === true || !hasValue(payload?.currentValue);
+      const currentValue = recalculate ? computedValue : Math.max(0, Number(payload.currentValue) || 0);
+      const status = typeof payload?.status === "string" && payload.status.trim() ? payload.status.trim().slice(0, 30) : (existing?.status ?? "active");
+      const notes = payload?.notes !== undefined ? nullableText(payload.notes) : (existing?.notes ?? null);
+      const purchaseDate = hasValue(payload?.purchaseDate) ? new Date(payload.purchaseDate) : (existing?.purchaseDate ?? null);
+      const set = {
+        purchasePrice: String(purchasePrice),
+        purchaseDate,
+        expectedLifeUses,
+        currentValue: String(currentValue),
+        serialNumber,
+        status,
+        notes,
+        updatedAt: new Date(),
+      };
+      if (existing) {
+        await db.update(assetProfilesTable).set(set).where(eq(assetProfilesTable.id, existing.id));
+      } else {
+        await db.insert(assetProfilesTable).values({ productId, maintenanceEveryUses: 50, usageCount, ...set }).onConflictDoUpdate({ target: assetProfilesTable.productId, set });
+      }
+      const dna = assetDigitalDna(productId, serialNumber, purchaseDate, purchasePrice);
+      void logAdminActivity(req, existing ? "asset_depreciation_updated" : "asset_depreciation_created", "product", productId, {
+        name: product.nameAr || product.name,
+        purchasePrice,
+        expectedLifeUses,
+        currentValue,
+        status,
+        serialNumber,
+        dna,
+        recalculated: recalculate,
+      });
+      void addEntityTimeline({
+        entityType: "asset",
+        entityId: productId,
+        type: "depreciation_updated",
+        title: existing ? "تحديث الإهلاك" : "إنشاء سجل إهلاك",
+        body: `القيمة المتبقية: ${formatCurrency(currentValue)} · العمر الافتراضي: ${expectedLifeUses}${recalculate ? " · أُعيد الاحتساب" : ""}`,
+        actor: erpActorFromAdmin(auth),
+        metadata: { purchasePrice, expectedLifeUses, currentValue, status, serialNumber },
+      });
+      return json({ ok: true, productId, name: product.nameAr || product.name, purchasePrice, expectedLifeUses, usageCount, currentValue, serialNumber, dna, status, maintenanceDue: usageCount > 0 && usageCount % Number(existing?.maintenanceEveryUses ?? 50) === 0 });
+    }
+
     const products = await db.query.productsTable.findMany({ orderBy: [asc(productsTable.id)], limit: 300 });
     const profiles = await db.query.assetProfilesTable.findMany({ limit: 500 });
     const profileByProduct = new Map(profiles.map((row) => [row.productId, row]));
@@ -11240,7 +11525,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
       const usageCount = Number(profile?.usageCount ?? 0);
       const currentValue = Math.max(0, Number(profile?.currentValue ?? purchasePrice - (purchasePrice * Math.min(usageCount, expectedLifeUses) / expectedLifeUses)));
-      return { productId: product.id, name: product.nameAr || product.name, purchasePrice, expectedLifeUses, usageCount, currentValue, status: profile?.status ?? "active", maintenanceDue: usageCount > 0 && usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0 };
+      const serialNumber = profile?.serialNumber ?? null;
+      return {
+        productId: product.id,
+        name: product.nameAr || product.name,
+        purchasePrice,
+        expectedLifeUses,
+        usageCount,
+        currentValue,
+        serialNumber,
+        dna: assetDigitalDna(product.id, serialNumber, profile?.purchaseDate, purchasePrice),
+        category: product.category ?? null,
+        status: profile?.status ?? "active",
+        maintenanceDue: usageCount > 0 && usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0,
+      };
     }) });
   }
 

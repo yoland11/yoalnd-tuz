@@ -138,6 +138,7 @@ export const assetProfilesTable = pgTable("asset_profiles", {
   usageCount: integer("usage_count").notNull().default(0),
   maintenanceEveryUses: integer("maintenance_every_uses").notNull().default(50),
   currentValue: text("current_value").notNull().default("0"),
+  serialNumber: varchar("serial_number", { length: 120 }),
   status: varchar("status", { length: 30 }).notNull().default("active"),
   notes: text("notes"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

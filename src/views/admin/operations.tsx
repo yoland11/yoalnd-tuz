@@ -9,14 +9,20 @@ import {
   Database,
   Download,
   FileText,
+  Fingerprint,
   Gauge,
   History,
   LifeBuoy,
   Package,
+  Pencil,
+  Plus,
+  Printer,
+  QrCode,
   RotateCcw,
   Search,
   ShieldCheck,
   Wrench,
+  X,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -81,9 +87,14 @@ type AssetRow = {
   expectedLifeUses: number;
   usageCount: number;
   currentValue: number;
+  serialNumber?: string | null;
+  dna?: string | null;
+  category?: string | null;
   status: string;
   maintenanceDue: boolean;
 };
+
+type AssetQrResponse = { productId: number; name: string; serialNumber: string | null; dna: string; token: string; scanUrl: string; dataUrl: string };
 
 type MaintenanceRow = {
   productId: number;
@@ -523,18 +534,34 @@ export function WarehouseTransfersPage() {
   );
 }
 
+const ASSET_STATUS_LABEL: Record<string, string> = { active: "نشط", maintenance: "صيانة", retired: "مُستبعد", locked: "🔒 مقفول" };
+
 export function AssetsPage() {
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
-  const totalValue = (data?.data ?? []).reduce((sum, row) => sum + row.currentValue, 0);
+  const [editing, setEditing] = useState<AssetRow | null>(null);
+  const [adding, setAdding] = useState(false);
+  const rows = data?.data ?? [];
+  const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
+  const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
   return (
     <div className="space-y-4" dir="rtl">
-      <PageHeader icon={Package} title="إهلاك الأصول" description="قيمة المواد الحالية وعدد مرات استخدامها وجدولة الصيانة." />
-      <div className="grid gap-3 md:grid-cols-3">
-        <StatCard icon={Package} label="عدد الأصول" value={(data?.data.length ?? 0).toLocaleString("ar-IQ")} />
+      <PageHeader
+        icon={Package}
+        title="إهلاك الأصول"
+        description="قيمة المواد الحالية وعدد مرات استخدامها وجدولة الصيانة."
+        action={(
+          <Button onClick={() => setAdding(true)} className="gap-1">
+            <Plus className="h-4 w-4" /> إضافة سجل إهلاك
+          </Button>
+        )}
+      />
+      <div className="grid gap-3 md:grid-cols-4">
+        <StatCard icon={Package} label="عدد الأصول" value={rows.length.toLocaleString("ar-IQ")} />
+        <StatCard icon={Gauge} label="إجمالي الشراء" value={formatCurrency(totalPurchase)} />
         <StatCard icon={Gauge} label="القيمة الحالية" value={formatCurrency(totalValue)} />
-        <StatCard icon={Wrench} label="تحتاج صيانة" value={(data?.data.filter((row) => row.maintenanceDue).length ?? 0).toLocaleString("ar-IQ")} />
+        <StatCard icon={Wrench} label="تحتاج صيانة" value={rows.filter((row) => row.maintenanceDue).length.toLocaleString("ar-IQ")} />
       </div>
-      {isLoading ? <LoadingRows /> : !data?.data.length ? <EmptyState message="لا توجد أصول" /> : (
+      {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -542,19 +569,28 @@ export function AssetsPage() {
                 <tr>
                   <th className="p-3 text-right">الأصل</th>
                   <th className="p-3 text-right">سعر الشراء</th>
-                  <th className="p-3 text-right">الاستخدام</th>
-                  <th className="p-3 text-right">القيمة الحالية</th>
+                  <th className="p-3 text-right">الاستخدام / العمر الافتراضي</th>
+                  <th className="p-3 text-right">القيمة المتبقية</th>
                   <th className="p-3 text-right">الحالة</th>
+                  <th className="p-3 text-center">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {data.data.map((row) => (
-                  <tr key={row.productId}>
-                    <td className="p-3 font-medium text-foreground">{row.name}</td>
+                {rows.map((row) => (
+                  <tr key={row.productId} className="hover:bg-background/40">
+                    <td className="p-3">
+                      <div className="font-medium text-foreground">{row.name}</div>
+                      {row.serialNumber && <div className="font-mono text-[11px] text-muted-foreground">SN: {row.serialNumber}</div>}
+                    </td>
                     <td className="p-3">{formatCurrency(row.purchasePrice)}</td>
                     <td className="p-3 text-muted-foreground">{row.usageCount} / {row.expectedLifeUses}</td>
                     <td className="p-3 text-primary">{formatCurrency(row.currentValue)}</td>
-                    <td className="p-3">{row.maintenanceDue ? <span className="text-amber-500">صيانة</span> : "نشط"}</td>
+                    <td className="p-3">{row.maintenanceDue ? <span className="text-amber-500">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</td>
+                    <td className="p-3 text-center">
+                      <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
+                        <Pencil className="h-3.5 w-3.5" /> تعديل
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -562,6 +598,188 @@ export function AssetsPage() {
           </div>
         </div>
       )}
+      {(editing || adding) && (
+        <DepreciationModal
+          asset={editing}
+          assets={rows}
+          onClose={() => { setEditing(null); setAdding(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null; assets: AssetRow[]; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  // When adding: only assets without a saved depreciation record (currentValue derived) — but every product is selectable.
+  const [productId, setProductId] = useState<number>(asset?.productId ?? assets[0]?.productId ?? 0);
+  const selected = asset ?? assets.find((row) => row.productId === productId) ?? null;
+  const usageCount = selected?.usageCount ?? 0;
+  const [purchasePrice, setPurchasePrice] = useState<string>(String(asset?.purchasePrice ?? selected?.purchasePrice ?? ""));
+  const [expectedLifeUses, setExpectedLifeUses] = useState<string>(String(asset?.expectedLifeUses ?? selected?.expectedLifeUses ?? 50));
+  const [currentValue, setCurrentValue] = useState<string>(String(asset?.currentValue ?? selected?.currentValue ?? ""));
+  const [serialNumber, setSerialNumber] = useState<string>(asset?.serialNumber ?? selected?.serialNumber ?? "");
+  const [status, setStatus] = useState<string>(asset?.status ?? selected?.status ?? "active");
+  const [qr, setQr] = useState<AssetQrResponse | null>(null);
+  const dna = asset?.dna ?? selected?.dna ?? null;
+
+  // Keep fields in sync when switching the selected asset (add mode).
+  function pick(id: number) {
+    setProductId(id);
+    setQr(null);
+    const row = assets.find((r) => r.productId === id);
+    if (row) {
+      setPurchasePrice(String(row.purchasePrice));
+      setExpectedLifeUses(String(row.expectedLifeUses));
+      setCurrentValue(String(row.currentValue));
+      setSerialNumber(row.serialNumber ?? "");
+      setStatus(row.status);
+    }
+  }
+
+  const price = Math.max(0, Number(purchasePrice) || 0);
+  const life = Math.max(1, Math.floor(Number(expectedLifeUses) || 1));
+  const computedValue = Math.max(0, price - (price * Math.min(usageCount, life) / life));
+
+  const save = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => adminFetch("/admin/assets", { method: "POST", body: JSON.stringify({ productId, serialNumber: serialNumber.trim(), ...payload }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      toast({ title: "تم حفظ سجل الإهلاك" });
+      onClose();
+    },
+    onError: (err) => toast({ title: "تعذّر الحفظ", description: apiErrorMessage(err), variant: "destructive" }),
+  });
+
+  const loadQr = useMutation({
+    mutationFn: () => adminFetch<AssetQrResponse>(`/admin/assets/qr?productId=${productId}`),
+    onSuccess: (data) => setQr(data),
+    onError: (err) => toast({ title: "تعذّر إنشاء رمز QR", description: apiErrorMessage(err), variant: "destructive" }),
+  });
+
+  function printQr(data: AssetQrResponse) {
+    const w = window.open("", "_blank", "width=420,height=560");
+    if (!w) return;
+    w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${data.name}</title>
+      <style>body{font-family:system-ui,Arial;text-align:center;padding:24px;color:#111}img{width:240px;height:240px}
+      .name{font-size:18px;font-weight:700;margin:12px 0 4px}.dna{font-family:monospace;font-size:13px;color:#444}
+      .sn{font-size:12px;color:#666;margin-top:4px}</style></head><body>
+      <img src="${data.dataUrl}" alt="QR"/><div class="name">${data.name}</div>
+      <div class="dna">${data.dna}</div>${data.serialNumber ? `<div class="sn">الرقم التسلسلي: ${data.serialNumber}</div>` : ""}
+      <script>window.onload=function(){window.print();}</script></body></html>`);
+    w.document.close();
+  }
+
+  const inputClass = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-bold text-foreground">
+            <Package className="h-5 w-5 text-primary" />
+            {asset ? "تعديل الإهلاك" : "إضافة سجل إهلاك"}
+          </h2>
+          <button onClick={onClose} className="rounded-lg p-1 text-muted-foreground hover:bg-background/60"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">الأصل</label>
+            {asset ? (
+              <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2 text-sm font-medium text-foreground">{asset.name}</div>
+            ) : (
+              <select className={inputClass} value={productId} onChange={(e) => pick(Number(e.target.value))}>
+                {assets.map((row) => <option key={row.productId} value={row.productId}>{row.name}</option>)}
+              </select>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">سعر الشراء</label>
+              <input type="number" min={0} className={inputClass} value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">العمر الافتراضي (استخدامات)</label>
+              <input type="number" min={1} className={inputClass} value={expectedLifeUses} onChange={(e) => setExpectedLifeUses(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">القيمة المتبقية</label>
+            <div className="flex gap-2">
+              <input type="number" min={0} className={inputClass} value={currentValue} onChange={(e) => setCurrentValue(e.target.value)} />
+              <button
+                type="button"
+                onClick={() => setCurrentValue(String(Math.round(computedValue)))}
+                className="flex shrink-0 items-center gap-1 rounded-lg border border-border/40 bg-background px-3 text-xs text-muted-foreground hover:text-primary"
+                title="احتساب القيمة من سعر الشراء والاستخدام"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> احتساب
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">القيمة المحتسبة: {formatCurrency(computedValue)} · الاستخدام الحالي {usageCount} / {life}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">الرقم التسلسلي</label>
+              <input className={inputClass} value={serialNumber} placeholder="اختياري — فريد لكل أصل" onChange={(e) => setSerialNumber(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">الحالة</label>
+              <select className={inputClass} value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="active">نشط</option>
+                <option value="maintenance">صيانة</option>
+                <option value="retired">مُستبعد</option>
+                <option value="locked">🔒 مقفول</option>
+              </select>
+            </div>
+          </div>
+          {dna && (
+            <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2">
+              <Fingerprint className="h-4 w-4 shrink-0 text-primary" />
+              <div className="min-w-0">
+                <p className="text-[11px] text-muted-foreground">البصمة الرقمية (Digital DNA)</p>
+                <p className="font-mono text-sm font-semibold text-foreground truncate">{dna}</p>
+              </div>
+            </div>
+          )}
+          <div className="rounded-lg border border-border/30 bg-background/50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground"><QrCode className="h-4 w-4 text-primary" /> رمز المسح Scan&Go</span>
+              <Button variant="outline" size="sm" disabled={loadQr.isPending || !productId} onClick={() => loadQr.mutate()} className="gap-1">
+                {qr ? "تحديث" : "إنشاء رمز"}
+              </Button>
+            </div>
+            {qr && (
+              <div className="mt-3 flex items-center gap-3">
+                <img src={qr.dataUrl} alt="QR" className="h-24 w-24 rounded-md border border-border/30 bg-white p-1" />
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="font-mono text-xs text-foreground truncate">{qr.dna}</p>
+                  <p className="text-[11px] text-muted-foreground">يفتح بطاقة حالة الأصل عند المسح</p>
+                  <Button variant="ghost" size="sm" onClick={() => printQr(qr)} className="gap-1 text-primary"><Printer className="h-3.5 w-3.5" /> طباعة الملصق</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <Button
+            disabled={save.isPending || !productId}
+            onClick={() => save.mutate({ purchasePrice: price, expectedLifeUses: life, currentValue: Math.max(0, Number(currentValue) || 0), status })}
+            className="flex-1 gap-1"
+          >
+            حفظ
+          </Button>
+          <Button
+            variant="outline"
+            disabled={save.isPending || !productId}
+            onClick={() => save.mutate({ purchasePrice: price, expectedLifeUses: life, status, recalculate: true })}
+            className="flex-1 gap-1"
+          >
+            <RotateCcw className="h-4 w-4" /> إعادة احتساب الإهلاك
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

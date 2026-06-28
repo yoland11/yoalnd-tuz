@@ -11,6 +11,7 @@ import {
   Package, Search, CheckCircle, Phone, Hash, XCircle, MessageCircle, MapPin, Clock, Calendar, CalendarClock,
   CircleDot, ClipboardCheck, PackageCheck, Sparkles, Star, Truck, QrCode, Printer, Flower2, ShoppingBag,
   Camera, Images, Music2, GraduationCap, BriefcaseBusiness, ChevronLeft, ExternalLink,
+  Fingerprint, Activity, Wrench,
 } from "lucide-react";
 import { getStagesFor, getStageIndex, getStageLabel, buildWhatsAppLink } from "@/lib/order-stages";
 import { serviceDetailsToRows } from "@/lib/service-details";
@@ -543,6 +544,7 @@ function trackingStatusLabel(status: string) {
 
 function SecureQrTrackingCard({ tracking }: { tracking: any }) {
   const t = useT();
+  if (tracking.kind === "asset") return <AssetQrCard tracking={tracking} />;
   const stages = getStagesFor(tracking.serviceType, tracking.kind);
   const currentIdx = getStageIndex(stages, tracking.status);
   const progress = stages.length > 1 ? Math.max(0, Math.min(100, (currentIdx / (stages.length - 1)) * 100)) : 0;
@@ -608,6 +610,76 @@ function SecureQrTrackingCard({ tracking }: { tracking: any }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const ASSET_STATUS_LABEL: Record<string, { label: string; tone: string }> = {
+  active: { label: "نشط — جاهز للاستخدام", tone: "text-status-success border-status-success/30 bg-status-success/10" },
+  maintenance: { label: "قيد الصيانة", tone: "text-status-warning border-status-warning/30 bg-status-warning/10" },
+  retired: { label: "مُستبعد من الخدمة", tone: "text-status-danger border-status-danger/30 bg-status-danger/10" },
+};
+
+// Public, financial-free asset card shown when a Scan&Go QR is scanned.
+function AssetQrCard({ tracking }: { tracking: any }) {
+  const t = useT();
+  const statusInfo = ASSET_STATUS_LABEL[tracking.status] ?? ASSET_STATUS_LABEL.active;
+  const lifePct = Math.max(0, Math.min(100, Number(tracking.lifePct ?? 0)));
+  const lifeTone = lifePct >= 60 ? "bg-status-success" : lifePct >= 30 ? "bg-status-warning" : "bg-status-danger";
+  return (
+    <div className="bg-card border border-border/40 rounded-2xl p-6 shadow-lg shadow-black/5 space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div className="flex items-center gap-4 min-w-0">
+          {tracking.image ? (
+            <img src={tracking.image} alt={tracking.assetName} className="h-16 w-16 rounded-xl object-cover border border-border/30 shrink-0" />
+          ) : (
+            <div className="h-16 w-16 rounded-xl bg-background/60 border border-border/30 flex items-center justify-center shrink-0">
+              <Package className="w-7 h-7 text-muted-foreground" />
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground mb-1">{t("جواز الأصل")}</p>
+            <p className="text-lg font-bold text-foreground truncate">{tracking.assetName}</p>
+            {tracking.category && <p className="text-sm text-muted-foreground mt-0.5">{tracking.category}</p>}
+          </div>
+        </div>
+        <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border ${statusInfo.tone}`}>
+          {tracking.status === "maintenance" ? <Wrench className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+          <span className="text-sm font-medium">{t(statusInfo.label)}</span>
+        </div>
+      </div>
+
+      <div className="rounded-xl bg-background/60 border border-border/30 p-4 flex items-center gap-3">
+        <Fingerprint className="w-5 h-5 text-primary shrink-0" />
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground mb-0.5">{t("البصمة الرقمية")}</p>
+          <p className="font-mono text-sm font-semibold text-foreground truncate tracking-wider">{tracking.trackingCode}</p>
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-muted-foreground">{t("العمر المتبقي")}</span>
+          <span className="text-sm font-semibold text-foreground">{lifePct}%</span>
+        </div>
+        <div className="h-2 bg-muted/40 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-700 ${lifeTone}`} style={{ width: `${lifePct}%` }} />
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">{t("الاستخدام")}: {tracking.usageCount} / {tracking.expectedLifeUses}</p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {tracking.serialNumber && (
+          <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+            <p className="text-xs text-muted-foreground mb-1">{t("الرقم التسلسلي")}</p>
+            <p className="text-foreground font-semibold font-mono">{tracking.serialNumber}</p>
+          </div>
+        )}
+        <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+          <p className="text-xs text-muted-foreground mb-1">{t("آخر تحديث")}</p>
+          <p className="text-foreground font-semibold">{formatTrackDate(tracking.updatedAt ?? tracking.createdAt)}</p>
+        </div>
+      </div>
     </div>
   );
 }
