@@ -210,7 +210,7 @@ function BarcodeSheet({
           key={index}
           className={`${config.widthClass} max-w-full rounded-lg border border-border/30 bg-white p-2 text-center text-black break-inside-avoid`}
         >
-          <p className="text-[10px] font-semibold truncate">{selected.nameAr || selected.name}</p>
+          <p className="text-[11px] font-semibold truncate">{selected.nameAr || selected.name}</p>
           <svg ref={(node) => { refs.current[index] = node; }} className="mx-auto max-w-full" />
         </div>
       ))}

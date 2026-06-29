@@ -151,7 +151,7 @@ export default function BackupPage() {
                   <span className="text-foreground">{ENTITIES.find(e => e.id === k)?.label ?? k}</span>
                   <span className="text-muted-foreground">
                     أُضيف: <span className="text-status-success">{v.inserted}</span> ·
-                    تكرار: <span className="text-yellow-400">{v.skipped}</span> ·
+                    تكرار: <span className="text-status-warning">{v.skipped}</span> ·
                     أخطاء: <span className="text-status-danger">{v.errors}</span>
                   </span>
                 </div>

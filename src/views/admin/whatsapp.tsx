@@ -325,7 +325,7 @@ export default function WhatsappPage() {
                         : <XCircle className="w-4 h-4 text-status-danger" />}
                       <span className="font-mono">{r.phone ? formatIraqiPhone(r.phone) : "—"}</span>
                       <span className="text-xs text-muted-foreground">· {EVENT_LABELS[r.event] ?? r.event}</span>
-                      {r.provider && <span className="text-[10px] text-muted-foreground">[{r.provider}]</span>}
+                      {r.provider && <span className="text-[11px] text-muted-foreground">[{r.provider}]</span>}
                     </div>
                     <span className="text-[11px] text-muted-foreground">{new Date(r.sentAt).toLocaleString("ar-IQ")}</span>
                   </div>

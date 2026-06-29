@@ -3481,6 +3481,7 @@ async function ensureCustomerProfileColumns(): Promise<void> {
       .then(() => db.execute(sql`alter table "customers" add column if not exists "address" text`))
       .then(() => db.execute(sql`alter table "customers" add column if not exists "city" text`))
       .then(() => db.execute(sql`alter table "customers" add column if not exists "updated_at" timestamp not null default now()`))
+      .then(() => db.execute(sql`alter table "customers" add column if not exists "status" varchar(20) not null default 'active'`))
       .then(() => undefined);
   }
   await customerProfilePromise;
@@ -13759,6 +13760,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       try { await ensureCustomerBackfill(); } catch { /* non-fatal: still show whatever customers exist */ }
       const search = req.nextUrl.searchParams.get("search")?.trim();
       const customers = await db.query.customersTable.findMany({
+        where: ne(customersTable.status, "deleted"),
         orderBy: (c, { desc }) => [desc(c.id)],
       });
       const orderCounts = await db
@@ -13990,6 +13992,69 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         rewardLevel: updated?.rewardLevel ?? rewardLevelForPoints(Number(updated?.rewardPoints ?? customer.rewardPoints ?? 0)),
         rewardLevelLabel: rewardLabel(updated?.rewardLevel),
       });
+    }
+
+    // Create a customer
+    if (method === "POST" && !parts[2]) {
+      const data = await body(req);
+      const rawPhone = textFallback(data?.phone);
+      const phone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
+      if (!phone) return error("رقم هاتف عراقي صحيح مطلوب", 400);
+      const name = textFallback(data?.name).slice(0, 200) || "زبون";
+      const existing = await db.query.customersTable.findFirst({ where: eq(customersTable.phone, phone) });
+      if (existing) {
+        if (existing.status === "deleted") {
+          const [row] = await db.update(customersTable).set({ status: "active", name, fullName: nullableText(data?.fullName) ?? name, email: nullableText(data?.email), address: nullableText(data?.address), city: nullableText(data?.city), updatedAt: new Date() }).where(eq(customersTable.id, existing.id)).returning();
+          void logAdminActivity(req, "customer_reactivated", "customer", existing.id, { phone });
+          return json({ id: row.id, name: row.name, phone: row.phone }, 201);
+        }
+        return error("رقم الهاتف مستخدم لعميل آخر", 409);
+      }
+      const [row] = await db.insert(customersTable).values({
+        phone, name, fullName: nullableText(data?.fullName) ?? name,
+        email: nullableText(data?.email), address: nullableText(data?.address), city: nullableText(data?.city),
+        role: "customer", status: "active",
+      } as any).returning();
+      void logAdminActivity(req, "customer_created", "customer", row.id, { phone, name });
+      return json({ id: row.id, name: row.name, phone: row.phone }, 201);
+    }
+
+    // Edit a customer
+    if (method === "PATCH" && parts[2] && !parts[3]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
+      if (!customer) return error("غير موجود", 404);
+      const data = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (data?.name !== undefined) update.name = textFallback(data.name, customer.name).slice(0, 200);
+      if (data?.fullName !== undefined) update.fullName = nullableText(data.fullName);
+      if (data?.email !== undefined) update.email = nullableText(data.email);
+      if (data?.address !== undefined) update.address = nullableText(data.address);
+      if (data?.city !== undefined) update.city = nullableText(data.city);
+      if (data?.phone !== undefined) {
+        const phone = normalizeIraqiPhone(String(data.phone));
+        if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+        if (phone !== customer.phone) {
+          const clash = await db.query.customersTable.findFirst({ where: and(eq(customersTable.phone, phone), ne(customersTable.id, id)) });
+          if (clash) return error("رقم الهاتف مستخدم لعميل آخر", 409);
+          update.phone = phone;
+        }
+      }
+      const [row] = await db.update(customersTable).set(update).where(eq(customersTable.id, id)).returning();
+      void logAdminActivity(req, "customer_updated", "customer", id, { name: row.name });
+      return json({ id: row.id, name: row.name, phone: row.phone });
+    }
+
+    // Soft-delete a customer (keeps financial history and avoids FK violations).
+    if (method === "DELETE" && parts[2] && !parts[3]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف غير صحيح", 400);
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, id) });
+      if (!customer) return error("غير موجود", 404);
+      await db.update(customersTable).set({ status: "deleted", updatedAt: new Date() }).where(eq(customersTable.id, id));
+      void logAdminActivity(req, "customer_deleted", "customer", id, { phone: customer.phone, name: customer.name });
+      return json({ message: "تم حذف العميل" });
     }
   }
 

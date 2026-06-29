@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, FileDown, MapPin, MessageCircle, NotebookPen, Receipt, Search, ShoppingBag, Sparkles, Trash2, Trophy, Wallet, X } from "lucide-react";
+import { Activity, FileDown, MapPin, MessageCircle, NotebookPen, Pencil, Plus, Receipt, Search, ShoppingBag, Sparkles, Trash2, Trophy, Wallet, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
@@ -51,6 +52,7 @@ export default function CustomersPage() {
   const [pointsNote, setPointsNote] = useState("");
   const [noteBody, setNoteBody] = useState("");
   const [notePriority, setNotePriority] = useState("normal");
+  const [editing, setEditing] = useState<null | { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "customers", search],
@@ -73,6 +75,28 @@ export default function CustomersPage() {
       toast({ title: "تم تحديث نقاط الزبون" });
     },
     onError: (err: any) => toast({ title: "تعذر تحديث النقاط", description: err?.message, variant: "destructive" }),
+  });
+  const saveCustomer = useMutation({
+    mutationFn: (c: NonNullable<typeof editing>) => adminFetch(c.id ? `/admin/customers/${c.id}` : "/admin/customers", {
+      method: c.id ? "PATCH" : "POST",
+      body: JSON.stringify({ name: c.name, phone: c.phone, fullName: c.fullName, email: c.email, address: c.address, city: c.city }),
+    }),
+    onSuccess: (_res, c) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+      if (c.id) queryClient.invalidateQueries({ queryKey: ["admin", "customer", c.id] });
+      setEditing(null);
+      toast({ title: c.id ? "تم تعديل بيانات العميل" : "تمت إضافة العميل" });
+    },
+    onError: (err: any) => toast({ title: "تعذر حفظ العميل", description: apiErrorMessage(err), variant: "destructive" }),
+  });
+  const deleteCustomer = useMutation({
+    mutationFn: (id: number) => adminFetch(`/admin/customers/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+      setSelectedId(null);
+      toast({ title: "تم حذف العميل" });
+    },
+    onError: (err: any) => toast({ title: "تعذر حذف العميل", description: apiErrorMessage(err), variant: "destructive" }),
   });
   const addNote = useMutation({
     mutationFn: () => adminFetch(`/admin/customers/${selectedId}/notes`, {
@@ -122,7 +146,12 @@ export default function CustomersPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-foreground">العملاء</h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-foreground">العملاء</h1>
+        <Button onClick={() => setEditing({ id: null, name: "", phone: "", fullName: "", email: "", address: "", city: "" })} className="gap-1">
+          <Plus className="w-4 h-4" /> إضافة عميل
+        </Button>
+      </div>
 
       <div className="relative">
         <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -142,7 +171,7 @@ export default function CustomersPage() {
                 <th className="text-right p-3 font-medium">عدد الطلبات</th>
                 <th className="text-right p-3 font-medium">الإنفاق الإجمالي</th>
                 <th className="text-right p-3 font-medium">النقاط</th>
-                <th className="text-right p-3 font-medium"></th>
+                <th className="text-center p-3 font-medium">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
@@ -153,7 +182,12 @@ export default function CustomersPage() {
                   <td className="p-3"><span className="text-primary font-semibold">{c.orderCount}</span></td>
                   <td className="p-3 text-primary">{formatCurrency(c.totalSpent)}</td>
                   <td className="p-3 text-xs text-muted-foreground">{(c.rewardPoints ?? 0).toLocaleString("ar-IQ")} نقطة</td>
-                  <td className="p-3 text-xs text-primary">عرض ←</td>
+                  <td className="p-3" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-center gap-1">
+                      <button onClick={() => setEditing({ id: c.id, name: c.name, phone: c.phone, fullName: "", email: "", address: "", city: "" })} className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-background/50" title="تعديل"><Pencil className="w-4 h-4" /></button>
+                      <button onClick={() => { if (confirm(`حذف العميل ${c.name || c.phone}؟`)) deleteCustomer.mutate(c.id); }} className="p-1.5 rounded text-destructive hover:bg-background/50" title="حذف"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -289,7 +323,7 @@ export default function CustomersPage() {
                           <div key={address.id} className="rounded-lg bg-background/40 border border-border/25 p-3">
                             <div className="flex items-center justify-between gap-2">
                               <p className="text-sm text-foreground">{address.type === "home" ? "المنزل" : address.type === "work" ? "العمل" : "عنوان آخر"}</p>
-                              {address.isDefault && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">افتراضي</span>}
+                              {address.isDefault && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">افتراضي</span>}
                             </div>
                             <p className="mt-1 text-xs text-muted-foreground">{[address.governorate, address.city, address.address].filter(Boolean).join(" / ")}</p>
                             {address.landmark && <p className="mt-1 text-[11px] text-muted-foreground">دالة: {address.landmark}</p>}
@@ -400,6 +434,86 @@ export default function CustomersPage() {
           </div>
         </div>
       )}
+
+      {editing && (
+        <CustomerFormModal
+          initial={editing}
+          saving={saveCustomer.isPending}
+          onClose={() => setEditing(null)}
+          onSave={(c) => saveCustomer.mutate(c)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CustomerFormModal({ initial, saving, onClose, onSave }: {
+  initial: { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string };
+  saving: boolean;
+  onClose: () => void;
+  onSave: (c: { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }) => void;
+}) {
+  const [form, setForm] = useState(initial);
+  // When editing an existing customer, load full data so optional fields aren't wiped.
+  const detail = useQuery({
+    queryKey: ["admin", "customer", initial.id, "form"],
+    queryFn: () => adminFetch<CustomerDetail>(`/admin/customers/${initial.id}`),
+    enabled: initial.id !== null,
+  });
+  useEffect(() => {
+    if (detail.data) {
+      setForm((f) => ({
+        ...f,
+        name: detail.data!.fullName || detail.data!.name || f.name,
+        phone: detail.data!.phone || f.phone,
+        email: detail.data!.email || "",
+        address: detail.data!.address || "",
+        city: detail.data!.city || "",
+      }));
+    }
+  }, [detail.data]);
+
+  const inputCls = "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  const canSave = form.name.trim().length > 0 && form.phone.trim().length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
+      <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-border/30 p-4">
+          <h2 className="text-lg font-bold text-foreground">{initial.id ? "تعديل بيانات العميل" : "إضافة عميل جديد"}</h2>
+          <button onClick={onClose}><X className="w-5 h-5 text-muted-foreground" /></button>
+        </div>
+        <div className="space-y-3 p-4">
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">الاسم *</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} placeholder="اسم العميل" />
+          </div>
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">رقم الهاتف *</label>
+            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" dir="ltr" />
+          </div>
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">البريد الإلكتروني</label>
+            <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={inputCls} placeholder="(اختياري)" dir="ltr" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">المدينة</label>
+              <input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className={inputCls} placeholder="(اختياري)" />
+            </div>
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">العنوان</label>
+              <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputCls} placeholder="(اختياري)" />
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 border-t border-border/30 p-4">
+          <Button className="flex-1" disabled={saving || !canSave} onClick={() => onSave({ ...form, fullName: form.name })}>
+            {saving ? "جارٍ الحفظ..." : initial.id ? "حفظ التعديلات" : "إضافة العميل"}
+          </Button>
+          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+        </div>
+      </div>
     </div>
   );
 }

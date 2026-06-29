@@ -128,7 +128,7 @@ function formatDate(value: string | null | undefined) {
 function statusClass(status: string) {
   if (status === "approved" || status === "completed" || status === "created") return "bg-primary/10 text-primary";
   if (status === "rejected") return "bg-destructive/10 text-destructive";
-  return "bg-amber-500/10 text-amber-500";
+  return "bg-status-warning/10 text-status-warning";
 }
 
 function PageHeader({ icon: Icon, title, description, action }: { icon: any; title: string; description: string; action?: React.ReactNode }) {
@@ -585,7 +585,7 @@ export function AssetsPage() {
                     <td className="p-3">{formatCurrency(row.purchasePrice)}</td>
                     <td className="p-3 text-muted-foreground">{row.usageCount} / {row.expectedLifeUses}</td>
                     <td className="p-3 text-primary">{formatCurrency(row.currentValue)}</td>
-                    <td className="p-3">{row.maintenanceDue ? <span className="text-amber-500">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</td>
+                    <td className="p-3">{row.maintenanceDue ? <span className="text-status-warning">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</td>
                     <td className="p-3 text-center">
                       <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
                         <Pencil className="h-3.5 w-3.5" /> تعديل
@@ -795,7 +795,7 @@ export function MaintenanceSchedulerPage() {
             <Card key={row.productId}>
               <p className="font-semibold text-foreground">{row.name}</p>
               <p className="mt-1 text-sm text-muted-foreground">الاستخدام الحالي: {row.usageCount} · الصيانة كل {row.maintenanceEveryUses} استخدام</p>
-              <p className="mt-2 text-xs text-amber-500">مقترح إرسالها للصيانة الآن.</p>
+              <p className="mt-2 text-xs text-status-warning">مقترح إرسالها للصيانة الآن.</p>
             </Card>
           ))}
         </div>

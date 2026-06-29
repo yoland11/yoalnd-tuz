@@ -36,7 +36,7 @@ const STATUS_LABELS: Record<string, string> = {
 const STATUS_TONES: Record<string, string> = {
   pending: "border-status-warning/30 bg-status-warning/10 text-status-warning",
   confirmed: "border-primary/30 bg-primary/10 text-primary",
-  processing: "border-blue-500/30 bg-blue-500/10 text-blue-300",
+  processing: "border-accent/30 bg-accent/10 text-accent",
   completed: "border-status-success/30 bg-status-success/10 text-status-success",
   delivered: "border-status-success/30 bg-status-success/10 text-status-success",
   cancelled: "border-status-danger/30 bg-status-danger/10 text-status-danger",
@@ -163,7 +163,7 @@ export default function CalendarPage() {
                     key={key}
                     type="button"
                     onClick={() => setSelected(events[0])}
-                    className="rounded-lg border border-amber-500/25 bg-background/45 px-3 py-2 text-right text-xs text-foreground transition-colors hover:border-amber-400/60"
+                    className="rounded-lg border border-status-warning/25 bg-background/45 px-3 py-2 text-right text-xs text-foreground transition-colors hover:border-status-warning/60"
                   >
                     <p className="font-semibold">{events.length} حجوزات بنفس المورد/الموعد</p>
                     <p className="mt-1 truncate text-muted-foreground">{events.map((event) => event.customerName).join("، ")}</p>
@@ -189,7 +189,7 @@ export default function CalendarPage() {
                     <div className="flex items-start justify-between gap-2">
                       <p className="font-semibold text-sm">{event.title}</p>
                       {conflictIds.has(`${event.kind}-${event.id}`) && (
-                        <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-[10px] text-status-warning">تعارض</span>
+                        <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-[11px] text-status-warning">تعارض</span>
                       )}
                     </div>
                     <p className="text-xs opacity-80 mt-1">{event.customerName}</p>

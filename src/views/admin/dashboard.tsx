@@ -139,13 +139,13 @@ export default function DashboardPage() {
   ];
 
   const orderCards: KpiCard[] = [
-    { label: "إجمالي الطلبات", value: fmtNum(data.totalOrders), icon: ShoppingBag, color: "text-blue-400" },
-    { label: "الطلبات النشطة", value: fmtNum(data.activeOrders), icon: Clock, color: "text-yellow-400" },
+    { label: "إجمالي الطلبات", value: fmtNum(data.totalOrders), icon: ShoppingBag, color: "text-accent" },
+    { label: "الطلبات النشطة", value: fmtNum(data.activeOrders), icon: Clock, color: "text-status-warning" },
     { label: "المسلَّمة", value: fmtNum(data.deliveredOrders), icon: Truck, color: "text-status-success" },
     { label: "الملغية", value: fmtNum(data.cancelledOrders), icon: XCircle, color: "text-status-danger" },
-    { label: "طلبات الخدمات", value: fmtNum(data.serviceOrders), icon: Sparkles, color: "text-pink-400" },
-    { label: "المنتجات", value: fmtNum(data.totalProducts), icon: Package, color: "text-purple-400" },
-    { label: "العملاء", value: fmtNum(data.totalCustomers), icon: Users, color: "text-cyan-400" },
+    { label: "طلبات الخدمات", value: fmtNum(data.serviceOrders), icon: Sparkles, color: "text-accent" },
+    { label: "المنتجات", value: fmtNum(data.totalProducts), icon: Package, color: "text-accent" },
+    { label: "العملاء", value: fmtNum(data.totalCustomers), icon: Users, color: "text-accent" },
   ];
   const cashCards: KpiCard[] = [
     { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary" },

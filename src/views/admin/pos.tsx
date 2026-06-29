@@ -102,7 +102,7 @@ function NumPad({
               onClick={() => press(k)}
               className={`h-14 rounded-xl text-xl font-bold transition-all active:scale-95 ${
                 k === "C" ? "bg-status-danger/20 text-status-danger hover:bg-status-danger/30"
-                : k === "⌫" ? "bg-status-warning/20 text-status-warning hover:bg-amber-500/30"
+                : k === "⌫" ? "bg-status-warning/20 text-status-warning hover:bg-status-warning/30"
                 : "bg-muted/60 text-foreground hover:bg-primary/20 hover:text-primary"
               }`}
             >
@@ -228,7 +228,7 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
       <div className="p-2 flex-1 space-y-0.5">
         <p className="text-xs font-semibold text-foreground line-clamp-2 leading-tight">{product.nameAr || product.name}</p>
         <p className="text-sm font-bold text-primary">{formatCurrency(product.price)}</p>
-        <p className={`text-[10px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>
+        <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>
           {outOfStock ? "نفذ المخزون" : `${stock} متبقي`}
         </p>
       </div>
@@ -813,7 +813,7 @@ export default function POSPage() {
         </div>
 
         {/* Shortcuts Info */}
-        <div className="hidden xl:flex gap-1 text-[10px] text-muted-foreground/60">
+        <div className="hidden xl:flex gap-1 text-[11px] text-muted-foreground/60">
           {[["F4","جديد"],["F9","تعليق"],["F10","حفظ"],["F11","معلق"],["F12","طباعة"]].map(([k,l]) => (
             <span key={k} className="bg-muted/30 rounded px-1.5 py-0.5 font-mono">{k} {l}</span>
           ))}
@@ -824,7 +824,7 @@ export default function POSPage() {
           {held.length > 0 && (
             <button onClick={() => setShowHeld(true)} className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-status-warning/10 border border-status-warning/30 text-status-warning text-sm font-medium hover:bg-status-warning/20 transition-colors">
               <PlayCircle className="w-4 h-4" />معلقة
-              <span className="absolute -top-1.5 -left-1.5 bg-amber-500 text-black text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-bold">{held.length}</span>
+              <span className="absolute -top-1.5 -left-1.5 bg-status-warning text-black text-[11px] rounded-full w-4 h-4 flex items-center justify-center font-bold">{held.length}</span>
             </button>
           )}
           <button
@@ -903,11 +903,11 @@ export default function POSPage() {
                       {p.images?.[0] && <img src={p.images[0]} alt="" className="w-8 h-8 rounded object-cover shrink-0" />}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{p.nameAr || p.name}</p>
-                        {p.barcode && <p className="text-[10px] text-muted-foreground font-mono">{p.barcode}</p>}
+                        {p.barcode && <p className="text-[11px] text-muted-foreground font-mono">{p.barcode}</p>}
                       </div>
                       <div className="text-left shrink-0">
                         <p className="text-sm font-bold text-primary">{formatCurrency(p.price)}</p>
-                        <p className={`text-[10px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p>
+                        <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>{stock > 0 ? `${stock} متبقي` : "نفذ"}</p>
                       </div>
                     </button>
                   );
@@ -1020,7 +1020,7 @@ export default function POSPage() {
             {/* Extra discount + tax inputs */}
             <div className="flex gap-2 pt-1">
               <div className="flex-1">
-                <label className="text-[10px] text-muted-foreground block mb-0.5">خصم إضافي</label>
+                <label className="text-[11px] text-muted-foreground block mb-0.5">خصم إضافي</label>
                 <input
                   type="number" min="0" value={form.discountAmount}
                   onChange={e => setForm(f => ({ ...f, discountAmount: e.target.value }))}
@@ -1029,7 +1029,7 @@ export default function POSPage() {
                 />
               </div>
               <div className="w-20">
-                <label className="text-[10px] text-muted-foreground block mb-0.5">ضريبة %</label>
+                <label className="text-[11px] text-muted-foreground block mb-0.5">ضريبة %</label>
                 <input
                   type="number" min="0" max="100" value={form.taxPct}
                   onChange={e => setForm(f => ({ ...f, taxPct: e.target.value }))}
@@ -1103,7 +1103,7 @@ export default function POSPage() {
             {grandTotal > 0 && (
               <div className={`flex justify-between items-center text-sm font-bold rounded-lg px-3 py-2 ${
                 remaining > 0 ? "bg-status-danger/10 text-status-danger"
-                : remaining < 0 ? "bg-blue-500/10 text-blue-400"
+                : remaining < 0 ? "bg-accent/10 text-accent"
                 : "bg-status-success/10 text-status-success"
               }`}>
                 <span>
@@ -1156,14 +1156,14 @@ export default function POSPage() {
 
           {/* Last Invoice Info */}
           {lastInvoiceNo && (
-            <div className="flex items-center justify-between bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
+            <div className="flex items-center justify-between bg-status-success/5 border border-status-success/20 rounded-xl px-3 py-2">
               <span className="text-xs text-status-success flex items-center gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 آخر فاتورة: <strong>{lastInvoiceNo}</strong>
               </span>
               <button
                 onClick={() => openPrintWindow(lastSavedCart, form, totals, lastInvoiceNo, "80mm", settings)}
-                className="text-[11px] text-status-success hover:text-emerald-300 underline"
+                className="text-[11px] text-status-success hover:text-status-success underline"
               >
                 إعادة طباعة
               </button>

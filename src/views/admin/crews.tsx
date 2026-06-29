@@ -37,7 +37,7 @@ const STATUS_LABELS: Record<string, string> = {
 const STATUS_TONES: Record<string, string> = {
   available: "bg-status-success/10 text-status-success border-status-success/30",
   busy: "bg-status-warning/10 text-status-warning border-status-warning/30",
-  vacation: "bg-blue-500/10 text-blue-300 border-blue-500/30",
+  vacation: "bg-accent/10 text-accent border-accent/30",
   inactive: "bg-status-danger/10 text-status-danger border-status-danger/30",
 };
 

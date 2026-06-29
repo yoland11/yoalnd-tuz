@@ -114,12 +114,12 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
 
   const c = data.cards;
   const cards = [
-    { label: "مبيعات اليوم", value: formatCurrency(c.todaySales), icon: TrendingUp, tone: "text-green-400" },
-    { label: "مصاريف اليوم", value: formatCurrency(c.todayExpenses), icon: TrendingDown, tone: "text-red-400" },
+    { label: "مبيعات اليوم", value: formatCurrency(c.todaySales), icon: TrendingUp, tone: "text-status-success" },
+    { label: "مصاريف اليوم", value: formatCurrency(c.todayExpenses), icon: TrendingDown, tone: "text-status-danger" },
     { label: "رصيد الافتتاح", value: formatCurrency(c.openingBalance), icon: Wallet, tone: "text-primary" },
     { label: "رصيد الإغلاق", value: formatCurrency(c.closingBalance), icon: Coins, tone: "text-primary" },
-    { label: "فرق الصندوق", value: c.cashDifference == null ? "—" : formatCurrency(c.cashDifference), icon: Scale, tone: c.cashDifference && Math.abs(c.cashDifference) >= 0.005 ? "text-amber-400" : "text-green-400" },
-    { label: "صافي الربح", value: formatCurrency(c.netProfit), icon: PiggyBank, tone: "text-green-400" },
+    { label: "فرق الصندوق", value: c.cashDifference == null ? "—" : formatCurrency(c.cashDifference), icon: Scale, tone: c.cashDifference && Math.abs(c.cashDifference) >= 0.005 ? "text-status-warning" : "text-status-success" },
+    { label: "صافي الربح", value: formatCurrency(c.netProfit), icon: PiggyBank, tone: "text-status-success" },
     { label: "عدد الطلبات", value: c.totalOrders.toLocaleString("ar-IQ"), icon: ShoppingBag, tone: "text-foreground" },
     { label: "عدد الفواتير", value: c.totalInvoices.toLocaleString("ar-IQ"), icon: Receipt, tone: "text-foreground" },
   ];
@@ -158,8 +158,8 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
       </div>
 
       {data.needsApproval && (
-        <div className="bg-card rounded-xl border border-amber-500/30 p-5">
-          <div className="flex items-center gap-2 mb-2"><ShieldCheck className="w-5 h-5 text-amber-400" /><h2 className="font-semibold text-foreground">يتطلب موافقة المدير</h2></div>
+        <div className="bg-card rounded-xl border border-status-warning/30 p-5">
+          <div className="flex items-center gap-2 mb-2"><ShieldCheck className="w-5 h-5 text-status-warning" /><h2 className="font-semibold text-foreground">يتطلب موافقة المدير</h2></div>
           <p className="text-sm text-muted-foreground mb-3">يوجد فرق في الصندوق ({STATUS_LABEL[data.reconciliationStatus] ?? data.reconciliationStatus} = {formatCurrency(data.cards.cashDifference ?? 0)}). يلزم اعتماد المدير.</p>
           {isManager ? (
             <div className="flex flex-col sm:flex-row gap-2">
@@ -167,7 +167,7 @@ export function FinanceDashboardPage({ me }: { me: AdminMe }) {
               <Button className="gap-1.5" disabled={approve.isPending} onClick={() => approve.mutate()}><ShieldCheck className="w-4 h-4" /> اعتماد الفرق</Button>
             </div>
           ) : (
-            <p className="text-xs text-amber-400">بانتظار اعتماد المدير.</p>
+            <p className="text-xs text-status-warning">بانتظار اعتماد المدير.</p>
           )}
         </div>
       )}
@@ -290,7 +290,7 @@ export function FinanceExpensesPage() {
                   <td className="px-3 py-2.5 text-center font-semibold text-foreground">{formatCurrency(e.amount)}</td>
                   <td className="px-3 py-2.5 text-center">{e.receiptImage ? <a href={e.receiptImage} target="_blank" rel="noreferrer" className="text-primary text-xs underline">عرض</a> : "—"}</td>
                   <td className="px-3 py-2.5 text-center text-muted-foreground text-xs">{e.createdByName}</td>
-                  <td className="px-3 py-2.5 text-center"><button onClick={() => confirm("حذف المصروف؟") && remove.mutate(e.id)} className="text-red-400 hover:bg-red-500/10 p-1.5 rounded"><Trash2 className="w-4 h-4" /></button></td>
+                  <td className="px-3 py-2.5 text-center"><button onClick={() => confirm("حذف المصروف؟") && remove.mutate(e.id)} className="text-status-danger hover:bg-status-danger/10 p-1.5 rounded"><Trash2 className="w-4 h-4" /></button></td>
                 </tr>
               ))}
             </tbody>
@@ -367,11 +367,11 @@ export function FinanceReportsPage() {
       {data && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           {[
-            { label: "إجمالي المبيعات", value: data.totals.totalSales, tone: "text-green-400" },
-            { label: "إجمالي المصاريف", value: data.totals.totalExpenses, tone: "text-red-400" },
+            { label: "إجمالي المبيعات", value: data.totals.totalSales, tone: "text-status-success" },
+            { label: "إجمالي المصاريف", value: data.totals.totalExpenses, tone: "text-status-danger" },
             { label: "إجمالي الإغلاق", value: data.totals.closingBalance, tone: "text-primary" },
-            { label: "صافي (مبيعات-مصاريف)", value: data.totals.totalSales - data.totals.totalExpenses, tone: "text-green-400" },
-            { label: "مجموع الفروقات", value: data.totals.difference, tone: "text-amber-400" },
+            { label: "صافي (مبيعات-مصاريف)", value: data.totals.totalSales - data.totals.totalExpenses, tone: "text-status-success" },
+            { label: "مجموع الفروقات", value: data.totals.difference, tone: "text-status-warning" },
           ].map((card) => (
             <div key={card.label} className="bg-card rounded-xl border border-border/30 p-4">
               <p className="text-xs text-muted-foreground mb-1">{card.label}</p>
@@ -392,8 +392,8 @@ export function FinanceReportsPage() {
                 <tr key={r.reportDate} className="border-b border-border/15">
                   <td className="px-3 py-2.5 text-center text-muted-foreground">{r.reportDate}</td>
                   <td className="px-3 py-2.5 text-center">{formatCurrency(r.openingBalance)}</td>
-                  <td className="px-3 py-2.5 text-center text-green-400">{formatCurrency(r.totalSales)}</td>
-                  <td className="px-3 py-2.5 text-center text-red-400">{formatCurrency(r.totalExpenses)}</td>
+                  <td className="px-3 py-2.5 text-center text-status-success">{formatCurrency(r.totalSales)}</td>
+                  <td className="px-3 py-2.5 text-center text-status-danger">{formatCurrency(r.totalExpenses)}</td>
                   <td className="px-3 py-2.5 text-center font-semibold text-foreground">{formatCurrency(r.closingBalance)}</td>
                   <td className="px-3 py-2.5 text-center">{r.actualCashInDrawer == null ? "—" : formatCurrency(r.actualCashInDrawer)}</td>
                   <td className="px-3 py-2.5 text-center">{r.difference == null ? "—" : formatCurrency(r.difference)}</td>

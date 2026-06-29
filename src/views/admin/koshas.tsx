@@ -974,7 +974,7 @@ export function AdminKoshaBookingsPage() {
                     </td>
                     <td className="px-4 py-3" dir="ltr">{item.phone}</td>
                     <td className="px-4 py-3">{item.eventDate || "-"} {item.eventTime || ""}</td>
-                    <td className={`px-4 py-3 font-bold ${isKoshaPendingPricing(item) ? "text-amber-500" : "text-primary"}`}>{koshaBookingAmountLabel(item)}</td>
+                    <td className={`px-4 py-3 font-bold ${isKoshaPendingPricing(item) ? "text-status-warning" : "text-primary"}`}>{koshaBookingAmountLabel(item)}</td>
                     <td className="px-4 py-3">
                       <div className="max-w-64 text-xs leading-6 text-muted-foreground">
                         {[item.eventType, item.serviceLevel, item.venueType, item.themeColor].filter(Boolean).join(" · ") || "-"}
@@ -1161,7 +1161,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 
         <KoshaDetailSection title="المبالغ">
           {isKoshaPendingPricing(booking) ? (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm font-semibold text-amber-500">بانتظار تحديد السعر من الإدارة</div>
+            <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-3 text-sm font-semibold text-status-warning">بانتظار تحديد السعر من الإدارة</div>
           ) : (
             <KoshaDetailGrid items={[["الإجمالي", formatCurrency(booking.totalAmount ?? 0)], ["الواصل", formatCurrency(booking.paidAmount ?? 0)], ["المتبقي", formatCurrency(booking.remainingAmount ?? 0)]]} />
           )}
@@ -1382,7 +1382,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
                 <h4 className="text-sm font-bold text-foreground">تسعير الحجز</h4>
                 <p className="mt-1 text-xs text-muted-foreground">الزبون لا يرى الأسعار قبل حفظ التسعير من هنا.</p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-bold ${computedPaymentStatus === "pending_pricing" ? "bg-amber-500/15 text-amber-500" : "bg-primary/10 text-primary"}`}>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${computedPaymentStatus === "pending_pricing" ? "bg-status-warning/15 text-status-warning" : "bg-primary/10 text-primary"}`}>
                 {computedPaymentStatus === "pending_pricing" ? "بانتظار التسعير" : "تم التسعير"}
               </span>
             </div>

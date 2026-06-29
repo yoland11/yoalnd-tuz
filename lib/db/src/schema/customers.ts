@@ -13,6 +13,7 @@ export const customersTable = pgTable("customers", {
   address: text("address"),
   city: text("city"),
   role: varchar("role", { length: 20 }).notNull().default("customer"),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
   rewardPoints: integer("reward_points").notNull().default(0),
   rewardLevel: varchar("reward_level", { length: 20 }).notNull().default("bronze"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

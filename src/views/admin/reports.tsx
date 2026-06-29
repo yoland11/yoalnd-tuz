@@ -637,12 +637,12 @@ export default function ReportsPage() {
                   <div key={`${item.label}-${index}`} className="flex flex-col items-center gap-2 min-w-[48px] flex-1">
                     <div className="relative w-full flex items-end justify-center" style={{ height: 128 }}>
                       <div
-                        className={`w-full max-w-[42px] rounded-t transition-all ${item.value >= 0 ? "bg-primary/75" : "bg-red-500/75"}`}
+                        className={`w-full max-w-[42px] rounded-t transition-all ${item.value >= 0 ? "bg-primary/75" : "bg-status-danger/75"}`}
                         style={{ height: `${height}%` }}
                         title={`${item.label}: ${formatCurrency(item.value)}`}
                       />
                     </div>
-                    <span className="text-[10px] text-muted-foreground max-w-[64px] truncate">{item.label}</span>
+                    <span className="text-[11px] text-muted-foreground max-w-[64px] truncate">{item.label}</span>
                   </div>
                 );
               })}

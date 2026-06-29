@@ -314,7 +314,7 @@ export default function SalesPage() {
             <Button variant="outline" size="sm" onClick={() => setShowHeld(true)} className="relative">
               <PlayCircle className="w-4 h-4 ml-1" />
               معلقة
-              <span className="absolute -top-1.5 -left-1.5 bg-amber-500 text-black text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
+              <span className="absolute -top-1.5 -left-1.5 bg-status-warning text-black text-[11px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
                 {held.length}
               </span>
             </Button>
@@ -728,7 +728,7 @@ function InvoiceListView({
                 ? <tr><td colSpan={8} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
-                      <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-bold text-orange-500">تم عكس الأثر المالي</span>}</td>
+                      <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}</td>
                       <td className="px-4 py-3 text-muted-foreground">{inv.date}</td>
                       <td className="px-4 py-3">{inv.customerName || "—"}</td>
                       <td className="px-4 py-3 text-center font-medium">{formatCurrency(inv.total)}</td>
@@ -740,7 +740,7 @@ function InvoiceListView({
                       </td>
                       <td className="px-4 py-3 text-center">
                         {inv.isInternal === 1
-                          ? <span className="text-xs bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded-full">داخلية</span>
+                          ? <span className="text-xs bg-accent/10 text-accent px-2 py-0.5 rounded-full">داخلية</span>
                           : <span className="text-xs bg-muted/30 text-muted-foreground px-2 py-0.5 rounded-full">عادية</span>
                         }
                       </td>
@@ -958,7 +958,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           <div>
             <h2 className="text-lg font-bold text-foreground">تفاصيل الفاتورة</h2>
             <p className="text-xs text-muted-foreground">{invoice?.invoiceNo ?? "جاري التحميل..."}</p>
-            {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] font-bold text-orange-500">تم عكس الأثر المالي</span>}
+            {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
@@ -982,7 +982,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         ) : (
           <div className="overflow-y-auto max-h-[calc(92vh-76px)] p-5 space-y-4">
             {invoice.financiallyReversed && (
-              <div className="rounded-lg border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-sm font-semibold text-orange-600">
+              <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-3 text-sm font-semibold text-status-warning">
                 هذه الفاتورة تم عكس أثرها المالي ولا تدخل ضمن الإيرادات الصافية — للعرض والتدقيق فقط (لا يمكن تعديلها أو إضافة دفعات أو تحصيل).
               </div>
             )}

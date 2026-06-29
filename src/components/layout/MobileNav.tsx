@@ -15,39 +15,39 @@ export function MobileNav() {
       <div className="flex justify-around items-center h-16">
         <Link href="/" className={`ajn-nav-link flex flex-col items-center justify-center w-full h-full space-y-1 ${location === '/' ? 'is-active' : ''}`}>
           <Home className="h-5 w-5" />
-          <span className="text-[10px] font-medium">{t("الرئيسية")}</span>
+          <span className="text-[11px] font-medium">{t("الرئيسية")}</span>
         </Link>
 
         <Link href="/services" className={`ajn-nav-link flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/services') ? 'is-active' : ''}`}>
           <WandSparkles className="h-5 w-5" />
-          <span className="text-[10px] font-medium">{t("الخدمات")}</span>
+          <span className="text-[11px] font-medium">{t("الخدمات")}</span>
         </Link>
 
         <Link href="/store" className={`ajn-nav-link flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/store') ? 'is-active' : ''}`}>
           <Store className="h-5 w-5" />
-          <span className="text-[10px] font-medium">{t("المتجر")}</span>
+          <span className="text-[11px] font-medium">{t("المتجر")}</span>
         </Link>
 
         <Link href="/koshas" className={`ajn-nav-link flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/koshas') ? 'is-active' : ''}`}>
           <Armchair className="h-5 w-5" />
-          <span className="text-[10px] font-medium">الكوشات</span>
+          <span className="text-[11px] font-medium">الكوشات</span>
         </Link>
 
         <Link href="/cart" className={`ajn-nav-link relative flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/cart') ? 'is-active' : ''}`}>
           <div className="relative">
             <ShoppingBag className="h-5 w-5" />
             {cartItemCount > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary text-[8px] font-bold text-primary-foreground">
+              <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
                 {cartItemCount}
               </span>
             )}
           </div>
-          <span className="text-[10px] font-medium">{t("السلة")}</span>
+          <span className="text-[11px] font-medium">{t("السلة")}</span>
         </Link>
 
         <Link href="/profile" className={`ajn-nav-link flex flex-col items-center justify-center w-full h-full space-y-1 ${location.startsWith('/profile') || location.startsWith('/account') ? 'is-active' : ''}`}>
           <User className="h-5 w-5" />
-          <span className="text-[10px] font-medium">{t("حسابي")}</span>
+          <span className="text-[11px] font-medium">{t("حسابي")}</span>
         </Link>
       </div>
     </div>

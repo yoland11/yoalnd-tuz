@@ -520,7 +520,7 @@ export default function InvoiceDesignerPage() {
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-sm truncate">{t.name}</span>
                       {t.isDefault === 1 && (
-                        <span className="text-[9px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">افتراضي</span>
+                        <span className="text-[11px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full shrink-0">افتراضي</span>
                       )}
                     </div>
                     <button

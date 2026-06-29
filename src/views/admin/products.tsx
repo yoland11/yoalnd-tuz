@@ -86,7 +86,7 @@ function stockStatusMeta(status: ReturnType<typeof stockStatus>) {
   if (status === "low") {
     return {
       label: "منخفض",
-      className: "border-amber-400/30 bg-amber-400/10 text-amber-400",
+      className: "border-status-warning/30 bg-status-warning/10 text-status-warning",
       icon: AlertTriangle,
     };
   }
@@ -277,13 +277,13 @@ export default function ProductsPage() {
           onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
           className={`rounded-xl border p-4 text-right transition-colors ${
             stockFilter === "low"
-              ? "border-amber-400/45 bg-amber-400/15"
+              ? "border-status-warning/45 bg-status-warning/15"
               : "border-border/30 bg-card hover:bg-background/40"
           }`}
         >
           <span className="flex items-center justify-between gap-3">
             <span className="text-sm text-muted-foreground">المخزون المنخفض</span>
-            <AlertTriangle className="h-5 w-5 text-amber-400" />
+            <AlertTriangle className="h-5 w-5 text-status-warning" />
           </span>
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.low}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">أقل من حد التنبيه أو {DEFAULT_LOW_STOCK_THRESHOLD} كافتراضي</span>
@@ -333,7 +333,7 @@ export default function ProductsPage() {
           onClick={() => setStockFilter(stockFilter === "low" ? "all" : "low")}
           className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
             stockFilter === "low"
-              ? "border-amber-400/40 bg-amber-400/10 text-amber-400"
+              ? "border-status-warning/40 bg-status-warning/10 text-status-warning"
               : "border-border/40 bg-card text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -1107,7 +1107,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     <img src={img} className="w-full h-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
                   </button>
                   {i === 0 && (
-                    <span className="absolute top-1 right-1 inline-flex items-center gap-1 rounded bg-primary text-primary-foreground px-1.5 py-0.5 text-[10px]">
+                    <span className="absolute top-1 right-1 inline-flex items-center gap-1 rounded bg-primary text-primary-foreground px-1.5 py-0.5 text-[11px]">
                       <Star className="w-3 h-3" /> رئيسية
                     </span>
                   )}
@@ -1207,7 +1207,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                     <button type="button" onClick={() => setPreviewImage(img)} className="block h-20 w-full">
                       <img src={img} className="h-full w-full" style={{ objectFit: (form.imageMetadata?.[i]?.objectFit as any) ?? "cover" }} alt="" />
                     </button>
-                    {i === 0 && <span className="absolute top-1 right-1 rounded bg-primary px-1 py-0.5 text-[9px] text-primary-foreground">رئيسية</span>}
+                    {i === 0 && <span className="absolute top-1 right-1 rounded bg-primary px-1 py-0.5 text-[11px] text-primary-foreground">رئيسية</span>}
                     <div className="grid grid-cols-3 divide-x divide-border/20 divide-x-reverse border-t border-border/20 bg-card/95">
                       <button type="button" title="معاينة" onClick={() => setPreviewImage(img)} className="p-1.5 text-muted-foreground hover:text-foreground">
                         <Eye className="mx-auto h-3.5 w-3.5" />

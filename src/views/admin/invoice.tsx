@@ -128,7 +128,7 @@ export default function Invoice() {
         <div className="flex items-center gap-2">
           <div className="inline-flex overflow-hidden rounded-lg border border-white/20" aria-label="حجم الطابعة الحرارية">
             {(["58mm", "80mm"] as const).map((size) => (
-              <button key={size} onClick={() => setThermalSize(size)} className={`px-3 py-2 text-xs font-medium ${thermalSize === size ? "bg-amber-400 text-black" : "bg-neutral-900 text-neutral-200"}`}>{size}</button>
+              <button key={size} onClick={() => setThermalSize(size)} className={`px-3 py-2 text-xs font-medium ${thermalSize === size ? "bg-status-warning text-black" : "bg-neutral-900 text-neutral-200"}`}>{size}</button>
             ))}
           </div>
           <button onClick={printQrOnly} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
@@ -140,7 +140,7 @@ export default function Invoice() {
           <button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors disabled:opacity-60">
             <Download className="w-4 h-4" /> {downloading ? "جاري التحميل..." : "تحميل PDF"}
           </button>
-          <button onClick={() => window.print()} className="inline-flex items-center gap-2 bg-amber-400 text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-300 transition-colors">
+          <button onClick={() => window.print()} className="inline-flex items-center gap-2 bg-status-warning text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-status-warning transition-colors">
             <Printer className="w-4 h-4" /> طباعة
           </button>
         </div>

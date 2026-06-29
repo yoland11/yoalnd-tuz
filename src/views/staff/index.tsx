@@ -7,12 +7,12 @@ import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 
 const STAGE_BADGE: Record<string, string> = {
-  preparing: "bg-amber-500/15 text-amber-600",
-  out_of_warehouse: "bg-blue-500/15 text-blue-600",
-  on_the_way: "bg-indigo-500/15 text-indigo-600",
-  executing: "bg-purple-500/15 text-purple-600",
-  executed: "bg-teal-500/15 text-teal-600",
-  delivered: "bg-green-600/15 text-green-700 dark:text-green-400",
+  preparing: "bg-status-warning/15 text-status-warning",
+  out_of_warehouse: "bg-accent/15 text-accent",
+  on_the_way: "bg-accent/15 text-accent",
+  executing: "bg-accent/15 text-accent",
+  executed: "bg-status-success/15 text-status-success",
+  delivered: "bg-status-success/15 text-status-success dark:text-status-success",
 };
 
 function Spinner() {
@@ -167,7 +167,7 @@ function Reports() {
       </div>
       <div className="rounded-xl border border-border bg-card p-3">
         <div className="text-sm text-muted-foreground">المبالغ المُحصّلة (المعتمدة)</div>
-        <div className="text-2xl font-extrabold text-green-600">{money(r.collected)} د.ع</div>
+        <div className="text-2xl font-extrabold text-status-success">{money(r.collected)} د.ع</div>
         <div className="text-xs text-muted-foreground">{r.collectedCount} عملية تحصيل</div>
       </div>
     </div>
@@ -198,7 +198,7 @@ function Approvals() {
               <div className="text-sm text-muted-foreground">{p.staffName} · {p.booking?.customerName ?? "—"}</div>
               {p.note && <div className="mt-0.5 text-sm">{p.note}</div>}
               <div className="mt-2 flex gap-2">
-                <button disabled={busy === p.id} onClick={() => act(p.id, "approve")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-green-600 py-2 text-sm font-bold text-white disabled:opacity-60"><CheckCircle2 className="h-4 w-4" /> موافقة</button>
+                <button disabled={busy === p.id} onClick={() => act(p.id, "approve")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-status-success py-2 text-sm font-bold text-white disabled:opacity-60"><CheckCircle2 className="h-4 w-4" /> موافقة</button>
                 <button disabled={busy === p.id} onClick={() => act(p.id, "reject")} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-destructive/40 py-2 text-sm font-bold text-destructive disabled:opacity-60"><XCircle className="h-4 w-4" /> رفض</button>
               </div>
             </div>
@@ -289,7 +289,7 @@ export default function StaffPortal() {
         </div>
         <div className="flex items-center gap-3">
           {pendingOps > 0 && (
-            <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-bold text-amber-600"><CloudOff className="h-3.5 w-3.5" /> {pendingOps} بانتظار الرفع</span>
+            <span className="flex items-center gap-1 rounded-full bg-status-warning/15 px-2 py-1 text-[11px] font-bold text-status-warning"><CloudOff className="h-3.5 w-3.5" /> {pendingOps} بانتظار الرفع</span>
           )}
           <button onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></button>
         </div>
@@ -313,7 +313,7 @@ export default function StaffPortal() {
             <button key={t.href} onClick={() => nav(t.href)} className={`relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] ${t.match ? "text-primary" : "text-muted-foreground"}`}>
               <t.icon className="h-5 w-5" />
               {t.label}
-              {!!t.badge && t.badge > 0 && <span className="absolute top-1 right-[28%] flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold text-white">{t.badge}</span>}
+              {!!t.badge && t.badge > 0 && <span className="absolute top-1 right-[28%] flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[11px] font-bold text-white">{t.badge}</span>}
             </button>
           ))}
         </nav>

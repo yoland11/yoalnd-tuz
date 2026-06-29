@@ -646,7 +646,7 @@ export default function Profile() {
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <p className="text-sm font-semibold text-foreground">{t(addressTypeLabel(address.type))}</p>
-                          {address.isDefault && <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">{t("افتراضي")}</span>}
+                          {address.isDefault && <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">{t("افتراضي")}</span>}
                         </div>
                         <p className="text-sm text-muted-foreground">{address.fullName} · {formatIraqiPhone(address.phone)}</p>
                         <p className="text-sm text-foreground mt-1">{address.governorate} / {address.city}</p>

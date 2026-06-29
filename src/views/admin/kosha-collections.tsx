@@ -35,7 +35,7 @@ export default function KoshaCollectionsPage() {
             <div key={p.id} className="rounded-xl border border-border/30 bg-card p-4">
               <div className="flex items-center justify-between">
                 <div className="text-xl font-bold text-foreground">{formatCurrency(p.amount)}</div>
-                <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-bold text-amber-600">بانتظار الاعتماد</span>
+                <span className="rounded-full bg-status-warning/15 px-2.5 py-1 text-xs font-bold text-status-warning">بانتظار الاعتماد</span>
               </div>
               <div className="mt-1 text-sm text-muted-foreground">
                 <span className="font-medium text-foreground">{p.staffName}</span> · {p.booking?.customerName ?? "—"}
@@ -49,7 +49,7 @@ export default function KoshaCollectionsPage() {
                 <button
                   disabled={busyId === p.id}
                   onClick={() => approve.mutate(p.id)}
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-green-600 py-2 text-sm font-bold text-white transition-colors hover:bg-green-700 disabled:opacity-60"
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-status-success py-2 text-sm font-bold text-white transition-colors hover:bg-status-success disabled:opacity-60"
                 >
                   {busyId === p.id && approve.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} موافقة وترحيل للنظام
                 </button>

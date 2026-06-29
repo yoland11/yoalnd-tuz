@@ -640,7 +640,7 @@ function StatementTab() {
             <StatCard label="إجمالي المستحق" value={formatCurrency(data.totals.totalCharges)} />
             <StatCard label="إجمالي المدفوع" value={formatCurrency(data.totals.totalPayments)} />
             <StatCard label="الرصيد" value={formatCurrency(data.totals.balance)}
-              accent={data.totals.balance > 0 ? "text-amber-500" : "text-status-success"} />
+              accent={data.totals.balance > 0 ? "text-status-warning" : "text-status-success"} />
           </div>
 
           {data.entries.length === 0 ? <EmptyState message="لا توجد حركات لهذا الزبون" />
@@ -693,8 +693,8 @@ function PnLTab() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <StatCard label="مبيعات المتجر" value={formatCurrency(data.totalSales)} />
             <StatCard label="إجمالي القبض" value={formatCurrency(data.totalReceipts)} accent="text-status-success" />
-            <StatCard label="إجمالي الصرف" value={formatCurrency(data.totalPayments)} accent="text-amber-500" />
-            <StatCard label="إجمالي المصاريف" value={formatCurrency(data.totalExpenses)} accent="text-amber-500" />
+            <StatCard label="إجمالي الصرف" value={formatCurrency(data.totalPayments)} accent="text-status-warning" />
+            <StatCard label="إجمالي المصاريف" value={formatCurrency(data.totalExpenses)} accent="text-status-warning" />
             <StatCard label="صافي التدفق النقدي" value={formatCurrency(data.netProfit)}
               accent={data.netProfit >= 0 ? "text-status-success" : "text-destructive"} />
           </div>

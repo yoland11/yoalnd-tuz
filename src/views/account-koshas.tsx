@@ -146,7 +146,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
               const done = i < stageRank(current); const cur = i === stageRank(current);
               return (
                 <li key={s.key} className="flex items-center gap-2.5 text-sm">
-                  <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${done ? "bg-green-600 text-white" : cur ? "bg-primary text-primary-foreground" : "border-2 border-border"}`}>
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${done ? "bg-status-success text-white" : cur ? "bg-primary text-primary-foreground" : "border-2 border-border"}`}>
                     {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : cur ? "●" : ""}
                   </span>
                   <span className={done || cur ? "font-bold text-foreground" : "text-muted-foreground"}>{s.label}</span>
@@ -197,7 +197,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
           <div className="rounded-2xl border border-border/30 bg-card p-4">
             {d.confirmation ? (
               <div className="text-center">
-                <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-green-600" />
+                <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-status-success" />
                 <p className="font-bold text-foreground">تم تأكيد الاستلام</p>
                 {d.confirmation.rating > 0 && (
                   <div className="mt-1 flex justify-center gap-0.5 text-primary">

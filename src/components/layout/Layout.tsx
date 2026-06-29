@@ -31,7 +31,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           target="_blank"
           rel="noreferrer"
           aria-label="تواصل واتساب"
-          className="fixed bottom-20 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-green-600/30 bg-green-600 text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-6"
+          className="fixed bottom-20 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-6"
         >
           <MessageCircle className="h-6 w-6" />
         </a>

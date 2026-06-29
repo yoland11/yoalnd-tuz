@@ -282,7 +282,7 @@ export default function ProductDetail() {
                 product.stock > 0 ? (
                   <span className="text-status-success text-sm font-medium">{t("متاح للإيجار")}</span>
                 ) : (
-                  <span className="text-amber-400 text-sm font-medium">{t("محجوز حالياً")}</span>
+                  <span className="text-status-warning text-sm font-medium">{t("محجوز حالياً")}</span>
                 )
               ) : product.stock > 0 ? (
                 <span className="text-status-success text-sm font-medium">{t("متوفر في المخزن")} ({product.stock} {t("قطعة")})</span>

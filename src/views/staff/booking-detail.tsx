@@ -16,7 +16,7 @@ const TYPE_LABEL: Record<string, string> = {
 
 function Banner({ kind, children }: { kind: "info" | "error" | "ok"; children: React.ReactNode }) {
   const c = kind === "error" ? "border-destructive/40 bg-destructive/10 text-destructive"
-    : kind === "ok" ? "border-green-600/40 bg-green-600/10 text-green-700 dark:text-green-400"
+    : kind === "ok" ? "border-status-success/40 bg-status-success/10 text-status-success dark:text-status-success"
     : "border-primary/30 bg-primary/5 text-foreground";
   return <div className={`rounded-lg border px-3 py-2 text-sm ${c}`}>{children}</div>;
 }
@@ -38,12 +38,12 @@ function MediaPicker({ media, setMedia, label }: { media: MediaInput[]; setMedia
             {m.kind === "video"
               ? <video src={m.url} className="h-full w-full object-cover" muted />
               : <img src={m.url} alt="" className="h-full w-full object-cover" />}
-            <button onClick={() => setMedia(media.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white">×</button>
+            <button onClick={() => setMedia(media.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-[11px] font-bold text-white">×</button>
           </div>
         ))}
         <label className="flex h-16 w-16 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border text-muted-foreground hover:border-primary">
           {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
-          <span className="text-[10px]">إضافة</span>
+          <span className="text-[11px]">إضافة</span>
           <input type="file" accept="image/*,video/*" multiple capture="environment" className="hidden" onChange={onPick} />
         </label>
       </div>
@@ -179,7 +179,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
               <div className="mb-3 flex gap-3 rounded-xl border border-primary/40 bg-primary/5 p-3">
                 <SetupThumb src={setup.package.image} alt={setup.package.name} onZoom={setLightbox} size="h-16 w-16" />
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2"><span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground">باقة</span><span className="truncate font-bold">{setup.package.name}</span></div>
+                  <div className="flex items-center gap-2"><span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-bold text-primary-foreground">باقة</span><span className="truncate font-bold">{setup.package.name}</span></div>
                   {setup.package.contents.length > 0 ? <div className="mt-1 text-[11px] leading-5 text-muted-foreground">{setup.package.contents.join(" · ")}</div> : null}
                 </div>
               </div>
@@ -192,7 +192,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
                 </button>
                 <div className="p-3">
                   <div className="font-bold">{setup.kosha.name}</div>
-                  {setup.kosha.specs.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-1">{setup.kosha.specs.map((s, i) => <span key={i} className="rounded-full bg-muted/50 px-2 py-0.5 text-[10px] text-muted-foreground">{s}</span>)}</div> : null}
+                  {setup.kosha.specs.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-1">{setup.kosha.specs.map((s, i) => <span key={i} className="rounded-full bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground">{s}</span>)}</div> : null}
                 </div>
               </div>
             )}
@@ -211,7 +211,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
               const done = i < stageRank(current); const cur = i === stageRank(current);
               return (
                 <li key={s.key} className="flex items-center gap-2.5 text-sm">
-                  <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${done ? "bg-green-600 text-white" : cur ? "bg-primary text-primary-foreground" : "border-2 border-border"}`}>
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${done ? "bg-status-success text-white" : cur ? "bg-primary text-primary-foreground" : "border-2 border-border"}`}>
                     {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : cur ? "●" : ""}
                   </span>
                   <span className={done || cur ? "font-bold" : "text-muted-foreground"}>{s.label}</span>
@@ -253,7 +253,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
               {data.paymentRequests.map((p) => (
                 <div key={p.id} className="flex items-center justify-between">
                   <span>{money(p.amount)} د.ع</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-green-600/15 text-green-700 dark:text-green-400" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-amber-500/15 text-amber-600"}`}>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-status-success/15 text-status-success dark:text-status-success" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>
                     {p.status === "approved" ? "معتمد" : p.status === "rejected" ? "مرفوض" : "بالانتظار"}
                   </span>
                 </div>
@@ -270,7 +270,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
               {data.media.map((m) => (
                 <a key={m.id} href={m.url} target="_blank" rel="noreferrer" className="relative aspect-square overflow-hidden rounded-lg border border-border">
                   {m.kind === "video" ? <><video src={m.url} className="h-full w-full object-cover" muted /><Video className="absolute bottom-1 right-1 h-3.5 w-3.5 text-white drop-shadow" /></> : <img src={m.url} alt="" className="h-full w-full object-cover" />}
-                  <span className="absolute bottom-0 inset-x-0 bg-black/50 text-center text-[8px] text-white">{PURPOSE_LABEL[m.purpose] ?? m.purpose}</span>
+                  <span className="absolute bottom-0 inset-x-0 bg-black/50 text-center text-[11px] text-white">{PURPOSE_LABEL[m.purpose] ?? m.purpose}</span>
                 </a>
               ))}
             </div>
@@ -329,7 +329,7 @@ function SetupGroup({ title, items, onZoom, showPrices }: { title: string; items
             <div className="p-2">
               <div className="truncate text-xs font-medium">{it.name}</div>
               {showPrices && it.price != null && it.price > 0 ? <div className="text-[11px] font-bold text-primary">{money(it.price)} د.ع</div> : null}
-              {it.description ? <div className="truncate text-[10px] text-muted-foreground">{it.description}</div> : null}
+              {it.description ? <div className="truncate text-[11px] text-muted-foreground">{it.description}</div> : null}
             </div>
           </div>
         ))}
@@ -410,7 +410,7 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
       <span className="text-sm font-medium">{label}</span>
       <div className="flex gap-2">
         <button onClick={() => set(true)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === true ? "bg-destructive text-white" : "border border-border"}`}>نعم</button>
-        <button onClick={() => set(false)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === false ? "bg-green-600 text-white" : "border border-border"}`}>لا</button>
+        <button onClick={() => set(false)} className={`rounded-lg px-4 py-1.5 text-sm font-bold ${value === false ? "bg-status-success text-white" : "border border-border"}`}>لا</button>
       </div>
     </div>
   );

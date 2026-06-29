@@ -153,7 +153,7 @@ export function Navbar() {
             <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
               <Heart className="h-5 w-5" />
               {wishlistCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
                   {wishlistCount}
                 </span>
               )}
@@ -163,7 +163,7 @@ export function Navbar() {
             <Button variant="ghost" size="icon" className="relative ajn-nav-icon">
               <ShoppingBag className="h-5 w-5" />
               {cartItemCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
                   {cartItemCount}
                 </span>
               )}

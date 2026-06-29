@@ -199,7 +199,7 @@ export default function DeliveryPage() {
                       <span className="text-primary font-bold">{formatCurrency(o.total)}</span>
                       {finalMaps && (
                         <a href={finalMaps} target="_blank" rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20">
+                          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20">
                           <MapPin className="w-3.5 h-3.5" /> الخارطة <ExternalLink className="w-3 h-3" />
                         </a>
                       )}

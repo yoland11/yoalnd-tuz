@@ -92,7 +92,7 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
                 {allowMultiple && <GripVertical className="h-3 w-3 text-primary/70" />}
                 <ColorDot color={color} size="sm" />
                 <span>{color.name}</span>
-                <span className="font-mono text-[10px] opacity-75" dir="ltr">{color.hex}</span>
+                <span className="font-mono text-[11px] opacity-75" dir="ltr">{color.hex}</span>
                 <button
                   type="button"
                   onClick={() => removeColor(key)}
@@ -142,7 +142,7 @@ export function ProductColorPicker({ value, onChange, allowMultiple = true }: Co
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate text-xs font-medium text-foreground">{color.name}</span>
-                  <span className="block truncate font-mono text-[10px] text-muted-foreground" dir="ltr">{color.hex}</span>
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground" dir="ltr">{color.hex}</span>
                 </span>
               </div>
             </button>
@@ -218,7 +218,7 @@ export function ProductColorDots({ colors, max = 5 }: { colors: unknown; max?: n
           <ColorDot color={color} size="sm" />
         </span>
       ))}
-      {extra > 0 && <span className="text-[10px] text-muted-foreground">+{extra}</span>}
+      {extra > 0 && <span className="text-[11px] text-muted-foreground">+{extra}</span>}
     </div>
   );
 }
@@ -238,7 +238,7 @@ export function SelectedColorLabel({
     <span className={`inline-flex items-center gap-1.5 ${className}`}>
       <ColorDot color={normalized} size="sm" />
       <span>اللون: {normalized.name}</span>
-      {normalized.hex && <span className="font-mono text-[10px] opacity-70" dir="ltr">{normalized.hex}</span>}
+      {normalized.hex && <span className="font-mono text-[11px] opacity-70" dir="ltr">{normalized.hex}</span>}
     </span>
   );
 }

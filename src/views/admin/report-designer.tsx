@@ -266,8 +266,8 @@ export function ReportDesignerPage() {
           {list.isLoading ? <Skeleton className="h-64 rounded-xl" /> : !list.data?.data.length ? <EmptyState message="لا توجد قوالب. ارفع ملف REPX للبدء." /> : (
             list.data.data.map((t) => (
               <button key={t.id} onClick={() => setSelectedId(t.id)} className={`w-full rounded-xl border p-3 text-right transition-colors ${selectedId === t.id ? "border-primary bg-primary/5" : "border-border/30 bg-card hover:border-primary/40"}`}>
-                <div className="flex items-center justify-between gap-2"><span className="truncate font-semibold text-foreground">{t.name}</span>{t.isDefault ? <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-400" /> : null}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"><span className="rounded-full bg-background/60 px-2 py-0.5">{CATEGORY_LABEL[t.category] ?? t.category}</span><span>{t.paperKind}</span><span>v{t.version}</span>{t.warnings ? <span className="flex items-center gap-0.5 text-amber-500"><AlertTriangle className="h-3 w-3" /> {t.warnings}</span> : null}</div>
+                <div className="flex items-center justify-between gap-2"><span className="truncate font-semibold text-foreground">{t.name}</span>{t.isDefault ? <Star className="h-4 w-4 shrink-0 fill-status-warning text-status-warning" /> : null}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"><span className="rounded-full bg-background/60 px-2 py-0.5">{CATEGORY_LABEL[t.category] ?? t.category}</span><span>{t.paperKind}</span><span>v{t.version}</span>{t.warnings ? <span className="flex items-center gap-0.5 text-status-warning"><AlertTriangle className="h-3 w-3" /> {t.warnings}</span> : null}</div>
               </button>
             ))
           )}
@@ -298,7 +298,7 @@ export function ReportDesignerPage() {
               </div>
 
               {detail.data?.warnings?.length ? (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-600"><p className="mb-1 flex items-center gap-1 font-semibold"><AlertTriangle className="h-3.5 w-3.5" /> تحذيرات الاستيراد ({detail.data.warnings.length}) — استُورد الباقي:</p><ul className="list-disc space-y-0.5 pe-4">{detail.data.warnings.slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
+                <div className="rounded-xl border border-status-warning/30 bg-status-warning/5 p-3 text-xs text-status-warning"><p className="mb-1 flex items-center gap-1 font-semibold"><AlertTriangle className="h-3.5 w-3.5" /> تحذيرات الاستيراد ({detail.data.warnings.length}) — استُورد الباقي:</p><ul className="list-disc space-y-0.5 pe-4">{detail.data.warnings.slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}</ul></div>
               ) : null}
 
               <div className="grid gap-3 xl:grid-cols-[1fr_260px]">
@@ -387,7 +387,7 @@ export function ReportDesignerPage() {
                         ))}
                         {!records.data?.data?.length ? <p className="px-2 text-[11px] text-muted-foreground">لا نتائج</p> : null}
                       </div>
-                      <p className="mt-1 text-[10px] text-muted-foreground">اختر سجلاً ليُعبّأ القالب ببياناته الفعلية حسب الربط.{rows.length ? ` نطاق التفاصيل سيُكرَّر ${rows.length} مرة عند الطباعة/التصدير.` : ""}</p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">اختر سجلاً ليُعبّأ القالب ببياناته الفعلية حسب الربط.{rows.length ? ` نطاق التفاصيل سيُكرَّر ${rows.length} مرة عند الطباعة/التصدير.` : ""}</p>
                     </div>
                   ) : null}
 

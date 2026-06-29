@@ -456,7 +456,7 @@ export default function SettingsPage() {
               <CalendarDays className="w-4 h-4 text-primary" />
               <h3 className="text-sm font-semibold text-foreground">الثيمات الموسمية</h3>
               {activeSeason && (
-                <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[10px] text-primary">نشط الآن: {activeSeason.label}</span>
+                <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[11px] text-primary">نشط الآن: {activeSeason.label}</span>
               )}
             </div>
             <label className="flex items-center gap-2 text-xs text-foreground">
@@ -490,7 +490,7 @@ export default function SettingsPage() {
                       placeholder="اسم الموسم"
                       className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     />
-                    {isActive && <span className="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[10px] text-primary">نشط</span>}
+                    {isActive && <span className="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-2 py-px text-[11px] text-primary">نشط</span>}
                     <button type="button" onClick={() => removeSeason(season.id)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg" aria-label="حذف الموسم">
                       <X className="w-4 h-4" />
                     </button>
@@ -770,7 +770,7 @@ function ThemePresetCard({
         <span className="flex min-w-0 items-center gap-1">
           <span className="truncate text-xs font-medium text-foreground">{preset.label}</span>
           {onDelete && (
-            <span className="shrink-0 rounded-full border border-border/40 px-1.5 py-px text-[9px] text-muted-foreground">مخصّص</span>
+            <span className="shrink-0 rounded-full border border-border/40 px-1.5 py-px text-[11px] text-muted-foreground">مخصّص</span>
           )}
         </span>
         <span className="flex shrink-0 items-center gap-0.5">

@@ -66,7 +66,7 @@ export function AdminNotificationsBell() {
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -left-1 min-w-5 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+          <span className="absolute -top-1 -left-1 min-w-5 rounded-full bg-status-danger px-1.5 py-0.5 text-[11px] font-bold text-white">
             {unreadCount > 99 ? "99+" : unreadCount.toLocaleString("ar-IQ")}
           </span>
         )}

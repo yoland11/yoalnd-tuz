@@ -566,12 +566,12 @@ function AdminSidebarEntry({
       <ItemIcon className="w-4 h-4 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-right">{item.label}</span>
       {item.href === "/admin/inventory-alerts" && lowStockCount > 0 && (
-        <span className="shrink-0 rounded-full bg-status-warning/15 px-2 py-0.5 text-[10px] text-status-warning">
+        <span className="shrink-0 rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] text-status-warning">
           {lowStockCount.toLocaleString("ar-IQ")}
         </span>
       )}
       {item.href === "/admin/messages" && newMessageCount > 0 && (
-        <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+        <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] text-primary">
           {newMessageCount.toLocaleString("ar-IQ")}
         </span>
       )}

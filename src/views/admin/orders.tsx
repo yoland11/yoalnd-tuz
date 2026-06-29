@@ -60,7 +60,7 @@ const PAYMENT_STATUS_LABELS: Record<string, string> = {
 };
 const PAYMENT_COLORS: Record<string, string> = {
   cod: "bg-status-warning/10 text-status-warning border-status-warning/30",
-  transfer: "bg-blue-500/10 text-blue-400 border-blue-500/30",
+  transfer: "bg-accent/10 text-accent border-accent/30",
   paid: "bg-status-success/10 text-status-success border-status-success/30",
 };
 
@@ -492,17 +492,17 @@ export default function OrdersPage() {
               const detailRows = serviceDetailsToRows(o.serviceType, o.customFields);
               const canArchive = ["delivered", "completed", "cancelled"].includes(o.status);
               return (
-                <div key={o.id} className={`bg-card rounded-xl border p-4 ${isReschedulePending ? "border-amber-500/50 ring-1 ring-amber-500/30" : "border-border/30"}`}>
+                <div key={o.id} className={`bg-card rounded-xl border p-4 ${isReschedulePending ? "border-status-warning/50 ring-1 ring-status-warning/30" : "border-border/30"}`}>
                   {isReschedulePending && (
                     <div className="mb-3 rounded-lg bg-status-warning/10 border border-status-warning/30 p-3">
-                      <p className="text-sm text-amber-200 font-semibold mb-1">
+                      <p className="text-sm text-status-warning font-semibold mb-1">
                         📅 الزبون طلب تغيير الموعد
                       </p>
-                      <p className="text-xs text-amber-100/90">
+                      <p className="text-xs text-status-warning/90">
                         من <span dir="ltr">{o.eventDate ?? "—"}</span> إلى <span dir="ltr">{o.requestedDate ?? "—"}</span>
                       </p>
                       {o.confirmationNote && (
-                        <p className="text-xs text-amber-100/80 mt-1">ملاحظة الزبون: {o.confirmationNote}</p>
+                        <p className="text-xs text-status-warning/80 mt-1">ملاحظة الزبون: {o.confirmationNote}</p>
                       )}
                       <div className="flex items-center gap-2 mt-3 flex-wrap">
                         <button
@@ -536,7 +536,7 @@ export default function OrdersPage() {
                       )}
                     </div>
                     {isReschedulePending ? (
-                      <span className="text-xs px-3 py-1.5 rounded-lg bg-status-warning/15 text-status-warning border border-amber-500/40">
+                      <span className="text-xs px-3 py-1.5 rounded-lg bg-status-warning/15 text-status-warning border border-status-warning/40">
                         طلب تغيير موعد
                       </span>
                     ) : (

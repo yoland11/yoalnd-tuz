@@ -175,7 +175,7 @@ export default function MessagesPage() {
                         : "bg-background border-border/30 text-foreground"
                     }`}>
                       <p className="whitespace-pre-wrap">{item.body}</p>
-                      <p className="text-[10px] text-muted-foreground mt-2">{formatDate(item.createdAt)}</p>
+                      <p className="text-[11px] text-muted-foreground mt-2">{formatDate(item.createdAt)}</p>
                     </div>
                   </div>
                 ))}
