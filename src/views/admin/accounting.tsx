@@ -413,7 +413,7 @@ function CategoriesTab() {
 
 // ───── Statement ─────
 type StatementEntry = {
-  date: string; kind: "order" | "booking" | "receipt";
+  date: string; kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment";
   ref: string; description: string; debit: number; credit: number; balance: number;
 };
 type StatementData = {
@@ -497,7 +497,7 @@ function StatementTab() {
               columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "الرصيد"]}
               rows={data.entries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ"),
-                e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : "قبض",
+                e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
                 <code className="text-xs text-primary">{e.ref}</code>,
                 e.description,
                 e.debit ? formatCurrency(e.debit) : "—",

@@ -19460,16 +19460,22 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
       const phoneVariants = iraqiPhoneVariants(phone);
-      const [orders, bookings, receipts] = await Promise.all([
+      const [orders, bookings, receipts, salesInvoices] = await Promise.all([
         db.select().from(ordersTable).where(inArray(ordersTable.customerPhone, phoneVariants)).orderBy(desc(ordersTable.createdAt)),
         db.select().from(serviceOrdersTable).where(inArray(serviceOrdersTable.phone, phoneVariants)).orderBy(desc(serviceOrdersTable.createdAt)),
         customer
           ? db.select().from(receiptVouchersTable).where(eq(receiptVouchersTable.customerId, customer.id)).orderBy(desc(receiptVouchersTable.date))
           : Promise.resolve([] as any[]),
+        db.select().from(salesInvoicesTable).where(and(
+          sql`${salesInvoicesTable.status} != 'deleted'`,
+          customer
+            ? or(inArray(salesInvoicesTable.customerPhone, phoneVariants), eq(salesInvoicesTable.customerId, customer.id))
+            : inArray(salesInvoicesTable.customerPhone, phoneVariants),
+        )).orderBy(desc(salesInvoicesTable.createdAt)),
       ]);
       type Entry = {
         date: string;
-        kind: "order" | "booking" | "receipt";
+        kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment";
         ref: string;
         description: string;
         debit: number;
@@ -19482,8 +19488,16 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
       for (const b of bookings) {
         entries.push({ date: b.createdAt.toISOString(), kind: "booking", ref: b.trackingCode ?? `#${b.id}`, description: "حجز خدمة", debit: 0, credit: 0 });
       }
+      // Sales invoices — the charge (debit) and any amount paid against it (credit).
+      for (const si of salesInvoices) {
+        const when = (si.createdAt ? si.createdAt.toISOString() : new Date(`${si.date}T00:00:00`).toISOString());
+        const nameSuffix = si.customerName ? ` — ${si.customerName}` : "";
+        entries.push({ date: when, kind: "invoice", ref: si.invoiceNo, description: `فاتورة مبيعات${nameSuffix}`, debit: Number.parseFloat(si.total), credit: 0 });
+        const paid = Number.parseFloat(si.paidAmount);
+        if (paid > 0) entries.push({ date: when, kind: "invoice_payment", ref: si.invoiceNo, description: `دفعة فاتورة ${si.invoiceNo}`, debit: 0, credit: paid });
+      }
       for (const r of receipts) {
-        entries.push({ date: new Date(r.date).toISOString(), kind: "receipt", ref: r.voucherNo, description: `سند قبض (${r.method})`, debit: 0, credit: Number.parseFloat(r.amount) });
+        entries.push({ date: new Date(r.date).toISOString(), kind: "receipt", ref: r.voucherNo, description: `سند قبض (${r.method}) — ${r.payerName ?? ""}`, debit: 0, credit: Number.parseFloat(r.amount) });
       }
       entries.sort((a, b) => a.date.localeCompare(b.date));
       let running = 0;
