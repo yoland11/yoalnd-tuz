@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, Save, RefreshCw, X,
-  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip,
+  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip, Pencil, Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -61,6 +61,8 @@ export default function PurchasesPage() {
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingNo, setEditingNo] = useState<string>("");
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
@@ -153,16 +155,18 @@ export default function PurchasesPage() {
           discount: i.discount, total: i.total,
         })),
       };
-      const res = await adminFetch<{ invoice: PurchaseInvoice }>("/admin/purchase-invoices", {
-        method: "POST", body: JSON.stringify(payload),
-      });
+      const res = await adminFetch<{ invoice: PurchaseInvoice }>(
+        editingId ? `/admin/purchase-invoices/${editingId}` : "/admin/purchase-invoices",
+        { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) },
+      );
       // Attach the uploaded invoice image / PDF and link it to the invoice (shows inside each asset's passport).
-      if (attachment && res?.invoice?.id) {
+      const invId = res?.invoice?.id ?? editingId;
+      if (attachment && invId) {
         try {
-          await adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "purchase_invoice", entityId: res.invoice.id, documentType: "invoice", title: `فاتورة شراء ${res.invoice.invoiceNo ?? ""}`.trim(), fileName: attachment.name, mimeType: attachment.type, fileUrl: attachment.url }) });
+          await adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "purchase_invoice", entityId: invId, documentType: "invoice", title: `فاتورة شراء ${res.invoice?.invoiceNo ?? ""}`.trim(), fileName: attachment.name, mimeType: attachment.type, fileUrl: attachment.url }) });
         } catch { /* attachment is best-effort; the invoice itself is already saved */ }
       }
-      toast({ title: "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
+      toast({ title: editingId ? "تم تعديل فاتورة الشراء" : "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
@@ -170,11 +174,83 @@ export default function PurchasesPage() {
       setItems([blankItem()]);
       setForm(newForm());
       setAttachment(null);
+      setEditingId(null); setEditingNo("");
+      if (editingId) setListMode(true);
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {
       setSaving(false);
     }
+  }
+
+  async function editInvoice(inv: PurchaseInvoice) {
+    try {
+      const full = await adminFetch<PurchaseInvoice & { items: any[] }>(`/admin/purchase-invoices/${inv.id}`);
+      const sub = (full.items ?? []).reduce((s: number, it: any) => s + (Number(it.total) || 0), 0);
+      const baseForTax = sub - (Number(full.discountAmount) || 0);
+      setForm({
+        date: full.date,
+        supplierName: full.supplierName ?? "",
+        supplierId: (full.supplierId ?? "") as string | number,
+        paymentMethod: full.paymentMethod ?? "cash",
+        paidAmount: String(full.paidAmount ?? ""),
+        shippingCost: String(full.shippingCost ?? "0"),
+        discountAmount: String(full.discountAmount ?? "0"),
+        taxPct: baseForTax > 0 ? String(+((Number(full.taxAmount) || 0) / baseForTax * 100).toFixed(2)) : "0",
+        notes: full.notes ?? "",
+      });
+      setItems((full.items ?? []).map((it: any) => ({
+        productId: it.productId ?? null, productName: it.productName ?? "", barcode: it.barcode ?? "",
+        quantity: Number(it.quantity) || 1, costPrice: Number(it.costPrice) || 0, salePrice: Number(it.salePrice) || 0,
+        discount: Number(it.discount) || 0, total: Number(it.total) || 0,
+      })));
+      setEditingId(full.id); setEditingNo(full.invoiceNo); setAttachment(null); setListMode(false);
+    } catch (e: any) { toast({ title: "تعذّر فتح الفاتورة", description: e.message, variant: "destructive" }); }
+  }
+
+  async function printInvoice(inv: PurchaseInvoice) {
+    let full: any = inv;
+    try { full = await adminFetch(`/admin/purchase-invoices/${inv.id}`); } catch { /* fall back to row */ }
+    const items: any[] = full.items ?? [];
+    const win = window.open("", "_blank", "width=900,height=1100");
+    if (!win) return;
+    const rows = items.map((it, i) => `<tr>
+      <td style="text-align:center">${i + 1}</td>
+      <td style="text-align:center">${it.image ? `<img src="${it.image}" style="width:42px;height:42px;object-fit:cover;border-radius:4px"/>` : "—"}</td>
+      <td>${it.productName ?? ""}</td>
+      <td style="text-align:center">${Number(it.quantity) || 0}</td>
+      <td style="text-align:center">${formatCurrency(it.costPrice)}</td>
+      <td style="text-align:center">${formatCurrency(it.total)}</td>
+    </tr>`).join("");
+    win.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${full.invoiceNo ?? "فاتورة شراء"}</title>
+      <style>@page{size:A4;margin:14mm}body{font-family:Tahoma,sans-serif;color:#111}h1{font-size:20px;margin:0}.muted{color:#555;font-size:12px;margin-top:4px}table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}th,td{border:1px solid #ccc;padding:6px}th{background:#f3f4f6}.tot{margin-top:14px;width:280px;margin-inline-start:auto;font-size:13px}.tot div{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed #e5e7eb}.tot .g{font-weight:700;font-size:15px;border-bottom:2px solid #111}</style>
+      </head><body onload="window.print()">
+      <h1>فاتورة شراء</h1>
+      <div class="muted">رقم: ${full.invoiceNo ?? "—"} · التاريخ: ${full.date ?? "—"} · المورد: ${full.supplierName || "—"}</div>
+      <table><thead><tr><th>#</th><th>الصورة</th><th>المنتج</th><th>الكمية</th><th>التكلفة</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="tot">
+        <div><span>الإجمالي الفرعي</span><span>${formatCurrency(full.subtotal)}</span></div>
+        <div><span>الخصم</span><span>${formatCurrency(full.discountAmount)}</span></div>
+        <div><span>الشحن</span><span>${formatCurrency(full.shippingCost)}</span></div>
+        <div><span>الضريبة</span><span>${formatCurrency(full.taxAmount)}</span></div>
+        <div class="g"><span>الإجمالي</span><span>${formatCurrency(full.total)}</span></div>
+        <div><span>المدفوع</span><span>${formatCurrency(full.paidAmount)}</span></div>
+        <div><span>المتبقي</span><span>${formatCurrency(full.remainingAmount)}</span></div>
+      </div>
+      </body></html>`);
+    win.document.close();
+  }
+
+  async function deleteInvoice(inv: PurchaseInvoice) {
+    if (!confirm(`حذف فاتورة الشراء ${inv.invoiceNo}؟ سيُعكس المخزون والحركة المالية.`)) return;
+    try {
+      await adminFetch(`/admin/purchase-invoices/${inv.id}`, { method: "DELETE" });
+      toast({ title: "تم حذف الفاتورة", description: inv.invoiceNo });
+      queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
+    } catch (e: any) { toast({ title: "تعذّر الحذف", description: e.message, variant: "destructive" }); }
   }
 
   if (listMode) {
@@ -185,6 +261,7 @@ export default function PurchasesPage() {
       from={listFrom} to={listTo}
       onFrom={setListFrom} onTo={setListTo}
       onBack={() => setListMode(false)}
+      onEdit={editInvoice} onPrint={printInvoice} onDelete={deleteInvoice}
     />;
   }
 
@@ -193,17 +270,17 @@ export default function PurchasesPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">فاتورة مشتريات</h1>
-          <p className="text-sm text-muted-foreground">استلام البضاعة وتحديث المخزون</p>
+          <h1 className="text-2xl font-bold text-foreground">{editingId ? `تعديل فاتورة شراء ${editingNo}` : "فاتورة مشتريات"}</h1>
+          <p className="text-sm text-muted-foreground">{editingId ? "سيُعاد ضبط المخزون والحركة المالية حسب الأصناف الجديدة" : "استلام البضاعة وتحديث المخزون"}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => setListMode(true)}>
             <Package className="w-4 h-4 ml-1" />
             سجل المشتريات
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { setItems([blankItem()]); setForm(newForm()); }}>
+          <Button variant="outline" size="sm" onClick={() => { setItems([blankItem()]); setForm(newForm()); setEditingId(null); setEditingNo(""); setAttachment(null); }}>
             <RefreshCw className="w-4 h-4 ml-1" />
-            جديدة
+            {editingId ? "إلغاء التعديل" : "جديدة"}
           </Button>
         </div>
       </div>
@@ -505,11 +582,11 @@ export default function PurchasesPage() {
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, onBack,
+  invoices, total, page, onPage, from, to, onFrom, onTo, onBack, onEdit, onPrint, onDelete,
 }: {
   invoices: PurchaseInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
-  onBack: () => void;
+  onBack: () => void; onEdit: (inv: PurchaseInvoice) => void; onPrint: (inv: PurchaseInvoice) => void; onDelete: (inv: PurchaseInvoice) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
@@ -546,11 +623,12 @@ function PurchaseListView({
                 <th className="px-4 py-3 text-center">الإجمالي</th>
                 <th className="px-4 py-3 text-center">الدفع</th>
                 <th className="px-4 py-3 text-center">الحالة</th>
+                <th className="px-4 py-3 text-center">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
               {invoices.length === 0
-                ? <tr><td colSpan={6} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
+                ? <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}</td>
@@ -564,6 +642,13 @@ function PurchaseListView({
                         <span className={`text-xs px-2 py-0.5 rounded-full ${inv.status === "active" ? "bg-status-success/10 text-status-success" : "bg-status-danger/10 text-status-danger"}`}>
                           {inv.status === "active" ? "نشطة" : "محذوفة"}
                         </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => onPrint(inv)} title="طباعة"><Printer className="w-4 h-4" /></Button>
+                          {inv.status === "active" ? <Button variant="ghost" size="sm" onClick={() => onEdit(inv)} title="تعديل" className="text-primary"><Pencil className="w-4 h-4" /></Button> : null}
+                          {inv.status === "active" ? <Button variant="ghost" size="sm" onClick={() => onDelete(inv)} title="حذف" className="text-destructive"><Trash2 className="w-4 h-4" /></Button> : null}
+                        </div>
                       </td>
                     </tr>
                   ))

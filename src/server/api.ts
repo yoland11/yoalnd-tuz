@@ -15528,7 +15528,11 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     const inv = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, id) });
     if (!inv) return error("الفاتورة غير موجودة", 404);
     const items = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
-    return json({ ...inv, items });
+    // Attach each item's product image (used in the printed invoice).
+    const pids = items.map((it: any) => it.productId).filter(Boolean) as number[];
+    const prods = pids.length ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, pids) }) : [];
+    const imgMap = new Map(prods.map((p: any) => [p.id, Array.isArray(p.images) && p.images.length ? p.images[0] : null]));
+    return json({ ...inv, items: items.map((it: any) => ({ ...it, image: it.productId ? imgMap.get(it.productId) ?? null : null })) });
   }
 
   if (method === "POST") {
@@ -15652,7 +15656,97 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     return json({ ...final, items: finalItems, financialTransaction, invoice: final }, 201);
   }
 
+  if (method === "PUT" && id) {
+    const existing = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, id) });
+    if (!existing || existing.status === "deleted") return error("الفاتورة غير موجودة", 404);
+    const b = await body(req);
+    const a = actor(auth);
+    const newItems = purchaseInvoiceItems(b?.items);
+    if (newItems.length === 0) return error("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء", 400);
+
+    // Reverse the stock added by the old items, then remove them.
+    const oldItems = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+    for (const oi of oldItems as any[]) {
+      if (oi.productId && Number(oi.quantity) > 0) {
+        await adjustProductStock(Number(oi.productId), -Number(oi.quantity), { reason: "purchase_invoice_edit_reversal", relatedType: "purchase_invoice", relatedId: id, createdBy: a.id, createdByName: a.name });
+      }
+    }
+    await db.delete(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+
+    const subtotal = newItems.reduce((sum, item) => sum + item.quantity * item.costPrice, 0);
+    const discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
+    const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
+    const total = Math.max(subtotal - discountAmount + taxAmount + shippingCost, 0);
+    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
+    const remainingAmount = Math.max(total - paidAmount, 0);
+    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+
+    await db.update(purchaseInvoicesTable).set({
+      date: b.date ?? existing.date,
+      supplierName: b.supplierName ?? existing.supplierName,
+      supplierId: b.supplierId ?? existing.supplierId,
+      subtotal: String(subtotal), discountAmount: String(discountAmount),
+      taxAmount: String(taxAmount), shippingCost: String(shippingCost),
+      total: String(total), paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
+      paymentMethod: b.paymentMethod ?? existing.paymentMethod, paymentStatus,
+      notes: b.notes ?? existing.notes,
+    } as any).where(eq(purchaseInvoicesTable.id, id));
+
+    // Re-resolve products, insert items, re-apply stock, update product cost.
+    const processedItems: typeof newItems = [];
+    for (const item of newItems) {
+      let productId = item.productId;
+      if (!productId) {
+        const existingProduct = item.barcode
+          ? await db.query.productsTable.findFirst({ where: eq(productsTable.barcode, item.barcode) })
+          : await db.query.productsTable.findFirst({ where: or(eq(productsTable.nameAr, item.productName), eq(productsTable.name, item.productName)) });
+        if (existingProduct) productId = existingProduct.id;
+        else {
+          const [createdProduct] = await db.insert(productsTable).values({ name: item.productName, nameAr: item.productName, price: String(item.salePrice > 0 ? item.salePrice : item.costPrice), costPrice: String(item.costPrice), stock: 0, barcode: item.barcode || null, category: "purchases", images: [], colors: [], isActive: true } as any).returning();
+          productId = createdProduct.id;
+        }
+      }
+      processedItems.push({ ...item, productId });
+    }
+    await db.insert(purchaseInvoiceItemsTable).values(
+      processedItems.map((item: any) => ({ invoiceId: id, productId: item.productId ?? null, productName: item.productName ?? "", barcode: item.barcode, quantity: String(item.quantity), costPrice: String(item.costPrice), salePrice: String(item.salePrice), discount: String(item.discount), total: String(item.total) })),
+    );
+    for (const item of processedItems) {
+      if (item.productId && item.quantity > 0) {
+        await adjustProductStock(Number(item.productId), Number(item.quantity), { reason: "purchase_invoice_edit_applied", relatedType: "purchase_invoice", relatedId: id, createdBy: a.id, createdByName: a.name });
+        const updateVals: any = { costPrice: String(item.costPrice) };
+        if (item.salePrice > 0) updateVals.price = String(item.salePrice);
+        await db.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
+      }
+    }
+
+    const final = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, id) });
+    const finalItems = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+    if (final) {
+      await syncSourcePaymentTarget({
+        sourceType: "purchase_invoice", sourceId: final.id, sourceEvent: "payment",
+        targetAmount: Number(final.paidAmount), normalDirection: "expense",
+        transactionDate: final.date, department: "store", transactionType: "purchase_invoice",
+        description: `فاتورة شراء ${final.invoiceNo}`, paymentMethod: (final.paymentMethod as any) || "cash", notes: final.notes,
+      }, financialActor(auth));
+    }
+    void logAdminActivity(req, "purchase_invoice_updated", "purchase_invoice", id, { invoiceNo: final?.invoiceNo, itemCount: finalItems.length });
+    return json({ ...final, items: finalItems, invoice: final });
+  }
+
   if (method === "DELETE" && id) {
+    const current = await db.query.purchaseInvoicesTable.findFirst({ where: eq(purchaseInvoicesTable.id, id) });
+    if (!current) return error("الفاتورة غير موجودة", 404);
+    if (current.status === "deleted") return json({ message: "الفاتورة محذوفة مسبقاً" });
+    const a = actor(auth);
+    // Reverse the stock this invoice added, so deletion keeps inventory correct.
+    const items = await db.select().from(purchaseInvoiceItemsTable).where(eq(purchaseInvoiceItemsTable.invoiceId, id));
+    for (const it of items as any[]) {
+      if (it.productId && Number(it.quantity) > 0) {
+        await adjustProductStock(Number(it.productId), -Number(it.quantity), { reason: "purchase_invoice_deleted_reversal", relatedType: "purchase_invoice", relatedId: id, createdBy: a.id, createdByName: a.name });
+      }
+    }
     const [deleted] = await db.update(purchaseInvoicesTable).set({ status: "deleted" } as any).where(eq(purchaseInvoicesTable.id, id)).returning();
     if (deleted) {
       await syncSourcePaymentTarget({
@@ -15668,6 +15762,7 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
         paymentMethod: (deleted.paymentMethod as any) || "cash",
       }, financialActor(auth));
     }
+    void logAdminActivity(req, "purchase_invoice_deleted", "purchase_invoice", id, { invoiceNo: current.invoiceNo, itemCount: items.length });
     return json({ message: "تم الحذف" });
   }
 
