@@ -76,91 +76,91 @@
 
 /* AJN Unified Premium Theme */
 :root {
-  color-scheme: dark;
-  --button-outline: rgba(212, 177, 90, .22);
-  --badge-outline: rgba(212, 177, 90, .16);
+  color-scheme: light;
+  --button-outline: rgba(224, 104, 90, .30);
+  --badge-outline: rgba(224, 104, 90, .20);
 
-  --opaque-button-border-intensity: 7;
+  --opaque-button-border-intensity: -10;
 
-  --elevate-1: rgba(212, 177, 90, .055);
-  --elevate-2: rgba(212, 177, 90, .10);
+  --elevate-1: rgba(24, 27, 31, .04);
+  --elevate-2: rgba(24, 27, 31, .07);
 
-  /* Background #0B0B12 */
-  --background: 240 24% 6%;
-  /* Text Primary #FFFFFF */
-  --foreground: 0 0% 100%;
+  /* خلفية أردوازي فاتح #F2F4F6 */
+  --background: 210 17% 96%;
+  /* نص #181B1F */
+  --foreground: 214 13% 11%;
   
-  /* Border #2A2D36 */
-  --border: 225 13% 19%;
+  /* حدود #E4E7EB */
+  --border: 213 16% 91%;
 
-  /* Card #1A1C25 */
-  --card: 229 17% 12%;
-  --card-foreground: 0 0% 100%;
-  --card-border: 225 13% 19%;
+  /* أسطح بيضاء #FFFFFF */
+  --card: 0 0% 100%;
+  --card-foreground: 214 13% 11%;
+  --card-border: 213 16% 91%;
 
-  /* Surface #12131A */
-  --sidebar: 233 18% 9%;
-  --sidebar-foreground: 0 0% 100%;
-  --sidebar-border: 225 13% 19%;
-  --sidebar-primary: 43 59% 59%;
-  --sidebar-primary-foreground: 240 24% 6%;
-  --sidebar-accent: 229 17% 12%;
-  --sidebar-accent-foreground: 0 0% 100%;
-  --sidebar-ring: 43 59% 59%;
+  /* أسطح بيضاء #FFFFFF */
+  --sidebar: 0 0% 100%;
+  --sidebar-foreground: 214 13% 11%;
+  --sidebar-border: 213 16% 91%;
+  --sidebar-primary: 6 68% 62%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 210 17% 96%;
+  --sidebar-accent-foreground: 214 13% 11%;
+  --sidebar-ring: 6 68% 62%;
 
-  --popover: 229 17% 12%;
-  --popover-foreground: 0 0% 100%;
-  --popover-border: 225 13% 19%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 214 13% 11%;
+  --popover-border: 213 16% 91%;
 
-  /* Primary Gold #D4B15A */
-  --primary: 43 59% 59%;
-  --primary-foreground: 240 24% 6%;
+  /* المرجاني #E0685A */
+  --primary: 6 68% 62%;
+  --primary-foreground: 0 0% 100%;
 
-  /* Surface #12131A */
-  --secondary: 233 18% 9%;
-  --secondary-foreground: 0 0% 100%;
+  /* رمادي فاتح #E4E7EB */
+  --secondary: 213 16% 91%;
+  --secondary-foreground: 214 13% 11%;
 
-  --muted: 229 17% 12%;
-  --muted-foreground: 224 11% 81%;
+  --muted: 210 19% 94%;
+  --muted-foreground: 213 6% 49%;
 
-  /* Accent Rose #A97B8B */
-  --accent: 339 21% 57%;
+  /* اللون المميّز = المرجاني */
+  --accent: 6 68% 62%;
   --accent-foreground: 0 0% 100%;
 
-  --destructive: 0 72% 58%;
+  --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
 
-  --input: 225 13% 19%;
-  --ring: 43 59% 59%;
+  --input: 213 16% 91%;
+  --ring: 6 68% 62%;
   
-  --chart-1: 43 59% 59%;
-  --chart-2: 339 21% 57%;
-  --chart-3: 46 60% 77%;
-  --chart-4: 224 11% 81%;
-  --chart-5: 41 50% 48%;
+  --chart-1: 6 68% 62%;
+  --chart-2: 213 8% 45%;
+  --chart-3: 6 60% 75%;
+  --chart-4: 214 13% 30%;
+  --chart-5: 6 45% 50%;
 
-  --ajn-header: 233 18% 9%;
-  --ajn-footer: 233 18% 9%;
-  --ajn-heading: 0 0% 100%;
-  --ajn-link: 43 59% 59%;
-  --ajn-hover: 46 60% 77%;
-  /* ألوان موحّدة لعناصر القائمة العلوية (Navbar) — توكن واحد لكل الحالات */
-  --ajn-nav-link: #FFFFFF;
-  --ajn-nav-link-active: #D4B15A;
-  --status-success: 43 59% 59%;
-  --status-danger: 0 72% 58%;
-  --status-warning: 41 50% 48%;
+  --ajn-header: 0 0% 100%;
+  --ajn-footer: 0 0% 100%;
+  --ajn-heading: 214 13% 11%;
+  --ajn-link: 6 68% 62%;
+  --ajn-hover: 7 53% 52%;
+  /* روابط القائمة العلوية: نص داكن على هيدر أبيض، ومرجاني للنشِط */
+  --ajn-nav-link: #181B1F;
+  --ajn-nav-link-active: #E0685A;
+  --status-success: 152 52% 36%;
+  --status-danger: 0 75% 45%;
+  --status-warning: 35 90% 44%;
 
   --radius: 0.75rem;
   
-  --shadow-2xs: 0 1px 2px 0 rgba(212, 177, 90, .05); 
-  --shadow-xs: 0 1px 3px 0 rgba(212, 177, 90, .06); 
-  --shadow-sm: 0 4px 10px -8px rgba(212, 177, 90, .22), 0 1px 2px -1px rgba(0, 0, 0, .5);
-  --shadow: 0 10px 24px -18px rgba(212, 177, 90, .22), 0 1px 3px -1px rgba(0, 0, 0, .55);
-  --shadow-md: 0 14px 32px -22px rgba(212, 177, 90, .26), 0 2px 6px -2px rgba(0, 0, 0, .55);
-  --shadow-lg: 0 20px 44px -28px rgba(212, 177, 90, .30), 0 4px 10px -4px rgba(0, 0, 0, .6);
-  --shadow-xl: 0 28px 56px -34px rgba(212, 177, 90, .34), 0 8px 18px -10px rgba(0, 0, 0, .65);
-  --shadow-2xl: 0 34px 70px -38px rgba(212, 177, 90, .38);
+  --shadow-2xs: 0 1px 2px 0 rgba(24, 27, 31, .05); 
+  --shadow-xs: 0 1px 3px 0 rgba(24, 27, 31, .06); 
+  --shadow-sm: 0 4px 10px -8px rgba(24, 27, 31, .22), 0 1px 2px -1px rgba(0, 0, 0, .5);
+  --shadow: 0 10px 24px -18px rgba(24, 27, 31, .22), 0 1px 3px -1px rgba(0, 0, 0, .55);
+  --shadow-md: 0 14px 32px -22px rgba(24, 27, 31, .26), 0 2px 6px -2px rgba(0, 0, 0, .55);
+  --shadow-lg: 0 20px 44px -28px rgba(24, 27, 31, .30), 0 4px 10px -4px rgba(0, 0, 0, .6);
+  --shadow-xl: 0 28px 56px -34px rgba(24, 27, 31, .34), 0 8px 18px -10px rgba(0, 0, 0, .65);
+  --shadow-2xl: 0 34px 70px -38px rgba(24, 27, 31, .38);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 

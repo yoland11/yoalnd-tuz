@@ -59,18 +59,19 @@ export function googleFontsHref(headingFont?: string, bodyFont?: string): string
   return `https://fonts.googleapis.com/css2?${q}&display=swap`;
 }
 
+// لوحة "أردوازي ومرجاني" — ثيم فاتح عصري مينيمال
 export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
-  background: "#0B0B12",
-  header: "#12131A",
-  footer: "#12131A",
-  sidebar: "#12131A",
-  primaryButton: "#D4B15A",
-  secondaryButton: "#12131A",
-  headings: "#FFFFFF",
-  text: "#FFFFFF",
-  cards: "#1A1C25",
-  links: "#D4B15A",
-  hover: "#E7D6A0",
+  background: "#F2F4F6",
+  header: "#FFFFFF",
+  footer: "#FFFFFF",
+  sidebar: "#FFFFFF",
+  primaryButton: "#E0685A",
+  secondaryButton: "#E4E7EB",
+  headings: "#181B1F",
+  text: "#181B1F",
+  cards: "#FFFFFF",
+  links: "#E0685A",
+  hover: "#C9564A",
   headingFont: "Cairo",
   bodyFont: "Cairo",
   baseFontPx: 16,
@@ -188,7 +189,8 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
   const appearance = normalizeAppearanceSettings(settings);
   const primaryForeground = hexToHslTriplet(readableForeground(appearance.primaryButton));
   const secondaryForeground = hexToHslTriplet(readableForeground(appearance.secondaryButton));
-  const accentForeground = hexToHslTriplet(readableForeground("#A97B8B"));
+  // اللون المميّز (accent) يتبع لون الزر الأساسي للحفاظ على لوحة متّسقة بلون مميّز واحد
+  const accentForeground = hexToHslTriplet(readableForeground(appearance.primaryButton));
 
   const bg = hexToHsl(appearance.background);
   // الثيمات الفاتحة تحتاج طبقات إبراز/إطار داكنة، والداكنة تحتاج فاتحة — حتى لا تختفي الإطارات
@@ -201,25 +203,25 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     "--foreground": hexToHslTriplet(appearance.text),
     "--card": hexToHslTriplet(appearance.cards),
     "--card-foreground": hexToHslTriplet(appearance.text),
-    "--card-border": hexToHslTriplet("#2A2D36"),
+    "--card-border": hexToHslTriplet(isLightTheme ? "#E4E7EB" : "#2A2D36"),
     "--popover": hexToHslTriplet(appearance.cards),
     "--popover-foreground": hexToHslTriplet(appearance.text),
-    "--popover-border": hexToHslTriplet("#2A2D36"),
+    "--popover-border": hexToHslTriplet(isLightTheme ? "#E4E7EB" : "#2A2D36"),
     "--primary": hexToHslTriplet(appearance.primaryButton),
     "--primary-foreground": primaryForeground,
     "--secondary": hexToHslTriplet(appearance.secondaryButton),
     "--secondary-foreground": secondaryForeground,
-    "--muted": hexToHslTriplet("#1A1C25"),
-    "--muted-foreground": hexToHslTriplet("#C8CBD3"),
-    "--accent": hexToHslTriplet("#A97B8B"),
+    "--muted": hexToHslTriplet(isLightTheme ? "#EEF1F4" : "#1A1C25"),
+    "--muted-foreground": hexToHslTriplet(isLightTheme ? "#757B83" : "#C8CBD3"),
+    "--accent": hexToHslTriplet(appearance.primaryButton),
     "--accent-foreground": accentForeground,
-    // الإطار العام (يُستخدم في كل الحدود الافتراضية وبطاقات الموقع والهيدر)
-    "--border": hexToHslTriplet("#2A2D36"),
-    "--input": hexToHslTriplet("#2A2D36"),
+    // الإطار العام يتكيّف مع سطوع الثيم: فاتح للثيمات الفاتحة، داكن للداكنة
+    "--border": hexToHslTriplet(isLightTheme ? "#E4E7EB" : "#2A2D36"),
+    "--input": hexToHslTriplet(isLightTheme ? "#E4E7EB" : "#2A2D36"),
     "--ring": hexToHslTriplet(appearance.primaryButton),
     "--sidebar": hexToHslTriplet(appearance.sidebar),
     "--sidebar-foreground": hexToHslTriplet(appearance.text),
-    "--sidebar-border": hexToHslTriplet("#2A2D36"),
+    "--sidebar-border": hexToHslTriplet(isLightTheme ? "#E4E7EB" : "#2A2D36"),
     "--sidebar-primary": hexToHslTriplet(appearance.primaryButton),
     "--sidebar-primary-foreground": primaryForeground,
     "--sidebar-accent": hexToHslTriplet(appearance.secondaryButton),
@@ -227,11 +229,11 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     "--sidebar-ring": hexToHslTriplet(appearance.hover),
     // اتجاه إطار الأزرار المعتمة: يفتّح في الثيم الداكن ويغمّق في الفاتح
     "--opaque-button-border-intensity": isLightTheme ? "-10" : "9",
-    // إطار الأزرار + إطار الشارات + طبقات اللمعان عند المرور/الضغط (إحساس الفخامة)
-    "--button-outline": "rgba(212, 177, 90, .22)",
-    "--badge-outline": "rgba(212, 177, 90, .16)",
-    "--elevate-1": "rgba(212, 177, 90, .055)",
-    "--elevate-2": "rgba(212, 177, 90, .10)",
+    // إطار الأزرار + إطار الشارات + طبقات اللمعان عند المرور/الضغط — محايدة في الثيم الفاتح، ذهبية في الداكن
+    "--button-outline": isLightTheme ? "rgba(224, 104, 90, .30)" : "rgba(212, 177, 90, .22)",
+    "--badge-outline": isLightTheme ? "rgba(224, 104, 90, .20)" : "rgba(212, 177, 90, .16)",
+    "--elevate-1": isLightTheme ? "rgba(24, 27, 31, .04)" : "rgba(212, 177, 90, .055)",
+    "--elevate-2": isLightTheme ? "rgba(24, 27, 31, .07)" : "rgba(212, 177, 90, .10)",
     "--ajn-header": hexToHslTriplet(appearance.header),
     "--ajn-footer": hexToHslTriplet(appearance.footer),
     "--ajn-heading": hexToHslTriplet(appearance.headings),
@@ -240,10 +242,10 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     // روابط الـ Navbar (قيم لون كاملة لأن index.css يستخدمها مباشرةً بلا hsl()) — تتكيّف مع سطوع الهيدر
     "--ajn-nav-link": headerIsLight ? "#1A1C25" : "#FFFFFF",
     "--ajn-nav-link-active": appearance.primaryButton,
-    // Semantic status tokens — darker shades for light themes to maintain contrast
-    "--status-success": hexToHslTriplet(appearance.primaryButton),
-    "--status-danger": isLightTheme ? "0 75% 42%" : "0 84% 70%",
-    "--status-warning": "41 50% 48%",
+    // Semantic status tokens — أخضر للنجاح ليتمايز عن المرجاني، وتباين أعلى في الثيم الفاتح
+    "--status-success": isLightTheme ? "152 52% 36%" : hexToHslTriplet(appearance.primaryButton),
+    "--status-danger": isLightTheme ? "0 75% 45%" : "0 84% 70%",
+    "--status-warning": isLightTheme ? "35 90% 44%" : "41 50% 48%",
     // Typography (admin-controlled): heading font, body font, base size.
     "--font-heading": fontStack(appearance.headingFont ?? "Cairo"),
     "--font-sans": fontStack(appearance.bodyFont ?? "Cairo"),
