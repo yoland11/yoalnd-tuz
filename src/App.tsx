@@ -17,6 +17,7 @@ import Cart from "@/views/cart";
 import Login from "@/views/login";
 import { registerServiceWorker } from "@/lib/pwa";
 import { ThemeVariables } from "@/components/theme-variables";
+import { DesktopRuntime } from "@/components/desktop-runtime";
 
 // Admin — lazy (large bundle, staff-only)
 const Admin = lazy(() => import("@/views/admin/index"));
@@ -234,6 +235,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeVariables />
       <TooltipProvider>
+        <DesktopRuntime />
         <WouterRouter>
           <Router />
         </WouterRouter>

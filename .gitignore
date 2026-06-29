@@ -59,5 +59,6 @@ Thumbs.db
 *.zip
 *.tar
 *.tgz
+desktop/release/
 .vercel
 .env*

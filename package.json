@@ -12,6 +12,9 @@
     "codegen": "pnpm --filter @workspace/api-spec run codegen",
     "db:push": "pnpm --filter @workspace/db run push",
     "db:seed": "pnpm --filter @workspace/db run seed",
+    "desktop:dev": "pnpm --dir desktop run dev",
+    "desktop:build": "pnpm --dir desktop run build",
+    "desktop:dist": "pnpm --dir desktop run dist",
     "audit": "pnpm audit --audit-level moderate"
   },
   "dependencies": {

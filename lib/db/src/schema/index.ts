@@ -32,3 +32,4 @@ export * from "./kosha-staff";
 export * from "./photography-staff";
 export * from "./master-cash-box";
 export * from "./enterprise";
+export * from "./desktop";

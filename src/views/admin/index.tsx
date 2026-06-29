@@ -69,6 +69,7 @@ const DisasterRecoveryPage = lazy(() => import("./operations").then((module) => 
 const TimelinesPage = lazy(() => import("./operations").then((module) => ({ default: module.TimelinesPage })));
 const EnterpriseCommandCenterPage = lazy(() => import("./enterprise"));
 const ReportDesignerPage = lazy(() => import("./report-designer").then((module) => ({ default: module.ReportDesignerPage })));
+const SyncCenterPage = lazy(() => import("./sync-center"));
 
 function Guard({ me, perm, children }: { me: AdminMe; perm: Permission; children: React.ReactNode }) {
   if (!hasPerm(me, perm)) return <NoPermission />;
@@ -195,6 +196,7 @@ export default function Admin() {
           <Route path="/admin/disaster-recovery">{() => <Guard me={me} perm="backup"><DisasterRecoveryPage /></Guard>}</Route>
           <Route path="/admin/invoice-designer">{() => <Guard me={me} perm="settings"><InvoiceDesignerPage /></Guard>}</Route>
           <Route path="/admin/report-designer">{() => <Guard me={me} perm="settings"><ReportDesignerPage /></Guard>}</Route>
+          <Route path="/admin/sync-center">{() => <Guard me={me} perm="settings"><SyncCenterPage /></Guard>}</Route>
           <Route path="/admin/settings/printer">{() => <Guard me={me} perm="settings"><PrinterSettingsPage /></Guard>}</Route>
           <Route path="/admin/settings/telegram">{() => <Guard me={me} perm="settings"><TelegramSettingsPage /></Guard>}</Route>
           <Route path="/admin/printer-settings">{() => <Guard me={me} perm="settings"><PrinterSettingsPage /></Guard>}</Route>

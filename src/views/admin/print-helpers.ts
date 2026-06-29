@@ -185,8 +185,15 @@ export function printWhenImagesReadyScript(closeAfterPrint = true) {
       window.onload = function() {
         waitForImages().then(function() {
           setTimeout(function() {
-            window.print();
-            ${closeAfterPrint ? "setTimeout(function(){ window.close(); }, 700);" : ""}
+            var desktopPrint = window.ajnDesktop && window.ajnDesktop.print;
+            if (desktopPrint) {
+              Promise.resolve(desktopPrint()).finally(function() {
+                ${closeAfterPrint ? "setTimeout(function(){ window.close(); }, 250);" : ""}
+              });
+            } else {
+              window.print();
+              ${closeAfterPrint ? "setTimeout(function(){ window.close(); }, 700);" : ""}
+            }
           }, 150);
         });
       };

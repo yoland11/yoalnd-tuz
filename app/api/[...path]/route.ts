@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { handleApi } from "@/server/api";
+import { withDesktopIdempotency } from "@/server/desktop-idempotency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ type Context = {
 
 async function dispatch(req: NextRequest, context: Context) {
   const { path = [] } = await context.params;
-  return handleApi(req, path);
+  return withDesktopIdempotency(req, path, () => handleApi(req, path));
 }
 
 export function GET(req: NextRequest, context: Context) {

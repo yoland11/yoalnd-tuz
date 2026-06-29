@@ -1,0 +1,37 @@
+appId: com.ajn.erp.desktop
+productName: AJN
+copyright: Copyright © AJN
+asar: true
+npmRebuild: false
+directories:
+  output: release
+  buildResources: assets
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+extraResources:
+  - from: assets
+    to: assets
+win:
+  icon: assets/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  artifactName: AJN-Setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AJN
+portable:
+  artifactName: AJN-Portable.${ext}
+mac:
+  icon: assets/icon.png
+  target: dir
+linux:
+  icon: assets/icon.png
+  target: dir

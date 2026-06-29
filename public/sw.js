@@ -1,5 +1,5 @@
 // AJN Service Worker — PWA shell, offline fallback, and Web Push.
-const VERSION = "ajn-pwa-v3";
+const VERSION = "ajn-pwa-v4";
 const APP_SHELL = [
   "/",
   "/store",
@@ -10,6 +10,9 @@ const APP_SHELL = [
   "/favicon.svg",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
+  "/admin/login",
+  "/admin/dashboard",
+  "/admin/sync-center",
 ];
 
 self.addEventListener("install", (event) => {
@@ -39,7 +42,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/admin")) return;
+  if (url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(
