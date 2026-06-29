@@ -102,8 +102,9 @@ export default function Admin() {
     return () => { alive = false; };
   }, []);
 
-  // Login route is always reachable
-  if (location === "/admin/login") return <AdminLogin />;
+  // Login route is always reachable. Lift the authenticated user into state so the app
+  // renders immediately after login (no manual refresh needed).
+  if (location === "/admin/login") return <AdminLogin onAuthed={(u) => { setMe(u); setLoading(false); }} />;
 
   if (loading) {
     return (

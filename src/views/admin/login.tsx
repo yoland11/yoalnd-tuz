@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchAdminMe, loginAdmin, hasPerm } from "./_lib";
+import { fetchAdminMe, loginAdmin, hasPerm, type AdminMe } from "./_lib";
 import { ADMIN_NAV } from "./_layout";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
-export default function AdminLogin() {
+export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => void }) {
   const [, setLocation] = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -19,6 +19,7 @@ export default function AdminLogin() {
     fetchAdminMe().then(me => {
       if (!alive) return;
       if (me) {
+        onAuthed?.(me);
         const first = ADMIN_NAV.find(n => hasPerm(me, n.perm));
         setLocation(first?.href ?? "/admin/dashboard");
       }
@@ -32,6 +33,7 @@ export default function AdminLogin() {
     setSubmitting(true);
     try {
       const user = await loginAdmin(username.trim(), password);
+      onAuthed?.(user);
       const first = ADMIN_NAV.find(n => hasPerm(user, n.perm));
       setLocation(first?.href ?? "/admin/dashboard");
     } catch (err: any) {
