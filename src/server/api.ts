@@ -14,6 +14,7 @@ import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
+import { parseRepx, guessCategory, REPORT_CATEGORIES } from "@/server/repx";
 import { z } from "zod/v4";
 import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
@@ -92,6 +93,7 @@ import {
   purchaseInvoicesTable,
   purchaseInvoiceItemsTable,
   printTemplatesTable,
+  reportTemplatesTable,
   qrTokensTable,
   db,
   dailyCashReconciliationsTable,
@@ -298,6 +300,7 @@ let productColorColumnsPromise: Promise<void> | null = null;
 let customerRewardsPromise: Promise<void> | null = null;
 let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
+let reportTemplatesTablesPromise: Promise<void> | null = null;
 let storeCategoryColumnsPromise: Promise<void> | null = null;
 let adminExtensionsTablesPromise: Promise<void> | null = null;
 let enterprisePhase5TablesPromise: Promise<void> | null = null;
@@ -4500,6 +4503,127 @@ async function ensureCouponsTables(): Promise<void> {
     });
   }
   await couponsTablesPromise;
+}
+
+async function ensureReportTemplatesTables(): Promise<void> {
+  if (!reportTemplatesTablesPromise) {
+    reportTemplatesTablesPromise = db.execute(sql`
+      create table if not exists "report_templates" (
+        "id" serial primary key,
+        "name" text not null,
+        "category" varchar(30) not null default 'custom',
+        "paper_kind" varchar(30) not null default 'A4',
+        "repx_xml" text not null,
+        "model" jsonb not null default '{}'::jsonb,
+        "mapping" jsonb not null default '{}'::jsonb,
+        "warnings" jsonb not null default '[]'::jsonb,
+        "version" integer not null default 1,
+        "history" jsonb not null default '[]'::jsonb,
+        "is_default" integer not null default 0,
+        "file_name" text,
+        "created_by" integer references "staff" ("id"),
+        "created_by_name" text not null default '',
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "report_templates_category_idx" on "report_templates" ("category", "updated_at");
+    `).then(() => undefined).catch((err) => {
+      reportTemplatesTablesPromise = null;
+      throw err;
+    });
+  }
+  await reportTemplatesTablesPromise;
+}
+
+// ---- REPX live-data binding helpers ----
+function getByPath(obj: any, path: string): any {
+  if (!path) return undefined;
+  return path.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+function reportDateStr(v: any): string { const s = iso(v); return s ? s.slice(0, 10) : ""; }
+
+async function listReportRecords(type: string, q: string): Promise<Array<{ id: number; label: string }>> {
+  const like = `%${q}%`;
+  try {
+    if (type === "invoice") {
+      const rows = await db.query.salesInvoicesTable.findMany({ where: q ? or(ilike(salesInvoicesTable.invoiceNo, like), ilike(salesInvoicesTable.customerName, like)) : undefined, orderBy: [desc(salesInvoicesTable.id)], limit: 20 });
+      return rows.map((r: any) => ({ id: r.id, label: `${r.invoiceNo ?? r.id} · ${r.customerName ?? ""}` }));
+    }
+    if (type === "product") {
+      const rows = await db.query.productsTable.findMany({ where: q ? or(ilike(productsTable.nameAr, like), ilike(productsTable.name, like)) : undefined, orderBy: [desc(productsTable.id)], limit: 20 });
+      return rows.map((r: any) => ({ id: r.id, label: r.nameAr || r.name || `#${r.id}` }));
+    }
+    if (type === "booking") {
+      const rows = await db.query.koshaBookingsTable.findMany({ where: q ? or(ilike(koshaBookingsTable.customerName, like), ilike(koshaBookingsTable.phone, like)) : undefined, orderBy: [desc(koshaBookingsTable.id)], limit: 20 });
+      return rows.map((r: any) => ({ id: r.id, label: `${r.customerName ?? ""} · ${r.eventDate ?? ""}` }));
+    }
+    if (type === "order") {
+      const rows = await db.query.ordersTable.findMany({ where: q ? or(ilike(ordersTable.trackingCode, like), ilike(ordersTable.customerName, like)) : undefined, orderBy: [desc(ordersTable.id)], limit: 20 });
+      return rows.map((r: any) => ({ id: r.id, label: `${r.trackingCode ?? r.id} · ${r.customerName ?? ""}` }));
+    }
+    if (type === "customer") {
+      const rows = await db.query.customersTable.findMany({ where: q ? or(ilike(customersTable.name, like), ilike(customersTable.phone, like)) : undefined, orderBy: [desc(customersTable.id)], limit: 20 });
+      return rows.map((r: any) => ({ id: r.id, label: `${r.fullName || r.name || ""} · ${r.phone ?? ""}` }));
+    }
+  } catch { /* table/column mismatch → empty */ }
+  return [];
+}
+
+// Detail-band rows — resolves a record's line items into repeating rows (#detail iteration).
+async function buildReportRows(type: string, recordId: number, mapping: Record<string, string>, fields: string[]): Promise<Array<Record<string, string>>> {
+  let items: any[] = [];
+  try {
+    if (type === "invoice") items = await db.query.salesInvoiceItemsTable.findMany({ where: eq(salesInvoiceItemsTable.invoiceId, recordId), limit: 200 });
+    else if (type === "order") items = await db.query.orderItemsTable.findMany({ where: eq(orderItemsTable.orderId, recordId), limit: 200 });
+    else return [];
+  } catch { return []; }
+  return items.map((it: any) => {
+    const qty = Number(it.quantity ?? 1);
+    const unit = Number(it.unitPrice ?? it.price ?? 0);
+    const itemCtx = { item: { name: it.productNameAr || it.productName || "", price: formatCurrency(unit), qty: String(qty), total: formatCurrency(it.total ?? unit * qty), barcode: it.barcode ?? "" } };
+    const row: Record<string, string> = {};
+    for (const f of fields) {
+      const v = getByPath(itemCtx, mapping[f] || f);
+      if (v !== undefined && v !== null) row[f] = String(v);
+    }
+    return row;
+  });
+}
+
+async function buildReportContext(type: string, recordId: number): Promise<(Record<string, any> & { __label?: string }) | null> {
+  if (!recordId) return null;
+  try {
+    if (type === "invoice") {
+      const inv: any = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, recordId) });
+      if (!inv) return null;
+      return {
+        invoice: { invoiceNo: inv.invoiceNo ?? `#${inv.id}`, date: reportDateStr(inv.createdAt ?? inv.date), total: formatCurrency(inv.totalAmount ?? inv.total ?? 0), paid: formatCurrency(inv.paidAmount ?? 0), remaining: formatCurrency(inv.remainingAmount ?? 0) },
+        customer: { fullName: inv.customerName ?? "", phone: inv.customerPhone ?? "", address: inv.address ?? "" },
+        __label: `${inv.invoiceNo ?? inv.id} · ${inv.customerName ?? ""}`,
+      };
+    }
+    if (type === "product") {
+      const p: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, recordId) });
+      if (!p) return null;
+      return { product: { name: p.nameAr || p.name || "", price: formatCurrency(p.price ?? 0), barcode: p.barcode ?? "", costPrice: formatCurrency(p.costPrice ?? 0) }, __label: p.nameAr || p.name || `#${p.id}` };
+    }
+    if (type === "booking") {
+      const b: any = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, recordId) });
+      if (!b) return null;
+      return { booking: { code: b.trackingCode ?? `KB-${b.id}`, date: reportDateStr(b.eventDate ?? b.createdAt), customerName: b.customerName ?? "" }, customer: { fullName: b.customerName ?? "", phone: b.phone ?? "", address: b.hallLocation ?? b.cityArea ?? "" }, __label: `${b.customerName ?? ""} · ${b.eventDate ?? ""}` };
+    }
+    if (type === "order") {
+      const o: any = await db.query.ordersTable.findFirst({ where: eq(ordersTable.id, recordId) });
+      if (!o) return null;
+      return { order: { code: o.trackingCode ?? `#${o.id}`, date: reportDateStr(o.createdAt) }, customer: { fullName: o.customerName ?? "", phone: o.customerPhone ?? "", address: o.address ?? "" }, __label: `${o.trackingCode ?? o.id} · ${o.customerName ?? ""}` };
+    }
+    if (type === "customer") {
+      const c: any = await db.query.customersTable.findFirst({ where: eq(customersTable.id, recordId) });
+      if (!c) return null;
+      return { customer: { fullName: c.fullName || c.name || "", phone: c.phone ?? "", address: c.address ?? "" }, __label: c.fullName || c.name || `#${c.id}` };
+    }
+  } catch { return null; }
+  return null;
 }
 
 async function ensureAdminExtensionsTables(): Promise<void> {
@@ -11443,6 +11567,150 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       void logAdminActivity(req, next === "approved" ? "warehouse_transfer_approved" : "warehouse_transfer_rejected", "warehouse_transfer", row.id, { transferNo: row.transferNo, execution });
       return json({ ...formatWarehouseTransfer(row), execution });
     }
+  }
+
+  if (section === "report-templates") {
+    const auth = await requirePermission(req, "settings");
+    if (isResponse(auth)) return auth;
+    await ensureReportTemplatesTables();
+    const sub = parts[2];
+
+    // List (lightweight — no repx/model payload).
+    if (method === "GET" && !sub) {
+      const category = req.nextUrl.searchParams.get("category")?.trim();
+      const rows = await db.query.reportTemplatesTable.findMany({
+        where: category && (REPORT_CATEGORIES as readonly string[]).includes(category) ? eq(reportTemplatesTable.category, category) : undefined,
+        orderBy: [desc(reportTemplatesTable.isDefault), desc(reportTemplatesTable.updatedAt)],
+        limit: 300,
+      });
+      return json({ data: rows.map((r) => ({ id: r.id, name: r.name, category: r.category, paperKind: r.paperKind, version: r.version, isDefault: r.isDefault === 1, fileName: r.fileName, warnings: (r.warnings ?? []).length, createdByName: r.createdByName, updatedAt: iso(r.updatedAt) })) });
+    }
+
+    // Upload / import a REPX file.
+    if (method === "POST" && !sub) {
+      const b = await body(req);
+      const repxXml = typeof b?.repxXml === "string" ? b.repxXml : "";
+      if (!repxXml.trim() || !/</.test(repxXml)) return error("ملف REPX فارغ أو غير صالح", 400);
+      const fileName = nullableText(b?.fileName);
+      const baseName = textFallback(b?.name, fileName?.replace(/\.repx$/i, ""), "قالب REPX");
+      const model = parseRepx(repxXml, baseName);
+      const category = typeof b?.category === "string" && (REPORT_CATEGORIES as readonly string[]).includes(b.category) ? b.category : guessCategory(`${baseName} ${fileName ?? ""}`);
+      const [row] = await db.insert(reportTemplatesTable).values({
+        name: baseName,
+        category,
+        paperKind: model.page.paperKind || "A4",
+        repxXml,
+        model: model as any,
+        warnings: model.warnings,
+        fileName,
+        createdBy: auth.id,
+        createdByName: auth.fullName || auth.username,
+      }).returning();
+      void logAdminActivity(req, "report_template_imported", "report_template", row.id, { name: baseName, category, fields: model.dataFields.length, warnings: model.warnings.length });
+      return json({ id: row.id, name: row.name, category: row.category, model, warnings: model.warnings }, 201);
+    }
+
+    // Records picker for live-data preview (search real AJN records by type).
+    if (method === "GET" && sub === "records") {
+      const type = req.nextUrl.searchParams.get("type")?.trim() ?? "";
+      const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
+      const records = await listReportRecords(type, q);
+      return json({ data: records });
+    }
+
+    const id = sub ? int(sub) : null;
+    if (!id) return error("معرف القالب غير صحيح", 400);
+    const tpl = await db.query.reportTemplatesTable.findFirst({ where: eq(reportTemplatesTable.id, id) });
+    if (!tpl) return error("القالب غير موجود", 404);
+
+    // Resolve a real record against the template mapping → field values for preview/print/export.
+    if (method === "GET" && parts[3] === "data") {
+      const type = req.nextUrl.searchParams.get("type")?.trim() ?? "";
+      const recordId = int(String(req.nextUrl.searchParams.get("recordId") ?? "")) ?? 0;
+      const context = await buildReportContext(type, recordId);
+      if (!context) return error("السجل غير موجود", 404);
+      const mapping = (tpl.mapping ?? {}) as Record<string, string>;
+      const fields = ((tpl.model as any)?.dataFields ?? []) as string[];
+      const values: Record<string, string> = {};
+      for (const f of fields) {
+        const path = mapping[f];
+        const v = path ? getByPath(context, path) : getByPath(context, f);
+        if (v !== undefined && v !== null) values[f] = String(v);
+      }
+      const rows = await buildReportRows(type, recordId, mapping, fields);
+      return json({ values, rows, label: context.__label ?? "" });
+    }
+
+    if (method === "GET") {
+      return json({ id: tpl.id, name: tpl.name, category: tpl.category, paperKind: tpl.paperKind, version: tpl.version, isDefault: tpl.isDefault === 1, fileName: tpl.fileName, repxXml: tpl.repxXml, model: tpl.model, mapping: tpl.mapping, warnings: tpl.warnings, history: (tpl.history ?? []).map((h: any) => ({ version: h.version, updatedAt: h.updatedAt })) });
+    }
+
+    if (method === "POST" && parts[3] === "clone") {
+      const [row] = await db.insert(reportTemplatesTable).values({
+        name: `${tpl.name} (نسخة)`, category: tpl.category, paperKind: tpl.paperKind, repxXml: tpl.repxXml,
+        model: tpl.model as any, mapping: tpl.mapping as any, warnings: tpl.warnings as any,
+        fileName: tpl.fileName, createdBy: auth.id, createdByName: auth.fullName || auth.username,
+      }).returning();
+      void logAdminActivity(req, "report_template_cloned", "report_template", row.id, { from: tpl.id });
+      return json({ id: row.id }, 201);
+    }
+
+    if (method === "POST" && parts[3] === "default") {
+      await db.update(reportTemplatesTable).set({ isDefault: 0 }).where(eq(reportTemplatesTable.category, tpl.category));
+      await db.update(reportTemplatesTable).set({ isDefault: 1, updatedAt: new Date() }).where(eq(reportTemplatesTable.id, id));
+      void logAdminActivity(req, "report_template_set_default", "report_template", id, { category: tpl.category });
+      return json({ ok: true });
+    }
+
+    if (method === "POST" && parts[3] === "revert") {
+      const b = await body(req);
+      const targetVersion = int(String(b?.version ?? ""));
+      const snapshot = (tpl.history ?? []).find((h: any) => h.version === targetVersion);
+      if (!snapshot) return error("الإصدار غير موجود", 404);
+      const history = [...(tpl.history ?? []), { version: tpl.version, repxXml: tpl.repxXml, model: tpl.model, mapping: tpl.mapping, updatedAt: new Date().toISOString() }];
+      await db.update(reportTemplatesTable).set({
+        repxXml: (snapshot as any).repxXml, model: (snapshot as any).model, mapping: (snapshot as any).mapping,
+        version: tpl.version + 1, history: history as any, updatedAt: new Date(),
+      }).where(eq(reportTemplatesTable.id, id));
+      void logAdminActivity(req, "report_template_reverted", "report_template", id, { to: targetVersion });
+      return json({ ok: true, version: tpl.version + 1 });
+    }
+
+    if (method === "PATCH") {
+      const b = await body(req);
+      const update: any = { updatedAt: new Date() };
+      if (typeof b?.name === "string" && b.name.trim()) update.name = b.name.trim();
+      if (typeof b?.category === "string" && (REPORT_CATEGORIES as readonly string[]).includes(b.category)) update.category = b.category;
+      if (b?.mapping && typeof b.mapping === "object") update.mapping = b.mapping;
+      // Editing the REPX re-parses and creates a new version (keeps the prior snapshot in history).
+      const repxChanged = typeof b?.repxXml === "string" && b.repxXml.trim() && b.repxXml !== tpl.repxXml;
+      if (repxChanged) {
+        const model = parseRepx(b.repxXml, update.name || tpl.name);
+        update.repxXml = b.repxXml;
+        update.model = model as any;
+        update.warnings = model.warnings;
+        update.paperKind = model.page.paperKind || tpl.paperKind;
+        update.version = tpl.version + 1;
+        update.history = [...(tpl.history ?? []), { version: tpl.version, repxXml: tpl.repxXml, model: tpl.model, mapping: tpl.mapping, updatedAt: new Date().toISOString() }] as any;
+      } else if (b?.model && typeof b.model === "object") {
+        // Visual designer edits — persist the model as the new version (model is the source of truth for render/print).
+        update.model = b.model;
+        if (b.model?.page?.paperKind) update.paperKind = b.model.page.paperKind;
+        update.version = tpl.version + 1;
+        update.history = [...(tpl.history ?? []), { version: tpl.version, repxXml: tpl.repxXml, model: tpl.model, mapping: tpl.mapping, updatedAt: new Date().toISOString() }] as any;
+      }
+      const [row] = await db.update(reportTemplatesTable).set(update).where(eq(reportTemplatesTable.id, id)).returning();
+      void logAdminActivity(req, "report_template_updated", "report_template", id, { name: row.name, version: row.version });
+      return json({ id: row.id, version: row.version });
+    }
+
+    if (method === "DELETE") {
+      await db.delete(reportTemplatesTable).where(eq(reportTemplatesTable.id, id));
+      void logAdminActivity(req, "report_template_deleted", "report_template", id, { name: tpl.name });
+      return json({ ok: true });
+    }
+
+    return error("إجراء غير مدعوم", 405);
   }
 
   if (section === "assets") {

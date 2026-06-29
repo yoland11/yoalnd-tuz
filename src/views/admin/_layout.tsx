@@ -7,7 +7,7 @@ import {
   Receipt, ShoppingCart, BarChart3, PenTool, Monitor, History, Barcode, Printer, WalletCards,
   Percent, Trophy, AlertTriangle, ChevronDown, Home, Store, Boxes, Megaphone, ShieldCheck,
   CheckSquare, CalendarDays, Inbox, Activity, QrCode, UserCheck,
-  Bell, Bot, CircleDollarSign, Menu, PackageCheck, Search as SearchIconCompat, X,
+  Bell, Bot, CircleDollarSign, Menu, PackageCheck, Search as SearchIconCompat, X, FileText,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -76,6 +76,7 @@ const NAV: NavItem[] = [
   { href: "/admin/backup",         label: "النسخ الاحتياطي",     icon: Database,        perm: "backup", adminOnly: true },
   { href: "/admin/disaster-recovery", label: "الطوارئ والاسترجاع", icon: Database,      perm: "backup", adminOnly: true },
   { href: "/admin/invoice-designer",label: "مصمم الفاتورة",     icon: PenTool,         perm: "settings", adminOnly: true },
+  { href: "/admin/report-designer", label: "مصمم التقارير REPX", icon: FileText,        perm: "settings", adminOnly: true },
   { href: "/admin/settings/printer",label: "إعدادات الطابعة",   icon: Printer,         perm: "settings", adminOnly: true },
   { href: "/admin/settings/telegram",label: "إعدادات Telegram", icon: Bot,             perm: "settings", adminOnly: true },
   { href: "/admin/settings",       label: "الإعدادات",          icon: Settings,        perm: "settings", adminOnly: true },
@@ -204,6 +205,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/backup"),
       navItem("/admin/disaster-recovery"),
       navItem("/admin/invoice-designer"),
+      navItem("/admin/report-designer"),
       navItem("/admin/settings/printer"),
       navItem("/admin/settings/telegram"),
       navItem("/admin/settings"),
