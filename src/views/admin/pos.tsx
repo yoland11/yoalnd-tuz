@@ -7,6 +7,7 @@ import {
   CheckCircle2, AlertCircle, Clock, Grid3X3, List,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -452,7 +453,7 @@ export default function POSPage() {
   const taxPct     = parseFloat(form.taxPct || "0");
   const taxAmount  = +((subtotal - totalDisc) * taxPct / 100).toFixed(2);
   const grandTotal = +(subtotal - totalDisc + taxAmount).toFixed(2);
-  const paidAmt    = parseFloat(form.paidAmount || "0");
+  const paidAmt    = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining  = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
   const totals     = { subtotal, discount: totalDisc, tax: taxAmount, grand: grandTotal, paid: paidAmt, remaining };
@@ -1067,7 +1068,7 @@ export default function POSPage() {
               {PAYMENT_METHODS.map(m => (
                 <button
                   key={m.value}
-                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value }))}
+                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-xs font-semibold border transition-all ${
                     form.paymentMethod === m.value
                       ? "bg-primary text-black border-primary shadow-md"
@@ -1084,10 +1085,10 @@ export default function POSPage() {
               <label className="text-xs text-muted-foreground mb-1 block">المبلغ المدفوع</label>
               <div className="flex gap-2">
                 <button
-                  onClick={() => { setNumpadField({ idx: -1, field: "paidAmount" }); setNumpadVal(form.paidAmount); }}
+                  onClick={() => { if (isCashPaymentMethod(form.paymentMethod)) return; setNumpadField({ idx: -1, field: "paidAmount" }); setNumpadVal(form.paidAmount); }}
                   className="flex-1 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm font-mono font-bold text-foreground text-right hover:border-primary/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 >
-                  {form.paidAmount || "0"}
+                  {isCashPaymentMethod(form.paymentMethod) ? grandTotal : form.paidAmount || "0"}
                 </button>
                 <button
                   onClick={() => setForm(f => ({ ...f, paidAmount: grandTotal.toString() }))}

@@ -14,6 +14,7 @@ import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
+import { settlePaymentAmounts } from "@/lib/payment-settlement";
 import { parseRepx, guessCategory, REPORT_CATEGORIES } from "@/server/repx";
 import { z } from "zod/v4";
 import { and, asc, desc, eq, gt, gte, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
@@ -497,20 +498,9 @@ async function productBarcodeExists(barcode: string, ignoreId?: number): Promise
   return !!existing && existing.id !== ignoreId;
 }
 
-function paymentSummary(totalValue: unknown, depositValue: unknown, preferredStatus?: unknown) {
-  const total = money(totalValue);
-  const requestedDeposit = money(depositValue);
-  const deposit = preferredStatus === "paid" && requestedDeposit === 0 && total > 0
-    ? total
-    : Math.min(requestedDeposit, total || requestedDeposit);
-  const remaining = Math.max(total - deposit, 0);
-  const status =
-    preferredStatus === "paid" || (total > 0 && remaining === 0)
-      ? "paid"
-      : preferredStatus === "partial" || deposit > 0
-        ? "partial"
-        : "unpaid";
-  return { deposit, remaining, status };
+function paymentSummary(totalValue: unknown, depositValue: unknown, preferredStatus?: unknown, paymentMethod?: unknown) {
+  const settled = settlePaymentAmounts(totalValue, depositValue, preferredStatus, paymentMethod);
+  return { deposit: settled.paid, remaining: settled.remaining, status: settled.status };
 }
 
 function sessionSecret(): string {
@@ -2256,6 +2246,7 @@ const KoshaBookingUpdateSchema = z.object({
   totalAmount: z.coerce.number().nonnegative().optional(),
   paidAmount: z.coerce.number().nonnegative().optional(),
   paymentStatus: z.enum(["paid", "partial", "unpaid", "pending_pricing"]).optional(),
+  paymentMethod: z.enum(["cash", "transfer", "pos", "card"]).optional(),
   pricing: z.object({
     koshaPrice: z.coerce.number().nonnegative().optional().default(0),
     welcomeBoardPrice: z.coerce.number().nonnegative().optional().default(0),
@@ -2265,6 +2256,7 @@ const KoshaBookingUpdateSchema = z.object({
     totalAmount: z.coerce.number().nonnegative().optional(),
     paidAmount: z.coerce.number().nonnegative().optional(),
     remainingAmount: z.coerce.number().nonnegative().optional(),
+    paymentMethod: z.enum(["cash", "transfer", "pos", "card"]).optional(),
     financialNotes: z.string().optional().nullable(),
   }).optional(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
@@ -5831,7 +5823,8 @@ async function insertServiceOrderWithTracking(values: Omit<typeof serviceOrdersT
   await ensurePaymentWorkflowColumns();
   // Surface the service customer on /admin/customers — create-or-link by phone.
   if (values.phone) await ensureCustomerForPhone(values.phone, (values as any).customerName);
-  const payment = paymentSummary((values as any).totalAmount, (values as any).depositAmount, (values as any).paymentStatus);
+  const paymentMethod = (values as any)?.customFields?.paymentMethod;
+  const payment = paymentSummary((values as any).totalAmount, (values as any).depositAmount, (values as any).paymentStatus, paymentMethod);
   const [row] = await db
     .insert(serviceOrdersTable)
     .values({
@@ -7342,7 +7335,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     }
     const total = Math.max(subtotal + deliveryFee - couponDiscountAmount - loyaltyDiscountAmount, 0);
     const paymentMethod = data.paymentMethod && ["cod", "transfer", "paid"].includes(data.paymentMethod) ? data.paymentMethod : "cod";
-    const payment = paymentSummary(total, paymentMethod === "paid" ? total : 0, paymentMethod === "paid" ? "paid" : "unpaid");
+    const payment = paymentSummary(total, paymentMethod === "paid" ? total : 0, paymentMethod === "paid" ? "paid" : "unpaid", paymentMethod);
     // Every order must surface a customer on /admin/customers. Create-or-link by phone
     // (the session id wins if the buyer was logged in; otherwise we resolve/create one).
     const orderCustomer = customerPhone ? await ensureCustomerForPhone(customerPhone, safeCustomerName) : null;
@@ -9545,10 +9538,12 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
             selectedAddons, welcomeBoards, selectedAccessories, addonDetails, welcomeBoardDetails, accessoryDetails, optionsTotal, catalogTotal,
           };
         }
-        if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined || parsed.data.pricing !== undefined) {
+        if (parsed.data.totalAmount !== undefined || parsed.data.paidAmount !== undefined || parsed.data.paymentStatus !== undefined || parsed.data.paymentMethod !== undefined || parsed.data.pricing !== undefined) {
           const pricing = parsed.data.pricing;
           const totalAmount = money(parsed.data.totalAmount ?? pricing?.totalAmount ?? existing.totalAmount);
           const paidAmount = money(parsed.data.paidAmount ?? pricing?.paidAmount ?? existing.paidAmount);
+          const currentPricing = ((existing.bookingDetails as any)?.pricing ?? {}) as Record<string, unknown>;
+          const paymentMethod = parsed.data.paymentMethod ?? pricing?.paymentMethod ?? currentPricing.paymentMethod ?? "cash";
           const pendingPricing = parsed.data.paymentStatus === "pending_pricing" || totalAmount <= 0;
           if (pendingPricing) {
             if (paidAmount > 0) return error("أدخل السعر الكلي قبل تسجيل أي مبلغ مدفوع", 400);
@@ -9557,7 +9552,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
             update.remainingAmount = "0";
             update.paymentStatus = "pending_pricing";
           } else {
-            const payment = paymentSummary(totalAmount, paidAmount, parsed.data.paymentStatus);
+            const payment = paymentSummary(totalAmount, paidAmount, parsed.data.paymentStatus, paymentMethod);
             update.totalAmount = String(totalAmount);
             update.paidAmount = String(payment.deposit);
             update.remainingAmount = String(payment.remaining);
@@ -9582,6 +9577,7 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
                 totalAmount: finalTotal,
                 paidAmount: finalPaid,
                 remainingAmount: finalRemaining,
+                paymentMethod,
                 financialNotes: nullableText(pricing.financialNotes),
                 pricedAt: update.paymentStatus === "pending_pricing" ? null : new Date().toISOString(),
                 pricedBy: auth.fullName || auth.username,
@@ -13790,10 +13786,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (search) {
         const s = search.toLowerCase();
         const phoneSearch = normalizePhoneDigits(search);
+        const normalizedPhoneSearch = normalizeIraqiPhone(search);
         result = result.filter((c) =>
           c.name.toLowerCase().includes(s) ||
           c.phone.includes(phoneSearch || search) ||
-          formatIraqiPhone(c.phone).includes(phoneSearch || search)
+          formatIraqiPhone(c.phone).includes(phoneSearch || search) ||
+          (normalizedPhoneSearch !== null && normalizeIraqiPhone(c.phone) === normalizedPhoneSearch)
         );
       }
       return json(result);
@@ -14055,7 +14053,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
       if (!service) return error("الخدمة غير موجودة", 404);
       const customFields = withDerivedServiceDetails(service.type, normalizeDetailsInput(rawBody?.customFields ?? data.customFields));
-      const payment = paymentSummary(rawBody?.totalAmount, rawBody?.depositAmount, rawBody?.paymentStatus);
+      const servicePaymentMethod = String(rawBody?.paymentMethod ?? (customFields as any)?.paymentMethod ?? "").trim();
+      if (servicePaymentMethod) {
+        if (!["cash", "transfer", "pos", "card"].includes(servicePaymentMethod)) return error("طريقة دفع غير صالحة", 400);
+        (customFields as any).paymentMethod = servicePaymentMethod;
+      }
+      const payment = paymentSummary(rawBody?.totalAmount, rawBody?.depositAmount, rawBody?.paymentStatus, servicePaymentMethod);
       const eventLocation =
         rawBody?.eventLocation ?? data.eventLocation ??
         primaryLocationFromDetails(service.type, customFields) ??
@@ -14273,6 +14276,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           update.eventLocation = primaryLocationFromDetails(service?.type, update.customFields) || prev.eventLocation;
         }
       }
+      if (b?.paymentMethod !== undefined) {
+        const paymentMethod = String(b.paymentMethod ?? "").trim();
+        if (!["cash", "transfer", "pos", "card"].includes(paymentMethod)) return error("طريقة دفع غير صالحة", 400);
+        update.customFields = { ...((update.customFields ?? prev.customFields ?? {}) as Record<string, unknown>), paymentMethod };
+      }
       if (update.eventDate !== undefined || update.customFields !== undefined) {
         const conflict = await findBookingConflict({
           serviceId: prev.serviceId,
@@ -14282,10 +14290,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         if (conflict) return error("يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.", 409);
       }
-      if (b?.totalAmount !== undefined || b?.depositAmount !== undefined || b?.paymentStatus !== undefined) {
+      if (b?.totalAmount !== undefined || b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.paymentMethod !== undefined) {
         if (b?.paymentStatus !== undefined && !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))) return error("حالة الدفع غير صالحة", 400);
         const totalAmount = b?.totalAmount ?? prev.totalAmount;
-        const payment = paymentSummary(totalAmount, b?.depositAmount ?? prev.depositAmount, b?.paymentStatus ?? prev.paymentStatus);
+        const paymentMethod = b?.paymentMethod ?? (update.customFields as any)?.paymentMethod ?? (prev.customFields as any)?.paymentMethod;
+        const payment = paymentSummary(totalAmount, b?.depositAmount ?? prev.depositAmount, b?.paymentStatus ?? prev.paymentStatus, paymentMethod);
         update.totalAmount = String(money(totalAmount));
         update.depositAmount = String(payment.deposit);
         update.remainingAmount = String(payment.remaining);
@@ -14436,7 +14445,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
       const safeCustomerName = textFallback(customerName, formatIraqiPhone(normalizedPhone), "زبون");
       const total = orderItems.reduce((s: number, it: any) => s + money(it.price) * Number(it.quantity), 0) + money(deliveryFee);
-      const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined));
+      const payment = paymentSummary(total, depositAmount, paymentStatus ?? (paymentMethod === "paid" ? "paid" : undefined), paymentMethod);
           const [order] = await db
             .insert(ordersTable)
             .values({
@@ -14605,8 +14614,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
 
       const effectiveTotal = update.total ?? current.total;
-      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || update.total !== undefined) {
-        const payment = paymentSummary(effectiveTotal, b?.depositAmount ?? current.depositAmount, b?.paymentStatus ?? current.paymentStatus);
+      if (b?.depositAmount !== undefined || b?.paymentStatus !== undefined || b?.paymentMethod !== undefined || update.total !== undefined) {
+        const payment = paymentSummary(effectiveTotal, b?.depositAmount ?? current.depositAmount, b?.paymentStatus ?? current.paymentStatus, update.paymentMethod ?? current.paymentMethod);
         update.depositAmount = String(payment.deposit);
         update.remainingAmount = String(payment.remaining);
         update.paymentStatus = payment.status;
@@ -15239,9 +15248,11 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     if (couponDiscountAmount > discountAmount) discountAmount = couponDiscountAmount;
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
     const total = Math.max(subtotal - discountAmount + taxAmount, 0);
-    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
-    const remainingAmount = Math.max(total - paidAmount, 0);
-    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const paymentMethod = b.paymentMethod ?? "cash";
+    const payment = paymentSummary(total, b.paidAmount ?? 0, b.paymentStatus, paymentMethod);
+    const paidAmount = payment.deposit;
+    const remainingAmount = payment.remaining;
+    const paymentStatus = payment.status;
     const rawPhone = textFallback(b.customerPhone);
     const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
     if (rawPhone && !customerPhone) return error("رقم هاتف الزبون العراقي غير صحيح", 400);
@@ -15260,7 +15271,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       total: String(total),
       paidAmount: String(paidAmount),
       remainingAmount: String(remainingAmount),
-      paymentMethod: b.paymentMethod ?? "cash",
+      paymentMethod,
       paymentStatus,
       dueDate: normalizeDateOnly(b.dueDate) ?? null,
       status: "active",
@@ -15368,9 +15379,11 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
     const discountAmount = parseFloat(b.discountAmount ?? String(existing.discountAmount)) || 0;
     const taxAmount = parseFloat(b.taxAmount ?? String(existing.taxAmount)) || 0;
     const total = Math.max(parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0, 0);
-    const paidAmount = Math.max(parseFloat(b.paidAmount ?? String(existing.paidAmount)) || 0, 0);
-    const remainingAmount = Math.max(total - paidAmount, 0);
-    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
+    const payment = paymentSummary(total, b.paidAmount ?? existing.paidAmount, b.paymentStatus ?? existing.paymentStatus, paymentMethod);
+    const paidAmount = payment.deposit;
+    const remainingAmount = payment.remaining;
+    const paymentStatus = payment.status;
     const rawPhone = b.customerPhone !== undefined ? textFallback(b.customerPhone) : existing.customerPhone;
     const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
     if (rawPhone && !customerPhone) return error("رقم هاتف الزبون العراقي غير صحيح", 400);
@@ -15382,7 +15395,7 @@ async function handleSalesInvoices(req: NextRequest, parts: string[], section: s
       subtotal: String(subtotal), discountAmount: String(discountAmount),
       taxAmount: String(taxAmount), total: String(total),
       paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
-      paymentMethod: b.paymentMethod ?? existing.paymentMethod,
+      paymentMethod,
       paymentStatus,
       dueDate: b.dueDate !== undefined ? normalizeDateOnly(b.dueDate) : existing.dueDate,
       status: b.status !== undefined ? String(b.status || existing.status) : existing.status,
@@ -15546,9 +15559,11 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
     const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
     const total = Math.max(subtotal - discountAmount + taxAmount + shippingCost, 0);
-    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
-    const remainingAmount = Math.max(total - paidAmount, 0);
-    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const paymentMethod = b.paymentMethod ?? "cash";
+    const payment = paymentSummary(total, b.paidAmount ?? 0, b.paymentStatus, paymentMethod);
+    const paidAmount = payment.deposit;
+    const remainingAmount = payment.remaining;
+    const paymentStatus = payment.status;
 
     const [inv] = await db.insert(purchaseInvoicesTable).values({
       invoiceNo: `PI-TEMP-${randomBytes(8).toString("hex")}`,
@@ -15559,7 +15574,7 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
       taxAmount: String(taxAmount), shippingCost: String(shippingCost),
       total: String(total), paidAmount: String(paidAmount),
       remainingAmount: String(remainingAmount),
-      paymentMethod: b.paymentMethod ?? "cash",
+      paymentMethod,
       paymentStatus, status: "active",
       notes: b.notes ?? null,
       createdBy: a.id, createdByName: a.name,
@@ -15678,9 +15693,11 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
     const shippingCost = parseFloat(b.shippingCost ?? "0") || 0;
     const total = Math.max(subtotal - discountAmount + taxAmount + shippingCost, 0);
-    const paidAmount = parseFloat(b.paidAmount ?? String(total)) || 0;
-    const remainingAmount = Math.max(total - paidAmount, 0);
-    const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
+    const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
+    const payment = paymentSummary(total, b.paidAmount ?? existing.paidAmount, b.paymentStatus ?? existing.paymentStatus, paymentMethod);
+    const paidAmount = payment.deposit;
+    const remainingAmount = payment.remaining;
+    const paymentStatus = payment.status;
 
     await db.update(purchaseInvoicesTable).set({
       date: b.date ?? existing.date,
@@ -15689,7 +15706,7 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
       subtotal: String(subtotal), discountAmount: String(discountAmount),
       taxAmount: String(taxAmount), shippingCost: String(shippingCost),
       total: String(total), paidAmount: String(paidAmount), remainingAmount: String(remainingAmount),
-      paymentMethod: b.paymentMethod ?? existing.paymentMethod, paymentStatus,
+      paymentMethod, paymentStatus,
       notes: b.notes ?? existing.notes,
     } as any).where(eq(purchaseInvoicesTable.id, id));
 
@@ -16881,6 +16898,7 @@ async function ensureAccountingVoucherTables() {
           "date" date NOT NULL DEFAULT now(),
           "amount" numeric(12,2) NOT NULL,
           "payee_name" text NOT NULL,
+          "customer_id" integer REFERENCES "customers" ("id") ON DELETE SET NULL,
           "reference" text,
           "method" varchar(20) NOT NULL DEFAULT 'cash',
           "notes" text,
@@ -16911,6 +16929,7 @@ async function ensureAccountingVoucherTables() {
           ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
           ADD COLUMN IF NOT EXISTS "amount" numeric(12,2) NOT NULL DEFAULT 0,
           ADD COLUMN IF NOT EXISTS "payee_name" text NOT NULL DEFAULT '',
+          ADD COLUMN IF NOT EXISTS "customer_id" integer,
           ADD COLUMN IF NOT EXISTS "reference" text,
           ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
           ADD COLUMN IF NOT EXISTS "notes" text,
@@ -16927,6 +16946,7 @@ async function ensureAccountingVoucherTables() {
 
         CREATE UNIQUE INDEX IF NOT EXISTS "payment_vouchers_voucher_no_idx" ON "payment_vouchers" ("voucher_no");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_date_idx" ON "payment_vouchers" ("date");
+        CREATE INDEX IF NOT EXISTS "payment_vouchers_customer_id_idx" ON "payment_vouchers" ("customer_id");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_created_by_idx" ON "payment_vouchers" ("created_by");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_approval_status_idx" ON "receipt_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_financial_transaction_id_idx" ON "receipt_vouchers" ("financial_transaction_id");
@@ -17012,7 +17032,7 @@ async function syncServiceOrderFinancialPayment(order: typeof serviceOrdersTable
     department: serviceDepartment(service),
     transactionType: "service_booking",
     description: `دفعة حجز ${order.trackingCode ?? `#${order.id}`}`,
-    paymentMethod: "cash",
+    paymentMethod: (order.customFields as any)?.paymentMethod === "transfer" ? "transfer" : (order.customFields as any)?.paymentMethod === "pos" || (order.customFields as any)?.paymentMethod === "card" ? "pos" : "cash",
     customerName: order.customerName,
     customerPhone: order.phone,
     dueDate: order.dueDate,
@@ -17022,6 +17042,7 @@ async function syncServiceOrderFinancialPayment(order: typeof serviceOrdersTable
 
 async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$inferSelect, financeActorValue: FinancialActor) {
   const targetPaid = order.status === "cancelled" ? 0 : Number(order.paidAmount);
+  const paymentMethod = (order.bookingDetails as any)?.pricing?.paymentMethod;
   return syncSourcePaymentTarget({
     sourceType: "kosha_booking",
     sourceId: order.id,
@@ -17032,7 +17053,7 @@ async function syncKoshaFinancialPayment(order: typeof koshaBookingsTable.$infer
     department: "koshas",
     transactionType: "kosha_booking",
     description: `دفعة حجز كوشة #${order.id}`,
-    paymentMethod: "cash",
+    paymentMethod: paymentMethod === "transfer" ? "transfer" : paymentMethod === "pos" || paymentMethod === "card" ? "pos" : "cash",
     customerName: order.customerName,
     customerPhone: order.phone,
     dueDate: order.dueDate,
@@ -17219,10 +17240,11 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
     const pricePerDay = Number(product.pricePerDay ?? product.price_per_day ?? 0) || Number(product.price ?? 0) || 0;
     if (pricePerDay <= 0) return error("سعر الإيجار اليومي غير محدد لهذا المنتج", 400);
     const total = days * pricePerDay;
-    const paid = Math.min(total, Math.max(0, Number(data.paidAmount ?? total) || 0));
-    const remaining = Math.max(0, total - paid);
+    const payment = paymentSummary(total, data.paidAmount ?? 0, undefined, data.paymentMethod);
+    const paid = payment.deposit;
+    const remaining = payment.remaining;
     const orderNo = rentalOrderNo(phone);
-    const paymentStatus = remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+    const paymentStatus = payment.status;
     const [rentalOrder] = await db.insert(rentalOrdersTable).values({
       orderNo,
       productId: product.id,
@@ -18902,6 +18924,8 @@ const paymentVoucherMutationSchema = z.object({
   date: voucherDateSchema,
   amount: voucherAmountSchema,
   payeeName: z.string().trim().optional().default(""),
+  customerPhone: z.string().trim().optional().default(""),
+  customerId: z.preprocess(optionalPositiveId, z.number().int().positive().nullable()).optional().default(null),
   reference: z.string().trim().optional().default(""),
   method: voucherMethodSchema.default("cash"),
   department: financeDepartmentSchema.default("general"),
@@ -19081,6 +19105,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
+      const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
       const conds = [] as any[];
       if (from) conds.push(gte(receiptVouchersTable.date, from));
       if (to) conds.push(lte(receiptVouchersTable.date, to));
@@ -19089,18 +19114,36 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .from(receiptVouchersTable)
         .where(conds.length ? (and(...conds) as any) : undefined)
         .orderBy(desc(receiptVouchersTable.date), desc(receiptVouchersTable.id));
-      return json(rows);
+      const customerIds = [...new Set(rows.map((row) => row.customerId).filter((id): id is number => !!id))];
+      const customers = customerIds.length
+        ? await db.query.customersTable.findMany({ where: inArray(customersTable.id, customerIds) })
+        : [];
+      const customerMap = new Map(customers.map((customer) => [customer.id, customer]));
+      const normalizedSearchPhone = normalizeIraqiPhone(search);
+      const searchLower = search.toLowerCase();
+      return json(rows
+        .map((row) => ({ ...row, customerPhone: row.customerId ? customerMap.get(row.customerId)?.phone ?? null : null }))
+        .filter((row) => !search || [
+          row.payerName,
+          row.reference,
+          row.customerPhone,
+          row.customerPhone ? formatIraqiPhone(row.customerPhone) : null,
+        ].some((value) => String(value ?? "").toLowerCase().includes(searchLower)) || (
+          normalizedSearchPhone && row.customerPhone && normalizeIraqiPhone(row.customerPhone) === normalizedSearchPhone
+        )));
     }
     if (method === "POST") {
       const parsed = receiptVoucherMutationSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("receipt-vouchers.create", parsed);
       const b = parsed.data;
-      let customerId = b.customerId;
-      if (!customerId && b.customerPhone.trim()) {
+      let customer = b.customerId
+        ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, b.customerId) })
+        : null;
+      if (b.customerId && !customer) return error("العميل المختار غير موجود", 400);
+      if (!customer && b.customerPhone.trim()) {
         const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
-        const c = await findCustomerByPhone(normalizedPhone);
-        if (c) customerId = c.id;
+        customer = await findCustomerByPhone(normalizedPhone);
       }
       const a = actor(auth);
       try {
@@ -19111,8 +19154,8 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
             voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
-            payerName: textFallback(b.payerName, "زبون"),
-            customerId: customerId ?? null,
+            payerName: textFallback(b.payerName, customer?.name, "زبون"),
+            customerId: customer?.id ?? null,
             orderId: b.orderId ?? null,
             bookingId: b.bookingId ?? null,
             reference: nullableText(b.reference),
@@ -19141,6 +19184,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           idempotencyKey: `receipt_voucher:${updated.id}:payment`,
           customerId: updated.customerId,
           customerName: updated.payerName,
+          customerPhone: customer?.phone,
           notes: updated.notes,
           attachments: [],
         }, financialActor(auth));
@@ -19196,6 +19240,7 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
     if (method === "GET") {
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
+      const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
       const conds = [] as any[];
       if (from) conds.push(gte(paymentVouchersTable.date, from));
       if (to) conds.push(lte(paymentVouchersTable.date, to));
@@ -19204,12 +19249,37 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
         .from(paymentVouchersTable)
         .where(conds.length ? (and(...conds) as any) : undefined)
         .orderBy(desc(paymentVouchersTable.date), desc(paymentVouchersTable.id));
-      return json(rows);
+      const customerIds = [...new Set(rows.map((row) => row.customerId).filter((id): id is number => !!id))];
+      const customers = customerIds.length
+        ? await db.query.customersTable.findMany({ where: inArray(customersTable.id, customerIds) })
+        : [];
+      const customerMap = new Map(customers.map((customer) => [customer.id, customer]));
+      const normalizedSearchPhone = normalizeIraqiPhone(search);
+      const searchLower = search.toLowerCase();
+      return json(rows
+        .map((row) => ({ ...row, customerPhone: row.customerId ? customerMap.get(row.customerId)?.phone ?? null : null }))
+        .filter((row) => !search || [
+          row.payeeName,
+          row.reference,
+          row.customerPhone,
+          row.customerPhone ? formatIraqiPhone(row.customerPhone) : null,
+        ].some((value) => String(value ?? "").toLowerCase().includes(searchLower)) || (
+          normalizedSearchPhone && row.customerPhone && normalizeIraqiPhone(row.customerPhone) === normalizedSearchPhone
+        )));
     }
     if (method === "POST") {
       const parsed = paymentVoucherMutationSchema.safeParse(await body(req));
       if (!parsed.success) return validationError("payment-vouchers.create", parsed);
       const b = parsed.data;
+      let customer = b.customerId
+        ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, b.customerId) })
+        : null;
+      if (b.customerId && !customer) return error("العميل المختار غير موجود", 400);
+      if (!customer && b.customerPhone.trim()) {
+        const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
+        if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
+        customer = await findCustomerByPhone(normalizedPhone);
+      }
       const a = actor(auth);
       try {
         await ensureMasterCashBoxTables();
@@ -19219,7 +19289,8 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
             voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
-            payeeName: textFallback(b.payeeName, "مستلم"),
+            payeeName: textFallback(b.payeeName, customer?.name, "مستلم"),
+            customerId: customer?.id ?? null,
             reference: nullableText(b.reference),
             method: b.method,
             notes: nullableText(b.notes),
@@ -19244,6 +19315,9 @@ async function handleAccounting(req: NextRequest, parts: string[], section: stri
           sourceId: updated.id,
           sourceEvent: "payment",
           idempotencyKey: `payment_voucher:${updated.id}:payment`,
+          customerId: updated.customerId,
+          customerName: updated.payeeName,
+          customerPhone: customer?.phone,
           notes: updated.notes,
           attachments: [],
         }, financialActor(auth));

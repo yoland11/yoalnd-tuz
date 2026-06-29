@@ -406,7 +406,7 @@ export default function OrdersPage() {
                       >
                         <option value="cod">عند الاستلام</option>
                         <option value="transfer">حوالة</option>
-                        <option value="paid">مدفوع</option>
+                        <option value="paid">نقداً (مدفوع بالكامل)</option>
                       </select>
                       <select
                         value={order.status}
@@ -780,7 +780,7 @@ function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClos
             <label className="block">
               <span className="block text-xs text-muted-foreground mb-1">طريقة الدفع</span>
               <select value={form.paymentMethod} onChange={(event) => { setPreview(null); setForm({ ...form, paymentMethod: event.target.value }); }} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-                <option value="cod">عند الاستلام</option><option value="transfer">حوالة</option><option value="paid">مدفوع</option>
+                <option value="cod">عند الاستلام</option><option value="transfer">حوالة</option><option value="paid">نقداً (مدفوع بالكامل)</option>
               </select>
             </label>
           </div>
@@ -996,6 +996,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
     totalAmount: "0",
     depositAmount: "0",
     paymentStatus: "unpaid",
+    paymentMethod: "",
     internalNotes: "",
     customFields: {} as Record<string, any>,
   });
@@ -1107,6 +1108,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
       totalAmount: parseFloat(serviceForm.totalAmount) || 0,
       depositAmount: parseFloat(serviceForm.depositAmount) || 0,
       paymentStatus: serviceForm.paymentStatus,
+      paymentMethod: serviceForm.paymentMethod || undefined,
       customFields: details,
     });
   }
@@ -1224,6 +1226,13 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
                 <Input label="السعر الكلي" type="number" value={serviceForm.totalAmount} onChange={v => setServiceForm(f => ({ ...f, totalAmount: v }))} />
                 <Input label="العربون" type="number" value={serviceForm.depositAmount} onChange={v => setServiceForm(f => ({ ...f, depositAmount: v }))} />
                 <div>
+                  <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
+                  <select value={serviceForm.paymentMethod} onChange={e => setServiceForm(f => ({ ...f, paymentMethod: e.target.value, depositAmount: e.target.value === "cash" ? f.totalAmount : f.depositAmount, paymentStatus: e.target.value === "cash" ? "paid" : f.paymentStatus }))}
+                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                    <option value="">غير محدد</option><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option>
+                  </select>
+                </div>
+                <div>
                   <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
                   <select value={serviceForm.paymentStatus} onChange={e => setServiceForm(f => ({ ...f, paymentStatus: e.target.value }))}
                     className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
@@ -1269,6 +1278,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
     totalAmount: String(order.totalAmount ?? 0),
     depositAmount: String(order.depositAmount ?? 0),
     paymentStatus: order.paymentStatus ?? "unpaid",
+    paymentMethod: String((order.customFields as any)?.paymentMethod ?? ""),
     customFields: {
       ...defaultServiceDetails(order.serviceType),
       ...(order.customFields ?? {}),
@@ -1321,6 +1331,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       totalAmount: parseFloat(form.totalAmount) || 0,
       depositAmount: parseFloat(form.depositAmount) || 0,
       paymentStatus: form.paymentStatus,
+      paymentMethod: form.paymentMethod || undefined,
       customFields: details,
     });
   }
@@ -1342,6 +1353,13 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
             <Input label="تاريخ الحجز" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} />
             <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
             <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
+              <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value, depositAmount: e.target.value === "cash" ? f.totalAmount : f.depositAmount, paymentStatus: e.target.value === "cash" ? "paid" : f.paymentStatus }))}
+                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                <option value="">غير محدد</option><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option>
+              </select>
+            </div>
             <div>
               <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
               <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}

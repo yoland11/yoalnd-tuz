@@ -1290,6 +1290,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     discountAmount: textNumber(savedPricing.discountAmount),
     totalAmount: textNumber(booking.totalAmount ?? savedPricing.totalAmount),
     paidAmount: String(booking.paidAmount ?? 0),
+    paymentMethod: String(savedPricing.paymentMethod ?? (booking.paymentStatus === "paid" ? "cash" : "transfer")),
     financialNotes: String(savedPricing.financialNotes ?? ""),
   });
   useEffect(() => setPreviewReady(false), [form]);
@@ -1297,7 +1298,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
   const { data: options } = useQuery<{ addons: KoshaOption[]; welcomeBoards: KoshaOption[]; accessories: KoshaOption[]; provinces: Array<{ id: number; name: string }> }>({
     queryKey: ["koshas", "options", "booking-editor"], queryFn: () => fetch("/api/koshas/options").then((response) => response.json()),
   });
-  const paidAmount = Number(form.paidAmount || 0) || 0;
+  const requestedPaidAmount = Number(form.paidAmount || 0) || 0;
   const breakdownTotal = Math.max(0,
     (Number(form.koshaPrice || 0) || 0) +
     (Number(form.welcomeBoardPrice || 0) || 0) +
@@ -1306,6 +1307,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     (Number(form.discountAmount || 0) || 0),
   );
   const pricedTotal = (Number(form.totalAmount || 0) || 0) > 0 ? Number(form.totalAmount || 0) || 0 : breakdownTotal;
+  const paidAmount = form.paymentMethod === "cash" ? pricedTotal : requestedPaidAmount;
   const remainingAmount = Math.max(0, pricedTotal - paidAmount);
   const computedPaymentStatus = pricedTotal <= 0 ? "pending_pricing" : remainingAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
   const save = useMutation({
@@ -1316,6 +1318,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
         totalAmount: pricedTotal,
         paidAmount,
         paymentStatus: computedPaymentStatus,
+        paymentMethod: form.paymentMethod,
         pricing: {
           koshaPrice: Number(form.koshaPrice || 0) || 0,
           welcomeBoardPrice: Number(form.welcomeBoardPrice || 0) || 0,
@@ -1325,6 +1328,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           totalAmount: pricedTotal,
           paidAmount,
           remainingAmount,
+          paymentMethod: form.paymentMethod,
           financialNotes: form.financialNotes,
         },
       }),
@@ -1389,7 +1393,8 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
               <Field label="سعر الخدمات الإضافية" type="number" value={form.addonsPrice} onChange={(value) => setForm({ ...form, addonsPrice: value })} />
               <Field label="خصم إن وجد" type="number" value={form.discountAmount} onChange={(value) => setForm({ ...form, discountAmount: value })} />
               <Field label="المبلغ الكلي" type="number" value={form.totalAmount} onChange={(value) => setForm({ ...form, totalAmount: value })} />
-              <Field label="المبلغ المدفوع" type="number" value={form.paidAmount} onChange={(value) => setForm({ ...form, paidAmount: value })} />
+              <div><label className="mb-1 block text-xs text-muted-foreground">طريقة الدفع</label><select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value, paidAmount: event.target.value === "cash" ? String(pricedTotal) : form.paidAmount })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option></select></div>
+              <Field label="المبلغ المدفوع" type="number" value={String(paidAmount)} onChange={(value) => setForm({ ...form, paidAmount: form.paymentMethod === "cash" ? String(pricedTotal) : value })} />
               <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2">
                 <div className="text-xs text-muted-foreground">المبلغ المتبقي</div>
                 <div className="mt-1 text-sm font-bold text-foreground">{formatCurrency(remainingAmount)}</div>

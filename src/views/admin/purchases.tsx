@@ -7,6 +7,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
+import { isCashPaymentMethod } from "@/lib/payment-settlement";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -92,7 +93,7 @@ export default function PurchasesPage() {
   const taxPct = parseFloat(form.taxPct || "0");
   const taxAmount = +((subtotal - extraDiscount) * taxPct / 100).toFixed(2);
   const grandTotal = +(subtotal - extraDiscount + taxAmount + shipping).toFixed(2);
-  const paidAmt = parseFloat(form.paidAmount || "0");
+  const paidAmt = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
 
@@ -498,7 +499,7 @@ export default function PurchasesPage() {
             <div className="grid grid-cols-2 gap-2">
               {PAYMENT_METHODS.map(m => (
                 <button key={m.value}
-                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value }))}
+                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                     form.paymentMethod === m.value
                       ? "bg-primary text-black border-primary"
@@ -511,8 +512,9 @@ export default function PurchasesPage() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">المبلغ المدفوع</label>
-              <input type="number" min="0" value={form.paidAmount}
+              <input type="number" min="0" value={isCashPaymentMethod(form.paymentMethod) ? grandTotal : form.paidAmount}
                 onChange={e => setForm(f => ({ ...f, paidAmount: e.target.value }))}
+                readOnly={isCashPaymentMethod(form.paymentMethod)}
                 placeholder={grandTotal.toString()}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"

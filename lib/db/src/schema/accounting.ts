@@ -38,6 +38,7 @@ export const paymentVouchersTable = pgTable("payment_vouchers", {
   date: date("date").notNull().defaultNow(),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   payeeName: text("payee_name").notNull(),
+  customerId: integer("customer_id").references(() => customersTable.id),
   reference: text("reference"),
   method: varchar("method", { length: 20 }).notNull().default("cash"),
   notes: text("notes"),

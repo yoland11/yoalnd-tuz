@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
+import { isCashPaymentMethod } from "@/lib/payment-settlement";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -170,7 +171,7 @@ export default function SalesPage() {
   const taxPct = parseFloat(form.taxPct || "0");
   const taxAmount = +((subtotal - totalDiscount) * taxPct / 100).toFixed(2);
   const grandTotal = +(subtotal - totalDiscount + taxAmount).toFixed(2);
-  const paidAmt = parseFloat(form.paidAmount || "0");
+  const paidAmt = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining = +(grandTotal - paidAmt).toFixed(2);
 
   // Auto paymentStatus
@@ -596,7 +597,7 @@ export default function SalesPage() {
               {PAYMENT_METHODS.map(m => (
                 <button
                   key={m.value}
-                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value }))}
+                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                     form.paymentMethod === m.value
                       ? "bg-primary text-black border-primary"
@@ -611,8 +612,9 @@ export default function SalesPage() {
               <label className="text-xs text-muted-foreground mb-1 block">المبلغ المدفوع</label>
               <input
                 type="number" min="0"
-                value={form.paidAmount}
+                value={isCashPaymentMethod(form.paymentMethod) ? grandTotal : form.paidAmount}
                 onChange={e => setForm(f => ({ ...f, paidAmount: e.target.value }))}
+                readOnly={isCashPaymentMethod(form.paymentMethod)}
                 placeholder={grandTotal.toString()}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
@@ -873,7 +875,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   const discountAmount = toNumber(draft.discountAmount);
   const taxAmount = toNumber(draft.taxAmount);
   const total = Math.max(subtotal - discountAmount + taxAmount, 0);
-  const paidAmount = toNumber(draft.paidAmount);
+  const paidAmount = isCashPaymentMethod(draft.paymentMethod) ? total : toNumber(draft.paidAmount);
   const remainingAmount = Math.max(total - paidAmount, 0);
   const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
@@ -1022,7 +1024,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     <button
                       type="button"
                       key={method.value}
-                      onClick={() => updateDraft("paymentMethod", method.value)}
+                      onClick={() => setDraft((current) => ({ ...current, paymentMethod: method.value, paidAmount: isCashPaymentMethod(method.value) ? String(total) : current.paidAmount }))}
                       className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                         draft.paymentMethod === method.value
                           ? "bg-primary text-black border-primary"
@@ -1038,8 +1040,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   <input
                     type="number"
                     min="0"
-                    value={draft.paidAmount}
+                    value={isCashPaymentMethod(draft.paymentMethod) ? total : draft.paidAmount}
                     onChange={(e) => updateDraft("paidAmount", e.target.value)}
+                    readOnly={isCashPaymentMethod(draft.paymentMethod)}
                     className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />

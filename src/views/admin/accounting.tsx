@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -35,10 +35,12 @@ type ReceiptVoucher = {
   id: number; voucherNo: string; date: string; amount: string; payerName: string;
   customerId: number | null; orderId: number | null; bookingId: number | null;
   reference: string | null; method: string; notes: string | null;
+  customerPhone?: string | null;
   createdByName: string; createdAt: string;
 };
 type PaymentVoucher = {
   id: number; voucherNo: string; date: string; amount: string; payeeName: string;
+  customerId: number | null; customerPhone?: string | null;
   reference: string | null; method: string; notes: string | null;
   createdByName: string; createdAt: string;
 };
@@ -86,12 +88,14 @@ function ReceiptsTab() {
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
     date: string; amount: string; payerName: string; customerPhone: string; reference: string;
-    method: string; notes: string;
+    customerId: number | null; method: string; notes: string;
   }>(null);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "receipt-vouchers"],
-    queryFn: () => adminFetch<ReceiptVoucher[]>("/admin/receipt-vouchers"),
+    queryKey: ["admin", "receipt-vouchers", deferredSearch],
+    queryFn: () => adminFetch<ReceiptVoucher[]>(`/admin/receipt-vouchers${deferredSearch ? `?search=${encodeURIComponent(deferredSearch)}` : ""}`),
   });
   const create = useMutation({
     mutationFn: (b: any) => adminFetch<ReceiptVoucher>("/admin/receipt-vouchers", { method: "POST", body: JSON.stringify(b) }),
@@ -111,10 +115,11 @@ function ReceiptsTab() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">إجمالي السندات: {data?.length ?? 0}</p>
-        <Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", reference: "", method: "cash", notes: "" })}>
+        <Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", customerId: null, reference: "", method: "cash", notes: "" })}>
           <Plus className="w-4 h-4 ml-1" />سند قبض جديد
         </Button>
       </div>
+      <VoucherListSearch value={search} onChange={setSearch} />
 
       {isLoading ? <Skeletons />
       : !data || data.length === 0 ? <EmptyState message="لا توجد سندات قبض بعد" />
@@ -125,7 +130,7 @@ function ReceiptsTab() {
             <code className="text-primary text-xs">{r.voucherNo}</code>,
             r.date,
             <strong>{formatCurrency(r.amount)}</strong>,
-            r.payerName,
+            <div><div>{r.payerName}</div>{r.customerPhone && <div className="text-xs text-muted-foreground">{formatIraqiPhone(r.customerPhone)}</div>}</div>,
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
@@ -139,10 +144,15 @@ function ReceiptsTab() {
       {editing && (
         <Modal title="سند قبض جديد" onClose={() => setEditing(null)}>
           <div className="grid grid-cols-2 gap-3">
+            <VoucherCustomerPicker
+              selectedId={editing.customerId}
+              onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payerName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone) })}
+              onClear={() => setEditing({ ...editing, customerId: null })}
+            />
             <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="الواصل من"><input value={editing.payerName} onChange={e => setEditing({ ...editing, payerName: e.target.value })} className={inputCls} /></Field>
-            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
+            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
             <Field label="طريقة الدفع">
               <select value={editing.method} onChange={e => setEditing({ ...editing, method: e.target.value })} className={inputCls}>
                 {METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -158,6 +168,7 @@ function ReceiptsTab() {
                 date: editing.date,
                 amount: editing.amount,
                 payerName: editing.payerName,
+                customerId: editing.customerId,
                 customerPhone: editing.customerPhone ? normalizeIraqiPhone(editing.customerPhone) ?? editing.customerPhone : undefined,
                 reference: editing.reference || undefined,
                 method: editing.method,
@@ -175,12 +186,14 @@ function PaymentsTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
-    date: string; amount: string; payeeName: string; reference: string; method: string; notes: string;
+    date: string; amount: string; payeeName: string; customerPhone: string; customerId: number | null; reference: string; method: string; notes: string;
   }>(null);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "payment-vouchers"],
-    queryFn: () => adminFetch<PaymentVoucher[]>("/admin/payment-vouchers"),
+    queryKey: ["admin", "payment-vouchers", deferredSearch],
+    queryFn: () => adminFetch<PaymentVoucher[]>(`/admin/payment-vouchers${deferredSearch ? `?search=${encodeURIComponent(deferredSearch)}` : ""}`),
   });
   const create = useMutation({
     mutationFn: (b: any) => adminFetch<PaymentVoucher>("/admin/payment-vouchers", { method: "POST", body: JSON.stringify(b) }),
@@ -200,10 +213,11 @@ function PaymentsTab() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">إجمالي السندات: {data?.length ?? 0}</p>
-        <Button onClick={() => setEditing({ date: todayStr(), amount: "", payeeName: "", reference: "", method: "cash", notes: "" })}>
+        <Button onClick={() => setEditing({ date: todayStr(), amount: "", payeeName: "", customerPhone: "", customerId: null, reference: "", method: "cash", notes: "" })}>
           <Plus className="w-4 h-4 ml-1" />سند صرف جديد
         </Button>
       </div>
+      <VoucherListSearch value={search} onChange={setSearch} />
 
       {isLoading ? <Skeletons />
       : !data || data.length === 0 ? <EmptyState message="لا توجد سندات صرف بعد" />
@@ -214,7 +228,7 @@ function PaymentsTab() {
             <code className="text-primary text-xs">{r.voucherNo}</code>,
             r.date,
             <strong>{formatCurrency(r.amount)}</strong>,
-            r.payeeName,
+            <div><div>{r.payeeName}</div>{r.customerPhone && <div className="text-xs text-muted-foreground">{formatIraqiPhone(r.customerPhone)}</div>}</div>,
             methodLabel(r.method),
             r.createdByName || "—",
             <div className="flex gap-1 justify-end">
@@ -228,9 +242,15 @@ function PaymentsTab() {
       {editing && (
         <Modal title="سند صرف جديد" onClose={() => setEditing(null)}>
           <div className="grid grid-cols-2 gap-3">
+            <VoucherCustomerPicker
+              selectedId={editing.customerId}
+              onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payeeName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone) })}
+              onClear={() => setEditing({ ...editing, customerId: null })}
+            />
             <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
-            <Field label="صُرف إلى" className="col-span-2"><input value={editing.payeeName} onChange={e => setEditing({ ...editing, payeeName: e.target.value })} className={inputCls} /></Field>
+            <Field label="صُرف إلى"><input value={editing.payeeName} onChange={e => setEditing({ ...editing, payeeName: e.target.value })} className={inputCls} /></Field>
+            <Field label="هاتف العميل"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
             <Field label="طريقة الدفع">
               <select value={editing.method} onChange={e => setEditing({ ...editing, method: e.target.value })} className={inputCls}>
                 {METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -246,6 +266,8 @@ function PaymentsTab() {
                 date: editing.date,
                 amount: editing.amount,
                 payeeName: editing.payeeName,
+                customerId: editing.customerId,
+                customerPhone: editing.customerPhone ? normalizeIraqiPhone(editing.customerPhone) ?? editing.customerPhone : undefined,
                 reference: editing.reference || undefined,
                 method: editing.method,
                 notes: editing.notes || undefined,
@@ -423,6 +445,135 @@ type StatementData = {
 };
 
 type CustomerLite = { id: number; name: string; phone: string };
+
+type CustomerAccountDetail = CustomerLite & {
+  summary: {
+    productOrders: number;
+    serviceOrders: number;
+    invoices: number;
+    totalSpent: number;
+    remainingTotal: number;
+  };
+  orders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
+  serviceOrders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
+  invoices: Array<{ id: number; invoiceNo: string; total: number; remainingAmount: number; createdAt: string }>;
+};
+
+function VoucherListSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="relative max-w-md">
+      <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="بحث باسم العميل أو رقم الهاتف"
+        className={`${inputCls} pr-10`}
+      />
+    </div>
+  );
+}
+
+function VoucherCustomerPicker({
+  selectedId,
+  onSelect,
+  onClear,
+}: {
+  selectedId: number | null;
+  onSelect: (customer: CustomerLite) => void;
+  onClear: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim());
+  const customers = useQuery({
+    queryKey: ["admin", "voucher-customers", deferredSearch],
+    queryFn: () => adminFetch<CustomerLite[]>(`/admin/customers?search=${encodeURIComponent(deferredSearch)}`),
+    enabled: deferredSearch.length > 0,
+    staleTime: 30_000,
+  });
+  const detail = useQuery({
+    queryKey: ["admin", "voucher-customer-account", selectedId],
+    queryFn: () => adminFetch<CustomerAccountDetail>(`/admin/customers/${selectedId}`),
+    enabled: !!selectedId,
+    staleTime: 30_000,
+  });
+  const recent = useMemo(() => {
+    if (!detail.data) return [];
+    return [
+      ...detail.data.orders.map((row) => ({ code: row.trackingCode, kind: "طلب متجر", total: row.total, date: row.createdAt })),
+      ...detail.data.serviceOrders.map((row) => ({ code: row.trackingCode, kind: "حجز خدمة", total: row.total, date: row.createdAt })),
+      ...detail.data.invoices.map((row) => ({ code: row.invoiceNo, kind: "فاتورة", total: row.total, date: row.createdAt })),
+    ].sort((left, right) => right.date.localeCompare(left.date)).slice(0, 5);
+  }, [detail.data]);
+
+  const summary = detail.data?.summary;
+  const totalPaid = summary ? Math.max(summary.totalSpent - summary.remainingTotal, 0) : 0;
+  const linkedCount = summary ? summary.productOrders + summary.serviceOrders + summary.invoices : 0;
+
+  return (
+    <div className="col-span-2 rounded-xl border border-border/30 bg-background/35 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-foreground">بحث باسم العميل</div>
+          <div className="text-xs text-muted-foreground">ابحث بالاسم أو الهاتف بصيغة 077 أو 964 أو +964</div>
+        </div>
+        {selectedId && <button type="button" onClick={onClear} className="text-xs text-destructive hover:underline">إزالة الربط</button>}
+      </div>
+      <div className="relative">
+        <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="اسم العميل أو رقم الهاتف" className={`${inputCls} pr-10`} />
+      </div>
+      {deferredSearch && !selectedId && (
+        <div className="max-h-44 overflow-y-auto rounded-lg border border-border/30 divide-y divide-border/20">
+          {customers.isLoading ? <div className="p-3 text-xs text-muted-foreground">جارٍ البحث…</div>
+          : !customers.data?.length ? <div className="p-3 text-xs text-muted-foreground">لا يوجد عميل مطابق</div>
+          : customers.data.slice(0, 12).map((customer) => (
+            <button
+              key={customer.id}
+              type="button"
+              onClick={() => { onSelect(customer); setSearch(""); }}
+              className="flex w-full items-center justify-between gap-3 p-3 text-right hover:bg-primary/5"
+            >
+              <span className="min-w-0 truncate text-sm text-foreground">{customer.name || "بدون اسم"}</span>
+              <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {selectedId && detail.isLoading && <div className="text-xs text-muted-foreground">جارٍ تحميل حساب العميل…</div>}
+      {selectedId && detail.data && summary && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <strong className="text-primary">{detail.data.name || "بدون اسم"}</strong>
+            <span className="text-muted-foreground" dir="ltr">{formatIraqiPhone(detail.data.phone)}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <MiniAccountStat label="الحجوزات والطلبات" value={String(linkedCount)} />
+            <MiniAccountStat label="إجمالي الحساب" value={formatCurrency(summary.totalSpent)} />
+            <MiniAccountStat label="إجمالي المدفوع" value={formatCurrency(totalPaid)} />
+            <MiniAccountStat label="إجمالي المتبقي" value={formatCurrency(summary.remainingTotal)} />
+          </div>
+          {recent.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-xs text-muted-foreground">آخر العمليات المرتبطة</div>
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {recent.map((row) => (
+                  <div key={`${row.kind}-${row.code}`} className="flex items-center justify-between gap-2 rounded-lg border border-border/20 px-2.5 py-2 text-xs">
+                    <span className="min-w-0 truncate"><span className="text-muted-foreground">{row.kind}</span> · {row.code}</span>
+                    <strong className="shrink-0">{formatCurrency(row.total)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniAccountStat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-lg border border-border/20 bg-card/70 p-2"><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-1 text-xs font-bold text-foreground">{value}</div></div>;
+}
 
 function StatementTab() {
   const [search, setSearch] = useState("");
