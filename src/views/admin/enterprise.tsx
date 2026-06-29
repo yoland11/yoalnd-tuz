@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Clock3,
   CloudRain,
+  Fingerprint,
   Gauge,
   History,
   Images,
@@ -44,6 +45,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import JsBarcode from "jsbarcode";
 import { adminFetch, apiErrorMessage, compressImageFile, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 
@@ -383,7 +385,7 @@ function PassportStat({ label, value, tone = "text-foreground" }: { label: strin
 }
 
 function AssetPassportModal({ row, onClose }: { row: AssetRow; onClose: () => void }) {
-  const [tab, setTab] = useState<"overview" | "advisor" | "timeline" | "photos" | "damage" | "signature">("overview");
+  const [tab, setTab] = useState<"overview" | "advisor" | "dna" | "calendar" | "timeline" | "photos" | "damage" | "signature">("overview");
   const qc = useQueryClient();
   const { toast } = useToast();
   const [lockReason, setLockReason] = useState("");
@@ -409,6 +411,8 @@ function AssetPassportModal({ row, onClose }: { row: AssetRow; onClose: () => vo
   const tabs: Array<{ key: typeof tab; label: string; icon: typeof BarChart3 }> = [
     { key: "overview", label: "نظرة عامة", icon: BarChart3 },
     { key: "advisor", label: "المستشار", icon: BrainCircuit },
+    { key: "dna", label: "الهوية DNA", icon: Fingerprint },
+    { key: "calendar", label: "التقويم", icon: CalendarClock },
     { key: "timeline", label: "الخط الزمني", icon: History },
     { key: "photos", label: "الألبوم", icon: Images },
     { key: "damage", label: "الأضرار", icon: AlertTriangle },
@@ -440,6 +444,8 @@ function AssetPassportModal({ row, onClose }: { row: AssetRow; onClose: () => vo
         )}
 
         {tab === "advisor" && <AssetAdvisorPanel productId={row.productId} />}
+        {tab === "dna" && <AssetDnaPanel productId={row.productId} productName={row.productName} />}
+        {tab === "calendar" && <AssetCalendarPanel productId={row.productId} />}
         {tab === "timeline" && <AssetTimelinePanel productId={row.productId} />}
         {tab === "photos" && <AssetPhotosPanel productId={row.productId} />}
         {tab === "damage" && <AssetDamagePanel productId={row.productId} />}
@@ -518,6 +524,17 @@ const ASSET_TIMELINE_ICON: Record<string, typeof History> = {
   damage: AlertTriangle,
   document_added: Images,
   signature_added: PenLine,
+  purchase: PackageCheck,
+  usage: Boxes,
+  replacement: RefreshCw,
+  checkout: Upload,
+  checkin: Warehouse,
+  checklist: ClipboardCheck,
+  emergency_lock: ShieldAlert,
+  unlock: ShieldAlert,
+  maintenance: Wrench,
+  rental: CalendarClock,
+  booked: CalendarClock,
   note: History,
 };
 
@@ -741,6 +758,11 @@ type AdvisorResponse = {
   replacement: { recommended: boolean; reason: string; estimatedCost: number };
   related: Array<{ productId: number; name: string; usageCount: number; expectedLifeUses: number; status: string; stock: number }>;
   availability: { status: string; holderName: string | null; since: string | null; nextMaintenance: string | null; warrantyUntil: string | null; stock: number };
+  liveStatus: { key: string; label: string; emoji: string };
+  location: { lastLocation: string | null; holderName: string | null; since: string | null; shelfCode: string | null; event: string | null; customer: string | null; city: string | null; eventDate: string | null };
+  checklist: string[];
+  dna: { fingerprint: string; serialNumber: string | null; barcode: string | null; warrantyUntil: string | null; supplierName: string | null; purchaseInvoiceId: number | null; lastPurchasePrice: number | null; accessories: string[] };
+  calendar: Array<{ date: string; type: string; label: string }>;
 };
 
 const SEVERITY_TONE: Record<string, string> = {
@@ -763,13 +785,17 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const checkCount = Object.values(checked).filter(Boolean).length;
   const submitChecklist = useMutation({
-    mutationFn: () => adminFetch("/admin/entity-timeline", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, type: "checklist", title: "قائمة الفحص قبل الاستخدام", body: CHECKLIST_ITEMS.filter((i) => checked[i]).join(" · "), metadata: { items: CHECKLIST_ITEMS.map((i) => ({ item: i, ok: !!checked[i] })) } }) }),
+    mutationFn: () => {
+      const done = Object.keys(checked).filter((k) => checked[k]);
+      return adminFetch("/admin/entity-timeline", { method: "POST", body: JSON.stringify({ entityType: "asset", entityId: productId, type: "checklist", title: "قائمة الفحص قبل الاستخدام", body: done.join(" · "), metadata: { items: done } }) });
+    },
     onSuccess: () => { setChecked({}); qc.invalidateQueries({ queryKey: ["asset-timeline", productId] }); toast({ title: "تم حفظ قائمة الفحص" }); },
     onError: (e) => toast({ title: "تعذّر الحفظ", description: apiErrorMessage(e), variant: "destructive" }),
   });
 
   if (isLoading || !data) return <Skeleton className="h-60 rounded-xl" />;
   const avail = AVAILABILITY_LABEL[data.availability.status] ?? AVAILABILITY_LABEL.available;
+  const checklistItems = data.checklist?.length ? data.checklist : CHECKLIST_ITEMS;
 
   return (
     <div className="space-y-4">
@@ -793,8 +819,10 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
           {data.replacement.recommended ? <p className="mt-1 text-xs text-foreground">تكلفة تقديرية للبديل: {formatCurrency(data.replacement.estimatedCost)}</p> : null}
         </div>
         <div className="rounded-xl border border-border/30 bg-background/40 p-4">
-          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-foreground"><CalendarClock className="h-4 w-4 text-primary" /> التوفر</div>
-          <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${avail.tone}`}>{avail.label}</span>
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-foreground"><CalendarClock className="h-4 w-4 text-primary" /> الحالة الحية والتوفر</div>
+          <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-bold ${avail.tone}`}>{data.liveStatus.emoji} {data.liveStatus.label}</span>
+          {data.location.lastLocation ? <p className="mt-1 text-xs text-muted-foreground">📍 الموقع: {data.location.lastLocation}{data.location.shelfCode ? ` · رف ${data.location.shelfCode}` : ""}</p> : null}
+          {data.location.event || data.location.customer ? <p className="mt-1 text-xs text-muted-foreground">🎉 {[data.location.event, data.location.customer, data.location.city, data.location.eventDate].filter(Boolean).join(" · ")}</p> : null}
           {data.availability.holderName ? <p className="mt-1 text-xs text-muted-foreground">بعهدة: {data.availability.holderName}{data.availability.since ? ` · منذ ${new Date(data.availability.since).toLocaleDateString("ar-IQ")}` : ""}</p> : null}
           {data.availability.nextMaintenance ? <p className="mt-1 text-xs text-muted-foreground">الصيانة القادمة: {new Date(data.availability.nextMaintenance).toLocaleDateString("ar-IQ")}</p> : null}
           {data.availability.warrantyUntil ? <p className="mt-1 text-xs text-muted-foreground">الضمان حتى: {new Date(data.availability.warrantyUntil).toLocaleDateString("ar-IQ")}</p> : null}
@@ -803,16 +831,16 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
       </div>
 
       <div className="rounded-xl border border-border/30 bg-background/40 p-4">
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><ClipboardCheck className="h-4 w-4 text-primary" /> قائمة الفحص الذكية</div>
+        <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-foreground"><ClipboardCheck className="h-4 w-4 text-primary" /> قائمة الفحص الذكية <span className="text-[11px] font-normal text-muted-foreground">(حسب نوع الأصل)</span></div>
         <div className="space-y-1.5">
-          {CHECKLIST_ITEMS.map((item) => (
+          {checklistItems.map((item) => (
             <label key={item} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
               <input type="checkbox" checked={!!checked[item]} onChange={(e) => setChecked((p) => ({ ...p, [item]: e.target.checked }))} className="h-4 w-4 rounded border-border/50" />
               {item}
             </label>
           ))}
         </div>
-        <Button size="sm" disabled={submitChecklist.isPending || checkCount === 0} onClick={() => submitChecklist.mutate()} className="mt-3 w-full gap-1"><CheckCircle2 className="h-4 w-4" /> تأكيد الفحص ({checkCount}/{CHECKLIST_ITEMS.length})</Button>
+        <Button size="sm" disabled={submitChecklist.isPending || checkCount === 0} onClick={() => submitChecklist.mutate()} className="mt-3 w-full gap-1"><CheckCircle2 className="h-4 w-4" /> تأكيد الفحص ({checkCount}/{checklistItems.length})</Button>
       </div>
 
       <div>
@@ -828,6 +856,107 @@ function AssetAdvisorPanel({ productId }: { productId: number }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DnaRow({ label, value }: { label: string; value: ReactNode }) {
+  return <div className="flex items-center justify-between gap-2 border-b border-border/20 pb-1.5"><span className="text-muted-foreground">{label}</span><span className="font-medium text-foreground">{value}</span></div>;
+}
+
+function AssetDnaPanel({ productId, productName }: { productId: number; productName: string }) {
+  const { data, isLoading } = useQuery<AdvisorResponse>({ queryKey: ["asset-advisor", productId], queryFn: () => adminFetch(`/admin/assets/advisor?productId=${productId}`) });
+  const qr = useQuery<{ dataUrl: string; scanUrl: string; dna: string }>({ queryKey: ["asset-qr", productId], queryFn: () => adminFetch(`/admin/assets/qr?productId=${productId}`) });
+  const invoiceInvId = data?.dna?.purchaseInvoiceId ?? null;
+  const invoiceDocs = useQuery<{ data: AssetDocRow[] }>({ queryKey: ["purchase-invoice-docs", invoiceInvId], queryFn: () => adminFetch(`/admin/documents?entityType=purchase_invoice&entityId=${invoiceInvId}`), enabled: !!invoiceInvId });
+  const barcodeRef = useRef<SVGSVGElement | null>(null);
+  const dna = data?.dna;
+  useEffect(() => {
+    if (dna?.barcode && barcodeRef.current) {
+      try { JsBarcode(barcodeRef.current, dna.barcode, { format: "CODE128", displayValue: true, height: 48, fontSize: 12, margin: 4, background: "#ffffff" }); } catch { /* invalid barcode value */ }
+    }
+  }, [dna?.barcode]);
+  if (isLoading || !data || !dna) return <Skeleton className="h-60 rounded-xl" />;
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">الهوية الرقمية الكاملة للأصل: <span className="font-semibold text-foreground">{productName}</span></p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-border/30 bg-white p-4">
+          {qr.data?.dataUrl ? <img src={qr.data.dataUrl} alt="QR" className="h-32 w-32" /> : <Skeleton className="h-32 w-32" />}
+          <p className="text-[11px] text-neutral-500">امسح للوصول إلى جواز الأصل</p>
+        </div>
+        <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-border/30 bg-white p-4">
+          {dna.barcode ? <svg ref={barcodeRef} className="max-w-full" /> : <p className="text-xs text-neutral-500">لا يوجد باركود مسجّل للمنتج</p>}
+        </div>
+      </div>
+      <div className="space-y-2 rounded-xl border border-border/30 bg-background/40 p-4 text-sm">
+        <DnaRow label="البصمة الرقمية" value={<span className="font-mono text-xs">{dna.fingerprint}</span>} />
+        <DnaRow label="الرقم التسلسلي" value={dna.serialNumber || "—"} />
+        <DnaRow label="الباركود" value={dna.barcode || "—"} />
+        <DnaRow label="المورّد" value={dna.supplierName || "—"} />
+        <DnaRow label="آخر سعر شراء" value={dna.lastPurchasePrice != null ? formatCurrency(dna.lastPurchasePrice) : "—"} />
+        <DnaRow label="الضمان حتى" value={dna.warrantyUntil ? new Date(dna.warrantyUntil).toLocaleDateString("ar-IQ") : "—"} />
+        <DnaRow label="فاتورة الشراء" value={dna.purchaseInvoiceId ? <Link href="/admin/purchases" className="text-primary hover:underline">عرض الفاتورة #{dna.purchaseInvoiceId} ←</Link> : "—"} />
+      </div>
+      {invoiceDocs.data?.data?.filter((d) => d.documentType === "invoice").length ? (
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <p className="mb-2 text-sm font-semibold text-foreground">صورة فاتورة الشراء</p>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+            {invoiceDocs.data.data.filter((d) => d.documentType === "invoice").map((d) => (
+              <a key={d.id} href={d.fileUrl} target="_blank" rel="noreferrer" className="flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-border/30 bg-white">
+                {String(d.fileUrl).startsWith("data:application/pdf") || /\.pdf$/i.test(d.title) ? <span className="text-xs font-semibold text-primary">PDF</span> : <img src={d.fileUrl} alt="فاتورة" className="h-full w-full object-cover" />}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+        <p className="mb-2 text-sm font-semibold text-foreground">الملحقات الأصلية</p>
+        {dna.accessories.length ? <div className="flex flex-wrap gap-2">{dna.accessories.map((a, i) => <span key={i} className="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary">{a}</span>)}</div> : <p className="text-xs text-muted-foreground">لم تُسجّل ملحقات بعد.</p>}
+      </div>
+    </div>
+  );
+}
+
+const CAL_TYPE_COLOR: Record<string, string> = { out: "bg-blue-500", in: "bg-status-success", maintenance: "bg-status-warning" };
+const CAL_WEEKDAYS = ["أحد", "اثنين", "ثلاثاء", "أربعاء", "خميس", "جمعة", "سبت"];
+
+function AssetCalendarPanel({ productId }: { productId: number }) {
+  const { data, isLoading } = useQuery<AdvisorResponse>({ queryKey: ["asset-advisor", productId], queryFn: () => adminFetch(`/admin/assets/advisor?productId=${productId}`) });
+  const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  if (isLoading || !data) return <Skeleton className="h-60 rounded-xl" />;
+  const events = data.calendar ?? [];
+  const byDay = new Map<string, string[]>();
+  for (const e of events) byDay.set(e.date, [...(byDay.get(e.date) ?? []), e.type]);
+  const year = month.getFullYear();
+  const mon = month.getMonth();
+  const firstDay = new Date(year, mon, 1).getDay();
+  const daysInMonth = new Date(year, mon + 1, 0).getDate();
+  const cells: Array<{ day: number | null; date?: string }> = [];
+  for (let i = 0; i < firstDay; i++) cells.push({ day: null });
+  for (let d = 1; d <= daysInMonth; d++) cells.push({ day: d, date: `${year}-${String(mon + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}` });
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <Button variant="outline" size="sm" onClick={() => setMonth(new Date(year, mon - 1, 1))}>السابق</Button>
+        <span className="text-sm font-semibold text-foreground">{month.toLocaleDateString("ar-IQ", { year: "numeric", month: "long" })}</span>
+        <Button variant="outline" size="sm" onClick={() => setMonth(new Date(year, mon + 1, 1))}>التالي</Button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-muted-foreground">
+        {CAL_WEEKDAYS.map((d) => <div key={d} className="py-1 font-medium">{d}</div>)}
+        {cells.map((c, i) => (
+          <div key={i} className={`flex aspect-square flex-col items-center justify-center gap-0.5 rounded-md text-xs ${c.day ? "border border-border/30 bg-background/40" : ""}`}>
+            {c.day ? (<><span className="text-foreground">{c.day}</span><div className="flex gap-0.5">{(byDay.get(c.date!) ?? []).slice(0, 3).map((tp, j) => <span key={j} className={`h-1.5 w-1.5 rounded-full ${CAL_TYPE_COLOR[tp] ?? "bg-muted-foreground"}`} />)}</div></>) : null}
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-blue-500" /> خروج</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-success" /> رجوع للمخزن</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-status-warning" /> صيانة</span>
+      </div>
+      {!events.length ? <p className="text-xs text-muted-foreground">لا توجد حركات مسجّلة على هذا الأصل بعد.</p> : null}
     </div>
   );
 }

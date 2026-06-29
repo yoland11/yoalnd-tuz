@@ -675,6 +675,24 @@ function AssetQrCard({ tracking }: { tracking: any }) {
             <p className="text-foreground font-semibold font-mono">{tracking.serialNumber}</p>
           </div>
         )}
+        {tracking.lastLocation && (
+          <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+            <p className="text-xs text-muted-foreground mb-1">{t("الموقع الحالي")}</p>
+            <p className="text-foreground font-semibold">{tracking.lastLocation}</p>
+          </div>
+        )}
+        {tracking.lastCheckout && (
+          <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+            <p className="text-xs text-muted-foreground mb-1">{t("آخر إخراج")}</p>
+            <p className="text-foreground font-semibold">{formatTrackDate(tracking.lastCheckout)}</p>
+          </div>
+        )}
+        {tracking.nextMaintenance && (
+          <div className="rounded-xl bg-background/60 border border-border/30 p-4">
+            <p className="text-xs text-muted-foreground mb-1">{t("الصيانة القادمة")}</p>
+            <p className="text-foreground font-semibold">{new Date(tracking.nextMaintenance).toLocaleDateString("ar-IQ")}</p>
+          </div>
+        )}
         <div className="rounded-xl bg-background/60 border border-border/30 p-4">
           <p className="text-xs text-muted-foreground mb-1">{t("آخر تحديث")}</p>
           <p className="text-foreground font-semibold">{formatTrackDate(tracking.updatedAt ?? tracking.createdAt)}</p>

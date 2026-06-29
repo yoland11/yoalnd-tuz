@@ -2,11 +2,11 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, Save, RefreshCw, X,
-  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package,
+  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -60,6 +60,7 @@ export default function PurchasesPage() {
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
+  const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
@@ -155,6 +156,12 @@ export default function PurchasesPage() {
       const res = await adminFetch<{ invoice: PurchaseInvoice }>("/admin/purchase-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
+      // Attach the uploaded invoice image / PDF and link it to the invoice (shows inside each asset's passport).
+      if (attachment && res?.invoice?.id) {
+        try {
+          await adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "purchase_invoice", entityId: res.invoice.id, documentType: "invoice", title: `فاتورة شراء ${res.invoice.invoiceNo ?? ""}`.trim(), fileName: attachment.name, mimeType: attachment.type, fileUrl: attachment.url }) });
+        } catch { /* attachment is best-effort; the invoice itself is already saved */ }
+      }
       toast({ title: "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
@@ -162,6 +169,7 @@ export default function PurchasesPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setItems([blankItem()]);
       setForm(newForm());
+      setAttachment(null);
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {
@@ -446,6 +454,35 @@ export default function PurchasesPage() {
                 rows={2}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">صورة / PDF الفاتورة (تُربط بالأصل)</label>
+              {attachment ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+                  <span className="flex items-center gap-1.5 truncate text-foreground"><Paperclip className="w-4 h-4 shrink-0 text-primary" />{attachment.name}</span>
+                  <button type="button" onClick={() => setAttachment(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+                </div>
+              ) : (
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border/50 bg-background py-2.5 text-sm text-muted-foreground hover:border-primary hover:text-primary">
+                  <Paperclip className="w-4 h-4" /> إرفاق صورة أو PDF
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      try {
+                        const url = file.type.startsWith("image/") ? await compressImageFile(file, 1800, 0.85) : await fileToDataUrl(file);
+                        setAttachment({ url, name: file.name, type: file.type });
+                      } catch {
+                        toast({ title: "تعذّر قراءة الملف", variant: "destructive" });
+                      }
+                    }}
+                  />
+                </label>
+              )}
             </div>
           </div>
 

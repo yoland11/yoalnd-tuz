@@ -899,6 +899,17 @@ function assetDigitalDna(
   return `AJN-A${productId}-${hash}`;
 }
 
+// Per-type pre-checkout checklist — picked from the asset's category/name keywords.
+function assetChecklistFor(product: { nameAr?: string | null; name?: string | null; category?: string | null; subcategory?: string | null }): string[] {
+  const hay = `${product.category ?? ""} ${product.subcategory ?? ""} ${product.nameAr ?? ""} ${product.name ?? ""}`.toLowerCase();
+  const has = (...keys: string[]) => keys.some((k) => hay.includes(k));
+  if (has("كاميرا", "تصوير", "camera", "lens", "عدسة")) return ["البطارية", "العدسة", "الشاحن", "كرت الذاكرة", "الحقيبة", "اختبار التشغيل"];
+  if (has("إضاء", "اضاء", "light", "فلاش", "flash", "led")) return ["الكابلات", "اللمبات/الإضاءة", "الحامل (الاستاند)", "وحدة التحكم", "اختبار التشغيل"];
+  if (has("صوت", "سماع", "speaker", "audio", "مايك", "mic")) return ["الكابلات", "المايكات", "البطاريات", "اختبار الصوت", "الحقيبة"];
+  if (has("كوش", "kosha", "ديكور", "decor", "ستارة", "قماش")) return ["اكتمال القطع", "سلامة القماش/الإطار", "الإكسسوارات", "النظافة العامة", "تصوير الحالة"];
+  return ["النظافة العامة", "سلامة الأجزاء والوصلات", "اختبار التشغيل", "اكتمال الملحقات", "تصوير الحالة قبل التسليم"];
+}
+
 // Scan&Go — a stable QR per asset that resolves through the public /track gateway
 // to a safe, financial-free asset status card. Reuses the shared qr_tokens table.
 async function ensureAssetQr(productId: number, req: NextRequest) {
@@ -2874,6 +2885,17 @@ async function recordStockMovement(resolved: { product: any; stockProduct: any }
           notes: "تم إنشاء ملف الأصل تلقائياً من حركة المخزون",
         }).onConflictDoNothing();
       }
+      // Integration — reflect inventory/rental movements on the asset's passport timeline.
+      const isRental = /rental/i.test(String(meta.reason));
+      void addEntityTimeline({
+        entityType: "asset",
+        entityId: usageProductId,
+        type: kind.type === "damage" ? "damage" : kind.type === "replacement" ? "replacement" : isRental ? "rental" : "usage",
+        title: kind.type === "damage" ? "⚠️ ضرر (حركة مخزون)" : kind.type === "replacement" ? "🔁 استبدال" : isRental ? "🏷️ تأجير الأصل" : "📦 استخدام/خروج من المخزن",
+        body: meta.reason ? String(meta.reason) : null,
+        actor: { id: meta.createdBy ?? null, name: meta.createdByName || "النظام" },
+        metadata: { delta, reason: meta.reason, relatedType: meta.relatedType, relatedId: meta.relatedId },
+      });
     }
   } catch (err) {
     console.warn("stock movement log failed", {
@@ -8617,23 +8639,31 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
     await ensureAdminExtensionsTables();
     const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, row.entityId) });
     if (!product) throw Object.assign(new Error("لم يتم العثور على الأصل"), { status: 404 });
-    const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, row.entityId) });
+    const [profile, passport, lastCustody] = await Promise.all([
+      db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, row.entityId) }),
+      db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, row.entityId) }),
+      db.query.equipmentCustodyTable.findFirst({ where: eq(equipmentCustodyTable.productId, row.entityId), orderBy: [desc(equipmentCustodyTable.issuedAt)] }),
+    ]);
     const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
     const usageCount = Number(profile?.usageCount ?? 0);
     const lifePct = Math.max(0, Math.min(100, Math.round((1 - Math.min(usageCount, expectedLifeUses) / expectedLifeUses) * 100)));
     const purchasePrice = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
     return {
       kind: "asset",
-      // No financial figures are exposed on the public gateway — only identity + health.
-      trackingCode: assetDigitalDna(product.id, profile?.serialNumber, profile?.purchaseDate, purchasePrice),
+      // No financial figures are exposed on the public gateway — only identity + health + whereabouts.
+      trackingCode: assetDigitalDna(product.id, passport?.serialNumber ?? profile?.serialNumber, profile?.purchaseDate, purchasePrice),
       assetName: product.nameAr || product.name,
-      serialNumber: profile?.serialNumber ?? null,
+      serialNumber: passport?.serialNumber ?? profile?.serialNumber ?? null,
       category: product.category ?? null,
       image: Array.isArray(product.images) && product.images.length ? product.images[0] : null,
       status: profile?.status ?? "active",
       usageCount,
       expectedLifeUses,
       lifePct,
+      lastLocation: passport?.lastLocation ?? null,
+      nextMaintenance: passport?.nextMaintenanceDate ?? null,
+      lastCheckout: lastCustody?.issuedAt ? lastCustody.issuedAt.toISOString() : null,
+      lastReturn: lastCustody?.returnedAt ? lastCustody.returnedAt.toISOString() : null,
       createdAt: (profile?.createdAt ?? product.createdAt).toISOString(),
       updatedAt: (profile?.updatedAt ?? product.updatedAt).toISOString(),
     };
@@ -9240,6 +9270,82 @@ async function handleAdminKoshas(req: NextRequest, parts: string[], section: str
       if (!id) return error("معرف الحجز غير صحيح", 400);
       const existing = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
       if (!existing) return error("الحجز غير موجود", 404);
+
+      // Booking ↔ assets link + equipment advisor (feature #17). Stored in bookingDetails.linkedAssets.
+      if (parts[3] === "assets") {
+        await ensureAdminExtensionsTables();
+        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+        const linked: Array<{ productId: number; quantity: number }> = Array.isArray(details.linkedAssets) ? details.linkedAssets : [];
+
+        if (method === "GET") {
+          const ids = linked.map((l) => l.productId).filter(Boolean);
+          const [products, profiles] = await Promise.all([
+            ids.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) : Promise.resolve([]),
+            ids.length ? db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }) : Promise.resolve([]),
+          ]);
+          const prodMap = new Map(products.map((p) => [p.id, p]));
+          const profMap = new Map(profiles.map((p) => [p.productId, p]));
+          const assets = linked.map((l) => {
+            const p = prodMap.get(l.productId);
+            const pr = profMap.get(l.productId);
+            return { productId: l.productId, quantity: l.quantity, name: p?.nameAr || p?.name || `#${l.productId}`, status: pr?.status ?? "active", stock: p?.stock ?? 0 };
+          });
+          const warnings: string[] = [];
+          for (const a of assets) {
+            if (a.status === "locked") warnings.push(`${a.name}: مقفول (قفل طارئ) — استبدله قبل التأكيد.`);
+            else if (a.status === "maintenance") warnings.push(`${a.name}: قيد الصيانة.`);
+            if (a.stock <= 0) warnings.push(`${a.name}: غير متوفر بالمخزون.`);
+          }
+          const categoryIds = [...new Set(products.map((p) => p.categoryId).filter(Boolean))] as number[];
+          const linkedSet = new Set(ids);
+          let suggestions: Array<{ productId: number; name: string; reason: string }> = [];
+          if (categoryIds.length) {
+            const candidates = await db.query.productsTable.findMany({ where: and(eq(productsTable.isActive, true), inArray(productsTable.categoryId, categoryIds), gt(productsTable.stock, 0)), limit: 30 });
+            suggestions = candidates.filter((c) => !linkedSet.has(c.id)).slice(0, 8).map((c) => ({ productId: c.id, name: c.nameAr || c.name, reason: "احتياطي مقترح من نفس الفئة" }));
+          }
+          // Product search for the picker (kept inside this "orders"-permissioned endpoint).
+          const search = req.nextUrl.searchParams.get("search")?.trim();
+          let searchResults: Array<{ productId: number; name: string; stock: number; status: string }> = [];
+          if (search && search.length >= 2) {
+            const found = await db.query.productsTable.findMany({
+              where: and(eq(productsTable.isActive, true), or(ilike(productsTable.nameAr, `%${search}%`), ilike(productsTable.name, `%${search}%`))),
+              limit: 12,
+            });
+            const fProfiles = found.length ? await db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, found.map((p) => p.id)) }) : [];
+            const fpMap = new Map(fProfiles.map((p) => [p.productId, p]));
+            searchResults = found.filter((p) => !linkedSet.has(p.id)).map((p) => ({ productId: p.id, name: p.nameAr || p.name, stock: p.stock, status: fpMap.get(p.id)?.status ?? "active" }));
+          }
+          return json({ assets, suggestions, warnings, searchResults });
+        }
+
+        if (method === "POST") {
+          const b = await body(req);
+          const productId = optionalPositiveId(b?.productId);
+          const quantity = Math.max(1, Math.round(Number(b?.quantity ?? 1)));
+          if (!productId) return error("اختر المعدّة", 400);
+          const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+          if (!product) return error("المعدّة غير موجودة", 404);
+          const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+          if (prof?.status === "locked") return error("هذه المعدّة مقفولة (قفل طارئ) — لا يمكن إضافتها للحجز حتى يعتمد المدير", 423);
+          if (prof?.status === "retired") return error("هذه المعدّة خارج الخدمة — لا يمكن إضافتها للحجز", 423);
+          if (linked.some((l) => l.productId === productId)) return error("المعدّة مضافة للحجز بالفعل", 409);
+          const nextLinked = [...linked, { productId, quantity }];
+          await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+          void logAdminActivity(req, "kosha_booking_asset_linked", "kosha_booking", id, { productId, quantity });
+          void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 تخصيص للحجز", body: `حجز كوشة #${id} — ${existing.customerName ?? ""}`, actor: erpActorFromAdmin(auth), metadata: { bookingId: id } });
+          return json({ ok: true, productId, quantity });
+        }
+
+        if (method === "DELETE" && parts[4]) {
+          const productId = int(parts[4]);
+          if (!productId) return error("معرف المعدّة غير صحيح", 400);
+          const nextLinked = linked.filter((l) => l.productId !== productId);
+          await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+          void logAdminActivity(req, "kosha_booking_asset_unlinked", "kosha_booking", id, { productId });
+          return json({ ok: true });
+        }
+        return error("إجراء غير مدعوم", 405);
+      }
 
       if (method === "GET") {
         const qr = await ensureQrForEntity("kosha_booking", existing, req).catch(() => null);
@@ -10043,9 +10149,25 @@ async function handleEnterpriseAdmin(req: NextRequest, parts: string[]): Promise
         metadata: data?.metadata && typeof data.metadata === "object" ? data.metadata : {},
         updatedAt: new Date(),
       };
+      const prevPassport = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) });
       try {
         const [row] = await db.insert(assetPassportsTable).values(values).onConflictDoUpdate({ target: assetPassportsTable.productId, set: values }).returning();
         await recordEnterpriseMutation(req, auth, "asset_passport_saved", "product", productId, "تم حفظ الجواز الرقمي للقطعة", { passportId: row.id, shelfCode: row.shelfCode });
+        // Integration — reflect maintenance changes on the asset timeline.
+        const newMaint = Number(values.maintenanceCost);
+        const maintChanged = newMaint > Number(prevPassport?.maintenanceCost ?? 0);
+        const dateChanged = Boolean(values.nextMaintenanceDate) && values.nextMaintenanceDate !== (prevPassport?.nextMaintenanceDate ?? null);
+        if (maintChanged || dateChanged) {
+          void addEntityTimeline({
+            entityType: "asset",
+            entityId: productId,
+            type: "maintenance",
+            title: "🛠️ صيانة",
+            body: [maintChanged ? `تكلفة الصيانة: ${formatCurrency(newMaint)}` : null, dateChanged ? `الصيانة القادمة: ${values.nextMaintenanceDate}` : null].filter(Boolean).join(" · ") || null,
+            actor: erpActorFromAdmin(auth),
+            metadata: { maintenanceCost: newMaint, nextMaintenanceDate: values.nextMaintenanceDate },
+          });
+        }
         return json(row, 201);
       } catch (err: any) {
         if (err?.code === "23505") return error("الرقم التسلسلي مستخدم لقطعة أخرى", 409);
@@ -10070,10 +10192,25 @@ async function handleEnterpriseAdmin(req: NextRequest, parts: string[]): Promise
         db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) }),
       ]);
       if (!product || !staff) return error("الموظف أو القطعة غير موجودة", 404);
+
+      // Emergency Lock enforcement — a locked / retired asset cannot be checked out until a manager unlocks it.
+      await ensureAdminExtensionsTables();
+      const issueProfile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+      if (issueProfile?.status === "locked") return error("الأصل مقفول (قفل طارئ) — لا يمكن إخراجه حتى يعتمد المدير إلغاء القفل", 423);
+      if (issueProfile?.status === "retired") return error("الأصل خارج الخدمة — لا يمكن إخراجه", 423);
+
+      // Smart Checklist gating — block checkout unless the pre-checkout checklist is confirmed, or a reason for a missing item is written.
+      const checklistConfirmed = data?.checklistConfirmed === true;
+      const checklistReason = nullableText(data?.checklistReason);
+      if (!checklistConfirmed && !checklistReason) {
+        return json({ error: "يجب تأكيد قائمة الفحص قبل إخراج الأصل، أو كتابة سبب النقص", requiresChecklist: true, checklist: assetChecklistFor(product) }, 422);
+      }
+
       const signatureUrl = data?.signature ? await persistMediaValue(data.signature, "enterprise/signatures") : nullableText(data?.signatureUrl);
       const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity, signatureUrl, notes: nullableText(data?.notes), issuedBy: auth.id }).returning();
       await db.update(assetPassportsTable).set({ lastStaffId: staffId, lastLocation: `بعهدة ${staff.fullName || staff.username}`, updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
       await recordEnterpriseMutation(req, auth, "equipment_issued", "product", productId, "تم تسليم معدات لموظف", { custodyId: row.id, staffId, quantity });
+      void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل بعهدة موظف", body: `${staff.fullName || staff.username}${checklistReason ? ` · سبب نقص الفحص: ${checklistReason}` : " · اكتملت قائمة الفحص"}`, actor: erpActorFromAdmin(auth), metadata: { custodyId: row.id, staffId, checklistConfirmed, checklistReason } });
       await createNotification({ staffId, type: "equipment_custody", title: "معدات جديدة بعهدتك", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/command-center" });
       return json(row, 201);
     }
@@ -10086,6 +10223,7 @@ async function handleEnterpriseAdmin(req: NextRequest, parts: string[]): Promise
       const [row] = await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, id)).returning();
       await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, current.productId));
       await recordEnterpriseMutation(req, auth, "equipment_returned", "product", current.productId, "تم إرجاع المعدات", { custodyId: id, staffId: current.staffId, quantity: current.quantity });
+      void addEntityTimeline({ entityType: "asset", entityId: current.productId, type: "checkin", title: "📥 إرجاع الأصل إلى المخزن", actor: erpActorFromAdmin(auth), metadata: { custodyId: id } });
       return json(row);
     }
   }
@@ -10927,7 +11065,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "documents") {
-    const auth = await requireAnyPermission(req, ["orders", "bookings", "invoices", "gallery"]);
+    const auth = await requireAnyPermission(req, ["orders", "bookings", "invoices", "gallery", "accounting", "products", "dashboard"]);
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
     if (method === "GET") {
@@ -11398,14 +11536,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         estimatedCost: purchasePrice,
       };
 
-      const relatedProducts = await db.query.productsTable.findMany({
-        where: and(
-          eq(productsTable.isActive, true),
-          product.categoryId ? eq(productsTable.categoryId, product.categoryId) : eq(productsTable.category, product.category ?? "—"),
-          ne(productsTable.id, productId),
-        ),
-        limit: 6,
-      });
+      // Curated related equipment (metadata.relatedProductIds) takes priority; otherwise same-category.
+      const curatedIds = Array.isArray((passport?.metadata as any)?.relatedProductIds)
+        ? ((passport!.metadata as any).relatedProductIds as unknown[]).map(Number).filter((n) => Number.isFinite(n) && n !== productId)
+        : [];
+      const relatedProducts = curatedIds.length
+        ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, curatedIds), limit: 8 })
+        : await db.query.productsTable.findMany({
+            where: and(
+              eq(productsTable.isActive, true),
+              product.categoryId ? eq(productsTable.categoryId, product.categoryId) : eq(productsTable.category, product.category ?? "—"),
+              ne(productsTable.id, productId),
+            ),
+            limit: 6,
+          });
       const relatedProfiles = relatedProducts.length
         ? await db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, relatedProducts.map((p) => p.id)) })
         : [];
@@ -11428,6 +11572,26 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const staff = await db.query.staffTable.findFirst({ where: eq(staffTable.id, custodyRows[0].staffId) });
         holderName = staff?.fullName || staff?.username || null;
       }
+
+      // Live status — the full 6-state model (🟢 available, 🟡 booked, 🔵 out of warehouse, 🟠 maintenance, 🔴 lost, ⚫ out of service).
+      const maintenanceDue = usageCount > 0 && usageCount % maintenanceEvery === 0;
+      const liveKey = status === "retired" ? "out_of_service"
+        : status === "lost" ? "lost"
+        : status === "locked" ? "lost"
+        : status === "maintenance" || maintenanceDue ? "maintenance"
+        : inCustody ? "out_of_warehouse"
+        : product.stock > 0 ? "available"
+        : "booked";
+      const LIVE: Record<string, { label: string; emoji: string }> = {
+        available: { label: "متوفر", emoji: "🟢" },
+        booked: { label: "محجوز", emoji: "🟡" },
+        out_of_warehouse: { label: "خارج المخزن", emoji: "🔵" },
+        maintenance: { label: "صيانة", emoji: "🟠" },
+        lost: { label: status === "locked" ? "مقفول/مفقود" : "مفقود", emoji: "🔴" },
+        out_of_service: { label: "خارج الخدمة", emoji: "⚫" },
+      };
+      const liveStatus = { key: liveKey, ...LIVE[liveKey] };
+
       const availability = {
         status: status === "locked" ? "locked" : inCustody ? "in_custody" : (product.stock > 0 ? "available" : "out_of_stock"),
         holderName,
@@ -11437,7 +11601,60 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         stock: product.stock,
       };
 
-      return json({ productId, suggestions, replacement, related, availability });
+      // Location tracking — city / event / customer / date, resolved from the booking using this asset (#16).
+      let currentBooking: any = null;
+      try {
+        const linkedBookings = await db.query.koshaBookingsTable.findMany({
+          where: sql`${koshaBookingsTable.bookingDetails} -> 'linkedAssets' @> ${JSON.stringify([{ productId }])}::jsonb`,
+          orderBy: [desc(koshaBookingsTable.createdAt)],
+          limit: 1,
+        });
+        currentBooking = linkedBookings[0] ?? null;
+      } catch { /* kosha tables may be absent; location falls back to passport data */ }
+      const location = {
+        lastLocation: passport?.lastLocation ?? null,
+        holderName,
+        since: inCustody ? iso(custodyRows[0].issuedAt) : null,
+        shelfCode: passport?.shelfCode ?? null,
+        event: currentBooking ? (currentBooking.eventType || "حجز كوشة") : null,
+        customer: currentBooking?.customerName ?? null,
+        city: currentBooking ? (currentBooking.cityArea || currentBooking.area || currentBooking.province || null) : null,
+        eventDate: currentBooking?.eventDate ?? null,
+      };
+
+      // Purchase invoice link (for Digital DNA bundle + "ثانياً").
+      const purchaseItem = await db
+        .select({ supplierName: purchaseInvoicesTable.supplierName, costPrice: purchaseInvoiceItemsTable.costPrice, date: purchaseInvoicesTable.date, invoiceId: purchaseInvoiceItemsTable.invoiceId })
+        .from(purchaseInvoiceItemsTable)
+        .leftJoin(purchaseInvoicesTable, eq(purchaseInvoicesTable.id, purchaseInvoiceItemsTable.invoiceId))
+        .where(eq(purchaseInvoiceItemsTable.productId, productId))
+        .orderBy(desc(purchaseInvoicesTable.date))
+        .limit(1);
+
+      const accessories = Array.isArray((passport?.metadata as any)?.accessories) ? ((passport!.metadata as any).accessories as unknown[]).map(String) : [];
+
+      // Digital DNA bundle — identity assembled in one place.
+      const dna = {
+        fingerprint: assetDigitalDna(productId, passport?.serialNumber ?? profile?.serialNumber, profile?.purchaseDate, purchasePrice),
+        serialNumber: passport?.serialNumber ?? profile?.serialNumber ?? null,
+        barcode: product.barcode ?? null,
+        warrantyUntil: passport?.warrantyUntil ?? null,
+        supplierName: passport?.supplierName ?? purchaseItem[0]?.supplierName ?? null,
+        purchaseInvoiceId: purchaseItem[0]?.invoiceId ?? null,
+        lastPurchasePrice: purchaseItem[0]?.costPrice ? Number(purchaseItem[0].costPrice) : null,
+        accessories,
+      };
+
+      // Availability calendar — events from custody periods + scheduled maintenance.
+      const calendarCustody = await db.query.equipmentCustodyTable.findMany({ where: eq(equipmentCustodyTable.productId, productId), orderBy: [desc(equipmentCustodyTable.issuedAt)], limit: 60 });
+      const calendar: Array<{ date: string; type: string; label: string }> = [];
+      for (const c of calendarCustody) {
+        if (c.issuedAt) calendar.push({ date: iso(c.issuedAt)!.slice(0, 10), type: "out", label: "خارج المخزن" });
+        if (c.returnedAt) calendar.push({ date: iso(c.returnedAt)!.slice(0, 10), type: "in", label: "رجع للمخزن" });
+      }
+      if (passport?.nextMaintenanceDate) calendar.push({ date: String(passport.nextMaintenanceDate).slice(0, 10), type: "maintenance", label: "صيانة مجدولة" });
+
+      return json({ productId, suggestions, replacement, related, availability, liveStatus, location, checklist: assetChecklistFor(product), dna, calendar });
     }
 
     if (method === "POST" || method === "PATCH") {
@@ -15134,6 +15351,16 @@ async function handlePurchaseInvoices(req: NextRequest, parts: string[], section
             updateVals.price = String(item.salePrice);
           }
           await db.update(productsTable).set(updateVals).where(eq(productsTable.id, item.productId));
+          // Integration — reflect the purchase on the asset's passport timeline.
+          void addEntityTimeline({
+            entityType: "asset",
+            entityId: Number(item.productId),
+            type: "purchase",
+            title: "🛒 شراء/توريد",
+            body: `الكمية: ${item.quantity} · التكلفة: ${formatCurrency(Number(item.costPrice))} · المورّد: ${inv.supplierName || "—"}`,
+            actor: { id: a.id ?? null, name: a.name },
+            metadata: { invoiceId: inv.id, quantity: item.quantity, costPrice: item.costPrice },
+          });
         }
       }
     }

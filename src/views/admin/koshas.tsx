@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
@@ -1127,6 +1127,10 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           </div>
         </KoshaDetailSection>
 
+        <KoshaDetailSection title="معدات الحجز والمستشار">
+          <BookingEquipmentSection bookingId={booking.id} />
+        </KoshaDetailSection>
+
         <KoshaDetailSection title="الكوشة المختارة">
           <KoshaOptionTile name={booking.koshaName ?? kosha?.name ?? "—"} mainImage={kosha?.mainImage ?? null} price={kosha?.price ?? null} onZoom={setLightbox} />
         </KoshaDetailSection>
@@ -1170,6 +1174,81 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <button type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
         </div>
       )}
+    </div>
+  );
+}
+
+type BookingAsset = { productId: number; quantity: number; name: string; status: string; stock: number };
+type BookingAssetsResponse = {
+  assets: BookingAsset[];
+  suggestions: Array<{ productId: number; name: string; reason: string }>;
+  warnings: string[];
+  searchResults: Array<{ productId: number; name: string; stock: number; status: string }>;
+};
+
+// Feature #17 — link equipment to a booking, with emergency-lock guards and backup suggestions.
+function BookingEquipmentSection({ bookingId }: { bookingId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const key = ["admin", "kosha-booking-assets", bookingId] as const;
+  const { data } = useQuery<BookingAssetsResponse>({
+    queryKey: [...key, search],
+    queryFn: () => adminFetch(`/admin/kosha-bookings/${bookingId}/assets?search=${encodeURIComponent(search)}`),
+  });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: key });
+  const add = useMutation({
+    mutationFn: (productId: number) => adminFetch(`/admin/kosha-bookings/${bookingId}/assets`, { method: "POST", body: JSON.stringify({ productId }) }),
+    onSuccess: () => { setSearch(""); invalidate(); toast({ title: "تمت إضافة المعدّة للحجز" }); },
+    onError: (e) => toast({ title: "تعذّر الإضافة", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const remove = useMutation({
+    mutationFn: (productId: number) => adminFetch(`/admin/kosha-bookings/${bookingId}/assets/${productId}`, { method: "DELETE" }),
+    onSuccess: () => { invalidate(); },
+    onError: (e) => toast({ title: "تعذّر الحذف", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const assets = data?.assets ?? [];
+  return (
+    <div className="space-y-3">
+      {data?.warnings?.length ? (
+        <div className="rounded-lg border border-status-danger/30 bg-status-danger/5 p-2 text-xs text-status-danger">
+          {data.warnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+        </div>
+      ) : null}
+
+      {assets.length ? (
+        <div className="flex flex-wrap gap-2">
+          {assets.map((a) => (
+            <span key={a.productId} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${a.status === "locked" ? "bg-status-danger/10 text-status-danger" : "bg-primary/10 text-primary"}`}>
+              {a.name}{a.status === "locked" ? " 🔒" : ""}
+              <button type="button" onClick={() => remove.mutate(a.productId)} className="font-bold hover:opacity-70" aria-label="إزالة">×</button>
+            </span>
+          ))}
+        </div>
+      ) : <p className="text-xs text-muted-foreground">لا توجد معدات مرتبطة بهذا الحجز.</p>}
+
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن معدّة لإضافتها..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+      {search.length >= 2 && data?.searchResults?.length ? (
+        <div className="divide-y divide-border/20 rounded-lg border border-border/30">
+          {data.searchResults.map((r) => (
+            <button key={r.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(r.productId)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
+              <span>{r.name}{r.status === "locked" ? " 🔒 مقفول" : ""}</span>
+              <span className="text-xs text-muted-foreground">مخزون {r.stock}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {data?.suggestions?.length ? (
+        <div>
+          <p className="mb-1 flex items-center gap-1 text-xs font-semibold text-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> اقتراحات احتياطية:</p>
+          <div className="flex flex-wrap gap-2">
+            {data.suggestions.map((s) => (
+              <button key={s.productId} type="button" disabled={add.isPending} onClick={() => add.mutate(s.productId)} className="rounded-full border border-border/40 px-2.5 py-1 text-xs text-muted-foreground hover:border-primary hover:text-primary">+ {s.name}</button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
