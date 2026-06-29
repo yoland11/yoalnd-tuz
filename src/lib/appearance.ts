@@ -193,6 +193,8 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
   const bg = hexToHsl(appearance.background);
   // الثيمات الفاتحة تحتاج طبقات إبراز/إطار داكنة، والداكنة تحتاج فاتحة — حتى لا تختفي الإطارات
   const isLightTheme = bg.l > 55;
+  // روابط القائمة العلوية تتكيّف مع لون الهيدر: نص داكن على هيدر فاتح، وأبيض على هيدر داكن (حتى لا تختفي في الوضع الفاتح)
+  const headerIsLight = hexToHsl(appearance.header).l > 55;
 
   return {
     "--background": hexToHslTriplet(appearance.background),
@@ -235,6 +237,9 @@ export function appearanceCssVariables(settings: unknown): Record<string, string
     "--ajn-heading": hexToHslTriplet(appearance.headings),
     "--ajn-link": hexToHslTriplet(appearance.links),
     "--ajn-hover": hexToHslTriplet(appearance.hover),
+    // روابط الـ Navbar (قيم لون كاملة لأن index.css يستخدمها مباشرةً بلا hsl()) — تتكيّف مع سطوع الهيدر
+    "--ajn-nav-link": headerIsLight ? "#1A1C25" : "#FFFFFF",
+    "--ajn-nav-link-active": appearance.primaryButton,
     // Semantic status tokens — darker shades for light themes to maintain contrast
     "--status-success": hexToHslTriplet(appearance.primaryButton),
     "--status-danger": isLightTheme ? "0 75% 42%" : "0 84% 70%",

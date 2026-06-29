@@ -232,9 +232,10 @@ a:hover {
 
 /* أزرار الهيرو في الصفحة الرئيسية — نمط موحّد لجميعها (أبيض + Hover ذهبي) */
 .ajn-hero-btn {
-  background-color: transparent;
-  color: var(--ajn-nav-link);
-  border-color: rgba(255, 255, 255, 0.35);
+  background-color: rgba(0, 0, 0, 0.28);
+  /* Hero sits on a fixed dark scrim, so its buttons are always white regardless of light/dark theme. */
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(2px);
   transition: color 200ms ease, border-color 200ms ease, background-color 200ms ease;
 }

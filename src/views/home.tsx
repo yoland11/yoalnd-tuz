@@ -34,7 +34,8 @@ export default function Home() {
             fetchPriority="high"
             className="w-full h-full object-cover object-center"
           />
-          <div className="absolute inset-0 bg-black/60 bg-gradient-to-t from-background via-black/40 to-transparent" />
+          {/* Fixed dark scrim (independent of light/dark theme) so the white hero text & buttons always read on any photo. */}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/55 to-black/45" />
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
