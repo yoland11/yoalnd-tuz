@@ -29,10 +29,33 @@ export type ThemePreset = {
  */
 export const THEME_PRESETS: ThemePreset[] = [
   {
+    // الافتراضي الحالي — ثيم فاتح عصري (أردوازي + مرجاني)
+    id: "slate-coral",
+    name: "Slate & Coral",
+    label: "أردوازي ومرجاني (افتراضي)",
+    colors: { ...DEFAULT_APPEARANCE_SETTINGS },
+  },
+  {
+    // الثيم الأصلي محفوظ كخيار بضغطة واحدة للرجوع إليه متى شئت
     id: "classic-ajn",
     name: "Classic AJN",
-    label: "AJN الكلاسيكي",
-    colors: { ...DEFAULT_APPEARANCE_SETTINGS },
+    label: "AJN الكلاسيكي (أسود وذهبي)",
+    colors: {
+      background: "#0B0B12",
+      header: "#12131A",
+      footer: "#12131A",
+      sidebar: "#12131A",
+      primaryButton: "#D4B15A",
+      secondaryButton: "#12131A",
+      headings: "#FFFFFF",
+      text: "#FFFFFF",
+      cards: "#1A1C25",
+      links: "#D4B15A",
+      hover: "#E7D6A0",
+      headingFont: "Cairo",
+      bodyFont: "Cairo",
+      baseFontPx: 16,
+    },
   },
   {
     id: "concept-01-apple-calm",

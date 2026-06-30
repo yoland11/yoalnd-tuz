@@ -623,6 +623,14 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
   const [status, setStatus] = useState<string>(asset?.status ?? selected?.status ?? "active");
   const [qr, setQr] = useState<AssetQrResponse | null>(null);
   const dna = asset?.dna ?? selected?.dna ?? null;
+  // بحث الأصل (بدل القائمة المنسدلة): يفلتر بالاسم أو الرقم التسلسلي من نفس البيانات المحمّلة
+  const [assetQuery, setAssetQuery] = useState<string>(asset ? "" : (assets.find((r) => r.productId === productId)?.name ?? ""));
+  const [assetOpen, setAssetOpen] = useState(false);
+  const assetResults = (() => {
+    const q = assetQuery.trim().toLowerCase();
+    const list = q ? assets.filter((r) => r.name.toLowerCase().includes(q) || String(r.serialNumber ?? "").toLowerCase().includes(q)) : assets;
+    return list.slice(0, 50);
+  })();
 
   // Keep fields in sync when switching the selected asset (add mode).
   function pick(id: number) {
@@ -689,9 +697,34 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
             {asset ? (
               <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2 text-sm font-medium text-foreground">{asset.name}</div>
             ) : (
-              <select className={inputClass} value={productId} onChange={(e) => pick(Number(e.target.value))}>
-                {assets.map((row) => <option key={row.productId} value={row.productId}>{row.name}</option>)}
-              </select>
+              <div className="relative">
+                <input
+                  className={inputClass}
+                  value={assetQuery}
+                  placeholder="ابحث عن الأصل بالاسم أو الرقم التسلسلي..."
+                  onChange={(e) => { setAssetQuery(e.target.value); setAssetOpen(true); }}
+                  onFocus={() => setAssetOpen(true)}
+                  onBlur={() => setTimeout(() => setAssetOpen(false), 150)}
+                />
+                {assetOpen && (
+                  <div className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-border/40 bg-card shadow-xl">
+                    {assetResults.length === 0 ? (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">لا توجد نتائج</div>
+                    ) : assetResults.map((row) => (
+                      <button
+                        key={row.productId}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { pick(row.productId); setAssetQuery(row.name); setAssetOpen(false); }}
+                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-right text-sm hover:bg-background/60 ${row.productId === productId ? "bg-primary/5 text-primary" : "text-foreground"}`}
+                      >
+                        <span className="truncate">{row.name}</span>
+                        {row.serialNumber ? <span className="shrink-0 font-mono text-[11px] text-muted-foreground">SN: {row.serialNumber}</span> : null}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <div className="grid grid-cols-2 gap-3">
