@@ -10,12 +10,28 @@ import {
   getGetMyOrdersQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { User, Package, LogOut, Phone, CheckCircle, ShoppingCart, Armchair, ChevronLeft } from "lucide-react";
+import {
+  User,
+  Package,
+  LogOut,
+  Phone,
+  CheckCircle,
+  ShoppingCart,
+  Armchair,
+  ChevronLeft,
+  GraduationCap,
+} from "lucide-react";
 import { Link } from "wouter";
 import { clearAuthToken, getAuthToken, setAuthToken } from "@/lib/api-session";
-import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
+import {
+  formatIraqiPhone,
+  formatIraqiPhoneInput,
+  normalizeIraqiPhone,
+  normalizePhoneDigits,
+} from "@/lib/phone";
 import { formatCurrency } from "@/lib/money";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -45,6 +61,18 @@ export default function Account() {
     },
   });
   const { data: cart } = useGetCart();
+  const { data: graduationOrders = [] } = useQuery<any[]>({
+    queryKey: ["customer", "graduation"],
+    queryFn: async () => {
+      const response = await fetch("/api/customer/graduation", {
+        credentials: "include",
+      });
+      if (!response.ok) return [];
+      return response.json();
+    },
+    enabled: !!me,
+    staleTime: 60_000,
+  });
 
   const requestOtp = useRequestOtp();
   const verifyOtp = useVerifyOtp();
@@ -69,8 +97,12 @@ export default function Account() {
         onSuccess: () => {
           setStep("otp");
         },
-        onError: (err: any) => setError(err?.message?.replace(/^HTTP \d+:\s*/, "") || "تعذر إرسال الرمز عبر واتساب"),
-      }
+        onError: (err: any) =>
+          setError(
+            err?.message?.replace(/^HTTP \d+:\s*/, "") ||
+              "تعذر إرسال الرمز عبر واتساب",
+          ),
+      },
     );
   }
 
@@ -92,8 +124,11 @@ export default function Account() {
           queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
           queryClient.invalidateQueries({ queryKey: getGetMyOrdersQueryKey() });
         },
-        onError: (err: any) => setError(err?.message?.replace(/^HTTP \d+:\s*/, "") || "رمز التحقق غير صحيح"),
-      }
+        onError: (err: any) =>
+          setError(
+            err?.message?.replace(/^HTTP \d+:\s*/, "") || "رمز التحقق غير صحيح",
+          ),
+      },
     );
   }
 
@@ -119,9 +154,9 @@ export default function Account() {
 
   // Logged in view
   if (me) {
-    const rows = ((myOrders ?? []) as any[]);
-    const productOrders = rows.filter(order => order.kind !== "service");
-    const serviceOrders = rows.filter(order => order.kind === "service");
+    const rows = (myOrders ?? []) as any[];
+    const productOrders = rows.filter((order) => order.kind !== "service");
+    const serviceOrders = rows.filter((order) => order.kind === "service");
     return (
       <div className="container mx-auto px-4 py-10 min-h-screen" dir="rtl">
         <div className="max-w-2xl mx-auto">
@@ -131,7 +166,9 @@ export default function Account() {
               <User className="w-8 h-8 text-primary" />
             </div>
             <div className="flex-1">
-              <h2 className="text-xl font-bold text-foreground">{me.name || formatIraqiPhone(me.phone)}</h2>
+              <h2 className="text-xl font-bold text-foreground">
+                {me.name || formatIraqiPhone(me.phone)}
+              </h2>
               <p className="text-muted-foreground text-sm flex items-center gap-1">
                 <Phone className="w-3.5 h-3.5" />
                 {formatIraqiPhone(me.phone)}
@@ -153,24 +190,80 @@ export default function Account() {
               </div>
               <div>
                 <p className="font-semibold text-foreground">السلة</p>
-                <p className="text-xs text-muted-foreground">{cart?.items?.length ?? 0} منتج</p>
+                <p className="text-xs text-muted-foreground">
+                  {cart?.items?.length ?? 0} منتج
+                </p>
               </div>
             </div>
-            <p className="text-primary font-bold">{formatCurrency(cart?.total)}</p>
+            <p className="text-primary font-bold">
+              {formatCurrency(cart?.total)}
+            </p>
           </div>
 
-          <Link href="/account/koshas" className="bg-card rounded-2xl border border-border/30 p-5 mb-6 flex items-center justify-between gap-4 hover:border-primary/40 transition-colors">
+          <Link
+            href="/account/koshas"
+            className="bg-card rounded-2xl border border-border/30 p-5 mb-6 flex items-center justify-between gap-4 hover:border-primary/40 transition-colors"
+          >
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
                 <Armchair className="w-5 h-5 text-primary" />
               </div>
               <div>
                 <p className="font-semibold text-foreground">كوشاتي</p>
-                <p className="text-xs text-muted-foreground">تابع حالة كوشاتك وصورها</p>
+                <p className="text-xs text-muted-foreground">
+                  تابع حالة كوشاتك وصورها
+                </p>
               </div>
             </div>
             <ChevronLeft className="w-5 h-5 text-muted-foreground" />
           </Link>
+
+          <div className="bg-card rounded-2xl border border-border/30 p-5 mb-6">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
+                  <GraduationCap className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <p className="font-semibold text-foreground">
+                    خزانة التخرج الرقمية
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    التصاميم والقياسات وطلبات التخرج السابقة
+                  </p>
+                </div>
+              </div>
+              <span className="text-sm font-bold text-primary">
+                {graduationOrders.length}
+              </span>
+            </div>
+            {graduationOrders.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                {graduationOrders.slice(0, 3).map((order: any) => (
+                  <Link
+                    key={order.id}
+                    href={order.trackingUrl}
+                    className="flex items-center justify-between rounded-lg border border-border/30 px-3 py-2 hover:border-primary/40"
+                  >
+                    <div>
+                      <strong className="text-sm">{order.orderNo}</strong>
+                      <p className="text-xs text-muted-foreground">
+                        {order.stageLabel}
+                      </p>
+                    </div>
+                    <ChevronLeft className="h-4 w-4 text-muted-foreground" />
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <Link
+                href="/graduation"
+                className="mt-4 flex items-center justify-center rounded-lg border border-dashed border-border py-3 text-sm text-primary"
+              >
+                إنشاء أول تصميم تخرج
+              </Link>
+            )}
+          </div>
 
           {/* Orders */}
           <h3 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
@@ -180,26 +273,43 @@ export default function Account() {
 
           {ordersLoading ? (
             <div className="space-y-3">
-              {[1,2].map(i => <Skeleton key={i} className="h-20 rounded-xl" />)}
+              {[1, 2].map((i) => (
+                <Skeleton key={i} className="h-20 rounded-xl" />
+              ))}
             </div>
           ) : productOrders.length > 0 ? (
             <div className="space-y-3">
-              {productOrders.map(order => (
-                <div key={order.id} className="bg-card rounded-xl border border-border/30 p-4">
+              {productOrders.map((order) => (
+                <div
+                  key={order.id}
+                  className="bg-card rounded-xl border border-border/30 p-4"
+                >
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
+                      <p className="font-mono text-sm font-bold text-foreground">
+                        {order.trackingCode}
+                      </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {new Date(order.createdAt).toLocaleDateString('ar-IQ', { year: 'numeric', month: 'long', day: 'numeric' })}
+                        {new Date(order.createdAt).toLocaleDateString("ar-IQ", {
+                          year: "numeric",
+                          month: "long",
+                          day: "numeric",
+                        })}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-primary font-bold">{formatCurrency(order.total)}</p>
-                      <span className={`text-xs px-2 py-0.5 rounded-full border ${
-                        order.status === "delivered" ? "border-status-success/30 text-status-success" :
-                        order.status === "cancelled" ? "border-status-danger/30 text-status-danger" :
-                        "border-status-warning/30 text-status-warning"
-                      }`}>
+                      <p className="text-primary font-bold">
+                        {formatCurrency(order.total)}
+                      </p>
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full border ${
+                          order.status === "delivered"
+                            ? "border-status-success/30 text-status-success"
+                            : order.status === "cancelled"
+                              ? "border-status-danger/30 text-status-danger"
+                              : "border-status-warning/30 text-status-warning"
+                        }`}
+                      >
                         {STATUS_LABELS[order.status] ?? order.status}
                       </span>
                     </div>
@@ -220,16 +330,25 @@ export default function Account() {
           </h3>
           {ordersLoading ? (
             <div className="space-y-3">
-              {[1,2].map(i => <Skeleton key={i} className="h-20 rounded-xl" />)}
+              {[1, 2].map((i) => (
+                <Skeleton key={i} className="h-20 rounded-xl" />
+              ))}
             </div>
           ) : serviceOrders.length > 0 ? (
             <div className="space-y-3">
-              {serviceOrders.map(order => (
-                <div key={`service-${order.id}`} className="bg-card rounded-xl border border-border/30 p-4">
+              {serviceOrders.map((order) => (
+                <div
+                  key={`service-${order.id}`}
+                  className="bg-card rounded-xl border border-border/30 p-4"
+                >
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-mono text-sm font-bold text-foreground">{order.trackingCode}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{order.serviceName ?? "حجز خدمة"}</p>
+                      <p className="font-mono text-sm font-bold text-foreground">
+                        {order.trackingCode}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {order.serviceName ?? "حجز خدمة"}
+                      </p>
                     </div>
                     <span className="text-xs px-2 py-0.5 rounded-full border border-status-warning/30 text-status-warning">
                       {STATUS_LABELS[order.status] ?? order.status}
@@ -251,24 +370,31 @@ export default function Account() {
 
   // Login view
   return (
-    <div className="container mx-auto px-4 py-20 min-h-screen flex items-start justify-center" dir="rtl">
+    <div
+      className="container mx-auto px-4 py-20 min-h-screen flex items-start justify-center"
+      dir="rtl"
+    >
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
             <User className="w-8 h-8 text-primary" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">تسجيل الدخول</h1>
-          <p className="text-muted-foreground text-sm mt-1">سجّل دخولك لمتابعة طلباتك</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            سجّل دخولك لمتابعة طلباتك
+          </p>
         </div>
 
         <div className="bg-card rounded-2xl border border-border/30 p-8">
           {step === "phone" ? (
             <form onSubmit={handleRequestOtp} className="space-y-4">
               <div>
-                <label className="block text-sm text-muted-foreground mb-2">رقم الهاتف</label>
+                <label className="block text-sm text-muted-foreground mb-2">
+                  رقم الهاتف
+                </label>
                 <input
                   value={phone}
-                  onChange={e => {
+                  onChange={(e) => {
                     setPhone(formatIraqiPhoneInput(e.target.value));
                     setError(null);
                   }}
@@ -279,7 +405,11 @@ export default function Account() {
                 />
               </div>
               {error && <p className="text-status-danger text-sm">{error}</p>}
-              <Button type="submit" className="w-full py-5" disabled={requestOtp.isPending}>
+              <Button
+                type="submit"
+                className="w-full py-5"
+                disabled={requestOtp.isPending}
+              >
                 {requestOtp.isPending ? "جاري الإرسال..." : "إرسال رمز التحقق"}
               </Button>
             </form>
@@ -287,26 +417,45 @@ export default function Account() {
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="text-center mb-2">
                 <CheckCircle className="w-8 h-8 text-status-success mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">تم إرسال رمز التحقق إلى</p>
-                <p className="font-mono text-foreground">{formatIraqiPhone(phone)}</p>
+                <p className="text-sm text-muted-foreground">
+                  تم إرسال رمز التحقق إلى
+                </p>
+                <p className="font-mono text-foreground">
+                  {formatIraqiPhone(phone)}
+                </p>
               </div>
               <div>
-                <label className="block text-sm text-muted-foreground mb-2">رمز التحقق</label>
+                <label className="block text-sm text-muted-foreground mb-2">
+                  رمز التحقق
+                </label>
                 <input
                   value={otp}
-                  onChange={e => setOtp(normalizePhoneDigits(e.target.value).slice(0, 6))}
+                  onChange={(e) =>
+                    setOtp(normalizePhoneDigits(e.target.value).slice(0, 6))
+                  }
                   placeholder="123456"
                   maxLength={6}
                   className="w-full bg-background border border-border/40 rounded-xl px-4 py-3.5 text-foreground text-2xl font-mono tracking-widest text-center placeholder-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-colors"
                 />
               </div>
-              {error && <p className="text-status-danger text-sm text-center">{error}</p>}
-              <Button type="submit" className="w-full py-5" disabled={verifyOtp.isPending}>
+              {error && (
+                <p className="text-status-danger text-sm text-center">
+                  {error}
+                </p>
+              )}
+              <Button
+                type="submit"
+                className="w-full py-5"
+                disabled={verifyOtp.isPending}
+              >
                 {verifyOtp.isPending ? "جاري التحقق..." : "تأكيد الدخول"}
               </Button>
               <button
                 type="button"
-                onClick={() => { setStep("phone"); setError(null); }}
+                onClick={() => {
+                  setStep("phone");
+                  setError(null);
+                }}
                 className="w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 تغيير رقم الهاتف

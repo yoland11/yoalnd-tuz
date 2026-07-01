@@ -33,3 +33,4 @@ export * from "./photography-staff";
 export * from "./master-cash-box";
 export * from "./enterprise";
 export * from "./desktop";
+export * from "./graduation";

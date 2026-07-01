@@ -25,7 +25,9 @@ const Invoice = lazy(() => import("@/views/admin/invoice"));
 
 // Kosha Staff Portal — lazy, separate restricted app (field crew)
 const StaffPortal = lazy(() => import("@/views/staff/index"));
-const PhotographyStaffPortal = lazy(() => import("@/views/staff/photography/index"));
+const PhotographyStaffPortal = lazy(
+  () => import("@/views/staff/photography/index"),
+);
 
 // Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
 const ProductDetail = lazy(() => import("@/views/store/id"));
@@ -37,6 +39,12 @@ const Favorites = lazy(() => import("@/views/favorites"));
 const Profile = lazy(() => import("@/views/profile"));
 const Account = lazy(() => import("@/views/account"));
 const AccountKoshas = lazy(() => import("@/views/account-koshas"));
+const GraduationConfigurator = lazy(() => import("@/views/graduation"));
+const GraduationTracking = lazy(() =>
+  import("@/views/graduation").then((module) => ({
+    default: module.GraduationTracking,
+  })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,22 +65,34 @@ const PageSpinner = () => (
 );
 
 const AdminSpinner = () => (
-  <div className="min-h-screen bg-background flex items-center justify-center" dir="rtl">
+  <div
+    className="min-h-screen bg-background flex items-center justify-center"
+    dir="rtl"
+  >
     <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
   </div>
 );
 
 // Recovers from ChunkLoadError caused by stale cached HTML referencing new deploy chunks
-class ChunkErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class ChunkErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
   state = { failed: false };
   static getDerivedStateFromError(error: Error) {
-    if (error.name === "ChunkLoadError" || /loading chunk/i.test(error.message)) {
+    if (
+      error.name === "ChunkLoadError" ||
+      /loading chunk/i.test(error.message)
+    ) {
       return { failed: true };
     }
     return null;
   }
   componentDidCatch(error: Error) {
-    if (error.name === "ChunkLoadError" || /loading chunk/i.test(error.message)) {
+    if (
+      error.name === "ChunkLoadError" ||
+      /loading chunk/i.test(error.message)
+    ) {
       // Force a hard reload to fetch fresh chunks from the new deployment
       window.location.reload();
     }
@@ -176,40 +196,73 @@ function Router() {
               <Route path="/services/:id" component={ServiceRequest} />
               <Route path="/koshas" component={Koshas} />
               <Route path="/koshas/:id" component={KoshaDetails} />
+              <Route path="/graduation/track/:token">
+                <Suspense fallback={<PageSpinner />}>
+                  <GraduationTracking />
+                </Suspense>
+              </Route>
+              <Route path="/graduation">
+                <Suspense fallback={<PageSpinner />}>
+                  <GraduationConfigurator />
+                </Suspense>
+              </Route>
               <Route path="/store" component={Store} />
-              <Route path="/store/category/:categorySlug/:subcategorySlug" component={Store} />
+              <Route
+                path="/store/category/:categorySlug/:subcategorySlug"
+                component={Store}
+              />
               <Route path="/store/category/:categorySlug" component={Store} />
               <Route path="/store/:id">
-                <Suspense fallback={<PageSpinner />}><ProductDetail /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <ProductDetail />
+                </Suspense>
               </Route>
               <Route path="/cart" component={Cart} />
               <Route path="/checkout">
-                <Suspense fallback={<PageSpinner />}><Checkout /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Checkout />
+                </Suspense>
               </Route>
               <Route path="/favorites">
-                <Suspense fallback={<PageSpinner />}><Favorites /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Favorites />
+                </Suspense>
               </Route>
               <Route path="/track/:token">
-                <Suspense fallback={<PageSpinner />}><Track /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Track />
+                </Suspense>
               </Route>
               <Route path="/track">
-                <Suspense fallback={<PageSpinner />}><Track /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Track />
+                </Suspense>
               </Route>
               <Route path="/kosha-tracking/:token">
-                <Suspense fallback={<PageSpinner />}><KoshaTracking /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <KoshaTracking />
+                </Suspense>
               </Route>
               <Route path="/gallery">
-                <Suspense fallback={<PageSpinner />}><Gallery /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Gallery />
+                </Suspense>
               </Route>
               <Route path="/login" component={Login} />
               <Route path="/profile">
-                <Suspense fallback={<PageSpinner />}><Profile /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Profile />
+                </Suspense>
               </Route>
               <Route path="/account/koshas">
-                <Suspense fallback={<PageSpinner />}><AccountKoshas /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <AccountKoshas />
+                </Suspense>
               </Route>
               <Route path="/account">
-                <Suspense fallback={<PageSpinner />}><Account /></Suspense>
+                <Suspense fallback={<PageSpinner />}>
+                  <Account />
+                </Suspense>
               </Route>
               <Route component={NotFound} />
             </Switch>
