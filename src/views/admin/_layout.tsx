@@ -102,6 +102,12 @@ const NAV: NavItem[] = [
     perm: "graduation",
   },
   {
+    href: "/admin/graduation/groups",
+    label: "الطلبات الجماعية",
+    icon: Users,
+    perm: "graduation",
+  },
+  {
     href: "/admin/graduation/customers",
     label: "عملاء التخرج",
     icon: Users,
@@ -128,6 +134,12 @@ const NAV: NavItem[] = [
   {
     href: "/admin/graduation/tailoring",
     label: "الخياطة",
+    icon: Scissors,
+    perm: "graduation",
+  },
+  {
+    href: "/admin/graduation/tailors",
+    label: "الخياطون",
     icon: Scissors,
     perm: "graduation",
   },
@@ -526,11 +538,13 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/graduation"),
       navItem("/admin/graduation/orders"),
+      navItem("/admin/graduation/groups"),
       navItem("/admin/graduation/customers"),
       navItem("/admin/graduation/configurator"),
       navItem("/admin/graduation/measurements"),
       navItem("/admin/graduation/production"),
       navItem("/admin/graduation/tailoring"),
+      navItem("/admin/graduation/tailors"),
       navItem("/admin/graduation/printing"),
       navItem("/admin/graduation/embroidery"),
       navItem("/admin/graduation/delivery"),

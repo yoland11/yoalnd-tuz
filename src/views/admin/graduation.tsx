@@ -82,11 +82,13 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 type Mode =
   | "dashboard"
   | "orders"
+  | "groups"
   | "customers"
   | "configurator"
   | "measurements"
   | "production"
   | "tailoring"
+  | "tailors"
   | "printing"
   | "embroidery"
   | "delivery"
@@ -96,11 +98,13 @@ type Mode =
 const MODE_LABELS: Record<Mode, string> = {
   dashboard: "لوحة تجهيزات التخرج",
   orders: "طلبات التخرج",
+  groups: "الطلبات الجماعية",
   customers: "عملاء التخرج",
   configurator: "مُعدّ تصميم التخرج",
   measurements: "القياسات",
   production: "لوحة الإنتاج",
   tailoring: "الخياطة",
+  tailors: "إدارة الخياطين",
   printing: "الطباعة",
   embroidery: "التطريز",
   delivery: "التسليم",
@@ -307,18 +311,44 @@ function GroupOrders() {
     university: "",
     college: "",
     department: "",
+    graduationBatch: "",
     graduationYear: String(new Date().getFullYear()),
-    eventDate: "",
+    expectedStudentCount: 1,
+    deliveryDate: "",
+    notes: "",
+    styleKey: "",
+    fabricKey: "",
+    packageKey: "",
+    accessories: [] as string[],
   });
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "graduation", "groups"],
     queryFn: () => adminFetch<any>("/admin/graduation/groups"),
   });
+  const { data: configData } = useQuery({
+    queryKey: ["admin", "graduation", "settings"],
+    queryFn: () => adminFetch<any>("/admin/graduation/settings"),
+    staleTime: 5 * 60_000,
+  });
+  const config = configData?.config as GraduationConfig | undefined;
   const create = useMutation({
     mutationFn: () =>
       adminFetch<any>("/admin/graduation/groups", {
         method: "POST",
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          defaultConfiguration: {
+            styleKey: form.styleKey,
+            packageKey: form.packageKey || undefined,
+            fabric: { key: form.fabricKey },
+            accessories: form.accessories,
+            customText: {
+              university: form.university,
+              college: form.college,
+              graduationYear: form.graduationYear,
+            },
+          },
+        }),
       }),
     onSuccess: ({ group }) => {
       client.invalidateQueries({ queryKey: ["admin", "graduation", "groups"] });
@@ -369,6 +399,7 @@ function GroupOrders() {
               <TableHead>الجامعة</TableHead>
               <TableHead>الممثل</TableHead>
               <TableHead>الموعد</TableHead>
+              <TableHead>التسجيل والإنتاج</TableHead>
               <TableHead>الحالة</TableHead>
               <TableHead>الرابط</TableHead>
             </TableRow>
@@ -376,7 +407,7 @@ function GroupOrders() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6}>
+                <TableCell colSpan={7}>
                   <Skeleton className="h-16" />
                 </TableCell>
               </TableRow>
@@ -391,7 +422,29 @@ function GroupOrders() {
                   </TableCell>
                   <TableCell>{item.university || "—"}</TableCell>
                   <TableCell>{item.representativeName || "—"}</TableCell>
-                  <TableCell>{item.eventDate || "—"}</TableCell>
+                  <TableCell>
+                    {item.groupMeta?.deliveryDate || item.eventDate || "—"}
+                  </TableCell>
+                  <TableCell className="min-w-52">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span>
+                        {item.stats?.registered ?? 0} /{" "}
+                        {item.stats?.expected ?? 0}
+                      </span>
+                      <span className="text-muted-foreground">
+                        إنتاج {item.stats?.productionProgress ?? 0}%
+                      </span>
+                    </div>
+                    <Progress
+                      className="mt-2 h-1.5"
+                      value={item.stats?.productionProgress ?? 0}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      طباعة {item.stats?.printingProgress ?? 0}% · تطريز{" "}
+                      {item.stats?.embroideryProgress ?? 0}% · تسليم{" "}
+                      {item.stats?.delivered ?? 0}
+                    </p>
+                  </TableCell>
                   <TableCell>
                     {item.status === "open" ? "مفتوحة" : "مغلقة"}
                   </TableCell>
@@ -426,7 +479,7 @@ function GroupOrders() {
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={7}
                   className="h-24 text-center text-muted-foreground"
                 >
                   لا توجد مجموعات بعد
@@ -449,6 +502,7 @@ function GroupOrders() {
               ["university", "الجامعة"],
               ["college", "الكلية"],
               ["department", "القسم"],
+              ["graduationBatch", "دفعة التخرج"],
               ["graduationYear", "سنة التخرج"],
             ].map(([key, label]) => (
               <div key={key}>
@@ -466,24 +520,127 @@ function GroupOrders() {
               </div>
             ))}
             <div>
-              <Label>موعد الحفل</Label>
+              <Label>موعد التسليم</Label>
               <Input
                 type="date"
                 className="mt-2"
-                value={form.eventDate}
+                value={form.deliveryDate}
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    eventDate: event.target.value,
+                    deliveryDate: event.target.value,
+                  }))
+                }
+              />
+            </div>
+            <div>
+              <Label>عدد الطلبة المتوقع</Label>
+              <Input
+                type="number"
+                min={1}
+                className="mt-2"
+                value={form.expectedStudentCount}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    expectedStudentCount: Math.max(
+                      1,
+                      Number(event.target.value) || 1,
+                    ),
                   }))
                 }
               />
             </div>
           </div>
+          <div>
+            <Label>ملاحظات المجموعة</Label>
+            <Textarea
+              className="mt-2"
+              value={form.notes}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  notes: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <Label>نوع الروب المشترك</Label>
+              <Select
+                value={form.styleKey}
+                onValueChange={(value) =>
+                  setForm((current) => ({ ...current, styleKey: value }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue placeholder="اختر النوع" />
+                </SelectTrigger>
+                <SelectContent>
+                  {config?.styles?.map((item) => (
+                    <SelectItem key={item.key} value={item.key}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>القماش المشترك</Label>
+              <Select
+                value={form.fabricKey}
+                onValueChange={(value) =>
+                  setForm((current) => ({ ...current, fabricKey: value }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue placeholder="اختر القماش" />
+                </SelectTrigger>
+                <SelectContent>
+                  {config?.fabrics?.map((item) => (
+                    <SelectItem key={item.key} value={item.key}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>الباقة</Label>
+              <Select
+                value={form.packageKey || "none"}
+                onValueChange={(value) =>
+                  setForm((current) => ({
+                    ...current,
+                    packageKey: value === "none" ? "" : value,
+                  }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">بدون باقة</SelectItem>
+                  {config?.packages?.map((item) => (
+                    <SelectItem key={item.key} value={item.key}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <DialogFooter className="sm:justify-start">
             <Button
               onClick={() => create.mutate()}
-              disabled={!form.title.trim() || create.isPending}
+              disabled={
+                !form.title.trim() ||
+                !form.representativeName.trim() ||
+                !form.styleKey ||
+                !form.fabricKey ||
+                create.isPending
+              }
             >
               {create.isPending ? (
                 <Loader2 className="ml-2 h-4 w-4 animate-spin" />
@@ -519,6 +676,11 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
     queryKey: ["admin", "graduation", "staff-options"],
     queryFn: () => adminFetch<any>("/admin/graduation/staff-options"),
     staleTime: 5 * 60_000,
+  });
+  const { data: tailorOptions } = useQuery({
+    queryKey: ["admin", "graduation", "tailors"],
+    queryFn: () => adminFetch<any>("/admin/graduation/resources?type=tailor"),
+    staleTime: 60_000,
   });
   const order = data?.order;
   const [draft, setDraft] = useState<any>({});
@@ -610,6 +772,103 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
             </div>
           </TabsContent>
           <TabsContent value="production" className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label>الخياط المسند إليه</Label>
+                <Select
+                  value={String(
+                    draft.assignedTailorId ??
+                      order.tailorAssignment?.tailorId ??
+                      "none",
+                  )}
+                  onValueChange={(value) =>
+                    setDraft((current: any) => ({
+                      ...current,
+                      assignedTailorId: value === "none" ? null : Number(value),
+                    }))
+                  }
+                >
+                  <SelectTrigger className="mt-2">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">غير مسند</SelectItem>
+                    {tailorOptions?.items
+                      ?.filter((tailor: any) => tailor.isActive)
+                      .map((tailor: any) => (
+                        <SelectItem key={tailor.id} value={String(tailor.id)}>
+                          {tailor.name} · السعة{" "}
+                          {tailor.profile?.dailyCapacity || 1}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>حالة عمل الخياط</Label>
+                <Select
+                  value={
+                    draft.tailorStatus ??
+                    order.tailorAssignment?.status ??
+                    "new"
+                  }
+                  onValueChange={(value) =>
+                    setDraft((current: any) => ({
+                      ...current,
+                      tailorStatus: value,
+                    }))
+                  }
+                >
+                  <SelectTrigger className="mt-2">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[
+                      ["new", "جديد"],
+                      ["cutting", "القص"],
+                      ["sewing", "الخياطة"],
+                      ["embroidery", "التطريز"],
+                      ["ironing", "الكي"],
+                      ["quality_check", "فحص الجودة"],
+                      ["packaging", "التغليف"],
+                      ["completed", "مكتمل"],
+                    ].map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {order.tailorAssignment?.tailorId ? (
+              <div className="grid gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-3">
+                <Info
+                  label="الخياط"
+                  value={order.tailorAssignment.tailorName}
+                />
+                <Info
+                  label="تاريخ الإسناد"
+                  value={
+                    order.tailorAssignment.assignmentDate
+                      ? new Date(
+                          order.tailorAssignment.assignmentDate,
+                        ).toLocaleString("ar-IQ")
+                      : "—"
+                  }
+                />
+                <Info
+                  label="تاريخ الإكمال"
+                  value={
+                    order.tailorAssignment.completionDate
+                      ? new Date(
+                          order.tailorAssignment.completionDate,
+                        ).toLocaleString("ar-IQ")
+                      : "لم يكتمل"
+                  }
+                />
+              </div>
+            ) : null}
             <div>
               <Label>مرحلة الإنتاج</Label>
               <Select
@@ -1036,12 +1295,460 @@ function Orders({
   );
 }
 
-function Production({ focus }: { focus?: string }) {
+const emptyTailorForm = {
+  name: "",
+  code: "",
+  phone: "",
+  address: "",
+  specialization: "",
+  dailyCapacity: 1,
+  status: "active",
+  notes: "",
+  photoUrl: "",
+  operatorId: null as number | null,
+  isActive: true,
+};
+
+function Tailors() {
   const { toast } = useToast();
   const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [form, setForm] = useState(emptyTailorForm);
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "graduation", "production"],
-    queryFn: () => adminFetch<any>("/admin/graduation/production"),
+    queryKey: ["admin", "graduation", "tailors"],
+    queryFn: () => adminFetch<any>("/admin/graduation/resources?type=tailor"),
+  });
+  const { data: staffOptions } = useQuery({
+    queryKey: ["admin", "graduation", "staff-options"],
+    queryFn: () => adminFetch<any>("/admin/graduation/staff-options"),
+    staleTime: 5 * 60_000,
+  });
+  const save = useMutation({
+    mutationFn: () =>
+      adminFetch(
+        editingId
+          ? `/admin/graduation/resources/${editingId}`
+          : "/admin/graduation/resources",
+        {
+          method: editingId ? "PATCH" : "POST",
+          body: JSON.stringify({ ...form, resourceType: "tailor" }),
+        },
+      ),
+    onSuccess: () => {
+      toast({
+        title: editingId ? "تم تحديث بيانات الخياط" : "تمت إضافة الخياط",
+      });
+      client.invalidateQueries({
+        queryKey: ["admin", "graduation", "tailors"],
+      });
+      setOpen(false);
+      setEditingId(null);
+      setForm(emptyTailorForm);
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذر حفظ الخياط",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+  const toggle = useMutation({
+    mutationFn: ({ id, active }: { id: number; active: boolean }) =>
+      adminFetch(`/admin/graduation/resources/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          isActive: active,
+          status: active ? "active" : "inactive",
+        }),
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({
+        queryKey: ["admin", "graduation", "tailors"],
+      });
+      toast({ title: "تم تحديث حالة الخياط" });
+    },
+  });
+  function edit(item: any) {
+    setEditingId(item.id);
+    setForm({
+      name: item.name || "",
+      code: item.code || "",
+      phone: item.profile?.phone || "",
+      address: item.profile?.address || "",
+      specialization: item.profile?.specialization || "",
+      dailyCapacity: Number(item.profile?.dailyCapacity) || 1,
+      status: item.status || "active",
+      notes: item.notes || "",
+      photoUrl: item.profile?.photoUrl || "",
+      operatorId: item.operatorId ? Number(item.operatorId) : null,
+      isActive: item.isActive !== false,
+    });
+    setOpen(true);
+  }
+  async function pickPhoto(file: File) {
+    const photoUrl = await processImageFile(file, {
+      maxSize: 900,
+      quality: 0.84,
+    });
+    setForm((current) => ({ ...current, photoUrl }));
+  }
+  const items = data?.items ?? [];
+  const selected = items.find((item: any) => item.id === selectedId);
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-bold">فريق الخياطة</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            السعة اليومية، الإسناد، الإنجاز والتأخير لكل خياط.
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setEditingId(null);
+            setForm(emptyTailorForm);
+            setOpen(true);
+          }}
+        >
+          <Plus className="ml-2 h-4 w-4" />
+          إضافة خياط
+        </Button>
+      </div>
+      {isLoading ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <Skeleton key={index} className="h-64" />
+          ))}
+        </div>
+      ) : items.length ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {items.map((item: any) => (
+            <Card key={item.id} className={item.isActive ? "" : "opacity-70"}>
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  {item.profile?.photoUrl ? (
+                    <img
+                      src={item.profile.photoUrl}
+                      alt={item.name}
+                      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
+                      <Scissors className="h-6 w-6" />
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <strong className="truncate">{item.name}</strong>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] ${item.isActive ? "bg-status-success/10 text-status-success" : "bg-muted text-muted-foreground"}`}
+                      >
+                        {item.isActive ? "مفعل" : "غير مفعل"}
+                      </span>
+                    </div>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
+                      {item.profile?.specialization || "خياطة عامة"}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      السعة اليومية: {item.profile?.dailyCapacity || 1}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="rounded-lg border border-border p-2">
+                    <strong className="block text-base text-primary">
+                      {item.stats?.assignedOrders ?? 0}
+                    </strong>
+                    <span className="text-muted-foreground">مسندة</span>
+                  </div>
+                  <div className="rounded-lg border border-border p-2">
+                    <strong className="block text-base text-status-success">
+                      {item.stats?.completed ?? 0}
+                    </strong>
+                    <span className="text-muted-foreground">مكتملة</span>
+                  </div>
+                  <div className="rounded-lg border border-border p-2">
+                    <strong className="block text-base text-status-warning">
+                      {item.stats?.delayed ?? 0}
+                    </strong>
+                    <span className="text-muted-foreground">متأخرة</span>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">درجة الإنتاجية</span>
+                  <strong className="text-primary">
+                    {item.stats?.productivityScore ?? 0}%
+                  </strong>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px] text-muted-foreground">
+                  <span>
+                    اليوم{" "}
+                    <strong className="block text-foreground">
+                      {item.stats?.dailyProduction ?? 0}
+                    </strong>
+                  </span>
+                  <span>
+                    الأسبوع{" "}
+                    <strong className="block text-foreground">
+                      {item.stats?.weeklyProduction ?? 0}
+                    </strong>
+                  </span>
+                  <span>
+                    الشهر{" "}
+                    <strong className="block text-foreground">
+                      {item.stats?.monthlyProduction ?? 0}
+                    </strong>
+                  </span>
+                  <span>
+                    متوسط الإنجاز{" "}
+                    <strong className="block text-foreground">
+                      {item.stats?.averageCompletionHours ?? 0} س
+                    </strong>
+                  </span>
+                  <span>
+                    نسبة التأخير{" "}
+                    <strong className="block text-status-warning">
+                      {item.stats?.delayRate ?? 0}%
+                    </strong>
+                  </span>
+                  <span>
+                    ملاحظات جودة{" "}
+                    <strong className="block text-foreground">
+                      {item.stats?.qualityIssues ?? 0}
+                    </strong>
+                  </span>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => edit(item)}
+                  >
+                    <Edit3 className="ml-2 h-4 w-4" />
+                    تعديل
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() =>
+                      setSelectedId(selectedId === item.id ? null : item.id)
+                    }
+                  >
+                    <ClipboardCheck className="ml-2 h-4 w-4" />
+                    الطابور
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    title={item.isActive ? "تعطيل" : "تفعيل"}
+                    onClick={() =>
+                      toggle.mutate({ id: item.id, active: !item.isActive })
+                    }
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
+          <Scissors className="mx-auto mb-3 h-9 w-9" />
+          لم تتم إضافة خياطين بعد
+        </div>
+      )}
+      {selected ? (
+        <section className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold">طابور {selected.name}</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                اسحب الطلب بين مراحل الإنتاج لتحديثه.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedId(null)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <Production tailorId={selected.id} />
+        </section>
+      ) : null}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          dir="rtl"
+          className="max-h-[92vh] max-w-2xl overflow-y-auto"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {editingId ? "تعديل بيانات الخياط" : "إضافة خياط"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {[
+              ["name", "الاسم الكامل"],
+              ["phone", "رقم الهاتف"],
+              ["address", "العنوان"],
+              ["specialization", "التخصص"],
+              ["code", "الكود"],
+            ].map(([key, label]) => (
+              <div key={key}>
+                <Label>{label}</Label>
+                <Input
+                  className="mt-2"
+                  value={(form as any)[key]}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      [key]: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+            ))}
+            <div>
+              <Label>الطاقة اليومية</Label>
+              <Input
+                className="mt-2"
+                type="number"
+                min={1}
+                value={form.dailyCapacity}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    dailyCapacity: Math.max(1, Number(event.target.value) || 1),
+                  }))
+                }
+              />
+            </div>
+            <div>
+              <Label>الحالة</Label>
+              <Select
+                value={form.status}
+                onValueChange={(value) =>
+                  setForm((current) => ({
+                    ...current,
+                    status: value,
+                    isActive: value !== "inactive",
+                  }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">نشط</SelectItem>
+                  <SelectItem value="leave">إجازة</SelectItem>
+                  <SelectItem value="inactive">غير مفعل</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>حساب الموظف المرتبط</Label>
+              <Select
+                value={form.operatorId ? String(form.operatorId) : "none"}
+                onValueChange={(value) =>
+                  setForm((current) => ({
+                    ...current,
+                    operatorId: value === "none" ? null : Number(value),
+                  }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">بدون حساب</SelectItem>
+                  {staffOptions?.items?.map((staff: any) => (
+                    <SelectItem key={staff.id} value={String(staff.id)}>
+                      {staff.name} - {staff.role}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div>
+            <Label>ملاحظات</Label>
+            <Textarea
+              className="mt-2"
+              value={form.notes}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  notes: event.target.value,
+                }))
+              }
+            />
+          </div>
+          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-3 text-sm hover:border-primary/60">
+            {form.photoUrl ? (
+              <img
+                src={form.photoUrl}
+                alt="صورة الخياط"
+                className="h-12 w-12 rounded-lg object-cover"
+              />
+            ) : (
+              <UserRound className="h-8 w-8 text-muted-foreground" />
+            )}
+            <span>
+              {form.photoUrl ? "استبدال الصورة" : "إضافة صورة للخياط"}
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              className="sr-only"
+              onChange={(event) =>
+                event.target.files?.[0] && pickPhoto(event.target.files[0])
+              }
+            />
+          </label>
+          <DialogFooter className="sm:justify-start">
+            <Button
+              disabled={!form.name.trim() || save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? (
+                <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="ml-2 h-4 w-4" />
+              )}
+              حفظ
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Production({
+  focus,
+  tailorId,
+}: {
+  focus?: string;
+  tailorId?: number;
+}) {
+  const { toast } = useToast();
+  const client = useQueryClient();
+  const [college, setCollege] = useState("");
+  const [department, setDepartment] = useState("");
+  const [size, setSize] = useState("");
+  const [filterTailorId, setFilterTailorId] = useState("all");
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "graduation", "production", tailorId ?? "all"],
+    queryFn: () =>
+      adminFetch<any>(
+        `/admin/graduation/production${tailorId ? `?tailorId=${tailorId}` : ""}`,
+      ),
     refetchInterval: 30_000,
   });
   const move = useMutation({
@@ -1062,97 +1769,181 @@ function Production({ focus }: { focus?: string }) {
         variant: "destructive",
       }),
   });
+  const { data: tailorOptions } = useQuery({
+    queryKey: ["admin", "graduation", "tailors"],
+    queryFn: () => adminFetch<any>("/admin/graduation/resources?type=tailor"),
+    staleTime: 60_000,
+    enabled: !tailorId,
+  });
   if (isLoading) return <Skeleton className="h-[600px]" />;
-  const visible = focus
+  const visibleSource = focus
     ? data.columns.filter((column: any) => column.stage === focus)
     : data.columns;
+  const normalizedCollege = college.trim().toLocaleLowerCase("ar");
+  const normalizedDepartment = department.trim().toLocaleLowerCase("ar");
+  const normalizedSize = size.trim().toLocaleLowerCase("ar");
+  const visible = visibleSource.map((column: any) => ({
+    ...column,
+    items: column.items.filter((item: any) => {
+      const itemCollege = String(item.group?.college || "").toLocaleLowerCase(
+        "ar",
+      );
+      const itemDepartment = String(
+        item.group?.department || item.customText?.department || "",
+      ).toLocaleLowerCase("ar");
+      const itemSize = String(item.preferredSize || "").toLocaleLowerCase("ar");
+      return (
+        (!normalizedCollege || itemCollege.includes(normalizedCollege)) &&
+        (!normalizedDepartment ||
+          itemDepartment.includes(normalizedDepartment)) &&
+        (!normalizedSize || itemSize.includes(normalizedSize)) &&
+        (tailorId ||
+          filterTailorId === "all" ||
+          Number(item.tailorAssignment?.tailorId) === Number(filterTailorId))
+      );
+    }),
+  }));
   return (
-    <div className="overflow-x-auto pb-3">
-      <div className="flex min-w-max gap-3">
-        {visible.map((column: any) => (
-          <section
-            key={column.stage}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              const id = Number(event.dataTransfer.getData("text/plain"));
-              if (id) move.mutate({ id, stage: column.stage });
-            }}
-            className="w-72 shrink-0 rounded-xl border border-border bg-muted/30"
-          >
-            <header className="flex items-center justify-between border-b border-border px-3 py-3">
-              <strong className="text-sm">{column.label}</strong>
-              <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">
-                {column.items.length}
-              </span>
-            </header>
-            <div className="max-h-[68vh] space-y-2 overflow-y-auto p-2">
-              {column.items.map((item: any) => (
-                <article
-                  key={item.id}
-                  draggable
-                  onDragStart={(event) =>
-                    event.dataTransfer.setData("text/plain", String(item.id))
-                  }
-                  className="cursor-grab rounded-lg border border-border bg-card p-3 active:cursor-grabbing"
-                >
-                  <div className="flex items-start gap-2">
-                    <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 flex-1">
-                      <strong className="block truncate text-sm">
-                        {item.customerName}
-                      </strong>
-                      <p className="mt-1 text-xs text-primary">
-                        {item.orderNo}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{item.dueDate || "بدون موعد"}</span>
-                    <span>{formatCurrency(item.totalAmount)}</span>
-                  </div>
-                  <div className="mt-3 flex gap-1">
-                    {GRADUATION_STAGES.indexOf(column.stage) > 0 ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 flex-1 text-xs"
-                        onClick={() =>
-                          move.mutate({
-                            id: item.id,
-                            stage:
-                              GRADUATION_STAGES[
-                                GRADUATION_STAGES.indexOf(column.stage) - 1
-                              ],
-                          })
-                        }
-                      >
-                        السابق
-                      </Button>
-                    ) : null}
-                    {GRADUATION_STAGES.indexOf(column.stage) <
-                    GRADUATION_STAGES.length - 1 ? (
-                      <Button
-                        size="sm"
-                        className="h-7 flex-1 text-xs"
-                        onClick={() =>
-                          move.mutate({
-                            id: item.id,
-                            stage:
-                              GRADUATION_STAGES[
-                                GRADUATION_STAGES.indexOf(column.stage) + 1
-                              ],
-                          })
-                        }
-                      >
-                        التالي
-                      </Button>
-                    ) : null}
-                  </div>
-                </article>
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Input
+          value={college}
+          onChange={(event) => setCollege(event.target.value)}
+          placeholder="فلترة حسب الكلية"
+        />
+        <Input
+          value={department}
+          onChange={(event) => setDepartment(event.target.value)}
+          placeholder="فلترة حسب القسم"
+        />
+        <Input
+          value={size}
+          onChange={(event) => setSize(event.target.value)}
+          placeholder="فلترة حسب المقاس"
+        />
+        {!tailorId ? (
+          <Select value={filterTailorId} onValueChange={setFilterTailorId}>
+            <SelectTrigger>
+              <SelectValue placeholder="كل الخياطين" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">كل الخياطين</SelectItem>
+              {tailorOptions?.items?.map((tailor: any) => (
+                <SelectItem key={tailor.id} value={String(tailor.id)}>
+                  {tailor.name}
+                </SelectItem>
               ))}
-            </div>
-          </section>
-        ))}
+            </SelectContent>
+          </Select>
+        ) : null}
+      </div>
+      <div className="overflow-x-auto pb-3">
+        <div className="flex min-w-max gap-3">
+          {visible.map((column: any) => (
+            <section
+              key={column.stage}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                const id = Number(event.dataTransfer.getData("text/plain"));
+                if (id) move.mutate({ id, stage: column.stage });
+              }}
+              className="w-72 shrink-0 rounded-xl border border-border bg-muted/30"
+            >
+              <header className="flex items-center justify-between border-b border-border px-3 py-3">
+                <strong className="text-sm">{column.label}</strong>
+                <span className="rounded-full bg-background px-2 py-0.5 text-xs text-muted-foreground">
+                  {column.items.length}
+                </span>
+              </header>
+              <div className="max-h-[68vh] space-y-2 overflow-y-auto p-2">
+                {column.items.map((item: any) => (
+                  <article
+                    key={item.id}
+                    draggable
+                    onDragStart={(event) =>
+                      event.dataTransfer.setData("text/plain", String(item.id))
+                    }
+                    className="cursor-grab rounded-lg border border-border bg-card p-3 active:cursor-grabbing"
+                  >
+                    <div className="flex items-start gap-2">
+                      <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <strong className="block truncate text-sm">
+                          {item.customerName}
+                        </strong>
+                        <p className="mt-1 text-xs text-primary">
+                          {item.orderNo}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{item.dueDate || "بدون موعد"}</span>
+                      <span>{formatCurrency(item.totalAmount)}</span>
+                    </div>
+                    {item.group ||
+                    item.tailorAssignment?.tailorName ||
+                    item.preferredSize ? (
+                      <div className="mt-2 space-y-1 border-t border-border pt-2 text-[11px] text-muted-foreground">
+                        {item.group ? (
+                          <p className="truncate">
+                            {item.group.title} ·{" "}
+                            {item.group.college ||
+                              item.group.university ||
+                              "مجموعة"}
+                          </p>
+                        ) : null}
+                        <div className="flex items-center justify-between gap-2">
+                          <span>
+                            {item.tailorAssignment?.tailorName || "غير مسند"}
+                          </span>
+                          <span>{item.preferredSize || "بدون مقاس"}</span>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="mt-3 flex gap-1">
+                      {GRADUATION_STAGES.indexOf(column.stage) > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 flex-1 text-xs"
+                          onClick={() =>
+                            move.mutate({
+                              id: item.id,
+                              stage:
+                                GRADUATION_STAGES[
+                                  GRADUATION_STAGES.indexOf(column.stage) - 1
+                                ],
+                            })
+                          }
+                        >
+                          السابق
+                        </Button>
+                      ) : null}
+                      {GRADUATION_STAGES.indexOf(column.stage) <
+                      GRADUATION_STAGES.length - 1 ? (
+                        <Button
+                          size="sm"
+                          className="h-7 flex-1 text-xs"
+                          onClick={() =>
+                            move.mutate({
+                              id: item.id,
+                              stage:
+                                GRADUATION_STAGES[
+                                  GRADUATION_STAGES.indexOf(column.stage) + 1
+                                ],
+                            })
+                          }
+                        >
+                          التالي
+                        </Button>
+                      ) : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -2024,6 +2815,8 @@ export default function GraduationAdminPage() {
         <DashboardWithGroups />
       ) : mode === "orders" ? (
         <Orders />
+      ) : mode === "groups" ? (
+        <GroupOrders />
       ) : mode === "customers" ? (
         <Customers />
       ) : mode === "configurator" ? (
@@ -2052,6 +2845,8 @@ export default function GraduationAdminPage() {
         <Production />
       ) : mode === "tailoring" ? (
         <Production focus="tailoring" />
+      ) : mode === "tailors" ? (
+        <Tailors />
       ) : mode === "printing" ? (
         <div className="space-y-5">
           <Production focus="printing" />

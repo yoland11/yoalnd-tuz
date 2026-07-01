@@ -1872,13 +1872,11 @@ async function executeApprovedApprovalRequest(
       .set({ status: "cancelled", archivedAt: new Date() })
       .where(eq(serviceOrdersTable.id, id))
       .returning();
-    await db
-      .insert(serviceOrderStatusHistoryTable)
-      .values({
-        serviceOrderId: id,
-        status: "cancelled",
-        notes: "إلغاء بعد موافقة المدير",
-      });
+    await db.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: id,
+      status: "cancelled",
+      notes: "إلغاء بعد موافقة المدير",
+    });
     await syncAutomaticTasksForEntityStatus({
       entityType: "service_order",
       entityId: id,
@@ -1922,13 +1920,11 @@ async function executeApprovedApprovalRequest(
       id: actor?.id ?? null,
       name: actor?.name ?? "النظام",
     });
-    await db
-      .insert(orderStatusHistoryTable)
-      .values({
-        orderId: id,
-        status: "cancelled",
-        notes: "إلغاء بعد موافقة المدير",
-      });
+    await db.insert(orderStatusHistoryTable).values({
+      orderId: id,
+      status: "cancelled",
+      notes: "إلغاء بعد موافقة المدير",
+    });
     await addEntityTimeline({
       entityType: "order",
       entityId: id,
@@ -14024,6 +14020,34 @@ async function enterpriseCommandCenter() {
           (select coalesce(sum(remaining_amount::numeric),0) from graduation_orders where archived_at is null and status <> 'cancelled'),
         'graduationInProduction', (select count(*) from graduation_orders where archived_at is null and production_stage not in ('new','ready','delivered') and status <> 'cancelled'),
         'graduationReady', (select count(*) from graduation_orders where archived_at is null and production_stage = 'ready' and status <> 'cancelled'),
+        'activeGroupOrders', (select count(*) from graduation_groups where status = 'open'),
+        'tailorsWorkingToday', (
+          select count(*) from graduation_resources r
+          where r.resource_type = 'tailor' and r.is_active = true and exists (
+            select 1 from graduation_orders o
+            where o.archived_at is null and o.status <> 'cancelled'
+              and o.production_stage not in ('new','ready','delivered')
+              and coalesce(o.production_estimate->'tailorAssignment'->>'tailorId','') ~ '^\d+$'
+              and (o.production_estimate->'tailorAssignment'->>'tailorId')::int = r.id
+          )
+        ),
+        'tailorsBehindSchedule', (
+          select count(distinct (o.production_estimate->'tailorAssignment'->>'tailorId'))
+          from graduation_orders o, ctx
+          where o.archived_at is null and o.status <> 'cancelled'
+            and o.due_date < ctx.today and o.production_stage not in ('ready','delivered')
+            and coalesce(o.production_estimate->'tailorAssignment'->>'tailorId','') ~ '^\d+$'
+        ),
+        'graduationProductionCapacity', (
+          select coalesce(sum(case when coalesce(metrics->>'dailyCapacity','') ~ '^\d+$' then (metrics->>'dailyCapacity')::int else 0 end),0)
+          from graduation_resources where resource_type = 'tailor' and is_active = true
+        ),
+        'graduationExpectedCompletions', (
+          select count(*) from graduation_orders o, ctx
+          where o.archived_at is null and o.status <> 'cancelled'
+            and o.production_stage not in ('ready','delivered')
+            and o.due_date between ctx.today and ctx.today + 7
+        ),
         'todayProfit', (select coalesce(total_sales::numeric - total_expenses::numeric,0) from daily_cash_reports, ctx where report_date = ctx.today limit 1),
         'criticalAlerts', (select count(*) from notifications where audience_type = 'admin' and archived_at is null and read_at is null and type ~* '(critical|overdue|low_stock|maintenance|payment)'),
         'openTasks', (select count(*) from tasks where archived_at is null and status not in ('completed','cancelled')),
@@ -16141,13 +16165,11 @@ async function handleEnterpriseAdmin(
         status: "pending",
         internalNotes: current.internalNotes,
       });
-      await db
-        .insert(serviceOrderStatusHistoryTable)
-        .values({
-          serviceOrderId: row.id,
-          status: row.status,
-          notes: `تم نسخ الحجز #${current.id}`,
-        });
+      await db.insert(serviceOrderStatusHistoryTable).values({
+        serviceOrderId: row.id,
+        status: row.status,
+        notes: `تم نسخ الحجز #${current.id}`,
+      });
       await ensureQrForEntity("service_order", row, req);
       await createAutomaticTasksForEntity({
         entityType: "service_order",
@@ -22457,13 +22479,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .set({ status: "cancelled", archivedAt: new Date() })
         .where(eq(serviceOrdersTable.id, id))
         .returning();
-      await db
-        .insert(serviceOrderStatusHistoryTable)
-        .values({
-          serviceOrderId: id,
-          status: "cancelled",
-          notes: "إلغاء وأرشفة من لوحة الإدارة",
-        });
+      await db.insert(serviceOrderStatusHistoryTable).values({
+        serviceOrderId: id,
+        status: "cancelled",
+        notes: "إلغاء وأرشفة من لوحة الإدارة",
+      });
       void syncAutomaticTasksForEntityStatus({
         entityType: "service_order",
         entityId: id,
@@ -22601,13 +22621,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             }),
           ),
       );
-      await db
-        .insert(orderStatusHistoryTable)
-        .values({
-          orderId: order.id,
-          status: "pending",
-          notes: "إضافة من الإدارة",
-        });
+      await db.insert(orderStatusHistoryTable).values({
+        orderId: order.id,
+        status: "pending",
+        notes: "إضافة من الإدارة",
+      });
       void fireOrderEvent("placed", {
         name: order.customerName,
         phone: order.customerPhone,
@@ -23082,13 +23100,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (archived && isRentalStoreOrder(current)) {
         await syncRentalRowFromStoreOrder(archived);
       }
-      await db
-        .insert(orderStatusHistoryTable)
-        .values({
-          orderId: id,
-          status: "cancelled",
-          notes: "إلغاء وأرشفة من لوحة الإدارة",
-        });
+      await db.insert(orderStatusHistoryTable).values({
+        orderId: id,
+        status: "cancelled",
+        notes: "إلغاء وأرشفة من لوحة الإدارة",
+      });
       void logAdminActivity(req, "order_cancelled_and_archived", "order", id, {
         oldValues: orderSnapshot(current, currentItems),
       });
@@ -24513,21 +24529,19 @@ async function handlePurchaseInvoices(
       }
       processedItems.push({ ...item, productId });
     }
-    await db
-      .insert(purchaseInvoiceItemsTable)
-      .values(
-        processedItems.map((item: any) => ({
-          invoiceId: id,
-          productId: item.productId ?? null,
-          productName: item.productName ?? "",
-          barcode: item.barcode,
-          quantity: String(item.quantity),
-          costPrice: String(item.costPrice),
-          salePrice: String(item.salePrice),
-          discount: String(item.discount),
-          total: String(item.total),
-        })),
-      );
+    await db.insert(purchaseInvoiceItemsTable).values(
+      processedItems.map((item: any) => ({
+        invoiceId: id,
+        productId: item.productId ?? null,
+        productName: item.productName ?? "",
+        barcode: item.barcode,
+        quantity: String(item.quantity),
+        costPrice: String(item.costPrice),
+        salePrice: String(item.salePrice),
+        discount: String(item.discount),
+        total: String(item.total),
+      })),
+    );
     for (const item of processedItems) {
       if (item.productId && item.quantity > 0) {
         await adjustProductStock(
@@ -26514,13 +26528,11 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
         })
         .where(eq(rentalOrdersTable.id, rentalOrder.id));
     }
-    await db
-      .insert(orderStatusHistoryTable)
-      .values({
-        orderId: storeOrder.id,
-        status: RENTAL_ACTIVE_STATUS,
-        notes: "تم إنشاء حجز الإيجار",
-      });
+    await db.insert(orderStatusHistoryTable).values({
+      orderId: storeOrder.id,
+      status: RENTAL_ACTIVE_STATUS,
+      notes: "تم إنشاء حجز الإيجار",
+    });
     const orderQr = await ensureQrForEntity("order", storeOrder, req);
     void logAdminActivity(req, "rental_order_created", "order", storeOrder.id, {
       orderNo,
@@ -26680,13 +26692,11 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
         } as any)
         .where(eq(ordersTable.id, storeOrder.id))
         .returning();
-      await db
-        .insert(orderStatusHistoryTable)
-        .values({
-          orderId: storeOrder.id,
-          status: nextStatus,
-          notes: "تحديث حالة الإيجار",
-        });
+      await db.insert(orderStatusHistoryTable).values({
+        orderId: storeOrder.id,
+        status: nextStatus,
+        notes: "تحديث حالة الإيجار",
+      });
       financialTransaction = updatedStoreOrder
         ? await syncOrderFinancialPayment(
             updatedStoreOrder,
@@ -27183,17 +27193,15 @@ async function finalizePhotographyPaymentRequest(
         reviewedAt: new Date(),
       })
       .where(eq(photographyPaymentRequestsTable.id, request.id));
-    await tx
-      .insert(photographyOrderEventsTable)
-      .values({
-        orderId: order.id,
-        staffId: reviewerId,
-        staffName: reviewer.name,
-        type: "payment_approved",
-        fromStatus: order.status,
-        toStatus: order.status,
-        note: reason ?? null,
-      });
+    await tx.insert(photographyOrderEventsTable).values({
+      orderId: order.id,
+      staffId: reviewerId,
+      staffName: reviewer.name,
+      type: "payment_approved",
+      fromStatus: order.status,
+      toStatus: order.status,
+      note: reason ?? null,
+    });
   });
   void createNotification({
     audienceType: "admin",
@@ -28853,18 +28861,16 @@ async function handleStaffPortal(
         })
         .where(eq(koshaDeliveryReportsTable.id, existing.id));
     } else {
-      await db
-        .insert(koshaDeliveryReportsTable)
-        .values({
-          bookingId: id,
-          staffId: auth.id,
-          staffName: auth.fullName || auth.username,
-          hasLoss,
-          hasBreakage,
-          note: note || null,
-          compensationAmount: String(compensation),
-          signatureUrl,
-        });
+      await db.insert(koshaDeliveryReportsTable).values({
+        bookingId: id,
+        staffId: auth.id,
+        staffName: auth.fullName || auth.username,
+        hasLoss,
+        hasBreakage,
+        note: note || null,
+        compensationAmount: String(compensation),
+        signatureUrl,
+      });
     }
 
     // Breakage/loss compensation is added to the customer's remaining balance.

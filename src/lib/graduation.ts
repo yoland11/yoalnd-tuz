@@ -258,6 +258,20 @@ export const graduationAdminPatchSchema = z
     discountAmount: z.coerce.number().min(0).optional(),
     paymentMethod: z.enum(["cash", "card", "transfer", "other"]).optional(),
     assignedStaffId: z.coerce.number().int().positive().nullable().optional(),
+    assignedTailorId: z.coerce.number().int().positive().nullable().optional(),
+    tailorStatus: z
+      .enum([
+        "new",
+        "cutting",
+        "sewing",
+        "embroidery",
+        "ironing",
+        "quality_check",
+        "packaging",
+        "completed",
+      ])
+      .optional(),
+    tailorCompletionDate: optionalString,
     dueDate: optionalString,
     notes: optionalString,
     internalNotes: optionalString,

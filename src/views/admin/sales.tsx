@@ -1,4 +1,10 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useDeferredValue,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
@@ -10,6 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
+import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -31,6 +38,11 @@ type SalesInvoice = {
   qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
 };
 type HeldInvoice = { id: string; customerName: string; items: CartItem[]; createdAt: string };
+type Customer = {
+  id: number;
+  name: string;
+  phone?: string | null;
+};
 
 const PAYMENT_METHODS = [
   { value: "cash",     label: "نقداً" },
@@ -52,6 +64,85 @@ function newInvoice() {
     paidAmount: "", taxPct: "0", discountAmount: "0", couponCode: "", couponDiscountAmount: "0",
     isInternal: false, date: new Date().toISOString().slice(0, 10),
   };
+}
+
+function CustomerLookup({
+  value,
+  onValueChange,
+  onSelect,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  onSelect: (customer: Customer) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const deferredSearch = useDeferredValue(value.trim());
+  const customers = useQuery<Customer[]>({
+    queryKey: ["admin", "sales-customer-search", deferredSearch],
+    queryFn: () =>
+      adminFetch(
+        `/admin/customers?search=${encodeURIComponent(deferredSearch)}&limit=12`,
+      ),
+    enabled: open && deferredSearch.length >= 2,
+    staleTime: 30_000,
+  });
+
+  const showResults = open && deferredSearch.length >= 2;
+
+  return (
+    <div className="relative">
+      <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <input
+        value={value}
+        onChange={(event) => {
+          onValueChange(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        placeholder="ابحث باسم العميل أو الهاتف"
+        autoComplete="off"
+        aria-expanded={showResults}
+        className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      />
+      {showResults ? (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto rounded-lg border border-border/40 bg-card shadow-xl">
+          {customers.isFetching ? (
+            <div className="px-3 py-3 text-xs text-muted-foreground">
+              جارٍ البحث عن العملاء...
+            </div>
+          ) : !customers.data?.length ? (
+            <div className="px-3 py-3 text-xs text-muted-foreground">
+              لا يوجد عميل مطابق
+            </div>
+          ) : (
+            customers.data.map((customer) => (
+              <button
+                key={customer.id}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onSelect(customer);
+                  setOpen(false);
+                }}
+                className="flex w-full items-center justify-between gap-3 border-b border-border/20 px-3 py-2.5 text-right transition-colors last:border-b-0 hover:bg-primary/10"
+              >
+                <span className="min-w-0 truncate text-sm font-medium text-foreground">
+                  {customer.name || "بدون اسم"}
+                </span>
+                <span
+                  className="shrink-0 text-xs text-muted-foreground"
+                  dir="ltr"
+                >
+                  {formatIraqiPhone(customer.phone)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────
@@ -502,11 +593,18 @@ export default function SalesPage() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">اسم العميل</label>
-              <input
+              <CustomerLookup
                 value={form.customerName}
-                onChange={e => setForm(f => ({ ...f, customerName: e.target.value }))}
-                placeholder="عميل نقدي"
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onValueChange={(value) =>
+                  setForm((current) => ({ ...current, customerName: value }))
+                }
+                onSelect={(customer) =>
+                  setForm((current) => ({
+                    ...current,
+                    customerName: customer.name,
+                    customerPhone: formatIraqiPhoneInput(customer.phone),
+                  }))
+                }
               />
             </div>
             <div>
@@ -1000,10 +1098,18 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">اسم العميل</label>
-                  <input
+                  <CustomerLookup
                     value={draft.customerName}
-                    onChange={(e) => updateDraft("customerName", e.target.value)}
-                    className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    onValueChange={(value) =>
+                      updateDraft("customerName", value)
+                    }
+                    onSelect={(customer) =>
+                      setDraft((current) => ({
+                        ...current,
+                        customerName: customer.name,
+                        customerPhone: formatIraqiPhoneInput(customer.phone),
+                      }))
+                    }
                   />
                 </div>
                 <div>

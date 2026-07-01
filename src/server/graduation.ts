@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
+import { z } from "zod/v4";
 import {
   and,
   asc,
@@ -85,6 +86,39 @@ const QC_KEYS = [
   "packaging",
 ];
 
+const graduationGroupInputSchema = z.object({
+  title: z.string().trim().min(2, "اسم المجموعة مطلوب").max(180),
+  university: z.string().trim().max(180).optional().default(""),
+  college: z.string().trim().max(180).optional().default(""),
+  department: z.string().trim().max(180).optional().default(""),
+  graduationBatch: z.string().trim().max(40).optional().default(""),
+  graduationYear: z.string().trim().max(10).optional().default(""),
+  representativeName: z
+    .string()
+    .trim()
+    .min(2, "اسم ممثل المجموعة مطلوب")
+    .max(160),
+  representativePhone: z.string().trim().min(10).max(30),
+  expectedStudentCount: z.coerce.number().int().min(1).max(5000).default(1),
+  deliveryDate: z.string().trim().max(20).optional().default(""),
+  notes: z.string().trim().max(2000).optional().default(""),
+  defaultConfiguration: z.record(z.string(), z.unknown()).default({}),
+});
+
+const graduationTailorInputSchema = z.object({
+  name: z.string().trim().min(2, "اسم الخياط مطلوب").max(160),
+  code: z.string().trim().max(80).optional().default(""),
+  phone: z.string().trim().max(30).optional().default(""),
+  address: z.string().trim().max(500).optional().default(""),
+  specialization: z.string().trim().max(200).optional().default(""),
+  dailyCapacity: z.coerce.number().int().min(1).max(1000).default(1),
+  status: z.enum(["active", "inactive", "leave"]).default("active"),
+  notes: z.string().trim().max(2000).optional().default(""),
+  photoUrl: z.string().optional().default(""),
+  operatorId: z.coerce.number().int().positive().nullable().optional(),
+  isActive: z.boolean().optional().default(true),
+});
+
 let graduationTablesReady: Promise<void> | null = null;
 
 export async function ensureGraduationTables() {
@@ -108,7 +142,6 @@ export async function ensureGraduationTables() {
         id serial PRIMARY KEY, order_no varchar(50) NOT NULL, qr_token varchar(96) NOT NULL,
         customer_id integer REFERENCES customers(id) ON DELETE SET NULL, group_id integer REFERENCES graduation_groups(id) ON DELETE SET NULL,
         customer_name text NOT NULL, phone varchar(30) NOT NULL, phone_last4 varchar(4), status varchar(30) NOT NULL DEFAULT 'draft',
-        production_stage varchar(40) NOT NULL DEFAULT 'new', style_key varchar(60) NOT NULL DEFAULT 'standard', package_key varchar(60),
         measurements jsonb NOT NULL DEFAULT '{}'::jsonb, colors jsonb NOT NULL DEFAULT '{}'::jsonb,
         fabric jsonb NOT NULL DEFAULT '{}'::jsonb, decoration jsonb NOT NULL DEFAULT '{}'::jsonb,
         custom_text jsonb NOT NULL DEFAULT '{}'::jsonb, accessories jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -192,6 +225,21 @@ function safeJson(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, any>)
     : {};
+}
+
+function groupMeta(row: { defaultConfiguration?: unknown }) {
+  return safeJson(safeJson(row.defaultConfiguration).groupMeta);
+}
+
+function tailorAssignment(row: { productionEstimate?: unknown }) {
+  return safeJson(safeJson(row.productionEstimate).tailorAssignment);
+}
+
+function graduationStageProgress(stage: string) {
+  const index = GRADUATION_STAGES.indexOf(stage as any);
+  return index < 0
+    ? 0
+    : Math.round((index / Math.max(1, GRADUATION_STAGES.length - 1)) * 100);
 }
 
 async function getConfig() {
@@ -285,6 +333,161 @@ async function persistMedia(value: unknown, folder: string) {
   return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
 }
 
+async function createGraduationGroup(
+  raw: unknown,
+  user: GraduationAdminUser | null,
+  origin: string,
+) {
+  const parsed = graduationGroupInputSchema.safeParse(raw);
+  if (!parsed.success)
+    return {
+      response: error(
+        "تحقق من بيانات المجموعة",
+        400,
+        parsed.error.issues.map((issue) => ({
+          field: issue.path.join("."),
+          message: issue.message,
+        })),
+      ),
+    };
+  const data = parsed.data;
+  const representativePhone = normalizeIraqiPhone(data.representativePhone);
+  if (!representativePhone)
+    return { response: error("رقم هاتف ممثل المجموعة غير صحيح", 400) };
+  const representativeCustomer = await ensureCustomer(
+    representativePhone,
+    data.representativeName,
+  );
+
+  const configuration = safeJson(data.defaultConfiguration);
+  const universityTemplate = safeJson(configuration.universityTemplate);
+  const decoration = safeJson(configuration.decoration);
+  const persistedConfiguration = {
+    ...configuration,
+    decoration: {
+      ...decoration,
+      universityLogo: decoration.universityLogo
+        ? await persistMedia(
+            decoration.universityLogo,
+            "graduation/groups/logos",
+          )
+        : "",
+      collegeLogo: decoration.collegeLogo
+        ? await persistMedia(decoration.collegeLogo, "graduation/groups/logos")
+        : "",
+    },
+    universityTemplate: {
+      ...universityTemplate,
+      logoUrl: universityTemplate.logoUrl
+        ? await persistMedia(
+            universityTemplate.logoUrl,
+            "graduation/groups/logos",
+          )
+        : "",
+      collegeLogoUrl: universityTemplate.collegeLogoUrl
+        ? await persistMedia(
+            universityTemplate.collegeLogoUrl,
+            "graduation/groups/logos",
+          )
+        : "",
+      defaultDesign: universityTemplate.defaultDesign
+        ? await persistMedia(
+            universityTemplate.defaultDesign,
+            "graduation/groups/designs",
+          )
+        : "",
+    },
+    groupMeta: {
+      graduationBatch: data.graduationBatch,
+      expectedStudentCount: data.expectedStudentCount,
+      deliveryDate: data.deliveryDate,
+      notes: data.notes,
+      lockedAt: new Date().toISOString(),
+    },
+  };
+
+  const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+  const [row] = await db
+    .insert(graduationGroupsTable)
+    .values({
+      groupNo: `GRP-TMP-${randomUUID()}`,
+      joinToken: token,
+      title: data.title,
+      representativeName: data.representativeName,
+      representativePhone,
+      university: data.university || null,
+      college: data.college || null,
+      department: data.department || null,
+      graduationYear:
+        data.graduationYear || data.graduationBatch.slice(0, 10) || null,
+      eventDate: data.deliveryDate || null,
+      defaultConfiguration: persistedConfiguration as any,
+      createdBy: user?.id ?? null,
+    })
+    .returning();
+  const groupNo = `AJN-GRP-${String(row.id).padStart(5, "0")}`;
+  const [saved] = await db
+    .update(graduationGroupsTable)
+    .set({ groupNo, updatedAt: new Date() })
+    .where(eq(graduationGroupsTable.id, row.id))
+    .returning();
+  const joinUrl = `/graduation?group=${token}`;
+  const absoluteJoinUrl = `${origin.replace(/\/$/, "")}${joinUrl}`;
+  const qrDataUrl = await QRCode.toDataURL(absoluteJoinUrl, {
+    width: 320,
+    margin: 1,
+  });
+
+  await addTimeline(
+    saved.id,
+    "group_created",
+    "تم إنشاء مجموعة التخرج وقفل الإعدادات المشتركة",
+    user,
+    { groupNo, expectedStudentCount: data.expectedStudentCount },
+    "graduation_group",
+  );
+  await addActivity(
+    user,
+    "graduation_group_created",
+    saved.id,
+    { groupNo, expectedStudentCount: data.expectedStudentCount },
+    "graduation_group",
+  );
+  await notify({
+    type: "graduation_group_created",
+    title: "تم إنشاء طلب تخرج جماعي",
+    body: `${saved.title} - ${saved.representativeName}`,
+    entityId: saved.id,
+    entityType: "graduation_group",
+    href: "/admin/graduation/groups",
+    metadata: { representativePhone, groupNo },
+  });
+  if (representativeCustomer)
+    await notify({
+      audienceType: "customer",
+      customerId: representativeCustomer.id,
+      type: "graduation_group_created",
+      title: "تم إنشاء مجموعة التخرج",
+      body: `${saved.title} - رمز المجموعة ${groupNo}`,
+      entityId: saved.id,
+      entityType: "graduation_group",
+      href: joinUrl,
+      metadata: { groupNo },
+    });
+  void sendTelegramMessage(
+    `🎓 <b>تم إنشاء مجموعة تخرج</b>\n\nالمجموعة: ${saved.title}\nالرمز: ${groupNo}\nالممثل: ${saved.representativeName}\nالهاتف: ${representativePhone}\nالعدد المتوقع: ${data.expectedStudentCount}\n\n${absoluteJoinUrl}`,
+  );
+
+  return {
+    group: {
+      ...saved,
+      groupMeta: groupMeta(saved),
+      joinUrl,
+      qrDataUrl,
+    },
+  };
+}
+
 async function ensureCustomer(phone: string, name: string) {
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) throw new Error("رقم الهاتف غير صحيح");
@@ -311,9 +514,10 @@ async function addTimeline(
   title: string,
   user?: GraduationAdminUser | null,
   metadata: Record<string, unknown> = {},
+  entityType = "graduation_order",
 ) {
   await db.insert(entityTimelineTable).values({
-    entityType: "graduation_order",
+    entityType,
     entityId,
     type,
     title,
@@ -328,19 +532,20 @@ async function addActivity(
   action: string,
   entityId?: number,
   metadata: Record<string, unknown> = {},
+  entityType = "graduation_order",
 ) {
   await db.insert(adminActivityLogsTable).values({
     staffId: user?.id ?? null,
     userName: user ? user.fullName || user.username : "النظام",
     action,
-    entityType: "graduation_order",
+    entityType,
     entityId: entityId ?? null,
     metadata,
   });
 }
 
 async function notify(input: {
-  audienceType?: "admin" | "customer";
+  audienceType?: "admin" | "customer" | "staff";
   customerId?: number | null;
   staffId?: number | null;
   type: string;
@@ -348,6 +553,8 @@ async function notify(input: {
   body?: string;
   entityId?: number;
   href?: string;
+  entityType?: string;
+  metadata?: Record<string, unknown>;
 }) {
   return db.insert(notificationsTable).values({
     audienceType: input.audienceType ?? "admin",
@@ -356,10 +563,10 @@ async function notify(input: {
     type: input.type,
     title: input.title,
     body: input.body ?? "",
-    entityType: "graduation_order",
+    entityType: input.entityType ?? "graduation_order",
     entityId: input.entityId ?? null,
     href: input.href ?? null,
-    metadata: {},
+    metadata: input.metadata ?? {},
   });
 }
 
@@ -592,11 +799,82 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
         })),
       ),
     };
-  const data = parsed.data;
+  let data = parsed.data;
   const normalizedPhone = normalizeIraqiPhone(data.phone);
   if (!normalizedPhone) return { response: error("رقم الهاتف غير صحيح", 400) };
   const customer = await ensureCustomer(normalizedPhone, data.customerName);
   if (!customer) return { response: error("تعذر إنشاء ملف الزبون", 500) };
+  let group: typeof graduationGroupsTable.$inferSelect | null = null;
+  if (data.groupToken) {
+    group =
+      (await db.query.graduationGroupsTable.findFirst({
+        where: and(
+          or(
+            eq(graduationGroupsTable.joinToken, data.groupToken),
+            eq(graduationGroupsTable.groupNo, data.groupToken),
+          ),
+          eq(graduationGroupsTable.status, "open"),
+        ),
+      })) ?? null;
+    if (!group)
+      return {
+        response: error("رابط أو رمز الطلب الجماعي غير صالح أو مغلق", 404),
+      };
+
+    const locked = safeJson(group.defaultConfiguration);
+    const lockedMeta = groupMeta(group);
+    const lockedCustomText = safeJson(locked.customText);
+    const studentCustomText = safeJson(data.customText);
+    const lockedFabric = safeJson(locked.fabric);
+    const lockedDecoration = safeJson(locked.decoration);
+    const lockedUniversity = safeJson(locked.universityTemplate);
+    const lockedColors = safeJson(locked.colors);
+    const lockedPreview = safeJson(locked.previewAssets);
+    data = {
+      ...data,
+      styleKey: String(locked.styleKey || data.styleKey),
+      packageKey:
+        String(locked.packageKey || data.packageKey || "") || undefined,
+      colors: Object.keys(lockedColors).length ? lockedColors : data.colors,
+      fabric: Object.keys(lockedFabric).length
+        ? ({
+            ...lockedFabric,
+            key: String(lockedFabric.key || data.fabric.key),
+          } as any)
+        : data.fabric,
+      decoration: Object.keys(lockedDecoration).length
+        ? ({ ...lockedDecoration } as any)
+        : data.decoration,
+      accessories: Array.isArray(locked.accessories)
+        ? locked.accessories.map(String)
+        : data.accessories,
+      universityTemplate: Object.keys(lockedUniversity).length
+        ? lockedUniversity
+        : data.universityTemplate,
+      previewAssets: Object.keys(lockedPreview).length
+        ? lockedPreview
+        : data.previewAssets,
+      dueDate:
+        String(
+          lockedMeta.deliveryDate || group.eventDate || data.dueDate || "",
+        ) || undefined,
+      customText: {
+        ...studentCustomText,
+        ...lockedCustomText,
+        studentName:
+          studentCustomText.studentName || data.customerName || undefined,
+        department:
+          studentCustomText.department || group.department || undefined,
+        text: studentCustomText.text || undefined,
+        studentId: studentCustomText.studentId || undefined,
+        university:
+          group.university || lockedCustomText.university || undefined,
+        college: group.college || lockedCustomText.college || undefined,
+        graduationYear:
+          group.graduationYear || lockedCustomText.graduationYear || undefined,
+      } as any,
+    };
+  }
   const config = await getConfig();
   if (!config.styles.some((item) => item.key === data.styleKey))
     return { response: error("نوع التخرج المختار غير متاح", 400) };
@@ -605,18 +883,7 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
   const pricing = graduationPriceSummary(data, config);
   const estimate = estimateGraduationProduction(data, config);
   const inventoryItems = graduationInventoryItems(data, config);
-  let groupId: number | null = null;
-  if (data.groupToken) {
-    const group = await db.query.graduationGroupsTable.findFirst({
-      where: and(
-        eq(graduationGroupsTable.joinToken, data.groupToken),
-        eq(graduationGroupsTable.status, "open"),
-      ),
-    });
-    if (!group)
-      return { response: error("رابط الطلب الجماعي غير صالح أو مغلق", 404) };
-    groupId = group.id;
-  }
+  const groupId = group?.id ?? null;
   const decoration = { ...data.decoration } as Record<string, any>;
   if (decoration.file)
     decoration.file = await persistMedia(decoration.file, "graduation/designs");
@@ -730,6 +997,16 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
       entityId: order.id,
       href: `/graduation/track/${qrToken}`,
     });
+    if (group)
+      await notify({
+        audienceType: "customer",
+        customerId: customer.id,
+        type: "graduation_group_measurements_confirmed",
+        title: "تم تأكيد قياساتك",
+        body: `تم ربط قياساتك بمجموعة ${group.title}`,
+        entityId: order.id,
+        href: `/graduation/track/${qrToken}`,
+      });
     void sendTelegramMessage(
       `🎓 <b>طلب تجهيزات تخرج جديد</b>\n\nرقم الطلب: ${orderNo}\nالزبون: ${order.customerName}\nالهاتف: ${normalizedPhone}\nالإجمالي: ${pricing.total.toLocaleString("en-US")} د.ع\n\n${process.env.APP_BASE_URL || ""}/admin/graduation/orders`,
     );
@@ -746,6 +1023,32 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
     status: data.status,
     total: pricing.total,
   });
+  if (group) {
+    await addTimeline(
+      group.id,
+      "student_registered",
+      `انضم ${order.customerName} إلى المجموعة`,
+      user,
+      { orderId: order.id, orderNo, customerId: customer.id },
+      "graduation_group",
+    );
+    await addActivity(
+      user,
+      "graduation_group_student_registered",
+      group.id,
+      { orderId: order.id, orderNo, customerId: customer.id },
+      "graduation_group",
+    );
+    await notify({
+      type: "graduation_group_student_registered",
+      title: "تسجيل طالب في طلب جماعي",
+      body: `${group.title} - ${order.customerName}`,
+      entityId: group.id,
+      entityType: "graduation_group",
+      href: "/admin/graduation/groups",
+      metadata: { orderId: order.id, orderNo },
+    });
+  }
   const qrDataUrl = await QRCode.toDataURL(
     `${process.env.APP_BASE_URL || ""}/graduation/track/${qrToken}`,
     { width: 320, margin: 1 },
@@ -776,6 +1079,93 @@ async function updateOrder(
   const discount = data.discountAmount ?? money(order.discountAmount);
   const paid = Math.min(data.paidAmount ?? money(order.paidAmount), total);
   const remaining = Math.max(0, total - paid);
+  const previousTailor = tailorAssignment(order);
+  let selectedTailor: any = null;
+  let nextProductionEstimate = safeJson(order.productionEstimate);
+  if (data.assignedTailorId !== undefined) {
+    if (data.assignedTailorId) {
+      selectedTailor = await db.query.graduationResourcesTable.findFirst({
+        where: and(
+          eq(graduationResourcesTable.id, data.assignedTailorId),
+          eq(graduationResourcesTable.resourceType, "tailor"),
+          eq(graduationResourcesTable.isActive, true),
+        ),
+      });
+      if (!selectedTailor)
+        return { response: error("الخياط المختار غير موجود أو غير مفعل", 404) };
+    }
+    const history = Array.isArray(previousTailor.history)
+      ? previousTailor.history
+      : [];
+    nextProductionEstimate = {
+      ...nextProductionEstimate,
+      tailorAssignment: data.assignedTailorId
+        ? {
+            tailorId: selectedTailor.id,
+            tailorName: selectedTailor.name,
+            assignmentDate:
+              Number(previousTailor.tailorId) === Number(selectedTailor.id)
+                ? previousTailor.assignmentDate || new Date().toISOString()
+                : new Date().toISOString(),
+            completionDate: previousTailor.completionDate || null,
+            status: data.tailorStatus || previousTailor.status || "new",
+            history: [
+              ...history,
+              {
+                tailorId: selectedTailor.id,
+                tailorName: selectedTailor.name,
+                assignedAt: new Date().toISOString(),
+                assignedBy: user.id,
+              },
+            ].slice(-25),
+          }
+        : {
+            history,
+            tailorId: null,
+            tailorName: "",
+            assignmentDate: null,
+            completionDate: null,
+            status: "new",
+          },
+    };
+  } else if (data.tailorStatus || data.tailorCompletionDate) {
+    nextProductionEstimate = {
+      ...nextProductionEstimate,
+      tailorAssignment: {
+        ...previousTailor,
+        ...(data.tailorStatus ? { status: data.tailorStatus } : {}),
+        ...(data.tailorCompletionDate
+          ? { completionDate: data.tailorCompletionDate }
+          : {}),
+      },
+    };
+  }
+  if (
+    data.productionStage &&
+    ["ready", "delivered"].includes(data.productionStage) &&
+    Number(previousTailor.tailorId || selectedTailor?.id)
+  ) {
+    const assignment = safeJson(nextProductionEstimate.tailorAssignment);
+    nextProductionEstimate = {
+      ...nextProductionEstimate,
+      tailorAssignment: {
+        ...assignment,
+        status: "completed",
+        completionDate: assignment.completionDate || new Date().toISOString(),
+      },
+    };
+  } else if (
+    data.productionStage === "tailoring" &&
+    Number(previousTailor.tailorId || selectedTailor?.id)
+  ) {
+    nextProductionEstimate = {
+      ...nextProductionEstimate,
+      tailorAssignment: {
+        ...safeJson(nextProductionEstimate.tailorAssignment),
+        status: "sewing",
+      },
+    };
+  }
   if (
     data.productionStage &&
     ["ready", "delivered"].includes(data.productionStage)
@@ -807,6 +1197,13 @@ async function updateOrder(
     remainingAmount: String(remaining),
     ...(data.assignedStaffId !== undefined
       ? { assignedStaffId: data.assignedStaffId }
+      : {}),
+    ...((data.assignedTailorId !== undefined ||
+      data.tailorStatus ||
+      data.tailorCompletionDate ||
+      data.productionStage) &&
+    safeJson(nextProductionEstimate.tailorAssignment).tailorId !== undefined
+      ? { productionEstimate: nextProductionEstimate }
       : {}),
     ...(data.dueDate !== undefined ? { dueDate: data.dueDate ?? null } : {}),
     ...(data.notes !== undefined ? { notes: data.notes ?? null } : {}),
@@ -882,6 +1279,83 @@ async function updateOrder(
       })
       .where(eq(salesInvoiceItemsTable.invoiceId, saved.invoiceId));
   }
+  if (data.assignedTailorId !== undefined) {
+    const newAssignment = tailorAssignment(saved);
+    const action = data.assignedTailorId
+      ? Number(previousTailor.tailorId) === Number(data.assignedTailorId)
+        ? "tailor_assignment_confirmed"
+        : previousTailor.tailorId
+          ? "tailor_changed"
+          : "tailor_assigned"
+      : "tailor_unassigned";
+    const title = data.assignedTailorId
+      ? previousTailor.tailorId
+        ? `تم تغيير الخياط إلى ${newAssignment.tailorName}`
+        : `تم تعيين الخياط ${newAssignment.tailorName}`
+      : "تم إلغاء تعيين الخياط";
+    await addTimeline(saved.id, action, title, user, {
+      previousTailorId: previousTailor.tailorId ?? null,
+      tailorId: newAssignment.tailorId ?? null,
+    });
+    await addActivity(user, `graduation_${action}`, saved.id, {
+      previousTailorId: previousTailor.tailorId ?? null,
+      tailorId: newAssignment.tailorId ?? null,
+      orderNo: saved.orderNo,
+    });
+    if (selectedTailor?.operatorId) {
+      await notify({
+        audienceType: "staff",
+        staffId: selectedTailor.operatorId,
+        type: "graduation_tailor_assignment",
+        title: "تم تعيين طلب تخرج جديد",
+        body: `${saved.orderNo} - ${saved.customerName}`,
+        entityId: saved.id,
+        href: `/admin/graduation/orders`,
+        metadata: { tailorId: selectedTailor.id },
+      });
+      await db
+        .update(tasksTable)
+        .set({
+          assignedStaffIds: [selectedTailor.operatorId],
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tasksTable.relatedType, "graduation_order"),
+            eq(tasksTable.relatedId, saved.id),
+            inArray(tasksTable.templateKey, [
+              "graduation_fabric_cutting",
+              "graduation_tailoring",
+              "graduation_ironing",
+              "graduation_quality_check",
+              "graduation_packaging",
+            ]),
+          ),
+        );
+    }
+  }
+  if (
+    data.dueDate !== undefined &&
+    data.dueDate !== order.dueDate &&
+    Number(tailorAssignment(saved).tailorId)
+  ) {
+    const assignedTailor = await db.query.graduationResourcesTable.findFirst({
+      where: eq(
+        graduationResourcesTable.id,
+        Number(tailorAssignment(saved).tailorId),
+      ),
+    });
+    if (assignedTailor?.operatorId)
+      await notify({
+        audienceType: "staff",
+        staffId: assignedTailor.operatorId,
+        type: "graduation_deadline_changed",
+        title: "تم تغيير موعد تسليم طلب التخرج",
+        body: `${saved.orderNo} - الموعد الجديد ${saved.dueDate || "غير محدد"}`,
+        entityId: saved.id,
+        href: "/admin/graduation/orders",
+      });
+  }
   if (
     data.paidAmount !== undefined ||
     (data.status !== undefined && data.status !== oldStatus)
@@ -950,6 +1424,67 @@ async function updateOrder(
       user,
       { from: oldStage, to: data.productionStage },
     );
+    if (saved.groupId) {
+      const group = await db.query.graduationGroupsTable.findFirst({
+        where: eq(graduationGroupsTable.id, saved.groupId),
+      });
+      const representative = group
+        ? await ensureCustomer(
+            group.representativePhone,
+            group.representativeName,
+          )
+        : null;
+      if (group && representative && oldStage === "new") {
+        const started = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(graduationOrdersTable)
+          .where(
+            and(
+              eq(graduationOrdersTable.groupId, group.id),
+              sql`${graduationOrdersTable.productionStage} <> 'new'`,
+              sql`${graduationOrdersTable.status} <> 'cancelled'`,
+            ),
+          );
+        if (Number(started[0]?.count ?? 0) === 1)
+          await notify({
+            audienceType: "customer",
+            customerId: representative.id,
+            type: "graduation_group_production_started",
+            title: "بدأ إنتاج مجموعة التخرج",
+            body: group.title,
+            entityId: group.id,
+            entityType: "graduation_group",
+            href: `/graduation?group=${group.joinToken}`,
+          });
+      }
+      if (
+        group &&
+        representative &&
+        ["ready", "delivered"].includes(data.productionStage)
+      ) {
+        const pending = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(graduationOrdersTable)
+          .where(
+            and(
+              eq(graduationOrdersTable.groupId, group.id),
+              sql`${graduationOrdersTable.productionStage} not in ('ready','delivered')`,
+              sql`${graduationOrdersTable.status} <> 'cancelled'`,
+            ),
+          );
+        if (Number(pending[0]?.count ?? 0) === 0)
+          await notify({
+            audienceType: "customer",
+            customerId: representative.id,
+            type: "graduation_group_production_completed",
+            title: "اكتمل إنتاج مجموعة التخرج",
+            body: `${group.title} جاهزة للاستلام`,
+            entityId: group.id,
+            entityType: "graduation_group",
+            href: `/graduation?group=${group.joinToken}`,
+          });
+      }
+    }
   }
   if (data.delivery) {
     const deliveryStatus = String(data.delivery.status ?? "assigned");
@@ -995,7 +1530,8 @@ async function orderDetail(id: number, origin = "") {
     .where(eq(graduationOrdersTable.id, id))
     .limit(1);
   if (!order) return null;
-  const [timeline, tasks, invoice] = await Promise.all([
+  const assignment = tailorAssignment(order);
+  const [timeline, tasks, invoice, group, tailor] = await Promise.all([
     db
       .select()
       .from(entityTimelineTable)
@@ -1021,6 +1557,16 @@ async function orderDetail(id: number, origin = "") {
           where: eq(salesInvoicesTable.id, order.invoiceId),
         })
       : null,
+    order.groupId
+      ? db.query.graduationGroupsTable.findFirst({
+          where: eq(graduationGroupsTable.id, order.groupId),
+        })
+      : null,
+    Number(assignment.tailorId)
+      ? db.query.graduationResourcesTable.findFirst({
+          where: eq(graduationResourcesTable.id, Number(assignment.tailorId)),
+        })
+      : null,
   ]);
   const qrUrl = `${origin || process.env.APP_BASE_URL || ""}/graduation/track/${order.qrToken}`;
   const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 360, margin: 1 });
@@ -1031,6 +1577,20 @@ async function orderDetail(id: number, origin = "") {
     assignedStaffId: order.assignedStaffId,
     inventoryItems: order.inventoryItems,
     productionEstimate: order.productionEstimate,
+    tailorAssignment: {
+      ...assignment,
+      profile: tailor ? safeJson(tailor.metrics) : null,
+    },
+    group: group
+      ? {
+          id: group.id,
+          groupNo: group.groupNo,
+          title: group.title,
+          university: group.university,
+          college: group.college,
+          department: group.department,
+        }
+      : null,
     invoice,
     timeline,
     tasks,
@@ -1147,10 +1707,22 @@ export async function handleGraduationPublic(
     await addTimeline(order.id, "design_approved", "وافق الزبون على التصميم");
     return json({ order: publicOrder(saved) });
   }
+  if (method === "POST" && resource === "groups") {
+    const result = await createGraduationGroup(
+      await requestBody(req),
+      null,
+      req.nextUrl.origin,
+    );
+    return result.response ?? json(result, 201);
+  }
   if (method === "GET" && resource === "groups" && parts[2]) {
+    const identifier = decodeURIComponent(parts[2]);
     const group = await db.query.graduationGroupsTable.findFirst({
       where: and(
-        eq(graduationGroupsTable.joinToken, parts[2]),
+        or(
+          eq(graduationGroupsTable.joinToken, identifier),
+          eq(graduationGroupsTable.groupNo, identifier.toUpperCase()),
+        ),
         eq(graduationGroupsTable.status, "open"),
       ),
     });
@@ -1165,6 +1737,9 @@ export async function handleGraduationPublic(
         eventDate: group.eventDate,
         defaultConfiguration: group.defaultConfiguration,
         joinToken: group.joinToken,
+        groupNo: group.groupNo,
+        representativeName: group.representativeName,
+        groupMeta: groupMeta(group),
       },
     });
   }
@@ -1395,7 +1970,7 @@ export async function handleAdminGraduation(
     return result.response ?? json(result, 201);
   }
   if (method === "GET" && resource === "production") {
-    const rows = await db
+    const allRows = await db
       .select()
       .from(graduationOrdersTable)
       .where(
@@ -1405,13 +1980,56 @@ export async function handleAdminGraduation(
         asc(graduationOrdersTable.dueDate),
         desc(graduationOrdersTable.createdAt),
       );
+    const requestedTailorId = Number(
+      req.nextUrl.searchParams.get("tailorId") || 0,
+    );
+    const rows = requestedTailorId
+      ? allRows.filter(
+          (row) => Number(tailorAssignment(row).tailorId) === requestedTailorId,
+        )
+      : allRows;
+    const groupIds = [
+      ...new Set(
+        rows
+          .map((row) => Number(row.groupId))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    ];
+    const groups = groupIds.length
+      ? await db
+          .select()
+          .from(graduationGroupsTable)
+          .where(inArray(graduationGroupsTable.id, groupIds))
+      : [];
+    const groupMap = new Map(groups.map((group) => [group.id, group]));
+    const enriched = rows.map((row) => {
+      const group = row.groupId ? groupMap.get(row.groupId) : null;
+      return {
+        ...publicOrder(row),
+        groupId: row.groupId,
+        group: group
+          ? {
+              id: group.id,
+              groupNo: group.groupNo,
+              title: group.title,
+              university: group.university,
+              college: group.college,
+              department: group.department,
+            }
+          : null,
+        tailorAssignment: tailorAssignment(row),
+        preferredSize: String(
+          safeJson(row.measurements).suggestedSize ||
+            safeJson(row.measurements).preferredSize ||
+            "",
+        ),
+      };
+    });
     return json({
       columns: GRADUATION_STAGES.map((stage) => ({
         stage,
         label: GRADUATION_STAGE_LABELS[stage],
-        items: rows
-          .filter((row) => row.productionStage === stage)
-          .map(publicOrder),
+        items: enriched.filter((row) => row.productionStage === stage),
       })),
     });
   }
@@ -1443,59 +2061,123 @@ export async function handleAdminGraduation(
     });
   }
   if (resource === "groups") {
-    if (method === "GET")
-      return json({
-        items: await db
+    if (method === "GET") {
+      const [groups, orders] = await Promise.all([
+        db
           .select()
           .from(graduationGroupsTable)
           .orderBy(desc(graduationGroupsTable.createdAt)),
+        db
+          .select({
+            groupId: graduationOrdersTable.groupId,
+            stage: graduationOrdersTable.productionStage,
+            status: graduationOrdersTable.status,
+          })
+          .from(graduationOrdersTable)
+          .where(sql`${graduationOrdersTable.groupId} is not null`),
+      ]);
+      return json({
+        items: groups.map((group) => {
+          const members = orders.filter((order) => order.groupId === group.id);
+          const meta = groupMeta(group);
+          const expected = Math.max(
+            Number(meta.expectedStudentCount ?? members.length),
+            members.length,
+          );
+          const registered = members.length;
+          const averageProgress = registered
+            ? Math.round(
+                members.reduce(
+                  (sum, order) => sum + graduationStageProgress(order.stage),
+                  0,
+                ) / registered,
+              )
+            : 0;
+          return {
+            ...group,
+            groupMeta: meta,
+            joinUrl: `/graduation?group=${group.joinToken}`,
+            stats: {
+              expected,
+              registered,
+              pending: Math.max(0, expected - registered),
+              productionProgress: averageProgress,
+              printingProgress: registered
+                ? Math.round(
+                    (members.filter(
+                      (order) =>
+                        GRADUATION_STAGES.indexOf(order.stage as any) >=
+                        GRADUATION_STAGES.indexOf("printing"),
+                    ).length /
+                      registered) *
+                      100,
+                  )
+                : 0,
+              embroideryProgress: registered
+                ? Math.round(
+                    (members.filter(
+                      (order) =>
+                        GRADUATION_STAGES.indexOf(order.stage as any) >=
+                        GRADUATION_STAGES.indexOf("embroidery"),
+                    ).length /
+                      registered) *
+                      100,
+                  )
+                : 0,
+              delivered: members.filter((order) => order.stage === "delivered")
+                .length,
+            },
+          };
+        }),
       });
+    }
     if (method === "POST") {
-      const data = await requestBody(req);
-      if (!String(data?.title ?? "").trim())
-        return error("اسم المجموعة مطلوب", 400);
-      const token =
-        randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
-      const [row] = await db
-        .insert(graduationGroupsTable)
-        .values({
-          groupNo: `GRP-TMP-${randomUUID()}`,
-          joinToken: token,
-          title: String(data.title).trim(),
-          representativeName: String(data.representativeName ?? "").trim(),
-          representativePhone:
-            normalizeIraqiPhone(data.representativePhone) ?? "",
-          university: String(data.university ?? "").trim() || null,
-          college: String(data.college ?? "").trim() || null,
-          department: String(data.department ?? "").trim() || null,
-          graduationYear: String(data.graduationYear ?? "").trim() || null,
-          eventDate: data.eventDate || null,
-          defaultConfiguration: safeJson(data.defaultConfiguration) as any,
-          createdBy: user.id,
-        })
-        .returning();
-      const groupNo = `AJN-GRP-${String(row.id).padStart(5, "0")}`;
-      const [saved] = await db
-        .update(graduationGroupsTable)
-        .set({ groupNo })
-        .where(eq(graduationGroupsTable.id, row.id))
-        .returning();
-      await addActivity(user, "graduation_group_created", undefined, {
-        groupId: saved.id,
-        groupNo,
-      });
-      return json(
-        { group: { ...saved, joinUrl: `/graduation?group=${token}` } },
-        201,
+      const result = await createGraduationGroup(
+        await requestBody(req),
+        user,
+        req.nextUrl.origin,
       );
+      return result.response ?? json(result, 201);
     }
     if ((method === "PATCH" || method === "PUT") && parts[1]) {
       const data = await requestBody(req);
+      const existing = await db.query.graduationGroupsTable.findFirst({
+        where: eq(graduationGroupsTable.id, Number(parts[1])),
+      });
+      if (!existing) return error("المجموعة غير موجودة", 404);
+      const update: Record<string, unknown> = { updatedAt: new Date() };
+      if (["open", "closed", "completed"].includes(String(data?.status)))
+        update.status = String(data.status);
+      if (String(data?.title ?? "").trim())
+        update.title = String(data.title).trim();
+      if (data?.eventDate !== undefined)
+        update.eventDate = data.eventDate || null;
+      if (data?.defaultConfiguration !== undefined)
+        update.defaultConfiguration = safeJson(data.defaultConfiguration);
       const [saved] = await db
         .update(graduationGroupsTable)
-        .set({ ...data, updatedAt: new Date() } as any)
+        .set(update as any)
         .where(eq(graduationGroupsTable.id, Number(parts[1])))
         .returning();
+      if (saved) {
+        await addTimeline(
+          saved.id,
+          "group_updated",
+          saved.status === "closed"
+            ? "تم إغلاق تسجيل المجموعة"
+            : "تم تحديث المجموعة",
+          user,
+          { previousStatus: existing.status, status: saved.status },
+          "graduation_group",
+        );
+        await addActivity(
+          user,
+          "graduation_group_updated",
+          saved.id,
+          { previousStatus: existing.status, status: saved.status },
+          "graduation_group",
+        );
+      }
       return saved ? json({ group: saved }) : error("المجموعة غير موجودة", 404);
     }
   }
@@ -1512,10 +2194,161 @@ export async function handleAdminGraduation(
           asc(graduationResourcesTable.resourceType),
           asc(graduationResourcesTable.name),
         );
+      if (type === "tailor") {
+        const orders = await db
+          .select()
+          .from(graduationOrdersTable)
+          .where(sql`${graduationOrdersTable.status} <> 'cancelled'`);
+        const now = Date.now();
+        const dayStart = new Date();
+        dayStart.setHours(0, 0, 0, 0);
+        const weekStart = new Date(dayStart);
+        weekStart.setDate(weekStart.getDate() - 6);
+        const monthStart = new Date(dayStart);
+        monthStart.setDate(1);
+        return json({
+          items: rows.map((row) => {
+            const assigned = orders.filter(
+              (order) =>
+                Number(tailorAssignment(order).tailorId) === Number(row.id),
+            );
+            const completed = assigned.filter((order) =>
+              ["ready", "delivered"].includes(order.productionStage),
+            );
+            const delayed = assigned.filter(
+              (order) =>
+                Boolean(order.dueDate) &&
+                new Date(`${order.dueDate}T23:59:59`).getTime() < now &&
+                !["ready", "delivered"].includes(order.productionStage),
+            );
+            const completionHours = completed
+              .map((order) => {
+                const end =
+                  order.deliveredAt ?? order.readyAt ?? order.updatedAt;
+                return Math.max(
+                  0,
+                  (new Date(end).getTime() -
+                    new Date(order.createdAt).getTime()) /
+                    3_600_000,
+                );
+              })
+              .filter(Number.isFinite);
+            const qualityIssues = assigned.filter((order) => {
+              const checklist = safeJson(order.qualityChecklist);
+              return (
+                Object.keys(checklist).length > 0 &&
+                Object.values(checklist).some((value) => value === false)
+              );
+            }).length;
+            const completionRate = assigned.length
+              ? (completed.length / assigned.length) * 100
+              : 0;
+            const delayRate = assigned.length
+              ? (delayed.length / assigned.length) * 100
+              : 0;
+            const qualityRate = assigned.length
+              ? (qualityIssues / assigned.length) * 100
+              : 0;
+            const productivityScore = Math.max(
+              0,
+              Math.min(
+                100,
+                Math.round(
+                  55 +
+                    completionRate * 0.45 -
+                    delayRate * 0.35 -
+                    qualityRate * 0.2,
+                ),
+              ),
+            );
+            const completedAfter = (date: Date) =>
+              completed.filter((order) => {
+                const end =
+                  order.deliveredAt ?? order.readyAt ?? order.updatedAt;
+                return new Date(end).getTime() >= date.getTime();
+              }).length;
+            return {
+              ...row,
+              profile: safeJson(row.metrics),
+              stats: {
+                totalOrders: assigned.length,
+                assignedOrders: assigned.filter(
+                  (order) =>
+                    !["ready", "delivered"].includes(order.productionStage),
+                ).length,
+                inProgress: assigned.filter(
+                  (order) =>
+                    !["new", "ready", "delivered"].includes(
+                      order.productionStage,
+                    ),
+                ).length,
+                completed: completed.length,
+                delayed: delayed.length,
+                dailyProduction: completedAfter(dayStart),
+                weeklyProduction: completedAfter(weekStart),
+                monthlyProduction: completedAfter(monthStart),
+                averageCompletionHours: completionHours.length
+                  ? Math.round(
+                      completionHours.reduce((sum, value) => sum + value, 0) /
+                        completionHours.length,
+                    )
+                  : 0,
+                delayRate: Math.round(delayRate),
+                qualityIssues,
+                productivityScore,
+              },
+            };
+          }),
+        });
+      }
       return json({ items: rows });
     }
     if (method === "POST") {
       const data = await requestBody(req);
+      if (String(data?.resourceType) === "tailor") {
+        const parsed = graduationTailorInputSchema.safeParse(data);
+        if (!parsed.success)
+          return error("تحقق من بيانات الخياط", 400, parsed.error.issues);
+        const profile = parsed.data;
+        const phone = profile.phone ? normalizeIraqiPhone(profile.phone) : null;
+        if (profile.phone && !phone)
+          return error("رقم هاتف الخياط غير صحيح", 400);
+        const photoUrl = profile.photoUrl
+          ? await persistMedia(profile.photoUrl, "graduation/tailors")
+          : "";
+        const [tailor] = await db
+          .insert(graduationResourcesTable)
+          .values({
+            resourceType: "tailor",
+            code: profile.code || `TLR-${Date.now()}`,
+            name: profile.name,
+            operatorId: profile.operatorId ?? null,
+            operatorName: profile.name,
+            status: profile.status,
+            metrics: {
+              phone,
+              address: profile.address,
+              specialization: profile.specialization,
+              dailyCapacity: profile.dailyCapacity,
+              photoUrl,
+            },
+            notes: profile.notes || null,
+            isActive: profile.isActive && profile.status !== "inactive",
+            createdBy: user.id,
+          })
+          .returning();
+        await addActivity(
+          user,
+          "graduation_tailor_created",
+          tailor.id,
+          { name: tailor.name, status: tailor.status },
+          "graduation_tailor",
+        );
+        return json(
+          { resource: { ...tailor, profile: safeJson(tailor.metrics) } },
+          201,
+        );
+      }
       if (
         !String(data?.name ?? "").trim() ||
         !["fabric_roll", "sewing_machine", "heat_press"].includes(
@@ -1546,6 +2379,70 @@ export async function handleAdminGraduation(
     }
     if ((method === "PATCH" || method === "PUT") && parts[1]) {
       const data = await requestBody(req);
+      const existing = await db.query.graduationResourcesTable.findFirst({
+        where: eq(graduationResourcesTable.id, Number(parts[1])),
+      });
+      if (!existing) return error("مورد الإنتاج غير موجود", 404);
+      if (existing.resourceType === "tailor") {
+        const current = safeJson(existing.metrics);
+        const parsed = graduationTailorInputSchema.safeParse({
+          name: data?.name ?? existing.name,
+          code: data?.code ?? existing.code,
+          phone: data?.phone ?? current.phone ?? "",
+          address: data?.address ?? current.address ?? "",
+          specialization: data?.specialization ?? current.specialization ?? "",
+          dailyCapacity: data?.dailyCapacity ?? current.dailyCapacity ?? 1,
+          status: data?.status ?? existing.status,
+          notes: data?.notes ?? existing.notes ?? "",
+          photoUrl: data?.photoUrl ?? current.photoUrl ?? "",
+          operatorId: data?.operatorId ?? existing.operatorId,
+          isActive: data?.isActive ?? existing.isActive,
+        });
+        if (!parsed.success)
+          return error("تحقق من بيانات الخياط", 400, parsed.error.issues);
+        const profile = parsed.data;
+        const phone = profile.phone ? normalizeIraqiPhone(profile.phone) : null;
+        if (profile.phone && !phone)
+          return error("رقم هاتف الخياط غير صحيح", 400);
+        const photoUrl = profile.photoUrl
+          ? await persistMedia(profile.photoUrl, "graduation/tailors")
+          : "";
+        const [tailor] = await db
+          .update(graduationResourcesTable)
+          .set({
+            code: profile.code || existing.code,
+            name: profile.name,
+            operatorId: profile.operatorId ?? null,
+            operatorName: profile.name,
+            status: profile.status,
+            metrics: {
+              phone,
+              address: profile.address,
+              specialization: profile.specialization,
+              dailyCapacity: profile.dailyCapacity,
+              photoUrl,
+            },
+            notes: profile.notes || null,
+            isActive: profile.isActive && profile.status !== "inactive",
+            updatedAt: new Date(),
+          })
+          .where(eq(graduationResourcesTable.id, existing.id))
+          .returning();
+        await addActivity(
+          user,
+          "graduation_tailor_updated",
+          tailor.id,
+          {
+            previousStatus: existing.status,
+            status: tailor.status,
+            isActive: tailor.isActive,
+          },
+          "graduation_tailor",
+        );
+        return json({
+          resource: { ...tailor, profile: safeJson(tailor.metrics) },
+        });
+      }
       const [row] = await db
         .update(graduationResourcesTable)
         .set({

@@ -62,6 +62,11 @@ import {
   type GraduationOption,
 } from "@/lib/graduation";
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
+import {
+  GraduationGroupBuilder,
+  GraduationGroupStudentRegistration,
+  GraduationOrderTypeChoice,
+} from "@/views/graduation-groups";
 
 type PublicGraduationConfig = GraduationConfig & { aiAvailable: boolean };
 
@@ -336,7 +341,7 @@ function PreviewPanel({
   );
 }
 
-export default function GraduationConfigurator() {
+function GraduationConfigurator() {
   const { toast } = useToast();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(initialForm);
@@ -1574,6 +1579,54 @@ export default function GraduationConfigurator() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+type GraduationEntryMode = "choice" | "individual" | "group" | "student";
+
+export default function GraduationEntry() {
+  const [mode, setMode] = useState<GraduationEntryMode>("choice");
+  const [groupToken, setGroupToken] = useState("");
+
+  useEffect(() => {
+    const token =
+      new URLSearchParams(window.location.search).get("group") || "";
+    if (token) {
+      setGroupToken(token);
+      setMode("student");
+    }
+  }, []);
+
+  function openStudent(token: string) {
+    const normalized = token.trim();
+    if (!normalized) return;
+    setGroupToken(normalized);
+    setMode("student");
+    const url = new URL(window.location.href);
+    url.searchParams.set("group", normalized);
+    window.history.replaceState({}, "", url);
+  }
+
+  function reset() {
+    setGroupToken("");
+    setMode("choice");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("group");
+    window.history.replaceState({}, "", url);
+  }
+
+  if (mode === "individual") return <GraduationConfigurator />;
+  if (mode === "group") return <GraduationGroupBuilder onBack={reset} />;
+  if (mode === "student")
+    return (
+      <GraduationGroupStudentRegistration token={groupToken} onBack={reset} />
+    );
+  return (
+    <GraduationOrderTypeChoice
+      onIndividual={() => setMode("individual")}
+      onGroup={() => setMode("group")}
+      onJoin={openStudent}
+    />
   );
 }
 
