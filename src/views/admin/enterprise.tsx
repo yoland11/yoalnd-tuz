@@ -110,16 +110,19 @@ function SectionTitle({ icon: Icon, title, description }: { icon: typeof Gauge; 
   );
 }
 
-function Metric({ icon: Icon, label, value, warning = false }: { icon: typeof Gauge; label: string; value: React.ReactNode; warning?: boolean }) {
-  return (
-    <div className={`rounded-xl border bg-card p-4 transition-colors ${warning ? "border-destructive/30" : "border-border/30 hover:border-primary/30"}`}>
+function Metric({ icon: Icon, label, value, warning = false, href }: { icon: typeof Gauge; label: string; value: React.ReactNode; warning?: boolean; href?: string }) {
+  const base = `rounded-xl border bg-card p-4 transition-colors ${warning ? "border-destructive/30 hover:border-destructive/50" : "border-border/30 hover:border-primary/30"}`;
+  const inner = (
+    <>
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">{label}</p>
         <Icon className={`h-4 w-4 shrink-0 ${warning ? "text-destructive" : "text-primary"}`} />
       </div>
       <p className="mt-3 truncate text-xl font-bold text-foreground">{value}</p>
-    </div>
+    </>
   );
+  if (href) return <Link href={href} aria-label={`${label}: ${typeof value === "string" || typeof value === "number" ? value : ""}`} className={`${base} block cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</Link>;
+  return <div className={base}>{inner}</div>;
 }
 
 function formatDateTime(value?: string | null) {
@@ -195,18 +198,18 @@ export default function EnterpriseCommandCenterPage() {
         <TabsContent value="overview" className="space-y-4">
           {command.isLoading ? <LoadingGrid /> : (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <Metric icon={PackageCheck} label="الكوشات المنصبة" value={summary.koshasInstalled ?? 0} />
-              <Metric icon={Users} label="فرق التصوير" value={summary.photographyTeams ?? 0} />
-              <Metric icon={Users} label="فرق الكوشات" value={summary.koshaTeams ?? 0} />
-              <Metric icon={Car} label="سيارات بالخارج" value={summary.vehiclesOutside ?? 0} />
-              <Metric icon={CalendarClock} label="حجوزات اليوم" value={summary.bookingsToday ?? 0} />
-              <Metric icon={Boxes} label="مواد مؤجرة" value={summary.rentedItems ?? 0} />
-              <Metric icon={AlertTriangle} label="مواد متأخرة" value={summary.overdueItems ?? 0} warning={Boolean(summary.overdueItems)} />
-              <Metric icon={Wallet} label="المبالغ المستحقة" value={formatCurrency(summary.outstandingAmount ?? 0)} warning={Boolean(summary.outstandingAmount)} />
-              <Metric icon={BarChart3} label="ربح اليوم" value={formatCurrency(summary.todayProfit ?? 0)} />
-              <Metric icon={ShieldAlert} label="تنبيهات حرجة" value={summary.criticalAlerts ?? 0} warning={Boolean(summary.criticalAlerts)} />
-              <Metric icon={ClipboardCheck} label="مهام مفتوحة" value={summary.openTasks ?? 0} />
-              <Metric icon={Building2} label="الفروع" value={summary.branches ?? 0} />
+              <Metric icon={PackageCheck} label="الكوشات المنصبة" value={summary.koshasInstalled ?? 0} href="/admin/kosha-bookings" />
+              <Metric icon={Users} label="فرق التصوير" value={summary.photographyTeams ?? 0} href="/admin/crews" />
+              <Metric icon={Users} label="فرق الكوشات" value={summary.koshaTeams ?? 0} href="/admin/crews" />
+              <Metric icon={Car} label="سيارات بالخارج" value={summary.vehiclesOutside ?? 0} href="/admin/crews" />
+              <Metric icon={CalendarClock} label="حجوزات اليوم" value={summary.bookingsToday ?? 0} href="/admin/calendar" />
+              <Metric icon={Boxes} label="مواد مؤجرة" value={summary.rentedItems ?? 0} href="/admin/orders" />
+              <Metric icon={AlertTriangle} label="مواد متأخرة" value={summary.overdueItems ?? 0} warning={Boolean(summary.overdueItems)} href="/admin/orders" />
+              <Metric icon={Wallet} label="المبالغ المستحقة" value={formatCurrency(summary.outstandingAmount ?? 0)} warning={Boolean(summary.outstandingAmount)} href="/admin/accounting" />
+              <Metric icon={BarChart3} label="ربح اليوم" value={formatCurrency(summary.todayProfit ?? 0)} href="/admin/reports" />
+              <Metric icon={ShieldAlert} label="تنبيهات حرجة" value={summary.criticalAlerts ?? 0} warning={Boolean(summary.criticalAlerts)} href="/admin/notifications" />
+              <Metric icon={ClipboardCheck} label="مهام مفتوحة" value={summary.openTasks ?? 0} href="/admin/tasks" />
+              <Metric icon={Building2} label="الفروع" value={summary.branches ?? 0} href="/admin/command-center" />
             </div>
           )}
           <div className="grid gap-4 xl:grid-cols-3">

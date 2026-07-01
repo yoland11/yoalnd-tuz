@@ -288,14 +288,22 @@ export default function ProductsPage() {
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.low}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">أقل من حد التنبيه أو {DEFAULT_LOW_STOCK_THRESHOLD} كافتراضي</span>
         </button>
-        <div className="rounded-xl border border-border/30 bg-card p-4">
+        <button
+          type="button"
+          onClick={() => setStockFilter(stockFilter === "available" ? "all" : "available")}
+          className={`rounded-xl border p-4 text-right transition-colors ${
+            stockFilter === "available"
+              ? "border-status-success/45 bg-status-success/15"
+              : "border-border/30 bg-card hover:bg-background/40"
+          }`}
+        >
           <span className="flex items-center justify-between gap-3">
             <span className="text-sm text-muted-foreground">منتجات متوفرة</span>
             <CheckCircle2 className="h-5 w-5 text-status-success" />
           </span>
           <strong className="mt-2 block text-2xl text-foreground">{stockStats.available}</strong>
           <span className="mt-1 block text-[11px] text-muted-foreground">اضغط على العدادات لتفعيل الفلتر السريع</span>
-        </div>
+        </button>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">

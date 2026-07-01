@@ -169,16 +169,19 @@ function downloadCsv(rows: FinancialTransaction[]) {
   URL.revokeObjectURL(url);
 }
 
-function Stat({ label, value, icon: Icon, tone = "text-primary" }: { label: string; value: string; icon: typeof Wallet; tone?: string }) {
-  return (
-    <div className="min-w-0 border-b border-border/25 px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-l sm:last:border-l-0">
+function Stat({ label, value, icon: Icon, tone = "text-primary", onClick }: { label: string; value: string; icon: typeof Wallet; tone?: string; onClick?: () => void }) {
+  const cls = "min-w-0 border-b border-border/25 px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-l sm:last:border-l-0";
+  const inner = (
+    <>
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <p className="truncate text-xs text-muted-foreground">{label}</p>
         <Icon className={`h-4 w-4 shrink-0 ${tone}`} />
       </div>
       <p className={`truncate text-base font-bold ${tone}`} title={value}>{value}</p>
-    </div>
+    </>
   );
+  if (onClick) return <button type="button" onClick={onClick} aria-label={`${label}: ${value}`} className={`${cls} block w-full text-right cursor-pointer transition-colors hover:bg-background/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</button>;
+  return <div className={cls}>{inner}</div>;
 }
 
 function TransactionForm({ onSaved, compact = false }: { onSaved: () => void; compact?: boolean }) {
@@ -304,6 +307,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
   const rows = transactions.data?.data ?? [];
   const pendingRows = useMemo(() => rows.filter((row) => row.approvalStatus === "pending"), [rows]);
+  const [mcTab, setMcTab] = useState("overview");
 
   if (dashboard.isLoading || !dashboard.data) {
     return <div className="space-y-4"><Skeleton className="h-24 rounded-xl" /><Skeleton className="h-64 rounded-xl" /><Skeleton className="h-80 rounded-xl" /></div>;
@@ -332,7 +336,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
           <Stat label="إجمالي الإيرادات" value={formatCurrency(data.cashBox.totalRevenue)} icon={ArrowUpRight} tone="text-status-success" />
           <Stat label="إجمالي المصاريف" value={formatCurrency(data.cashBox.totalExpenses)} icon={ArrowDownLeft} tone="text-destructive" />
           <Stat label="صافي الربح" value={formatCurrency(data.cashBox.netProfit)} icon={Landmark} tone={data.cashBox.netProfit >= 0 ? "text-primary" : "text-destructive"} />
-          <Stat label="بانتظار الموافقة" value={`${data.pending.count.toLocaleString("ar-IQ")} · ${formatCurrency(data.pending.amount)}`} icon={ShieldCheck} tone="text-status-warning" />
+          <Stat label="بانتظار الموافقة" value={`${data.pending.count.toLocaleString("ar-IQ")} · ${formatCurrency(data.pending.amount)}`} icon={ShieldCheck} tone="text-status-warning" onClick={() => setMcTab("approvals")} />
         </div>
       </div>
 
@@ -342,7 +346,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         <div className="rounded-xl bg-card p-4"><div className="flex items-center justify-between"><p className="text-xs text-muted-foreground">التلف والخسائر هذا الشهر</p><TriangleAlert className="h-4 w-4 text-status-warning" /></div><p className="mt-3 text-xl font-bold text-foreground">{formatCurrency(data.damageLosses)}</p><p className="mt-1 text-xs text-muted-foreground">تُسجل مع المنتج والموظف المسؤول ضمن حركة مالية مدققة.</p></div>
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs value={mcTab} onValueChange={setMcTab} className="space-y-4">
         <TabsList className="print:hidden"><TabsTrigger value="overview">الملخص</TabsTrigger><TabsTrigger value="ledger">دفتر الحركات</TabsTrigger><TabsTrigger value="approvals">الموافقات ({data.pending.count})</TabsTrigger></TabsList>
         <TabsContent value="overview" className="space-y-4">
           <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">

@@ -68,7 +68,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 const PIE_COLORS = ["#C9A84C", "#E5C77B", "#8B7355", "#4A4A4A", "#6B5A3E", "#A88B4F"];
 
-type KpiCard = { label: string; value: string; icon: typeof Clock; color: string };
+type KpiCard = { label: string; value: string; icon: typeof Clock; color: string; href?: string };
 
 // Signature device: a short gold tick marks every section, encoding "this is a distinct group".
 function SectionHeader({ icon: Icon, title, hint }: { icon?: typeof Clock; title: string; hint?: string }) {
@@ -86,13 +86,19 @@ function SectionHeader({ icon: Icon, title, hint }: { icon?: typeof Clock; title
 function KpiGrid({ cards }: { cards: KpiCard[] }) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-      {cards.map((c) => (
-        <div key={c.label} className="rounded-xl border border-border/30 bg-card p-4 transition-colors hover:border-primary/30">
-          <c.icon className={`h-4 w-4 ${c.color}`} />
-          <p className="mt-3 text-xl font-bold leading-none text-foreground">{c.value}</p>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">{c.label}</p>
-        </div>
-      ))}
+      {cards.map((c) => {
+        const base = "rounded-xl border border-border/30 bg-card p-4 transition-colors hover:border-primary/30";
+        const inner = (
+          <>
+            <c.icon className={`h-4 w-4 ${c.color}`} />
+            <p className="mt-3 text-xl font-bold leading-none text-foreground">{c.value}</p>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">{c.label}</p>
+          </>
+        );
+        return c.href
+          ? <Link key={c.label} href={c.href} aria-label={`${c.label}: ${c.value}`} className={`${base} block cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</Link>
+          : <div key={c.label} className={base}>{inner}</div>;
+      })}
     </div>
   );
 }
@@ -139,25 +145,25 @@ export default function DashboardPage() {
   ];
 
   const orderCards: KpiCard[] = [
-    { label: "إجمالي الطلبات", value: fmtNum(data.totalOrders), icon: ShoppingBag, color: "text-accent" },
-    { label: "الطلبات النشطة", value: fmtNum(data.activeOrders), icon: Clock, color: "text-status-warning" },
-    { label: "المسلَّمة", value: fmtNum(data.deliveredOrders), icon: Truck, color: "text-status-success" },
-    { label: "الملغية", value: fmtNum(data.cancelledOrders), icon: XCircle, color: "text-status-danger" },
-    { label: "طلبات الخدمات", value: fmtNum(data.serviceOrders), icon: Sparkles, color: "text-accent" },
-    { label: "المنتجات", value: fmtNum(data.totalProducts), icon: Package, color: "text-accent" },
-    { label: "العملاء", value: fmtNum(data.totalCustomers), icon: Users, color: "text-accent" },
+    { label: "إجمالي الطلبات", value: fmtNum(data.totalOrders), icon: ShoppingBag, color: "text-accent", href: "/admin/orders" },
+    { label: "الطلبات النشطة", value: fmtNum(data.activeOrders), icon: Clock, color: "text-status-warning", href: "/admin/orders" },
+    { label: "المسلَّمة", value: fmtNum(data.deliveredOrders), icon: Truck, color: "text-status-success", href: "/admin/orders" },
+    { label: "الملغية", value: fmtNum(data.cancelledOrders), icon: XCircle, color: "text-status-danger", href: "/admin/orders" },
+    { label: "طلبات الخدمات", value: fmtNum(data.serviceOrders), icon: Sparkles, color: "text-accent", href: "/admin/orders" },
+    { label: "المنتجات", value: fmtNum(data.totalProducts), icon: Package, color: "text-accent", href: "/admin/products" },
+    { label: "العملاء", value: fmtNum(data.totalCustomers), icon: Users, color: "text-accent", href: "/admin/customers" },
   ];
   const cashCards: KpiCard[] = [
-    { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary" },
-    { label: "رصيد الصندوق المتوقع", value: formatCurrency(data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success" },
-    { label: "فرق الجرد", value: data.dailyCash?.difference == null ? "غير مجرود" : formatCurrency(data.dailyCash.difference), icon: CreditCard, color: data.dailyCash?.status === "shortage" ? "text-status-danger" : "text-primary" },
-    { label: "توصيل اليوم", value: formatCurrency(data.financialSummary?.deliveryFeesTotal ?? 0), icon: Truck, color: "text-primary" },
+    { label: "مبيعات صندوق اليوم", value: formatCurrency(data.dailyCash?.totalSales ?? 0), icon: DollarSign, color: "text-primary", href: "/admin/finance/daily-report" },
+    { label: "رصيد الصندوق المتوقع", value: formatCurrency(data.dailyCash?.expectedCashBalance ?? 0), icon: CreditCard, color: "text-status-success", href: "/admin/finance/master-cash" },
+    { label: "فرق الجرد", value: data.dailyCash?.difference == null ? "غير مجرود" : formatCurrency(data.dailyCash.difference), icon: CreditCard, color: data.dailyCash?.status === "shortage" ? "text-status-danger" : "text-primary", href: "/admin/finance/reconciliation" },
+    { label: "توصيل اليوم", value: formatCurrency(data.financialSummary?.deliveryFeesTotal ?? 0), icon: Truck, color: "text-primary", href: "/admin/delivery" },
   ];
   const monthCards: KpiCard[] = [
-    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success" },
-    { label: "مصاريف الشهر", value: formatCurrency(data.financialSummary?.monthlyExpenses ?? 0), icon: CreditCard, color: "text-status-warning" },
-    { label: "المتبقي على الزبائن", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning" },
-    { label: "إجمالي الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary" },
+    { label: "إيراد الشهر", value: formatCurrency(data.monthlyRevenue ?? 0), icon: DollarSign, color: "text-status-success", href: "/admin/reports" },
+    { label: "مصاريف الشهر", value: formatCurrency(data.financialSummary?.monthlyExpenses ?? 0), icon: CreditCard, color: "text-status-warning", href: "/admin/expenses" },
+    { label: "المتبقي على الزبائن", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning", href: "/admin/accounting" },
+    { label: "إجمالي الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary", href: "/admin/reports" },
   ];
 
   const pieData = data.statusBreakdown.map(s => ({

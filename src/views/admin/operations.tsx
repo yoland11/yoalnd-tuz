@@ -146,16 +146,21 @@ function PageHeader({ icon: Icon, title, description, action }: { icon: any; tit
   );
 }
 
-function StatCard({ label, value, icon: Icon }: { label: string; value: React.ReactNode; icon: any }) {
-  return (
-    <div className="rounded-xl border border-border/30 bg-card p-4">
+function StatCard({ label, value, icon: Icon, onClick, active }: { label: string; value: React.ReactNode; icon: any; onClick?: () => void; active?: boolean }) {
+  const inner = (
+    <>
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">{label}</p>
         <Icon className="h-4 w-4 text-primary" />
       </div>
       <div className="mt-2 text-xl font-bold text-foreground">{value}</div>
-    </div>
+    </>
   );
+  const base = `rounded-xl border bg-card p-4 transition-colors ${active ? "border-primary/50" : "border-border/30"}`;
+  if (onClick) return (
+    <button type="button" onClick={onClick} aria-label={`${label}: ${typeof value === "string" || typeof value === "number" ? value : ""}`} className={`${base} block w-full text-right cursor-pointer hover:border-primary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring`}>{inner}</button>
+  );
+  return <div className={base}>{inner}</div>;
 }
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -543,6 +548,8 @@ export function AssetsPage() {
   const rows = data?.data ?? [];
   const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
   const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
+  const [filter, setFilter] = useState<"all" | "maintenance">("all");
+  const filtered = filter === "maintenance" ? rows.filter((r) => r.maintenanceDue) : rows;
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader
@@ -556,10 +563,10 @@ export function AssetsPage() {
         )}
       />
       <div className="grid gap-3 md:grid-cols-4">
-        <StatCard icon={Package} label="عدد الأصول" value={rows.length.toLocaleString("ar-IQ")} />
-        <StatCard icon={Gauge} label="إجمالي الشراء" value={formatCurrency(totalPurchase)} />
-        <StatCard icon={Gauge} label="القيمة الحالية" value={formatCurrency(totalValue)} />
-        <StatCard icon={Wrench} label="تحتاج صيانة" value={rows.filter((row) => row.maintenanceDue).length.toLocaleString("ar-IQ")} />
+        <StatCard icon={Package} label="عدد الأصول" value={rows.length.toLocaleString("ar-IQ")} onClick={() => setFilter("all")} active={filter === "all"} />
+        <StatCard icon={Gauge} label="إجمالي الشراء" value={formatCurrency(totalPurchase)} onClick={() => setFilter("all")} />
+        <StatCard icon={Gauge} label="القيمة الحالية" value={formatCurrency(totalValue)} onClick={() => setFilter("all")} />
+        <StatCard icon={Wrench} label="تحتاج صيانة" value={rows.filter((row) => row.maintenanceDue).length.toLocaleString("ar-IQ")} onClick={() => setFilter("maintenance")} active={filter === "maintenance"} />
       </div>
       {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
@@ -576,7 +583,9 @@ export function AssetsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {rows.map((row) => (
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا توجد بيانات مطابقة</td></tr>
+                ) : filtered.map((row) => (
                   <tr key={row.productId} className="hover:bg-background/40">
                     <td className="p-3">
                       <div className="font-medium text-foreground">{row.name}</div>
