@@ -645,7 +645,9 @@ export default function POSPage() {
       setLastSavedCart([...cart]);
       setLastSavedForm({ ...form });
       setLastSavedTotals({ ...totals });
-      setCart([]); setForm(newForm()); setCustomerStats(null);
+      setCart([]); setForm(newForm()); setCustomerStats(null); setSearchQ("");
+      // Return focus to the barcode field so the next sale can be scanned/typed with no mouse.
+      requestAnimationFrame(() => { barcodeRef.current?.focus(); barcodeRef.current?.select(); });
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {

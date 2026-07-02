@@ -327,6 +327,9 @@ export default function SalesPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setCart([]);
       setForm(newInvoice());
+      setSearchQ("");
+      // Ready for the next invoice: focus the barcode/search field with no mouse.
+      requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {

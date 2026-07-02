@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, Save, RefreshCw, X,
@@ -64,6 +64,7 @@ export default function PurchasesPage() {
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
+  const firstFieldRef = useRef<HTMLSelectElement>(null);
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
@@ -177,6 +178,7 @@ export default function PurchasesPage() {
       setAttachment(null);
       setEditingId(null); setEditingNo("");
       if (editingId) setListMode(true);
+      else requestAnimationFrame(() => firstFieldRef.current?.focus()); // ready for a new purchase invoice
     } catch (e: any) {
       toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
     } finally {
@@ -432,6 +434,7 @@ export default function PurchasesPage() {
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">المورد</label>
               <select
+                ref={firstFieldRef}
                 value={form.supplierId}
                 onChange={e => {
                   const id = e.target.value;
