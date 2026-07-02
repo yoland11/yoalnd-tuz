@@ -1,0 +1,12 @@
+node_modules
+.next
+desktop/release
+desktop/dist
+dist
+release
+*.exe
+*.msi
+*.dmg
+*.zip
+*.blockmap
+.git
