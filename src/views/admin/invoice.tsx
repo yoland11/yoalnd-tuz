@@ -109,10 +109,10 @@ export default function Invoice() {
   }
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-muted-foreground" dir="rtl">جاري التحميل...</div>;
+    return <div className="min-h-dvh flex items-center justify-center text-muted-foreground" dir="rtl">جاري التحميل...</div>;
   }
   if (error || !data) {
-    return <div className="min-h-screen flex items-center justify-center text-muted-foreground" dir="rtl">{type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود"}</div>;
+    return <div className="min-h-dvh flex items-center justify-center text-muted-foreground" dir="rtl">{type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود"}</div>;
   }
 
   const isBooking = data.kind === "booking";

@@ -125,7 +125,7 @@ export default function Track() {
 
   if (secureToken) {
     return (
-      <div className="container mx-auto px-4 py-12 min-h-screen">
+      <div className="container mx-auto px-4 py-12 min-h-dvh">
         <div className="max-w-2xl mx-auto">
           <div className="text-center mb-10">
             <Package className="w-12 h-12 text-primary mx-auto mb-3" />
@@ -148,7 +148,7 @@ export default function Track() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-12 min-h-screen">
+    <div className="container mx-auto px-4 py-12 min-h-dvh">
       <div className="max-w-2xl mx-auto">
         <div className="text-center mb-10 animate-fade-up">
           <Package className="w-12 h-12 text-primary mx-auto mb-3" />

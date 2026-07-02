@@ -71,7 +71,7 @@ export default function Login() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-12 min-h-screen" dir="rtl">
+    <div className="container mx-auto px-4 py-12 min-h-dvh" dir="rtl">
       <div className="max-w-xl mx-auto">
         <div className="text-center mb-8">
           <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mb-4">

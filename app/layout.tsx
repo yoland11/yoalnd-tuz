@@ -40,6 +40,10 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: "#C9A84C",
+  width: "device-width",
+  initialScale: 1,
+  // Enables env(safe-area-inset-*) so content clears the notch and the browser/home bars on mobile.
+  viewportFit: "cover",
 };
 
 const FALLBACK_LOGO_URL = "/images/logo-fallback.svg";

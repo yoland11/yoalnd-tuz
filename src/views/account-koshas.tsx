@@ -33,7 +33,7 @@ async function cfetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 function LoginPrompt() {
   return (
-    <div className="container mx-auto flex min-h-[60vh] flex-col items-center justify-center gap-4 px-4 text-center" dir="rtl">
+    <div className="container mx-auto flex min-h-[60dvh] flex-col items-center justify-center gap-4 px-4 text-center" dir="rtl">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10"><Armchair className="h-8 w-8 text-primary" /></div>
       <h1 className="text-xl font-bold text-foreground">كوشاتي</h1>
       <p className="text-muted-foreground">سجّل الدخول لمتابعة حالة كوشاتك وصورها.</p>
@@ -58,7 +58,7 @@ export default function AccountKoshas() {
   if (selected) return <KoshaDetail id={selected} onBack={() => setSelected(null)} whatsapp={settings?.whatsapp} />;
 
   return (
-    <div className="container mx-auto min-h-screen px-4 py-8" dir="rtl">
+    <div className="container mx-auto min-h-dvh px-4 py-8" dir="rtl">
       <div className="mx-auto max-w-2xl">
         <h1 className="mb-6 flex items-center gap-2 text-2xl font-bold text-foreground"><Armchair className="h-6 w-6 text-primary" /> كوشاتي</h1>
         {!list ? (
@@ -106,7 +106,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
   }, [id]);
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="flex min-h-[60vh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
+  if (loading) return <div className="flex min-h-[60dvh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
   if (!d) return <div className="container mx-auto px-4 py-16 text-center text-muted-foreground" dir="rtl">الحجز غير موجود<div className="mt-3"><button onClick={onBack} className="text-primary">رجوع</button></div></div>;
 
   const current = d.executionStage;
@@ -120,7 +120,7 @@ function KoshaDetail({ id, onBack, whatsapp }: { id: number; onBack: () => void;
   }
 
   return (
-    <div className="container mx-auto min-h-screen px-4 py-6" dir="rtl">
+    <div className="container mx-auto min-h-dvh px-4 py-6" dir="rtl">
       <div className="mx-auto max-w-2xl space-y-4">
         <button onClick={onBack} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ChevronLeft className="h-4 w-4" /> كوشاتي</button>
 

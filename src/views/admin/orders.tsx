@@ -754,7 +754,7 @@ function EditProductOrderModal({ order, onClose, onSaved }: { order: any; onClos
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 sm:p-4" dir="rtl">
-      <div className="bg-card border border-border/40 rounded-xl w-full max-w-4xl max-h-[94vh] overflow-hidden flex flex-col shadow-2xl">
+      <div className="bg-card border border-border/40 rounded-xl w-full max-w-4xl max-h-[94dvh] overflow-hidden flex flex-col shadow-2xl">
         <div className="flex items-center justify-between gap-3 p-4 sm:p-5 border-b border-border/30 shrink-0">
           <div className="min-w-0">
             <h3 className="font-bold text-foreground truncate">تعديل الطلب {order.trackingCode}</h3>
@@ -1115,7 +1115,7 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
-      <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-6 border-b border-border/30">
           <h3 className="font-bold text-foreground">طلب جديد</h3>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
@@ -1338,7 +1338,7 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
-      <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-6 border-b border-border/30">
           <div>
             <h3 className="font-bold text-foreground">تعديل الحجز</h3>

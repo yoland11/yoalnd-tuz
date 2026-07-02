@@ -739,7 +739,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       <form
         onSubmit={async e => { e.preventDefault(); setBusy(true); try { await onSave(form); } catch (error: any) { alert(error?.message || "تعذر حفظ المنتج"); } finally { setBusy(false); } }}
         onClick={e => e.stopPropagation()}
-        className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4"
+        className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto p-6 space-y-4"
       >
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-foreground">{form.id ? "تعديل منتج" : "منتج جديد"}</h3>
@@ -1286,12 +1286,12 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
       </form>
       {previewImage && (
         <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}>
-          <img src={previewImage} alt="" className="max-h-[86vh] max-w-[92vw] rounded-xl object-contain border border-border/40 bg-card" />
+          <img src={previewImage} alt="" className="max-h-[86dvh] max-w-[92vw] rounded-xl object-contain border border-border/40 bg-card" />
         </div>
       )}
       {previewVideo && (
         <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewVideo(null); }}>
-          <video src={previewVideo} controls autoPlay className="max-h-[86vh] max-w-[92vw] rounded-xl border border-border/40 bg-black" onClick={(event) => event.stopPropagation()} />
+          <video src={previewVideo} controls autoPlay className="max-h-[86dvh] max-w-[92vw] rounded-xl border border-border/40 bg-black" onClick={(event) => event.stopPropagation()} />
         </div>
       )}
     </div>

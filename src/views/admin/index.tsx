@@ -203,7 +203,7 @@ export default function Admin() {
   if (loading) {
     return (
       <div
-        className="min-h-screen bg-background flex items-center justify-center"
+        className="min-h-dvh bg-background flex items-center justify-center"
         dir="rtl"
       >
         <Loader2 className="w-8 h-8 text-primary animate-spin" />

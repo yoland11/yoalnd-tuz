@@ -158,7 +158,7 @@ export default function Account() {
     const productOrders = rows.filter((order) => order.kind !== "service");
     const serviceOrders = rows.filter((order) => order.kind === "service");
     return (
-      <div className="container mx-auto px-4 py-10 min-h-screen" dir="rtl">
+      <div className="container mx-auto px-4 py-10 min-h-dvh" dir="rtl">
         <div className="max-w-2xl mx-auto">
           {/* Profile Card */}
           <div className="bg-card rounded-2xl border border-border/30 p-6 mb-6 flex items-center gap-4">
@@ -371,7 +371,7 @@ export default function Account() {
   // Login view
   return (
     <div
-      className="container mx-auto px-4 py-20 min-h-screen flex items-start justify-center"
+      className="container mx-auto px-4 py-20 min-h-dvh flex items-start justify-center"
       dir="rtl"
     >
       <div className="w-full max-w-sm">

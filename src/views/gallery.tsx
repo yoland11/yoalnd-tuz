@@ -34,7 +34,7 @@ export default function Gallery() {
   }
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-dvh bg-background" dir="rtl">
       {/* Header */}
       <div className="border-b border-border/30 py-10">
         <div className="container mx-auto px-4 text-center">
@@ -158,12 +158,12 @@ export default function Gallery() {
 
           <div className="max-w-5xl w-full px-16" onClick={e => e.stopPropagation()}>
             {allItems[previewIndex].mediaType === "video" ? (
-              <video src={allItems[previewIndex].mediaUrl} controls className="w-full max-h-[80vh] rounded-xl" />
+              <video src={allItems[previewIndex].mediaUrl} controls className="w-full max-h-[80dvh] rounded-xl" />
             ) : (
               <img
                 src={allItems[previewIndex].mediaUrl}
                 alt={allItems[previewIndex].titleAr ?? ""}
-                className="w-full max-h-[80vh] object-contain rounded-xl"
+                className="w-full max-h-[80dvh] object-contain rounded-xl"
               />
             )}
             {allItems[previewIndex].titleAr && (

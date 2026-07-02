@@ -38,7 +38,7 @@ export default function KoshaTrackingPage() {
   });
 
   if (isLoading) {
-    return <div className="flex min-h-[60vh] items-center justify-center" dir="rtl"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
+    return <div className="flex min-h-[60dvh] items-center justify-center" dir="rtl"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
   }
   if (isError || !data) {
     return (

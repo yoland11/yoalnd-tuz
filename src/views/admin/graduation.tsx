@@ -730,7 +730,7 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         dir="rtl"
-        className="max-h-[92vh] max-w-5xl overflow-y-auto"
+        className="max-h-[92dvh] max-w-5xl overflow-y-auto"
       >
         <DialogHeader>
           <DialogTitle>تفاصيل {order.orderNo}</DialogTitle>
@@ -1585,7 +1585,7 @@ function Tailors() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
           dir="rtl"
-          className="max-h-[92vh] max-w-2xl overflow-y-auto"
+          className="max-h-[92dvh] max-w-2xl overflow-y-auto"
         >
           <DialogHeader>
             <DialogTitle>
@@ -1855,7 +1855,7 @@ function Production({
                   {column.items.length}
                 </span>
               </header>
-              <div className="max-h-[68vh] space-y-2 overflow-y-auto p-2">
+              <div className="max-h-[68dvh] space-y-2 overflow-y-auto p-2">
                 {column.items.map((item: any) => (
                   <article
                     key={item.id}

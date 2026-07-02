@@ -255,9 +255,23 @@ a:hover {
     @apply border-border;
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     @apply font-sans antialiased bg-background text-foreground;
+    min-height: 100dvh;
   }
+}
+
+/* Mobile safe-area helpers — reserve space for the notch, home indicator, and browser bars. */
+@layer utilities {
+  .pt-safe { padding-top: env(safe-area-inset-top); }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+  /* Comfortable bottom clearance so the last fields/buttons in long pages & modals are never hidden. */
+  .pb-safe-lg { padding-bottom: calc(env(safe-area-inset-bottom) + 2rem); }
+  .mb-safe { margin-bottom: env(safe-area-inset-bottom); }
 }
 
 /**

@@ -1170,7 +1170,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
 
       {lightbox && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4" onClick={(event) => { event.stopPropagation(); setLightbox(null); }}>
-          <img src={lightbox} alt="" className="max-h-[88vh] max-w-full rounded-lg object-contain" />
+          <img src={lightbox} alt="" className="max-h-[88dvh] max-w-full rounded-lg object-contain" />
           <button type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
         </div>
       )}
@@ -1344,7 +1344,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" dir="rtl">
-      <form onSubmit={(event) => { event.preventDefault(); if (!previewReady) { setPreviewReady(true); return; } save.mutate(); }} className="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border/40 bg-card shadow-2xl">
+      <form onSubmit={(event) => { event.preventDefault(); if (!previewReady) { setPreviewReady(true); return; } save.mutate(); }} className="flex max-h-[94dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border/40 bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 sm:p-5">
           <div><h3 className="font-bold text-foreground">تعديل حجز الكوشة KB-{booking.id}</h3><p className="mt-1 text-xs text-muted-foreground">التغييرات المالية تظهر قبل اعتماد الحفظ.</p></div>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>

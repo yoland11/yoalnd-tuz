@@ -641,7 +641,7 @@ function GraduationConfigurator() {
 
   return (
     <div
-      className="min-h-screen bg-background pb-24"
+      className="min-h-dvh bg-background pb-24"
       dir="rtl"
       style={GRADUATION_THEME_STYLE}
     >

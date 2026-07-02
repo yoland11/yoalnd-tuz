@@ -46,7 +46,7 @@ export default function Cart() {
   const items = cart?.items ?? [];
 
   return (
-    <div className="container mx-auto px-4 py-10 min-h-screen">
+    <div className="container mx-auto px-4 py-10 min-h-dvh">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold text-foreground flex items-center gap-3">
           <ShoppingCart className="w-7 h-7 text-primary" />

@@ -197,7 +197,7 @@ export default function CustomersPage() {
 
       {selectedId !== null && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={() => setSelectedId(null)}>
-          <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 p-6 border-b border-border/30">
               <h3 className="font-bold text-foreground">ملف الزبون 360</h3>
               <button onClick={() => setSelectedId(null)}><X className="w-5 h-5 text-muted-foreground" /></button>

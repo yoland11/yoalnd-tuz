@@ -61,7 +61,7 @@ export function GraduationOrderTypeChoice({
 }) {
   const [code, setCode] = useState("");
   return (
-    <main className="min-h-screen bg-background px-4 py-10" dir="rtl">
+    <main className="min-h-dvh bg-background px-4 py-10" dir="rtl">
       <div className="mx-auto max-w-5xl">
         <header className="mb-8 text-center">
           <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/30 bg-primary/10 text-primary">
@@ -256,7 +256,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
     );
   if (created)
     return (
-      <main className="min-h-screen bg-background px-4 py-12" dir="rtl">
+      <main className="min-h-dvh bg-background px-4 py-12" dir="rtl">
         <Card className="mx-auto max-w-2xl">
           <CardContent className="space-y-5 p-6 text-center sm:p-8">
             <BadgeCheck className="mx-auto h-14 w-14 text-primary" />
@@ -308,7 +308,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
     form.styleKey &&
     form.fabricKey;
   return (
-    <main className="min-h-screen bg-background px-3 py-6 sm:px-5" dir="rtl">
+    <main className="min-h-dvh bg-background px-3 py-6 sm:px-5" dir="rtl">
       <div className="mx-auto max-w-6xl space-y-5">
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
           <div>
@@ -731,7 +731,7 @@ export function GraduationGroupStudentRegistration({
   if (groupQuery.isError || !group)
     return (
       <main
-        className="min-h-screen bg-background px-4 py-16 text-center"
+        className="min-h-dvh bg-background px-4 py-16 text-center"
         dir="rtl"
       >
         <QrCode className="mx-auto h-12 w-12 text-muted-foreground" />
@@ -746,7 +746,7 @@ export function GraduationGroupStudentRegistration({
     );
   if (completed)
     return (
-      <main className="min-h-screen bg-background px-4 py-12" dir="rtl">
+      <main className="min-h-dvh bg-background px-4 py-12" dir="rtl">
         <Card className="mx-auto max-w-xl">
           <CardContent className="space-y-5 p-7 text-center">
             <BadgeCheck className="mx-auto h-14 w-14 text-primary" />
@@ -778,7 +778,7 @@ export function GraduationGroupStudentRegistration({
 
   const ready = progress === 100 && form.phone.replace(/\D/g, "").length >= 10;
   return (
-    <main className="min-h-screen bg-background px-3 py-6 sm:px-5" dir="rtl">
+    <main className="min-h-dvh bg-background px-3 py-6 sm:px-5" dir="rtl">
       <div className="mx-auto max-w-5xl space-y-5">
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
           <div>

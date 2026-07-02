@@ -16,7 +16,7 @@ const STAGE_BADGE: Record<string, string> = {
 };
 
 function Spinner() {
-  return <div className="flex min-h-screen items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
+  return <div className="flex min-h-dvh items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
 }
 
 function Login({ onDone }: { onDone: () => void }) {
@@ -29,7 +29,7 @@ function Login({ onDone }: { onDone: () => void }) {
     finally { setBusy(false); }
   }
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-6" dir="rtl">
+    <div className="flex min-h-dvh items-center justify-center bg-background p-6" dir="rtl">
       <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-2xl border border-border bg-card p-6">
         <div className="text-center">
           <div className="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10"><Armchair className="h-7 w-7 text-primary" /></div>
@@ -262,7 +262,7 @@ export default function StaffPortal() {
   if (!me) return <Login onDone={refreshMe} />;
   if (!allowed) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background p-6 text-center" dir="rtl">
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center" dir="rtl">
         <p className="text-muted-foreground">حسابك لا يملك صلاحية الوصول لبوابة الكوشات.</p>
         <button onClick={() => logoutAdmin().then(refreshMe)} className="rounded-lg border border-border px-4 py-2 text-sm">تسجيل الخروج</button>
       </div>
@@ -278,7 +278,7 @@ export default function StaffPortal() {
   ].filter(Boolean) as Array<{ href: string; label: string; icon: any; match: boolean; badge?: number }>;
 
   return (
-    <div className="min-h-screen bg-background text-foreground" dir="rtl">
+    <div className="min-h-dvh bg-background text-foreground" dir="rtl">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
         <div className="flex items-center gap-2">
           <Armchair className="h-5 w-5 text-primary" />

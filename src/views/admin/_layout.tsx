@@ -809,7 +809,7 @@ export function AdminLayout({
 
   return (
     <div
-      className="min-h-screen bg-background flex overflow-x-hidden"
+      className="min-h-dvh bg-background flex overflow-x-hidden"
       dir="rtl"
     >
       <aside
@@ -862,7 +862,7 @@ export function AdminLayout({
         <AdminNotificationsBell />
       </div>
       <div
-        className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur"
+        className="md:hidden fixed top-0 inset-x-0 z-20 bg-card/95 border-b border-border/30 backdrop-blur pt-safe"
         dir="rtl"
         style={{ backgroundColor: "hsl(var(--sidebar) / 0.95)" }}
       >
@@ -956,7 +956,7 @@ export function AdminLayout({
         </div>
       )}
       <main
-        className={`flex-1 min-w-0 overflow-x-hidden p-4 pt-20 md:p-6 md:pt-20 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}
+        className={`flex-1 min-w-0 overflow-x-hidden p-4 pt-[calc(5rem+env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2rem)] md:p-6 md:pt-20 max-w-[1400px] w-full ${sidebarHidden ? "md:mr-0" : "md:mr-60"}`}
       >
         {children}
       </main>

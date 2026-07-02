@@ -96,7 +96,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
 
-  if (loading) return <div className="flex min-h-[60vh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
+  if (loading) return <div className="flex min-h-[60dvh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
   if (err || !data) return <div className="p-6 text-center text-muted-foreground">{err ?? "غير موجود"}<div className="mt-3"><button onClick={onBack} className="text-primary underline">رجوع</button></div></div>;
 
   const b = data.booking;
@@ -298,7 +298,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
       </div>
       {lightbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4" onClick={() => setLightbox(null)}>
-          <img src={lightbox} alt="" className="max-h-[88vh] max-w-full rounded-lg object-contain" />
+          <img src={lightbox} alt="" className="max-h-[88dvh] max-w-full rounded-lg object-contain" />
         </div>
       )}
     </div>

@@ -190,7 +190,7 @@ export default function ProductDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       {/* Breadcrumb */}
       <div className="border-b border-border/30 py-3">
         <div className="container mx-auto px-4 flex items-center gap-2 text-sm text-muted-foreground">
@@ -529,7 +529,7 @@ export default function ProductDetail() {
             <X className="w-8 h-8" />
           </button>
           <div className="relative max-w-4xl w-full" onClick={e => e.stopPropagation()}>
-            <img src={images[selectedImage]} alt="" className="w-full max-h-[80vh] object-contain rounded-xl" />
+            <img src={images[selectedImage]} alt="" className="w-full max-h-[80dvh] object-contain rounded-xl" />
             {images.length > 1 && (
               <>
                 <button

@@ -445,7 +445,7 @@ export default function Profile() {
 
   if (loading) {
     return (
-      <div className="container mx-auto px-4 py-12 min-h-screen">
+      <div className="container mx-auto px-4 py-12 min-h-dvh">
         <div className="max-w-5xl mx-auto bg-card rounded-2xl border border-border/30 p-8 text-center text-muted-foreground">
           <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3 text-primary" />
           {t("جاري تحميل ملف الزبون...")}
@@ -457,7 +457,7 @@ export default function Profile() {
   if (!customer) return null;
 
   return (
-    <div className="container mx-auto px-4 py-10 min-h-screen">
+    <div className="container mx-auto px-4 py-10 min-h-dvh">
       <CelebrationEffect
         active={!!latestCompletedOrder}
         storageKey={latestCompletedOrder ? `ajn-profile-complete-${latestCompletedOrder.kind ?? "order"}-${latestCompletedOrder.id}` : undefined}

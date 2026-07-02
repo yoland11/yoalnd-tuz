@@ -24,7 +24,7 @@ export default function Home() {
   return (
     <div className="flex flex-col w-full">
       {/* Hero Section */}
-      <section className="relative h-[80vh] min-h-[600px] w-full flex items-center justify-center overflow-hidden">
+      <section className="relative h-[80dvh] min-h-[600px] w-full flex items-center justify-center overflow-hidden">
 <div className="absolute inset-0 z-0">
           <img 
             src="/images/hero.png" 

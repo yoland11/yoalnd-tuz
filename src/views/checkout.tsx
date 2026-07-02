@@ -190,7 +190,7 @@ export default function Checkout() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-10 min-h-screen">
+    <div className="container mx-auto px-4 py-10 min-h-dvh">
       <h1 className="text-3xl font-bold text-foreground mb-8 flex items-center gap-3">
         <Package className="w-7 h-7 text-primary" />
         {t("إتمام الطلب")}

@@ -364,7 +364,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         <TabsContent value="approvals"><TransactionTable rows={pendingRows} loading={transactions.isLoading} isManager={isManager} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} emptyMessage="لا توجد معاملات بانتظار الموافقة ضمن الصفحة الحالية" /></TabsContent>
       </Tabs>
 
-      <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل الحركة المالية</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} busy={reverse.isPending} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
+      <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88dvh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل الحركة المالية</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} busy={reverse.isPending} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
     </div>
   );
 }

@@ -366,7 +366,7 @@ export function ImageUploadEditor({
             aria-modal="true"
             aria-label="تعديل الصورة"
             onMouseDown={(event) => event.stopPropagation()}
-            className={`flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-border/40 bg-card shadow-2xl transition-all duration-200 ${closing ? "scale-[0.98] opacity-0" : "scale-100 opacity-100"}`}
+            className={`flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-border/40 bg-card shadow-2xl transition-all duration-200 ${closing ? "scale-[0.98] opacity-0" : "scale-100 opacity-100"}`}
           >
             <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 bg-background/55 px-4 py-3 sm:px-5">
               <div className="min-w-0">

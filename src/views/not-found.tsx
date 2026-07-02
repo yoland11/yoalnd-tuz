@@ -4,7 +4,7 @@ import { Home, Search } from "lucide-react";
 
 export default function NotFound() {
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-background px-4" dir="rtl">
+    <div className="min-h-dvh w-full flex items-center justify-center bg-background px-4" dir="rtl">
       <div className="w-full max-w-md text-center">
         <p className="text-8xl font-bold text-primary/20 mb-4 leading-none" aria-hidden="true">404</p>
         <h1 className="text-2xl font-bold text-foreground mb-3 text-balance">الصفحة غير موجودة</h1>

@@ -298,7 +298,7 @@ export default function StaffPage() {
               save.mutate(editing);
             }}
             onClick={(e) => e.stopPropagation()}
-            className="bg-card border border-border/40 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 space-y-4"
+            className="bg-card border border-border/40 rounded-2xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-6 space-y-4"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-foreground">

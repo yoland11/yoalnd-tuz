@@ -1054,7 +1054,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
-      <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92vh] overflow-hidden shadow-xl">
+      <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92dvh] overflow-hidden shadow-xl">
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border/30">
           <div>
             <h2 className="text-lg font-bold text-foreground">تفاصيل الفاتورة</h2>

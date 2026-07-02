@@ -59,14 +59,14 @@ const queryClient = new QueryClient({
 
 // Minimal spinner shown while lazy chunks load
 const PageSpinner = () => (
-  <div className="min-h-[50vh] flex items-center justify-center" dir="rtl">
+  <div className="min-h-[50dvh] flex items-center justify-center" dir="rtl">
     <div className="h-7 w-7 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
   </div>
 );
 
 const AdminSpinner = () => (
   <div
-    className="min-h-screen bg-background flex items-center justify-center"
+    className="min-h-dvh bg-background flex items-center justify-center"
     dir="rtl"
   >
     <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />

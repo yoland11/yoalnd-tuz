@@ -39,7 +39,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <CustomerMessageWidget />
       <PwaInstallPrompt />
       <MobileNav />
-      <footer className="border-t border-border/40 py-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
+      <footer className="border-t border-border/40 pt-6 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">
           <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">

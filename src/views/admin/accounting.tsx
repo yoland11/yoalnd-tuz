@@ -739,8 +739,8 @@ function Field({ label, children, className = "" }: { label: string; children: R
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-card rounded-xl border border-border/40 w-full max-w-2xl p-5 space-y-3" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border/40 w-full max-w-2xl my-6 p-5 space-y-3 max-h-[calc(100dvh-3rem)] overflow-y-auto pb-safe" onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center">
           <h2 className="text-lg font-bold">{title}</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">×</button>

@@ -44,7 +44,7 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4" dir="rtl">
+    <div className="min-h-dvh bg-background flex items-center justify-center p-4" dir="rtl">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-4">
