@@ -364,7 +364,14 @@ function Empty({ message }: { message: string }) {
 
 export default function EnterpriseCommandCenterPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]["value"]>("overview");
+  const [focusedAssetId, setFocusedAssetId] = useState<number | null>(null);
   const queryClient = useQueryClient();
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("tab") === "assets") setTab("assets");
+    const assetId = Number(params.get("asset"));
+    if (Number.isInteger(assetId) && assetId > 0) setFocusedAssetId(assetId);
+  }, []);
   const command = useQuery<CommandCenter>({
     queryKey: ["admin", "enterprise", "command-center"],
     queryFn: () => adminFetch("/admin/enterprise/command-center"),
@@ -658,7 +665,10 @@ export default function EnterpriseCommandCenterPage() {
           <QueueTab active={tab === "queue"} />
         </TabsContent>
         <TabsContent value="assets">
-          <AssetsTab active={tab === "assets"} />
+          <AssetsTab
+            active={tab === "assets"}
+            focusProductId={focusedAssetId}
+          />
         </TabsContent>
         <TabsContent value="intelligence">
           <IntelligenceTab active={tab === "intelligence"} />
@@ -3516,7 +3526,7 @@ function assetStatusLabel(row: AssetRow) {
   return "متاح";
 }
 
-function printAssetReport(rows: AssetRow[]) {
+function printAssetReport(rows: AssetRow[], title = "تقرير جوازات الأصول") {
   const popup = window.open("", "_blank", "width=1100,height=800");
   if (!popup) throw new Error("تعذّر فتح نافذة الطباعة");
   const totalValue = rows.reduce(
@@ -3526,9 +3536,9 @@ function printAssetReport(rows: AssetRow[]) {
   const revenue = rows.reduce((sum, row) => sum + row.revenueTotal, 0);
   const maintenance = rows.reduce((sum, row) => sum + row.maintenanceCost, 0);
   popup.document
-    .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير الأصول</title><style>
+    .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${escapeAssetPrint(title)}</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0 0 6px}.meta{font-size:12px;margin-bottom:16px}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}.box{border:1px solid #000;padding:8px}.box b{display:block;margin-top:5px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{font-weight:700;background:#eee}@media print{button{display:none}}
-  </style></head><body><button onclick="window.print()">طباعة</button><h1>تقرير جوازات الأصول</h1><div class="meta">مجموعة علي جان نهاد · تاريخ الإنشاء: ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</div><div class="summary"><div class="box">عدد الأصول<b>${rows.length.toLocaleString("ar-IQ")}</b></div><div class="box">القيمة الحالية<b>${escapeAssetPrint(formatCurrency(totalValue))}</b></div><div class="box">الإيرادات<b>${escapeAssetPrint(formatCurrency(revenue))}</b></div><div class="box">الصيانة<b>${escapeAssetPrint(formatCurrency(maintenance))}</b></div></div><table><thead><tr><th>الكود</th><th>الأصل</th><th>التسلسلي</th><th>الحالة</th><th>الصحة</th><th>الاستخدام</th><th>القيمة الحالية</th><th>الإيراد</th><th>الصيانة</th><th>ROI</th></tr></thead><tbody>${rows
+  </style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>${escapeAssetPrint(title)}</h1><div class="meta">مجموعة علي جان نهاد · تاريخ الإنشاء: ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</div><div class="summary"><div class="box">عدد الأصول<b>${rows.length.toLocaleString("ar-IQ")}</b></div><div class="box">القيمة الحالية<b>${escapeAssetPrint(formatCurrency(totalValue))}</b></div><div class="box">الإيرادات<b>${escapeAssetPrint(formatCurrency(revenue))}</b></div><div class="box">الصيانة<b>${escapeAssetPrint(formatCurrency(maintenance))}</b></div></div><table><thead><tr><th>الكود</th><th>الأصل</th><th>التسلسلي</th><th>الحالة</th><th>الصحة</th><th>الاستخدام</th><th>القيمة الحالية</th><th>الإيراد</th><th>الصيانة</th><th>ROI</th></tr></thead><tbody>${rows
     .map(
       (row) =>
         `<tr><td>${escapeAssetPrint(row.assetCode)}</td><td>${escapeAssetPrint(row.productName)}</td><td>${escapeAssetPrint(row.serialNumber || "—")}</td><td>${escapeAssetPrint(assetStatusLabel(row))}</td><td>${escapeAssetPrint(`${row.healthScore ?? assetHealth(row).score}%`)}</td><td>${escapeAssetPrint(row.usageCount)}</td><td>${escapeAssetPrint(formatCurrency(Number(row.currentValue ?? 0)))}</td><td>${escapeAssetPrint(formatCurrency(row.revenueTotal))}</td><td>${escapeAssetPrint(formatCurrency(row.maintenanceCost))}</td><td>${escapeAssetPrint(`${row.roi}%`)}</td></tr>`,
@@ -3538,7 +3548,7 @@ function printAssetReport(rows: AssetRow[]) {
   popup.focus();
 }
 
-function exportAssetCsv(rows: AssetRow[]) {
+function exportAssetCsv(rows: AssetRow[], reportType = "assets") {
   const columns = [
     "كود الأصل",
     "اسم الأصل",
@@ -3583,12 +3593,18 @@ function exportAssetCsv(rows: AssetRow[]) {
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `ajn-assets-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `ajn-${reportType}-${new Date().toISOString().slice(0, 10)}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
 
-function AssetsTab({ active }: { active: boolean }) {
+function AssetsTab({
+  active,
+  focusProductId,
+}: {
+  active: boolean;
+  focusProductId?: number | null;
+}) {
   const query = useQuery<{ data: AssetRow[]; summary: AssetSummary }>({
     queryKey: ["admin", "enterprise", "assets"],
     queryFn: () => adminFetch("/admin/enterprise/assets"),
@@ -3599,9 +3615,15 @@ function AssetsTab({ active }: { active: boolean }) {
   const [selected, setSelected] = useState<AssetRow | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [reportType, setReportType] = useState("assets");
   const [printingQr, setPrintingQr] = useState(false);
   const deferredSearch = useDeferredValue(search.trim().toLowerCase());
   const rows = query.data?.data ?? [];
+  useEffect(() => {
+    if (!focusProductId || selected || !rows.length) return;
+    const focused = rows.find((row) => row.productId === focusProductId);
+    if (focused) setSelected(focused);
+  }, [focusProductId, rows, selected]);
   const filtered = useMemo(
     () =>
       rows.filter((row) => {
@@ -3633,6 +3655,31 @@ function AssetsTab({ active }: { active: boolean }) {
       }),
     [deferredSearch, filter, rows],
   );
+  const reportRows = useMemo(() => {
+    if (reportType === "maintenance")
+      return filtered.filter(
+        (row) => row.maintenanceCost > 0 || row.assetStatus === "maintenance",
+      );
+    if (reportType === "damage")
+      return filtered.filter((row) => (row.damageCount ?? 0) > 0);
+    if (reportType === "replacement")
+      return filtered.filter((row) => row.replacementRecommended);
+    if (reportType === "depreciation")
+      return [...filtered].sort(
+        (a, b) => Number(b.depreciation ?? 0) - Number(a.depreciation ?? 0),
+      );
+    if (reportType === "roi")
+      return [...filtered].sort((a, b) => b.roi - a.roi);
+    return filtered;
+  }, [filtered, reportType]);
+  const reportTitles: Record<string, string> = {
+    assets: "تقرير الأصول",
+    maintenance: "تقرير الصيانة",
+    damage: "تقرير الأضرار",
+    roi: "تقرير العائد ROI",
+    depreciation: "تقرير الإهلاك",
+    replacement: "تقرير الاستبدال المقترح",
+  };
   const summary = query.data?.summary;
   const topUsage = useMemo(
     () => [...rows].sort((a, b) => b.usageCount - a.usageCount).slice(0, 5),
@@ -3758,7 +3805,7 @@ function AssetsTab({ active }: { active: boolean }) {
           title="الجواز الرقمي ومواقع الرفوف"
           description="اضغط أي قطعة لفتح جوازها الكامل: الحالة الصحية، الموقع، العهدة، والعائد."
         />
-        <div className="mb-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_180px_auto]">
+        <div className="mb-4 grid gap-2 xl:grid-cols-[minmax(0,1fr)_170px_190px_auto]">
           <div className="relative">
             <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -3780,22 +3827,37 @@ function AssetsTab({ active }: { active: boolean }) {
             <option value="lost">مفقود أو مقفول</option>
             <option value="replacement">موصى باستبداله</option>
           </select>
+          <select
+            value={reportType}
+            onChange={(event) => setReportType(event.target.value)}
+            className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            aria-label="نوع تقرير الأصول"
+          >
+            <option value="assets">تقرير الأصول</option>
+            <option value="maintenance">تقرير الصيانة</option>
+            <option value="damage">تقرير الأضرار</option>
+            <option value="roi">تقرير ROI</option>
+            <option value="depreciation">تقرير الإهلاك</option>
+            <option value="replacement">تقرير الاستبدال</option>
+          </select>
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
               className="gap-1"
-              disabled={!filtered.length}
-              onClick={() => printAssetReport(filtered)}
+              disabled={!reportRows.length}
+              onClick={() =>
+                printAssetReport(reportRows, reportTitles[reportType])
+              }
             >
-              <Printer className="h-4 w-4" /> طباعة
+              <Printer className="h-4 w-4" /> PDF / طباعة
             </Button>
             <Button
               variant="outline"
               size="sm"
               className="gap-1"
-              disabled={!filtered.length}
-              onClick={() => exportAssetCsv(filtered)}
+              disabled={!reportRows.length}
+              onClick={() => exportAssetCsv(reportRows, reportType)}
             >
               <FileSpreadsheet className="h-4 w-4" /> Excel
             </Button>

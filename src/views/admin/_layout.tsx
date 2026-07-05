@@ -53,6 +53,7 @@ import {
   GraduationCap,
   Ruler,
   Scissors,
+  ScanLine,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -437,6 +438,12 @@ const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/asset-movements",
+    label: "حركة الأصول والمخزن",
+    icon: ScanLine,
+    perm: "products",
+  },
+  {
     href: "/admin/maintenance-scheduler",
     label: "جدولة الصيانة",
     icon: AlertTriangle,
@@ -593,6 +600,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/barcodes"),
       navItem("/admin/warehouse-transfers"),
       navItem("/admin/assets"),
+      navItem("/admin/asset-movements"),
       navItem("/admin/maintenance-scheduler"),
     ],
   },
@@ -808,10 +816,7 @@ export function AdminLayout({
   }
 
   return (
-    <div
-      className="min-h-dvh bg-background flex overflow-x-hidden"
-      dir="rtl"
-    >
+    <div className="min-h-dvh bg-background flex overflow-x-hidden" dir="rtl">
       <aside
         className={`${sidebarHidden ? "hidden" : "hidden md:flex"} w-60 shrink-0 bg-card border-l border-border/30 flex-col py-6 px-3 fixed right-0 top-0 h-full z-10`}
         style={{ backgroundColor: "hsl(var(--sidebar))" }}

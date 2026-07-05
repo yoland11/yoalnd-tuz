@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Archive,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   BarChart3,
   Boxes,
+  Camera,
   CheckCircle2,
   Database,
   Download,
@@ -13,23 +16,34 @@ import {
   Gauge,
   History,
   LifeBuoy,
+  MapPin,
   Package,
+  Pause,
   Pencil,
+  Play,
   Plus,
   Printer,
   QrCode,
   RotateCcw,
+  ScanLine,
   Search,
   ShieldCheck,
   Wrench,
   X,
   XCircle,
+  Upload,
+  UserRound,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
-import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import {
+  adminFetch,
+  apiErrorMessage,
+  compressImageFile,
+  formatCurrency,
+} from "./_lib";
 
 type ApprovalRow = {
   id: number;
@@ -91,7 +105,52 @@ type AssetRow = {
   dna?: string | null;
   category?: string | null;
   status: string;
+  depreciationPaused?: boolean;
   maintenanceDue: boolean;
+};
+
+type MovementAsset = {
+  productId: number;
+  productName: string;
+  assetCode: string;
+  serialNumber?: string | null;
+  barcode?: string | null;
+  category?: string | null;
+  imageUrl?: string | null;
+  stock: number;
+  assetStatus: string;
+  healthScore: number;
+  healthLabel: string;
+  lastLocation?: string | null;
+  shelfCode?: string | null;
+  custody?: Array<{
+    id: number;
+    staffId: number;
+    staffName?: string | null;
+    issuedAt?: string | null;
+  }>;
+};
+
+type AssetMovementRow = {
+  id: string;
+  source: string;
+  productId: number;
+  productName: string;
+  type: string;
+  title: string;
+  body?: string | null;
+  quantityChange?: number | null;
+  actorName?: string | null;
+  relatedType?: string | null;
+  relatedId?: number | null;
+  createdAt: string;
+};
+
+type StaffOption = {
+  id: number;
+  fullName?: string | null;
+  username: string;
+  isActive: boolean;
 };
 
 type AssetQrResponse = { productId: number; name: string; serialNumber: string | null; dna: string; token: string; scanUrl: string; dataUrl: string };
@@ -539,9 +598,19 @@ export function WarehouseTransfersPage() {
   );
 }
 
-const ASSET_STATUS_LABEL: Record<string, string> = { active: "نشط", maintenance: "صيانة", retired: "مُستبعد", locked: "🔒 مقفول" };
+const ASSET_STATUS_LABEL: Record<string, string> = {
+  active: "نشط",
+  reserved: "محجوز",
+  maintenance: "صيانة",
+  transferred: "منقول",
+  lost: "مفقود",
+  retired: "مُستبعد",
+  locked: "🔒 مقفول",
+};
 
 export function AssetsPage() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
   const [editing, setEditing] = useState<AssetRow | null>(null);
   const [adding, setAdding] = useState(false);
@@ -550,6 +619,36 @@ export function AssetsPage() {
   const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
   const [filter, setFilter] = useState<"all" | "maintenance">("all");
   const filtered = filter === "maintenance" ? rows.filter((r) => r.maintenanceDue) : rows;
+  const depreciationRows = [...rows]
+    .filter((row) => row.purchasePrice > 0)
+    .sort(
+      (a, b) =>
+        1 - b.currentValue / b.purchasePrice -
+        (1 - a.currentValue / a.purchasePrice),
+    )
+    .slice(0, 8);
+  const toggleDepreciation = useMutation({
+    mutationFn: ({ productId, paused }: { productId: number; paused: boolean }) =>
+      adminFetch("/admin/assets/depreciation", {
+        method: "POST",
+        body: JSON.stringify({ productId, paused }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "enterprise", "assets"],
+      });
+      toast({
+        title: variables.paused ? "تم إيقاف الإهلاك" : "تم استئناف الإهلاك",
+      });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر تحديث الإهلاك",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader
@@ -568,6 +667,48 @@ export function AssetsPage() {
         <StatCard icon={Gauge} label="القيمة الحالية" value={formatCurrency(totalValue)} onClick={() => setFilter("all")} />
         <StatCard icon={Wrench} label="تحتاج صيانة" value={rows.filter((row) => row.maintenanceDue).length.toLocaleString("ar-IQ")} onClick={() => setFilter("maintenance")} active={filter === "maintenance"} />
       </div>
+      <Card>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-foreground">مخطط الإهلاك</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              نسبة القيمة المستهلكة للأصول الأعلى إهلاكاً.
+            </p>
+          </div>
+          <BarChart3 className="h-5 w-5 text-primary" />
+        </div>
+        {!depreciationRows.length ? (
+          <p className="text-sm text-muted-foreground">لا توجد قيم شراء مسجلة.</p>
+        ) : (
+          <div className="space-y-3">
+            {depreciationRows.map((row) => {
+              const percent = Math.max(
+                0,
+                Math.min(
+                  100,
+                  Math.round((1 - row.currentValue / row.purchasePrice) * 100),
+                ),
+              );
+              return (
+                <div key={row.productId}>
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                    <span className="truncate text-foreground">{row.name}</span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {percent}% · {formatCurrency(row.currentValue)}
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary transition-[width]"
+                      style={{ width: `${percent}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
       {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
@@ -594,11 +735,39 @@ export function AssetsPage() {
                     <td className="p-3">{formatCurrency(row.purchasePrice)}</td>
                     <td className="p-3 text-muted-foreground">{row.usageCount} / {row.expectedLifeUses}</td>
                     <td className="p-3 text-primary">{formatCurrency(row.currentValue)}</td>
-                    <td className="p-3">{row.maintenanceDue ? <span className="text-status-warning">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</td>
-                    <td className="p-3 text-center">
-                      <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
-                        <Pencil className="h-3.5 w-3.5" /> تعديل
-                      </Button>
+                      <td className="p-3">
+                        <div>{row.maintenanceDue ? <span className="text-status-warning">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</div>
+                        {row.depreciationPaused ? (
+                          <span className="mt-1 inline-flex rounded-full bg-status-warning/10 px-2 py-0.5 text-[11px] text-status-warning">
+                            الإهلاك متوقف
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
+                            <Pencil className="h-3.5 w-3.5" /> تعديل
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={toggleDepreciation.isPending}
+                            onClick={() =>
+                              toggleDepreciation.mutate({
+                                productId: row.productId,
+                                paused: !row.depreciationPaused,
+                              })
+                            }
+                            className="gap-1 text-muted-foreground"
+                          >
+                            {row.depreciationPaused ? (
+                              <Play className="h-3.5 w-3.5" />
+                            ) : (
+                              <Pause className="h-3.5 w-3.5" />
+                            )}
+                            {row.depreciationPaused ? "استئناف" : "إيقاف"}
+                          </Button>
+                        </div>
                     </td>
                   </tr>
                 ))}
@@ -822,6 +991,569 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const MOVEMENT_LABELS: Record<string, string> = {
+  checkout: "إخراج من المخزن",
+  checkin: "إدخال إلى المخزن",
+  available: "متاح",
+  reserved: "محجوز",
+  maintenance: "صيانة",
+  damage: "ضرر",
+  repair: "إصلاح",
+  inspection: "فحص",
+  transferred: "تحويل مخزني",
+  lost: "مفقود",
+  retired: "مستبعد",
+  stock_movement: "حركة مخزون",
+  depreciation_paused: "إيقاف الإهلاك",
+  depreciation_resumed: "استئناف الإهلاك",
+};
+
+function escapeMovementPrint(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function exportMovementCsv(rows: AssetMovementRow[]) {
+  const data = [
+    ["التاريخ", "الأصل", "الحركة", "التفاصيل", "الكمية", "المستخدم"],
+    ...rows.map((row) => [
+      formatDate(row.createdAt),
+      row.productName,
+      MOVEMENT_LABELS[row.type] ?? row.title,
+      row.body ?? "",
+      row.quantityChange ?? "",
+      row.actorName ?? "النظام",
+    ]),
+  ];
+  const csv = data
+    .map((line) =>
+      line
+        .map((value) => `"${String(value).replaceAll('"', '""')}"`)
+        .join(","),
+    )
+    .join("\n");
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `ajn-asset-movements-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function printMovementReport(rows: AssetMovementRow[]) {
+  const popup = window.open("", "_blank", "width=1000,height=800");
+  if (!popup) throw new Error("تعذّر فتح نافذة الطباعة");
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير حركة الأصول</title><style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0}.meta{font-size:12px;margin:6px 0 16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{background:#eee}button{margin-bottom:12px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">طباعة / حفظ PDF</button><h1>تقرير حركة الأصول والمخزن</h1><div class="meta">مجموعة علي جان نهاد · ${escapeMovementPrint(new Date().toLocaleString("ar-IQ"))}</div><table><thead><tr><th>التاريخ</th><th>الأصل</th><th>الحركة</th><th>التفاصيل</th><th>الكمية</th><th>المستخدم</th></tr></thead><tbody>${rows
+    .map(
+      (row) => `<tr><td>${escapeMovementPrint(formatDate(row.createdAt))}</td><td>${escapeMovementPrint(row.productName)}</td><td>${escapeMovementPrint(MOVEMENT_LABELS[row.type] ?? row.title)}</td><td>${escapeMovementPrint(row.body || "—")}</td><td>${escapeMovementPrint(row.quantityChange ?? "—")}</td><td>${escapeMovementPrint(row.actorName || "النظام")}</td></tr>`,
+    )
+    .join("")}</tbody></table></body></html>`);
+  popup.document.close();
+  popup.focus();
+}
+
+export function AssetMovementsPage() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [scanCode, setScanCode] = useState("");
+  const [multiCodes, setMultiCodes] = useState("");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [scannedIds, setScannedIds] = useState<number[]>([]);
+  const [staffId, setStaffId] = useState("");
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [notes, setNotes] = useState("");
+  const [cost, setCost] = useState("");
+  const [photoCategory, setPhotoCategory] = useState("current");
+
+  const assetsQuery = useQuery<{ data: MovementAsset[] }>({
+    queryKey: ["admin", "enterprise", "assets"],
+    queryFn: () => adminFetch("/admin/enterprise/assets"),
+    staleTime: 20_000,
+  });
+  const staffQuery = useQuery<StaffOption[]>({
+    queryKey: ["admin", "staff", "asset-movements"],
+    queryFn: () => adminFetch("/admin/staff"),
+    staleTime: 60_000,
+  });
+  const movementsQuery = useQuery<{ data: AssetMovementRow[] }>({
+    queryKey: ["admin", "asset-movements", selectedId],
+    queryFn: () =>
+      adminFetch(
+        `/admin/assets/movements${selectedId ? `?productId=${selectedId}` : ""}`,
+      ),
+    staleTime: 10_000,
+  });
+  const advisorQuery = useQuery<{ checklist: string[] }>({
+    queryKey: ["asset-advisor", selectedId],
+    queryFn: () => adminFetch(`/admin/assets/advisor?productId=${selectedId}`),
+    enabled: Boolean(selectedId),
+    staleTime: 30_000,
+  });
+  const assets = assetsQuery.data?.data ?? [];
+  const selected = assets.find((row) => row.productId === selectedId) ?? null;
+  const scanned = scannedIds
+    .map((id) => assets.find((row) => row.productId === id))
+    .filter((row): row is MovementAsset => Boolean(row));
+  const checklist = advisorQuery.data?.checklist ?? [];
+  const checklistComplete =
+    checklist.length > 0 && checklist.every((item) => checked[item]);
+
+  const refresh = () => {
+    queryClient.invalidateQueries({
+      queryKey: ["admin", "enterprise", "assets"],
+    });
+    queryClient.invalidateQueries({ queryKey: ["admin", "asset-movements"] });
+    queryClient.invalidateQueries({ queryKey: ["asset-timeline"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+  };
+
+  function selectAsset(asset: MovementAsset) {
+    setSelectedId(asset.productId);
+    setScannedIds((current) =>
+      current.includes(asset.productId)
+        ? current
+        : [asset.productId, ...current].slice(0, 50),
+    );
+    setChecked({});
+    setNotes("");
+    setCost("");
+  }
+
+  const scan = useMutation({
+    mutationFn: (code: string) =>
+      adminFetch<{
+        productId: number;
+        name: string;
+        assetCode: string;
+      }>(`/admin/assets/scan?code=${encodeURIComponent(code)}`),
+    onSuccess: (result) => {
+      const asset = assets.find((row) => row.productId === result.productId);
+      if (asset) selectAsset(asset);
+      setScanCode("");
+      toast({ title: `تم العثور على ${result.name}` });
+    },
+    onError: (error) =>
+      toast({
+        title: "لم يتم العثور على الأصل",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  const multiScan = useMutation({
+    mutationFn: async (codes: string[]) => {
+      const found: number[] = [];
+      const failed: string[] = [];
+      for (const code of codes) {
+        try {
+          const result = await adminFetch<{ productId: number }>(
+            `/admin/assets/scan?code=${encodeURIComponent(code)}`,
+          );
+          found.push(result.productId);
+        } catch {
+          failed.push(code);
+        }
+      }
+      return { found: Array.from(new Set(found)), failed };
+    },
+    onSuccess: ({ found, failed }) => {
+      setScannedIds((current) =>
+        Array.from(new Set([...found, ...current])).slice(0, 100),
+      );
+      if (found[0]) setSelectedId(found[0]);
+      setMultiCodes("");
+      toast({
+        title: `تمت إضافة ${found.length.toLocaleString("ar-IQ")} أصل`,
+        description: failed.length
+          ? `تعذر التعرّف على ${failed.length.toLocaleString("ar-IQ")} رمز`
+          : undefined,
+      });
+    },
+  });
+
+  const checkout = useMutation({
+    mutationFn: () =>
+      adminFetch("/admin/enterprise/custody", {
+        method: "POST",
+        body: JSON.stringify({
+          productId: selectedId,
+          staffId: Number(staffId),
+          quantity: 1,
+          checklistConfirmed: checklistComplete,
+          notes: notes.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      refresh();
+      setChecked({});
+      setNotes("");
+      toast({ title: "تم إخراج الأصل وتسجيل العهدة" });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر إخراج الأصل",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  const checkin = useMutation({
+    mutationFn: (custodyId: number) =>
+      adminFetch(`/admin/enterprise/custody/${custodyId}`, {
+        method: "PATCH",
+      }),
+    onSuccess: () => {
+      refresh();
+      toast({ title: "تم إرجاع الأصل إلى المخزن" });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر إرجاع الأصل",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  const action = useMutation({
+    mutationFn: (actionName: string) =>
+      adminFetch("/admin/assets/action", {
+        method: "POST",
+        body: JSON.stringify({
+          productId: selectedId,
+          action: actionName,
+          notes: notes.trim() || null,
+          cost: Number(cost) || 0,
+        }),
+      }),
+    onSuccess: (_data, actionName) => {
+      refresh();
+      setNotes("");
+      setCost("");
+      toast({ title: `تم تسجيل ${MOVEMENT_LABELS[actionName] ?? "الحركة"}` });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر تسجيل الحركة",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  const uploadPhoto = useMutation({
+    mutationFn: async (file: File) => {
+      const fileUrl = await compressImageFile(file, 1600, 0.82);
+      return adminFetch("/admin/documents", {
+        method: "POST",
+        body: JSON.stringify({
+          entityType: "asset",
+          entityId: selectedId,
+          documentType: "photo",
+          title: file.name || "صورة أصل",
+          fileName: file.name,
+          mimeType: file.type,
+          fileUrl,
+          metadata: { category: photoCategory },
+        }),
+      });
+    },
+    onSuccess: () => {
+      refresh();
+      toast({ title: "تم حفظ صورة الأصل" });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر رفع الصورة",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  async function scanImage(file: File) {
+    try {
+      const Detector = (window as any).BarcodeDetector;
+      if (!Detector) throw new Error("المتصفح لا يدعم قراءة QR من الكاميرا");
+      const bitmap = await createImageBitmap(file);
+      const detector = new Detector({
+        formats: ["qr_code", "code_128", "ean_13", "ean_8"],
+      });
+      const results = await detector.detect(bitmap);
+      bitmap.close();
+      const value = String(results?.[0]?.rawValue ?? "").trim();
+      if (!value) throw new Error("لم يظهر رمز واضح في الصورة");
+      scan.mutate(value);
+    } catch (error) {
+      toast({
+        title: "تعذّر قراءة الرمز",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      });
+    }
+  }
+
+  const statusCounts = {
+    available: assets.filter(
+      (row) => row.assetStatus === "active" && !row.custody?.length,
+    ).length,
+    reserved: assets.filter((row) => row.assetStatus === "reserved").length,
+    checkedOut: assets.filter((row) => Boolean(row.custody?.length)).length,
+    maintenance: assets.filter((row) => row.assetStatus === "maintenance").length,
+    lost: assets.filter((row) => row.assetStatus === "lost").length,
+  };
+  const movementRows = movementsQuery.data?.data ?? [];
+
+  return (
+    <div className="space-y-4" dir="rtl">
+      <PageHeader
+        icon={ScanLine}
+        title="حركة الأصول والمخزن"
+        description="مسح QR والباركود، إخراج وإرجاع الأصول، وتسجيل الصيانة والأضرار من شاشة واحدة."
+      />
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <StatCard icon={CheckCircle2} label="متاح" value={statusCounts.available} />
+        <StatCard icon={Package} label="محجوز" value={statusCounts.reserved} />
+        <StatCard icon={ArrowUpFromLine} label="خارج المخزن" value={statusCounts.checkedOut} />
+        <StatCard icon={Wrench} label="صيانة" value={statusCounts.maintenance} />
+        <StatCard icon={AlertTriangle} label="مفقود" value={statusCounts.lost} />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="space-y-4">
+          <Card>
+            <h2 className="flex items-center gap-2 font-semibold text-foreground">
+              <ScanLine className="h-4 w-4 text-primary" /> المسح السريع
+            </h2>
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (scanCode.trim()) scan.mutate(scanCode.trim());
+              }}
+            >
+              <input
+                value={scanCode}
+                onChange={(event) => setScanCode(event.target.value)}
+                placeholder="QR / Barcode / Serial / AJN-A000001"
+                autoFocus
+                className="min-w-0 flex-1 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+              />
+              <Button type="submit" size="icon" disabled={scan.isPending || !scanCode.trim()} title="مسح">
+                <ScanLine className="h-4 w-4" />
+              </Button>
+              <label className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border/40 text-muted-foreground hover:border-primary hover:text-primary" title="التقاط QR بالكاميرا">
+                <Camera className="h-4 w-4" />
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void scanImage(file);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            </form>
+            <textarea
+              value={multiCodes}
+              onChange={(event) => setMultiCodes(event.target.value)}
+              rows={4}
+              placeholder="مسح متعدد: ضع كل رمز في سطر مستقل"
+              className="mt-3 w-full resize-none rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+            <Button
+              variant="outline"
+              className="mt-2 w-full gap-2"
+              disabled={multiScan.isPending || !multiCodes.trim()}
+              onClick={() =>
+                multiScan.mutate(
+                  multiCodes
+                    .split("\n")
+                    .map((value) => value.trim())
+                    .filter(Boolean),
+                )
+              }
+            >
+              <Boxes className="h-4 w-4" /> إضافة الرموز دفعة واحدة
+            </Button>
+          </Card>
+
+          <Card>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="font-semibold text-foreground">قائمة المسح</h2>
+              <span className="text-xs text-muted-foreground">{scanned.length}</span>
+            </div>
+            {!scanned.length ? (
+              <p className="text-sm text-muted-foreground">امسح أول أصل لبدء الحركة.</p>
+            ) : (
+              <div className="max-h-72 space-y-2 overflow-y-auto">
+                {scanned.map((asset) => (
+                  <button
+                    key={asset.productId}
+                    type="button"
+                    onClick={() => selectAsset(asset)}
+                    className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-right transition-colors ${selectedId === asset.productId ? "border-primary/50 bg-primary/5" : "border-border/30 bg-background/40 hover:border-primary/30"}`}
+                  >
+                    {asset.imageUrl ? (
+                      <img src={asset.imageUrl} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+                    ) : (
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"><Package className="h-4 w-4" /></span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-foreground">{asset.productName}</span>
+                      <span className="block font-mono text-[11px] text-muted-foreground">{asset.assetCode}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+
+        <div className="space-y-4">
+          {!selected ? (
+            <Card className="min-h-64">
+              <EmptyState message="اختر أصلاً من نتيجة المسح لعرض الإجراءات" />
+            </Card>
+          ) : (
+            <>
+              <Card>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    {selected.imageUrl ? (
+                      <img src={selected.imageUrl} alt="" className="h-16 w-16 shrink-0 rounded-lg object-cover" />
+                    ) : (
+                      <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Package className="h-6 w-6" /></span>
+                    )}
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-bold text-foreground">{selected.productName}</h2>
+                      <p className="mt-1 font-mono text-xs text-muted-foreground">{selected.assetCode} · {selected.serialNumber || selected.barcode || "بدون تسلسلي"}</p>
+                      <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" /> {selected.lastLocation || selected.shelfCode || "داخل المخزن"}</p>
+                    </div>
+                  </div>
+                  <a href={`/admin/command-center?tab=assets&asset=${selected.productId}`} className="inline-flex h-9 items-center gap-2 rounded-md border border-border/40 px-3 text-sm text-primary hover:border-primary/50">
+                    <Fingerprint className="h-4 w-4" /> فتح جواز الأصل
+                  </a>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-lg bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">الحالة</p><p className="mt-1 text-sm font-semibold">{ASSET_STATUS_LABEL[selected.assetStatus] ?? selected.assetStatus}</p></div>
+                  <div className="rounded-lg bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">الصحة</p><p className="mt-1 text-sm font-semibold">{selected.healthScore}% · {selected.healthLabel}</p></div>
+                  <div className="rounded-lg bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">المخزون</p><p className="mt-1 text-sm font-semibold">{selected.stock}</p></div>
+                  <div className="rounded-lg bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">العهدة</p><p className="mt-1 truncate text-sm font-semibold">{selected.custody?.[0]?.staffName || "لا توجد"}</p></div>
+                </div>
+              </Card>
+
+              <Card>
+                <h2 className="mb-3 font-semibold text-foreground">الإجراءات السريعة</h2>
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                  {[
+                    ["reserved", "حجز", Package],
+                    ["maintenance", "صيانة", Wrench],
+                    ["inspection", "فحص", ShieldCheck],
+                    ["transferred", "تحويل", Boxes],
+                    ["available", "إتاحة", CheckCircle2],
+                    ["damage", "ضرر", AlertTriangle],
+                    ["repair", "إصلاح", LifeBuoy],
+                    ["lost", "مفقود", XCircle],
+                    ["retired", "استبعاد", Archive],
+                  ].map(([key, label, Icon]) => (
+                    <Button key={String(key)} variant="outline" size="sm" disabled={action.isPending} onClick={() => action.mutate(String(key))} className="gap-1.5">
+                      <Icon className="h-3.5 w-3.5" /> {String(label)}
+                    </Button>
+                  ))}
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_160px]">
+                  <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="ملاحظات الحركة أو وصف الضرر" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
+                  <input type="number" min="0" value={cost} onChange={(event) => setCost(event.target.value)} placeholder="تكلفة الإصلاح" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
+                </div>
+              </Card>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card>
+                  <h2 className="flex items-center gap-2 font-semibold text-foreground"><ArrowUpFromLine className="h-4 w-4 text-primary" /> إخراج / إرجاع</h2>
+                  {selected.custody?.length ? (
+                    <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                      <p className="text-sm text-foreground">بعهدة {selected.custody[0].staffName || "موظف"}</p>
+                      <Button className="mt-3 w-full gap-2" disabled={checkin.isPending} onClick={() => checkin.mutate(selected.custody![0].id)}>
+                        <ArrowDownToLine className="h-4 w-4" /> Check-In إلى المخزن
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      <select value={staffId} onChange={(event) => setStaffId(event.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary">
+                        <option value="">اختر الموظف المستلم</option>
+                        {(staffQuery.data ?? []).filter((staff) => staff.isActive).map((staff) => <option key={staff.id} value={staff.id}>{staff.fullName || staff.username}</option>)}
+                      </select>
+                      <div className="max-h-44 space-y-1.5 overflow-y-auto rounded-lg border border-border/30 p-3">
+                        {advisorQuery.isLoading ? <Skeleton className="h-20" /> : checklist.map((item) => (
+                          <label key={item} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+                            <input type="checkbox" checked={Boolean(checked[item])} onChange={(event) => setChecked((current) => ({ ...current, [item]: event.target.checked }))} />
+                            {item}
+                          </label>
+                        ))}
+                      </div>
+                      <Button className="w-full gap-2" disabled={checkout.isPending || !staffId || !checklistComplete} onClick={() => checkout.mutate()}>
+                        <ArrowUpFromLine className="h-4 w-4" /> Check-Out وتسجيل العهدة
+                      </Button>
+                    </div>
+                  )}
+                </Card>
+
+                <Card>
+                  <h2 className="flex items-center gap-2 font-semibold text-foreground"><Camera className="h-4 w-4 text-primary" /> صورة الحركة</h2>
+                  <select value={photoCategory} onChange={(event) => setPhotoCategory(event.target.value)} className="mt-3 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary">
+                    <option value="current">الحالة الحالية</option>
+                    <option value="checkout">قبل الإخراج</option>
+                    <option value="checkin">بعد الإرجاع</option>
+                    <option value="damage">ضرر</option>
+                    <option value="maintenance">صيانة</option>
+                    <option value="before_repair">قبل الإصلاح</option>
+                    <option value="after_repair">بعد الإصلاح</option>
+                  </select>
+                  <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border/50 py-8 text-sm text-muted-foreground hover:border-primary hover:text-primary">
+                    <Upload className="h-4 w-4" /> {uploadPhoto.isPending ? "جارٍ الرفع..." : "رفع أو التقاط صورة"}
+                    <input type="file" accept="image/*" capture="environment" className="hidden" disabled={uploadPhoto.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadPhoto.mutate(file); event.target.value = ""; }} />
+                  </label>
+                </Card>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <Card>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 font-semibold text-foreground"><History className="h-4 w-4 text-primary" /> سجل الحركات</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{selected ? `الحركات الخاصة بـ ${selected.productName}` : "آخر حركات جميع الأصول"}</p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="gap-1" disabled={!movementRows.length} onClick={() => printMovementReport(movementRows)}><Printer className="h-4 w-4" /> PDF / طباعة</Button>
+            <Button variant="outline" size="sm" className="gap-1" disabled={!movementRows.length} onClick={() => exportMovementCsv(movementRows)}><Download className="h-4 w-4" /> Excel / CSV</Button>
+          </div>
+        </div>
+        {movementsQuery.isLoading ? <LoadingRows /> : !movementRows.length ? <EmptyState message="لا توجد حركات مسجلة" /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-background/50 text-muted-foreground"><tr><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">الأصل</th><th className="p-3 text-right">الحركة</th><th className="p-3 text-right">التفاصيل</th><th className="p-3 text-right">الكمية</th><th className="p-3 text-right">المستخدم</th></tr></thead>
+              <tbody className="divide-y divide-border/20">
+                {movementRows.map((row) => <tr key={row.id} className="hover:bg-background/30"><td className="p-3 text-xs text-muted-foreground">{formatDate(row.createdAt)}</td><td className="p-3 font-medium text-foreground">{row.productName}</td><td className="p-3">{MOVEMENT_LABELS[row.type] ?? row.title}</td><td className="max-w-xs truncate p-3 text-muted-foreground">{row.body || row.title}</td><td className="p-3">{row.quantityChange == null ? "—" : row.quantityChange > 0 ? `+${row.quantityChange}` : row.quantityChange}</td><td className="p-3 text-muted-foreground">{row.actorName || "النظام"}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

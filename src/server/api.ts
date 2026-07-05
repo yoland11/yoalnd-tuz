@@ -15637,6 +15637,19 @@ async function handleEnterpriseAdmin(
           updatedAt: new Date(),
         })
         .where(eq(assetPassportsTable.productId, current.productId));
+      const returnedProfile = await db.query.assetProfilesTable.findFirst({
+        where: eq(assetProfilesTable.productId, current.productId),
+      });
+      if (
+        returnedProfile &&
+        !["maintenance", "lost", "retired", "locked"].includes(
+          returnedProfile.status,
+        )
+      )
+        await db
+          .update(assetProfilesTable)
+          .set({ status: "active", updatedAt: new Date() })
+          .where(eq(assetProfilesTable.id, returnedProfile.id));
       await recordEnterpriseMutation(
         req,
         auth,
@@ -18515,6 +18528,344 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
 
+    if (parts[2] === "scan" && method === "GET") {
+      const rawCode = String(req.nextUrl.searchParams.get("code") ?? "").trim();
+      if (!rawCode) return error("أدخل QR أو الباركود أو الرقم التسلسلي", 400);
+      const normalized = decodeURIComponent(rawCode).trim();
+      const tail =
+        normalized.split(/[/?#]/).filter(Boolean).at(-1) ?? normalized;
+      const codeMatch = normalized.match(/AJN-A0*(\d+)/i);
+      let productId = codeMatch ? Number(codeMatch[1]) : 0;
+
+      if (!productId) {
+        const qr = await db.query.qrTokensTable.findFirst({
+          where: and(
+            eq(qrTokensTable.entityType, "asset"),
+            eq(qrTokensTable.token, tail),
+          ),
+        });
+        productId = qr?.entityId ?? 0;
+      }
+      if (!productId) {
+        const passport = await db.query.assetPassportsTable.findFirst({
+          where: or(
+            sql`lower(${assetPassportsTable.serialNumber}) = ${normalized.toLowerCase()}`,
+            eq(assetPassportsTable.qrToken, tail),
+          ),
+        });
+        productId = passport?.productId ?? 0;
+      }
+      if (!productId) {
+        const profile = await db.query.assetProfilesTable.findFirst({
+          where: sql`lower(${assetProfilesTable.serialNumber}) = ${normalized.toLowerCase()}`,
+        });
+        productId = profile?.productId ?? 0;
+      }
+      if (!productId) {
+        const product = await db.query.productsTable.findFirst({
+          where: or(
+            sql`lower(${productsTable.barcode}) = ${normalized.toLowerCase()}`,
+            sql`lower(${productsTable.nameAr}) = ${normalized.toLowerCase()}`,
+            sql`lower(${productsTable.name}) = ${normalized.toLowerCase()}`,
+          ),
+        });
+        productId = product?.id ?? 0;
+      }
+      if (!productId) return error("لم يتم العثور على أصل بهذا الرمز", 404);
+
+      const [product, profile, passport, custody] = await Promise.all([
+        db.query.productsTable.findFirst({
+          where: eq(productsTable.id, productId),
+        }),
+        db.query.assetProfilesTable.findFirst({
+          where: eq(assetProfilesTable.productId, productId),
+        }),
+        db.query.assetPassportsTable.findFirst({
+          where: eq(assetPassportsTable.productId, productId),
+        }),
+        db.query.equipmentCustodyTable.findMany({
+          where: and(
+            eq(equipmentCustodyTable.productId, productId),
+            eq(equipmentCustodyTable.status, "issued"),
+          ),
+          limit: 10,
+        }),
+      ]);
+      if (!product) return error("الأصل غير موجود", 404);
+      if (!profile && !passport && !product.isRental)
+        return error("هذا المنتج غير مسجل كأصل أو منتج إيجار", 404);
+      return json({
+        productId,
+        name: product.nameAr || product.name,
+        assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
+        barcode: product.barcode ?? null,
+        serialNumber: passport?.serialNumber ?? profile?.serialNumber ?? null,
+        status: profile?.status ?? "active",
+        stock: product.stock,
+        location:
+          passport?.lastLocation ?? passport?.shelfCode ?? "داخل المخزن",
+        shelfCode: passport?.shelfCode ?? null,
+        custody,
+      });
+    }
+
+    if (parts[2] === "movements" && method === "GET") {
+      const productId = optionalPositiveId(
+        req.nextUrl.searchParams.get("productId"),
+      );
+      const timelineFilters: any[] = [
+        eq(entityTimelineTable.entityType, "asset"),
+      ];
+      if (productId)
+        timelineFilters.push(eq(entityTimelineTable.entityId, productId));
+      const [timeline, stockRows] = await Promise.all([
+        db.query.entityTimelineTable.findMany({
+          where: and(...timelineFilters),
+          orderBy: [desc(entityTimelineTable.createdAt)],
+          limit: 500,
+        }),
+        db.query.stockMovementsTable.findMany({
+          where: productId
+            ? or(
+                eq(stockMovementsTable.productId, productId),
+                eq(stockMovementsTable.stockSourceProductId, productId),
+              )
+            : undefined,
+          orderBy: [desc(stockMovementsTable.createdAt)],
+          limit: 500,
+        }),
+      ]);
+      const productIds = Array.from(
+        new Set([
+          ...timeline.map((row) => row.entityId),
+          ...stockRows.flatMap((row) =>
+            [row.productId, row.stockSourceProductId].filter(
+              (id): id is number => Boolean(id),
+            ),
+          ),
+        ]),
+      );
+      const products = productIds.length
+        ? await db.query.productsTable.findMany({
+            where: inArray(productsTable.id, productIds),
+            limit: 1000,
+          })
+        : [];
+      const productMap = new Map(products.map((row) => [row.id, row]));
+      const rows = [
+        ...timeline.map((row) => ({
+          id: `timeline-${row.id}`,
+          source: "timeline",
+          productId: row.entityId,
+          productName:
+            productMap.get(row.entityId)?.nameAr ||
+            productMap.get(row.entityId)?.name ||
+            `#${row.entityId}`,
+          type: row.type,
+          title: row.title,
+          body: row.body,
+          quantityChange: null,
+          actorName: row.actorName,
+          relatedType: null,
+          relatedId: null,
+          metadata: row.metadata,
+          createdAt: row.createdAt,
+        })),
+        ...stockRows.map((row) => {
+          const resolvedId = row.stockSourceProductId ?? row.productId ?? 0;
+          return {
+            id: `stock-${row.id}`,
+            source: "stock",
+            productId: resolvedId,
+            productName:
+              productMap.get(resolvedId)?.nameAr ||
+              productMap.get(resolvedId)?.name ||
+              `#${resolvedId}`,
+            type: "stock_movement",
+            title: row.reason,
+            body: null,
+            quantityChange: Number(row.quantityChange),
+            actorName: row.createdByName,
+            relatedType: row.relatedType,
+            relatedId: row.relatedId,
+            metadata: {
+              productId: row.productId,
+              stockSourceProductId: row.stockSourceProductId,
+            },
+            createdAt: row.createdAt,
+          };
+        }),
+      ]
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )
+        .slice(0, 500);
+      return json({ data: rows });
+    }
+
+    if (parts[2] === "action" && method === "POST") {
+      const payload = await body(req);
+      const productId = optionalPositiveId(payload?.productId);
+      const action = String(payload?.action ?? "").trim();
+      const allowed = new Set([
+        "available",
+        "reserved",
+        "maintenance",
+        "damage",
+        "repair",
+        "inspection",
+        "transferred",
+        "lost",
+        "retired",
+      ]);
+      if (!productId || !allowed.has(action))
+        return error("الأصل أو نوع الحركة غير صحيح", 400);
+      const product = await db.query.productsTable.findFirst({
+        where: eq(productsTable.id, productId),
+      });
+      if (!product) return error("الأصل غير موجود", 404);
+      const current = await db.query.assetProfilesTable.findFirst({
+        where: eq(assetProfilesTable.productId, productId),
+      });
+      const statusByAction: Record<string, string> = {
+        available: "active",
+        reserved: "reserved",
+        maintenance: "maintenance",
+        damage: "maintenance",
+        repair: "active",
+        transferred: "transferred",
+        lost: "lost",
+        retired: "retired",
+      };
+      const nextStatus = statusByAction[action] ?? current?.status ?? "active";
+      const baseValues = {
+        status: nextStatus,
+        updatedAt: new Date(),
+      };
+      if (current) {
+        await db
+          .update(assetProfilesTable)
+          .set(baseValues)
+          .where(eq(assetProfilesTable.id, current.id));
+      } else {
+        const purchasePrice = String(Number(product.costPrice ?? 0));
+        await db.insert(assetProfilesTable).values({
+          productId,
+          purchasePrice,
+          currentValue: purchasePrice,
+          ...baseValues,
+        });
+      }
+
+      const cost = Math.max(0, enterpriseNumber(payload?.cost));
+      if (action === "repair" && cost > 0) {
+        const passport = await db.query.assetPassportsTable.findFirst({
+          where: eq(assetPassportsTable.productId, productId),
+        });
+        const maintenanceCost =
+          enterpriseNumber(passport?.maintenanceCost) + cost;
+        await db
+          .insert(assetPassportsTable)
+          .values({ productId, maintenanceCost: String(maintenanceCost) })
+          .onConflictDoUpdate({
+            target: assetPassportsTable.productId,
+            set: {
+              maintenanceCost: String(maintenanceCost),
+              updatedAt: new Date(),
+            },
+          });
+      }
+
+      const titles: Record<string, string> = {
+        available: "إعادة الأصل إلى المتاح",
+        reserved: "حجز الأصل",
+        maintenance: "إرسال الأصل للصيانة",
+        damage: "تسجيل ضرر على الأصل",
+        repair: "إكمال إصلاح الأصل",
+        inspection: "فحص الأصل",
+        transferred: "تحويل الأصل بين المخازن",
+        lost: "تسجيل الأصل كمفقود",
+        retired: "استبعاد الأصل من الخدمة",
+      };
+      await addEntityTimeline({
+        entityType: "asset",
+        entityId: productId,
+        type: action,
+        title: titles[action],
+        body: nullableText(payload?.notes),
+        actor: erpActorFromAdmin(auth),
+        metadata: {
+          cost,
+          previousStatus: current?.status ?? "active",
+          nextStatus,
+          warehouseId: optionalPositiveId(payload?.warehouseId),
+          shelfCode: nullableText(payload?.shelfCode),
+        },
+      });
+      await logAdminActivity(req, `asset_${action}`, "product", productId, {
+        name: product.nameAr || product.name,
+        previousStatus: current?.status ?? "active",
+        nextStatus,
+        cost,
+      });
+      if (["damage", "lost", "retired"].includes(action))
+        await createNotification({
+          type: `asset_${action}`,
+          title: titles[action],
+          body: product.nameAr || product.name,
+          entityType: "product",
+          entityId: productId,
+          href: "/admin/asset-movements",
+        });
+      revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      return json({ ok: true, productId, status: nextStatus });
+    }
+
+    if (parts[2] === "depreciation" && method === "POST") {
+      const payload = await body(req);
+      const productId = optionalPositiveId(payload?.productId);
+      if (!productId) return error("معرّف الأصل مطلوب", 400);
+      const product = await db.query.productsTable.findFirst({
+        where: eq(productsTable.id, productId),
+      });
+      if (!product) return error("الأصل غير موجود", 404);
+      const passport = await db.query.assetPassportsTable.findFirst({
+        where: eq(assetPassportsTable.productId, productId),
+      });
+      const paused = payload?.paused === true;
+      const metadata = {
+        ...assetMetadataObject(passport?.metadata),
+        depreciationPaused: paused,
+        depreciationChangedAt: new Date().toISOString(),
+        depreciationChangedBy: auth.id,
+      };
+      await db
+        .insert(assetPassportsTable)
+        .values({ productId, metadata })
+        .onConflictDoUpdate({
+          target: assetPassportsTable.productId,
+          set: { metadata, updatedAt: new Date() },
+        });
+      await addEntityTimeline({
+        entityType: "asset",
+        entityId: productId,
+        type: paused ? "depreciation_paused" : "depreciation_resumed",
+        title: paused ? "إيقاف الإهلاك" : "استئناف الإهلاك",
+        body: nullableText(payload?.reason),
+        actor: erpActorFromAdmin(auth),
+        metadata: { paused },
+      });
+      await logAdminActivity(
+        req,
+        paused ? "asset_depreciation_paused" : "asset_depreciation_resumed",
+        "product",
+        productId,
+        { name: product.nameAr || product.name, reason: payload?.reason },
+      );
+      return json({ ok: true, productId, depreciationPaused: paused });
+    }
+
     // Scan&Go — printable QR for a single asset (resolves through the public /track gateway).
     if (parts[2] === "qr") {
       const productId =
@@ -19069,17 +19420,24 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
     }
 
-    const products = await db.query.productsTable.findMany({
-      orderBy: [asc(productsTable.id)],
-      limit: 300,
-    });
-    const profiles = await db.query.assetProfilesTable.findMany({ limit: 500 });
+    const [products, profiles, passports] = await Promise.all([
+      db.query.productsTable.findMany({
+        orderBy: [asc(productsTable.id)],
+        limit: 300,
+      }),
+      db.query.assetProfilesTable.findMany({ limit: 500 }),
+      db.query.assetPassportsTable.findMany({ limit: 500 }),
+    ]);
     const profileByProduct = new Map(
       profiles.map((row) => [row.productId, row]),
+    );
+    const passportByProduct = new Map(
+      passports.map((row) => [row.productId, row]),
     );
     return json({
       data: products.map((product) => {
         const profile = profileByProduct.get(product.id);
+        const passport = passportByProduct.get(product.id);
         const purchasePrice = Number(
           profile?.purchasePrice ?? product.costPrice ?? 0,
         );
@@ -19111,6 +19469,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           ),
           category: product.category ?? null,
           status: profile?.status ?? "active",
+          depreciationPaused:
+            assetMetadataObject(passport?.metadata).depreciationPaused === true,
           maintenanceDue:
             usageCount > 0 &&
             usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0,
@@ -26769,6 +27129,34 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
       relatedType: "order",
       relatedId: storeOrder.id,
     });
+    const rentalPassport = await db.query.assetPassportsTable.findFirst({
+      where: eq(assetPassportsTable.productId, stockSource.id),
+    });
+    const rentalRevenue =
+      enterpriseNumber(rentalPassport?.revenueTotal) + total;
+    await db
+      .insert(assetPassportsTable)
+      .values({
+        productId: stockSource.id,
+        revenueTotal: String(rentalRevenue),
+      })
+      .onConflictDoUpdate({
+        target: assetPassportsTable.productId,
+        set: { revenueTotal: String(rentalRevenue), updatedAt: new Date() },
+      });
+    void addEntityTimeline({
+      entityType: "asset",
+      entityId: stockSource.id,
+      type: "rental",
+      title: "إيجار الأصل",
+      body: `${orderNo} · ${customerName} · ${formatCurrency(total)}`,
+      actor: SYSTEM_FINANCIAL_ACTOR,
+      metadata: {
+        rentalOrderId: rentalOrder.id,
+        orderId: storeOrder.id,
+        revenue: total,
+      },
+    });
     const financialTransaction = await syncOrderFinancialPayment(
       storeOrder,
       SYSTEM_FINANCIAL_ACTOR,
@@ -26921,6 +27309,57 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
       update.stockRestoredAt = null;
       update.returnedAt = null;
       update.cancelledAt = null;
+    }
+    if (
+      existing.status === RENTAL_ACTIVE_STATUS &&
+      nextStatus === "cancelled"
+    ) {
+      const sourceId = existing.stockSourceProductId ?? existing.productId;
+      const passport = await db.query.assetPassportsTable.findFirst({
+        where: eq(assetPassportsTable.productId, sourceId),
+      });
+      const nextRevenue = Math.max(
+        0,
+        enterpriseNumber(passport?.revenueTotal) -
+          enterpriseNumber(existing.totalAmount),
+      );
+      await db
+        .insert(assetPassportsTable)
+        .values({ productId: sourceId, revenueTotal: String(nextRevenue) })
+        .onConflictDoUpdate({
+          target: assetPassportsTable.productId,
+          set: { revenueTotal: String(nextRevenue), updatedAt: new Date() },
+        });
+      void addEntityTimeline({
+        entityType: "asset",
+        entityId: sourceId,
+        type: "rental_reversal",
+        title: "عكس إيراد إيجار ملغي",
+        body: existing.orderNo,
+        actor: financialActor(auth),
+        metadata: {
+          rentalOrderId: existing.id,
+          revenueReversal: enterpriseNumber(existing.totalAmount),
+        },
+      });
+    } else if (
+      existing.status === "cancelled" &&
+      nextStatus === RENTAL_ACTIVE_STATUS
+    ) {
+      const sourceId = existing.stockSourceProductId ?? existing.productId;
+      const passport = await db.query.assetPassportsTable.findFirst({
+        where: eq(assetPassportsTable.productId, sourceId),
+      });
+      const nextRevenue =
+        enterpriseNumber(passport?.revenueTotal) +
+        enterpriseNumber(existing.totalAmount);
+      await db
+        .insert(assetPassportsTable)
+        .values({ productId: sourceId, revenueTotal: String(nextRevenue) })
+        .onConflictDoUpdate({
+          target: assetPassportsTable.productId,
+          set: { revenueTotal: String(nextRevenue), updatedAt: new Date() },
+        });
     }
     const [row] = await db
       .update(rentalOrdersTable)
