@@ -11,6 +11,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle,
   BarChart3,
+  BatteryCharging,
   BookOpen,
   Boxes,
   BrainCircuit,
@@ -22,6 +23,7 @@ import {
   Clock3,
   CloudRain,
   Fingerprint,
+  FileSpreadsheet,
   Gauge,
   History,
   Images,
@@ -31,10 +33,13 @@ import {
   PackageCheck,
   PenLine,
   RefreshCw,
+  Printer,
+  QrCode,
   Route,
   Search,
   Send,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Timer,
   Trash2,
@@ -46,6 +51,7 @@ import {
   Wrench,
   X,
   HeartPulse,
+  Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -128,18 +134,60 @@ type AssetRow = {
   id: number;
   productId: number;
   productName: string;
+  assetCode?: string;
+  serialNumber?: string | null;
+  barcode?: string | null;
+  category?: string | null;
+  imageUrl?: string | null;
   stock: number;
   shelfCode?: string | null;
   lastLocation?: string | null;
+  purchaseDate?: string | null;
+  supplierName?: string | null;
+  warrantyUntil?: string | null;
+  nextMaintenanceDate?: string | null;
   usageCount: number;
+  workingHours?: number;
+  rentalCount?: number;
   revenueTotal: number;
   maintenanceCost: number;
+  repairCount?: number;
+  damageCount?: number;
   profit: number;
   roi: number;
   purchasePrice?: number;
   currentValue?: number;
+  depreciation?: number;
+  expectedLifeUses?: number;
+  maintenanceEveryUses?: number;
+  healthScore?: number;
+  healthLabel?: string;
+  assetAgeYears?: number;
+  lastInspectionAt?: string | null;
+  inspectionDays?: number | null;
+  replacementRecommended?: boolean;
   assetStatus?: string;
+  metadata?: Record<string, any>;
+  insurance?: Record<string, any>;
+  battery?: Record<string, any>;
+  locker?: Record<string, any>;
+  nfcTag?: string | null;
+  gpsDeviceId?: string | null;
+  gpsLastSeen?: string | null;
   custody?: Array<{ staffName?: string | null; staffId?: number | null }>;
+};
+
+type AssetSummary = {
+  total: number;
+  available: number;
+  maintenance: number;
+  critical: number;
+  lost: number;
+  replacement: number;
+  currentValue: number;
+  revenue: number;
+  maintenanceCost: number;
+  netProfit: number;
 };
 type Intelligence = {
   kpis: {
@@ -454,6 +502,29 @@ export default function EnterpriseCommandCenterPage() {
                 value={summary.criticalAlerts ?? 0}
                 warning={Boolean(summary.criticalAlerts)}
                 href="/admin/notifications"
+              />
+              <Metric
+                icon={Boxes}
+                label="الأصول المسجلة"
+                value={summary.assetsRegistered ?? 0}
+              />
+              <Metric
+                icon={Wrench}
+                label="أصول تحتاج صيانة"
+                value={summary.assetsMaintenance ?? 0}
+                warning={Boolean(summary.assetsMaintenance)}
+              />
+              <Metric
+                icon={ShieldAlert}
+                label="أصول مفقودة أو مقفولة"
+                value={summary.assetsLostOrLocked ?? 0}
+                warning={Boolean(summary.assetsLostOrLocked)}
+              />
+              <Metric
+                icon={RefreshCw}
+                label="استبدال أصول مقترح"
+                value={summary.assetsReplacementRecommended ?? 0}
+                warning={Boolean(summary.assetsReplacementRecommended)}
               />
               <Metric
                 icon={ClipboardCheck}
@@ -1589,6 +1660,40 @@ function QueueTab({ active }: { active: boolean }) {
 }
 
 function assetHealth(row: AssetRow) {
+  if (typeof row.healthScore === "number") {
+    const score = row.healthScore;
+    if (score >= 85)
+      return {
+        score,
+        emoji: "🟢",
+        label: row.healthLabel || "ممتاز",
+        tone: "bg-status-success/15 text-status-success",
+        bar: "bg-status-success",
+      };
+    if (score >= 65)
+      return {
+        score,
+        emoji: "🟡",
+        label: row.healthLabel || "جيد",
+        tone: "bg-status-warning/15 text-status-warning",
+        bar: "bg-status-warning",
+      };
+    if (score >= 40)
+      return {
+        score,
+        emoji: "🟠",
+        label: row.healthLabel || "يحتاج صيانة",
+        tone: "bg-status-warning/15 text-status-warning",
+        bar: "bg-status-warning",
+      };
+    return {
+      score,
+      emoji: "🔴",
+      label: row.healthLabel || "حرج",
+      tone: "bg-status-danger/15 text-status-danger",
+      bar: "bg-status-danger",
+    };
+  }
   const purchase = Number(row.purchasePrice ?? 0);
   const value = Number(row.currentValue ?? purchase);
   const maintRatio =
@@ -1647,6 +1752,300 @@ function PassportStat({
   );
 }
 
+function assetDateInput(value?: string | null) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function AssetDetailsPanel({ row }: { row: AssetRow }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const metadata = row.metadata ?? {};
+  const insurance = row.insurance ?? {};
+  const battery = row.battery ?? {};
+  const locker = row.locker ?? {};
+  const [form, setForm] = useState({
+    serialNumber: row.serialNumber ?? "",
+    supplierName: row.supplierName ?? "",
+    warrantyUntil: assetDateInput(row.warrantyUntil),
+    shelfCode: row.shelfCode ?? "",
+    lastLocation: row.lastLocation ?? "",
+    nextMaintenanceDate: assetDateInput(row.nextMaintenanceDate),
+    workingHours: String(row.workingHours ?? 0),
+    accessories: Array.isArray(metadata.accessories)
+      ? metadata.accessories.join("، ")
+      : "",
+    customChecklist: Array.isArray(metadata.customChecklist)
+      ? metadata.customChecklist.join("\n")
+      : "",
+    insuranceCompany: String(insurance.company ?? ""),
+    policyNumber: String(insurance.policyNumber ?? ""),
+    insuranceCoverage: String(insurance.coverage ?? ""),
+    insuranceExpiry: assetDateInput(insurance.expiryDate),
+    batteryCount: String(battery.count ?? ""),
+    chargeCycles: String(battery.chargeCycles ?? ""),
+    batteryHealth: String(battery.health ?? ""),
+    lastCharge: assetDateInput(battery.lastCharge),
+    warehouse: String(locker.warehouse ?? ""),
+    room: String(locker.room ?? ""),
+    position: String(locker.position ?? ""),
+    nfcTag: row.nfcTag ?? "",
+    gpsDeviceId: row.gpsDeviceId ?? "",
+    gpsLastSeen: row.gpsLastSeen ?? "",
+  });
+  const field =
+    "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary";
+  const save = useMutation({
+    mutationFn: () =>
+      adminFetch("/admin/enterprise/assets", {
+        method: "POST",
+        body: JSON.stringify({
+          productId: row.productId,
+          serialNumber: form.serialNumber.trim() || null,
+          supplierName: form.supplierName.trim() || null,
+          warrantyUntil: form.warrantyUntil || null,
+          shelfCode: form.shelfCode.trim() || null,
+          lastLocation: form.lastLocation.trim() || null,
+          nextMaintenanceDate: form.nextMaintenanceDate || null,
+          metadata: {
+            workingHours: Math.max(0, Number(form.workingHours) || 0),
+            accessories: form.accessories
+              .split(/[،,\n]/)
+              .map((value) => value.trim())
+              .filter(Boolean),
+            customChecklist: form.customChecklist
+              .split("\n")
+              .map((value) => value.trim())
+              .filter(Boolean),
+            insurance: {
+              company: form.insuranceCompany.trim() || null,
+              policyNumber: form.policyNumber.trim() || null,
+              coverage: form.insuranceCoverage.trim() || null,
+              expiryDate: form.insuranceExpiry || null,
+            },
+            battery: {
+              count: Math.max(0, Number(form.batteryCount) || 0),
+              chargeCycles: Math.max(0, Number(form.chargeCycles) || 0),
+              health: form.batteryHealth.trim() || null,
+              lastCharge: form.lastCharge || null,
+            },
+            locker: {
+              warehouse: form.warehouse.trim() || null,
+              room: form.room.trim() || null,
+              shelf: form.shelfCode.trim() || null,
+              position: form.position.trim() || null,
+            },
+            nfcTag: form.nfcTag.trim() || null,
+            gpsDeviceId: form.gpsDeviceId.trim() || null,
+            gpsLastSeen: form.gpsLastSeen.trim() || null,
+          },
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] });
+      qc.invalidateQueries({ queryKey: ["asset-advisor", row.productId] });
+      qc.invalidateQueries({ queryKey: ["asset-timeline", row.productId] });
+      toast({ title: "تم حفظ بيانات جواز الأصل" });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذّر حفظ بيانات الأصل",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+
+  const bind = (key: keyof typeof form) => ({
+    value: form[key],
+    onChange: (
+      event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+    ) => setForm((current) => ({ ...current, [key]: event.target.value })),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Fingerprint className="h-4 w-4 text-primary" /> الهوية ومكان التخزين
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            {...bind("serialNumber")}
+            className={field}
+            placeholder="الرقم التسلسلي"
+          />
+          <input
+            {...bind("supplierName")}
+            className={field}
+            placeholder="المورّد"
+          />
+          <input
+            {...bind("shelfCode")}
+            className={field}
+            placeholder="الرف (مثال A2)"
+          />
+          <input
+            {...bind("lastLocation")}
+            className={field}
+            placeholder="آخر موقع معروف"
+          />
+          <input
+            {...bind("warehouse")}
+            className={field}
+            placeholder="المخزن"
+          />
+          <input {...bind("room")} className={field} placeholder="الغرفة" />
+          <input
+            {...bind("position")}
+            className={field}
+            placeholder="الموضع داخل الرف"
+          />
+          <input
+            {...bind("workingHours")}
+            type="number"
+            min="0"
+            className={field}
+            placeholder="ساعات التشغيل"
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+            <ShieldCheck className="h-4 w-4 text-primary" /> الضمان والتأمين
+          </div>
+          <div className="space-y-2">
+            <label className="block text-xs text-muted-foreground">
+              الضمان حتى
+            </label>
+            <input {...bind("warrantyUntil")} type="date" className={field} />
+            <input
+              {...bind("insuranceCompany")}
+              className={field}
+              placeholder="شركة التأمين"
+            />
+            <input
+              {...bind("policyNumber")}
+              className={field}
+              placeholder="رقم الوثيقة"
+            />
+            <input
+              {...bind("insuranceCoverage")}
+              className={field}
+              placeholder="التغطية"
+            />
+            <label className="block text-xs text-muted-foreground">
+              انتهاء التأمين
+            </label>
+            <input {...bind("insuranceExpiry")} type="date" className={field} />
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+            <BatteryCharging className="h-4 w-4 text-primary" /> البطارية
+            والصيانة
+          </div>
+          <div className="space-y-2">
+            <input
+              {...bind("batteryCount")}
+              type="number"
+              min="0"
+              className={field}
+              placeholder="عدد البطاريات"
+            />
+            <input
+              {...bind("chargeCycles")}
+              type="number"
+              min="0"
+              className={field}
+              placeholder="دورات الشحن"
+            />
+            <input
+              {...bind("batteryHealth")}
+              className={field}
+              placeholder="صحة البطارية % أو وصف"
+            />
+            <label className="block text-xs text-muted-foreground">
+              آخر شحن
+            </label>
+            <input {...bind("lastCharge")} type="date" className={field} />
+            <label className="block text-xs text-muted-foreground">
+              الصيانة القادمة
+            </label>
+            <input
+              {...bind("nextMaintenanceDate")}
+              type="date"
+              className={field}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <div className="mb-2 text-sm font-semibold text-foreground">
+            الملحقات الأصلية
+          </div>
+          <textarea
+            {...bind("accessories")}
+            rows={3}
+            className={field}
+            placeholder="بطارية، شاحن، حقيبة..."
+          />
+        </div>
+        <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+          <div className="mb-2 text-sm font-semibold text-foreground">
+            قائمة فحص مخصصة
+          </div>
+          <textarea
+            {...bind("customChecklist")}
+            rows={3}
+            className={field}
+            placeholder="اكتب كل بند في سطر مستقل"
+          />
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border/30 bg-background/40 p-4">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <MapPin className="h-4 w-4 text-primary" /> NFC وGPS
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <input
+            {...bind("nfcTag")}
+            className={field}
+            placeholder="معرّف NFC"
+          />
+          <input
+            {...bind("gpsDeviceId")}
+            className={field}
+            placeholder="معرّف جهاز GPS"
+          />
+          <input
+            {...bind("gpsLastSeen")}
+            className={field}
+            placeholder="آخر إحداثيات/موقع"
+          />
+        </div>
+      </div>
+
+      <Button
+        className="w-full gap-2"
+        disabled={save.isPending}
+        onClick={() => save.mutate()}
+      >
+        {save.isPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Settings2 className="h-4 w-4" />
+        )}
+        حفظ بيانات الأصل
+      </Button>
+    </div>
+  );
+}
+
 function AssetPassportModal({
   row,
   onClose,
@@ -1656,6 +2055,7 @@ function AssetPassportModal({
 }) {
   const [tab, setTab] = useState<
     | "overview"
+    | "details"
     | "advisor"
     | "dna"
     | "calendar"
@@ -1716,6 +2116,7 @@ function AssetPassportModal({
     icon: typeof BarChart3;
   }> = [
     { key: "overview", label: "نظرة عامة", icon: BarChart3 },
+    { key: "details", label: "بيانات الأصل", icon: Settings2 },
     { key: "advisor", label: "المستشار", icon: BrainCircuit },
     { key: "dna", label: "الهوية DNA", icon: Fingerprint },
     { key: "calendar", label: "التقويم", icon: CalendarClock },
@@ -1774,6 +2175,7 @@ function AssetPassportModal({
         )}
 
         {tab === "advisor" && <AssetAdvisorPanel productId={row.productId} />}
+        {tab === "details" && <AssetDetailsPanel row={row} />}
         {tab === "dna" && (
           <AssetDnaPanel
             productId={row.productId}
@@ -1877,6 +2279,27 @@ function AssetPassportModal({
                 <PassportStat
                   label="مرات الاستخدام"
                   value={row.usageCount.toLocaleString("ar-IQ")}
+                />
+                <PassportStat
+                  label="ساعات التشغيل"
+                  value={(row.workingHours ?? 0).toLocaleString("ar-IQ")}
+                />
+                <PassportStat
+                  label="مرات الإيجار"
+                  value={(row.rentalCount ?? 0).toLocaleString("ar-IQ")}
+                />
+                <PassportStat
+                  label="الإصلاحات"
+                  value={(row.repairCount ?? 0).toLocaleString("ar-IQ")}
+                />
+                <PassportStat
+                  label="الأضرار"
+                  value={(row.damageCount ?? 0).toLocaleString("ar-IQ")}
+                  tone={
+                    (row.damageCount ?? 0) > 0
+                      ? "text-status-danger"
+                      : "text-foreground"
+                  }
                 />
                 <PassportStat label="المخزون" value={String(row.stock)} />
               </div>
@@ -2077,6 +2500,7 @@ function AssetTimelinePanel({ productId }: { productId: number }) {
 function AssetPhotosPanel({ productId }: { productId: number }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [category, setCategory] = useState("current");
   const { data, isLoading } = useQuery<{ data: AssetDocRow[] }>({
     queryKey: ["asset-docs", productId],
     queryFn: () =>
@@ -2097,6 +2521,7 @@ function AssetPhotosPanel({ productId }: { productId: number }) {
             fileName: file.name,
             mimeType: file.type,
             fileUrl,
+            metadata: { category },
           }),
         });
       }
@@ -2113,8 +2538,40 @@ function AssetPhotosPanel({ productId }: { productId: number }) {
         variant: "destructive",
       }),
   });
+  const remove = useMutation({
+    mutationFn: (id: number) =>
+      adminFetch(`/admin/documents/${id}`, { method: "DELETE" }),
+    onSuccess: () => toast({ title: "تم إرسال طلب حذف الصورة للموافقة" }),
+    onError: (error) =>
+      toast({
+        title: "تعذّر طلب حذف الصورة",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+  const categories: Record<string, string> = {
+    purchase: "صور الشراء",
+    serial: "الرقم التسلسلي",
+    maintenance: "الصيانة",
+    damage: "الأضرار",
+    before_repair: "قبل الإصلاح",
+    after_repair: "بعد الإصلاح",
+    current: "الحالة الحالية",
+  };
   return (
     <div className="space-y-3">
+      <select
+        value={category}
+        onChange={(event) => setCategory(event.target.value)}
+        className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+        aria-label="نوع صور الأصل"
+      >
+        {Object.entries(categories).map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-border/50 bg-background/40 py-4 text-sm text-muted-foreground hover:border-primary hover:text-primary">
         <Upload className="h-4 w-4" />{" "}
         {upload.isPending ? "جارٍ الرفع..." : "إضافة صور للأصل"}
@@ -2136,21 +2593,35 @@ function AssetPhotosPanel({ productId }: { productId: number }) {
         <EmptyState message="لا توجد صور بعد" />
       ) : (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-          {photos.map((p) => (
-            <a
-              key={p.id}
-              href={p.fileUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="group relative aspect-square overflow-hidden rounded-lg border border-border/30"
-            >
-              <img
-                src={p.fileUrl}
-                alt={p.title}
-                className="h-full w-full object-cover transition-transform group-hover:scale-105"
-              />
-            </a>
-          ))}
+          {photos.map((p) => {
+            const photoCategory = String(p.metadata?.category ?? "current");
+            return (
+              <div
+                key={p.id}
+                className="group relative aspect-square overflow-hidden rounded-lg border border-border/30"
+              >
+                <a href={p.fileUrl} target="_blank" rel="noreferrer">
+                  <img
+                    src={p.fileUrl}
+                    alt={p.title}
+                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                  />
+                </a>
+                <span className="absolute inset-x-1 bottom-1 truncate rounded bg-black/70 px-1.5 py-0.5 text-center text-[10px] text-white">
+                  {categories[photoCategory] ?? "صورة أصل"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => remove.mutate(p.id)}
+                  disabled={remove.isPending}
+                  className="absolute left-1 top-1 flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white opacity-0 transition-opacity hover:bg-status-danger group-hover:opacity-100 focus:opacity-100"
+                  aria-label="طلب حذف الصورة"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -2171,6 +2642,7 @@ function AssetDamagePanel({ productId }: { productId: number }) {
   const [desc, setDesc] = useState("");
   const [cost, setCost] = useState("");
   const [severity, setSeverity] = useState("minor");
+  const [repairStatus, setRepairStatus] = useState("pending");
   const inputClass =
     "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none";
   const log = useMutation({
@@ -2183,13 +2655,18 @@ function AssetDamagePanel({ productId }: { productId: number }) {
           type: "damage",
           title: severity === "major" ? "ضرر جسيم" : "ضرر طفيف",
           body: desc.trim(),
-          metadata: { cost: Number(cost) || 0, severity },
+          metadata: {
+            cost: Number(cost) || 0,
+            severity,
+            repairStatus,
+          },
         }),
       }),
     onSuccess: () => {
       setDesc("");
       setCost("");
       setSeverity("minor");
+      setRepairStatus("pending");
       qc.invalidateQueries({ queryKey: ["asset-timeline", productId] });
       toast({ title: "تم تسجيل الضرر" });
     },
@@ -2210,7 +2687,7 @@ function AssetDamagePanel({ productId }: { productId: number }) {
           placeholder="وصف الضرر..."
           className={inputClass}
         />
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid gap-2 sm:grid-cols-3">
           <input
             type="number"
             min={0}
@@ -2226,6 +2703,16 @@ function AssetDamagePanel({ productId }: { productId: number }) {
           >
             <option value="minor">ضرر طفيف</option>
             <option value="major">ضرر جسيم</option>
+          </select>
+          <select
+            value={repairStatus}
+            onChange={(e) => setRepairStatus(e.target.value)}
+            className={inputClass}
+          >
+            <option value="pending">بانتظار الإصلاح</option>
+            <option value="in_progress">قيد الإصلاح</option>
+            <option value="repaired">تم الإصلاح</option>
+            <option value="unrepairable">غير قابل للإصلاح</option>
           </select>
         </div>
         <Button
@@ -2264,6 +2751,16 @@ function AssetDamagePanel({ productId }: { productId: number }) {
                   تكلفة الإصلاح: {formatCurrency(Number(d.metadata.cost))}
                 </p>
               ) : null}
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                حالة الإصلاح:{" "}
+                {d.metadata?.repairStatus === "repaired"
+                  ? "تم الإصلاح"
+                  : d.metadata?.repairStatus === "in_progress"
+                    ? "قيد الإصلاح"
+                    : d.metadata?.repairStatus === "unrepairable"
+                      ? "غير قابل للإصلاح"
+                      : "بانتظار الإصلاح"}
+              </p>
             </div>
           ))}
         </div>
@@ -3000,38 +3497,259 @@ function AssetCalendarPanel({ productId }: { productId: number }) {
   );
 }
 
+function escapeAssetPrint(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function assetStatusLabel(row: AssetRow) {
+  if (row.assetStatus === "locked") return "مقفول";
+  if (row.assetStatus === "lost") return "مفقود";
+  if (row.assetStatus === "retired") return "خارج الخدمة";
+  if (row.assetStatus === "maintenance") return "صيانة";
+  if (row.custody?.length) return "خارج المخزن";
+  if (row.stock <= 0) return "محجوز";
+  return "متاح";
+}
+
+function printAssetReport(rows: AssetRow[]) {
+  const popup = window.open("", "_blank", "width=1100,height=800");
+  if (!popup) throw new Error("تعذّر فتح نافذة الطباعة");
+  const totalValue = rows.reduce(
+    (sum, row) => sum + Number(row.currentValue ?? 0),
+    0,
+  );
+  const revenue = rows.reduce((sum, row) => sum + row.revenueTotal, 0);
+  const maintenance = rows.reduce((sum, row) => sum + row.maintenanceCost, 0);
+  popup.document
+    .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>تقرير الأصول</title><style>
+    @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}h1{font-size:22px;margin:0 0 6px}.meta{font-size:12px;margin-bottom:16px}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}.box{border:1px solid #000;padding:8px}.box b{display:block;margin-top:5px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:6px;text-align:right}th{font-weight:700;background:#eee}@media print{button{display:none}}
+  </style></head><body><button onclick="window.print()">طباعة</button><h1>تقرير جوازات الأصول</h1><div class="meta">مجموعة علي جان نهاد · تاريخ الإنشاء: ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</div><div class="summary"><div class="box">عدد الأصول<b>${rows.length.toLocaleString("ar-IQ")}</b></div><div class="box">القيمة الحالية<b>${escapeAssetPrint(formatCurrency(totalValue))}</b></div><div class="box">الإيرادات<b>${escapeAssetPrint(formatCurrency(revenue))}</b></div><div class="box">الصيانة<b>${escapeAssetPrint(formatCurrency(maintenance))}</b></div></div><table><thead><tr><th>الكود</th><th>الأصل</th><th>التسلسلي</th><th>الحالة</th><th>الصحة</th><th>الاستخدام</th><th>القيمة الحالية</th><th>الإيراد</th><th>الصيانة</th><th>ROI</th></tr></thead><tbody>${rows
+    .map(
+      (row) =>
+        `<tr><td>${escapeAssetPrint(row.assetCode)}</td><td>${escapeAssetPrint(row.productName)}</td><td>${escapeAssetPrint(row.serialNumber || "—")}</td><td>${escapeAssetPrint(assetStatusLabel(row))}</td><td>${escapeAssetPrint(`${row.healthScore ?? assetHealth(row).score}%`)}</td><td>${escapeAssetPrint(row.usageCount)}</td><td>${escapeAssetPrint(formatCurrency(Number(row.currentValue ?? 0)))}</td><td>${escapeAssetPrint(formatCurrency(row.revenueTotal))}</td><td>${escapeAssetPrint(formatCurrency(row.maintenanceCost))}</td><td>${escapeAssetPrint(`${row.roi}%`)}</td></tr>`,
+    )
+    .join("")}</tbody></table></body></html>`);
+  popup.document.close();
+  popup.focus();
+}
+
+function exportAssetCsv(rows: AssetRow[]) {
+  const columns = [
+    "كود الأصل",
+    "اسم الأصل",
+    "الرقم التسلسلي",
+    "الفئة",
+    "الحالة",
+    "الصحة",
+    "الاستخدام",
+    "ساعات التشغيل",
+    "سعر الشراء",
+    "القيمة الحالية",
+    "الإيراد",
+    "الصيانة",
+    "صافي الربح",
+    "ROI",
+  ];
+  const lines = rows.map((row) => [
+    row.assetCode,
+    row.productName,
+    row.serialNumber || "",
+    row.category || "",
+    assetStatusLabel(row),
+    row.healthScore ?? assetHealth(row).score,
+    row.usageCount,
+    row.workingHours ?? 0,
+    row.purchasePrice ?? 0,
+    row.currentValue ?? 0,
+    row.revenueTotal,
+    row.maintenanceCost,
+    row.profit,
+    row.roi,
+  ]);
+  const csv = [columns, ...lines]
+    .map((line) =>
+      line
+        .map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`)
+        .join(","),
+    )
+    .join("\n");
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `ajn-assets-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function AssetsTab({ active }: { active: boolean }) {
-  const query = useQuery<{ data: AssetRow[] }>({
+  const query = useQuery<{ data: AssetRow[]; summary: AssetSummary }>({
     queryKey: ["admin", "enterprise", "assets"],
     queryFn: () => adminFetch("/admin/enterprise/assets"),
     enabled: active,
     staleTime: 30_000,
   });
+  const { toast } = useToast();
   const [selected, setSelected] = useState<AssetRow | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [printingQr, setPrintingQr] = useState(false);
+  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
+  const rows = query.data?.data ?? [];
+  const filtered = useMemo(
+    () =>
+      rows.filter((row) => {
+        const matchesSearch =
+          !deferredSearch ||
+          [
+            row.productName,
+            row.assetCode,
+            row.serialNumber,
+            row.barcode,
+            row.category,
+          ].some((value) =>
+            String(value ?? "")
+              .toLowerCase()
+              .includes(deferredSearch),
+          );
+        const health = assetHealth(row);
+        const matchesFilter =
+          filter === "all" ||
+          (filter === "available" && assetStatusLabel(row) === "متاح") ||
+          (filter === "maintenance" &&
+            (row.assetStatus === "maintenance" ||
+              health.label === "يحتاج صيانة")) ||
+          (filter === "critical" && health.label === "حرج") ||
+          (filter === "lost" &&
+            ["lost", "locked"].includes(row.assetStatus ?? "")) ||
+          (filter === "replacement" && row.replacementRecommended);
+        return matchesSearch && matchesFilter;
+      }),
+    [deferredSearch, filter, rows],
+  );
+  const summary = query.data?.summary;
+  const topUsage = useMemo(
+    () => [...rows].sort((a, b) => b.usageCount - a.usageCount).slice(0, 5),
+    [rows],
+  );
+  const topProfit = useMemo(
+    () => [...rows].sort((a, b) => b.profit - a.profit).slice(0, 5),
+    [rows],
+  );
+
+  async function printQrWall() {
+    if (!filtered.length) return;
+    const popup = window.open("", "_blank", "width=1000,height=800");
+    if (!popup) {
+      toast({ title: "اسمح بفتح نافذة الطباعة", variant: "destructive" });
+      return;
+    }
+    popup.document.write("<p dir='rtl'>جارٍ تجهيز رموز QR...</p>");
+    setPrintingQr(true);
+    try {
+      const selectedRows = filtered.slice(0, 120);
+      const results = await Promise.allSettled(
+        selectedRows.map(
+          (row) =>
+            adminFetch(
+              `/admin/assets/qr?productId=${row.productId}`,
+            ) as Promise<{
+              dataUrl: string;
+            }>,
+        ),
+      );
+      const cards = selectedRows
+        .map((row, index) => {
+          const result = results[index];
+          if (result.status !== "fulfilled" || !result.value.dataUrl) return "";
+          return `<article><img src="${result.value.dataUrl}" alt="QR"><b>${escapeAssetPrint(row.productName)}</b><span>${escapeAssetPrint(row.assetCode)}</span><small>${escapeAssetPrint(row.serialNumber || row.barcode || "")}</small></article>`;
+        })
+        .join("");
+      popup.document.open();
+      popup.document.write(
+        `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>جدار QR للأصول</title><style>@page{size:A4;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;margin:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}main{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}article{border:1px solid #000;padding:7px;text-align:center;break-inside:avoid}img{width:110px;height:110px;display:block;margin:auto}b,span,small{display:block;margin-top:3px}b{font-size:12px}span,small{font-size:9px}@media print{button{display:none}}</style></head><body><header><div><h2>جدار QR للأصول</h2><small>مجموعة علي جان نهاد · ${escapeAssetPrint(new Date().toLocaleString("ar-IQ"))}</small></div><button onclick="window.print()">طباعة</button></header><main>${cards}</main></body></html>`,
+      );
+      popup.document.close();
+      popup.focus();
+      if (filtered.length > 120)
+        toast({ title: "تم تجهيز أول 120 أصلاً حسب الفلترة الحالية" });
+    } catch (error) {
+      popup.close();
+      toast({
+        title: "تعذّر تجهيز جدار QR",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      });
+    } finally {
+      setPrintingQr(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <Metric
           icon={Boxes}
           label="الأصول المسجلة"
-          value={query.data?.data.length ?? 0}
+          value={summary?.total ?? rows.length}
+        />
+        <Metric
+          icon={CheckCircle2}
+          label="المتاح"
+          value={summary?.available ?? 0}
+        />
+        <Metric
+          icon={Wrench}
+          label="يحتاج صيانة"
+          value={summary?.maintenance ?? 0}
+          warning={Boolean(summary?.maintenance)}
+        />
+        <Metric
+          icon={HeartPulse}
+          label="حالة حرجة"
+          value={summary?.critical ?? 0}
+          warning={Boolean(summary?.critical)}
+        />
+        <Metric
+          icon={ShieldAlert}
+          label="مفقود أو مقفول"
+          value={summary?.lost ?? 0}
+          warning={Boolean(summary?.lost)}
+        />
+        <Metric
+          icon={RefreshCw}
+          label="موصى باستبداله"
+          value={summary?.replacement ?? 0}
+          warning={Boolean(summary?.replacement)}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Metric
+          icon={Gauge}
+          label="القيمة الحالية"
+          value={formatCurrency(summary?.currentValue ?? 0)}
         />
         <Metric
           icon={Wallet}
-          label="إجمالي ربح الأصول"
-          value={formatCurrency(
-            query.data?.data.reduce((sum, row) => sum + row.profit, 0) ?? 0,
-          )}
+          label="إيرادات الأصول"
+          value={formatCurrency(summary?.revenue ?? 0)}
         />
         <Metric
           icon={Wrench}
           label="تكلفة الصيانة"
-          value={formatCurrency(
-            query.data?.data.reduce(
-              (sum, row) => sum + row.maintenanceCost,
-              0,
-            ) ?? 0,
-          )}
+          value={formatCurrency(summary?.maintenanceCost ?? 0)}
+        />
+        <Metric
+          icon={BarChart3}
+          label="صافي ربح الأصول"
+          value={formatCurrency(summary?.netProfit ?? 0)}
+          warning={(summary?.netProfit ?? 0) < 0}
         />
       </div>
       <Panel>
@@ -3040,16 +3758,77 @@ function AssetsTab({ active }: { active: boolean }) {
           title="الجواز الرقمي ومواقع الرفوف"
           description="اضغط أي قطعة لفتح جوازها الكامل: الحالة الصحية، الموقع، العهدة، والعائد."
         />
+        <div className="mb-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_180px_auto]">
+          <div className="relative">
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="بحث بالاسم أو الكود أو التسلسلي أو الباركود"
+              className="w-full rounded-lg border border-border/40 bg-background py-2 pe-3 ps-10 text-sm outline-none focus:border-primary"
+            />
+          </div>
+          <select
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+          >
+            <option value="all">كل الحالات</option>
+            <option value="available">متاح</option>
+            <option value="maintenance">يحتاج صيانة</option>
+            <option value="critical">حرج</option>
+            <option value="lost">مفقود أو مقفول</option>
+            <option value="replacement">موصى باستبداله</option>
+          </select>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              disabled={!filtered.length}
+              onClick={() => printAssetReport(filtered)}
+            >
+              <Printer className="h-4 w-4" /> طباعة
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              disabled={!filtered.length}
+              onClick={() => exportAssetCsv(filtered)}
+            >
+              <FileSpreadsheet className="h-4 w-4" /> Excel
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1"
+              disabled={!filtered.length || printingQr}
+              onClick={printQrWall}
+            >
+              {printingQr ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <QrCode className="h-4 w-4" />
+              )}{" "}
+              QR Wall
+            </Button>
+          </div>
+        </div>
         {query.isLoading ? (
           <Skeleton className="h-72 rounded-lg" />
-        ) : !query.data?.data.length ? (
+        ) : !rows.length ? (
           <Empty message="لم تُسجل جوازات رقمية للأصول بعد" />
+        ) : !filtered.length ? (
+          <Empty message="لا توجد أصول مطابقة للبحث أو الفلتر" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-sm">
+            <table className="w-full min-w-[980px] text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
                   <th className="p-3 text-right">القطعة</th>
+                  <th className="p-3 text-right">الكود/التسلسلي</th>
+                  <th className="p-3 text-right">الحالة</th>
                   <th className="p-3 text-right">الصحة</th>
                   <th className="p-3 text-right">الموقع</th>
                   <th className="p-3 text-right">الاستخدام</th>
@@ -3060,7 +3839,7 @@ function AssetsTab({ active }: { active: boolean }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {query.data.data.map((row) => {
+                {filtered.map((row) => {
                   const health = assetHealth(row);
                   return (
                     <tr
@@ -3068,7 +3847,39 @@ function AssetsTab({ active }: { active: boolean }) {
                       onClick={() => setSelected(row)}
                       className="cursor-pointer transition-colors hover:bg-background/40"
                     >
-                      <td className="p-3 font-medium">{row.productName}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2">
+                          {row.imageUrl ? (
+                            <img
+                              src={row.imageUrl}
+                              alt=""
+                              className="h-9 w-9 shrink-0 rounded-md object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                              <Boxes className="h-4 w-4" />
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-medium text-foreground">
+                              {row.productName}
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {row.category || "بدون فئة"}
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <p className="font-mono text-xs text-foreground">
+                          {row.assetCode}
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          {row.serialNumber || "بدون تسلسلي"}
+                        </p>
+                      </td>
+                      <td className="p-3 text-xs">{assetStatusLabel(row)}</td>
                       <td className="p-3">
                         <span
                           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold ${health.tone}`}
@@ -3106,6 +3917,62 @@ function AssetsTab({ active }: { active: boolean }) {
           </div>
         )}
       </Panel>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel>
+          <SectionTitle
+            icon={Gauge}
+            title="الأكثر استخداماً"
+            description="خريطة استخدام تساعد على تدوير المعدات ومنع استهلاك أصل واحد."
+          />
+          <div className="space-y-2">
+            {topUsage.map((row, index) => (
+              <button
+                key={row.productId}
+                type="button"
+                onClick={() => setSelected(row)}
+                className="flex w-full items-center gap-3 rounded-lg border border-border/30 bg-background/40 p-3 text-right hover:border-primary/40"
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {row.productName}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {row.usageCount.toLocaleString("ar-IQ")} استخدام
+                </span>
+              </button>
+            ))}
+          </div>
+        </Panel>
+        <Panel>
+          <SectionTitle
+            icon={Wallet}
+            title="الأعلى ربحاً"
+            description="ترتيب الأصول حسب صافي الإيراد بعد الشراء والصيانة."
+          />
+          <div className="space-y-2">
+            {topProfit.map((row, index) => (
+              <button
+                key={row.productId}
+                type="button"
+                onClick={() => setSelected(row)}
+                className="flex w-full items-center gap-3 rounded-lg border border-border/30 bg-background/40 p-3 text-right hover:border-primary/40"
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                  {row.productName}
+                </span>
+                <span className="text-xs font-semibold text-primary">
+                  {formatCurrency(row.profit)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Panel>
+      </div>
       <QuickAssetLinks />
       {selected && (
         <AssetPassportModal row={selected} onClose={() => setSelected(null)} />

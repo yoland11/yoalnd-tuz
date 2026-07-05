@@ -1162,6 +1162,81 @@ function assetChecklistFor(product: {
   ];
 }
 
+function assetMetadataObject(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {};
+}
+
+function assetHealthSnapshot(input: {
+  purchaseDate?: Date | string | null;
+  purchasePrice: number;
+  maintenanceCost: number;
+  usageCount: number;
+  expectedLifeUses: number;
+  repairCount: number;
+  damageCount: number;
+  lastInspectionAt?: Date | string | null;
+}) {
+  const now = Date.now();
+  const purchaseAt = input.purchaseDate
+    ? new Date(input.purchaseDate).getTime()
+    : Number.NaN;
+  const ageYears = Number.isFinite(purchaseAt)
+    ? Math.max(0, (now - purchaseAt) / (365.25 * 86400000))
+    : 0;
+  const inspectedAt = input.lastInspectionAt
+    ? new Date(input.lastInspectionAt).getTime()
+    : Number.NaN;
+  const inspectionDays = Number.isFinite(inspectedAt)
+    ? Math.max(0, (now - inspectedAt) / 86400000)
+    : null;
+  const usageRatio = Math.min(
+    1.25,
+    input.usageCount / Math.max(1, input.expectedLifeUses),
+  );
+  const maintenanceRatio = input.purchasePrice
+    ? Math.min(1, input.maintenanceCost / input.purchasePrice)
+    : 0;
+  const inspectionPenalty =
+    inspectionDays === null
+      ? 8
+      : inspectionDays > 365
+        ? 12
+        : inspectionDays > 180
+          ? 6
+          : 0;
+  const score = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        100 -
+          usageRatio * 35 -
+          maintenanceRatio * 25 -
+          Math.min(15, input.repairCount * 3) -
+          Math.min(20, input.damageCount * 5) -
+          Math.min(10, ageYears * 1.25) -
+          inspectionPenalty,
+      ),
+    ),
+  );
+  const label =
+    score >= 85
+      ? "ممتاز"
+      : score >= 65
+        ? "جيد"
+        : score >= 40
+          ? "يحتاج صيانة"
+          : "حرج";
+  return {
+    score,
+    label,
+    ageYears: Number(ageYears.toFixed(1)),
+    inspectionDays: inspectionDays === null ? null : Math.round(inspectionDays),
+  };
+}
+
 // Scan&Go — a stable QR per asset that resolves through the public /track gateway
 // to a safe, financial-free asset status card. Reuses the shared qr_tokens table.
 async function ensureAssetQr(productId: number, req: NextRequest) {
@@ -14051,6 +14126,19 @@ async function enterpriseCommandCenter() {
         'todayProfit', (select coalesce(total_sales::numeric - total_expenses::numeric,0) from daily_cash_reports, ctx where report_date = ctx.today limit 1),
         'criticalAlerts', (select count(*) from notifications where audience_type = 'admin' and archived_at is null and read_at is null and type ~* '(critical|overdue|low_stock|maintenance|payment)'),
         'openTasks', (select count(*) from tasks where archived_at is null and status not in ('completed','cancelled')),
+        'assetsRegistered', (select count(*) from asset_profiles),
+        'assetsMaintenance', (
+          select count(*) from asset_profiles
+          where status = 'maintenance'
+            or (usage_count > 0 and usage_count % greatest(1, maintenance_every_uses) = 0)
+        ),
+        'assetsLostOrLocked', (select count(*) from asset_profiles where status in ('lost','locked')),
+        'assetsReplacementRecommended', (
+          select count(*) from asset_profiles p
+          left join asset_passports ap on ap.product_id = p.product_id
+          where p.usage_count::numeric / greatest(1, p.expected_life_uses) >= 0.85
+             or (p.purchase_price::numeric > 0 and coalesce(ap.maintenance_cost, 0)::numeric >= p.purchase_price::numeric * 0.4)
+        ),
         'branches', (select count(*) from enterprise_branches where is_active = true)
       ),
       'branches', coalesce((select jsonb_agg(jsonb_build_object(
@@ -15100,58 +15188,180 @@ async function handleEnterpriseAdmin(
 
   if (section === "assets") {
     if (method === "GET") {
-      const [passports, products, profiles, custody] = await Promise.all([
-        db.query.assetPassportsTable.findMany({
-          orderBy: [desc(assetPassportsTable.updatedAt)],
-          limit: 1000,
-        }),
-        db.query.productsTable.findMany({
-          where: eq(productsTable.isActive, true),
-          limit: 2000,
-        }),
-        db.query.assetProfilesTable.findMany({ limit: 1000 }),
-        db.query.equipmentCustodyTable.findMany({
-          where: eq(equipmentCustodyTable.status, "issued"),
-          limit: 1000,
-        }),
-      ]);
-      const productMap = new Map(products.map((row) => [row.id, row]));
+      const [passports, products, profiles, custody, staff, timelineRows] =
+        await Promise.all([
+          db.query.assetPassportsTable.findMany({
+            orderBy: [desc(assetPassportsTable.updatedAt)],
+            limit: 1000,
+          }),
+          db.query.productsTable.findMany({
+            limit: 2000,
+          }),
+          db.query.assetProfilesTable.findMany({ limit: 1000 }),
+          db.query.equipmentCustodyTable.findMany({
+            where: eq(equipmentCustodyTable.status, "issued"),
+            limit: 1000,
+          }),
+          db.query.staffTable.findMany({ limit: 2000 }),
+          db.query.entityTimelineTable.findMany({
+            where: eq(entityTimelineTable.entityType, "asset"),
+            orderBy: [desc(entityTimelineTable.createdAt)],
+            limit: 10000,
+          }),
+        ]);
       const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+      const passportMap = new Map(passports.map((row) => [row.productId, row]));
+      const staffMap = new Map(staff.map((row) => [row.id, row]));
       const custodyMap = new Map<number, typeof custody>();
       for (const row of custody)
         custodyMap.set(row.productId, [
           ...(custodyMap.get(row.productId) ?? []),
           row,
         ]);
+      const timelineMap = new Map<number, typeof timelineRows>();
+      for (const row of timelineRows)
+        timelineMap.set(row.entityId, [
+          ...(timelineMap.get(row.entityId) ?? []),
+          row,
+        ]);
+      const registeredIds = new Set<number>([
+        ...passports.map((row) => row.productId),
+        ...profiles.map((row) => row.productId),
+        ...products.filter((row) => row.isRental).map((row) => row.id),
+      ]);
+      const assetProducts = products.filter((row) => registeredIds.has(row.id));
+      const data = assetProducts.map((product) => {
+        const passport = passportMap.get(product.id);
+        const profile = profileMap.get(product.id);
+        const metadata = assetMetadataObject(passport?.metadata);
+        const events = timelineMap.get(product.id) ?? [];
+        const purchasePrice = enterpriseNumber(
+          profile?.purchasePrice ?? product.costPrice,
+        );
+        const currentValue = Math.max(
+          0,
+          enterpriseNumber(profile?.currentValue ?? purchasePrice),
+        );
+        const revenue = enterpriseNumber(passport?.revenueTotal);
+        const maintenance = enterpriseNumber(passport?.maintenanceCost);
+        const profit = revenue - purchasePrice - maintenance;
+        const damageCount = events.filter(
+          (row) => row.type === "damage",
+        ).length;
+        const repairCount = events.filter((row) =>
+          ["repair", "maintenance_completed"].includes(row.type),
+        ).length;
+        const rentalCount = events.filter((row) =>
+          ["rental", "booked", "checkout"].includes(row.type),
+        ).length;
+        const lastInspection = events.find((row) =>
+          ["inspection", "checklist"].includes(row.type),
+        );
+        const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
+        const usageCount = Number(profile?.usageCount ?? 0);
+        const health = assetHealthSnapshot({
+          purchaseDate: profile?.purchaseDate,
+          purchasePrice,
+          maintenanceCost: maintenance,
+          usageCount,
+          expectedLifeUses,
+          repairCount,
+          damageCount,
+          lastInspectionAt: lastInspection?.createdAt,
+        });
+        const activeCustody = custodyMap.get(product.id) ?? [];
+        const assetStatus = profile?.status ?? "active";
+        const replacementRecommended =
+          health.score < 40 ||
+          usageCount / Math.max(1, expectedLifeUses) >= 0.85 ||
+          (purchasePrice > 0 && maintenance >= purchasePrice * 0.4);
+        return {
+          ...(passport ?? {}),
+          id: passport?.id ?? -product.id,
+          productId: product.id,
+          productName: product.nameAr || product.name || `#${product.id}`,
+          assetCode: `AJN-A${String(product.id).padStart(6, "0")}`,
+          serialNumber: passport?.serialNumber ?? profile?.serialNumber ?? null,
+          barcode: product.barcode ?? null,
+          category: product.category ?? product.subcategory ?? null,
+          imageUrl:
+            passport?.imageUrl ??
+            (Array.isArray(product.images) ? product.images[0] : null) ??
+            null,
+          stock: product.stock ?? 0,
+          purchaseDate: profile?.purchaseDate ?? null,
+          supplierName: passport?.supplierName ?? null,
+          warrantyUntil: passport?.warrantyUntil ?? null,
+          purchasePrice,
+          currentValue,
+          depreciation: Math.max(0, purchasePrice - currentValue),
+          expectedLifeUses,
+          maintenanceEveryUses:
+            Number(profile?.maintenanceEveryUses ?? 50) || 50,
+          usageCount,
+          workingHours: Math.max(0, Number(metadata.workingHours ?? 0) || 0),
+          rentalCount,
+          revenueTotal: revenue,
+          maintenanceCost: maintenance,
+          repairCount,
+          damageCount,
+          profit,
+          roi:
+            purchasePrice > 0
+              ? Number(((profit / purchasePrice) * 100).toFixed(2))
+              : 0,
+          healthScore: health.score,
+          healthLabel: health.label,
+          assetAgeYears: health.ageYears,
+          lastInspectionAt: lastInspection?.createdAt ?? null,
+          inspectionDays: health.inspectionDays,
+          replacementRecommended,
+          assetStatus,
+          metadata,
+          insurance: assetMetadataObject(metadata.insurance),
+          battery: assetMetadataObject(metadata.battery),
+          locker: assetMetadataObject(metadata.locker),
+          nfcTag: nullableText(metadata.nfcTag),
+          gpsDeviceId: nullableText(metadata.gpsDeviceId),
+          gpsLastSeen: nullableText(metadata.gpsLastSeen),
+          custody: activeCustody.map((row) => {
+            const holder = staffMap.get(row.staffId);
+            return {
+              ...row,
+              staffName:
+                holder?.fullName || holder?.username || `#${row.staffId}`,
+            };
+          }),
+        };
+      });
       return json({
-        data: passports.map((passport) => {
-          const product = productMap.get(passport.productId);
-          const profile = profileMap.get(passport.productId);
-          const purchasePrice = enterpriseNumber(
-            profile?.purchasePrice ?? product?.costPrice,
-          );
-          const revenue = enterpriseNumber(passport.revenueTotal);
-          const maintenance = enterpriseNumber(passport.maintenanceCost);
-          const profit = revenue - purchasePrice - maintenance;
-          return {
-            ...passport,
-            productName:
-              product?.nameAr || product?.name || `#${passport.productId}`,
-            stock: product?.stock ?? 0,
-            purchasePrice,
-            currentValue: enterpriseNumber(profile?.currentValue),
-            usageCount: profile?.usageCount ?? 0,
-            revenueTotal: revenue,
-            maintenanceCost: maintenance,
-            profit,
-            roi:
-              purchasePrice > 0
-                ? Number(((profit / purchasePrice) * 100).toFixed(2))
-                : 0,
-            assetStatus: profile?.status ?? "active",
-            custody: custodyMap.get(passport.productId) ?? [],
-          };
-        }),
+        data,
+        summary: {
+          total: data.length,
+          available: data.filter(
+            (row) =>
+              row.assetStatus === "active" &&
+              row.stock > 0 &&
+              row.custody.length === 0,
+          ).length,
+          maintenance: data.filter(
+            (row) =>
+              row.assetStatus === "maintenance" ||
+              row.healthLabel === "يحتاج صيانة",
+          ).length,
+          critical: data.filter((row) => row.healthLabel === "حرج").length,
+          lost: data.filter((row) =>
+            ["lost", "locked"].includes(row.assetStatus),
+          ).length,
+          replacement: data.filter((row) => row.replacementRecommended).length,
+          currentValue: data.reduce((sum, row) => sum + row.currentValue, 0),
+          revenue: data.reduce((sum, row) => sum + row.revenueTotal, 0),
+          maintenanceCost: data.reduce(
+            (sum, row) => sum + row.maintenanceCost,
+            0,
+          ),
+          netProfit: data.reduce((sum, row) => sum + row.profit, 0),
+        },
         products: products.map((row) => ({
           id: row.id,
           name: row.nameAr || row.name,
@@ -15169,41 +15379,75 @@ async function handleEnterpriseAdmin(
         where: eq(productsTable.id, productId),
       });
       if (!product) return error("القطعة غير موجودة", 404);
-      const imageUrl = data?.image
-        ? await persistMediaValue(data.image, "enterprise/assets")
-        : nullableText(data?.imageUrl);
-      const values = {
-        productId,
-        serialNumber: nullableText(data?.serialNumber),
-        supplierName: nullableText(data?.supplierName),
-        warrantyUntil: data?.warrantyUntil
-          ? String(data.warrantyUntil).slice(0, 10)
-          : null,
-        warehouseId: optionalPositiveId(data?.warehouseId),
-        shelfCode: nullableText(data?.shelfCode),
-        imageUrl,
-        qrToken: String(data?.qrToken ?? randomBytes(24).toString("hex")).slice(
-          0,
-          80,
-        ),
-        lastStaffId: optionalPositiveId(data?.lastStaffId),
-        lastLocation: nullableText(data?.lastLocation),
-        revenueTotal: String(Math.max(0, enterpriseNumber(data?.revenueTotal))),
-        maintenanceCost: String(
-          Math.max(0, enterpriseNumber(data?.maintenanceCost)),
-        ),
-        nextMaintenanceDate: data?.nextMaintenanceDate
-          ? String(data.nextMaintenanceDate).slice(0, 10)
-          : null,
-        metadata:
-          data?.metadata && typeof data.metadata === "object"
-            ? data.metadata
-            : {},
-        updatedAt: new Date(),
-      };
       const prevPassport = await db.query.assetPassportsTable.findFirst({
         where: eq(assetPassportsTable.productId, productId),
       });
+      const has = (key: string) =>
+        Object.prototype.hasOwnProperty.call(data ?? {}, key);
+      const imageUrl = data?.image
+        ? await persistMediaValue(data.image, "enterprise/assets")
+        : has("imageUrl")
+          ? nullableText(data?.imageUrl)
+          : (prevPassport?.imageUrl ?? null);
+      const metadataPatch = assetMetadataObject(data?.metadata);
+      const values = {
+        productId,
+        serialNumber: has("serialNumber")
+          ? nullableText(data?.serialNumber)
+          : (prevPassport?.serialNumber ?? null),
+        supplierName: has("supplierName")
+          ? nullableText(data?.supplierName)
+          : (prevPassport?.supplierName ?? null),
+        warrantyUntil: has("warrantyUntil")
+          ? data?.warrantyUntil
+            ? String(data.warrantyUntil).slice(0, 10)
+            : null
+          : (prevPassport?.warrantyUntil ?? null),
+        warehouseId: has("warehouseId")
+          ? optionalPositiveId(data?.warehouseId)
+          : (prevPassport?.warehouseId ?? null),
+        shelfCode: has("shelfCode")
+          ? nullableText(data?.shelfCode)
+          : (prevPassport?.shelfCode ?? null),
+        imageUrl,
+        qrToken: String(
+          data?.qrToken ??
+            prevPassport?.qrToken ??
+            randomBytes(24).toString("hex"),
+        ).slice(0, 80),
+        lastStaffId: has("lastStaffId")
+          ? optionalPositiveId(data?.lastStaffId)
+          : (prevPassport?.lastStaffId ?? null),
+        lastLocation: has("lastLocation")
+          ? nullableText(data?.lastLocation)
+          : (prevPassport?.lastLocation ?? null),
+        revenueTotal: String(
+          Math.max(
+            0,
+            has("revenueTotal")
+              ? enterpriseNumber(data?.revenueTotal)
+              : enterpriseNumber(prevPassport?.revenueTotal),
+          ),
+        ),
+        maintenanceCost: String(
+          Math.max(
+            0,
+            has("maintenanceCost")
+              ? enterpriseNumber(data?.maintenanceCost)
+              : enterpriseNumber(prevPassport?.maintenanceCost),
+          ),
+        ),
+        nextMaintenanceDate: has("nextMaintenanceDate")
+          ? data?.nextMaintenanceDate
+            ? String(data.nextMaintenanceDate).slice(0, 10)
+            : null
+          : (prevPassport?.nextMaintenanceDate ?? null),
+        metadata: {
+          ...assetMetadataObject(prevPassport?.metadata),
+          ...metadataPatch,
+        },
+        updatedAt: new Date(),
+      };
       try {
         const [row] = await db
           .insert(assetPassportsTable)
@@ -18618,6 +18862,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       )
         ? ((passport!.metadata as any).accessories as unknown[]).map(String)
         : [];
+      const customChecklist = Array.isArray(
+        (passport?.metadata as any)?.customChecklist,
+      )
+        ? ((passport!.metadata as any).customChecklist as unknown[])
+            .map(String)
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [];
 
       // Digital DNA bundle — identity assembled in one place.
       const dna = {
@@ -18675,7 +18927,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         availability,
         liveStatus,
         location,
-        checklist: assetChecklistFor(product),
+        checklist: customChecklist.length
+          ? customChecklist
+          : assetChecklistFor(product),
         dna,
         calendar,
       });
