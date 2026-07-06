@@ -31898,24 +31898,52 @@ async function handleAccounting(
       const phoneVariants = iraqiPhoneVariants(phone);
       const [orders, bookings, receipts, salesInvoices] = await Promise.all([
         db
-          .select()
+          .select({
+            trackingCode: ordersTable.trackingCode,
+            total: ordersTable.total,
+            depositAmount: ordersTable.depositAmount,
+            createdAt: ordersTable.createdAt,
+          })
           .from(ordersTable)
           .where(inArray(ordersTable.customerPhone, phoneVariants))
           .orderBy(desc(ordersTable.createdAt)),
         db
-          .select()
+          .select({
+            id: serviceOrdersTable.id,
+            trackingCode: serviceOrdersTable.trackingCode,
+            totalAmount: serviceOrdersTable.totalAmount,
+            depositAmount: serviceOrdersTable.depositAmount,
+            createdAt: serviceOrdersTable.createdAt,
+          })
           .from(serviceOrdersTable)
           .where(inArray(serviceOrdersTable.phone, phoneVariants))
           .orderBy(desc(serviceOrdersTable.createdAt)),
         customer
           ? db
-              .select()
+              .select({
+                voucherNo: receiptVouchersTable.voucherNo,
+                date: receiptVouchersTable.date,
+                amount: receiptVouchersTable.amount,
+                payerName: receiptVouchersTable.payerName,
+                orderId: receiptVouchersTable.orderId,
+                bookingId: receiptVouchersTable.bookingId,
+                reference: receiptVouchersTable.reference,
+                method: receiptVouchersTable.method,
+              })
               .from(receiptVouchersTable)
               .where(eq(receiptVouchersTable.customerId, customer.id))
               .orderBy(desc(receiptVouchersTable.date))
           : Promise.resolve([] as any[]),
         db
-          .select()
+          .select({
+            id: salesInvoicesTable.id,
+            invoiceNo: salesInvoicesTable.invoiceNo,
+            date: salesInvoicesTable.date,
+            customerName: salesInvoicesTable.customerName,
+            total: salesInvoicesTable.total,
+            paidAmount: salesInvoicesTable.paidAmount,
+            createdAt: salesInvoicesTable.createdAt,
+          })
           .from(salesInvoicesTable)
           .where(
             and(
