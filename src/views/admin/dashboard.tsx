@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   AlertTriangle, Bell, CalendarDays, CreditCard, ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
-  CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle, UserCheck, Activity,
+  CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle, UserCheck, Activity, WalletCards,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -52,6 +52,14 @@ type DashboardData = {
     monthlyExpenses: number;
     cashBalance: number;
     deliveryFeesTotal: number;
+  };
+  receivables?: {
+    totalOutstanding: number;
+    totalReceivables: number;
+    unpaidBookings: number;
+    debtorCount: number;
+    recentPayments: { transaction_no: string; date: string; amount: number; customer_name: string; payment_method: string; approval_status: string }[];
+    topDebtors: { customer_name: string; phone: string; remaining: number }[];
   };
   alerts: { key: string; label: string; count: number }[];
 };
@@ -165,6 +173,12 @@ export default function DashboardPage() {
     { label: "المتبقي على الزبائن", value: formatCurrency(data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning", href: "/admin/accounting" },
     { label: "إجمالي الإيرادات", value: formatCurrency(data.totalRevenue), icon: DollarSign, color: "text-primary", href: "/admin/reports" },
   ];
+  const receivableCards: KpiCard[] = [
+    { label: "إجمالي المستحق", value: formatCurrency(data.receivables?.totalOutstanding ?? data.remainingTotal ?? 0), icon: CreditCard, color: "text-status-warning", href: "/admin/accounting?tab=receivables" },
+    { label: "إجمالي الذمم", value: formatCurrency(data.receivables?.totalReceivables ?? 0), icon: WalletCards, color: "text-status-danger", href: "/admin/accounting?tab=statement" },
+    { label: "حجوزات غير مسددة", value: fmtNum(data.receivables?.unpaidBookings ?? 0), icon: CalendarDays, color: "text-status-warning", href: "/admin/orders" },
+    { label: "عملاء مدينون", value: fmtNum(data.receivables?.debtorCount ?? 0), icon: Users, color: "text-status-danger", href: "/admin/accounting?tab=receivables" },
+  ];
 
   const pieData = data.statusBreakdown.map(s => ({
     name: STATUS_LABELS[s.status] ?? s.status,
@@ -273,6 +287,34 @@ export default function DashboardPage() {
       <section><SectionHeader icon={ShoppingBag} title="الطلبات والمخزون" /><KpiGrid cards={orderCards} /></section>
       <section><SectionHeader icon={CreditCard} title="الصندوق وتوصيل اليوم" /><KpiGrid cards={cashCards} /></section>
       <section><SectionHeader icon={DollarSign} title="الشهر والإجمالي" /><KpiGrid cards={monthCards} /></section>
+      <section>
+        <SectionHeader icon={WalletCards} title="الذمم والتحصيل" hint="محدّث من الطلبات والحجوزات والفواتير" />
+        <KpiGrid cards={receivableCards} />
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border border-border/30 bg-card p-4">
+            <h3 className="mb-3 text-sm font-semibold text-foreground">آخر الدفعات</h3>
+            {!data.receivables?.recentPayments?.length ? <EmptyState message="لا توجد دفعات حديثة" /> : (
+              <div className="space-y-2">{data.receivables.recentPayments.map((payment) => (
+                <div key={payment.transaction_no} className="flex items-center justify-between gap-3 rounded-lg border border-border/20 bg-background/50 p-2.5 text-xs">
+                  <div className="min-w-0"><p className="truncate font-semibold text-foreground">{payment.customer_name || "زبون"}</p><p className="text-muted-foreground">{payment.date} · {payment.approval_status === "executed" ? "معتمد" : "قيد الاعتماد"}</p></div>
+                  <strong className="shrink-0 text-status-success">{formatCurrency(payment.amount)}</strong>
+                </div>
+              ))}</div>
+            )}
+          </div>
+          <div className="rounded-xl border border-border/30 bg-card p-4">
+            <h3 className="mb-3 text-sm font-semibold text-foreground">أعلى العملاء مديونية</h3>
+            {!data.receivables?.topDebtors?.length ? <EmptyState message="لا توجد ذمم مستحقة" /> : (
+              <div className="space-y-2">{data.receivables.topDebtors.map((customer, index) => (
+                <div key={`${customer.phone}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border/20 bg-background/50 p-2.5 text-xs">
+                  <div className="min-w-0"><p className="truncate font-semibold text-foreground">{customer.customer_name || "زبون"}</p><p className="text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</p></div>
+                  <strong className="shrink-0 text-status-danger">{formatCurrency(customer.remaining)}</strong>
+                </div>
+              ))}</div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-card rounded-xl border border-border/30 p-5">

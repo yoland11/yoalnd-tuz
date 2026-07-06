@@ -109,6 +109,7 @@ const REPORTS: ReportConfig[] = [
       { key: "invoice_no", label: "رقم الفاتورة" },
       { key: "date", label: "التاريخ", type: "date", align: "center" },
       { key: "customer_name", label: "العميل" },
+      { key: "supplier_name", label: "المورد" },
       { key: "staff_name", label: "الموظف" },
       { key: "item_count", label: "الأصناف", type: "number", align: "center" },
       { key: "subtotal", label: "الإجمالي", type: "money", align: "center" },

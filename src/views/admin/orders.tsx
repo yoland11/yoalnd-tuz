@@ -21,6 +21,7 @@ import { EmptyState } from "./_layout";
 import { SelectedColorLabel } from "@/components/product-colors";
 import { EventCountdown } from "@/components/interactive/event-countdown";
 import { useToast } from "@/hooks/use-toast";
+import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 
 type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -32,6 +33,7 @@ type ServiceOrder = {
   depositAmount?: number;
   remainingAmount?: number;
   paymentStatus?: string;
+  lastPayment?: LastPayment;
   internalNotes?: string | null;
   customerConfirmation?: string | null;
   requestedDate?: string | null;
@@ -456,14 +458,16 @@ export default function OrdersPage() {
                       <Trash2 className="w-3.5 h-3.5" /> إلغاء وأرشفة
                     </button>
                   </div>
-                  <PaymentPanel
+                  <AccountSummaryCard
+                    sourceType="order"
+                    sourceId={order.id}
                     total={Number(order.total ?? 0)}
-                    deposit={Number((order as any).depositAmount ?? 0)}
+                    discount={Number((order as any).couponDiscountAmount ?? 0) + Number((order as any).loyaltyDiscountAmount ?? 0)}
+                    paid={Number((order as any).depositAmount ?? 0)}
                     remaining={Number((order as any).remainingAmount ?? 0)}
-                    status={(order as any).paymentStatus ?? "unpaid"}
-                    internalNotes={(order as any).internalNotes ?? ""}
-                    onSave={(values) => updateProductPayment.mutate({ id: order.id, ...values })}
-                    saving={updateProductPayment.isPending}
+                    paymentStatus={(order as any).paymentStatus ?? "unpaid"}
+                    lastPayment={(order as any).lastPayment ?? null}
+                    onCollected={invalidateAll}
                   />
                   {Array.isArray(order.items) && order.items.length > 0 && (
                     <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-background/40 border border-border/20 p-3">
@@ -560,6 +564,17 @@ export default function OrdersPage() {
                       ))}
                     </div>
                   )}
+                  <AccountSummaryCard
+                    sourceType="service_order"
+                    sourceId={o.id}
+                    total={Number(o.totalAmount ?? 0)}
+                    discount={Number(o.customFields?.discountAmount ?? 0)}
+                    paid={Number(o.depositAmount ?? 0)}
+                    remaining={Number(o.remainingAmount ?? 0)}
+                    paymentStatus={o.paymentStatus ?? "unpaid"}
+                    lastPayment={o.lastPayment ?? null}
+                    onCollected={invalidateAll}
+                  />
                   <PaymentPanel
                     total={Number(o.totalAmount ?? 0)}
                     deposit={Number(o.depositAmount ?? 0)}
@@ -878,6 +893,7 @@ function PaymentPanel({
 
   return (
     <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 rounded-lg bg-background/40 border border-border/20 p-3">
+      <div className="col-span-full text-xs font-semibold text-muted-foreground">تعديل التسعير والملاحظات</div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {allowTotal && (
           <label className="block">

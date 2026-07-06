@@ -118,6 +118,14 @@ type CommandCenter = {
     type: string;
     href?: string;
   }>;
+  latestPayments: Array<{
+    transactionNo: string;
+    date: string;
+    amount: number;
+    customerName: string;
+    method: string;
+    status: string;
+  }>;
 };
 
 type QueueRow = {
@@ -578,6 +586,30 @@ export default function EnterpriseCommandCenterPage() {
               />
             </div>
           )}
+          {command.data ? (
+            <div className="rounded-xl border border-border/30 bg-card p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2"><Wallet className="h-4 w-4 text-primary" /><h3 className="text-sm font-semibold text-foreground">الحالة المالية</h3></div>
+                <Link href="/admin/accounting?tab=statement" className="text-xs font-semibold text-primary hover:underline">فتح كشوف العملاء</Link>
+              </div>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                <Metric icon={Wallet} label="إجمالي المستحق" value={formatCurrency(summary.outstandingAmount ?? 0)} warning={Boolean(summary.outstandingAmount)} href="/admin/accounting?tab=receivables" />
+                <Metric icon={Users} label="عدد المدينين" value={summary.debtorCount ?? 0} warning={Boolean(summary.debtorCount)} href="/admin/customers" />
+                <Metric icon={CalendarClock} label="حجوزات متأخرة" value={summary.overdueBookings ?? 0} warning={Boolean(summary.overdueBookings)} href="/admin/orders" />
+                <Metric icon={Wallet} label="آخر الدفعات" value={command.data.latestPayments?.length ?? 0} href="/admin/accounting?tab=receivables" />
+              </div>
+              {command.data.latestPayments?.length ? (
+                <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {command.data.latestPayments.slice(0, 6).map((payment) => (
+                    <div key={payment.transactionNo} className="flex items-center justify-between gap-3 rounded-lg border border-border/20 bg-background/50 p-2.5 text-xs">
+                      <div className="min-w-0"><p className="truncate font-semibold text-foreground">{payment.customerName || "زبون"}</p><p className="text-muted-foreground">{payment.date} · {payment.status === "executed" ? "معتمد" : "قيد الاعتماد"}</p></div>
+                      <strong className="shrink-0 text-status-success">{formatCurrency(payment.amount)}</strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid gap-4 xl:grid-cols-3">
             <Panel className="xl:col-span-2">
               <SectionTitle

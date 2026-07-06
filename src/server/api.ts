@@ -1860,6 +1860,90 @@ async function executeApprovedApprovalRequest(
     });
     return { executed: true, productId };
   }
+  if (row.type === "cancel_receipt_voucher") {
+    const voucherId = row.entityId;
+    if (!voucherId) return { executed: false, reason: "missing_voucher" };
+    const voucher = await db.query.receiptVouchersTable.findFirst({
+      where: eq(receiptVouchersTable.id, voucherId),
+    });
+    if (!voucher) return { executed: false, reason: "voucher_not_found" };
+    if (voucher.approvalStatus === "cancelled")
+      return { executed: false, reason: "already_cancelled" };
+    if (voucher.financialTransactionId) {
+      const transaction = await db.query.financialTransactionsTable.findFirst({
+        where: eq(financialTransactionsTable.id, voucher.financialTransactionId),
+      });
+      const managerActor = { ...financeActorValue, role: "manager" };
+      if (transaction?.approvalStatus === "executed")
+        await reverseFinancialTransaction(
+          voucher.financialTransactionId,
+          managerActor,
+          "إلغاء سند قبض بعد موافقة المدير",
+        );
+      else
+        await cancelFinancialTransactionRequest(
+          voucher.financialTransactionId,
+          managerActor,
+          "إلغاء سند قبض بعد موافقة المدير",
+        );
+    }
+    await db
+      .update(receiptVouchersTable)
+      .set({ approvalStatus: "cancelled" })
+      .where(eq(receiptVouchersTable.id, voucherId));
+    await addEntityTimeline({
+      entityType: "receipt_voucher",
+      entityId: voucherId,
+      type: "payment_deleted_approved",
+      title: "تم إلغاء سند القبض بعد الموافقة",
+      body: voucher.voucherNo,
+      actor,
+      metadata: { approvalRequestId: row.id },
+    });
+    return { executed: true, voucherId };
+  }
+  if (row.type === "cancel_payment_voucher") {
+    const voucherId = row.entityId;
+    if (!voucherId) return { executed: false, reason: "missing_voucher" };
+    const voucher = await db.query.paymentVouchersTable.findFirst({
+      where: eq(paymentVouchersTable.id, voucherId),
+    });
+    if (!voucher) return { executed: false, reason: "voucher_not_found" };
+    if (voucher.approvalStatus === "cancelled")
+      return { executed: false, reason: "already_cancelled" };
+    if (voucher.financialTransactionId) {
+      const transaction = await db.query.financialTransactionsTable.findFirst({
+        where: eq(financialTransactionsTable.id, voucher.financialTransactionId),
+      });
+      const managerActor = { ...financeActorValue, role: "manager" };
+      if (transaction?.approvalStatus === "executed")
+        await reverseFinancialTransaction(
+          voucher.financialTransactionId,
+          managerActor,
+          "إلغاء سند صرف بعد موافقة المدير",
+        );
+      else
+        await cancelFinancialTransactionRequest(
+          voucher.financialTransactionId,
+          managerActor,
+          "إلغاء سند صرف بعد موافقة المدير",
+        );
+    }
+    await db
+      .update(paymentVouchersTable)
+      .set({ approvalStatus: "cancelled" })
+      .where(eq(paymentVouchersTable.id, voucherId));
+    await addEntityTimeline({
+      entityType: "payment_voucher",
+      entityId: voucherId,
+      type: "refund_deleted_approved",
+      title: "تم إلغاء سند الصرف بعد الموافقة",
+      body: voucher.voucherNo,
+      actor,
+      metadata: { approvalRequestId: row.id },
+    });
+    return { executed: true, voucherId };
+  }
   if (
     row.type === "warehouse_transfer" ||
     row.entityType === "warehouse_transfer"
@@ -2456,6 +2540,8 @@ async function runSmartNotificationsSweep() {
       entityId: row.id,
       href: "/admin/orders",
       phone: row.customerPhone,
+      telegram: `💳 <b>دفعة متجر متأخرة</b>\nالزبون: ${telegramText(row.customerName)}\nالطلب: ${telegramText(row.trackingCode)}\nالمتبقي: ${formatCurrency(row.remainingAmount)}`,
+      whatsapp: `تذكير من AJN: يوجد مبلغ متبقٍ على طلبك ${row.trackingCode} بقيمة ${formatCurrency(row.remainingAmount)}.`,
       metadata: {
         remainingAmount: Number(row.remainingAmount),
         dueDate: row.dueDate,
@@ -2471,6 +2557,8 @@ async function runSmartNotificationsSweep() {
       entityId: row.id,
       href: "/admin/orders",
       phone: row.phone,
+      telegram: `💳 <b>دفعة حجز خدمة متأخرة</b>\nالزبون: ${telegramText(row.customerName)}\nالحجز: ${telegramText(row.trackingCode)}\nالمتبقي: ${formatCurrency(row.remainingAmount)}`,
+      whatsapp: `تذكير من AJN: يوجد مبلغ متبقٍ على حجزك ${row.trackingCode ?? ""} بقيمة ${formatCurrency(row.remainingAmount)}.`,
       metadata: {
         remainingAmount: Number(row.remainingAmount),
         dueDate: row.dueDate,
@@ -2486,6 +2574,8 @@ async function runSmartNotificationsSweep() {
       entityId: row.id,
       href: "/admin/kosha-bookings",
       phone: row.phone,
+      telegram: `💳 <b>دفعة كوشة متأخرة</b>\nالزبون: ${telegramText(row.customerName)}\nالحجز: ${telegramText(row.trackingCode ?? `KB-${row.id}`)}\nالمتبقي: ${formatCurrency(row.remainingAmount)}`,
+      whatsapp: `تذكير من AJN: يوجد مبلغ متبقٍ على حجز الكوشة بقيمة ${formatCurrency(row.remainingAmount)}.`,
       metadata: {
         remainingAmount: Number(row.remainingAmount),
         dueDate: row.dueDate,
@@ -10265,7 +10355,16 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       limit,
       offset,
     });
-    return json(await Promise.all(orders.map(formatOrder)));
+    const [formatted, lastPayments] = await Promise.all([
+      Promise.all(orders.map(formatOrder)),
+      collectionLastPayments("order", orders.map((order) => order.id)),
+    ]);
+    return json(
+      formatted.map((order) => ({
+        ...order,
+        lastPayment: lastPayments.get(order.id) ?? null,
+      })),
+    );
   }
 
   if (method === "POST" && parts.length === 1) {
@@ -14093,6 +14192,20 @@ async function enterpriseCommandCenter() {
           (select coalesce(sum(remaining_amount::numeric),0) from service_orders where archived_at is null and status <> 'cancelled') +
           (select coalesce(sum(remaining_amount::numeric),0) from kosha_bookings where archived_at is null and status <> 'cancelled') +
           (select coalesce(sum(remaining_amount::numeric),0) from graduation_orders where archived_at is null and status <> 'cancelled'),
+        'debtorCount', (
+          select count(*) from (
+            select regexp_replace(coalesce(phone, name), '[^0-9A-Za-zء-ي]', '', 'g') as customer_key
+            from (
+              select customer_phone as phone, customer_name as name from orders where archived_at is null and status <> 'cancelled' and remaining_amount::numeric > 0
+              union all select phone, customer_name from service_orders where archived_at is null and status <> 'cancelled' and remaining_amount::numeric > 0
+              union all select phone, customer_name from kosha_bookings where archived_at is null and status <> 'cancelled' and remaining_amount::numeric > 0
+              union all select customer_phone, customer_name from sales_invoices where status = 'active' and financially_reversed = false and remaining_amount::numeric > 0
+            ) debtors group by customer_key
+          ) grouped_debtors
+        ),
+        'overdueBookings',
+          (select count(*) from service_orders, ctx where archived_at is null and status <> 'cancelled' and remaining_amount::numeric > 0 and due_date < ctx.today) +
+          (select count(*) from kosha_bookings, ctx where archived_at is null and status <> 'cancelled' and remaining_amount::numeric > 0 and due_date < ctx.today),
         'graduationInProduction', (select count(*) from graduation_orders where archived_at is null and production_stage not in ('new','ready','delivered') and status <> 'cancelled'),
         'graduationReady', (select count(*) from graduation_orders where archived_at is null and production_stage = 'ready' and status <> 'cancelled'),
         'activeGroupOrders', (select count(*) from graduation_groups where status = 'open'),
@@ -14168,7 +14281,14 @@ async function enterpriseCommandCenter() {
         'id', id, 'title', title, 'body', body, 'type', type, 'href', href, 'createdAt', created_at
       ) order by created_at desc) from (
         select * from notifications where audience_type = 'admin' and archived_at is null and read_at is null order by created_at desc limit 20
-      ) alert_rows), '[]'::jsonb)
+      ) alert_rows), '[]'::jsonb),
+      'latestPayments', coalesce((select jsonb_agg(jsonb_build_object(
+        'transactionNo', transaction_no, 'date', transaction_date, 'amount', amount::float,
+        'customerName', coalesce(customer_name, description), 'method', payment_method,
+        'status', approval_status
+      ) order by created_at desc) from (
+        select * from financial_transactions where direction = 'revenue' and source_event = 'payment' order by created_at desc limit 6
+      ) payment_rows), '[]'::jsonb)
     ) as payload
   `);
   return (
@@ -16957,6 +17077,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  const collection = await handleCollections(req, parts, section);
+  if (collection) return collection;
 
   if (section === "enterprise") {
     const enterprise = await handleEnterpriseAdmin(req, parts.slice(2));
@@ -20790,6 +20913,69 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         message: err?.message,
       });
     }
+    let receivables = {
+      totalOutstanding: 0,
+      totalReceivables: 0,
+      unpaidBookings: 0,
+      debtorCount: 0,
+      recentPayments: [] as any[],
+      topDebtors: [] as any[],
+    };
+    try {
+      const [summaryRows, paymentRows, debtorRows] = await Promise.all([
+        db.execute(sql`
+          SELECT
+            (
+              SELECT coalesce(sum(remaining_amount::numeric), 0) FROM orders WHERE archived_at IS NULL AND status <> 'cancelled'
+            ) + (
+              SELECT coalesce(sum(remaining_amount::numeric), 0) FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled'
+            ) + (
+              SELECT coalesce(sum(remaining_amount::numeric), 0) FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled'
+            ) + (
+              SELECT coalesce(sum(remaining_amount::numeric), 0) FROM sales_invoices WHERE status = 'active' AND financially_reversed = false
+            ) AS outstanding,
+            (
+              SELECT count(*) FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            ) + (
+              SELECT count(*) FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            ) AS unpaid_bookings
+        `),
+        db.execute(sql`
+          SELECT transaction_no, transaction_date::text AS date, amount::float AS amount,
+            coalesce(customer_name, description) AS customer_name, payment_method, approval_status
+          FROM financial_transactions
+          WHERE direction = 'revenue' AND source_event = 'payment'
+          ORDER BY created_at DESC LIMIT 6
+        `),
+        db.execute(sql`
+          WITH debt AS (
+            SELECT customer_name, customer_phone AS phone, remaining_amount::numeric AS remaining FROM orders WHERE archived_at IS NULL AND status <> 'cancelled'
+            UNION ALL SELECT customer_name, phone, remaining_amount::numeric FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled'
+            UNION ALL SELECT customer_name, phone, remaining_amount::numeric FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled'
+            UNION ALL SELECT customer_name, customer_phone, remaining_amount::numeric FROM sales_invoices WHERE status = 'active' AND financially_reversed = false
+          )
+          SELECT max(customer_name) AS customer_name, max(phone) AS phone,
+            sum(remaining)::float AS remaining,
+            count(*) over()::int AS debtor_count
+          FROM debt WHERE remaining > 0
+          GROUP BY regexp_replace(coalesce(phone, customer_name), '[^0-9A-Za-zء-ي]', '', 'g')
+          ORDER BY remaining DESC LIMIT 6
+        `),
+      ]);
+      const summary = (summaryRows.rows?.[0] ?? {}) as any;
+      const topDebtors = (debtorRows.rows ?? []) as any[];
+      const outstanding = Number(summary.outstanding ?? 0);
+      receivables = {
+        totalOutstanding: outstanding,
+        totalReceivables: outstanding,
+        unpaidBookings: Number(summary.unpaid_bookings ?? 0),
+        debtorCount: Number(topDebtors[0]?.debtor_count ?? topDebtors.length),
+        recentPayments: paymentRows.rows ?? [],
+        topDebtors,
+      };
+    } catch (err: any) {
+      console.warn("dashboard receivables summary failed", { message: err?.message });
+    }
     return json({
       totalOrders: totalOrders[0].c,
       activeOrders: activeOrders[0].c,
@@ -20850,6 +21036,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       },
       dailyCash: dailyCashSummary,
       financialSummary,
+      receivables,
       alerts,
     });
   }
@@ -22082,6 +22269,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         whatsappLogs,
         messageThreads,
         invoices,
+        customerPayments,
       ] = await Promise.all([
         db.query.ordersTable.findMany({
           where: inArray(ordersTable.customerPhone, phoneVariants),
@@ -22141,6 +22329,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orderBy: [desc(salesInvoicesTable.createdAt)],
           limit: 20,
         }),
+        db.query.financialTransactionsTable.findMany({
+          where: and(
+            or(
+              eq(financialTransactionsTable.customerId, id),
+              inArray(financialTransactionsTable.customerPhone, phoneVariants),
+            ),
+            eq(financialTransactionsTable.direction, "revenue"),
+            eq(financialTransactionsTable.approvalStatus, "executed"),
+          ),
+          orderBy: [desc(financialTransactionsTable.executedAt), desc(financialTransactionsTable.createdAt)],
+          limit: 20,
+        }),
       ]);
       const productTotal = orders.reduce(
         (sum, row) => sum + money(row.total),
@@ -22174,6 +22374,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           (row) =>
             row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
         ).length;
+      const totalCharges = productTotal + serviceTotal + invoiceTotal;
+      const totalPaid = Math.max(totalCharges - remainingTotal, 0);
       return json({
         id: customer.id,
         name: customer.name,
@@ -22198,9 +22400,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           productOrders: orders.length,
           serviceOrders: serviceOrders.length,
           invoices: invoices.length,
-          totalSpent: productTotal + serviceTotal + invoiceTotal,
+          totalSpent: totalCharges,
+          totalCharges,
+          totalPaid,
           remainingTotal,
+          currentBalance: remainingTotal,
+          openInvoices: unpaidCount,
           unpaidCount,
+          lastPayment: customerPayments[0]
+            ? {
+                amount: money(customerPayments[0].amount),
+                date: customerPayments[0].transactionDate,
+                method: customerPayments[0].paymentMethod,
+                transactionNo: customerPayments[0].transactionNo,
+              }
+            : null,
           lastWhatsappAt: whatsappLogs[0]?.sentAt?.toISOString?.() ?? null,
           lastActivityAt: activity[0]?.createdAt?.toISOString?.() ?? null,
         },
@@ -22232,6 +22446,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           remainingAmount: Number.parseFloat(invoice.remainingAmount ?? "0"),
           paymentStatus: invoice.paymentStatus,
           createdAt: invoice.createdAt.toISOString(),
+        })),
+        payments: customerPayments.map((payment) => ({
+          id: payment.id,
+          transactionNo: payment.transactionNo,
+          date: payment.transactionDate,
+          amount: money(payment.amount),
+          method: payment.paymentMethod,
+          description: payment.description,
         })),
         addresses: addresses.map(formatAddress),
         rewardHistory: rewardHistory.map((row) => ({
@@ -22501,6 +22723,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
       const services = await db.query.servicesTable.findMany();
       const sMap = new Map(services.map((s) => [s.id, s]));
+      const lastPayments = await collectionLastPayments(
+        "service_order",
+        rows.map((row) => row.id),
+      );
       const sorted = [...rows].sort((a, b) => {
         const ar = a.status === "reschedule_pending" ? 0 : 1;
         const br = b.status === "reschedule_pending" ? 0 : 1;
@@ -22524,6 +22750,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           depositAmount: Number.parseFloat(r.depositAmount ?? "0"),
           remainingAmount: Number.parseFloat(r.remainingAmount ?? "0"),
           paymentStatus: r.paymentStatus ?? "unpaid",
+          lastPayment: lastPayments.get(r.id) ?? null,
           customFields: r.customFields ?? {},
           status: r.status,
           customerConfirmation: r.customerConfirmation ?? null,
@@ -24161,6 +24388,8 @@ async function ensureSalesInvoicesTables() {
       ALTER TABLE sales_invoices
         ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(60),
         ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS supplier_name TEXT,
         ADD COLUMN IF NOT EXISTS stock_applied INTEGER NOT NULL DEFAULT 1,
         ADD COLUMN IF NOT EXISTS stock_restored_at TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
@@ -24343,7 +24572,8 @@ async function handleSalesInvoices(
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
     const qr = await ensureQrForEntity("invoice", inv, req);
-    return json({ ...inv, items, qr });
+    const lastPayments = await collectionLastPayments("sales_invoice", [id]);
+    return json({ ...inv, items, qr, lastPayment: lastPayments.get(id) ?? null });
   }
 
   if (method === "POST") {
@@ -24384,6 +24614,14 @@ async function handleSalesInvoices(
     const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
     if (rawPhone && !customerPhone)
       return error("رقم هاتف الزبون العراقي غير صحيح", 400);
+    const supplierId = optionalPositiveId(b.supplierId);
+    const supplier = supplierId
+      ? await db.query.suppliersTable.findFirst({
+          where: eq(suppliersTable.id, supplierId),
+        })
+      : null;
+    if (supplierId && !supplier) return error("المورد المختار غير موجود", 400);
+    const supplierName = nullableText(b.supplierName ?? supplier?.name);
 
     const [inv] = await db
       .insert(salesInvoicesTable)
@@ -24393,6 +24631,8 @@ async function handleSalesInvoices(
         customerName: b.customerName ?? "",
         customerPhone,
         customerId: b.customerId ?? null,
+        supplierId,
+        supplierName,
         subtotal: String(subtotal),
         discountAmount: String(discountAmount),
         couponCode: couponPreview?.ok ? couponPreview.coupon.code : null,
@@ -24580,6 +24820,20 @@ async function handleSalesInvoices(
     const customerPhone = rawPhone ? normalizeIraqiPhone(rawPhone) : null;
     if (rawPhone && !customerPhone)
       return error("رقم هاتف الزبون العراقي غير صحيح", 400);
+    const supplierId =
+      b.supplierId !== undefined
+        ? optionalPositiveId(b.supplierId)
+        : existing.supplierId;
+    const supplier = supplierId
+      ? await db.query.suppliersTable.findFirst({
+          where: eq(suppliersTable.id, supplierId),
+        })
+      : null;
+    if (supplierId && !supplier) return error("المورد المختار غير موجود", 400);
+    const supplierName =
+      b.supplierName !== undefined
+        ? nullableText(b.supplierName ?? supplier?.name)
+        : existing.supplierName;
 
     await db
       .update(salesInvoicesTable)
@@ -24587,6 +24841,8 @@ async function handleSalesInvoices(
         date: b.date ?? existing.date,
         customerName: b.customerName ?? existing.customerName,
         customerPhone,
+        supplierId,
+        supplierName,
         subtotal: String(subtotal),
         discountAmount: String(discountAmount),
         taxAmount: String(taxAmount),
@@ -25692,6 +25948,7 @@ async function handleReports(
           si.date::text AS date,
           COALESCE(NULLIF(si.customer_name, ''), 'زبون') AS customer_name,
           COALESCE(si.customer_phone, '') AS customer_phone,
+          COALESCE(NULLIF(si.supplier_name, ''), '—') AS supplier_name,
           COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد') AS staff_name,
           COALESCE(si.payment_method, '') AS payment_method,
           COALESCE(si.payment_status, '') AS payment_status,
@@ -26962,6 +27219,409 @@ async function syncRentalFinancialPayment(
     },
     financeActorValue,
   );
+}
+
+const paymentCollectionSchema = z.object({
+  sourceType: z.enum([
+    "order",
+    "service_order",
+    "sales_invoice",
+    "kosha_booking",
+  ]),
+  sourceId: z.coerce.number().int().positive(),
+  amount: z.coerce.number().positive("المبلغ يجب أن يكون أكبر من صفر"),
+  paymentMethod: z
+    .enum(["cash", "transfer", "card", "pos"])
+    .default("cash"),
+  receiptNo: z.string().trim().max(100).optional().default(""),
+  notes: z.string().trim().max(2000).optional().default(""),
+  receiptImage: z.string().trim().optional().default(""),
+});
+
+type CollectionSourceType = z.infer<
+  typeof paymentCollectionSchema
+>["sourceType"];
+
+async function collectionSourceSummary(
+  sourceType: CollectionSourceType,
+  sourceId: number,
+) {
+  let source: any = null;
+  let reference = `#${sourceId}`;
+  let customerId: number | null = null;
+  let customerName = "";
+  let customerPhone: string | null = null;
+  let total = 0;
+  let discount = 0;
+  let paid = 0;
+  let remaining = 0;
+  let paymentStatus = "unpaid";
+  let paymentMethod = "cash";
+  let date = new Date().toISOString().slice(0, 10);
+
+  if (sourceType === "order") {
+    source = await db.query.ordersTable.findFirst({
+      where: eq(ordersTable.id, sourceId),
+    });
+    if (source) {
+      reference = source.trackingCode;
+      customerId = source.customerId ?? null;
+      customerName = source.customerName;
+      customerPhone = source.customerPhone;
+      total = money(source.total);
+      discount = money(source.couponDiscountAmount) + money(source.loyaltyDiscountAmount);
+      paid = money(source.depositAmount);
+      remaining = money(source.remainingAmount);
+      paymentStatus = source.paymentStatus;
+      paymentMethod = source.paymentMethod;
+      date = source.createdAt.toISOString().slice(0, 10);
+    }
+  } else if (sourceType === "service_order") {
+    source = await db.query.serviceOrdersTable.findFirst({
+      where: eq(serviceOrdersTable.id, sourceId),
+    });
+    if (source) {
+      reference = source.trackingCode ?? `SRV-${source.id}`;
+      customerName = source.customerName;
+      customerPhone = source.phone;
+      total = money(source.totalAmount);
+      discount = money((source.customFields as any)?.discountAmount);
+      paid = money(source.depositAmount);
+      remaining = money(source.remainingAmount);
+      paymentStatus = source.paymentStatus;
+      paymentMethod = String((source.customFields as any)?.paymentMethod ?? "cash");
+      date = source.createdAt.toISOString().slice(0, 10);
+    }
+  } else if (sourceType === "sales_invoice") {
+    source = await db.query.salesInvoicesTable.findFirst({
+      where: eq(salesInvoicesTable.id, sourceId),
+    });
+    if (source) {
+      reference = source.invoiceNo;
+      customerId = source.customerId ?? null;
+      customerName = source.customerName;
+      customerPhone = source.customerPhone;
+      total = money(source.total);
+      discount = money(source.discountAmount) + money(source.couponDiscountAmount);
+      paid = money(source.paidAmount);
+      remaining = money(source.remainingAmount);
+      paymentStatus = source.paymentStatus;
+      paymentMethod = source.paymentMethod;
+      date = source.date;
+    }
+  } else {
+    source = await db.query.koshaBookingsTable.findFirst({
+      where: eq(koshaBookingsTable.id, sourceId),
+    });
+    if (source) {
+      reference = source.trackingCode ?? `KB-${source.id}`;
+      customerName = source.customerName;
+      customerPhone = source.phone;
+      total = money(source.totalAmount);
+      discount = money((source.bookingDetails as any)?.pricing?.discountAmount);
+      paid = money(source.paidAmount);
+      remaining = money(source.remainingAmount);
+      paymentStatus = source.paymentStatus;
+      paymentMethod = String((source.bookingDetails as any)?.pricing?.paymentMethod ?? "cash");
+      date = source.createdAt.toISOString().slice(0, 10);
+    }
+  }
+  if (!source) return null;
+  if (!customerId && customerPhone) {
+    customerId = (await findCustomerByPhone(customerPhone))?.id ?? null;
+  }
+  const lastPayment = await db.query.financialTransactionsTable.findFirst({
+    where: and(
+      eq(financialTransactionsTable.sourceType, sourceType),
+      eq(financialTransactionsTable.sourceId, String(sourceId)),
+      eq(financialTransactionsTable.sourceEvent, "payment"),
+    ),
+    orderBy: [desc(financialTransactionsTable.createdAt)],
+  });
+  return {
+    source,
+    sourceType,
+    sourceId,
+    reference,
+    customerId,
+    customerName,
+    customerPhone,
+    total,
+    discount,
+    paid,
+    remaining,
+    paymentStatus,
+    paymentMethod,
+    date,
+    lastPayment: lastPayment
+      ? {
+          amount: money(lastPayment.amount),
+          date: lastPayment.transactionDate,
+          createdAt: lastPayment.createdAt.toISOString(),
+          method: lastPayment.paymentMethod,
+          status: lastPayment.approvalStatus,
+          transactionNo: lastPayment.transactionNo,
+        }
+      : null,
+  };
+}
+
+async function collectionLastPayments(
+  sourceType: CollectionSourceType,
+  sourceIds: number[],
+) {
+  const ids = [...new Set(sourceIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return new Map<number, any>();
+  const rows = await db.query.financialTransactionsTable.findMany({
+    where: and(
+      eq(financialTransactionsTable.sourceType, sourceType),
+      inArray(financialTransactionsTable.sourceId, ids.map(String)),
+      eq(financialTransactionsTable.sourceEvent, "payment"),
+    ),
+    orderBy: [desc(financialTransactionsTable.createdAt)],
+  });
+  const result = new Map<number, any>();
+  for (const row of rows) {
+    const id = Number(row.sourceId);
+    if (!result.has(id)) {
+      result.set(id, {
+        amount: money(row.amount),
+        date: row.transactionDate,
+        createdAt: row.createdAt.toISOString(),
+        method: row.paymentMethod,
+        status: row.approvalStatus,
+        transactionNo: row.transactionNo,
+      });
+    }
+  }
+  return result;
+}
+
+async function handleCollections(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "collections") return null;
+  const method = req.method;
+  const currentUser = await getAdminUser(req);
+  if (!currentUser) return error("غير مخول", 401);
+
+  if (method === "GET" && parts[2] && parts[3]) {
+    const auth = await requireAnyPermission(req, [
+      "orders",
+      "bookings",
+      "accounting",
+    ]);
+    if (isResponse(auth)) return auth;
+    const sourceType = parts[2] as CollectionSourceType;
+    const sourceId = int(parts[3]);
+    if (
+      !paymentCollectionSchema.shape.sourceType.safeParse(sourceType).success ||
+      !sourceId
+    )
+      return error("مرجع التحصيل غير صحيح", 400);
+    const summary = await collectionSourceSummary(sourceType, sourceId);
+    return summary ? json(summary) : error("الطلب أو الحجز غير موجود", 404);
+  }
+
+  if (method !== "POST") return error("العملية غير مدعومة", 405);
+  if (!canEditOrderFinancials(currentUser))
+    return error("تسجيل الدفعات متاح للمحاسب أو المدير فقط", 403);
+  const parsed = paymentCollectionSchema.safeParse(await body(req));
+  if (!parsed.success) return validationError("collections.create", parsed);
+  const data = parsed.data;
+  const before = await collectionSourceSummary(data.sourceType, data.sourceId);
+  if (!before) return error("الطلب أو الحجز غير موجود", 404);
+  if (["cancelled", "deleted"].includes(String(before.source.status)))
+    return error("لا يمكن تحصيل دفعة لمعاملة ملغية", 409);
+  if ((before.source as any).financiallyReversed)
+    return error("تم عكس الأثر المالي لهذه المعاملة", 409);
+  if (before.total <= 0) return error("يجب تحديد المبلغ الكلي أولاً", 409);
+  if (before.remaining <= 0) return error("الحساب مدفوع بالكامل", 409);
+  const amount = money(data.amount);
+  if (amount > before.remaining)
+    return error(`المبلغ أكبر من المتبقي (${formatCurrency(before.remaining)})`, 400);
+
+  const paid = money(before.paid + amount);
+  const remaining = money(Math.max(before.total - paid, 0));
+  const paymentStatus = remaining <= 0 ? "paid" : "partial";
+  const a = actor(currentUser);
+  const sourceMethod = data.paymentMethod === "transfer" ? "transfer" : data.paymentMethod === "card" || data.paymentMethod === "pos" ? "pos" : "cash";
+
+  try {
+    if (data.sourceType === "order") {
+      await db.update(ordersTable).set({
+        depositAmount: String(paid),
+        remainingAmount: String(remaining),
+        paymentStatus,
+        paymentMethod: sourceMethod === "cash" ? "paid" : sourceMethod,
+        updatedAt: new Date(),
+      }).where(eq(ordersTable.id, data.sourceId));
+    } else if (data.sourceType === "service_order") {
+      await db.update(serviceOrdersTable).set({
+        depositAmount: String(paid),
+        remainingAmount: String(remaining),
+        paymentStatus,
+        customFields: {
+          ...((before.source.customFields ?? {}) as Record<string, unknown>),
+          paymentMethod: sourceMethod,
+        },
+      }).where(eq(serviceOrdersTable.id, data.sourceId));
+    } else if (data.sourceType === "sales_invoice") {
+      await db.update(salesInvoicesTable).set({
+        paidAmount: String(paid),
+        remainingAmount: String(remaining),
+        paymentStatus,
+        paymentMethod: sourceMethod,
+        updatedAt: new Date(),
+      }).where(eq(salesInvoicesTable.id, data.sourceId));
+    } else {
+      await db.update(koshaBookingsTable).set({
+        paidAmount: String(paid),
+        remainingAmount: String(remaining),
+        paymentStatus,
+        bookingDetails: {
+          ...((before.source.bookingDetails ?? {}) as Record<string, unknown>),
+          pricing: {
+            ...(((before.source.bookingDetails as any)?.pricing ?? {}) as Record<string, unknown>),
+            paymentMethod: sourceMethod,
+          },
+        },
+        updatedAt: new Date(),
+      }).where(eq(koshaBookingsTable.id, data.sourceId));
+    }
+
+    const [voucher] = await db.insert(receiptVouchersTable).values({
+      voucherNo: temporaryVoucherNo(),
+      date: new Date().toISOString().slice(0, 10),
+      amount: String(amount),
+      payerName: textFallback(before.customerName, "زبون"),
+      customerId: before.customerId,
+      orderId: data.sourceType === "order" ? data.sourceId : null,
+      bookingId: data.sourceType === "service_order" ? data.sourceId : null,
+      reference: nullableText(
+        data.receiptNo
+          ? `${before.reference} | ${data.receiptNo}`
+          : before.reference,
+      ),
+      method: sourceMethod,
+      notes: nullableText(data.notes),
+      createdBy: a.id,
+      createdByName: a.name,
+    }).returning();
+    const [savedVoucher] = await db.update(receiptVouchersTable).set({
+      voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
+    }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
+
+    const updated = await collectionSourceSummary(data.sourceType, data.sourceId);
+    let financialTransaction: any = null;
+    if (updated) {
+      if (data.sourceType === "order")
+        financialTransaction = await syncOrderFinancialPayment(updated.source, financialActor(currentUser));
+      else if (data.sourceType === "service_order")
+        financialTransaction = await syncServiceOrderFinancialPayment(updated.source, financialActor(currentUser));
+      else if (data.sourceType === "kosha_booking")
+        financialTransaction = await syncKoshaFinancialPayment(updated.source, financialActor(currentUser));
+      else
+        financialTransaction = await syncSourcePaymentTarget({
+          sourceType: "sales_invoice",
+          sourceId: data.sourceId,
+          sourceEvent: "payment",
+          targetAmount: paid,
+          normalDirection: "revenue",
+          transactionDate: updated.date,
+          department: "store",
+          transactionType: "sales_invoice",
+          description: `دفعة فاتورة مبيعات ${updated.reference}`,
+          paymentMethod: sourceMethod,
+          customerId: updated.customerId,
+          customerName: updated.customerName,
+          customerPhone: updated.customerPhone,
+          notes: data.notes,
+        }, financialActor(currentUser));
+    }
+    if (financialTransaction) {
+      await db.update(receiptVouchersTable).set({
+        approvalStatus: financialTransaction.approvalStatus,
+        financialTransactionId: financialTransaction.id,
+      }).where(eq(receiptVouchersTable.id, savedVoucher.id));
+    }
+
+    let receiptImage: string | null = null;
+    if (data.receiptImage) {
+      receiptImage = await persistMediaValue(
+        data.receiptImage,
+        `receipts/${data.sourceType}/${data.sourceId}`,
+      );
+      if (receiptImage) {
+        await ensureAdminExtensionsTables();
+        await db.insert(entityDocumentsTable).values({
+          entityType: data.sourceType,
+          entityId: data.sourceId,
+          documentType: "payment_receipt",
+          title: `وصل دفعة ${savedVoucher.voucherNo}`,
+          fileUrl: receiptImage,
+          fileName: `receipt-${savedVoucher.voucherNo}`,
+          mimeType: "image/*",
+          metadata: { voucherId: savedVoucher.id, amount, receiptNo: data.receiptNo },
+          uploadedBy: a.id,
+          uploadedByName: a.name,
+        });
+      }
+    }
+    await addEntityTimeline({
+      entityType: data.sourceType,
+      entityId: data.sourceId,
+      type: "payment_added",
+      title: "تم تسجيل دفعة جديدة",
+      body: `${formatCurrency(amount)} بواسطة ${a.name}`,
+      actor: erpActorFromAdmin(currentUser),
+      metadata: {
+        voucherId: savedVoucher.id,
+        voucherNo: savedVoucher.voucherNo,
+        amount,
+        paymentMethod: sourceMethod,
+        paid,
+        remaining,
+        receiptImage,
+      },
+    });
+    await logAdminActivity(req, "payment_added", data.sourceType, data.sourceId, {
+      amount,
+      paymentMethod: sourceMethod,
+      voucherNo: savedVoucher.voucherNo,
+      receiptNo: data.receiptNo,
+      oldValues: { paid: before.paid, remaining: before.remaining },
+      newValues: { paid, remaining, paymentStatus },
+      device: req.headers.get("user-agent")?.slice(0, 180) ?? "unknown",
+    });
+    void notifyTelegramPayment({
+      event: "paymentReceived",
+      reference: before.reference,
+      customerName: before.customerName,
+      amount,
+      paymentMethod: sourceMethod,
+      createdByName: a.name,
+      status: financialTransaction?.approvalStatus ?? "pending",
+      entityPath: erpEntityHref(data.sourceType, data.sourceId),
+    });
+    revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+    return json({
+      ok: true,
+      voucher: savedVoucher,
+      financialTransaction,
+      summary: await collectionSourceSummary(data.sourceType, data.sourceId),
+    }, 201);
+  } catch (err: any) {
+    console.error("payment collection failed", {
+      sourceType: data.sourceType,
+      sourceId: data.sourceId,
+      userId: currentUser.id,
+      message: err?.message,
+    });
+    return error(err?.message || "تعذر تسجيل الدفعة", 500);
+  }
 }
 
 async function formatRentalOrder(row: typeof rentalOrdersTable.$inferSelect) {
@@ -30625,16 +31285,28 @@ async function handleAccounting(
           where: eq(receiptVouchersTable.id, id),
         });
         if (!voucher) return error("سند القبض غير موجود", 404);
+        if (!(auth.role === "admin" || auth.role === "manager")) {
+          const approval = await createApprovalRequest({
+            type: "cancel_receipt_voucher",
+            title: `إلغاء سند قبض ${voucher.voucherNo}`,
+            entityType: "receipt_voucher",
+            entityId: voucher.id,
+            oldValues: voucher as any,
+            actor: erpActorFromAdmin(auth),
+          });
+          return json({ message: "تم إرسال طلب الإلغاء لموافقة المدير", approval: formatApprovalRequest(approval) }, 202);
+        }
         if (voucher.financialTransactionId) {
-          await cancelFinancialTransactionRequest(
-            voucher.financialTransactionId,
-            financialActor(auth),
-            "إلغاء سند القبض",
-          );
+          const transaction = await db.query.financialTransactionsTable.findFirst({ where: eq(financialTransactionsTable.id, voucher.financialTransactionId) });
+          if (transaction?.approvalStatus === "executed")
+            await reverseFinancialTransaction(voucher.financialTransactionId, financialActor(auth), "إلغاء سند القبض المعتمد");
+          else await cancelFinancialTransactionRequest(voucher.financialTransactionId, financialActor(auth), "إلغاء سند القبض");
         }
         await db
-          .delete(receiptVouchersTable)
+          .update(receiptVouchersTable)
+          .set({ approvalStatus: "cancelled" })
           .where(eq(receiptVouchersTable.id, id));
+        void logAdminActivity(req, "payment_deleted", "receipt_voucher", id, { voucherNo: voucher.voucherNo, device: req.headers.get("user-agent")?.slice(0, 180) ?? "unknown" });
       } catch (err: any) {
         console.error("receipt voucher delete failed", {
           id,
@@ -30645,7 +31317,7 @@ async function handleAccounting(
           /منفذة/.test(String(err?.message)) ? 409 : 500,
         );
       }
-      return json({ message: "تم الحذف" });
+      return json({ message: "تم إلغاء السند وحفظ أثره للتدقيق" });
     }
   }
 
@@ -30820,16 +31492,28 @@ async function handleAccounting(
           where: eq(paymentVouchersTable.id, id),
         });
         if (!voucher) return error("سند الصرف غير موجود", 404);
+        if (!(auth.role === "admin" || auth.role === "manager")) {
+          const approval = await createApprovalRequest({
+            type: "cancel_payment_voucher",
+            title: `إلغاء سند صرف ${voucher.voucherNo}`,
+            entityType: "payment_voucher",
+            entityId: voucher.id,
+            oldValues: voucher as any,
+            actor: erpActorFromAdmin(auth),
+          });
+          return json({ message: "تم إرسال طلب الإلغاء لموافقة المدير", approval: formatApprovalRequest(approval) }, 202);
+        }
         if (voucher.financialTransactionId) {
-          await cancelFinancialTransactionRequest(
-            voucher.financialTransactionId,
-            financialActor(auth),
-            "إلغاء سند الصرف",
-          );
+          const transaction = await db.query.financialTransactionsTable.findFirst({ where: eq(financialTransactionsTable.id, voucher.financialTransactionId) });
+          if (transaction?.approvalStatus === "executed")
+            await reverseFinancialTransaction(voucher.financialTransactionId, financialActor(auth), "إلغاء سند الصرف المعتمد");
+          else await cancelFinancialTransactionRequest(voucher.financialTransactionId, financialActor(auth), "إلغاء سند الصرف");
         }
         await db
-          .delete(paymentVouchersTable)
+          .update(paymentVouchersTable)
+          .set({ approvalStatus: "cancelled" })
           .where(eq(paymentVouchersTable.id, id));
+        void logAdminActivity(req, "refund_deleted", "payment_voucher", id, { voucherNo: voucher.voucherNo, device: req.headers.get("user-agent")?.slice(0, 180) ?? "unknown" });
       } catch (err: any) {
         console.error("payment voucher delete failed", {
           id,
@@ -30840,7 +31524,7 @@ async function handleAccounting(
           /منفذة/.test(String(err?.message)) ? 409 : 500,
         );
       }
-      return json({ message: "تم الحذف" });
+      return json({ message: "تم إلغاء السند وحفظ أثره للتدقيق" });
     }
   }
 
@@ -31111,6 +31795,87 @@ async function handleAccounting(
         500,
       );
     }
+    if (method === "GET" && parts[2] === "receivables") {
+      const type = (req.nextUrl.searchParams.get("type") ?? "outstanding").trim();
+      const from = req.nextUrl.searchParams.get("from") ?? new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+      const to = req.nextUrl.searchParams.get("to") ?? new Date().toISOString().slice(0, 10);
+      if (type === "daily-payments" || type === "monthly-payments") {
+        const period = type === "daily-payments" ? "YYYY-MM-DD" : "YYYY-MM";
+        const rows = await db.execute(sql`
+          SELECT to_char(transaction_date, ${period}) AS period,
+            count(*)::int AS payment_count,
+            coalesce(sum(amount::numeric), 0)::float AS total_paid
+          FROM financial_transactions
+          WHERE direction = 'revenue' AND approval_status = 'executed'
+            AND transaction_date BETWEEN ${from} AND ${to}
+          GROUP BY to_char(transaction_date, ${period})
+          ORDER BY period DESC
+        `);
+        return json({ type, from, to, rows: rows.rows ?? [] });
+      }
+      if (type === "receipts") {
+        const rows = await db.execute(sql`
+          SELECT rv.id, rv.voucher_no, rv.date::text AS date, rv.payer_name,
+            coalesce(c.phone, '') AS phone, rv.amount::float AS amount,
+            rv.method, rv.reference, rv.approval_status
+          FROM receipt_vouchers rv
+          LEFT JOIN customers c ON c.id = rv.customer_id
+          WHERE rv.date BETWEEN ${from} AND ${to}
+          ORDER BY rv.date DESC, rv.id DESC
+          LIMIT 2000
+        `);
+        return json({ type, from, to, rows: rows.rows ?? [] });
+      }
+      const receivablesHaving =
+        type === "paid"
+          ? sql`coalesce(sum(remaining), 0) <= 0 AND coalesce(sum(total), 0) > 0`
+          : type === "outstanding"
+            ? sql`coalesce(sum(remaining), 0) > 0`
+            : type === "overdue"
+              ? sql`coalesce(sum(remaining), 0) > 0 AND min(due_date) < current_date`
+              : sql`true`;
+      const rows = await db.execute(sql`
+        WITH ledger AS (
+          SELECT customer_id, customer_name, customer_phone AS phone, tracking_code AS reference,
+            'طلب متجر'::text AS source, created_at::date AS date, due_date,
+            total::numeric AS total, deposit_amount::numeric AS paid, remaining_amount::numeric AS remaining
+          FROM orders WHERE archived_at IS NULL AND status <> 'cancelled'
+          UNION ALL
+          SELECT NULL, customer_name, phone, coalesce(tracking_code, 'SRV-' || id),
+            'حجز خدمة', created_at::date, due_date,
+            total_amount::numeric, deposit_amount::numeric, remaining_amount::numeric
+          FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled'
+          UNION ALL
+          SELECT NULL, customer_name, phone, coalesce(tracking_code, 'KB-' || id),
+            'حجز كوشة', created_at::date, due_date,
+            total_amount::numeric, paid_amount::numeric, remaining_amount::numeric
+          FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled'
+          UNION ALL
+          SELECT customer_id, customer_name, customer_phone, invoice_no,
+            'فاتورة مبيعات', date, due_date,
+            total::numeric, paid_amount::numeric, remaining_amount::numeric
+          FROM sales_invoices WHERE status = 'active' AND financially_reversed = false
+        ), filtered AS (
+          SELECT *, regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') AS phone_key
+          FROM ledger
+          WHERE date BETWEEN ${from} AND ${to}
+        )
+        SELECT max(customer_id) AS customer_id, max(customer_name) AS customer_name, max(phone) AS phone,
+          count(*)::int AS invoice_count,
+          coalesce(sum(total), 0)::float AS total,
+          coalesce(sum(paid), 0)::float AS paid,
+          coalesce(sum(remaining), 0)::float AS remaining,
+          count(*) FILTER (WHERE remaining > 0)::int AS open_invoices,
+          max(date)::text AS last_invoice_date,
+          min(due_date)::text AS oldest_due_date
+        FROM filtered
+        GROUP BY coalesce(nullif(phone_key, ''), 'customer:' || coalesce(customer_id::text, customer_name))
+        HAVING ${receivablesHaving}
+        ORDER BY remaining DESC, customer_name
+        LIMIT 2000
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
     if (method === "GET" && parts[2] === "statement") {
       const customerId = req.nextUrl.searchParams.get("customerId")
         ? Number.parseInt(req.nextUrl.searchParams.get("customerId")!, 10)
@@ -31181,7 +31946,7 @@ async function handleAccounting(
           ref: o.trackingCode,
           description: "طلب من المتجر",
           debit: Number.parseFloat(o.total),
-          credit: 0,
+          credit: Number.parseFloat(o.depositAmount ?? "0"),
         });
       }
       for (const b of bookings) {
@@ -31190,8 +31955,8 @@ async function handleAccounting(
           kind: "booking",
           ref: b.trackingCode ?? `#${b.id}`,
           description: "حجز خدمة",
-          debit: 0,
-          credit: 0,
+          debit: Number.parseFloat(b.totalAmount ?? "0"),
+          credit: Number.parseFloat(b.depositAmount ?? "0"),
         });
       }
       // Sales invoices — the charge (debit) and any amount paid against it (credit).
@@ -31220,6 +31985,8 @@ async function handleAccounting(
           });
       }
       for (const r of receipts) {
+        if (r.orderId || r.bookingId) continue;
+        if (salesInvoices.some((invoice) => String(r.reference ?? "").startsWith(invoice.invoiceNo))) continue;
         entries.push({
           date: new Date(r.date).toISOString(),
           kind: "receipt",

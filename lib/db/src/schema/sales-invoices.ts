@@ -2,6 +2,7 @@ import { pgTable, serial, text, numeric, integer, timestamp, varchar, date, bool
 import { customersTable } from "./customers";
 import { staffTable } from "./staff";
 import { productsTable } from "./products";
+import { suppliersTable } from "./suppliers";
 
 export const salesInvoicesTable = pgTable("sales_invoices", {
   id: serial("id").primaryKey(),
@@ -11,6 +12,8 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   customerName: text("customer_name").notNull().default(""),
   customerPhone: varchar("customer_phone", { length: 30 }),
   customerId: integer("customer_id").references(() => customersTable.id),
+  supplierId: integer("supplier_id").references(() => suppliersTable.id, { onDelete: "set null" }),
+  supplierName: text("supplier_name"),
   subtotal: numeric("subtotal", { precision: 14, scale: 2 }).notNull().default("0"),
   discountAmount: numeric("discount_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   couponCode: varchar("coupon_code", { length: 60 }),

@@ -1,6 +1,6 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search } from "lucide-react";
+import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
@@ -8,8 +8,12 @@ import { adminFetch, apiErrorMessage, formatCurrency, formatMoney } from "./_lib
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
+import { useSearch } from "wouter";
+import { downloadElementPdf } from "@/lib/pdf";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { printWhenImagesReadyScript, sheetReportCss } from "./print-helpers";
 
-type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "pnl";
+type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "receivables" | "pnl";
 
 const TABS: { id: Tab; label: string; icon: any }[] = [
   { id: "receipts",   label: "سندات القبض",  icon: Receipt },
@@ -17,6 +21,7 @@ const TABS: { id: Tab; label: string; icon: any }[] = [
   { id: "expenses",   label: "المصاريف",     icon: FileText },
   { id: "categories", label: "أنواع المصاريف", icon: FileText },
   { id: "statement",  label: "كشف حساب",     icon: FileText },
+  { id: "receivables", label: "تقارير الذمم", icon: TrendingUp },
   { id: "pnl",        label: "ملخص التدفق النقدي", icon: TrendingUp },
 ];
 
@@ -52,6 +57,11 @@ type Category = { id: number; name: string; nameAr: string; isActive: number };
 
 export default function AccountingPage() {
   const [tab, setTab] = useState<Tab>("receipts");
+  const routeSearch = useSearch();
+  useEffect(() => {
+    const requested = new URLSearchParams(routeSearch).get("tab") as Tab | null;
+    if (requested && TABS.some((item) => item.id === requested)) setTab(requested);
+  }, [routeSearch]);
   return (
     <div className="space-y-4" dir="rtl">
       <div className="flex items-center justify-between">
@@ -77,6 +87,7 @@ export default function AccountingPage() {
       {tab === "expenses"   && <ExpensesTab />}
       {tab === "categories" && <CategoriesTab />}
       {tab === "statement"  && <StatementTab />}
+      {tab === "receivables" && <ReceivablesTab />}
       {tab === "pnl"        && <PnLTab />}
     </div>
   );
@@ -452,7 +463,9 @@ type CustomerAccountDetail = CustomerLite & {
     serviceOrders: number;
     invoices: number;
     totalSpent: number;
+    totalPaid?: number;
     remainingTotal: number;
+    openInvoices?: number;
   };
   orders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
   serviceOrders: Array<{ id: number; trackingCode: string; total: number; remainingAmount: number; createdAt: string }>;
@@ -506,7 +519,7 @@ function VoucherCustomerPicker({
   }, [detail.data]);
 
   const summary = detail.data?.summary;
-  const totalPaid = summary ? Math.max(summary.totalSpent - summary.remainingTotal, 0) : 0;
+  const totalPaid = summary ? (summary.totalPaid ?? Math.max(summary.totalSpent - summary.remainingTotal, 0)) : 0;
   const linkedCount = summary ? summary.productOrders + summary.serviceOrders + summary.invoices : 0;
 
   return (
@@ -645,7 +658,7 @@ function StatementTab() {
 
           {data.entries.length === 0 ? <EmptyState message="لا توجد حركات لهذا الزبون" />
           : <DataTable
-              columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "الرصيد"]}
+              columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "المبلغ المتبقي"]}
               rows={data.entries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ"),
                 e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
@@ -657,6 +670,137 @@ function StatementTab() {
               ])}
             />
           }
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ReceivablesReportType =
+  | "outstanding"
+  | "paid"
+  | "balances"
+  | "ledger"
+  | "daily-payments"
+  | "monthly-payments"
+  | "receipts"
+  | "overdue";
+
+type ReceivablesPayload = {
+  type: ReceivablesReportType;
+  from: string;
+  to: string;
+  rows: Record<string, any>[];
+};
+
+const RECEIVABLE_REPORTS: Array<{ value: ReceivablesReportType; label: string }> = [
+  { value: "ledger", label: "دفتر حسابات العملاء" },
+  { value: "outstanding", label: "العملاء المدينون" },
+  { value: "paid", label: "العملاء المسددون" },
+  { value: "balances", label: "الأرصدة المستحقة" },
+  { value: "daily-payments", label: "الدفعات اليومية" },
+  { value: "monthly-payments", label: "الدفعات الشهرية" },
+  { value: "receipts", label: "تقرير سندات القبض" },
+  { value: "overdue", label: "الدفعات المتأخرة" },
+];
+
+function ReceivablesTab() {
+  const reportRef = useRef<HTMLDivElement>(null);
+  const { data: settings } = usePublicSettings();
+  const [type, setType] = useState<ReceivablesReportType>("outstanding");
+  const [from, setFrom] = useState(() => {
+    const date = new Date();
+    date.setFullYear(date.getFullYear() - 1);
+    return date.toISOString().slice(0, 10);
+  });
+  const [to, setTo] = useState(todayStr());
+  const [search, setSearch] = useState("");
+  const report = useQuery({
+    queryKey: ["admin", "accounting", "receivables", type, from, to],
+    queryFn: () => adminFetch<ReceivablesPayload>(`/admin/accounting/receivables?type=${type}&from=${from}&to=${to}`),
+  });
+  const rows = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return report.data?.rows ?? [];
+    return (report.data?.rows ?? []).filter((row) => Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(term)));
+  }, [report.data, search]);
+  const customerReport = !["daily-payments", "monthly-payments", "receipts"].includes(type);
+  const columns = customerReport
+    ? [
+        ["customer_name", "العميل"], ["phone", "الهاتف"], ["invoice_count", "الفواتير"],
+        ["total", "الإجمالي"], ["paid", "المدفوع"], ["remaining", "المتبقي"],
+        ["open_invoices", "المفتوحة"], ["last_invoice_date", "آخر فاتورة"], ["oldest_due_date", "الاستحقاق"],
+      ]
+    : type === "receipts"
+      ? [["voucher_no", "السند"], ["date", "التاريخ"], ["payer_name", "العميل"], ["phone", "الهاتف"], ["amount", "المبلغ"], ["method", "الطريقة"], ["approval_status", "الحالة"]]
+      : [["period", type === "daily-payments" ? "اليوم" : "الشهر"], ["payment_count", "عدد الدفعات"], ["total_paid", "إجمالي المدفوع"]];
+  const total = rows.reduce((sum, row) => sum + Number(row.remaining ?? row.amount ?? row.total_paid ?? 0), 0);
+  const paid = rows.reduce((sum, row) => sum + Number(row.paid ?? row.total_paid ?? 0), 0);
+
+  function cell(row: Record<string, any>, key: string) {
+    if (["total", "paid", "remaining", "amount", "total_paid"].includes(key)) return formatCurrency(row[key] ?? 0);
+    if (key === "method") return methodLabel(String(row[key] ?? ""));
+    if (key === "approval_status") return row[key] === "executed" ? "معتمد" : row[key] === "pending" ? "قيد الاعتماد" : String(row[key] ?? "—");
+    return String(row[key] ?? "—");
+  }
+
+  function exportCsv() {
+    const csvRows = [columns.map((column) => column[1]), ...rows.map((row) => columns.map((column) => cell(row, column[0])))];
+    const csv = csvRows.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ajn-${type}-${from}-${to}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function printReport() {
+    if (!reportRef.current) return;
+    const popup = window.open("", "_blank", "width=1100,height=800");
+    if (!popup) return;
+    popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${RECEIVABLE_REPORTS.find((item) => item.value === type)?.label}</title><style>${sheetReportCss("a4")}</style></head><body>${reportRef.current.outerHTML}${printWhenImagesReadyScript()}</body></html>`);
+    popup.document.close();
+  }
+
+  async function exportPdf() {
+    if (!reportRef.current) return;
+    await downloadElementPdf(reportRef.current, `ajn-${type}-${from}-${to}.pdf`, { format: "a4", margin: 8 });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border/30 bg-card p-4">
+        <Field label="نوع التقرير"><select value={type} onChange={(event) => setType(event.target.value as ReceivablesReportType)} className={inputCls}>{RECEIVABLE_REPORTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></Field>
+        <Field label="من تاريخ"><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} className={inputCls} /></Field>
+        <Field label="إلى تاريخ"><input type="date" value={to} onChange={(event) => setTo(event.target.value)} className={inputCls} /></Field>
+        <Field label="بحث"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="اسم، هاتف، سند..." className={inputCls} /></Field>
+        <div className="mr-auto flex flex-wrap gap-2">
+          <Button variant="outline" onClick={printReport}><Printer className="ml-1 h-4 w-4" />طباعة</Button>
+          <Button variant="outline" onClick={exportPdf}><Download className="ml-1 h-4 w-4" />PDF</Button>
+          <Button variant="outline" onClick={exportCsv}><FileSpreadsheet className="ml-1 h-4 w-4" />Excel / CSV</Button>
+        </div>
+      </div>
+      {report.isLoading ? <Skeletons /> : (
+        <div ref={reportRef} className="report-sheet rounded-xl border border-border/30 bg-card p-5">
+          <div className="report-head flex items-center justify-between gap-4 border-b border-border/30 pb-4">
+            <div><div className="report-company text-lg font-bold">{settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div className="report-title mt-1 text-xl font-bold text-primary">{RECEIVABLE_REPORTS.find((item) => item.value === type)?.label}</div></div>
+            <img className="report-logo h-12 w-auto object-contain" src={logoSrc(settings)} alt="AJN" />
+          </div>
+          <div className="report-meta my-3 text-xs text-muted-foreground">الفترة: {from} إلى {to} · تاريخ الإنشاء: {new Date().toLocaleString("ar-IQ")}</div>
+          <div className="report-summary mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <StatCard label="عدد السجلات" value={rows.length.toLocaleString("ar-IQ")} />
+            <StatCard label={customerReport ? "إجمالي المتبقي" : "إجمالي التقرير"} value={formatCurrency(total)} accent={total > 0 ? "text-status-warning" : "text-status-success"} />
+            <StatCard label="إجمالي المدفوع" value={formatCurrency(paid)} accent="text-status-success" />
+            <StatCard label="الفترة" value={`${from} — ${to}`} />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="report-table w-full text-sm">
+              <thead><tr>{columns.map((column) => <th key={column[0]} className="border border-border/30 p-2 text-right">{column[1]}</th>)}</tr></thead>
+              <tbody>{rows.length ? rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column[0]} className="border border-border/20 p-2">{cell(row, column[0])}</td>)}</tr>) : <tr><td colSpan={columns.length} className="p-8 text-center text-muted-foreground">لا توجد بيانات</td></tr>}</tbody>
+            </table>
+          </div>
+          <div className="report-footer mt-4 border-t border-border/30 pt-3 text-center text-xs text-muted-foreground">تم إنشاء التقرير من نظام AJN</div>
         </div>
       )}
     </div>

@@ -12,6 +12,7 @@ import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
 import { formatMoney } from "@/lib/money";
+import { AccountSummaryCard } from "./payment-collection";
 
 type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
   id?: number;
@@ -1163,7 +1164,20 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           {isKoshaPendingPricing(booking) ? (
             <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-3 text-sm font-semibold text-status-warning">بانتظار تحديد السعر من الإدارة</div>
           ) : (
-            <KoshaDetailGrid items={[["الإجمالي", formatCurrency(booking.totalAmount ?? 0)], ["الواصل", formatCurrency(booking.paidAmount ?? 0)], ["المتبقي", formatCurrency(booking.remainingAmount ?? 0)]]} />
+            <AccountSummaryCard
+              sourceType="kosha_booking"
+              sourceId={booking.id}
+              total={Number(booking.totalAmount ?? 0)}
+              discount={Number((booking.bookingDetails as any)?.pricing?.discountAmount ?? 0)}
+              paid={Number(booking.paidAmount ?? 0)}
+              remaining={Number(booking.remainingAmount ?? 0)}
+              paymentStatus={booking.paymentStatus ?? "unpaid"}
+              onCollected={() => {
+                queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+                onClose();
+              }}
+              compact
+            />
           )}
         </KoshaDetailSection>
       </div>

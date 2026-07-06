@@ -10,6 +10,7 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   CheckCircle2, Clock, AlertCircle, QrCode, Download,
+  Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -17,6 +18,9 @@ import { adminFetch, formatCurrency } from "./_lib";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
+import { AccountSummaryCard, type LastPayment } from "./payment-collection";
+import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -34,6 +38,7 @@ type SalesInvoice = {
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   financiallyReversed?: boolean;
+  supplierId?: number | null; supplierName?: string | null; lastPayment?: LastPayment;
   items?: CartItem[];
   qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
 };
@@ -43,6 +48,7 @@ type Customer = {
   name: string;
   phone?: string | null;
 };
+type Supplier = { id: number; name: string };
 
 const PAYMENT_METHODS = [
   { value: "cash",     label: "نقداً" },
@@ -60,6 +66,7 @@ const PAYMENT_STATUSES = [
 function newInvoice() {
   return {
     customerName: "", customerPhone: "", notes: "",
+    supplierId: "", supplierName: "",
     paymentMethod: "cash", paymentStatus: "paid",
     paidAmount: "", taxPct: "0", discountAmount: "0", couponCode: "", couponDiscountAmount: "0",
     isInternal: false, date: new Date().toISOString().slice(0, 10),
@@ -187,6 +194,11 @@ export default function SalesPage() {
     staleTime: 3 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
   });
+  const { data: suppliers = [] } = useQuery<Supplier[]>({
+    queryKey: ["admin", "suppliers", "sales"],
+    queryFn: () => adminFetch("/admin/suppliers"),
+    staleTime: 5 * 60 * 1000,
+  });
 
   // Invoices list
   const { data: invoicesList } = useQuery({
@@ -304,6 +316,8 @@ export default function SalesPage() {
         date: form.date,
         customerName: form.customerName,
         customerPhone: form.customerPhone,
+        supplierId: form.supplierId || null,
+        supplierName: form.supplierName || null,
         subtotal, discountAmount: totalDiscount, taxAmount, total: grandTotal,
         couponCode: form.couponCode || undefined,
         paidAmount: paidAmt, remainingAmount: remaining,
@@ -620,6 +634,20 @@ export default function SalesPage() {
                 dir="ltr"
               />
             </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">المورد</label>
+              <select
+                value={form.supplierId}
+                onChange={(event) => {
+                  const supplier = suppliers.find((row) => String(row.id) === event.target.value);
+                  setForm((current) => ({ ...current, supplierId: event.target.value, supplierName: supplier?.name ?? "" }));
+                }}
+                className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="">بدون مورد</option>
+                {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+              </select>
+            </div>
             <div className="flex items-center gap-2 pt-1">
               <input
                 type="checkbox" id="isInternal"
@@ -817,6 +845,7 @@ function InvoiceListView({
                 <th className="px-4 py-3 text-right">رقم الفاتورة</th>
                 <th className="px-4 py-3 text-right">التاريخ</th>
                 <th className="px-4 py-3 text-right">العميل</th>
+                <th className="px-4 py-3 text-right">المورد</th>
                 <th className="px-4 py-3 text-center">الإجمالي</th>
                 <th className="px-4 py-3 text-center">الحالة</th>
                 <th className="px-4 py-3 text-center">الدفع</th>
@@ -826,12 +855,13 @@ function InvoiceListView({
             </thead>
             <tbody className="divide-y divide-border/20">
               {invoices.length === 0
-                ? <tr><td colSpan={8} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
+                ? <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}</td>
                       <td className="px-4 py-3 text-muted-foreground">{inv.date}</td>
                       <td className="px-4 py-3">{inv.customerName || "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{inv.supplierName || "—"}</td>
                       <td className="px-4 py-3 text-center font-medium">{formatCurrency(inv.total)}</td>
                       <td className="px-4 py-3 text-center">
                         <StatusBadge status={inv.status} />
@@ -887,6 +917,8 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     date: "",
     customerName: "",
     customerPhone: "",
+    supplierId: "",
+    supplierName: "",
     discountAmount: "0",
     taxAmount: "0",
     paidAmount: "0",
@@ -895,6 +927,12 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     isInternal: false,
   });
   const [items, setItems] = useState<CartItem[]>([]);
+  const { data: settings } = usePublicSettings();
+  const { data: suppliers = [] } = useQuery<Supplier[]>({
+    queryKey: ["admin", "suppliers", "sales"],
+    queryFn: () => adminFetch("/admin/suppliers"),
+    staleTime: 5 * 60 * 1000,
+  });
 
   const { data: invoice, isLoading, error } = useQuery<SalesInvoice>({
     queryKey: ["admin", "sales-invoice", invoiceId],
@@ -908,6 +946,8 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       date: invoice.date?.slice(0, 10) || new Date().toISOString().slice(0, 10),
       customerName: invoice.customerName || "",
       customerPhone: invoice.customerPhone || "",
+      supplierId: invoice.supplierId ? String(invoice.supplierId) : "",
+      supplierName: invoice.supplierName || "",
       discountAmount: String(invoice.discountAmount ?? "0"),
       taxAmount: String(invoice.taxAmount ?? "0"),
       paidAmount: String(invoice.paidAmount ?? "0"),
@@ -994,6 +1034,8 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           date: draft.date,
           customerName: draft.customerName,
           customerPhone: draft.customerPhone,
+          supplierId: draft.supplierId || null,
+          supplierName: draft.supplierName || null,
           subtotal,
           discountAmount,
           taxAmount,
@@ -1052,6 +1094,29 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
+  function printInvoice() {
+    if (!invoice) return;
+    const popup = window.open("", "_blank", "width=520,height=760");
+    if (!popup) {
+      toast({ title: "تعذر فتح نافذة الطباعة", variant: "destructive" });
+      return;
+    }
+    const itemRows = items.map((item) => `
+      <tr><td class="name">${item.productName}</td><td class="num">${item.quantity}</td><td class="num">${formatCurrency(item.unitPrice)}</td><td class="num">${formatCurrency(item.total)}</td></tr>
+    `).join("");
+    popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${invoice.invoiceNo}</title><style>${thermalReceiptCss("80mm")}</style></head><body>
+      <div class="receipt">
+        <div class="r-head"><img class="r-logo" src="${logoSrc(settings)}" alt=""><div class="r-company">${settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div class="r-sub">فاتورة مبيعات</div><div class="r-sub num">${invoice.invoiceNo} · ${draft.date}</div></div>
+        <hr class="rule"><div class="kv"><span>العميل</span><span class="v">${draft.customerName || "زبون"}</span></div>
+        <div class="kv"><span>الهاتف</span><span class="v num">${formatIraqiPhone(draft.customerPhone) || "غير مسجل"}</span></div>
+        ${draft.supplierName ? `<div class="kv"><span>المورد</span><span class="v">${draft.supplierName}</span></div>` : ""}
+        <hr class="rule dashed"><table class="items"><thead><tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>المبلغ</th></tr></thead><tbody>${itemRows}</tbody></table>
+        <div class="totals"><div class="payline"><span>الخصم</span><span class="num">${formatCurrency(discountAmount)}</span></div><div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(total)}</span></div><div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(paidAmount)}</span></div><div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(remainingAmount)}</span></div></div>
+        ${invoice.qr?.dataUrl ? `<div class="qr"><img src="${invoice.qr.dataUrl}" alt="QR"><div class="cap num">${invoice.invoiceNo}</div></div>` : ""}<div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
+      </div>${printWhenImagesReadyScript()}</body></html>`);
+    popup.document.close();
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
       <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92dvh] overflow-hidden shadow-xl">
@@ -1062,6 +1127,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
             {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={printInvoice} disabled={!invoice}>
+              <Printer className="w-4 h-4 ml-1" />
+              طباعة / PDF
+            </Button>
             <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
               <QrCode className="w-4 h-4 ml-1" />
               طباعة QR
@@ -1087,6 +1156,20 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 هذه الفاتورة تم عكس أثرها المالي ولا تدخل ضمن الإيرادات الصافية — للعرض والتدقيق فقط (لا يمكن تعديلها أو إضافة دفعات أو تحصيل).
               </div>
             )}
+            <AccountSummaryCard
+              sourceType="sales_invoice"
+              sourceId={invoice.id}
+              total={toNumber(invoice.total)}
+              discount={toNumber(invoice.discountAmount) + toNumber((invoice as any).couponDiscountAmount)}
+              paid={toNumber(invoice.paidAmount)}
+              remaining={toNumber(invoice.remainingAmount)}
+              paymentStatus={invoice.paymentStatus}
+              lastPayment={invoice.lastPayment ?? null}
+              onCollected={() => {
+                queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });
+                queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+              }}
+            />
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-3">
                 <h3 className="font-semibold text-sm">بيانات العميل</h3>
@@ -1123,6 +1206,20 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">المورد</label>
+                  <select
+                    value={draft.supplierId}
+                    onChange={(event) => {
+                      const supplier = suppliers.find((row) => String(row.id) === event.target.value);
+                      setDraft((current) => ({ ...current, supplierId: event.target.value, supplierName: supplier?.name ?? "" }));
+                    }}
+                    className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="">بدون مورد</option>
+                    {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+                  </select>
                 </div>
               </div>
 

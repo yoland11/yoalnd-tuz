@@ -166,6 +166,32 @@ export function thermalReceiptCss(size: "58mm" | "80mm") {
   `;
 }
 
+export function sheetReportCss(size: "a4" | "a5" = "a4") {
+  const page = size === "a5" ? "A5" : "A4";
+  const margin = size === "a5" ? "10mm" : "14mm";
+  const base = size === "a5" ? "11px" : "12px";
+  return `
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+    @page { size: ${page} portrait; margin: ${margin}; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: #fff; color: #000; direction: rtl; font-family: Cairo, Tahoma, Arial, sans-serif; font-size: ${base}; }
+    .report-sheet { width: 100%; background: #fff; color: #000; }
+    .report-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 12px; }
+    .report-logo { width: auto; height: ${size === "a5" ? "40px" : "52px"}; object-fit: contain; }
+    .report-company { font-size: 18px; font-weight: 800; }
+    .report-title { font-size: 20px; font-weight: 800; }
+    .report-meta { font-size: 11px; font-weight: 600; line-height: 1.8; }
+    .report-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+    .report-stat { border: 1px solid #000; padding: 7px; }
+    .report-stat strong { display: block; margin-top: 3px; font-size: 14px; }
+    table.report-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    .report-table th { background: #f2f2f2; border: 1px solid #000; padding: 6px; font-weight: 800; text-align: right; }
+    .report-table td { border: 1px solid #000; padding: 6px; vertical-align: top; }
+    .report-footer { margin-top: 12px; border-top: 1px solid #000; padding-top: 7px; text-align: center; font-size: 10px; }
+    @media print { body { background: #fff !important; } .report-sheet { box-shadow: none !important; } }
+  `;
+}
+
 export function printWhenImagesReadyScript(closeAfterPrint = true) {
   return `
     <script>

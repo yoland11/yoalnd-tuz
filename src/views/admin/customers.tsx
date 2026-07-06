@@ -20,7 +20,13 @@ type CustomerDetail = Customer & {
   avatarUrl?: string | null;
   address?: string;
   city?: string;
-  summary?: { productOrders: number; serviceOrders: number; invoices: number; totalSpent: number; remainingTotal: number; unpaidCount: number; lastWhatsappAt: string | null; lastActivityAt: string | null };
+  summary?: {
+    productOrders: number; serviceOrders: number; invoices: number; totalSpent: number;
+    totalCharges: number; totalPaid: number; remainingTotal: number; currentBalance: number;
+    openInvoices: number; unpaidCount: number;
+    lastPayment: { amount: number; date: string; method: string; transactionNo: string } | null;
+    lastWhatsappAt: string | null; lastActivityAt: string | null;
+  };
   orders: { id: number; trackingCode: string; status: string; total: number; remainingAmount?: number; paymentStatus?: string; createdAt: string }[];
   serviceOrders: { id: number; trackingCode: string | null; status: string; total?: number; remainingAmount?: number; paymentStatus?: string; eventDate?: string | null; eventLocation?: string | null; createdAt: string }[];
   invoices?: { id: number; invoiceNo: string; total: number; paidAmount: number; remainingAmount: number; paymentStatus: string; createdAt: string }[];
@@ -30,6 +36,7 @@ type CustomerDetail = Customer & {
   whatsappLogs?: { id: number; event: string; status: string; provider: string; sentAt: string }[];
   messageThreads?: { id: number; subject: string; status: string; lastMessageAt: string | null }[];
   activity?: { id: number; action: string; entityLabel: string; entityType: string; createdAt: string }[];
+  payments?: { id: number; transactionNo: string; date: string; amount: number; method: string; description: string }[];
 };
 
 const ACTIVITY_LABELS: Record<string, string> = {
@@ -232,11 +239,25 @@ export default function CustomersPage() {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
                   <Metric icon={ShoppingBag} label="الطلبات" value={(detail.summary?.productOrders ?? detail.orders.length).toLocaleString("ar-IQ")} />
                   <Metric icon={Sparkles} label="الحجوزات" value={(detail.summary?.serviceOrders ?? detail.serviceOrders.length).toLocaleString("ar-IQ")} />
-                  <Metric icon={Wallet} label="المتبقي" value={formatCurrency(detail.summary?.remainingTotal ?? 0)} tone={(detail.summary?.remainingTotal ?? 0) > 0 ? "text-status-warning" : "text-primary"} />
+                  <Metric icon={Wallet} label="الرصيد الحالي" value={formatCurrency(detail.summary?.currentBalance ?? detail.summary?.remainingTotal ?? 0)} tone={(detail.summary?.currentBalance ?? detail.summary?.remainingTotal ?? 0) > 0 ? "text-status-danger" : "text-status-success"} />
+                  <Metric icon={Wallet} label="إجمالي المدفوع" value={formatCurrency(detail.summary?.totalPaid ?? 0)} tone="text-status-success" />
+                  <Metric icon={Receipt} label="فواتير مفتوحة" value={(detail.summary?.openInvoices ?? detail.summary?.unpaidCount ?? 0).toLocaleString("ar-IQ")} tone={(detail.summary?.openInvoices ?? 0) > 0 ? "text-status-warning" : "text-status-success"} />
                   <Metric icon={Receipt} label="الفواتير" value={(detail.summary?.invoices ?? detail.invoices?.length ?? 0).toLocaleString("ar-IQ")} />
+                </div>
+
+                <div className="rounded-xl border border-border/25 bg-background/40 p-4">
+                  <h4 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground"><Wallet className="h-4 w-4 text-primary" /> آخر دفعة</h4>
+                  {detail.summary?.lastPayment ? (
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <Info label="المبلغ" value={formatCurrency(detail.summary.lastPayment.amount)} />
+                      <Info label="التاريخ" value={detail.summary.lastPayment.date} />
+                      <Info label="الطريقة" value={detail.summary.lastPayment.method === "cash" ? "نقدي" : detail.summary.lastPayment.method === "transfer" ? "تحويل" : "بطاقة"} />
+                      <Info label="رقم الحركة" value={detail.summary.lastPayment.transactionNo} />
+                    </div>
+                  ) : <p className="text-xs text-muted-foreground">لا توجد دفعات معتمدة بعد</p>}
                 </div>
 
                 <div className="rounded-xl bg-background/40 border border-border/25 p-4">
