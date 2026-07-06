@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm run *)",
+      "Bash(awk '/if \\\\\\(section === \"products\"\\\\\\)/,/^  \\\\}/' /Users/yoland/Desktop/ajn-project-fixed/src/server/api.ts)",
+      "Bash(awk 'NR>=3700 && NR<=3850' /Users/yoland/Desktop/ajn-project-fixed/src/server/api.ts)",
+      "Bash(awk 'NR>=2726 && NR<=4012' /Users/yoland/Desktop/ajn-project-fixed/src/server/api.ts)",
+      "Bash(awk 'NR>=2973 && NR<=3065' /Users/yoland/Desktop/ajn-project-fixed/src/server/api.ts)",
+      "Bash(node *)",
+      "Bash(grep -E \"\\\\.\\(tsx|css\\)$\")",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"%{http_code}\")",
+      "Bash(open -a \"Google Chrome\" \"http://localhost:3000\")",
+      "Bash(open \"http://localhost:3000\")",
+      "Bash(screencapture -x /tmp/ajn-screenshot.png)",
+      "Read(//private/tmp/**)",
+      "Read(//Users/yoland/Desktop/**)",
+      "Bash(npx playwright *)"
+    ]
+  }
+}

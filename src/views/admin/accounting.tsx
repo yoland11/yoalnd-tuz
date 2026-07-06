@@ -448,6 +448,7 @@ function CategoriesTab() {
 type StatementEntry = {
   date: string; kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment";
   ref: string; description: string; debit: number; credit: number; balance: number;
+  href?: string | null;
 };
 type StatementData = {
   customer: { id: number | null; name: string; phone: string };
@@ -662,12 +663,16 @@ function StatementTab() {
               rows={data.entries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ"),
                 e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
-                <code className="text-xs text-primary">{e.ref}</code>,
+                <span className="inline-flex items-center gap-1.5 text-primary">
+                  <code className="text-xs">{e.ref}</code>
+                  {e.href ? <FileText className="h-3.5 w-3.5" aria-hidden="true" /> : null}
+                </span>,
                 e.description,
                 e.debit ? formatCurrency(e.debit) : "—",
                 e.credit ? <span className="text-status-success">{formatCurrency(e.credit)}</span> : "—",
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
+              rowHrefs={data.entries.map((entry) => entry.href ?? null)}
             />
           }
         </div>
@@ -904,7 +909,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   );
 }
 
-function DataTable({ columns, rows }: { columns: string[]; rows: React.ReactNode[][] }) {
+function DataTable({ columns, rows, rowHrefs }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null> }) {
   return (
     <div className="bg-card rounded-xl border border-border/30 overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
@@ -914,11 +919,30 @@ function DataTable({ columns, rows }: { columns: string[]; rows: React.ReactNode
           </tr>
         </thead>
         <tbody className="divide-y divide-border/20">
-          {rows.map((cells, i) => (
-            <tr key={i} className="hover:bg-background/30">
+          {rows.map((cells, i) => {
+            const href = rowHrefs?.[i] ?? null;
+            const openDocument = () => {
+              if (href) window.open(href, "_blank", "noopener,noreferrer");
+            };
+            return (
+            <tr
+              key={i}
+              className={href ? "cursor-pointer transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60" : "hover:bg-background/30"}
+              role={href ? "link" : undefined}
+              tabIndex={href ? 0 : undefined}
+              title={href ? "فتح الفاتورة المرتبطة" : undefined}
+              onClick={href ? openDocument : undefined}
+              onKeyDown={href ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  openDocument();
+                }
+              } : undefined}
+            >
               {cells.map((cell, j) => <td key={j} className="p-3 align-middle">{cell}</td>)}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

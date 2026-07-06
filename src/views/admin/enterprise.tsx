@@ -66,6 +66,11 @@ import {
   formatCurrency,
 } from "./_lib";
 import { EmptyState } from "./_layout";
+import {
+  getLabelHistory,
+  labelHistoryStats,
+  type LabelHistoryEntry,
+} from "./label-helpers";
 
 type CommandCenter = {
   generatedAt: string;
@@ -687,6 +692,7 @@ export default function EnterpriseCommandCenterPage() {
               )}
             </Panel>
           </div>
+          <LabelPrintingWidget />
           <QuickLinks />
         </TabsContent>
 
@@ -740,6 +746,67 @@ function QuickLinks() {
           </Link>
         ))}
       </div>
+    </Panel>
+  );
+}
+
+function LabelPrintingWidget() {
+  const [history, setHistory] = useState<LabelHistoryEntry[]>([]);
+  useEffect(() => {
+    setHistory(getLabelHistory());
+  }, []);
+  const stats = useMemo(() => labelHistoryStats(history), [history]);
+  const cards = [
+    { label: "طُبع اليوم", value: stats.printedToday, icon: Printer },
+    { label: "إجمالي الملصقات", value: stats.totalPrinted, icon: QrCode },
+    { label: "آخر طابعة", value: stats.lastPrinter, icon: Settings2 },
+    { label: "أخطاء الطباعة", value: stats.errors, icon: AlertTriangle },
+  ] as const;
+  return (
+    <Panel>
+      <div className="flex items-center justify-between gap-2">
+        <SectionTitle icon={QrCode} title="طباعة الملصقات الأخيرة" />
+        <Link
+          href="/admin/print-labels"
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          فتح مركز الملصقات
+        </Link>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {cards.map(({ label, value, icon: Icon }) => (
+          <div
+            key={label}
+            className="rounded-lg border border-border/30 bg-background/40 p-3"
+          >
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Icon className="h-4 w-4 text-primary" />
+              {label}
+            </div>
+            <p className="mt-1 text-lg font-bold text-foreground">{value}</p>
+          </div>
+        ))}
+      </div>
+      {history.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          لا توجد عمليات طباعة ملصقات بعد على هذا الجهاز.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-1">
+          {history.slice(0, 4).map((h) => (
+            <div
+              key={h.id}
+              className="flex items-center justify-between gap-2 rounded-lg border border-border/20 bg-background/30 px-3 py-1.5 text-xs"
+            >
+              <span className="text-foreground">{h.template}</span>
+              <span className="text-muted-foreground">{h.count} ملصق</span>
+              <span className="text-muted-foreground">
+                {new Date(h.at).toLocaleString("ar")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }

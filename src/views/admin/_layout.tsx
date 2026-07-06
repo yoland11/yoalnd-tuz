@@ -231,6 +231,12 @@ const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/print-labels",
+    label: "طباعة الملصقات",
+    icon: QrCode,
+    perm: "products",
+  },
+  {
     href: "/admin/inventory-alerts",
     label: "تنبيهات المخزون",
     icon: AlertTriangle,
@@ -598,6 +604,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/inventory-alerts"),
       navItem("/admin/inventory-value"),
       navItem("/admin/barcodes"),
+      navItem("/admin/print-labels"),
       navItem("/admin/warehouse-transfers"),
       navItem("/admin/assets"),
       navItem("/admin/asset-movements"),

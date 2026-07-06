@@ -1848,12 +1848,17 @@ async function executeApprovedApprovalRequest(
       where: eq(productsTable.id, productId),
     })) as any;
     if (!existing) return { executed: false, reason: "product_not_found" };
-    await db.delete(productsTable).where(eq(productsTable.id, productId));
+    if (existing.archivedAt)
+      return { executed: false, reason: "already_archived" };
+    await db
+      .update(productsTable)
+      .set({ archivedAt: new Date(), isActive: false, updatedAt: new Date() })
+      .where(eq(productsTable.id, productId));
     await addEntityTimeline({
       entityType: "product",
       entityId: productId,
-      type: "product_deleted_approved",
-      title: "تم حذف المادة بعد موافقة المدير",
+      type: "product_archived_approved",
+      title: "تمت أرشفة المادة بعد موافقة المدير",
       body: existing.nameAr || existing.name || String(productId),
       actor,
       metadata: { approvalRequestId: row.id },
@@ -5758,6 +5763,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "is_rental" boolean not null default false;
       alter table "products" add column if not exists "price_per_day" numeric(12,2) not null default 0;
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
+      alter table "products" add column if not exists "archived_at" timestamp;
       do $$
       begin
         alter table "products"
@@ -5775,6 +5781,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       create index if not exists "products_stock_min_stock_idx" on "products" ("stock", "min_stock");
       create index if not exists "products_shared_stock_product_id_idx" on "products" ("shared_stock_product_id");
       create index if not exists "products_is_rental_active_idx" on "products" ("is_rental", "is_active");
+      create index if not exists "products_archived_at_idx" on "products" ("archived_at");
     `,
       )
       .then(() => undefined)
@@ -31899,6 +31906,7 @@ async function handleAccounting(
       const [orders, bookings, receipts, salesInvoices] = await Promise.all([
         db
           .select({
+            id: ordersTable.id,
             trackingCode: ordersTable.trackingCode,
             total: ordersTable.total,
             depositAmount: ordersTable.depositAmount,
@@ -31965,6 +31973,7 @@ async function handleAccounting(
         description: string;
         debit: number;
         credit: number;
+        href: string | null;
       };
       const entries: Entry[] = [];
       for (const o of orders) {
@@ -31975,6 +31984,7 @@ async function handleAccounting(
           description: "طلب من المتجر",
           debit: Number.parseFloat(o.total),
           credit: Number.parseFloat(o.depositAmount ?? "0"),
+          href: `/admin/invoice/${o.id}`,
         });
       }
       for (const b of bookings) {
@@ -31985,6 +31995,7 @@ async function handleAccounting(
           description: "حجز خدمة",
           debit: Number.parseFloat(b.totalAmount ?? "0"),
           credit: Number.parseFloat(b.depositAmount ?? "0"),
+          href: `/admin/invoice/${b.id}?type=booking`,
         });
       }
       // Sales invoices — the charge (debit) and any amount paid against it (credit).
@@ -32000,6 +32011,7 @@ async function handleAccounting(
           description: `فاتورة مبيعات${nameSuffix}`,
           debit: Number.parseFloat(si.total),
           credit: 0,
+          href: `/admin/sales?invoice=${si.id}`,
         });
         const paid = Number.parseFloat(si.paidAmount);
         if (paid > 0)
@@ -32010,6 +32022,7 @@ async function handleAccounting(
             description: `دفعة فاتورة ${si.invoiceNo}`,
             debit: 0,
             credit: paid,
+            href: `/admin/sales?invoice=${si.id}`,
           });
       }
       for (const r of receipts) {
@@ -32022,6 +32035,7 @@ async function handleAccounting(
           description: `سند قبض (${r.method}) — ${r.payerName ?? ""}`,
           debit: 0,
           credit: Number.parseFloat(r.amount),
+          href: null,
         });
       }
       entries.sort((a, b) => a.date.localeCompare(b.date));

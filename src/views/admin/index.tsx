@@ -30,6 +30,7 @@ const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
+const PrintLabelsPage = lazy(() => import("./print-labels"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const POSPage = lazy(() => import("./pos"));
@@ -370,6 +371,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <BarcodesPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/print-labels">
+            {() => (
+              <Guard me={me} perm="products">
+                <PrintLabelsPage />
               </Guard>
             )}
           </Route>
