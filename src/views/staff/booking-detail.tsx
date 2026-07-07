@@ -229,6 +229,9 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
           {current === "delivered" && <Banner kind="ok">تم تسليم الكوشة بنجاح.</Banner>}
         </div>
 
+        {/* Booking assets — QR checkout / return */}
+        <AssetsSection id={id} />
+
         {/* Checklist before warehouse exit */}
         {panel === "checklist" && <ChecklistPanel booking={b} busy={busy} onCancel={() => setPanel(null)} onConfirm={(note) => run(() => staffApi.setStage(id, "out_of_warehouse", note))} />}
 
@@ -457,6 +460,86 @@ function CollectPanel({ remaining, busy, onSubmit }: { remaining: number; busy: 
         {busy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "تم استلام المبلغ"}
       </button>
       <div className="mt-1.5 text-center text-xs text-muted-foreground">يُرسل للمدير للموافقة — لا يُسجَّل المال إلا بعد الاعتماد</div>
+    </div>
+  );
+}
+
+function AssetsSection({ id }: { id: number }) {
+  const [assets, setAssets] = useState<Array<{ productId: number; name: string; assetCode: string; checkedOut: boolean }>>([]);
+  const [mode, setMode] = useState<"checkout" | "return">("checkout");
+  const [problem, setProblem] = useState<"none" | "broken" | "lost">("none");
+  const [busy, setBusy] = useState(false);
+  const [manual, setManual] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(async () => {
+    try { const r = await staffApi.assets(id); setAssets(r.assets ?? []); } catch { /* offline / no assets */ }
+  }, [id]);
+  useEffect(() => { void load(); }, [load]);
+
+  const doneCount = assets.filter((a) => (mode === "checkout" ? a.checkedOut : !a.checkedOut)).length;
+
+  async function handleCode(code: string) {
+    if (!code.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await staffApi.scanAsset(id, { mode, code: code.trim(), problem: mode === "return" ? problem : undefined });
+      setMsg({ ok: true, text: mode === "checkout" ? `تم إخراج ${r.name ?? ""}` : problem === "lost" ? `سُجّل ${r.name ?? ""} كمفقود` : problem === "broken" ? `${r.name ?? ""} أُرسل للصيانة` : `تم استلام ${r.name ?? ""}` });
+      setManual(""); setProblem("none");
+      await load();
+    } catch (e: any) {
+      setMsg({ ok: false, text: String(e?.message ?? "").replace(/^HTTP\s+\d+:\s*/i, "") || "تعذّر المسح" });
+    } finally { setBusy(false); }
+  }
+
+  async function scanImage(file: File) {
+    try {
+      const Detector = (window as any).BarcodeDetector;
+      if (!Detector) throw new Error("المتصفح لا يدعم قراءة QR — استخدم الإدخال اليدوي");
+      const bitmap = await createImageBitmap(file);
+      const det = new Detector({ formats: ["qr_code", "code_128", "ean_13"] });
+      const res = await det.detect(bitmap); bitmap.close();
+      const v = String(res?.[0]?.rawValue ?? "").trim();
+      if (!v) throw new Error("لم يظهر رمز واضح في الصورة");
+      await handleCode(v);
+    } catch (e: any) { setMsg({ ok: false, text: e?.message ?? "تعذّر القراءة" }); }
+  }
+
+  if (!assets.length) return null;
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border bg-card p-3">
+      <div className="text-sm font-bold">أصول الحجز (مسح QR)</div>
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => setMode("checkout")} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "checkout" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-border text-muted-foreground"}`}>إخراج من المخزن</button>
+        <button type="button" onClick={() => setMode("return")} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "return" ? "border-status-success bg-status-success/10 text-status-success dark:text-status-success" : "border-border text-muted-foreground"}`}>استلام الأصول</button>
+      </div>
+      {mode === "return" && (
+        <div className="grid grid-cols-3 gap-2">
+          {([["none", "سليم"], ["broken", "كسر"], ["lost", "فقدان"]] as const).map(([v, l]) => (
+            <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{l}</button>
+          ))}
+        </div>
+      )}
+      <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 py-6">
+        {busy ? <Loader2 className="h-8 w-8 animate-spin text-primary" /> : <Camera className="h-8 w-8 text-primary" />}
+        <span className="text-sm font-bold">مسح رمز الأصل بالكاميرا</span>
+        <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void scanImage(f); e.target.value = ""; }} />
+      </label>
+      <form onSubmit={(e) => { e.preventDefault(); void handleCode(manual); }} className="flex gap-2">
+        <input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="إدخال يدوي: AJN-A000001" className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+        <button type="submit" disabled={busy || !manual.trim()} className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">مسح</button>
+      </form>
+      {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
+      <div className="text-xs text-muted-foreground">{mode === "checkout" ? "تم إخراج" : "تم استلام"} {doneCount} / {assets.length}</div>
+      <ul className="space-y-1">
+        {assets.map((a) => (
+          <li key={a.productId} className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-1.5 text-sm">
+            <span>{a.name}</span>
+            <span className={`text-xs font-bold ${a.checkedOut ? "text-status-warning" : "text-status-success"}`}>{a.checkedOut ? "خارج المخزن" : "في المخزن"}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

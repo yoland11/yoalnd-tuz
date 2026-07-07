@@ -30052,6 +30052,98 @@ async function handleStaffPortal(
   const auth = await requirePermission(req, "koshas");
   if (isResponse(auth)) return auth;
 
+  // ── Crew asset checkout / return for a booking (reuses custody + timeline) ──
+  if (resource === "bookings" && id && action === "assets") {
+    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
+    if (!booking) return error("الحجز غير موجود", 404);
+    const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+    const linked: Array<{ productId: number; quantity: number }> = Array.isArray(details.linkedAssets) ? details.linkedAssets : [];
+    const ids = linked.map((l) => l.productId).filter(Boolean);
+    const resolveCode = async (raw: string): Promise<number> => {
+      const s = decodeURIComponent(String(raw || "")).trim();
+      if (!s) return 0;
+      const m = s.match(/AJN-A0*(\d+)/i);
+      if (m) return Number(m[1]);
+      const found = await db.query.productsTable.findFirst({
+        where: or(
+          sql`lower(${productsTable.barcode}) = ${s.toLowerCase()}`,
+          sql`lower(${productsTable.nameAr}) = ${s.toLowerCase()}`,
+        ),
+      });
+      return found?.id ?? 0;
+    };
+
+    if (method === "GET") {
+      const [products, custody] = await Promise.all([
+        ids.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) : Promise.resolve([]),
+        ids.length ? db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }) : Promise.resolve([]),
+      ]);
+      const pmap = new Map(products.map((p: any) => [p.id, p]));
+      const outSet = new Set(custody.map((c) => c.productId));
+      return json({
+        assets: linked.map((l) => ({
+          productId: l.productId,
+          name: pmap.get(l.productId)?.nameAr || pmap.get(l.productId)?.name || `#${l.productId}`,
+          assetCode: `AJN-A${String(l.productId).padStart(6, "0")}`,
+          checkedOut: outSet.has(l.productId),
+        })),
+      });
+    }
+
+    if (action === "assets" && method === "POST") {
+      const b = await body(req);
+      const mode = String(b?.mode ?? "checkout"); // checkout | return
+      const productId = await resolveCode(String(b?.code ?? ""));
+      if (!productId) return error("لم يتم التعرف على الأصل", 404);
+      if (!linked.some((l) => l.productId === productId)) return error("هذا الأصل لا يخص هذا الحجز", 409);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      const activeCustody = await db.query.equipmentCustodyTable.findFirst({
+        where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")),
+        orderBy: [desc(equipmentCustodyTable.issuedAt)],
+      });
+
+      if (mode === "checkout") {
+        const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+        if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+        if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
+        const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId: auth.id, quantity: 1, issuedBy: auth.id, notes: `حجز كوشة #${booking.id}` }).returning();
+        await db.insert(assetPassportsTable).values({ productId, lastStaffId: auth.id, lastLocation: `بعهدة ${auth.fullName || auth.username}` })
+          .onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: auth.id, lastLocation: `بعهدة ${auth.fullName || auth.username}`, updatedAt: new Date() } });
+        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل للحجز", body: `حجز كوشة #${booking.id} · ${auth.fullName || auth.username}`, actor: erpActorFromAdmin(auth), metadata: { custodyId: row.id, bookingId: booking.id } });
+        void logAdminActivity(req, "kosha_asset_checkout", "product", productId, { bookingId: booking.id, custodyId: row.id });
+        return json({ ok: true, productId, name: product?.nameAr || product?.name });
+      }
+
+      // return: none | broken | lost
+      const problem = String(b?.problem ?? "none");
+      const note = nullableText(b?.note);
+      const cost = String(Number(product?.costPrice ?? 0));
+      if (problem === "lost") {
+        await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" })
+          .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
+        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "lost", title: "⚠️ فقدان أصل أثناء الحجز", body: note, actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id } });
+        void logAdminActivity(req, "kosha_asset_lost", "product", productId, { bookingId: booking.id });
+        await createNotification({ type: "asset_lost", title: "فقدان أصل", body: product?.nameAr || product?.name || `#${productId}`, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+      } else if (problem === "broken") {
+        await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "maintenance" })
+          .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
+        if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "damage", title: "🛠️ كسر أثناء الحجز — صيانة", body: note, actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id } });
+        void logAdminActivity(req, "kosha_asset_broken", "product", productId, { bookingId: booking.id });
+        await createNotification({ type: "asset_damage", title: "كسر أصل", body: product?.nameAr || product?.name || `#${productId}`, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+      } else {
+        if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+        await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
+        const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+        if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع أصل الحجز", actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id } });
+        void logAdminActivity(req, "kosha_asset_return", "product", productId, { bookingId: booking.id });
+      }
+      return json({ ok: true, productId, name: product?.nameAr || product?.name });
+    }
+    return error("المسار غير موجود", 404);
+  }
+
   // ── Dashboard ──
   if (resource === "dashboard" && method === "GET") {
     const today = baghdadToday();
