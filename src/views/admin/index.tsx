@@ -32,6 +32,7 @@ const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
 const PrintLabelsPage = lazy(() => import("./print-labels"));
 const AssetNewPage = lazy(() => import("./asset-new"));
+const AssetGatePage = lazy(() => import("./asset-gate"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const POSPage = lazy(() => import("./pos"));
@@ -651,6 +652,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <AssetNewPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/asset-gate">
+            {() => (
+              <Guard me={me} perm="products">
+                <AssetGatePage />
               </Guard>
             )}
           </Route>
