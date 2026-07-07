@@ -11,31 +11,73 @@ export const productsTable = pgTable("products", {
   nameAr: text("name_ar").notNull(),
   nameKu: text("name_ku"),
   nameTr: text("name_tr"),
+
   description: text("description"),
   descriptionAr: text("description_ar"),
   descriptionKu: text("description_ku"),
   descriptionTr: text("description_tr"),
+
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   originalPrice: numeric("original_price", { precision: 10, scale: 2 }),
   costPrice: numeric("cost_price", { precision: 14, scale: 2 }).notNull().default("0"),
+
   stock: integer("stock").notNull().default(0),
   minStock: integer("min_stock").notNull().default(0),
   sharedStockProductId: integer("shared_stock_product_id"),
+
   isRental: boolean("is_rental").notNull().default(false),
   pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 }).notNull().default("0"),
+
   barcode: varchar("barcode", { length: 100 }),
+
   categoryId: integer("category_id").references(() => categoriesTable.id),
   subcategoryId: integer("subcategory_id").references(() => categoriesTable.id),
+
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
-  images: jsonb("images").$type<string[]>().notNull().default([]),
-  videos: jsonb("videos").$type<string[]>().notNull().default([]),
-  imageMetadata: jsonb("image_metadata").$type<Record<string, unknown>[]>().notNull().default([]),
-  colors: jsonb("colors").$type<Array<string | { name: string; hex: string; image?: string | null; imageUrl?: string | null }>>().notNull().default([]),
+
+  images: jsonb("images")
+    .$type<string[]>()
+    .notNull()
+    .default([]),
+
+  videos: jsonb("videos")
+    .$type<string[]>()
+    .notNull()
+    .default([]),
+
+  imageMetadata: jsonb("image_metadata")
+    .$type<Record<string, unknown>[]>()
+    .notNull()
+    .default([]),
+
+  colors: jsonb("colors")
+    .$type<
+      Array<{
+        name: string;
+        hex: string;
+        image?: string | null;
+        imageUrl?: string | null;
+      } | string>
+    >()
+    .notNull()
+    .default([]),
+
   isFeatured: boolean("is_featured").notNull().default(false),
+
   isActive: boolean("is_active").notNull().default(true),
+
   sortOrder: integer("sort_order").notNull().default(0),
+
+  // ===== Archive Support =====
+  archivedAt: timestamp("archived_at"),
+  archivedBy: integer("archived_by"),
+  archiveReason: text("archive_reason"),
+
+  // ===========================
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
+
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

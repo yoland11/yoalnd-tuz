@@ -148,6 +148,18 @@ export default function PrintLabelsPage() {
 
   const lastPrintRef = useRef<{ labels: LabelData[]; config: LabelTemplateConfig } | null>(null);
 
+  // Deep-link support: /admin/print-labels?productId=..&kind=.. preselects an item.
+  const initialParams = useMemo(() => {
+    if (typeof window === "undefined") return { productId: null as number | null, kind: null as string | null };
+    const sp = new URLSearchParams(window.location.search);
+    const pid = Number(sp.get("productId"));
+    return {
+      productId: Number.isFinite(pid) && pid > 0 ? pid : null,
+      kind: sp.get("kind"),
+    };
+  }, []);
+  const appliedInitial = useRef(false);
+
   const { data: products = [], isLoading } = useQuery<Product[]>({
     queryKey: ["admin", "label-products"],
     queryFn: () => adminFetch("/admin/products?limit=1000"),
@@ -156,7 +168,20 @@ export default function PrintLabelsPage() {
 
   useEffect(() => {
     setHistory(getLabelHistory());
+    if (initialParams.kind && (KIND_ORDER as string[]).includes(initialParams.kind)) {
+      switchKind(initialParams.kind as LabelKind);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Preselect the deep-linked product once the list has loaded.
+  useEffect(() => {
+    if (appliedInitial.current || !initialParams.productId) return;
+    if (products.some((p) => p.id === initialParams.productId)) {
+      setSelectedIds(new Set([initialParams.productId]));
+      appliedInitial.current = true;
+    }
+  }, [products, initialParams.productId]);
 
   useEffect(() => {
     let alive = true;

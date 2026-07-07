@@ -15593,6 +15593,21 @@ async function handleEnterpriseAdmin(
           "تم حفظ الجواز الرقمي للقطعة",
           { passportId: row.id, shelfCode: row.shelfCode },
         );
+        // Warehouse registration — mirror the asset quantity into warehouse_stock
+        // when it first gets a home warehouse or moves between warehouses. Reuses the
+        // existing adjustWarehouseStock helper (no new table / endpoint).
+        try {
+          const nextWarehouse = values.warehouseId ?? null;
+          const prevWarehouse = prevPassport?.warehouseId ?? null;
+          if (nextWarehouse && nextWarehouse !== prevWarehouse) {
+            const qty = Math.max(1, Math.floor(Number(product.stock ?? 1)) || 1);
+            if (prevWarehouse)
+              await adjustWarehouseStock(productId, prevWarehouse, -qty);
+            await adjustWarehouseStock(productId, nextWarehouse, qty);
+          }
+        } catch {
+          /* warehouse_stock is a convenience mirror — never block the passport save */
+        }
         // Integration — reflect maintenance changes on the asset timeline.
         const newMaint = Number(values.maintenanceCost);
         const maintChanged =
