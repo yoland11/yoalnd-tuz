@@ -21342,7 +21342,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           id: p.id,
           name: p.name,
           nameAr: p.nameAr,
+          nameKu: p.nameKu ?? p.name_ku ?? "",
+          nameTr: p.nameTr ?? p.name_tr ?? "",
+          description: p.description ?? "",
+          descriptionAr: p.descriptionAr ?? p.description_ar ?? "",
+          descriptionKu: p.descriptionKu ?? p.description_ku ?? "",
+          descriptionTr: p.descriptionTr ?? p.description_tr ?? "",
           price: String(p.price),
+          originalPrice:
+            p.originalPrice ?? p.original_price
+              ? String(p.originalPrice ?? p.original_price)
+              : "",
           costPrice: String(p.costPrice ?? p.cost_price ?? "0"),
           stock: String(productStockAmount(p)),
           ownStock: String(p.ownStock ?? p.stock ?? "0"),
@@ -21366,8 +21376,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           subcategory: p.subcategory ?? "",
           images: publicMediaList("product", p, p.images),
           videos: publicMediaList("product-video", p, p.videos),
+          imageMetadata: Array.isArray(p.imageMetadata ?? p.image_metadata)
+            ? (p.imageMetadata ?? p.image_metadata)
+            : [],
+          colors: Array.isArray(p.colors) ? p.colors : [],
+          isFeatured: Boolean(p.isFeatured ?? p.is_featured ?? false),
           barcode: p.barcode ?? p.bar_code ?? "",
           isActive: p.isActive ?? p.is_active ?? true,
+          archivedAt: p.archivedAt ?? p.archived_at ?? null,
         })),
       );
       res.headers.set(
