@@ -670,7 +670,7 @@ export default function PrintLabelsPage() {
                 <RefreshCw className="w-4 h-4" /> إعادة
               </Button>
             </div>
-            <div className="mt-2">
+            <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
               <label className="text-xs text-muted-foreground flex items-center gap-2">
                 عدد النسخ للطباعة المتعددة / التكرار:
                 <input
@@ -682,6 +682,25 @@ export default function PrintLabelsPage() {
                   className="w-20 bg-background border border-border/40 rounded-lg px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <RotateCw className="w-3.5 h-3.5" /> تدوير الطباعة
+                </span>
+                <div className="flex rounded-lg border border-border/40 overflow-hidden">
+                  {[0, 90, 180, 270].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => persistSettings({ ...settings, rotation: d })}
+                      className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                        (settings.rotation ?? 0) === d ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {d}°
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
