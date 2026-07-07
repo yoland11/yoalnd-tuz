@@ -1,6 +1,6 @@
 {
   "framework": "nextjs",
-  "installCommand": "pnpm install",
+  "installCommand": "pnpm install --prod=false",
   "buildCommand": "pnpm run build",
   "crons": [
     {
