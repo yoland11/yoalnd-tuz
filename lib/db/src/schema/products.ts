@@ -70,10 +70,11 @@ export const productsTable = pgTable("products", {
   sortOrder: integer("sort_order").notNull().default(0),
 
   // ===== Archive Support =====
+  // Only archived_at exists in the production DB (added via runtime `alter table
+  // ... add column if not exists`). archived_by / archive_reason were declared but
+  // never migrated or used, which made Drizzle SELECT non-existent columns → every
+  // products query 500'd. Removed until they are actually provisioned + used.
   archivedAt: timestamp("archived_at"),
-  archivedBy: integer("archived_by"),
-  archiveReason: text("archive_reason"),
-
   // ===========================
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
