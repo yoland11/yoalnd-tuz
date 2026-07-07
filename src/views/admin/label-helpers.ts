@@ -56,6 +56,8 @@ export type LabelSettings = {
   autoCenter: boolean;
   highQuality: boolean;
   printerName: string;
+  /** Print rotation in degrees (0/90/180/270) to compensate for the printer's feed direction. */
+  rotation?: number;
 };
 
 /** Resolved, ready-to-render data for a single label. */
@@ -85,6 +87,7 @@ export const DEFAULT_LABEL_SETTINGS: LabelSettings = {
   autoCenter: true,
   highQuality: true,
   printerName: "Xprinter XP-236B",
+  rotation: 0,
 };
 
 const BASE_FIELDS: LabelFieldToggles = {
@@ -319,13 +322,28 @@ export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {
   // Quality knobs: crisp barcode/QR edges, forced black ink, no anti-alias blur.
   const rendering = settings.highQuality ? "crisp-edges" : "auto";
   const centerBody = settings.autoCenter && opts.screen ? "align-items:center;justify-content:center;" : "";
+  // Print rotation to compensate for the printer's feed direction. When rotating
+  // 90/270 the page bounding box swaps W↔H so the label still fits its page.
+  const rot = (((settings.rotation ?? 0) % 360) + 360) % 360;
+  const swap = rot === 90 || rot === 270;
+  const pageW = swap ? h : w;
+  const pageH = swap ? w : h;
 
   return `
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap');
-    ${opts.screen ? "" : `@page { size: ${w}mm ${h}mm; margin: 0; }`}
+    ${opts.screen ? "" : `@page { size: ${pageW}mm ${pageH}mm; margin: 0; }`}
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     ${opts.screen ? "" : `html, body { margin: 0; padding: 0; background: #fff; }`}
-    .lb-sheet { display: ${opts.screen ? "block" : "block"}; }
+    .lb-sheet { display: block; }
+    ${opts.screen ? "" : `
+    .lb-page {
+      width: ${pageW}mm; height: ${pageH}mm;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      page-break-after: always; break-after: page;
+    }
+    .lb-page:last-child { page-break-after: auto; break-after: auto; }
+    `}
     .lb-label {
       position: relative;
       width: ${w}mm;
@@ -338,10 +356,8 @@ export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      ${opts.screen ? "" : "page-break-after: always; break-after: page;"}
+      ${opts.screen ? centerBody : `transform: rotate(${rot}deg); transform-origin: center center; flex: 0 0 auto;`}
     }
-    ${opts.screen ? `.lb-label { ${centerBody} }` : ""}
-    .lb-label:last-child { page-break-after: auto; break-after: auto; }
     .lb-label * { color: #000 !important; }
     .lb-brand {
       text-align: center;
@@ -384,7 +400,7 @@ export async function buildLabelSheetHtml(
   opts: { title?: string; autoPrint?: boolean } = {},
 ): Promise<string> {
   const markups = await Promise.all(labels.map((d) => buildLabelMarkup(d, config)));
-  const sheet = markups.map((m) => `<div class="lb-label">${m}</div>`).join("\n");
+  const sheet = markups.map((m) => `<div class="lb-page"><div class="lb-label">${m}</div></div>`).join("\n");
   return `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8" />
     <title>${esc(opts.title ?? "طباعة الملصقات")}</title>
     <style>${labelCss(settings)}</style>

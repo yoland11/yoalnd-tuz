@@ -839,6 +839,23 @@ export default function PrintLabelsPage() {
                 className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
               />
             </label>
+            <label className="block text-xs text-muted-foreground">
+              تدوير الطباعة (لتصحيح اتجاه الطابعة)
+              <select
+                value={String(settings.rotation ?? 0)}
+                onChange={(e) => persistSettings({ ...settings, rotation: Number(e.target.value) })}
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+              >
+                {[0, 90, 180, 270].map((d) => (
+                  <option key={d} value={d}>{d}°</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-muted-foreground leading-5">
+            <b className="text-foreground">إذا خرجت الطباعة مقلوبة أو مدوّرة:</b> جرّب «تدوير الطباعة» = <b>90°</b> ثم <b>270°</b> حتى تظبط.
+            وإذا ظهر تاريخ/رابط أعلى الملصق: في نافذة الطباعة افتح «مزيد من الإعدادات» وأطفئ
+            <b> Headers and footers (الرؤوس والتذييلات)</b>، واجعل الهوامش (Margins) = بلا (None).
           </div>
           <div className="flex flex-wrap gap-4 pt-2">
             <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
