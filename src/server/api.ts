@@ -4049,6 +4049,12 @@ async function formatKoshaBooking(row: any) {
         )
       : [],
     bookingDetails: row.bookingDetails ?? row.booking_details ?? {},
+    // Denormalized crew (stored in bookingDetails via /:id/employees) — surfaced here so
+    // every consumer (card, details, schedule, reports, print) shows the names with no extra lookup.
+    primaryEmployeeId: (row.bookingDetails ?? row.booking_details ?? {})?.primaryEmployeeId ?? null,
+    primaryEmployeeName: (row.bookingDetails ?? row.booking_details ?? {})?.primaryEmployeeName ?? null,
+    assistantEmployeeId: (row.bookingDetails ?? row.booking_details ?? {})?.assistantEmployeeId ?? null,
+    assistantEmployeeName: (row.bookingDetails ?? row.booking_details ?? {})?.assistantEmployeeName ?? null,
     notes: row.notes ?? "",
     status: row.status ?? "new",
     trackingCode: row.trackingCode ?? row.tracking_code ?? null,
@@ -13646,6 +13652,44 @@ async function handleAdminKoshas(
           return json({ ok: true });
         }
         return error("إجراء غير مدعوم", 405);
+      }
+
+      // Booking crew — Primary + Assistant employee, stored in bookingDetails (no new table).
+      if (parts[3] === "employees" && method === "POST") {
+        const b = await body(req);
+        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+        const primaryId = optionalPositiveId(b?.primaryEmployeeId);
+        const assistantId = optionalPositiveId(b?.assistantEmployeeId);
+        const [primary, assistant] = await Promise.all([
+          primaryId
+            ? db.query.staffTable.findFirst({ where: eq(staffTable.id, primaryId) })
+            : Promise.resolve(null),
+          assistantId
+            ? db.query.staffTable.findFirst({ where: eq(staffTable.id, assistantId) })
+            : Promise.resolve(null),
+        ]);
+        const next = {
+          ...details,
+          primaryEmployeeId: primaryId ?? null,
+          primaryEmployeeName: primary ? primary.fullName || primary.username : null,
+          assistantEmployeeId: assistantId ?? null,
+          assistantEmployeeName: assistant ? assistant.fullName || assistant.username : null,
+        };
+        await db
+          .update(koshaBookingsTable)
+          .set({ bookingDetails: next, updatedAt: new Date() })
+          .where(eq(koshaBookingsTable.id, id));
+        void logAdminActivity(req, "kosha_booking_employees_set", "kosha_booking", id, {
+          primaryEmployeeId: primaryId,
+          assistantEmployeeId: assistantId,
+        });
+        return json({
+          ok: true,
+          primaryEmployeeId: next.primaryEmployeeId,
+          primaryEmployeeName: next.primaryEmployeeName,
+          assistantEmployeeId: next.assistantEmployeeId,
+          assistantEmployeeName: next.assistantEmployeeName,
+        });
       }
 
       if (method === "GET") {

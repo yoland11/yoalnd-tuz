@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ScanLine,
@@ -20,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./_layout";
-import { adminFetch, apiErrorMessage } from "./_lib";
+import { adminFetch, apiErrorMessage, compressImageFile } from "./_lib";
 
 type GateMode = "checkout" | "return";
 
@@ -28,6 +28,9 @@ type Booking = {
   id: number;
   bookingNo?: string;
   customerName?: string;
+  primaryEmployeeId?: number | null;
+  primaryEmployeeName?: string | null;
+  assistantEmployeeName?: string | null;
   status?: string;
   eventDate?: string;
   eventAt?: string;
@@ -62,11 +65,13 @@ export default function AssetGatePage() {
   const [processed, setProcessed] = useState<Record<number, "checkout" | "return" | "lost">>({});
   const [flash, setFlash] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
-  // Damage panel (return mode)
-  const [damage, setDamage] = useState(false);
-  const [damageKind, setDamageKind] = useState<"damage" | "maintenance" | "lost">("damage");
+  // Return problem panel: none | broken | lost
+  const [problem, setProblem] = useState<"none" | "broken" | "lost">("none");
   const [repairCost, setRepairCost] = useState("");
-  const [damageNote, setDamageNote] = useState("");
+  const [problemNote, setProblemNote] = useState(""); // damage description OR loss reason
+  const [responsibleId, setResponsibleId] = useState("");
+  const [managerApproval, setManagerApproval] = useState(false);
+  const [problemPhoto, setProblemPhoto] = useState<string | null>(null);
 
   const { data: bookings = [], isLoading: bookingsLoading } = useQuery<Booking[]>({
     queryKey: ["admin", "gate-bookings"],
@@ -126,7 +131,31 @@ export default function AssetGatePage() {
     setProcessed({});
     setPending(null);
     setFlash(null);
+    // Carry the booking's Primary Employee into the checkout by default.
+    if (b.primaryEmployeeId) setEmployeeId(String(b.primaryEmployeeId));
   }
+
+  // Deep-link from a booking page: /admin/asset-gate?bookingId=..&mode=checkout|return
+  const initialParams = useMemo(() => {
+    if (typeof window === "undefined") return { bookingId: 0, mode: "" };
+    const sp = new URLSearchParams(window.location.search);
+    return { bookingId: Number(sp.get("bookingId")) || 0, mode: sp.get("mode") || "" };
+  }, []);
+  const appliedDeepLink = useRef(false);
+  useEffect(() => {
+    if (appliedDeepLink.current) return;
+    if (initialParams.mode === "return" || initialParams.mode === "checkout") setMode(initialParams.mode);
+    if (initialParams.bookingId) {
+      const b = bookings.find((x) => x.id === initialParams.bookingId);
+      if (b) {
+        selectBooking(b);
+        appliedDeepLink.current = true;
+      }
+    } else {
+      appliedDeepLink.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookings]);
 
   function switchMode(next: GateMode) {
     setMode(next);
@@ -177,10 +206,12 @@ export default function AssetGatePage() {
           return;
         }
       }
-      setDamage(false);
-      setDamageKind("damage");
+      setProblem("none");
       setRepairCost("");
-      setDamageNote("");
+      setProblemNote("");
+      setResponsibleId("");
+      setManagerApproval(false);
+      setProblemPhoto(null);
       setPending(res);
     } catch (e) {
       showFlash("err", apiErrorMessage(e, "تعذّر التعرف على الرمز"));
@@ -240,31 +271,58 @@ export default function AssetGatePage() {
 
   async function confirmReturn() {
     if (!pending || !booking) return;
+    // Required-field validation per problem type.
+    if (problem === "broken") {
+      if (!problemNote.trim()) return showFlash("err", "أدخل وصف الكسر");
+      if (!responsibleId) return showFlash("err", "اختر الموظف المسؤول عن الكسر");
+    }
+    if (problem === "lost") {
+      if (!problemNote.trim()) return showFlash("err", "أدخل سبب الفقدان");
+      if (!responsibleId) return showFlash("err", "اختر الموظف المسؤول");
+      if (!managerApproval) return showFlash("err", "مطلوب اعتماد المدير قبل تسجيل الفقدان");
+    }
     setBusy(true);
     try {
-      // Optional damage / maintenance / lost — recorded before closing custody.
-      if (damage) {
+      const resp = staff.find((s) => String(s.id) === responsibleId);
+      const respTxt = resp ? ` · المسؤول: ${resp.fullName ?? resp.username}` : "";
+      const tag = ` · حجز #${booking.bookingNo ?? booking.id}`;
+      if (problem === "broken") {
+        // Broken → Maintenance (status + timeline + audit + maintenance record).
         await adminFetch("/admin/assets/action", {
           method: "POST",
           body: JSON.stringify({
             productId: pending.productId,
-            action: damageKind, // damage | maintenance | lost
-            cost: damageKind === "maintenance" || damageKind === "damage" ? Number(repairCost) || 0 : 0,
-            notes: damageNote || `أثناء استلام حجز #${booking.bookingNo ?? booking.id}`,
+            action: "maintenance",
+            cost: Number(repairCost) || 0,
+            notes: `كسر: ${problemNote}${respTxt}${tag}`,
+            image: problemPhoto || undefined,
           }),
         });
-      }
-      if (damageKind === "lost" && damage) {
-        // Lost asset: no custody return; mark processed as lost.
-        setProcessed((p) => ({ ...p, [pending.productId]: "lost" }));
-      } else {
         const c = activeCustodyFor(pending.productId);
         if (c) await adminFetch(`/admin/custody/${c.id}`, { method: "PATCH", body: JSON.stringify({}) });
         setProcessed((p) => ({ ...p, [pending.productId]: "return" }));
+        showFlash("ok", `تم استلام ${pending.name} وإرساله للصيانة`);
+      } else if (problem === "lost") {
+        // Lost → status lost + manager notification (from the action handler).
+        await adminFetch("/admin/assets/action", {
+          method: "POST",
+          body: JSON.stringify({
+            productId: pending.productId,
+            action: "lost",
+            notes: `فقدان: ${problemNote}${respTxt}${tag} · باعتماد المدير`,
+          }),
+        });
+        setProcessed((p) => ({ ...p, [pending.productId]: "lost" }));
+        showFlash("ok", `تم تسجيل ${pending.name} كمفقود وإشعار المدير`);
+      } else {
+        // No problem → return to warehouse (status Available + passport reset).
+        const c = activeCustodyFor(pending.productId);
+        if (c) await adminFetch(`/admin/custody/${c.id}`, { method: "PATCH", body: JSON.stringify({}) });
+        setProcessed((p) => ({ ...p, [pending.productId]: "return" }));
+        showFlash("ok", `تم استلام ${pending.name}`);
       }
       setPending(null);
       await refetchCustody();
-      showFlash("ok", damage ? `تم استلام ${pending.name} مع تسجيل الملاحظة` : `تم استلام ${pending.name}`);
     } catch (e) {
       showFlash("err", apiErrorMessage(e, "تعذّر استلام الأصل"));
     } finally {
@@ -570,29 +628,61 @@ export default function AssetGatePage() {
 
             {mode === "return" && (
               <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
-                  <input type="checkbox" checked={damage} onChange={(e) => setDamage(e.target.checked)} className="accent-primary" />
-                  <Wrench className="h-4 w-4 text-amber-500" /> يوجد ضرر / نقص / يحتاج صيانة
-                </label>
-                {damage && (
+                <p className="text-sm font-semibold text-foreground">هل توجد مشكلة في هذا الأصل؟</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ["none", "لا يوجد", "emerald"],
+                    ["broken", "يوجد كسر", "amber"],
+                    ["lost", "يوجد فقدان", "red"],
+                  ] as const).map(([v, l, c]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setProblem(v)}
+                      className={`rounded-lg border px-2 py-2 text-xs font-medium ${
+                        problem === v
+                          ? c === "emerald"
+                            ? "border-emerald-500 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                            : c === "amber"
+                              ? "border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                              : "border-red-500 bg-red-500/15 text-red-600 dark:text-red-400"
+                          : "border-border/40 text-muted-foreground"
+                      }`}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+
+                {problem === "broken" && (
                   <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      {([["damage", "ضرر"], ["maintenance", "صيانة"], ["lost", "مفقود"]] as const).map(([v, l]) => (
-                        <button
-                          key={v}
-                          type="button"
-                          onClick={() => setDamageKind(v)}
-                          className={`rounded-lg border px-2 py-1.5 text-xs font-medium ${damageKind === v ? "border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-400" : "border-border/40 text-muted-foreground"}`}
-                        >
-                          {l}
-                        </button>
-                      ))}
-                    </div>
-                    {(damageKind === "damage" || damageKind === "maintenance") && (
-                      <input type="number" value={repairCost} onChange={(e) => setRepairCost(e.target.value)} placeholder="تكلفة الإصلاح (اختياري)" className={inputCls} />
-                    )}
-                    <textarea value={damageNote} onChange={(e) => setDamageNote(e.target.value)} placeholder="ملاحظة (اختياري)" className={`${inputCls} min-h-[60px]`} />
-                    {damageKind === "maintenance" && <p className="text-xs text-muted-foreground">سيتم إرسال الأصل للصيانة تلقائياً.</p>}
+                    <textarea value={problemNote} onChange={(e) => setProblemNote(e.target.value)} placeholder="وصف الكسر *" className={`${inputCls} min-h-[56px]`} />
+                    <input type="number" value={repairCost} onChange={(e) => setRepairCost(e.target.value)} placeholder="تكلفة الإصلاح التقديرية" className={inputCls} />
+                    <select value={responsibleId} onChange={(e) => setResponsibleId(e.target.value)} className={inputCls}>
+                      <option value="">— الموظف المسؤول * —</option>
+                      {staff.map((s) => (<option key={s.id} value={String(s.id)}>{s.fullName || s.username}</option>))}
+                    </select>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                      <Camera className="h-4 w-4" /> {problemPhoto ? "تم إرفاق صورة ✓" : "إرفاق صورة (اختياري)"}
+                      <input type="file" accept="image/*" capture="environment" className="hidden"
+                        onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setProblemPhoto(await compressImageFile(f, 1400, 0.8)); } catch {} } e.target.value = ""; }} />
+                    </label>
+                    <p className="text-xs text-muted-foreground">سيُرسَل الأصل للصيانة ويُنشأ سجل صيانة.</p>
+                  </div>
+                )}
+
+                {problem === "lost" && (
+                  <div className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                    <textarea value={problemNote} onChange={(e) => setProblemNote(e.target.value)} placeholder="سبب الفقدان *" className={`${inputCls} min-h-[56px]`} />
+                    <select value={responsibleId} onChange={(e) => setResponsibleId(e.target.value)} className={inputCls}>
+                      <option value="">— الموظف المسؤول * —</option>
+                      {staff.map((s) => (<option key={s.id} value={String(s.id)}>{s.fullName || s.username}</option>))}
+                    </select>
+                    <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+                      <input type="checkbox" checked={managerApproval} onChange={(e) => setManagerApproval(e.target.checked)} className="accent-red-500" />
+                      اعتماد المدير على تسجيل الفقدان *
+                    </label>
+                    <p className="text-xs text-muted-foreground">سيُخصَم من المخزون، ويُشعَر المدير.</p>
                   </div>
                 )}
               </div>
