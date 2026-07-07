@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -656,9 +657,16 @@ export function AssetsPage() {
         title="إهلاك الأصول"
         description="قيمة المواد الحالية وعدد مرات استخدامها وجدولة الصيانة."
         action={(
-          <Button onClick={() => setAdding(true)} className="gap-1">
-            <Plus className="h-4 w-4" /> إضافة سجل إهلاك
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link href="/admin/assets/new">
+              <Button className="gap-1">
+                <Plus className="h-4 w-4" /> إضافة أصل جديد
+              </Button>
+            </Link>
+            <Button variant="outline" onClick={() => setAdding(true)} className="gap-1">
+              <Plus className="h-4 w-4" /> سجل إهلاك
+            </Button>
+          </div>
         )}
       />
       <div className="grid gap-3 md:grid-cols-4">
@@ -748,6 +756,11 @@ export function AssetsPage() {
                           <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
                             <Pencil className="h-3.5 w-3.5" /> تعديل
                           </Button>
+                          <Link href={`/admin/print-labels?productId=${row.productId}&kind=asset`}>
+                            <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground">
+                              <QrCode className="h-3.5 w-3.5" /> طباعة ملصق
+                            </Button>
+                          </Link>
                           <Button
                             variant="ghost"
                             size="sm"

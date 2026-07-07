@@ -35,6 +35,10 @@ export const productsTable = pgTable("products", {
   isFeatured: boolean("is_featured").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
+  // Soft-delete / archive marker. The column is provisioned at runtime via
+  // `alter table "products" add column if not exists "archived_at"` (see api.ts),
+  // so this mirrors the live DB shape — no migration required.
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

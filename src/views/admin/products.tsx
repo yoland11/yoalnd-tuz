@@ -4,7 +4,8 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -505,6 +506,9 @@ export default function ProductsPage() {
                           })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                             <Edit2 className="w-4 h-4" />
                           </button>
+                          <Link href={`/admin/print-labels?productId=${p.id}&kind=product`} className="text-muted-foreground hover:bg-muted p-2 rounded-lg" title="طباعة ملصق">
+                            <QrCode className="w-4 h-4" />
+                          </Link>
                           <button onClick={() => confirm("حذف المنتج؟") && remove.mutateAsync({ id: p.id }).then(invalidate)} className="text-status-danger hover:bg-status-danger/10 p-2 rounded-lg">
                             <Trash2 className="w-4 h-4" />
                           </button>

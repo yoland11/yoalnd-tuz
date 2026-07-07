@@ -438,6 +438,12 @@ const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets/new",
+    label: "إضافة أصل جديد",
+    icon: PackageCheck,
+    perm: "products",
+  },
+  {
     href: "/admin/assets",
     label: "إهلاك الأصول",
     icon: Package,
@@ -606,6 +612,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/barcodes"),
       navItem("/admin/print-labels"),
       navItem("/admin/warehouse-transfers"),
+      navItem("/admin/assets/new"),
       navItem("/admin/assets"),
       navItem("/admin/asset-movements"),
       navItem("/admin/maintenance-scheduler"),
