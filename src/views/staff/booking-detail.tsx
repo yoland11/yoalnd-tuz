@@ -5,6 +5,7 @@ import {
   type BookingDetail, type StageKey, type MediaInput, type SetupItem,
 } from "./lib";
 import { isQueued } from "./offline";
+import { LiveScanner } from "./live-scanner";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -148,6 +149,8 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
             <a href={`tel:${b.phone}`} className="inline-flex items-center justify-end gap-1 text-left font-medium text-primary"><Phone className="h-3.5 w-3.5" />{b.phone}</a>
             {b.eventDate && (<><div className="text-muted-foreground">تاريخ الحفل</div><div className="text-left font-medium">{b.eventDate} {b.eventTime}</div></>)}
             {b.eventType && (<><div className="text-muted-foreground">نوع الحفل</div><div className="text-left font-medium">{b.eventType}</div></>)}
+            {(b as any).primaryEmployeeName && (<><div className="text-muted-foreground">الموظف الأساسي</div><div className="text-left font-medium">{(b as any).primaryEmployeeName}</div></>)}
+            {(b as any).assistantEmployeeName && (<><div className="text-muted-foreground">الموظف المساعد</div><div className="text-left font-medium">{(b as any).assistantEmployeeName}</div></>)}
             <div className="text-muted-foreground">العنوان</div>
             <div className="text-left font-medium">{[b.province, b.area, b.cityArea, b.hallLocation].filter(Boolean).join(" — ") || "—"}</div>
           </div>
@@ -464,82 +467,136 @@ function CollectPanel({ remaining, busy, onSubmit }: { remaining: number; busy: 
   );
 }
 
-function AssetsSection({ id }: { id: number }) {
-  const [assets, setAssets] = useState<Array<{ productId: number; name: string; assetCode: string; checkedOut: boolean }>>([]);
+type GateAsset = { productId: number; name: string; assetCode: string; imageUrl?: string | null; checkedOut: boolean };
+type Pending = { productId: number; name: string; assetCode: string; status: string; imageUrl?: string | null; checkedOut: boolean };
+
+export function AssetsSection({ id }: { id: number }) {
+  const [assets, setAssets] = useState<GateAsset[]>([]);
   const [mode, setMode] = useState<"checkout" | "return">("checkout");
-  const [problem, setProblem] = useState<"none" | "broken" | "lost">("none");
+  const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [manual, setManual] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
+  const [problem, setProblem] = useState<"none" | "broken" | "lost">("none");
+  const [note, setNote] = useState("");
+  const [cost, setCost] = useState("");
+  const [managerApproval, setManagerApproval] = useState(false);
 
   const load = useCallback(async () => {
     try { const r = await staffApi.assets(id); setAssets(r.assets ?? []); } catch { /* offline / no assets */ }
   }, [id]);
   useEffect(() => { void load(); }, [load]);
 
+  const total = assets.length;
   const doneCount = assets.filter((a) => (mode === "checkout" ? a.checkedOut : !a.checkedOut)).length;
+  const allDone = total > 0 && doneCount >= total;
 
-  async function handleCode(code: string) {
-    if (!code.trim()) return;
+  async function onDetect(code: string) {
+    if (busy || pending) return;
     setBusy(true); setMsg(null);
     try {
-      const r = await staffApi.scanAsset(id, { mode, code: code.trim(), problem: mode === "return" ? problem : undefined });
-      setMsg({ ok: true, text: mode === "checkout" ? `تم إخراج ${r.name ?? ""}` : problem === "lost" ? `سُجّل ${r.name ?? ""} كمفقود` : problem === "broken" ? `${r.name ?? ""} أُرسل للصيانة` : `تم استلام ${r.name ?? ""}` });
-      setManual(""); setProblem("none");
-      await load();
+      const r = await staffApi.scanAsset(id, { mode: "resolve", code });
+      if (mode === "checkout" && r.checkedOut) { setMsg({ ok: false, text: `${r.name}: مُخرَج مسبقاً` }); return; }
+      if (mode === "return" && !r.checkedOut) { setMsg({ ok: false, text: `${r.name}: غير مُخرَج` }); return; }
+      setProblem("none"); setNote(""); setCost(""); setManagerApproval(false);
+      setPending({ productId: r.productId, name: r.name ?? "", assetCode: r.assetCode ?? "", status: r.status ?? "", imageUrl: r.imageUrl, checkedOut: Boolean(r.checkedOut) });
     } catch (e: any) {
       setMsg({ ok: false, text: String(e?.message ?? "").replace(/^HTTP\s+\d+:\s*/i, "") || "تعذّر المسح" });
     } finally { setBusy(false); }
   }
 
-  async function scanImage(file: File) {
+  async function confirm() {
+    if (!pending) return;
+    if (mode === "return") {
+      if (problem === "broken" && !note.trim()) return setMsg({ ok: false, text: "أدخل سبب الكسر" });
+      if (problem === "lost" && !note.trim()) return setMsg({ ok: false, text: "أدخل سبب الفقدان" });
+      if (problem === "lost" && !managerApproval) return setMsg({ ok: false, text: "مطلوب اعتماد المدير" });
+    }
+    setBusy(true); setMsg(null);
     try {
-      const Detector = (window as any).BarcodeDetector;
-      if (!Detector) throw new Error("المتصفح لا يدعم قراءة QR — استخدم الإدخال اليدوي");
-      const bitmap = await createImageBitmap(file);
-      const det = new Detector({ formats: ["qr_code", "code_128", "ean_13"] });
-      const res = await det.detect(bitmap); bitmap.close();
-      const v = String(res?.[0]?.rawValue ?? "").trim();
-      if (!v) throw new Error("لم يظهر رمز واضح في الصورة");
-      await handleCode(v);
-    } catch (e: any) { setMsg({ ok: false, text: e?.message ?? "تعذّر القراءة" }); }
+      const code = pending.assetCode || `AJN-A${String(pending.productId).padStart(6, "0")}`;
+      await staffApi.scanAsset(id, mode === "checkout"
+        ? { mode: "checkout", code }
+        : { mode: "return", code, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined });
+      setMsg({ ok: true, text: mode === "checkout" ? `تم إخراج ${pending.name}` : problem === "lost" ? `سُجّل ${pending.name} كمفقود` : problem === "broken" ? `${pending.name} أُرسل للصيانة` : `تم استلام ${pending.name}` });
+      setPending(null);
+      await load();
+    } catch (e: any) {
+      setMsg({ ok: false, text: String(e?.message ?? "").replace(/^HTTP\s+\d+:\s*/i, "") || "تعذّرت العملية" });
+    } finally { setBusy(false); }
   }
 
   if (!assets.length) return null;
 
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card p-3">
-      <div className="text-sm font-bold">أصول الحجز (مسح QR)</div>
-      <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => setMode("checkout")} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "checkout" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-border text-muted-foreground"}`}>إخراج من المخزن</button>
-        <button type="button" onClick={() => setMode("return")} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "return" ? "border-status-success bg-status-success/10 text-status-success dark:text-status-success" : "border-border text-muted-foreground"}`}>استلام الأصول</button>
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-bold">📦 أصول الحجز</div>
+        <div className="text-xs text-muted-foreground">{mode === "checkout" ? "تم إخراج" : "تم استلام"} {doneCount} / {total}{allDone ? " ✓" : ""}</div>
       </div>
-      {mode === "return" && (
-        <div className="grid grid-cols-3 gap-2">
-          {([["none", "سليم"], ["broken", "كسر"], ["lost", "فقدان"]] as const).map(([v, l]) => (
-            <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{l}</button>
-          ))}
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => { setMode("checkout"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "checkout" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-border text-muted-foreground"}`}>🚚 إخراج الأصول</button>
+        <button type="button" onClick={() => { setMode("return"); setPending(null); }} className={`rounded-lg border-2 py-2 text-sm font-bold ${mode === "return" ? "border-status-success bg-status-success/10 text-status-success dark:text-status-success" : "border-border text-muted-foreground"}`}>📥 استلام الأصول</button>
+      </div>
+
+      {pending ? (
+        <div className="space-y-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
+          <div className="flex gap-3">
+            {pending.imageUrl
+              ? <img src={pending.imageUrl} alt="" className="h-16 w-16 rounded-lg object-cover" />
+              : <div className="grid h-16 w-16 place-items-center rounded-lg bg-muted text-2xl">📦</div>}
+            <div className="min-w-0">
+              <div className="font-bold">{pending.name}</div>
+              <div className="font-mono text-xs text-muted-foreground" dir="ltr">{pending.assetCode}</div>
+              <div className="text-xs text-muted-foreground">الحالة: {pending.status}</div>
+            </div>
+          </div>
+          {mode === "return" && (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                {([["none", "سليم"], ["broken", "يوجد كسر"], ["lost", "يوجد فقدان"]] as const).map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground"}`}>{l}</button>
+                ))}
+              </div>
+              {problem === "broken" && (
+                <div className="space-y-2">
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="سبب الكسر *" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="تكلفة الإصلاح التقديرية" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                </div>
+              )}
+              {problem === "lost" && (
+                <div className="space-y-2">
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="سبب الفقدان *" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={managerApproval} onChange={(e) => setManagerApproval(e.target.checked)} className="accent-primary" /> اعتماد المدير *</label>
+                </div>
+              )}
+            </>
+          )}
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setPending(null)} disabled={busy} className="flex-1 rounded-lg border border-border py-2 text-sm font-bold">إلغاء</button>
+            <button type="button" onClick={confirm} disabled={busy} className="flex-1 rounded-lg bg-primary py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "..." : mode === "checkout" ? "تأكيد الإخراج" : "تأكيد الاستلام"}</button>
+          </div>
         </div>
+      ) : scanning ? (
+        <div className="space-y-2">
+          <LiveScanner onDetect={onDetect} active={scanning && !pending} />
+          <button type="button" onClick={() => setScanning(false)} className="w-full rounded-lg border border-border py-2 text-sm">إغلاق الماسح</button>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setScanning(true)} className="w-full rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground">📷 مسح QR / باركود</button>
       )}
-      <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 py-6">
-        {busy ? <Loader2 className="h-8 w-8 animate-spin text-primary" /> : <Camera className="h-8 w-8 text-primary" />}
-        <span className="text-sm font-bold">مسح رمز الأصل بالكاميرا</span>
-        <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void scanImage(f); e.target.value = ""; }} />
-      </label>
-      <form onSubmit={(e) => { e.preventDefault(); void handleCode(manual); }} className="flex gap-2">
-        <input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="إدخال يدوي: AJN-A000001" className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm" />
-        <button type="submit" disabled={busy || !manual.trim()} className="rounded-lg bg-primary px-3 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">مسح</button>
-      </form>
+
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
-      <div className="text-xs text-muted-foreground">{mode === "checkout" ? "تم إخراج" : "تم استلام"} {doneCount} / {assets.length}</div>
+
       <ul className="space-y-1">
         {assets.map((a) => (
           <li key={a.productId} className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-1.5 text-sm">
-            <span>{a.name}</span>
-            <span className={`text-xs font-bold ${a.checkedOut ? "text-status-warning" : "text-status-success"}`}>{a.checkedOut ? "خارج المخزن" : "في المخزن"}</span>
+            <span className="truncate">{a.name}</span>
+            <span className={`shrink-0 text-xs font-bold ${a.checkedOut ? "text-status-warning" : "text-status-success"}`}>{a.checkedOut ? "خارج المخزن" : "في المخزن"}</span>
           </li>
         ))}
       </ul>
+      {!allDone && <div className="text-xs text-status-warning">⚠️ لا يمكن إكمال الحجز حتى {mode === "checkout" ? "إخراج" : "استلام"} كل الأصول.</div>}
     </div>
   );
 }
