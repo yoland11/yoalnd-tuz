@@ -21361,6 +21361,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     await ensureAssetLinksTable();
 
     if (method === "GET") {
+      // Reverse lookup: which bookings/orders an asset is linked to (for the Asset Passport).
+      const productIdParam = int(String(req.nextUrl.searchParams.get("productId") ?? "")) ?? 0;
+      if (productIdParam) {
+        const linkRows: any[] = ((await db.execute(sql`select entity_type, entity_id, quantity from "asset_links" where product_id = ${productIdParam} order by id desc`)) as any).rows ?? [];
+        const koshaRows: any[] = ((await db.execute(sql`select id, customer_name, event_date, status from "kosha_bookings" where "booking_details" -> 'linkedAssets' @> ${JSON.stringify([{ productId: productIdParam }])}::jsonb`)) as any).rows ?? [];
+        const TYPE_LABEL: Record<string, string> = { kosha: "كوشة", order: "طلب متجر", rental: "إيجار", service: "خدمة", photography: "تصوير" };
+        const links = [
+          ...koshaRows.map((k) => ({ entityType: "kosha", entityId: Number(k.id), label: `كوشة #${k.id}${k.customer_name ? ` — ${k.customer_name}` : ""}`, date: k.event_date ?? null, status: k.status ?? null })),
+          ...linkRows.map((r) => ({ entityType: String(r.entity_type), entityId: Number(r.entity_id), label: `${TYPE_LABEL[r.entity_type] ?? r.entity_type} #${r.entity_id}`, date: null, status: null })),
+        ];
+        return json({ links });
+      }
       const entityType = String(req.nextUrl.searchParams.get("entityType") ?? "").trim();
       const entityId = int(String(req.nextUrl.searchParams.get("entityId") ?? "")) ?? 0;
       if (!entityType || !entityId) return error("entityType و entityId مطلوبان", 400);
