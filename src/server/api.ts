@@ -30168,6 +30168,30 @@ async function handleStaffPortal(
   const auth = await requirePermission(req, "koshas");
   if (isResponse(auth)) return auth;
 
+  // ── Product/asset search for the crew "Products & Assets" picker ──
+  if (resource === "products" && method === "GET") {
+    const q = String(req.nextUrl.searchParams.get("search") ?? "").trim();
+    if (q.length < 2) return json({ products: [] });
+    const rows = await db.query.productsTable.findMany({
+      where: or(
+        ilike(productsTable.nameAr, `%${q}%`),
+        ilike(productsTable.name, `%${q}%`),
+        ilike(productsTable.barcode, `%${q}%`),
+      ),
+      limit: 20,
+    });
+    return json({
+      products: rows.map((p: any) => ({
+        productId: p.id,
+        name: p.nameAr || p.name,
+        barcode: p.barcode ?? null,
+        assetCode: `AJN-A${String(p.id).padStart(6, "0")}`,
+        isRental: Boolean(p.isRental),
+        imageUrl: (publicMediaList("product", p, p.images) ?? [])[0] ?? null,
+      })),
+    });
+  }
+
   // ── Crew asset checkout / return for a booking (reuses custody + timeline) ──
   if (resource === "bookings" && id && action === "assets") {
     const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
@@ -30190,20 +30214,31 @@ async function handleStaffPortal(
     };
 
     if (method === "GET") {
-      const [products, custody] = await Promise.all([
+      const [products, custody, passports, profiles, warehouses] = await Promise.all([
         ids.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) : Promise.resolve([]),
         ids.length ? db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }) : Promise.resolve([]),
+        ids.length ? db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }) : Promise.resolve([]),
+        ids.length ? db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }) : Promise.resolve([]),
+        db.query.warehousesTable.findMany(),
       ]);
       const pmap = new Map(products.map((p: any) => [p.id, p]));
+      const passMap = new Map(passports.map((p: any) => [p.productId, p]));
+      const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
+      const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
       const outSet = new Set(custody.map((c) => c.productId));
       return json({
         assets: linked.map((l) => {
           const pr: any = pmap.get(l.productId);
+          const pass: any = passMap.get(l.productId);
+          const prof: any = profMap.get(l.productId);
           return {
             productId: l.productId,
             name: pr?.nameAr || pr?.name || `#${l.productId}`,
             assetCode: `AJN-A${String(l.productId).padStart(6, "0")}`,
             imageUrl: (publicMediaList("product", pr, pr?.images) ?? [])[0] ?? null,
+            quantity: Number(l.quantity ?? 1),
+            warehouse: pass?.warehouseId ? (whMap.get(pass.warehouseId) ?? null) : null,
+            status: outSet.has(l.productId) ? "checked_out" : (prof?.status ?? "active"),
             checkedOut: outSet.has(l.productId),
           };
         }),
@@ -30212,9 +30247,31 @@ async function handleStaffPortal(
 
     if (action === "assets" && method === "POST") {
       const b = await body(req);
-      const mode = String(b?.mode ?? "checkout"); // resolve | checkout | return
-      const productId = await resolveCode(String(b?.code ?? ""));
-      if (!productId) return error("لم يتم التعرف على الأصل", 404);
+      const mode = String(b?.mode ?? "checkout"); // resolve | checkout | return | link | setqty | unlink
+      const productId = (optionalPositiveId(b?.productId) ?? 0) || (await resolveCode(String(b?.code ?? "")));
+      if (!productId) return error("لم يتم التعرف على المنتج/الأصل", 404);
+
+      // Link management — writes to bookingDetails.linkedAssets (auto-syncs with the Admin Panel).
+      if (mode === "link" || mode === "setqty") {
+        const p = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+        if (!p) return error("المنتج غير موجود", 404);
+        const qty = Math.max(1, Math.round(Number(b?.quantity ?? 1)));
+        const exists = linked.find((l) => l.productId === productId);
+        const nextLinked = exists
+          ? linked.map((l) => (l.productId === productId ? { ...l, quantity: qty } : l))
+          : [...linked, { productId, quantity: qty }];
+        await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+        void logAdminActivity(req, exists ? "kosha_asset_qty" : "kosha_asset_linked", "product", productId, { bookingId: id, quantity: qty });
+        if (!exists) void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 ربط بالحجز", body: `حجز كوشة #${id}`, actor: erpActorFromAdmin(auth), metadata: { bookingId: id } });
+        return json({ ok: true, productId, name: p.nameAr || p.name });
+      }
+      if (mode === "unlink") {
+        const nextLinked = linked.filter((l) => l.productId !== productId);
+        await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+        void logAdminActivity(req, "kosha_asset_unlinked", "product", productId, { bookingId: id });
+        return json({ ok: true, productId });
+      }
+
       if (!linked.some((l) => l.productId === productId)) return error("هذا الأصل لا يخص هذا الحجز", 409);
       const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
       const activeCustody = await db.query.equipmentCustodyTable.findFirst({
