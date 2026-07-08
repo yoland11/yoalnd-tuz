@@ -17137,6 +17137,48 @@ async function handleEnterpriseAdmin(
   return null;
 }
 
+// Unified cross-entity asset linking (kosha | order | rental | service | photography).
+// One small table provisioned at runtime — no migration, no per-entity columns.
+async function ensureAssetLinksTable(): Promise<void> {
+  await db.execute(sql`
+    create table if not exists "asset_links" (
+      "id" serial primary key,
+      "product_id" integer not null,
+      "entity_type" varchar(30) not null,
+      "entity_id" integer not null,
+      "quantity" integer not null default 1,
+      "created_by" integer,
+      "created_at" timestamp not null default now()
+    )
+  `);
+  await db.execute(sql`create unique index if not exists "asset_links_uq" on "asset_links" ("product_id","entity_type","entity_id")`);
+  await db.execute(sql`create index if not exists "asset_links_entity_idx" on "asset_links" ("entity_type","entity_id")`);
+}
+
+function assetHealthScore(profile: any, passportMeta: any): number {
+  const metaScore = Number(passportMeta?.healthScore);
+  if (Number.isFinite(metaScore)) return Math.max(0, Math.min(100, Math.round(metaScore)));
+  const life = Number(profile?.expectedLifeUses ?? 50) || 50;
+  const used = Number(profile?.usageCount ?? 0);
+  return Math.max(0, Math.round(100 - (Math.min(used, life) / life) * 100));
+}
+
+/** Resolve a scanned code (AJN-A code / barcode / serial) to a productId. */
+async function resolveAssetProductId(raw: string): Promise<number> {
+  const s = decodeURIComponent(String(raw || "")).trim();
+  if (!s) return 0;
+  const m = s.match(/AJN-A0*(\d+)/i);
+  if (m) return Number(m[1]);
+  const found = await db.query.productsTable.findFirst({
+    where: or(
+      sql`lower(${productsTable.barcode}) = ${s.toLowerCase()}`,
+      sql`lower(${productsTable.nameAr}) = ${s.toLowerCase()}`,
+      sql`lower(${productsTable.name}) = ${s.toLowerCase()}`,
+    ),
+  });
+  return found?.id ?? 0;
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
@@ -21310,6 +21352,80 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       clearStoreCategoriesCache();
       return json({ message: "تم الحذف" });
     }
+  }
+
+  // Unified asset links — /admin/asset-links (works for any entity type).
+  if (section === "asset-links") {
+    const auth = await requireAnyPermission(req, ["products", "orders", "services", "invoices", "accounting"]);
+    if (isResponse(auth)) return auth;
+    await ensureAssetLinksTable();
+
+    if (method === "GET") {
+      const entityType = String(req.nextUrl.searchParams.get("entityType") ?? "").trim();
+      const entityId = int(String(req.nextUrl.searchParams.get("entityId") ?? "")) ?? 0;
+      if (!entityType || !entityId) return error("entityType و entityId مطلوبان", 400);
+      const linkRows: any[] = ((await db.execute(sql`select id, product_id from "asset_links" where entity_type = ${entityType} and entity_id = ${entityId} order by id`)) as any).rows ?? [];
+      const ids = linkRows.map((r) => Number(r.product_id)).filter(Boolean);
+      if (!ids.length) return json({ assets: [] });
+      const [products, passports, profiles, warehouses, custody] = await Promise.all([
+        db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }),
+        db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }),
+        db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }),
+        db.query.warehousesTable.findMany(),
+        db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }),
+      ]);
+      const pmap = new Map(products.map((p: any) => [p.id, p]));
+      const passMap = new Map(passports.map((p: any) => [p.productId, p]));
+      const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
+      const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
+      const outSet = new Set(custody.map((c) => c.productId));
+      return json({
+        assets: ids.map((pid) => {
+          const p: any = pmap.get(pid);
+          const pass: any = passMap.get(pid);
+          const prof: any = profMap.get(pid);
+          return {
+            productId: pid,
+            name: p?.nameAr || p?.name || `#${pid}`,
+            assetCode: `AJN-A${String(pid).padStart(6, "0")}`,
+            barcode: p?.barcode ?? null,
+            imageUrl: (publicMediaList("product", p, p?.images) ?? [])[0] ?? null,
+            status: outSet.has(pid) ? "checked_out" : (prof?.status ?? "active"),
+            warehouse: pass?.warehouseId ? (whMap.get(pass.warehouseId) ?? null) : null,
+            health: assetHealthScore(prof, assetMetadataObject(pass?.metadata)),
+            checkedOut: outSet.has(pid),
+          };
+        }),
+      });
+    }
+
+    if (method === "POST") {
+      const b = await body(req);
+      const entityType = String(b?.entityType ?? "").trim();
+      const entityId = optionalPositiveId(b?.entityId);
+      let productId = optionalPositiveId(b?.productId) ?? 0;
+      if (!productId && b?.code) productId = await resolveAssetProductId(String(b.code)); // scan-to-add
+      if (!entityType || !entityId || !productId) return error("النوع والمعرّف والأصل مطلوبة", 400);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      await db.execute(sql`insert into "asset_links" ("product_id","entity_type","entity_id","quantity","created_by") values (${productId}, ${entityType}, ${entityId}, ${Math.max(1, Math.round(Number(b?.quantity ?? 1)))}, ${auth.id}) on conflict ("product_id","entity_type","entity_id") do nothing`);
+      void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 ربط الأصل", body: `${entityType} #${entityId}`, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId } });
+      void logAdminActivity(req, "asset_linked", "product", productId, { entityType, entityId });
+      return json({ ok: true, productId, name: product.nameAr || product.name });
+    }
+
+    if (method === "DELETE") {
+      const p = req.nextUrl.searchParams;
+      const entityType = String(p.get("entityType") ?? "").trim();
+      const entityId = int(String(p.get("entityId") ?? "")) ?? 0;
+      let productId = int(String(p.get("productId") ?? "")) ?? 0;
+      if (!productId && p.get("code")) productId = await resolveAssetProductId(String(p.get("code"))); // scan-to-remove
+      if (!entityType || !entityId || !productId) return error("المعطيات ناقصة", 400);
+      await db.execute(sql`delete from "asset_links" where product_id = ${productId} and entity_type = ${entityType} and entity_id = ${entityId}`);
+      void logAdminActivity(req, "asset_unlinked", "product", productId, { entityType, entityId });
+      return json({ ok: true, productId });
+    }
+    return error("غير مدعوم", 405);
   }
 
   if (section === "products") {

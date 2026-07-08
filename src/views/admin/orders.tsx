@@ -22,6 +22,7 @@ import { SelectedColorLabel } from "@/components/product-colors";
 import { EventCountdown } from "@/components/interactive/event-countdown";
 import { useToast } from "@/hooks/use-toast";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
+import { LinkedAssetsPanel } from "./linked-assets-panel";
 
 type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
@@ -469,6 +470,9 @@ export default function OrdersPage() {
                     lastPayment={(order as any).lastPayment ?? null}
                     onCollected={invalidateAll}
                   />
+                  <div className="mb-3">
+                    <LinkedAssetsPanel entityType={isRentalOrder(order) ? "rental" : "order"} entityId={order.id} />
+                  </div>
                   {Array.isArray(order.items) && order.items.length > 0 && (
                     <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-background/40 border border-border/20 p-3">
                       {order.items.map((item: any) => (
