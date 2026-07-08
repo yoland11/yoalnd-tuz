@@ -5759,9 +5759,13 @@ async function ensurePerformanceIndexes(): Promise<void> {
 let adminProductsColumnsPromise: Promise<void> | null = null;
 async function ensureAdminProductsColumns(): Promise<void> {
   if (!adminProductsColumnsPromise) {
-    adminProductsColumnsPromise = db
-      .execute(
-        sql`
+    adminProductsColumnsPromise = (async () => {
+      // Detect first run of the is_asset column so the backfill happens exactly once.
+      const existing = (await db.execute(
+        sql`select 1 from information_schema.columns where table_name = 'products' and column_name = 'is_asset'`,
+      )) as any;
+      const hadIsAsset = Boolean(existing?.rows?.length);
+      await db.execute(sql`
       alter table "products" add column if not exists "barcode" varchar(100);
       alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
       alter table "products" add column if not exists "min_stock" integer not null default 0;
@@ -5770,6 +5774,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "price_per_day" numeric(12,2) not null default 0;
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
       alter table "products" add column if not exists "archived_at" timestamp;
+      alter table "products" add column if not exists "is_asset" boolean not null default false;
       do $$
       begin
         alter table "products"
@@ -5788,8 +5793,13 @@ async function ensureAdminProductsColumns(): Promise<void> {
       create index if not exists "products_shared_stock_product_id_idx" on "products" ("shared_stock_product_id");
       create index if not exists "products_is_rental_active_idx" on "products" ("is_rental", "is_active");
       create index if not exists "products_archived_at_idx" on "products" ("archived_at");
-    `,
-      )
+      create index if not exists "products_is_asset_idx" on "products" ("is_asset");
+    `);
+      // One-time backfill: products that already had a depreciation profile stay assets.
+      if (!hadIsAsset) {
+        await db.execute(sql`update "products" set "is_asset" = true where id in (select product_id from asset_profiles)`);
+      }
+    })()
       .then(() => undefined)
       .catch(() => {
         adminProductsColumnsPromise = null;
@@ -8693,6 +8703,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
             : 0,
         sharedStockProductId: sharedStock.id,
         isRental: data.isRental === true,
+        isAsset: data.isAsset === true,
         pricePerDay: String(money(data.pricePerDay)),
         barcode: requestedBarcode || null,
         categoryId: productCategories.categoryId,
@@ -8798,6 +8809,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "sortOrder",
       "minStock",
       "isRental",
+      "isAsset",
       "barcode",
       "categoryId",
       "subcategoryId",
@@ -15395,12 +15407,8 @@ async function handleEnterpriseAdmin(
           ...(timelineMap.get(row.entityId) ?? []),
           row,
         ]);
-      const registeredIds = new Set<number>([
-        ...passports.map((row) => row.productId),
-        ...profiles.map((row) => row.productId),
-        ...products.filter((row) => row.isRental).map((row) => row.id),
-      ]);
-      const assetProducts = products.filter((row) => registeredIds.has(row.id));
+      // Only products explicitly flagged as fixed assets appear in Asset Management.
+      const assetProducts = products.filter((row) => (row as any).isAsset);
       const data = assetProducts.map((product) => {
         const passport = passportMap.get(product.id);
         const profile = profileMap.get(product.id);
@@ -19653,8 +19661,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
     const [products, profiles, passports] = await Promise.all([
       db.query.productsTable.findMany({
+        where: eq(productsTable.isAsset, true),
         orderBy: [asc(productsTable.id)],
-        limit: 300,
+        limit: 2000,
       }),
       db.query.assetProfilesTable.findMany({ limit: 500 }),
       db.query.assetPassportsTable.findMany({ limit: 500 }),
@@ -21511,6 +21520,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           isFeatured: Boolean(p.isFeatured ?? p.is_featured ?? false),
           barcode: p.barcode ?? p.bar_code ?? "",
           isActive: p.isActive ?? p.is_active ?? true,
+          isAsset: Boolean(p.isAsset ?? p.is_asset ?? false),
           archivedAt: p.archivedAt ?? p.archived_at ?? null,
         })),
       );

@@ -28,7 +28,7 @@ type ProductForm = {
   descriptionKu?: string; descriptionTr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
-  isRental?: boolean; pricePerDay?: string;
+  isRental?: boolean; pricePerDay?: string; isAsset?: boolean;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
   categoryId?: number | null; subcategoryId?: number | null;
@@ -52,7 +52,7 @@ type RentalBookingRow = {
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
-  isRental: false, pricePerDay: "0",
+  isRental: false, pricePerDay: "0", isAsset: false,
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
@@ -236,6 +236,7 @@ export default function ProductsPage() {
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
       isRental: form.isRental === true,
+      isAsset: form.isAsset === true,
       pricePerDay: parseFloat(form.pricePerDay ?? "0") || 0,
       sharedStockProductId: form.sharedStockProductId ?? null,
       ...(form.id && !form.sharedStockProductId ? { sharedStockLinkedProductIds: form.sharedStockLinkedProductIds ?? [] } : {}),
@@ -542,7 +543,7 @@ export default function ProductsPage() {
                             price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                             costPrice: p.costPrice ? String(p.costPrice) : "0",
                             stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
-                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0",
+                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0", isAsset: !!(p as any).isAsset,
                             sharedStockProductId: (p as any).sharedStockProductId ?? null,
                             sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
                             categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
@@ -913,6 +914,18 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               <Inp label="الكمية" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
             </div>
           )}
+        </div>
+        <div className="rounded-xl border border-accent/30 bg-accent/5 p-3">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
+            <input
+              type="checkbox"
+              checked={form.isAsset === true}
+              onChange={(event) => onChange({ ...form, isAsset: event.target.checked })}
+              className="accent-primary"
+            />
+            إضافة إلى إهلاك الأصول (أصل ثابت)
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">عند التفعيل يظهر المنتج في إدارة الأصول والجواز الرقمي والإهلاك، ويدعم QR والباركود والصيانة والإخراج/الاستلام. الافتراضي: غير مفعّل.</p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

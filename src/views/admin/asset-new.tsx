@@ -242,6 +242,7 @@ export default function AssetNewPage() {
         stock: 1,
         minStock: 0,
         isRental: form.isRental,
+        isAsset: true,
         pricePerDay: num(form.pricePerDay),
         category: categoryLabel,
         images: imageInputs,

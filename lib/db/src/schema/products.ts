@@ -27,6 +27,9 @@ export const productsTable = pgTable("products", {
 
   isRental: boolean("is_rental").notNull().default(false),
   pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Explicit fixed-asset flag. Only is_asset products appear in Asset Depreciation /
+  // Passport / Management. Provisioned at runtime (see ensureAdminProductsColumns).
+  isAsset: boolean("is_asset").notNull().default(false),
 
   barcode: varchar("barcode", { length: 100 }),
 
