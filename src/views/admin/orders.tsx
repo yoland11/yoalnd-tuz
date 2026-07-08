@@ -579,6 +579,9 @@ export default function OrdersPage() {
                     lastPayment={o.lastPayment ?? null}
                     onCollected={invalidateAll}
                   />
+                  <div className="my-3">
+                    <LinkedAssetsPanel entityType="service" entityId={o.id} />
+                  </div>
                   <PaymentPanel
                     total={Number(o.totalAmount ?? 0)}
                     deposit={Number(o.depositAmount ?? 0)}
