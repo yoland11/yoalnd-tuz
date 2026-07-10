@@ -54,6 +54,7 @@ import {
   Ruler,
   Scissors,
   ScanLine,
+  Factory,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -64,6 +65,7 @@ type NavItem = {
   label: string;
   icon: any;
   perm: Permission | null;
+  anyPerm?: Permission[];
   adminOnly?: boolean;
   external?: boolean;
 };
@@ -235,6 +237,20 @@ const NAV: NavItem[] = [
     label: "طباعة الملصقات",
     icon: QrCode,
     perm: "products",
+  },
+  {
+    href: "/admin/production",
+    label: "أوامر الإنتاج",
+    icon: Factory,
+    perm: "production_view",
+    anyPerm: ["production_view", "products"],
+  },
+  {
+    href: "/admin/production/reports",
+    label: "تقارير الإنتاج",
+    icon: BarChart3,
+    perm: "production_view",
+    anyPerm: ["production_view", "products"],
   },
   {
     href: "/admin/inventory-alerts",
@@ -607,6 +623,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: "المخزون",
     icon: Boxes,
     items: [
+      navItem("/admin/production"),
+      navItem("/admin/production/reports"),
       navItem("/admin/inventory-alerts"),
       navItem("/admin/inventory-value"),
       navItem("/admin/barcodes"),
@@ -742,6 +760,7 @@ function isNavItem(item: NavEntry): item is NavItem {
 function canSeeItem(me: AdminMe, item: NavEntry) {
   if (!isNavItem(item)) return true;
   if (item.adminOnly && me.role !== "admin") return false;
+  if (item.anyPerm) return item.anyPerm.some((p) => hasPerm(me, p));
   return hasPerm(me, item.perm);
 }
 

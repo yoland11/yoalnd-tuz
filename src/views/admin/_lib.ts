@@ -25,6 +25,11 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  "production_view",
+  "production_create",
+  "production_edit",
+  "production_delete",
+  "production_approve",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -47,6 +52,11 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   koshas: "بوابة كادر الكوشات",
   photography: "بوابة المصورين",
   graduation: "إدارة تجهيزات التخرج",
+  production_view: "عرض الإنتاج",
+  production_create: "إنشاء أوامر الإنتاج",
+  production_edit: "تعديل أوامر الإنتاج",
+  production_delete: "حذف أوامر الإنتاج",
+  production_approve: "اعتماد أوامر الإنتاج",
 };
 
 export type AdminMe = {

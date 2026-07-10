@@ -1132,6 +1132,10 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <BookingEquipmentSection bookingId={booking.id} />
         </KoshaDetailSection>
 
+        <KoshaDetailSection title="📦 منتجات الإنتاج (BOM)">
+          <BookingProductionSection bookingId={booking.id} />
+        </KoshaDetailSection>
+
         <KoshaDetailSection title="الكوشة المختارة">
           <KoshaOptionTile name={booking.koshaName ?? kosha?.name ?? "—"} mainImage={kosha?.mainImage ?? null} price={kosha?.price ?? null} onZoom={setLightbox} />
         </KoshaDetailSection>
@@ -1262,6 +1266,150 @@ function BookingEquipmentSection({ bookingId }: { bookingId: number }) {
             ))}
           </div>
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+type BookingProductionResponse = {
+  status: string;
+  items: Array<{ productId: number; name: string; quantity: number; unitPrice?: number; status?: string }>;
+  materials: Array<{ productId: number; name: string; required: number; available: number; missing: number; unit: string }>;
+  shoppingList: Array<{ productId: number; name: string; required: number; missing: number; unit: string }>;
+  stockOk: boolean;
+  totalCost: number;
+  expectedRevenue: number;
+  expectedProfit: number;
+  profitMargin: number;
+};
+
+const PRODUCTION_STATUS_LABELS: Record<string, string> = {
+  pending: "قيد الانتظار",
+  preparing: "التحضير",
+  in_production: "قيد الإنتاج",
+  quality_check: "فحص الجودة",
+  ready: "جاهز",
+  delivered: "تم التسليم",
+  cancelled: "ملغي",
+};
+
+// Attach production (BOM) products to a booking. Deducts recipe components, not finished items.
+function BookingProductionSection({ bookingId }: { bookingId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const key = ["admin", "kosha-booking-production", bookingId] as const;
+  const { data } = useQuery<BookingProductionResponse>({
+    queryKey: key,
+    queryFn: () => adminFetch(`/admin/kosha-bookings/${bookingId}/production`),
+  });
+  const { data: products = [] } = useQuery<Array<{ id: number; name: string; nameAr: string; stock: number }>>({
+    queryKey: ["admin", "production-products-picker"],
+    queryFn: () => adminFetch("/admin/products?limit=1000"),
+    staleTime: 2 * 60 * 1000,
+    enabled: search.trim().length >= 2,
+  });
+  // Production orders explicitly linked to this booking — shows live manufacturing progress.
+  const { data: linkedOrders = [] } = useQuery<Array<{ id: number; orderNo: string; status: string; totalCost: number; expectedProfit: number }>>({
+    queryKey: ["admin", "kosha-booking-production-orders", bookingId],
+    queryFn: () => adminFetch(`/admin/production?bookingType=kosha_booking&bookingId=${bookingId}`),
+  });
+
+  const items = data?.items ?? [];
+  const save = useMutation({
+    mutationFn: (payload: { items: any[]; status?: string }) =>
+      adminFetch(`/admin/kosha-bookings/${bookingId}/production`, { method: "PUT", body: JSON.stringify(payload) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: key }),
+    onError: (e) => toast({ title: "تعذّر الحفظ", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+
+  function commit(nextItems: any[], status?: string) {
+    save.mutate({ items: nextItems.map((i) => ({ productId: i.productId, quantity: i.quantity, status: i.status })), status: status ?? data?.status });
+  }
+  function addProduct(p: { id: number; nameAr: string; name: string }) {
+    if (items.some((i) => i.productId === p.id)) return;
+    commit([...items, { productId: p.id, name: p.nameAr || p.name, quantity: 1, status: "pending" }]);
+    setSearch("");
+  }
+  function setQty(productId: number, quantity: number) {
+    commit(items.map((i) => (i.productId === productId ? { ...i, quantity } : i)));
+  }
+  function removeProduct(productId: number) {
+    commit(items.filter((i) => i.productId !== productId));
+  }
+
+  const searchResults = search.trim().length >= 2
+    ? products.filter((p) => [p.nameAr, p.name].some((v) => String(v ?? "").toLowerCase().includes(search.trim().toLowerCase()))).slice(0, 12)
+    : [];
+
+  return (
+    <div className="space-y-3">
+      {linkedOrders.length > 0 && (
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-1">
+          <p className="text-[11px] font-semibold text-foreground">🏭 أوامر إنتاج مرتبطة:</p>
+          {linkedOrders.map((o) => (
+            <div key={o.id} className="flex items-center justify-between text-xs">
+              <span className="font-mono text-foreground">{o.orderNo}</span>
+              <span className="text-muted-foreground">{PRODUCTION_STATUS_LABELS[o.status] ?? o.status} · {formatCurrency(o.totalCost)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs text-muted-foreground">حالة الإنتاج</label>
+        <select
+          value={data?.status ?? "pending"}
+          onChange={(e) => commit(items, e.target.value)}
+          className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs"
+        >
+          {Object.entries(PRODUCTION_STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+      </div>
+
+      {items.length ? (
+        <div className="space-y-2">
+          {items.map((it) => (
+            <div key={it.productId} className="flex items-center gap-2 rounded-lg border border-border/25 bg-background/40 p-2">
+              <span className="flex-1 min-w-0 truncate text-sm text-foreground">{it.name}</span>
+              <input type="number" min={1} value={it.quantity}
+                onChange={(e) => setQty(it.productId, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                className="w-16 rounded-lg border border-border/40 bg-background px-2 py-1 text-center text-sm" />
+              <button type="button" onClick={() => removeProduct(it.productId)} className="p-1 text-status-danger hover:opacity-70"><Trash2 className="h-4 w-4" /></button>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-xs text-muted-foreground">لا توجد منتجات إنتاج مرتبطة بهذا الحجز.</p>}
+
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن منتج للإضافة..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+      {searchResults.length ? (
+        <div className="divide-y divide-border/20 rounded-lg border border-border/30">
+          {searchResults.map((r) => (
+            <button key={r.id} type="button" onClick={() => addProduct(r)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
+              <span>{r.nameAr || r.name}</span>
+              <span className="text-xs text-muted-foreground">مخزون {r.stock}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {data && items.length ? (
+        <>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-lg border border-border/30 bg-background/40 p-2"><p className="text-[10px] text-muted-foreground">التكلفة</p><p className="text-xs font-bold text-foreground">{formatCurrency(data.totalCost)}</p></div>
+            <div className="rounded-lg border border-border/30 bg-background/40 p-2"><p className="text-[10px] text-muted-foreground">الإيراد</p><p className="text-xs font-bold text-foreground">{formatCurrency(data.expectedRevenue)}</p></div>
+            <div className="rounded-lg border border-border/30 bg-background/40 p-2"><p className="text-[10px] text-muted-foreground">الربح</p><p className={`text-xs font-bold ${data.expectedProfit >= 0 ? "text-status-success" : "text-status-danger"}`}>{formatCurrency(data.expectedProfit)}</p></div>
+          </div>
+          {!data.stockOk && data.shoppingList.length ? (
+            <div className="rounded-lg border border-status-danger/30 bg-status-danger/5 p-2">
+              <p className="text-xs font-semibold text-status-danger">🛒 مواد ناقصة قبل التأكيد:</p>
+              <ul className="mt-1 space-y-0.5">
+                {data.shoppingList.map((s) => <li key={s.productId} className="flex justify-between text-xs text-foreground"><span>{s.name}</span><span className="text-status-danger">ناقص {s.missing} {s.unit}</span></li>)}
+              </ul>
+            </div>
+          ) : items.length ? (
+            <p className="text-xs text-status-success">✅ جميع المواد متوفرة.</p>
+          ) : null}
+        </>
       ) : null}
     </div>
   );

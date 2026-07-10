@@ -4,12 +4,12 @@ import {
   useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
-import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode } from "lucide-react";
+import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode, RefreshCw, Copy } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, fileToDataUrl, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, fileToDataUrl, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { usePublicSettings } from "@/lib/public-settings";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
@@ -535,7 +535,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   products: any[];
 }) {
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<"details" | "rentals">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe">("details");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
@@ -766,8 +766,23 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             >
               حجوزات الإيجار
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("recipe")}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "recipe" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              🧩 وصفة المنتج
+            </button>
           </div>
         )}
+
+        {activeTab === "recipe" && form.id ? (
+          <RecipeTab
+            productId={form.id}
+            sellingPrice={Number(form.price) || 0}
+            products={products}
+          />
+        ) : null}
 
         {activeTab === "rentals" ? (
           <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
@@ -843,7 +858,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               </div>
             )}
           </div>
-        ) : (
+        ) : activeTab === "details" ? (
           <>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-3">
           <h4 className="text-sm font-semibold text-foreground">إعدادات الإيجار</h4>
@@ -1286,7 +1301,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
         <Button type="submit" disabled={busy} className="w-full">{busy ? "جاري الحفظ..." : "حفظ"}</Button>
           </>
-        )}
+        ) : null}
       </form>
       {previewImage && (
         <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}>
@@ -1308,6 +1323,362 @@ function Inp({ label, value, onChange, type = "text" }: { label: string; value: 
       <label className="block text-xs text-muted-foreground mb-1">{label}</label>
       <input type={type} value={value} onChange={e => onChange(e.target.value)}
         className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+    </div>
+  );
+}
+
+// ───── 🧩 Product Recipe (BOM) tab ─────
+type RecipeComp = {
+  id?: number;
+  componentProductId: number;
+  name: string;
+  quantity: number;
+  unit: string;
+  unitCost: number;
+  notes?: string | null;
+  componentStock?: number;
+};
+type LaborLine = { worker: string; hours: number; hourlyRate: number };
+
+function RecipeTab({ productId, sellingPrice, products }: { productId: number; sellingPrice: number; products: any[] }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [rows, setRows] = useState<RecipeComp[]>([]);
+  const [labor, setLabor] = useState<LaborLine[]>([]);
+  const [wastagePercent, setWastagePercent] = useState(0);
+  const [recipeNotes, setRecipeNotes] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [dupTarget, setDupTarget] = useState<string>("");
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["admin", "product-recipe", productId],
+    queryFn: () => adminFetch<any>(`/products/${productId}/recipe`),
+    enabled: Boolean(productId),
+  });
+
+  useEffect(() => {
+    if (data?.components) {
+      setRows(data.components.map((c: any) => ({
+        id: c.id,
+        componentProductId: c.componentProductId,
+        name: c.name,
+        quantity: Number(c.quantity) || 0,
+        unit: c.unit || "قطعة",
+        unitCost: Number(c.unitCost) || 0,
+        notes: c.notes ?? "",
+        componentStock: Number(c.componentStock ?? 0),
+      })));
+      setLabor(Array.isArray(data.labor) ? data.labor.map((l: any) => ({ worker: l.worker || "", hours: Number(l.hours) || 0, hourlyRate: Number(l.hourlyRate) || 0 })) : []);
+      setWastagePercent(Number(data.wastagePercent) || 0);
+      setRecipeNotes(data.notes ?? "");
+      setDirty(false);
+    }
+  }, [data]);
+
+  const materialCost = useMemo(
+    () => rows.reduce((sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.unitCost) || 0), 0),
+    [rows],
+  );
+  const laborCost = useMemo(
+    () => labor.reduce((sum, l) => sum + (Number(l.hours) || 0) * (Number(l.hourlyRate) || 0), 0),
+    [labor],
+  );
+  const totalCost = materialCost + laborCost;
+  const profit = sellingPrice - totalCost;
+  const margin = sellingPrice > 0 ? (profit / sellingPrice) * 100 : 0;
+
+  function addLaborLine() {
+    setLabor((prev) => [...prev, { worker: "", hours: 0, hourlyRate: 0 }]);
+    setDirty(true);
+  }
+  function updateLabor(i: number, patch: Partial<LaborLine>) {
+    setLabor((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+    setDirty(true);
+  }
+  function removeLabor(i: number) {
+    setLabor((prev) => prev.filter((_, idx) => idx !== i));
+    setDirty(true);
+  }
+
+  const usedIds = new Set(rows.map((r) => r.componentProductId));
+  const pickable = products
+    .filter((p: any) => p.id !== productId)
+    .filter((p: any) => (replaceIndex != null ? true : !usedIds.has(p.id)))
+    .filter((p: any) => {
+      const term = pickerSearch.trim().toLowerCase();
+      if (!term) return true;
+      return [p.nameAr, p.name, p.barcode].some((v) => String(v ?? "").toLowerCase().includes(term));
+    })
+    .slice(0, 40);
+
+  function update(i: number, patch: Partial<RecipeComp>) {
+    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+    setDirty(true);
+  }
+  function removeRow(i: number) {
+    setRows((prev) => prev.filter((_, idx) => idx !== i));
+    setDirty(true);
+  }
+  function pickProduct(p: any) {
+    if (replaceIndex != null) {
+      update(replaceIndex, { componentProductId: p.id, name: p.nameAr || p.name, unitCost: Number(p.costPrice) || 0, componentStock: Number(p.stock) || 0 });
+      setReplaceIndex(null);
+    } else {
+      setRows((prev) => [...prev, {
+        componentProductId: p.id,
+        name: p.nameAr || p.name,
+        quantity: 1,
+        unit: "قطعة",
+        unitCost: Number(p.costPrice) || 0,
+        notes: "",
+        componentStock: Number(p.stock) || 0,
+      }]);
+      setDirty(true);
+    }
+    setPickerOpen(false);
+    setPickerSearch("");
+  }
+
+  async function save() {
+    setBusy(true);
+    try {
+      await adminFetch(`/products/${productId}/recipe`, {
+        method: "PUT",
+        body: JSON.stringify({
+          components: rows.map((r) => ({
+            componentProductId: r.componentProductId,
+            quantity: Number(r.quantity) || 0,
+            unit: r.unit || "قطعة",
+            unitCost: Number(r.unitCost) || 0,
+            notes: r.notes || null,
+          })),
+          labor: labor
+            .filter((l) => l.worker || l.hours > 0 || l.hourlyRate > 0)
+            .map((l) => ({ worker: l.worker, hours: Number(l.hours) || 0, hourlyRate: Number(l.hourlyRate) || 0 })),
+          wastagePercent: Number(wastagePercent) || 0,
+          recipeNotes: recipeNotes || null,
+        }),
+      });
+      toast({ title: "تم حفظ الوصفة ✅" });
+      setDirty(false);
+      await refetch();
+      qc.invalidateQueries({ queryKey: ["admin", "product-recipe", productId] });
+    } catch (e: any) {
+      toast({ title: "تعذر حفظ الوصفة", description: apiErrorMessage(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function duplicate() {
+    const targetId = Number(dupTarget);
+    if (!targetId) return;
+    setBusy(true);
+    try {
+      await adminFetch(`/products/${productId}/recipe/duplicate`, {
+        method: "POST",
+        body: JSON.stringify({ targetProductId: targetId }),
+      });
+      const targetName = products.find((p: any) => p.id === targetId)?.nameAr || "المنتج";
+      toast({ title: `تم نسخ الوصفة إلى ${targetName} ✅` });
+      setDupTarget("");
+    } catch (e: any) {
+      toast({ title: "تعذر نسخ الوصفة", description: apiErrorMessage(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground">🧩 وصفة المنتج (BOM)</h4>
+          <p className="mt-1 text-[11px] text-muted-foreground">المكوّنات المستهلكة عند بيع أو إنتاج هذا المنتج. لا يُخصم المنتج النهائي — تُخصم مكوّناته فقط.</p>
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={() => { setReplaceIndex(null); setPickerOpen(true); }}>
+          <Plus className="w-4 h-4 ml-1" /> إضافة مكوّن
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="rounded-lg border border-border/25 bg-card/50 p-3 text-xs text-muted-foreground">جارٍ التحميل…</div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border/40 bg-card/40 p-6 text-center text-xs text-muted-foreground">
+          لا توجد مكوّنات بعد. أضف مكوّنات من منتجات المتجر لتكوين الوصفة.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r, i) => {
+            const low = (r.componentStock ?? 0) < (Number(r.quantity) || 0);
+            return (
+              <div key={`${r.componentProductId}-${i}`} className="rounded-lg border border-border/25 bg-card/60 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <span className="text-sm font-medium text-foreground truncate">{r.name}</span>
+                    {low && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-status-warning/30 bg-status-warning/10 px-1.5 py-0.5 text-[10px] text-status-warning">
+                        <AlertTriangle className="w-3 h-3" /> مخزون {r.componentStock ?? 0}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" title="استبدال" onClick={() => { setReplaceIndex(i); setPickerOpen(true); }}
+                      className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" title="حذف" onClick={() => removeRow(i)}
+                      className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <label className="block">
+                    <span className="block text-[10px] text-muted-foreground mb-0.5">الكمية</span>
+                    <input type="number" min={0} step="any" value={r.quantity}
+                      onChange={(e) => update(i, { quantity: Number(e.target.value) })}
+                      className="w-full bg-background border border-border/40 rounded-lg px-2 py-1 text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-muted-foreground mb-0.5">الوحدة</span>
+                    <input value={r.unit} onChange={(e) => update(i, { unit: e.target.value })}
+                      className="w-full bg-background border border-border/40 rounded-lg px-2 py-1 text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-muted-foreground mb-0.5">تكلفة الوحدة</span>
+                    <input type="number" min={0} step="any" value={r.unitCost}
+                      onChange={(e) => update(i, { unitCost: Number(e.target.value) })}
+                      className="w-full bg-background border border-border/40 rounded-lg px-2 py-1 text-sm" />
+                  </label>
+                  <div className="flex flex-col justify-end">
+                    <span className="block text-[10px] text-muted-foreground mb-0.5">تكلفة السطر</span>
+                    <span className="px-2 py-1 text-sm font-semibold text-foreground">{formatCurrency((Number(r.quantity) || 0) * (Number(r.unitCost) || 0))}</span>
+                  </div>
+                </div>
+                <input value={r.notes ?? ""} onChange={(e) => update(i, { notes: e.target.value })}
+                  placeholder="ملاحظات (اختياري)"
+                  className="mt-2 w-full bg-background border border-border/40 rounded-lg px-2 py-1 text-xs" />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Labor + wastage */}
+      <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-foreground">👷 تكلفة العمالة</h4>
+          <button type="button" onClick={addLaborLine} className="inline-flex items-center gap-1 rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
+            <Plus className="w-3.5 h-3.5" /> إضافة عامل
+          </button>
+        </div>
+        {labor.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">لا توجد تكلفة عمالة. أضف عاملاً لاحتساب صافي الربح بدقة.</p>
+        ) : (
+          <div className="space-y-2">
+            {labor.map((l, i) => (
+              <div key={i} className="grid grid-cols-12 gap-1.5 items-center">
+                <input value={l.worker} onChange={(e) => updateLabor(i, { worker: e.target.value })} placeholder="العامل"
+                  className="col-span-5 bg-background border border-border/40 rounded-lg px-2 py-1 text-xs" />
+                <input type="number" min={0} step="any" value={l.hours} onChange={(e) => updateLabor(i, { hours: Number(e.target.value) })} placeholder="ساعات"
+                  className="col-span-2 bg-background border border-border/40 rounded-lg px-1.5 py-1 text-xs text-center" />
+                <input type="number" min={0} step="any" value={l.hourlyRate} onChange={(e) => updateLabor(i, { hourlyRate: Number(e.target.value) })} placeholder="أجر/س"
+                  className="col-span-2 bg-background border border-border/40 rounded-lg px-1.5 py-1 text-xs text-center" />
+                <span className="col-span-2 text-[11px] text-foreground text-center">{formatCurrency((Number(l.hours) || 0) * (Number(l.hourlyRate) || 0))}</span>
+                <button type="button" onClick={() => removeLabor(i)} className="col-span-1 text-status-danger"><Trash2 className="w-3.5 h-3.5 mx-auto" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2 pt-1">
+          <label className="text-[11px] text-muted-foreground">نسبة الهدر %</label>
+          <input type="number" min={0} max={100} step="any" value={wastagePercent}
+            onChange={(e) => { setWastagePercent(Number(e.target.value)); setDirty(true); }}
+            className="w-20 bg-background border border-border/40 rounded-lg px-2 py-1 text-xs text-center" />
+          <input value={recipeNotes} onChange={(e) => { setRecipeNotes(e.target.value); setDirty(true); }}
+            placeholder="ملاحظات الوصفة (اختياري)"
+            className="flex-1 bg-background border border-border/40 rounded-lg px-2 py-1 text-xs" />
+        </div>
+      </div>
+
+      {/* Totals */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">تكلفة المواد</p>
+          <p className="mt-1 text-sm font-bold text-foreground">{formatCurrency(materialCost)}</p>
+        </div>
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">تكلفة العمالة</p>
+          <p className="mt-1 text-sm font-bold text-foreground">{formatCurrency(laborCost)}</p>
+        </div>
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">سعر البيع</p>
+          <p className="mt-1 text-sm font-bold text-foreground">{formatCurrency(sellingPrice)}</p>
+        </div>
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">صافي الربح</p>
+          <p className={`mt-1 text-sm font-bold ${profit >= 0 ? "text-status-success" : "text-status-danger"}`}>{formatCurrency(profit)}</p>
+        </div>
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">هامش الربح</p>
+          <p className={`mt-1 text-sm font-bold ${margin >= 0 ? "text-status-success" : "text-status-danger"}`}>{margin.toFixed(1)}%</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+        <Button type="button" size="sm" onClick={save} disabled={busy || !dirty}>
+          <Save className="w-4 h-4 ml-1" /> {busy ? "جارٍ الحفظ…" : dirty ? "حفظ الوصفة" : "محفوظة"}
+        </Button>
+        <div className="flex items-center gap-1">
+          <select value={dupTarget} onChange={(e) => setDupTarget(e.target.value)}
+            className="bg-background border border-border/40 rounded-lg px-2 py-1.5 text-xs max-w-[150px]">
+            <option value="">نسخ الوصفة إلى…</option>
+            {products.filter((p: any) => p.id !== productId).map((p: any) => (
+              <option key={p.id} value={p.id}>{p.nameAr || p.name}</option>
+            ))}
+          </select>
+          <Button type="button" size="sm" variant="outline" onClick={duplicate} disabled={busy || !dupTarget}>
+            <Copy className="w-4 h-4 ml-1" /> نسخ
+          </Button>
+        </div>
+      </div>
+
+      {/* Component picker */}
+      {pickerOpen && (
+        <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4" dir="rtl"
+          onClick={() => { setPickerOpen(false); setReplaceIndex(null); }}>
+          <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[80dvh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-3 border-b border-border/30">
+              <h4 className="text-sm font-semibold text-foreground">{replaceIndex != null ? "استبدال المكوّن" : "اختر مكوّناً"}</h4>
+              <button type="button" onClick={() => { setPickerOpen(false); setReplaceIndex(null); }} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-3 border-b border-border/30">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input autoFocus value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)}
+                  placeholder="بحث عن منتج…"
+                  className="w-full bg-background border border-border/40 rounded-lg pr-9 pl-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div className="overflow-y-auto divide-y divide-border/20">
+              {pickable.length === 0 ? (
+                <div className="p-4 text-center text-xs text-muted-foreground">لا توجد منتجات مطابقة.</div>
+              ) : pickable.map((p: any) => (
+                <button key={p.id} type="button" onClick={() => pickProduct(p)}
+                  className="w-full text-right p-3 hover:bg-primary/5 flex items-center justify-between gap-2">
+                  <span className="text-sm text-foreground truncate">{p.nameAr || p.name}</span>
+                  <span className="text-[11px] text-muted-foreground shrink-0">مخزون {Number(p.stock) || 0} · {formatCurrency(Number(p.costPrice) || 0)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

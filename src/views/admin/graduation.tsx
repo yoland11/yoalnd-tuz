@@ -67,6 +67,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { ProductionProgressPanel } from "./production-progress";
 import { useToast } from "@/hooks/use-toast";
 import { downloadElementPdf } from "@/lib/pdf";
 import { formatCurrency } from "@/lib/money";
@@ -1136,6 +1137,9 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
             ))}
           </TabsContent>
         </Tabs>
+        <div className="mt-4">
+          <ProductionProgressPanel bookingType="graduation" bookingId={order.id} />
+        </div>
         <DialogFooter className="gap-2 sm:justify-start">
           <Button
             onClick={() => save.mutate()}

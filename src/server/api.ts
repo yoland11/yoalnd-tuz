@@ -283,6 +283,11 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  "production_view",
+  "production_create",
+  "production_edit",
+  "production_delete",
+  "production_approve",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -333,6 +338,7 @@ let stockTrackingTablesPromise: Promise<void> | null = null;
 let koshaTablesPromise: Promise<void> | null = null;
 let koshaStaffTablesPromise: Promise<void> | null = null;
 let photographyStaffTablesPromise: Promise<void> | null = null;
+let productionTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
   string,
   { expiresAt: number; payload: any[] }
@@ -4591,6 +4597,18 @@ async function syncSharedStockLinkedProducts(
   }
 }
 
+// Sale stock adjustment — MAKE-TO-STOCK model: a sale deducts the FINISHED product's own
+// stock (the goods produced via Production Orders). Recipe COMPONENTS are consumed only at
+// production time, never at sale time. So this simply adjusts the sold product's stock.
+async function adjustSaleStock(
+  productId: number,
+  delta: number,
+  meta: StockMovementMeta,
+): Promise<void> {
+  if (!productId || !delta) return;
+  await adjustProductStock(productId, delta, meta);
+}
+
 async function applyOrderItemsStock(
   orderId: number,
   direction: 1 | -1,
@@ -4605,7 +4623,7 @@ async function applyOrderItemsStock(
     const productId = Number(item.productId ?? 0);
     const quantity = Number(item.quantity ?? 0);
     if (productId > 0 && quantity > 0) {
-      await adjustProductStock(productId, direction * quantity, {
+      await adjustSaleStock(productId, direction * quantity, {
         reason,
         relatedType: "order",
         relatedId: orderId,
@@ -4689,7 +4707,7 @@ async function applySalesInvoiceItemsStock(
     const productId = Number(item.productId ?? 0);
     const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
     if (productId > 0 && quantity > 0) {
-      await adjustProductStock(productId, direction * quantity, {
+      await adjustSaleStock(productId, direction * quantity, {
         reason,
         relatedType: "sales_invoice",
         relatedId: invoiceId,
@@ -8463,10 +8481,462 @@ async function handleAuth(req: NextRequest, parts: string[]) {
   return null;
 }
 
+// ───── Production & Product Recipe (BOM) ─────
+// Two runtime-provisioned tables (idempotent DDL — matches the codebase's ensureXTable
+// convention, so NO drizzle migration is needed):
+//  • product_recipes    — BOM component lines, one row per component of a finished product.
+//  • production_orders   — production run headers (items + consumed materials stored as JSONB).
+// Everything else (inventory, movements, timeline, audit) reuses existing infrastructure.
+async function ensureProductionTables(): Promise<void> {
+  if (!productionTablesPromise) {
+    productionTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "product_recipes" (
+        "id" serial primary key,
+        "product_id" integer not null references "products" ("id") on delete cascade,
+        "component_product_id" integer not null references "products" ("id"),
+        "quantity" numeric(12,3) not null default 1,
+        "unit" varchar(30) not null default 'قطعة',
+        "unit_cost" numeric(14,2) not null default 0,
+        "notes" text,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "product_recipes_product_idx" on "product_recipes" ("product_id");
+      create table if not exists "production_orders" (
+        "id" serial primary key,
+        "order_no" varchar(50) not null unique,
+        "status" varchar(20) not null default 'pending',
+        "items" jsonb not null default '[]'::jsonb,
+        "materials" jsonb not null default '[]'::jsonb,
+        "total_cost" numeric(16,2) not null default 0,
+        "expected_revenue" numeric(16,2) not null default 0,
+        "expected_profit" numeric(16,2) not null default 0,
+        "notes" text,
+        "created_by" integer references "staff" ("id"),
+        "created_by_name" text not null default '',
+        "delivered_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "production_orders_status_idx" on "production_orders" ("status", "created_at");
+      -- Enterprise columns (labor / equipment / wastage / booking / approval) added idempotently.
+      alter table "production_orders" add column if not exists "material_cost" numeric(16,2) not null default 0;
+      alter table "production_orders" add column if not exists "labor_cost" numeric(16,2) not null default 0;
+      alter table "production_orders" add column if not exists "equipment_cost" numeric(16,2) not null default 0;
+      alter table "production_orders" add column if not exists "wastage_percent" numeric(6,2) not null default 0;
+      alter table "production_orders" add column if not exists "labor" jsonb not null default '[]'::jsonb;
+      alter table "production_orders" add column if not exists "equipment" jsonb not null default '[]'::jsonb;
+      alter table "production_orders" add column if not exists "booking_type" varchar(40);
+      alter table "production_orders" add column if not exists "booking_id" integer;
+      alter table "production_orders" add column if not exists "approved_by" integer;
+      alter table "production_orders" add column if not exists "approved_by_name" text;
+      alter table "production_orders" add column if not exists "approved_at" timestamp;
+      alter table "production_orders" add column if not exists "cancelled_at" timestamp;
+      alter table "production_orders" add column if not exists "stock_applied" integer not null default 0;
+      alter table "production_orders" add column if not exists "produced" jsonb not null default '{}'::jsonb;
+      alter table "production_orders" add column if not exists "applied_materials" jsonb not null default '[]'::jsonb;
+      alter table "production_orders" add column if not exists "expense_id" integer;
+      create index if not exists "production_orders_booking_idx" on "production_orders" ("booking_type", "booking_id");
+      -- Recipe-level overhead (labor lines + wastage) kept 1:1 with a finished product.
+      create table if not exists "product_recipe_settings" (
+        "product_id" integer primary key references "products" ("id") on delete cascade,
+        "labor_cost" numeric(14,2) not null default 0,
+        "labor" jsonb not null default '[]'::jsonb,
+        "wastage_percent" numeric(6,2) not null default 0,
+        "notes" text,
+        "updated_at" timestamp not null default now()
+      );
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        productionTablesPromise = null;
+        throw err;
+      });
+  }
+  return productionTablesPromise;
+}
+
+type RecipeComponentInput = {
+  componentProductId: number;
+  quantity: number;
+  unit?: string | null;
+  unitCost?: number | null;
+  notes?: string | null;
+};
+
+// Load the raw recipe rows for one finished product, newest sort order first.
+async function loadProductRecipeRows(productId: number): Promise<any[]> {
+  await ensureProductionTables();
+  const rows = await db.execute(sql`
+    select r.*, p.name as component_name, p.name_ar as component_name_ar,
+           p.cost_price as component_cost_price, p.price as component_price,
+           p.stock as component_stock
+    from product_recipes r
+    join products p on p.id = r.component_product_id
+    where r.product_id = ${productId}
+    order by r.sort_order asc, r.id asc
+  `);
+  return (rows as any).rows ?? (rows as any) ?? [];
+}
+
+function formatRecipeComponent(row: any) {
+  const quantity = Number(row.quantity ?? 0);
+  const unitCost = Number(row.unit_cost ?? row.unitCost ?? 0);
+  return {
+    id: Number(row.id),
+    componentProductId: Number(row.component_product_id ?? row.componentProductId),
+    name: row.component_name_ar || row.component_name || `#${row.component_product_id}`,
+    quantity,
+    unit: row.unit ?? "قطعة",
+    unitCost,
+    lineCost: Math.round(quantity * unitCost * 100) / 100,
+    notes: row.notes ?? null,
+    componentStock: Number(row.component_stock ?? 0),
+    componentCostPrice: Number(row.component_cost_price ?? 0),
+    sortOrder: Number(row.sort_order ?? 0),
+  };
+}
+
+type RecipeLaborLine = { worker: string; hours: number; hourlyRate: number; total: number };
+type RecipeSettings = {
+  laborCost: number;
+  labor: RecipeLaborLine[];
+  wastagePercent: number;
+  notes: string | null;
+};
+
+// Load the recipe-level overhead (labor lines + wastage) for a finished product.
+async function loadRecipeSettings(productId: number): Promise<RecipeSettings> {
+  await ensureProductionTables();
+  const res: any = await db.execute(
+    sql`select * from product_recipe_settings where product_id = ${productId} limit 1`,
+  );
+  const row = (res.rows ?? res ?? [])[0];
+  const labor: RecipeLaborLine[] = Array.isArray(row?.labor)
+    ? row.labor
+    : typeof row?.labor === "string"
+      ? JSON.parse(row.labor || "[]")
+      : [];
+  return {
+    laborCost: Number(row?.labor_cost ?? 0),
+    labor,
+    wastagePercent: Number(row?.wastage_percent ?? 0),
+    notes: row?.notes ?? null,
+  };
+}
+
+// Normalize incoming labor lines and derive each total (hours × hourlyRate).
+function normalizeLaborLines(raw: unknown): { lines: RecipeLaborLine[]; total: number } {
+  const lines: RecipeLaborLine[] = (Array.isArray(raw) ? raw : [])
+    .map((l: any) => {
+      const hours = Number(l?.hours) || 0;
+      const hourlyRate = Number(l?.hourlyRate) || 0;
+      const explicit = Number(l?.total);
+      const total = Number.isFinite(explicit) && explicit > 0 ? explicit : hours * hourlyRate;
+      return {
+        worker: typeof l?.worker === "string" ? l.worker.slice(0, 120) : "",
+        hours,
+        hourlyRate,
+        total: Math.round(total * 100) / 100,
+      };
+    })
+    .filter((l) => l.worker || l.total > 0);
+  const total = Math.round(lines.reduce((s, l) => s + l.total, 0) * 100) / 100;
+  return { lines, total };
+}
+
+// Build the recipe payload (components + labor + cost/profit summary) for a finished product.
+async function buildRecipePayload(product: any) {
+  const rows = await loadProductRecipeRows(product.id);
+  const settings = await loadRecipeSettings(product.id);
+  const components = rows.map(formatRecipeComponent);
+  const materialCost =
+    Math.round(components.reduce((sum, c) => sum + c.lineCost, 0) * 100) / 100;
+  // Labor cost = sum of labor lines, or the stored flat labor_cost when no lines given.
+  const laborFromLines = settings.labor.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const laborCost = Math.round((laborFromLines > 0 ? laborFromLines : settings.laborCost) * 100) / 100;
+  const sellingPrice = Number.parseFloat(String(product.price ?? "0")) || 0;
+  const totalCost = Math.round((materialCost + laborCost) * 100) / 100;
+  const profit = Math.round((sellingPrice - totalCost) * 100) / 100;
+  const margin =
+    sellingPrice > 0 ? Math.round((profit / sellingPrice) * 1000) / 10 : 0;
+  return {
+    productId: product.id,
+    productName: product.nameAr || product.name,
+    components,
+    labor: settings.labor,
+    laborCost,
+    wastagePercent: settings.wastagePercent,
+    notes: settings.notes,
+    totals: { materialCost, laborCost, totalCost, sellingPrice, profit, margin },
+  };
+}
+
+// Expand a list of finished-product requirements into raw component requirements.
+// Products WITH a recipe contribute their components (finished product is NOT consumed);
+// products WITHOUT a recipe are treated as their own requirement (normal stock item).
+async function expandRecipeRequirements(
+  items: Array<{ productId: number; quantity: number }>,
+): Promise<Map<number, { quantity: number; unit: string; unitCost: number }>> {
+  await ensureProductionTables();
+  const required = new Map<
+    number,
+    { quantity: number; unit: string; unitCost: number }
+  >();
+  for (const item of items) {
+    const productId = Number(item.productId);
+    const qty = Number(item.quantity) || 0;
+    if (!productId || qty <= 0) continue;
+    const rows = await loadProductRecipeRows(productId);
+    if (!rows.length) {
+      const prev = required.get(productId);
+      required.set(productId, {
+        quantity: (prev?.quantity ?? 0) + qty,
+        unit: prev?.unit ?? "قطعة",
+        unitCost: prev?.unitCost ?? 0,
+      });
+      continue;
+    }
+    for (const row of rows) {
+      const compId = Number(row.component_product_id);
+      const need = Number(row.quantity ?? 0) * qty;
+      const prev = required.get(compId);
+      required.set(compId, {
+        quantity: (prev?.quantity ?? 0) + need,
+        unit: row.unit ?? prev?.unit ?? "قطعة",
+        unitCost: Number(row.unit_cost ?? prev?.unitCost ?? 0),
+      });
+    }
+  }
+  return required;
+}
+
+// Check component stock availability for a set of finished-product requirements.
+// Returns shortages (missing materials) so a sale/booking can be blocked before confirmation.
+async function checkRecipeStockAvailability(
+  items: Array<{ productId: number; quantity: number }>,
+) {
+  const required = await expandRecipeRequirements(items);
+  const ids = [...required.keys()];
+  if (!ids.length) return { ok: true, shortages: [], requirements: [] };
+  const products = await db.query.productsTable.findMany({
+    where: inArray(productsTable.id, ids),
+  });
+  const stockMap = new Map(products.map((p) => [p.id, p]));
+  const shortages: Array<{
+    productId: number;
+    name: string;
+    required: number;
+    available: number;
+    missing: number;
+    unit: string;
+  }> = [];
+  const requirements: Array<{
+    productId: number;
+    name: string;
+    required: number;
+    available: number;
+    unit: string;
+    unitCost: number;
+  }> = [];
+  for (const [productId, need] of required) {
+    const product = stockMap.get(productId);
+    const available = Number(product?.stock ?? 0);
+    const name = product?.nameAr || product?.name || `#${productId}`;
+    requirements.push({
+      productId,
+      name,
+      required: Math.round(need.quantity * 1000) / 1000,
+      available,
+      unit: need.unit,
+      unitCost: need.unitCost,
+    });
+    if (available < need.quantity) {
+      shortages.push({
+        productId,
+        name,
+        required: Math.round(need.quantity * 1000) / 1000,
+        available,
+        missing: Math.round((need.quantity - available) * 1000) / 1000,
+        unit: need.unit,
+      });
+    }
+  }
+  return { ok: shortages.length === 0, shortages, requirements };
+}
+
+// Handles /products/:id/recipe (GET), replace (PUT), and /recipe/duplicate (POST).
+async function handleProductRecipe(
+  req: NextRequest,
+  parts: string[],
+  method: string,
+  productId: number,
+): Promise<NextResponse | null> {
+  const auth = await requirePermission(req, "products");
+  if (isResponse(auth)) return auth;
+  await ensureProductionTables();
+  const product = await db.query.productsTable.findFirst({
+    where: eq(productsTable.id, productId),
+  });
+  if (!product) return error("المنتج غير موجود", 404);
+
+  // GET /products/:id/recipe → components + cost/profit summary
+  if (method === "GET" && !parts[3]) {
+    return json(await buildRecipePayload(product));
+  }
+
+  // PUT /products/:id/recipe → replace the whole component list at once
+  // Body: { components: [{ componentProductId, quantity, unit, unitCost, notes }] }
+  if (method === "PUT" && !parts[3]) {
+    const b = await body(req);
+    const raw = Array.isArray(b?.components) ? b.components : [];
+    const components: RecipeComponentInput[] = raw
+      .map((c: any) => ({
+        componentProductId: Number(c?.componentProductId),
+        quantity: Number(c?.quantity),
+        unit: typeof c?.unit === "string" ? c.unit.slice(0, 30) : "قطعة",
+        unitCost: Number(c?.unitCost ?? 0),
+        notes:
+          typeof c?.notes === "string" && c.notes.trim()
+            ? c.notes.trim().slice(0, 500)
+            : null,
+      }))
+      .filter(
+        (c: RecipeComponentInput) =>
+          c.componentProductId && c.componentProductId !== productId && c.quantity > 0,
+      );
+    await db.execute(
+      sql`delete from product_recipes where product_id = ${productId}`,
+    );
+    for (let i = 0; i < components.length; i++) {
+      const c = components[i];
+      await db.execute(sql`
+        insert into product_recipes
+          (product_id, component_product_id, quantity, unit, unit_cost, notes, sort_order)
+        values
+          (${productId}, ${c.componentProductId}, ${c.quantity}, ${c.unit ?? "قطعة"},
+           ${c.unitCost ?? 0}, ${c.notes ?? null}, ${i})
+      `);
+    }
+    // Persist recipe-level overhead: labor lines and wastage %.
+    const { lines: laborLines, total: laborTotal } = normalizeLaborLines(b?.labor);
+    const flatLaborCost = Number(b?.laborCost);
+    const laborCost = laborTotal > 0 ? laborTotal : Number.isFinite(flatLaborCost) ? Math.max(0, flatLaborCost) : 0;
+    const wastagePercent = Math.max(0, Math.min(100, Number(b?.wastagePercent) || 0));
+    const recipeNotes =
+      typeof b?.recipeNotes === "string" && b.recipeNotes.trim()
+        ? b.recipeNotes.trim().slice(0, 1000)
+        : null;
+    await db.execute(sql`
+      insert into product_recipe_settings (product_id, labor_cost, labor, wastage_percent, notes, updated_at)
+      values (${productId}, ${laborCost}, ${JSON.stringify(laborLines)}::jsonb, ${wastagePercent}, ${recipeNotes}, now())
+      on conflict (product_id) do update set
+        labor_cost = excluded.labor_cost,
+        labor = excluded.labor,
+        wastage_percent = excluded.wastage_percent,
+        notes = excluded.notes,
+        updated_at = now()
+    `);
+    void addEntityTimeline({
+      entityType: "product",
+      entityId: productId,
+      type: "recipe",
+      title: "🧩 تحديث وصفة المنتج (BOM)",
+      body: `${components.length} مكوّن · أجور ${laborCost}`,
+      actor: actor(auth),
+      metadata: { count: components.length, laborCost, wastagePercent },
+    });
+    return json(await buildRecipePayload(product));
+  }
+
+  // POST /products/:id/recipe/duplicate → copy this recipe into another product
+  // Body: { targetProductId }
+  if (method === "POST" && parts[3] === "duplicate") {
+    const b = await body(req);
+    const targetId = Number(b?.targetProductId);
+    if (!targetId || targetId === productId)
+      return error("المنتج الهدف غير صحيح", 400);
+    const target = await db.query.productsTable.findFirst({
+      where: eq(productsTable.id, targetId),
+    });
+    if (!target) return error("المنتج الهدف غير موجود", 404);
+    const rows = await loadProductRecipeRows(productId);
+    await db.execute(
+      sql`delete from product_recipes where product_id = ${targetId}`,
+    );
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      await db.execute(sql`
+        insert into product_recipes
+          (product_id, component_product_id, quantity, unit, unit_cost, notes, sort_order)
+        values
+          (${targetId}, ${Number(row.component_product_id)}, ${Number(row.quantity)},
+           ${row.unit ?? "قطعة"}, ${Number(row.unit_cost ?? 0)}, ${row.notes ?? null}, ${i})
+      `);
+    }
+    // Carry over recipe-level labor/wastage settings too.
+    const srcSettings = await loadRecipeSettings(productId);
+    await db.execute(sql`
+      insert into product_recipe_settings (product_id, labor_cost, labor, wastage_percent, notes, updated_at)
+      values (${targetId}, ${srcSettings.laborCost}, ${JSON.stringify(srcSettings.labor)}::jsonb, ${srcSettings.wastagePercent}, ${srcSettings.notes}, now())
+      on conflict (product_id) do update set
+        labor_cost = excluded.labor_cost, labor = excluded.labor,
+        wastage_percent = excluded.wastage_percent, notes = excluded.notes, updated_at = now()
+    `);
+    void addEntityTimeline({
+      entityType: "product",
+      entityId: targetId,
+      type: "recipe",
+      title: "🧩 نسخ وصفة المنتج (BOM)",
+      body: `منسوخة من ${product.nameAr || product.name}`,
+      actor: actor(auth),
+      metadata: { sourceProductId: productId, count: rows.length },
+    });
+    return json(await buildRecipePayload(target));
+  }
+
+  return null;
+}
+
 async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureAdminProductsColumns();
   await ensureStoreCategoryColumns();
+
+  // ── Recipe stock verification (POST /products/recipe/check-stock) ──
+  // Body: { items: [{ productId, quantity }] } → { ok, shortages, requirements }.
+  // Reused by store sales, Kosha bookings, packages and services before confirmation.
+  if (parts[1] === "recipe" && parts[2] === "check-stock") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    if (method !== "POST") return error("غير مدعوم", 405);
+    const b = await body(req);
+    const items = Array.isArray(b?.items) ? b.items : [];
+    const result = await checkRecipeStockAvailability(
+      items.map((it: any) => ({
+        productId: Number(it?.productId),
+        quantity: Number(it?.quantity),
+      })),
+    );
+    return json(result);
+  }
+
+  // ── Product Recipe (BOM) CRUD (/products/:id/recipe[...]) ──
+  if (parts[2] === "recipe") {
+    const productId = int(parts[1]);
+    if (!productId) return error("معرف المنتج غير صحيح", 400);
+    const recipeResponse = await handleProductRecipe(
+      req,
+      parts,
+      method,
+      productId,
+    );
+    if (recipeResponse) return recipeResponse;
+  }
 
   if (method === "GET" && parts[1] === "featured") {
     const products = await db.query.productsTable.findMany({
@@ -13463,6 +13933,86 @@ async function handleAdminKoshas(
       });
       if (!existing) return error("الحجز غير موجود", 404);
 
+      // Booking ↔ Production items (BOM). Stored in bookingDetails.productionItems +
+      // productionStatus. Deducts recipe components (not the finished item) when produced.
+      if (parts[3] === "production") {
+        await ensureProductionTables();
+        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+        const items: Array<{ productId: number; quantity: number; status?: string }> =
+          Array.isArray(details.productionItems) ? details.productionItems : [];
+
+        if (method === "GET") {
+          const estimate = await computeProductionEstimate(
+            items.map((i) => ({
+              productId: Number(i.productId),
+              quantity: Number(i.quantity),
+            })),
+          );
+          const merged = estimate.items.map((it, idx) => ({
+            ...it,
+            status: items[idx]?.status ?? "pending",
+          }));
+          return json({
+            status: details.productionStatus ?? "pending",
+            items: merged,
+            materials: estimate.materials,
+            shoppingList: estimate.shoppingList,
+            stockOk: estimate.stockOk,
+            totalCost: estimate.totalCost,
+            expectedRevenue: estimate.expectedRevenue,
+            expectedProfit: estimate.expectedProfit,
+            profitMargin: estimate.profitMargin,
+          });
+        }
+
+        if (method === "PUT" || method === "POST") {
+          const b = await body(req);
+          const nextItems = Array.isArray(b?.items)
+            ? b.items
+                .map((it: any) => ({
+                  productId: Number(it?.productId),
+                  quantity: Math.floor(Number(it?.quantity) || 0),
+                  status:
+                    typeof it?.status === "string" ? it.status : "pending",
+                }))
+                .filter((it: any) => it.productId && it.quantity > 0)
+            : items;
+          const nextStatus = PRODUCTION_STATUSES.includes(b?.status)
+            ? b.status
+            : (details.productionStatus ?? "pending");
+          await db
+            .update(koshaBookingsTable)
+            .set({
+              bookingDetails: {
+                ...details,
+                productionItems: nextItems,
+                productionStatus: nextStatus,
+              },
+              updatedAt: new Date(),
+            })
+            .where(eq(koshaBookingsTable.id, id));
+          const estimate = await computeProductionEstimate(
+            nextItems.map((i: any) => ({
+              productId: i.productId,
+              quantity: i.quantity,
+            })),
+          );
+          return json({
+            status: nextStatus,
+            items: nextItems,
+            materials: estimate.materials,
+            shoppingList: estimate.shoppingList,
+            stockOk: estimate.stockOk,
+            totalCost: estimate.totalCost,
+            expectedRevenue: estimate.expectedRevenue,
+            expectedProfit: estimate.expectedProfit,
+            profitMargin: estimate.profitMargin,
+          });
+        }
+
+        return error("غير مدعوم", 405);
+      }
+
       // Booking ↔ assets link + equipment advisor (feature #17). Stored in bookingDetails.linkedAssets.
       if (parts[3] === "assets") {
         await ensureAdminExtensionsTables();
@@ -17093,6 +17643,945 @@ async function handleEnterpriseAdmin(
   return null;
 }
 
+function formatProductionOrder(row: any) {
+  const items = Array.isArray(row.items)
+    ? row.items
+    : typeof row.items === "string"
+      ? JSON.parse(row.items || "[]")
+      : [];
+  const materials = Array.isArray(row.materials)
+    ? row.materials
+    : typeof row.materials === "string"
+      ? JSON.parse(row.materials || "[]")
+      : [];
+  const parseJson = (v: any) =>
+    Array.isArray(v) ? v : typeof v === "string" ? JSON.parse(v || "[]") : [];
+  const labor = parseJson(row.labor);
+  const equipment = parseJson(row.equipment);
+  const produced: Record<string, number> =
+    row.produced && typeof row.produced === "object" && !Array.isArray(row.produced)
+      ? row.produced
+      : typeof row.produced === "string"
+        ? JSON.parse(row.produced || "{}")
+        : {};
+  // Per-item planned vs produced vs remaining (partial-production progress).
+  const itemsWithProgress = items.map((it: any) => {
+    const done = Number(produced[String(it.productId)] ?? 0);
+    return { ...it, produced: done, remaining: Math.max(0, Number(it.quantity) - done) };
+  });
+  const totalPlanned = itemsWithProgress.reduce((s: number, it: any) => s + Number(it.quantity), 0);
+  const totalProduced = itemsWithProgress.reduce((s: number, it: any) => s + it.produced, 0);
+  const toIso = (v: any) =>
+    v ? (v instanceof Date ? v.toISOString() : new Date(v).toISOString()) : null;
+  return {
+    id: Number(row.id),
+    orderNo: row.order_no ?? row.orderNo,
+    status: row.status,
+    items: itemsWithProgress,
+    produced,
+    totalPlanned,
+    totalProduced,
+    materials,
+    labor,
+    equipment,
+    materialCost: Number(row.material_cost ?? row.materialCost ?? 0),
+    laborCost: Number(row.labor_cost ?? row.laborCost ?? 0),
+    equipmentCost: Number(row.equipment_cost ?? row.equipmentCost ?? 0),
+    wastagePercent: Number(row.wastage_percent ?? row.wastagePercent ?? 0),
+    totalCost: Number(row.total_cost ?? row.totalCost ?? 0),
+    expectedRevenue: Number(row.expected_revenue ?? row.expectedRevenue ?? 0),
+    expectedProfit: Number(row.expected_profit ?? row.expectedProfit ?? 0),
+    bookingType: row.booking_type ?? row.bookingType ?? null,
+    bookingId: row.booking_id ?? row.bookingId ?? null,
+    expenseId: row.expense_id ?? row.expenseId ?? null,
+    notes: row.notes ?? null,
+    createdByName: row.created_by_name ?? row.createdByName ?? "",
+    approvedByName: row.approved_by_name ?? row.approvedByName ?? null,
+    approvedAt: toIso(row.approved_at ?? row.approvedAt),
+    deliveredAt: toIso(row.delivered_at ?? row.deliveredAt),
+    cancelledAt: toIso(row.cancelled_at ?? row.cancelledAt),
+    createdAt: toIso(row.created_at ?? row.createdAt),
+    updatedAt: toIso(row.updated_at ?? row.updatedAt),
+  };
+}
+
+function normalizeProductionItems(
+  raw: unknown,
+): Array<{ productId: number; quantity: number }> {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((it: any) => ({
+      productId: Number(it?.productId),
+      quantity: Math.floor(Number(it?.quantity) || 0),
+    }))
+    .filter((it) => it.productId && it.quantity > 0);
+}
+
+type EquipmentLine = {
+  type: string;
+  id: number | null;
+  name: string;
+  fuelCost: number;
+  usageCost: number;
+  depreciation: number;
+  maintenance: number;
+  total: number;
+};
+
+// Normalize equipment lines (vehicle / equipment / rental asset) and derive each total
+// = fuel + usage + depreciation + maintenance allocation.
+function normalizeEquipmentLines(raw: unknown): { lines: EquipmentLine[]; total: number } {
+  const lines: EquipmentLine[] = (Array.isArray(raw) ? raw : [])
+    .map((e: any) => {
+      const fuelCost = Number(e?.fuelCost) || 0;
+      const usageCost = Number(e?.usageCost) || 0;
+      const depreciation = Number(e?.depreciation) || 0;
+      const maintenance = Number(e?.maintenance) || 0;
+      const total = Math.round((fuelCost + usageCost + depreciation + maintenance) * 100) / 100;
+      return {
+        type: typeof e?.type === "string" ? e.type.slice(0, 40) : "equipment",
+        id: e?.id != null ? Number(e.id) : null,
+        name: typeof e?.name === "string" ? e.name.slice(0, 160) : "",
+        fuelCost,
+        usageCost,
+        depreciation,
+        maintenance,
+        total,
+      };
+    })
+    .filter((e) => e.name || e.total > 0);
+  const total = Math.round(lines.reduce((s, e) => s + e.total, 0) * 100) / 100;
+  return { lines, total };
+}
+
+type ProductionCostInput = {
+  labor?: unknown;
+  equipment?: unknown;
+  wastagePercent?: number;
+};
+
+// Compute material consumption + full cost/profit projection (material + labor + equipment,
+// wastage applied to materials) and the shopping list — WITHOUT committing anything.
+async function computeProductionEstimate(
+  items: Array<{ productId: number; quantity: number }>,
+  cost: ProductionCostInput = {},
+) {
+  const wastagePercent = Math.max(0, Math.min(100, Number(cost.wastagePercent) || 0));
+  const wastageMultiplier = 1 + wastagePercent / 100;
+  const required = await expandRecipeRequirements(items);
+  const componentIds = [...required.keys()];
+  const itemIds = items.map((i) => i.productId);
+  const allIds = [...new Set([...componentIds, ...itemIds])];
+  const products = allIds.length
+    ? await db.query.productsTable.findMany({
+        where: inArray(productsTable.id, allIds),
+      })
+    : [];
+  const productMap = new Map(products.map((p) => [p.id, p]));
+
+  let materialCost = 0;
+  const materials = componentIds.map((productId) => {
+    const need = required.get(productId)!;
+    const product = productMap.get(productId);
+    const available = Number(product?.stock ?? 0);
+    const effectiveUnitCost =
+      need.unitCost > 0 ? need.unitCost : Number(product?.costPrice ?? 0);
+    const grossQty = Math.round(need.quantity * wastageMultiplier * 1000) / 1000;
+    const lineCost = Math.round(grossQty * effectiveUnitCost * 100) / 100;
+    materialCost += lineCost;
+    const missing = Math.max(0, grossQty - available);
+    return {
+      productId,
+      name: product?.nameAr || product?.name || `#${productId}`,
+      required: grossQty,
+      available,
+      missing: Math.round(missing * 1000) / 1000,
+      unit: need.unit,
+      unitCost: effectiveUnitCost,
+      lineCost,
+    };
+  });
+
+  let expectedRevenue = 0;
+  // Recipe-level labor auto-rolled from each finished product's saved recipe settings.
+  let recipeLaborCost = 0;
+  const itemsDetailed = await Promise.all(
+    items.map(async (it) => {
+      const product = productMap.get(it.productId);
+      const price = Number.parseFloat(String(product?.price ?? "0")) || 0;
+      expectedRevenue += price * it.quantity;
+      const settings = await loadRecipeSettings(it.productId);
+      recipeLaborCost += settings.laborCost * it.quantity;
+      return {
+        productId: it.productId,
+        name: product?.nameAr || product?.name || `#${it.productId}`,
+        quantity: it.quantity,
+        unitPrice: price,
+      };
+    }),
+  );
+
+  const { lines: laborLines, total: extraLaborCost } = normalizeLaborLines(cost.labor);
+  const { lines: equipmentLines, total: equipmentCost } = normalizeEquipmentLines(cost.equipment);
+  const laborCost = Math.round((recipeLaborCost + extraLaborCost) * 100) / 100;
+
+  materialCost = Math.round(materialCost * 100) / 100;
+  expectedRevenue = Math.round(expectedRevenue * 100) / 100;
+  const totalCost = Math.round((materialCost + laborCost + equipmentCost) * 100) / 100;
+  const expectedProfit = Math.round((expectedRevenue - totalCost) * 100) / 100;
+  const shoppingList = materials.filter((m) => m.missing > 0);
+  return {
+    items: itemsDetailed,
+    materials,
+    laborLines,
+    equipmentLines,
+    shoppingList,
+    stockOk: shoppingList.length === 0,
+    wastagePercent,
+    materialCost,
+    laborCost,
+    equipmentCost,
+    totalCost,
+    expectedRevenue,
+    expectedProfit,
+    profitMargin:
+      expectedRevenue > 0
+        ? Math.round((expectedProfit / expectedRevenue) * 1000) / 10
+        : 0,
+  };
+}
+
+const PRODUCTION_STATUSES = [
+  "pending",
+  "preparing",
+  "in_production",
+  "quality_check",
+  "ready",
+  "delivered",
+  "cancelled",
+] as const;
+const PRODUCTION_BOOKING_TYPES = [
+  "kosha_booking",
+  "wedding",
+  "engagement",
+  "graduation",
+  "gift_order",
+] as const;
+
+// Aggregate production analytics for the reports dashboards. Computed in-memory from the
+// production_orders history (cancelled orders excluded from cost/output/profit rollups).
+async function buildProductionReports() {
+  await ensureProductionTables();
+  const res: any = await db.execute(
+    sql`select * from production_orders order by id desc limit 2000`,
+  );
+  const orders = (res.rows ?? res ?? []).map(formatProductionOrder);
+  const active = orders.filter((o: any) => o.status !== "cancelled");
+
+  const dayMap = new Map<string, { orders: number; units: number; cost: number; revenue: number; profit: number }>();
+  const monthMap = new Map<string, { orders: number; units: number; cost: number; revenue: number; profit: number; labor: number; equipment: number }>();
+  const materialMap = new Map<number, { productId: number; name: string; quantity: number; cost: number }>();
+  const productMap = new Map<number, { productId: number; name: string; units: number; revenue: number; cost: number }>();
+  const bookingMap = new Map<string, { bookingType: string; bookingId: number; orders: number; revenue: number; cost: number }>();
+
+  let totalCost = 0, totalRevenue = 0, totalProfit = 0, totalLabor = 0, totalEquipment = 0, totalMaterial = 0, totalUnits = 0;
+
+  for (const o of active) {
+    const day = (o.createdAt ?? "").slice(0, 10);
+    const month = (o.createdAt ?? "").slice(0, 7);
+    const units = (o.items ?? []).reduce((s: number, it: any) => s + (Number(it.quantity) || 0), 0);
+    totalCost += o.totalCost; totalRevenue += o.expectedRevenue; totalProfit += o.expectedProfit;
+    totalLabor += o.laborCost; totalEquipment += o.equipmentCost; totalMaterial += o.materialCost; totalUnits += units;
+
+    const d = dayMap.get(day) ?? { orders: 0, units: 0, cost: 0, revenue: 0, profit: 0 };
+    d.orders++; d.units += units; d.cost += o.totalCost; d.revenue += o.expectedRevenue; d.profit += o.expectedProfit;
+    dayMap.set(day, d);
+
+    const m = monthMap.get(month) ?? { orders: 0, units: 0, cost: 0, revenue: 0, profit: 0, labor: 0, equipment: 0 };
+    m.orders++; m.units += units; m.cost += o.totalCost; m.revenue += o.expectedRevenue; m.profit += o.expectedProfit;
+    m.labor += o.laborCost; m.equipment += o.equipmentCost;
+    monthMap.set(month, m);
+
+    for (const mat of o.materials ?? []) {
+      const key = Number(mat.productId);
+      const cur = materialMap.get(key) ?? { productId: key, name: mat.name, quantity: 0, cost: 0 };
+      cur.quantity += Number(mat.required) || 0; cur.cost += Number(mat.lineCost) || 0;
+      materialMap.set(key, cur);
+    }
+
+    // Split each order's total cost across its finished items proportionally to revenue.
+    const orderRevenue = o.expectedRevenue || 0;
+    for (const it of o.items ?? []) {
+      const key = Number(it.productId);
+      const lineRevenue = (Number(it.unitPrice) || 0) * (Number(it.quantity) || 0);
+      const costShare = orderRevenue > 0 ? (lineRevenue / orderRevenue) * o.totalCost : 0;
+      const cur = productMap.get(key) ?? { productId: key, name: it.name, units: 0, revenue: 0, cost: 0 };
+      cur.units += Number(it.quantity) || 0; cur.revenue += lineRevenue; cur.cost += costShare;
+      productMap.set(key, cur);
+    }
+
+    if (o.bookingType && o.bookingId) {
+      const key = `${o.bookingType}:${o.bookingId}`;
+      const cur = bookingMap.get(key) ?? { bookingType: o.bookingType, bookingId: o.bookingId, orders: 0, revenue: 0, cost: 0 };
+      cur.orders++; cur.revenue += o.expectedRevenue; cur.cost += o.totalCost;
+      bookingMap.set(key, cur);
+    }
+  }
+
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const sortDesc = (a: any, b: any) => b.sortVal - a.sortVal;
+  const daily = [...dayMap.entries()].map(([date, v]) => ({ date, ...v, cost: round(v.cost), revenue: round(v.revenue), profit: round(v.profit) })).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 30);
+  const monthly = [...monthMap.entries()].map(([month, v]) => ({ month, ...v, cost: round(v.cost), revenue: round(v.revenue), profit: round(v.profit), labor: round(v.labor), equipment: round(v.equipment) })).sort((a, b) => (a.month < b.month ? 1 : -1)).slice(0, 12);
+  const materialConsumption = [...materialMap.values()].map((m) => ({ ...m, quantity: round(m.quantity), cost: round(m.cost), sortVal: m.quantity })).sort(sortDesc).map(({ sortVal, ...m }) => m);
+  const mostUsedMaterials = materialConsumption.slice(0, 10);
+  const profitPerProduct = [...productMap.values()].map((p) => ({ ...p, revenue: round(p.revenue), cost: round(p.cost), profit: round(p.revenue - p.cost), margin: p.revenue > 0 ? round(((p.revenue - p.cost) / p.revenue) * 100) : 0, sortVal: p.revenue - p.cost })).sort(sortDesc).map(({ sortVal, ...p }) => p);
+  const profitPerBooking = [...bookingMap.values()].map((b) => ({ ...b, revenue: round(b.revenue), cost: round(b.cost), profit: round(b.revenue - b.cost) }));
+
+  const deliveredCount = orders.filter((o: any) => o.status === "delivered").length;
+  const cancelledCount = orders.filter((o: any) => o.status === "cancelled").length;
+
+  // Reorder alerts — recipe components at/below their min stock (need restocking to keep
+  // producing). Reuses products.min_stock; suggested qty tops back up to min (or 1 unit).
+  let reorderList: Array<{ productId: number; name: string; stock: number; minStock: number; suggested: number }> = [];
+  try {
+    const r: any = await db.execute(sql`
+      select distinct p.id, coalesce(p.name_ar, p.name) as name, p.stock, p.min_stock
+      from products p
+      join product_recipes rc on rc.component_product_id = p.id
+      where p.stock <= greatest(p.min_stock, 0)
+      order by (greatest(p.min_stock,0) - p.stock) desc
+      limit 50`);
+    reorderList = (r.rows ?? r ?? []).map((row: any) => {
+      const stock = Number(row.stock ?? 0);
+      const minStock = Number(row.min_stock ?? 0);
+      return { productId: Number(row.id), name: row.name, stock, minStock, suggested: Math.max(1, minStock - stock) };
+    });
+  } catch {
+    reorderList = [];
+  }
+
+  return {
+    summary: {
+      totalOrders: orders.length,
+      activeOrders: active.length,
+      deliveredCount,
+      cancelledCount,
+      totalUnits,
+      totalMaterial: round(totalMaterial),
+      totalLabor: round(totalLabor),
+      totalEquipment: round(totalEquipment),
+      totalCost: round(totalCost),
+      totalRevenue: round(totalRevenue),
+      totalProfit: round(totalProfit),
+      profitMargin: totalRevenue > 0 ? round((totalProfit / totalRevenue) * 100) : 0,
+      efficiency: orders.length > 0 ? round((deliveredCount / orders.length) * 100) : 0,
+    },
+    daily,
+    monthly,
+    materialConsumption: materialConsumption.slice(0, 50),
+    mostUsedMaterials,
+    profitPerProduct: profitPerProduct.slice(0, 50),
+    profitPerBooking,
+    laborCostReport: { total: round(totalLabor), byMonth: monthly.map((m) => ({ month: m.month, labor: m.labor })) },
+    equipmentCostReport: { total: round(totalEquipment), byMonth: monthly.map((m) => ({ month: m.month, equipment: m.equipment })) },
+    reorderList,
+  };
+}
+
+// Equipment/vehicle registry for the Production order builder. Returns fleet vehicles and
+// rental assets with pre-computed per-use depreciation + maintenance allocation so the UI can
+// auto-fill equipment cost lines from real asset data (reuses fleet_vehicles + asset_profiles
+// + asset_passports — no new tables).
+async function buildProductionResources() {
+  await ensureAdminExtensionsTables();
+  const vehiclesRes: any = await db.execute(
+    sql`select id, name, plate_number, status from fleet_vehicles where is_active = true order by name asc limit 200`,
+  ).catch(() => ({ rows: [] }));
+  const assetsRes: any = await db.execute(sql`
+    select ap.product_id, coalesce(p.name_ar, p.name) as name,
+           ap.purchase_price, ap.expected_life_uses, ap.current_value,
+           pass.maintenance_cost
+    from asset_profiles ap
+    join products p on p.id = ap.product_id
+    left join asset_passports pass on pass.product_id = ap.product_id
+    order by ap.id desc limit 500
+  `).catch(() => ({ rows: [] }));
+
+  const vehicles = (vehiclesRes.rows ?? vehiclesRes ?? []).map((v: any) => ({
+    id: Number(v.id),
+    name: v.name,
+    plateNumber: v.plate_number ?? null,
+    status: v.status ?? null,
+  }));
+  const assets = (assetsRes.rows ?? assetsRes ?? []).map((a: any) => {
+    const purchasePrice = Number(a.purchase_price ?? 0);
+    const life = Math.max(1, Number(a.expected_life_uses ?? 0) || 1);
+    const maintenanceCost = Number(a.maintenance_cost ?? 0);
+    return {
+      productId: Number(a.product_id),
+      name: a.name || `#${a.product_id}`,
+      purchasePrice,
+      currentValue: Number(a.current_value ?? 0),
+      expectedLifeUses: life,
+      // Per-use figures the UI drops straight into an equipment cost line.
+      depreciationPerUse: Math.round((purchasePrice / life) * 100) / 100,
+      maintenancePerUse: Math.round((maintenanceCost / life) * 100) / 100,
+    };
+  });
+  return { vehicles, assets };
+}
+
+// Optional accounting entry: post the order's labor + equipment cost as a pending expense
+// (routed through the normal approval + financial-request workflow). Raw materials are NOT
+// expensed here — in make-to-stock they are an inventory transfer, already accounted.
+async function postProductionExpense(
+  order: any,
+  auth: AdminUser,
+): Promise<number | null> {
+  const amount =
+    Math.round((Number(order.labor_cost ?? 0) + Number(order.equipment_cost ?? 0)) * 100) / 100;
+  if (amount <= 0) return null;
+  await ensureExpenseManagementTables();
+  const a = actor(auth);
+  const orderNo = order.order_no ?? order.orderNo ?? "";
+  const [row] = await db
+    .insert(expensesTable)
+    .values({
+      date: new Date().toISOString().slice(0, 10),
+      name: `تكاليف إنتاج ${orderNo}`,
+      amount: String(amount),
+      categoryName: "تكاليف الإنتاج",
+      paymentMethod: "cash",
+      notes: `أمر إنتاج ${orderNo} — عمالة ${order.labor_cost ?? 0} + معدات ${order.equipment_cost ?? 0}`,
+      createdBy: a.id,
+      createdByName: a.name,
+      approvalStatus: "pending",
+    })
+    .returning();
+  try {
+    const ft = await createSourceFinancialRequest(
+      {
+        transactionDate: row.date,
+        direction: "expense",
+        amount,
+        department: "general",
+        transactionType: "expense",
+        description: row.name,
+        paymentMethod: "cash",
+        sourceType: "expense",
+        sourceId: row.id,
+        sourceEvent: "payment",
+        idempotencyKey: `expense:${row.id}:payment`,
+        notes: row.notes,
+        attachments: [],
+      },
+      financialActor(auth),
+    );
+    await db
+      .update(expensesTable)
+      .set({ financialTransactionId: ft.id, approvalStatus: ft.approvalStatus })
+      .where(eq(expensesTable.id, row.id));
+  } catch (err) {
+    await db.update(expensesTable).set({ deletedAt: new Date() }).where(eq(expensesTable.id, row.id));
+    console.warn("production expense post failed", { orderNo, message: (err as any)?.message });
+    return null;
+  }
+  return row.id;
+}
+
+// Apply (direction -1) or reverse (direction +1) a production order's inventory effect:
+//   • components: deduct on apply / restore on reverse
+//   • finished goods: increase on apply / decrease on reverse
+// Never DEDUCTS finished products — production only ADDS them (and cancel removes them).
+async function applyProductionStock(
+  order: any,
+  direction: -1 | 1,
+  reason: string,
+  who: { id: number | null; name: string },
+): Promise<void> {
+  const materials = Array.isArray(order.materials)
+    ? order.materials
+    : typeof order.materials === "string"
+      ? JSON.parse(order.materials || "[]")
+      : [];
+  const items = Array.isArray(order.items)
+    ? order.items
+    : typeof order.items === "string"
+      ? JSON.parse(order.items || "[]")
+      : [];
+  const orderId = Number(order.id);
+  for (const mat of materials) {
+    const pid = Number(mat.productId);
+    const qty = Number(mat.required) || 0;
+    if (pid && qty > 0) {
+      await adjustProductStock(pid, direction * qty, {
+        reason: `${reason}_material`,
+        relatedType: "production_order",
+        relatedId: orderId,
+        createdBy: who.id,
+        createdByName: who.name,
+      });
+    }
+  }
+  for (const it of items) {
+    const pid = Number(it.productId);
+    const qty = Number(it.quantity) || 0;
+    if (pid && qty > 0) {
+      // Finished goods move opposite to materials: apply = +stock, reverse = −stock.
+      await adjustProductStock(pid, -direction * qty, {
+        reason: `${reason}_output`,
+        relatedType: "production_order",
+        relatedId: orderId,
+        createdBy: who.id,
+        createdByName: who.name,
+      });
+    }
+  }
+}
+
+// Reverse EXACTLY what an order actually consumed/produced (partial-production safe): restores
+// the accumulated `applied_materials` and removes the `produced` finished goods. Used on
+// cancel/delete instead of reversing the full plan.
+async function restoreProductionOrder(
+  order: any,
+  reason: string,
+  who: { id: number | null; name: string },
+): Promise<void> {
+  const applied = Array.isArray(order.applied_materials)
+    ? order.applied_materials
+    : typeof order.applied_materials === "string"
+      ? JSON.parse(order.applied_materials || "[]")
+      : [];
+  const produced =
+    order.produced && typeof order.produced === "object" && !Array.isArray(order.produced)
+      ? order.produced
+      : typeof order.produced === "string"
+        ? JSON.parse(order.produced || "{}")
+        : {};
+  const orderId = Number(order.id);
+  for (const mat of applied) {
+    const pid = Number(mat.productId);
+    const qty = Number(mat.required) || 0;
+    if (pid && qty > 0) {
+      await adjustProductStock(pid, qty, {
+        reason: `${reason}_material`,
+        relatedType: "production_order",
+        relatedId: orderId,
+        createdBy: who.id,
+        createdByName: who.name,
+      });
+    }
+  }
+  for (const [pidStr, q] of Object.entries(produced)) {
+    const pid = Number(pidStr);
+    const qty = Number(q) || 0;
+    if (pid && qty > 0) {
+      await adjustProductStock(pid, -qty, {
+        reason: `${reason}_output`,
+        relatedType: "production_order",
+        relatedId: orderId,
+        createdBy: who.id,
+        createdByName: who.name,
+      });
+    }
+  }
+}
+
+// Merge a batch of {productId, required} material rows into an accumulator (sum by product).
+function mergeAppliedMaterials(existing: any[], batch: any[]): any[] {
+  const map = new Map<number, { productId: number; required: number }>();
+  for (const m of [...existing, ...batch]) {
+    const pid = Number(m.productId);
+    if (!pid) continue;
+    const prev = map.get(pid);
+    map.set(pid, { productId: pid, required: (prev?.required ?? 0) + (Number(m.required) || 0) });
+  }
+  return [...map.values()];
+}
+
+// Production Orders module — enterprise manufacturing: recipe-driven material consumption,
+// finished-goods output, labor + equipment costing, workflow statuses, approvals and reports.
+// Granular production_* permissions with "products" as a backward-compatible fallback.
+async function handleProduction(
+  req: NextRequest,
+  parts: string[],
+  method: string,
+): Promise<NextResponse | null> {
+  // Method → minimum permission (admins bypass; "products" kept for backward compatibility).
+  const permForMethod: Permission[] =
+    method === "GET"
+      ? ["production_view", "products"]
+      : method === "POST" && !parts[2]
+        ? ["production_create", "products"]
+        : method === "DELETE"
+          ? ["production_delete", "products"]
+          : parts[3] === "approve"
+            ? ["production_approve", "products"]
+            : ["production_edit", "production_create", "products"];
+  const auth = await requireAnyPermission(req, permForMethod);
+  if (isResponse(auth)) return auth;
+  await ensureProductionTables();
+  const who = actor(auth);
+
+  // GET /admin/production[?bookingType=&bookingId=] → production orders (optionally filtered)
+  if (method === "GET" && !parts[2]) {
+    const bookingType = req.nextUrl.searchParams.get("bookingType");
+    const bookingId = int(req.nextUrl.searchParams.get("bookingId") ?? undefined);
+    let rows: any;
+    if (bookingType && bookingId) {
+      rows = await db.execute(
+        sql`select * from production_orders where booking_type = ${bookingType} and booking_id = ${bookingId} order by id desc limit 100`,
+      );
+    } else {
+      rows = await db.execute(
+        sql`select * from production_orders order by id desc limit 200`,
+      );
+    }
+    return json((rows.rows ?? rows ?? []).map(formatProductionOrder));
+  }
+
+  // GET /admin/production/reports → aggregated production dashboards
+  if (method === "GET" && parts[2] === "reports") {
+    return json(await buildProductionReports());
+  }
+
+  // GET /admin/production/resources → vehicles + assets (with per-use depreciation) for costing
+  if (method === "GET" && parts[2] === "resources") {
+    return json(await buildProductionResources());
+  }
+
+  // GET /admin/production/bookings?type=&search= → real bookings for the attach picker.
+  // kosha_booking/wedding/engagement ⇐ kosha_bookings (wedding/engagement filtered by event_type),
+  // graduation ⇐ graduation_orders, gift_order ⇐ orders.
+  if (method === "GET" && parts[2] === "bookings") {
+    const type = req.nextUrl.searchParams.get("type") ?? "kosha_booking";
+    const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
+    const like = `%${search}%`;
+    let rows: any[] = [];
+    try {
+      if (type === "graduation") {
+        const r: any = await db.execute(sql`
+          select id, coalesce(customer_name, order_no) as label, created_at as date
+          from graduation_orders
+          ${search ? sql`where customer_name ilike ${like} or order_no ilike ${like}` : sql``}
+          order by id desc limit 50`);
+        rows = r.rows ?? r ?? [];
+      } else if (type === "gift_order") {
+        const r: any = await db.execute(sql`
+          select id, customer_name as label, created_at as date
+          from orders
+          ${search ? sql`where customer_name ilike ${like}` : sql``}
+          order by id desc limit 50`);
+        rows = r.rows ?? r ?? [];
+      } else {
+        const eventFilter =
+          type === "wedding"
+            ? sql`where (event_type ilike '%زفاف%' or event_type ilike '%wedding%' or event_type ilike '%عرس%')`
+            : type === "engagement"
+              ? sql`where (event_type ilike '%خطوب%' or event_type ilike '%engagement%' or event_type ilike '%ملكة%')`
+              : sql``;
+        const searchFilter = search
+          ? eventFilter
+            ? sql` and (customer_name ilike ${like} or phone ilike ${like})`
+            : sql`where (customer_name ilike ${like} or phone ilike ${like})`
+          : sql``;
+        const r: any = await db.execute(sql`
+          select id, customer_name as label, event_date as date, event_type
+          from kosha_bookings ${eventFilter}${searchFilter}
+          order by id desc limit 50`);
+        rows = r.rows ?? r ?? [];
+      }
+    } catch {
+      rows = [];
+    }
+    return json(
+      rows.map((row) => ({
+        id: Number(row.id),
+        label: row.label || `#${row.id}`,
+        date: row.date ? String(row.date).slice(0, 10) : null,
+        eventType: row.event_type ?? null,
+      })),
+    );
+  }
+
+  // GET /admin/production/:id → single order (for booking progress panels)
+  if (method === "GET" && parts[2]) {
+    const id = int(parts[2]);
+    if (!id) return error("معرف أمر الإنتاج غير صحيح", 400);
+    const res: any = await db.execute(
+      sql`select * from production_orders where id = ${id} limit 1`,
+    );
+    const row = (res.rows ?? res ?? [])[0];
+    if (!row) return error("أمر الإنتاج غير موجود", 404);
+    return json(formatProductionOrder(row));
+  }
+
+  // POST /admin/production/estimate → full cost/profit + shopping list preview (no commit)
+  if (method === "POST" && parts[2] === "estimate") {
+    const b = await body(req);
+    const items = normalizeProductionItems(b?.items);
+    return json(
+      await computeProductionEstimate(items, {
+        labor: b?.labor,
+        equipment: b?.equipment,
+        wastagePercent: b?.wastagePercent,
+      }),
+    );
+  }
+
+  // POST /admin/production → create a run. Two modes:
+  //   • immediate (default): verify stock → deduct materials → add finished goods now.
+  //   • plan (`plan: true`): create a pending plan WITHOUT touching stock; produce later
+  //     (fully or partially) via POST /:id/produce. Enables partial production.
+  if (method === "POST" && !parts[2]) {
+    const b = await body(req);
+    const items = normalizeProductionItems(b?.items);
+    if (!items.length) return error("لا توجد منتجات للإنتاج", 400);
+    const plan = b?.plan === true;
+    const estimate = await computeProductionEstimate(items, {
+      labor: b?.labor,
+      equipment: b?.equipment,
+      wastagePercent: b?.wastagePercent,
+    });
+    if (!plan && !estimate.stockOk) {
+      return json(
+        { error: "المواد غير كافية لإتمام الإنتاج", shortages: estimate.shoppingList },
+        409,
+      );
+    }
+    const notes =
+      typeof b?.notes === "string" && b.notes.trim()
+        ? b.notes.trim().slice(0, 1000)
+        : null;
+    const bookingType = PRODUCTION_BOOKING_TYPES.includes(b?.bookingType)
+      ? b.bookingType
+      : null;
+    const bookingId = bookingType ? int(String(b?.bookingId ?? "")) : null;
+    const orderNo = `PRD-${Date.now().toString(36).toUpperCase()}${Math.floor(
+      Math.random() * 1296,
+    )
+      .toString(36)
+      .toUpperCase()
+      .padStart(2, "0")}`;
+    // Immediate mode records the full produced map + applied materials so cancel/delete can
+    // reverse exactly. Plan mode starts empty (nothing produced yet).
+    const producedMap = plan
+      ? {}
+      : Object.fromEntries(estimate.items.map((it) => [String(it.productId), it.quantity]));
+    const appliedMaterials = plan ? [] : estimate.materials;
+    const initialStatus = plan ? "pending" : "in_production";
+    const [created]: any = (
+      await db.execute(sql`
+      insert into production_orders
+        (order_no, status, items, materials, labor, equipment,
+         material_cost, labor_cost, equipment_cost, wastage_percent,
+         total_cost, expected_revenue, expected_profit,
+         booking_type, booking_id, notes, stock_applied, produced, applied_materials, created_by, created_by_name)
+      values
+        (${orderNo}, ${initialStatus}, ${JSON.stringify(estimate.items)}::jsonb,
+         ${JSON.stringify(estimate.materials)}::jsonb, ${JSON.stringify(estimate.laborLines)}::jsonb,
+         ${JSON.stringify(estimate.equipmentLines)}::jsonb,
+         ${estimate.materialCost}, ${estimate.laborCost}, ${estimate.equipmentCost}, ${estimate.wastagePercent},
+         ${estimate.totalCost}, ${estimate.expectedRevenue}, ${estimate.expectedProfit},
+         ${bookingType}, ${bookingId}, ${notes}, ${plan ? 0 : 1},
+         ${JSON.stringify(producedMap)}::jsonb, ${JSON.stringify(appliedMaterials)}::jsonb,
+         ${who.id}, ${who.name})
+      returning *
+    `)
+    ).rows ?? [];
+    // Immediate mode: deduct raw materials AND add finished goods now.
+    if (!plan) await applyProductionStock(created, -1, "production", who);
+    // Optional accounting: post labor + equipment as a pending expense.
+    if (b?.postExpense === true && created) {
+      const expenseId = await postProductionExpense(created, auth);
+      if (expenseId) {
+        await db.execute(sql`update production_orders set expense_id = ${expenseId} where id = ${Number(created.id)}`);
+        created.expense_id = expenseId;
+      }
+    }
+    void addEntityTimeline({
+      entityType: "production",
+      entityId: created ? Number(created.id) : 0,
+      type: "production_created",
+      title: "🏭 أمر إنتاج جديد",
+      body: `${orderNo} · ${estimate.items.length} منتج · تكلفة ${estimate.totalCost}`,
+      actor: who,
+      metadata: { orderNo, totalCost: estimate.totalCost },
+    });
+    if (bookingType && bookingId) {
+      void addEntityTimeline({
+        entityType: bookingType === "kosha_booking" ? "kosha_booking" : bookingType,
+        entityId: bookingId,
+        type: "production_linked",
+        title: "🏭 ربط أمر إنتاج بالحجز",
+        body: orderNo,
+        actor: who,
+        metadata: { orderNo, productionOrderId: created ? Number(created.id) : null },
+      });
+    }
+    void logAdminActivity(req, "production.create", "production", created ? Number(created.id) : undefined, {
+      orderNo,
+      items: estimate.items.length,
+      totalCost: estimate.totalCost,
+    });
+    return json(formatProductionOrder(created), 201);
+  }
+
+  // POST /admin/production/:id/produce → PARTIAL (or full) production of a plan.
+  // Body: { items: [{ productId, quantity }] }. Deducts that batch's materials + adds finished
+  // goods, updates the produced/applied ledger, auto-completes status when fully produced.
+  if (method === "POST" && parts[2] && parts[3] === "produce") {
+    const id = int(parts[2]);
+    if (!id) return error("معرف أمر الإنتاج غير صحيح", 400);
+    const res: any = await db.execute(sql`select * from production_orders where id = ${id} limit 1`);
+    const order = (res.rows ?? res ?? [])[0];
+    if (!order) return error("أمر الإنتاج غير موجود", 404);
+    if (order.status === "cancelled") return error("الأمر ملغي", 400);
+
+    const planned = (Array.isArray(order.items) ? order.items : JSON.parse(order.items || "[]")) as any[];
+    const producedMap: Record<string, number> =
+      order.produced && typeof order.produced === "object" && !Array.isArray(order.produced)
+        ? { ...order.produced }
+        : JSON.parse(order.produced || "{}");
+    const plannedMap = new Map(planned.map((it) => [Number(it.productId), Number(it.quantity)]));
+
+    const b = await body(req);
+    const requested = normalizeProductionItems(b?.items);
+    // Clamp each requested quantity to the remaining (planned − already produced).
+    const batch = requested
+      .map((r) => {
+        const remaining = (plannedMap.get(r.productId) ?? 0) - (Number(producedMap[String(r.productId)]) || 0);
+        return { productId: r.productId, quantity: Math.min(r.quantity, Math.max(0, remaining)) };
+      })
+      .filter((r) => r.quantity > 0);
+    if (!batch.length) return error("لا توجد كمية متبقية للإنتاج", 400);
+
+    const estimate = await computeProductionEstimate(batch, {
+      wastagePercent: Number(order.wastage_percent) || 0,
+    });
+    if (!estimate.stockOk) {
+      return json({ error: "المواد غير كافية لإتمام هذه الدفعة", shortages: estimate.shoppingList }, 409);
+    }
+
+    const batchOrder = { id, materials: estimate.materials, items: estimate.items };
+    await applyProductionStock(batchOrder, -1, "production", who);
+
+    for (const it of batch) {
+      producedMap[String(it.productId)] = (Number(producedMap[String(it.productId)]) || 0) + it.quantity;
+    }
+    const appliedNext = mergeAppliedMaterials(
+      Array.isArray(order.applied_materials) ? order.applied_materials : JSON.parse(order.applied_materials || "[]"),
+      estimate.materials,
+    );
+    const fullyProduced = planned.every(
+      (it) => (Number(producedMap[String(it.productId)]) || 0) >= Number(it.quantity),
+    );
+    const nextStatus = fullyProduced ? "ready" : "in_production";
+    const [row]: any = (
+      await db.execute(sql`
+        update production_orders
+        set produced = ${JSON.stringify(producedMap)}::jsonb,
+            applied_materials = ${JSON.stringify(appliedNext)}::jsonb,
+            stock_applied = 1, status = ${nextStatus}, updated_at = now()
+        where id = ${id}
+        returning *
+      `)
+    ).rows ?? [];
+    void addEntityTimeline({
+      entityType: "production",
+      entityId: id,
+      type: "production_batch",
+      title: "🏭 إنتاج دفعة",
+      body: batch.map((it) => `${estimate.items.find((e) => e.productId === it.productId)?.name ?? it.productId} ×${it.quantity}`).join(" · "),
+      actor: who,
+      metadata: { batch, fullyProduced },
+    });
+    void logAdminActivity(req, "production.produce", "production", id, { batch, fullyProduced });
+    return json(formatProductionOrder(row));
+  }
+
+  // POST /admin/production/:id/approve → approval gate (production_approve)
+  if (method === "POST" && parts[2] && parts[3] === "approve") {
+    const id = int(parts[2]);
+    if (!id) return error("معرف أمر الإنتاج غير صحيح", 400);
+    const [row]: any = (
+      await db.execute(sql`
+        update production_orders
+        set approved_by = ${who.id}, approved_by_name = ${who.name}, approved_at = now(), updated_at = now()
+        where id = ${id}
+        returning *
+      `)
+    ).rows ?? [];
+    if (!row) return error("أمر الإنتاج غير موجود", 404);
+    void logAdminActivity(req, "production.approve", "production", id, {});
+    return json(formatProductionOrder(row));
+  }
+
+  // PATCH /admin/production/:id → advance status. Cancelling a stock-applied order reverses
+  // its inventory effect (restore materials, remove produced finished goods).
+  if (method === "PATCH" && parts[2]) {
+    const id = int(parts[2]);
+    if (!id) return error("معرف أمر الإنتاج غير صحيح", 400);
+    const b = await body(req);
+    const status = String(b?.status ?? "");
+    if (!PRODUCTION_STATUSES.includes(status as any))
+      return error("حالة غير صحيحة", 400);
+    const res: any = await db.execute(
+      sql`select * from production_orders where id = ${id} limit 1`,
+    );
+    const existing = (res.rows ?? res ?? [])[0];
+    if (!existing) return error("أمر الإنتاج غير موجود", 404);
+
+    if (status === "cancelled" && Number(existing.stock_applied) === 1) {
+      await restoreProductionOrder(existing, "production_cancelled", who);
+    }
+    const stockAppliedNext = status === "cancelled" ? 0 : Number(existing.stock_applied ?? 0);
+    const deliveredClause =
+      status === "delivered" ? sql`, delivered_at = now()` : sql``;
+    const cancelledClause =
+      status === "cancelled" ? sql`, cancelled_at = now()` : sql``;
+    const [row]: any = (
+      await db.execute(sql`
+        update production_orders
+        set status = ${status}, stock_applied = ${stockAppliedNext}, updated_at = now()${deliveredClause}${cancelledClause}
+        where id = ${id}
+        returning *
+      `)
+    ).rows ?? [];
+    void addEntityTimeline({
+      entityType: "production",
+      entityId: id,
+      type: "production_status",
+      title: `🏭 حالة الإنتاج: ${status}`,
+      actor: who,
+      metadata: { status },
+    });
+    void logAdminActivity(req, "production.status", "production", id, { status });
+    return json(formatProductionOrder(row));
+  }
+
+  // DELETE /admin/production/:id → remove order (restores inventory if still applied)
+  if (method === "DELETE" && parts[2]) {
+    const id = int(parts[2]);
+    if (!id) return error("معرف أمر الإنتاج غير صحيح", 400);
+    const res: any = await db.execute(
+      sql`select * from production_orders where id = ${id} limit 1`,
+    );
+    const existing = (res.rows ?? res ?? [])[0];
+    if (!existing) return error("أمر الإنتاج غير موجود", 404);
+    if (Number(existing.stock_applied) === 1) {
+      await restoreProductionOrder(existing, "production_deleted", who);
+    }
+    await db.execute(sql`delete from production_orders where id = ${id}`);
+    void logAdminActivity(req, "production.delete", "production", id, {
+      orderNo: existing.order_no,
+    });
+    return json({ ok: true });
+  }
+
+  return null;
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
@@ -17145,6 +18634,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     } catch (err: any) {
       return error(err?.message || "تعذّر تنفيذ الترجمة التلقائية", 502);
     }
+  }
+
+  if (section === "production") {
+    const production = await handleProduction(req, parts, method);
+    if (production) return production;
   }
 
   if (section === "auth") {
@@ -24604,6 +26098,7 @@ async function handleSalesInvoices(
     const items = salesInvoiceItems(b?.items);
     if (items.length === 0)
       return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
+
     const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
     const subtotal = items.reduce(
       (sum, item) => sum + item.quantity * item.unitPrice,

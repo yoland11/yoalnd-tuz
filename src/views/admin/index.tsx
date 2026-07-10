@@ -34,6 +34,8 @@ const PrintLabelsPage = lazy(() => import("./print-labels"));
 const AssetNewPage = lazy(() => import("./asset-new"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
+const ProductionPage = lazy(() => import("./production"));
+const ProductionReportsPage = lazy(() => import("./production-reports"));
 const POSPage = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
@@ -154,13 +156,18 @@ const GraduationAdminPage = lazy(() => import("./graduation"));
 function Guard({
   me,
   perm,
+  anyPerm,
   children,
 }: {
   me: AdminMe;
-  perm: Permission;
+  perm?: Permission;
+  anyPerm?: Permission[];
   children: React.ReactNode;
 }) {
-  if (!hasPerm(me, perm)) return <NoPermission />;
+  const allowed = anyPerm
+    ? anyPerm.some((p) => hasPerm(me, p))
+    : hasPerm(me, perm ?? null);
+  if (!allowed) return <NoPermission />;
   return <>{children}</>;
 }
 
@@ -379,6 +386,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <PrintLabelsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/production/reports">
+            {() => (
+              <Guard me={me} anyPerm={["production_view", "products"]}>
+                <ProductionReportsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/production">
+            {() => (
+              <Guard me={me} anyPerm={["production_view", "products"]}>
+                <ProductionPage />
               </Guard>
             )}
           </Route>
