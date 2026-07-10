@@ -56,6 +56,8 @@ export type LabelSettings = {
   autoCenter: boolean;
   highQuality: boolean;
   printerName: string;
+  /** Print rotation in degrees (0/90/180/270) to compensate for the printer's feed direction. */
+  rotation?: number;
 };
 
 /** Resolved, ready-to-render data for a single label. */
@@ -77,7 +79,7 @@ export type LabelData = {
 
 export const DEFAULT_LABEL_SETTINGS: LabelSettings = {
   widthMm: 40,
-  heightMm: 30,
+  heightMm: 60,
   dpi: 203,
   marginMm: 0,
   gapMm: 2,
@@ -85,6 +87,7 @@ export const DEFAULT_LABEL_SETTINGS: LabelSettings = {
   autoCenter: true,
   highQuality: true,
   printerName: "Xprinter XP-236B",
+  rotation: 0,
 };
 
 const BASE_FIELDS: LabelFieldToggles = {
@@ -319,13 +322,32 @@ export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {
   // Quality knobs: crisp barcode/QR edges, forced black ink, no anti-alias blur.
   const rendering = settings.highQuality ? "crisp-edges" : "auto";
   const centerBody = settings.autoCenter && opts.screen ? "align-items:center;justify-content:center;" : "";
+  // Print rotation to compensate for the printer's feed direction. When rotating
+  // 90/270 the page bounding box swaps W↔H so the label still fits its page.
+  const rot = (((settings.rotation ?? 0) % 360) + 360) % 360;
+  const swap = rot === 90 || rot === 270;
+  const pageW = swap ? h : w;
+  const pageH = swap ? w : h;
+  // Tall labels (e.g. 40×60) use a vertical layout with a big centered QR so they
+  // fill the stock instead of leaving the bottom blank.
+  const portrait = h >= w * 1.35;
+  const qrMm = portrait ? Math.min(w - 6, 28) : 13;
 
   return `
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap');
-    ${opts.screen ? "" : `@page { size: ${w}mm ${h}mm; margin: 0; }`}
+    ${opts.screen ? "" : `@page { size: ${pageW}mm ${pageH}mm; margin: 0; }`}
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     ${opts.screen ? "" : `html, body { margin: 0; padding: 0; background: #fff; }`}
-    .lb-sheet { display: ${opts.screen ? "block" : "block"}; }
+    .lb-sheet { display: block; }
+    ${opts.screen ? "" : `
+    .lb-page {
+      width: ${pageW}mm; height: ${pageH}mm;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      page-break-after: always; break-after: page;
+    }
+    .lb-page:last-child { page-break-after: auto; break-after: auto; }
+    `}
     .lb-label {
       position: relative;
       width: ${w}mm;
@@ -338,38 +360,36 @@ export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      ${opts.screen ? "" : "page-break-after: always; break-after: page;"}
+      ${opts.screen ? centerBody : `transform: rotate(${rot}deg); transform-origin: center center; flex: 0 0 auto;`}
     }
-    ${opts.screen ? `.lb-label { ${centerBody} }` : ""}
-    .lb-label:last-child { page-break-after: auto; break-after: auto; }
     .lb-label * { color: #000 !important; }
     .lb-brand {
       text-align: center;
       font-weight: 900;
-      font-size: 2.7mm;
+      font-size: ${portrait ? "3.4mm" : "2.7mm"};
       line-height: 1.1;
       letter-spacing: 0.2mm;
       border-bottom: 0.35mm solid #000;
-      padding-bottom: 0.4mm;
-      margin-bottom: 0.6mm;
+      padding-bottom: 0.5mm;
+      margin-bottom: 0.8mm;
     }
-    .lb-body { flex: 1; display: flex; gap: 1mm; min-height: 0; }
-    .lb-qr { flex: 0 0 auto; display: flex; align-items: center; }
+    .lb-body { flex: 1; display: flex; gap: 1mm; min-height: 0; ${portrait ? "flex-direction: column; align-items: center; justify-content: center;" : ""} }
+    .lb-qr { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
     .lb-qr img {
-      width: 13mm; height: 13mm; object-fit: contain; display: block;
+      width: ${qrMm}mm; height: ${qrMm}mm; object-fit: contain; display: block;
       image-rendering: ${rendering}; image-rendering: pixelated;
     }
-    .lb-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 0.2mm; }
-    .lb-name { font-weight: 800; font-size: 2.4mm; line-height: 1.15; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .lb-row { display: flex; justify-content: space-between; gap: 1mm; font-size: 1.9mm; line-height: 1.25; font-weight: 700; }
+    .lb-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 0.3mm; ${portrait ? "width: 100%; text-align: center;" : ""} }
+    .lb-name { font-weight: 800; font-size: ${portrait ? "3mm" : "2.4mm"}; line-height: 1.15; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .lb-row { display: flex; justify-content: ${portrait ? "center" : "space-between"}; gap: 1.5mm; font-size: ${portrait ? "2.6mm" : "1.9mm"}; line-height: 1.3; font-weight: 700; }
     .lb-row .lb-k { opacity: 0.85; flex: 0 0 auto; }
-    .lb-row .lb-v { font-weight: 800; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-row .lb-v { font-weight: 800; text-align: ${portrait ? "right" : "left"}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .lb-mono { font-family: "Courier New", monospace; letter-spacing: 0.2mm; direction: ltr; }
-    .lb-code-row .lb-v { font-size: 2mm; }
-    .lb-footer { margin-top: 0.6mm; text-align: center; }
-    .lb-barcode { width: 100%; height: 6.5mm; }
+    .lb-code-row .lb-v { font-size: ${portrait ? "2.6mm" : "2mm"}; }
+    .lb-footer { margin-top: 0.8mm; text-align: center; }
+    .lb-barcode { width: 100%; height: ${portrait ? "11mm" : "6.5mm"}; }
     .lb-barcode svg { width: 100%; height: 100%; display: block; image-rendering: ${rendering}; }
-    .lb-readable { font-size: 2.2mm; font-weight: 800; line-height: 1.1; margin-top: 0.2mm; }
+    .lb-readable { font-size: ${portrait ? "3mm" : "2.2mm"}; font-weight: 800; line-height: 1.1; margin-top: 0.3mm; }
     @media print { * { color: #000 !important; } body { background: #fff !important; } }
   `;
 }
@@ -384,7 +404,7 @@ export async function buildLabelSheetHtml(
   opts: { title?: string; autoPrint?: boolean } = {},
 ): Promise<string> {
   const markups = await Promise.all(labels.map((d) => buildLabelMarkup(d, config)));
-  const sheet = markups.map((m) => `<div class="lb-label">${m}</div>`).join("\n");
+  const sheet = markups.map((m) => `<div class="lb-page"><div class="lb-label">${m}</div></div>`).join("\n");
   return `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8" />
     <title>${esc(opts.title ?? "طباعة الملصقات")}</title>
     <style>${labelCss(settings)}</style>

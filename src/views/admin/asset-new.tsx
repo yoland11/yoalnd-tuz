@@ -22,7 +22,6 @@ import { EmptyState } from "./_layout";
 import {
   adminFetch,
   apiErrorMessage,
-  apiErrorStatus,
   compressImageFile,
   formatCurrency,
 } from "./_lib";
@@ -120,26 +119,6 @@ function assetCodePreview(id?: number) {
   return id ? `AJN-A${String(id).padStart(6, "0")}` : "AJN-A······";
 }
 
-/**
- * Pre-flight duplicate-serial check via the existing scan endpoint. Runs BEFORE
- * the product is created so a duplicate serial never leaves an orphan product.
- * Matches on serialNumber specifically to avoid false positives from name/barcode hits.
- */
-async function serialInUse(serial: string): Promise<boolean> {
-  if (!serial) return false;
-  try {
-    const found = await adminFetch<any>(`/admin/assets/scan?code=${encodeURIComponent(serial)}`);
-    return Boolean(
-      found?.serialNumber && String(found.serialNumber).toLowerCase() === serial.toLowerCase(),
-    );
-  } catch (e) {
-    // 404 = no match (free to use). On any other unexpected error, stay permissive —
-    // the server still enforces uniqueness with a 409 on the profile insert.
-    if (apiErrorStatus(e) === 404) return false;
-    return false;
-  }
-}
-
 export default function AssetNewPage() {
   const [, setLocation] = useLocation();
   const [form, setForm] = useState({ ...EMPTY });
@@ -233,12 +212,6 @@ export default function AssetNewPage() {
    *  4) GET  /admin/assets/qr     → ensures QR token row + returns scannable QR image
    */
   async function persist(): Promise<SavedAsset> {
-    // Guard duplicate serial BEFORE creating the product (avoids orphan products
-    // and double-submits) — the profile insert also enforces this server-side.
-    if (await serialInUse(form.serialNumber.trim())) {
-      throw new Error("الرقم التسلسلي مستخدم مسبقاً لأصل آخر");
-    }
-
     const categoryLabel =
       CATEGORIES.find(([v]) => v === form.category)?.[1] ?? form.category;
 
@@ -269,6 +242,7 @@ export default function AssetNewPage() {
         stock: 1,
         minStock: 0,
         isRental: form.isRental,
+        isAsset: true,
         pricePerDay: num(form.pricePerDay),
         category: categoryLabel,
         images: imageInputs,

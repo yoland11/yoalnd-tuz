@@ -100,6 +100,12 @@ export const staffApi = {
     mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/delivery`, { method: "POST", body: JSON.stringify(payload) }),
   collect: (id: number, amount: number, note?: string): Promise<{ ok: boolean } | QueuedResult> =>
     mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect`, { method: "POST", body: JSON.stringify({ amount, note }) }),
+  assets: (id: number) => adminFetch<{ assets: Array<{ productId: number; name: string; assetCode: string; imageUrl?: string | null; quantity?: number; warehouse?: string | null; status?: string; checkedOut: boolean }> }>(`${base}/bookings/${id}/assets`),
+  searchProducts: (q: string) => adminFetch<{ products: Array<{ productId: number; name: string; barcode: string | null; assetCode: string; isRental: boolean; imageUrl: string | null }> }>(`${base}/products?search=${encodeURIComponent(q)}`),
+  linkAsset: (id: number, payload: { mode: "link" | "setqty" | "unlink"; productId?: number; code?: string; quantity?: number }) =>
+    adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/bookings/${id}/assets`, { method: "POST", body: JSON.stringify(payload) }),
+  scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }) =>
+    adminFetch<{ ok: boolean; productId: number; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets`, { method: "POST", body: JSON.stringify(payload) }),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string | null; href: string | null; isRead: boolean; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),

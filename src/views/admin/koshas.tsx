@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Package, Plus, Printer, Save, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -51,6 +51,10 @@ type KoshaBooking = {
   selectedAccessories: string[];
   venueImages: string[];
   bookingDetails: Record<string, unknown>;
+  primaryEmployeeId?: number | null;
+  primaryEmployeeName?: string | null;
+  assistantEmployeeId?: number | null;
+  assistantEmployeeName?: string | null;
   notes: string;
   status: string;
   trackingCode?: string | null;
@@ -817,8 +821,8 @@ export function AdminKoshaBookingsPage() {
   });
 
   const csv = useMemo(() => {
-    const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الاكسسوارات", "الإجمالي", "الحالة"];
-    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.selectedAccessories?.join("، ") ?? "", koshaBookingAmountLabel(item), STATUS_LABELS[item.status] ?? item.status]);
+    const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الموظف الأساسي", "الموظف المساعد", "الاكسسوارات", "الإجمالي", "الحالة"];
+    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.primaryEmployeeName ?? "", item.assistantEmployeeName ?? "", item.selectedAccessories?.join("، ") ?? "", koshaBookingAmountLabel(item), STATUS_LABELS[item.status] ?? item.status]);
     return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   }, [data]);
 
@@ -916,7 +920,7 @@ export function AdminKoshaBookingsPage() {
         </div>
         <div class="parties">
           <div><strong>الزبون:</strong> ${full.customerName}<br><strong>الهاتف:</strong> <span style="direction:ltr">${full.phone || "—"}</span></div>
-          <div><strong>الموعد:</strong> ${dateLine}<br><strong>الحالة:</strong> ${STATUS_LABELS[full.status] ?? full.status}</div>
+          <div><strong>الموعد:</strong> ${dateLine}<br><strong>الحالة:</strong> ${STATUS_LABELS[full.status] ?? full.status}${(full.primaryEmployeeName || full.assistantEmployeeName) ? `<br><strong>الطاقم:</strong> ${[full.primaryEmployeeName, full.assistantEmployeeName].filter(Boolean).join(" · ")}` : ""}</div>
         </div>
         <table><thead><tr><th>البند</th><th style="text-align:left">السعر (د.ع)</th></tr></thead><tbody>${rows}</tbody></table>
         <div class="totals">
@@ -972,6 +976,9 @@ export function AdminKoshaBookingsPage() {
                     <td className="px-4 py-3">
                       <div className="font-medium text-foreground">{item.customerName}</div>
                       {(item.brideName || item.groomName) && <div className="text-xs text-muted-foreground">{[item.brideName, item.groomName].filter(Boolean).join(" و ")}</div>}
+                      {(item.primaryEmployeeName || item.assistantEmployeeName) && (
+                        <div className="mt-0.5 text-xs text-primary">فريق: {[item.primaryEmployeeName, item.assistantEmployeeName].filter(Boolean).join(" · ")}</div>
+                      )}
                     </td>
                     <td className="px-4 py-3" dir="ltr">{item.phone}</td>
                     <td className="px-4 py-3">{item.eventDate || "-"} {item.eventTime || ""}</td>
@@ -1086,6 +1093,14 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
   const addonsQuery = useQuery({ queryKey: ["admin", "kosha-addons"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-addons") });
   const boardsQuery = useQuery({ queryKey: ["admin", "kosha-welcome-boards"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-welcome-boards") });
   const accessoriesQuery = useQuery({ queryKey: ["admin", "kosha-accessories"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-accessories") });
+  const staffQuery = useQuery({ queryKey: ["admin", "staff"], queryFn: () => adminFetch<{ id: number; fullName?: string; username?: string }[]>("/admin/staff") });
+  const [primaryId, setPrimaryId] = useState(String(booking.primaryEmployeeId ?? ""));
+  const [assistantId, setAssistantId] = useState(String(booking.assistantEmployeeId ?? ""));
+  const saveCrew = useMutation({
+    mutationFn: () => adminFetch(`/admin/kosha-bookings/${booking.id}/employees`, { method: "POST", body: JSON.stringify({ primaryEmployeeId: primaryId ? Number(primaryId) : null, assistantEmployeeId: assistantId ? Number(assistantId) : null }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم حفظ الطاقم" }); },
+    onError: (err: any) => toast({ title: "تعذر حفظ الطاقم", description: err?.message, variant: "destructive" }),
+  });
 
   const kosha = (koshasQuery.data ?? []).find((item) => item.id === booking.koshaId) ?? null;
   const addons = resolveKoshaOptions(booking.selectedAddons, addonsQuery.data ?? []);
@@ -1111,7 +1126,33 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
         </div>
 
         <KoshaDetailSection title="بيانات الحجز">
-          <KoshaDetailGrid items={[["اسم الزبون", booking.customerName], ["رقم الهاتف", booking.phone], ["تاريخ الحجز", booking.eventDate], ["وقت الحجز", booking.eventTime], ["حالة الطلب", STATUS_LABELS[booking.status] ?? booking.status], ["الملاحظات", booking.notes]]} />
+          <KoshaDetailGrid items={[["اسم الزبون", booking.customerName], ["رقم الهاتف", booking.phone], ["تاريخ الحجز", booking.eventDate], ["وقت الحجز", booking.eventTime], ["حالة الطلب", STATUS_LABELS[booking.status] ?? booking.status], ["الموظف الأساسي", booking.primaryEmployeeName ?? "—"], ["الموظف المساعد", booking.assistantEmployeeName ?? "—"], ["الملاحظات", booking.notes]]} />
+        </KoshaDetailSection>
+
+        <KoshaDetailSection title="الطاقم وإخراج/استلام الأصول">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs text-muted-foreground">الموظف الأساسي
+              <select value={primaryId} onChange={(e) => setPrimaryId(e.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+                <option value="">— اختر —</option>
+                {(staffQuery.data ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.fullName || s.username}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted-foreground">الموظف المساعد
+              <select value={assistantId} onChange={(e) => setAssistantId(e.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+                <option value="">— اختر —</option>
+                {(staffQuery.data ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.fullName || s.username}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => saveCrew.mutate()} disabled={saveCrew.isPending} className="gap-1">حفظ الطاقم</Button>
+            <Link href={`/admin/asset-gate?bookingId=${booking.id}&mode=checkout`}>
+              <Button size="sm" variant="outline" className="gap-1"><ScanLine className="h-3.5 w-3.5" /> مسح / إخراج من المخزن</Button>
+            </Link>
+            <Link href={`/admin/asset-gate?bookingId=${booking.id}&mode=return`}>
+              <Button size="sm" variant="outline" className="gap-1"><ArrowDownToLine className="h-3.5 w-3.5" /> استلام الأصول</Button>
+            </Link>
+          </div>
         </KoshaDetailSection>
 
         <KoshaDetailSection title="التتبع وحالة الكوشة">

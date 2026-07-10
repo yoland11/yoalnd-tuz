@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  useListProducts, useCreateProduct, useUpdateProduct, useDeleteProduct,
+  useCreateProduct, useUpdateProduct, useDeleteProduct,
   getListProductsQueryKey,
 } from "@workspace/api-client-react";
 import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, Star, Video, Play, ImagePlus, Link2, AlertTriangle, CheckCircle2, PackageX, CalendarDays, QrCode, RefreshCw, Copy } from "lucide-react";
@@ -29,7 +29,7 @@ type ProductForm = {
   descriptionKu?: string; descriptionTr?: string;
   price: string; originalPrice?: string; costPrice?: string;
   stock: string; minStock?: string; barcode?: string;
-  isRental?: boolean; pricePerDay?: string;
+  isRental?: boolean; pricePerDay?: string; isAsset?: boolean;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
   categoryId?: number | null; subcategoryId?: number | null;
@@ -53,7 +53,7 @@ type RentalBookingRow = {
 
 const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
-  isRental: false, pricePerDay: "0",
+  isRental: false, pricePerDay: "0", isAsset: false,
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
   images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
 };
@@ -113,7 +113,13 @@ function StockStatusBadge({ product }: { product: any }) {
 export default function ProductsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { data: products, isLoading } = useListProducts({ limit: 250 });
+  // Admin uses the admin endpoint (same products table, but NO isActive filter and a high
+  // limit) so hidden/archived products and products beyond the store's page also appear.
+  const { data: products, isLoading } = useQuery<any[]>({
+    queryKey: ["admin", "products-all"],
+    queryFn: () => adminFetch("/admin/products?limit=2000"),
+    staleTime: 30_000,
+  });
   const { data: categories } = useQuery({
     queryKey: ["admin", "categories"],
     queryFn: () => adminFetch<Category[]>("/admin/categories"),
@@ -126,6 +132,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("");
   const [stockFilter, setStockFilter] = useState<StockFilter>("all");
+  const [visFilter, setVisFilter] = useState<"all" | "visible" | "hidden" | "archived" | "rental" | "nocat">("all");
   const [view, setView] = useState<"list" | "stock">("list");
   const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
 
@@ -143,16 +150,37 @@ export default function ProductsPage() {
     );
   }, [productRows]);
 
+  const isArchived = (p: any) => Boolean(p.archivedAt);
+  const isHidden = (p: any) => !isArchived(p) && p.isActive === false;
+  const isVisible = (p: any) => !isArchived(p) && p.isActive !== false;
+  const hasNoCategory = (p: any) => !p.categoryId && !p.subcategoryId && !String(p.category ?? "").trim();
+
   const filtered = useMemo(() => {
     let rows = productRows;
     if (catFilter) rows = rows.filter((p: any) => p.category === catFilter);
     if (stockFilter !== "all") rows = rows.filter((p: any) => stockStatus(p) === stockFilter);
+    if (visFilter === "visible") rows = rows.filter(isVisible);
+    else if (visFilter === "hidden") rows = rows.filter(isHidden);
+    else if (visFilter === "archived") rows = rows.filter(isArchived);
+    else if (visFilter === "rental") rows = rows.filter((p: any) => p.isRental);
+    else if (visFilter === "nocat") rows = rows.filter(hasNoCategory);
     if (search) {
       const s = search.toLowerCase();
-      rows = rows.filter((p: any) => p.nameAr.toLowerCase().includes(s) || p.name.toLowerCase().includes(s) || String(p.sharedStockProductName ?? "").toLowerCase().includes(s));
+      rows = rows.filter((p: any) =>
+        [
+          p.nameAr,
+          p.name,
+          p.barcode, // product code
+          p.category,
+          p.subcategory,
+          p.description,
+          p.descriptionAr,
+          p.sharedStockProductName,
+        ].some((v) => String(v ?? "").toLowerCase().includes(s)),
+      );
     }
     return rows;
-  }, [productRows, search, catFilter, stockFilter]);
+  }, [productRows, search, catFilter, stockFilter, visFilter]);
 
   const parentCats = categories?.filter(c => !c.parentId) ?? [];
   const subCats = categories?.filter(c => c.parentId) ?? [];
@@ -209,6 +237,7 @@ export default function ProductsPage() {
       stock: parseInt(form.stock) || 0,
       minStock: parseInt(form.minStock ?? "0") || 0,
       isRental: form.isRental === true,
+      isAsset: form.isAsset === true,
       pricePerDay: parseFloat(form.pricePerDay ?? "0") || 0,
       sharedStockProductId: form.sharedStockProductId ?? null,
       ...(form.id && !form.sharedStockProductId ? { sharedStockLinkedProductIds: form.sharedStockLinkedProductIds ?? [] } : {}),
@@ -311,7 +340,7 @@ export default function ProductsPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[240px]">
           <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث عن منتج..."
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="بحث بالاسم أو الباركود أو التصنيف أو الوصف..."
             className="w-full bg-card border border-border/40 rounded-lg pr-10 pl-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
         <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
@@ -325,6 +354,15 @@ export default function ProductsPage() {
           <option value="available">متوفر</option>
           <option value="low">المخزون المنخفض</option>
           <option value="out">نفد المخزون</option>
+        </select>
+        <select value={visFilter} onChange={e => setVisFilter(e.target.value as typeof visFilter)}
+          className="bg-card border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          <option value="all">كل المنتجات</option>
+          <option value="visible">الظاهرة</option>
+          <option value="hidden">المخفية</option>
+          <option value="archived">المؤرشفة</option>
+          <option value="rental">الإيجار</option>
+          <option value="nocat">بدون تصنيف</option>
         </select>
         <button
           type="button"
@@ -483,9 +521,18 @@ export default function ProductsPage() {
                       <td className="p-3"><StockStatusBadge product={p} /></td>
                       <td className="p-3 text-muted-foreground">{p.category ?? "—"}</td>
                       <td className="p-3">
-                        <span className={`text-xs px-2 py-1 rounded-full ${p.isActive === false ? "bg-status-danger/10 text-status-danger" : "bg-status-success/10 text-status-success"}`}>
-                          {p.isActive === false ? "مخفي" : "ظاهر"}
-                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          <span className={`text-xs px-2 py-1 rounded-full ${
+                            isArchived(p) ? "bg-muted text-muted-foreground"
+                              : p.isActive === false ? "bg-status-danger/10 text-status-danger"
+                                : "bg-status-success/10 text-status-success"
+                          }`}>
+                            {isArchived(p) ? "مؤرشف" : p.isActive === false ? "مخفي" : "ظاهر"}
+                          </span>
+                          {hasNoCategory(p) && (
+                            <span className="text-xs px-2 py-1 rounded-full bg-status-warning/10 text-status-warning">بدون تصنيف</span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
@@ -497,7 +544,7 @@ export default function ProductsPage() {
                             price: String(p.price), originalPrice: p.originalPrice ? String(p.originalPrice) : "",
                             costPrice: p.costPrice ? String(p.costPrice) : "0",
                             stock: String(currentStock), minStock: p.minStock ? String(p.minStock) : "0", barcode: p.barcode ?? "",
-                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0",
+                            isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0", isAsset: !!(p as any).isAsset,
                             sharedStockProductId: (p as any).sharedStockProductId ?? null,
                             sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
                             categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
@@ -894,6 +941,18 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               <Inp label="الكمية" type="number" value={form.stock} onChange={v => onChange({ ...form, stock: v })} />
             </div>
           )}
+        </div>
+        <div className="rounded-xl border border-accent/30 bg-accent/5 p-3">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
+            <input
+              type="checkbox"
+              checked={form.isAsset === true}
+              onChange={(event) => onChange({ ...form, isAsset: event.target.checked })}
+              className="accent-primary"
+            />
+            إضافة إلى إهلاك الأصول (أصل ثابت)
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">عند التفعيل يظهر المنتج في إدارة الأصول والجواز الرقمي والإهلاك، ويدعم QR والباركود والصيانة والإخراج/الاستلام. الافتراضي: غير مفعّل.</p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

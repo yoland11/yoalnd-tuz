@@ -454,7 +454,7 @@ export default function PrintLabelsPage() {
             <QrCode className="w-6 h-6 text-primary" /> طباعة الملصقات
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            ملصقات QR وباركود احترافية — Xprinter XP-236B ‏· 40×30 مم ‏· 203 DPI
+            ملصقات QR وباركود احترافية — Xprinter XP-236B ‏· {settings.widthMm}×{settings.heightMm} مم ‏· {settings.dpi} DPI
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -670,7 +670,7 @@ export default function PrintLabelsPage() {
                 <RefreshCw className="w-4 h-4" /> إعادة
               </Button>
             </div>
-            <div className="mt-2">
+            <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
               <label className="text-xs text-muted-foreground flex items-center gap-2">
                 عدد النسخ للطباعة المتعددة / التكرار:
                 <input
@@ -682,6 +682,25 @@ export default function PrintLabelsPage() {
                   className="w-20 bg-background border border-border/40 rounded-lg px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <RotateCw className="w-3.5 h-3.5" /> تدوير الطباعة
+                </span>
+                <div className="flex rounded-lg border border-border/40 overflow-hidden">
+                  {[0, 90, 180, 270].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => persistSettings({ ...settings, rotation: d })}
+                      className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                        (settings.rotation ?? 0) === d ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {d}°
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -839,6 +858,23 @@ export default function PrintLabelsPage() {
                 className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
               />
             </label>
+            <label className="block text-xs text-muted-foreground">
+              تدوير الطباعة (لتصحيح اتجاه الطابعة)
+              <select
+                value={String(settings.rotation ?? 0)}
+                onChange={(e) => persistSettings({ ...settings, rotation: Number(e.target.value) })}
+                className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+              >
+                {[0, 90, 180, 270].map((d) => (
+                  <option key={d} value={d}>{d}°</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-muted-foreground leading-5">
+            <b className="text-foreground">إذا خرجت الطباعة مقلوبة أو مدوّرة:</b> جرّب «تدوير الطباعة» = <b>90°</b> ثم <b>270°</b> حتى تظبط.
+            وإذا ظهر تاريخ/رابط أعلى الملصق: في نافذة الطباعة افتح «مزيد من الإعدادات» وأطفئ
+            <b> Headers and footers (الرؤوس والتذييلات)</b>، واجعل الهوامش (Margins) = بلا (None).
           </div>
           <div className="flex flex-wrap gap-4 pt-2">
             <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
@@ -853,7 +889,7 @@ export default function PrintLabelsPage() {
           </div>
           <div className="pt-2 flex gap-2">
             <Button variant="outline" size="sm" onClick={() => persistSettings({ ...DEFAULT_LABEL_SETTINGS })}>
-              استعادة الافتراضي (40×30 / 203DPI)
+              استعادة الافتراضي (40×60 / 203DPI)
             </Button>
             <Button variant="ghost" size="sm" onClick={testPrint} className="gap-2">
               <FlaskConical className="w-4 h-4" /> طباعة صفحة اختبار

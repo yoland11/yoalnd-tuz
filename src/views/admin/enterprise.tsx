@@ -2210,6 +2210,14 @@ function AssetPassportModal({
     retry: false,
     enabled: tab === "overview",
   });
+  const linkedBookings = useQuery<{
+    links: Array<{ entityType: string; entityId: number; label: string; date: string | null; status: string | null }>;
+    history?: Array<{ staff: string; issuedAt: string | null; returnedAt: string | null; status: string; notes: string | null }>;
+  }>({
+    queryKey: ["asset-linked-bookings", row.productId],
+    queryFn: () => adminFetch(`/admin/asset-links?productId=${row.productId}`),
+    retry: false,
+  });
   const health = assetHealth(row);
   const purchase = Number(row.purchasePrice ?? 0);
   const value = Number(row.currentValue ?? purchase);
@@ -2349,6 +2357,42 @@ function AssetPassportModal({
                       .join("، ")}
                   </div>
                 ) : null}
+                {/* Current booking / booking history (linked assets across all entity types) */}
+                <div className="mt-3 border-t border-border/30 pt-2">
+                  <div className="text-xs text-muted-foreground">الحجوزات / الطلبات المرتبطة</div>
+                  {(linkedBookings.data?.links ?? []).length === 0 ? (
+                    <div className="mt-1 text-xs text-muted-foreground">لا يوجد حجز مرتبط حالياً</div>
+                  ) : (
+                    <ul className="mt-1 space-y-1">
+                      {(linkedBookings.data?.links ?? []).map((l, i) => (
+                        <li key={`${l.entityType}-${l.entityId}-${i}`} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate text-foreground">{l.label}</span>
+                          {l.date ? <span className="shrink-0 text-muted-foreground">{l.date}</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {(linkedBookings.data?.history ?? []).length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-xs text-muted-foreground">سجل الاستخدام (إخراج / استلام)</div>
+                      <ul className="mt-1 space-y-1">
+                        {(linkedBookings.data?.history ?? []).slice(0, 6).map((h, i) => (
+                          <li key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate text-foreground">
+                              {h.staff}
+                              {h.notes ? ` · ${h.notes}` : ""}
+                            </span>
+                            <span className="shrink-0 text-muted-foreground">
+                              {h.issuedAt ? new Date(h.issuedAt).toLocaleDateString("ar") : "—"}
+                              {" → "}
+                              {h.returnedAt ? new Date(h.returnedAt).toLocaleDateString("ar") : (h.status === "issued" ? "بالعهدة" : "—")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
