@@ -454,7 +454,7 @@ export default function PrintLabelsPage() {
             <QrCode className="w-6 h-6 text-primary" /> طباعة الملصقات
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            ملصقات QR وباركود احترافية — Xprinter XP-236B ‏· 40×30 مم ‏· 203 DPI
+            ملصقات QR وباركود احترافية — Xprinter XP-236B ‏· {settings.widthMm}×{settings.heightMm} مم ‏· {settings.dpi} DPI
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -889,7 +889,7 @@ export default function PrintLabelsPage() {
           </div>
           <div className="pt-2 flex gap-2">
             <Button variant="outline" size="sm" onClick={() => persistSettings({ ...DEFAULT_LABEL_SETTINGS })}>
-              استعادة الافتراضي (40×30 / 203DPI)
+              استعادة الافتراضي (40×60 / 203DPI)
             </Button>
             <Button variant="ghost" size="sm" onClick={testPrint} className="gap-2">
               <FlaskConical className="w-4 h-4" /> طباعة صفحة اختبار
