@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import {
-  Archive, Ban, BarChart3, Bell, CalendarDays, Camera, Check, ChevronRight, ClipboardList, CloudOff,
-  Home, ImagePlus, Loader2, LogOut, MapPin, PackageCheck, Pencil, Phone, Printer, QrCode, Search,
-  Send, Trash2, User, Users, WalletCards, X,
+  Archive, Ban, BarChart3, Bell, Boxes, CalendarDays, Camera, Check, ChevronRight, ClipboardList, CloudOff,
+  Home, ImagePlus, Loader2, LogOut, MapPin, PackageCheck, Pencil, Phone, Plus, Printer, QrCode, ScanLine, Search,
+  Send, Trash2, Undo2, Upload, User, Users, WalletCards, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,9 +18,10 @@ import { formatCurrency } from "@/lib/money";
 import { countOps, flushQueue, isQueued } from "../offline";
 import {
   PHOTO_STAGES, PHOTO_STAGE_LABEL, newClientToken, photographyApi, photoMoney,
-  readLocalEvent, saveLocalEvent, type PhotographyEvent, type PhotographyEventDetail,
+  readLocalEvent, saveLocalEvent, type PhotographyAsset, type PhotographyEvent, type PhotographyEventDetail,
   type PhotographyOrder, type PhotographyPrice, type PhotographyStage,
 } from "./lib";
+import { LiveScanner } from "../live-scanner";
 
 const isPhotoManager = (me: AdminMe | null | undefined) => !!me && (me.role === "admin" || me.role === "manager");
 const phoneDisplay = (phone: string | null | undefined) => (phone && phone.trim() ? phone : "غير مسجل");
@@ -416,6 +417,7 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
     <div className="space-y-4 p-4"><button type="button" onClick={() => window.history.back()} className="inline-flex items-center text-sm text-muted-foreground"><ChevronRight className="ml-1 h-4 w-4" /> رجوع</button>{cancelled ? <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm font-bold text-destructive">تم إلغاء هذا الطلب — للعرض والتدقيق فقط.</div> : null}<div className="rounded-xl border border-border/30 bg-card p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="font-mono font-bold text-primary">{order.orderNo}</div><h1 className="mt-1 text-lg font-bold text-foreground">{order.customerName}</h1><p className="mt-1 text-xs text-muted-foreground">{order.event?.eventName || order.event?.groomName}</p><div className="mt-2"><PaymentBadge order={order} /></div></div><button type="button" onClick={printReceipt} className="grid h-11 w-11 flex-shrink-0 place-items-center rounded-lg border border-border/30 text-primary" aria-label="طباعة الوصل"><Printer className="h-5 w-5" /></button></div>{order.referenceImage ? <img src={order.referenceImage} alt="صورة المجموعة" className="mt-4 h-44 w-full rounded-lg object-contain bg-background" /> : null}<div className="mt-4 grid grid-cols-2 gap-2 text-sm"><Info label="الهاتف" value={phoneDisplay(order.phone)} /><Info label="النسخ" value={String(order.copies)} /><Info label="سعر النسخة" value={`${photoMoney(order.unitPrice)} د.ع`} /><Info label="الإجمالي" value={`${photoMoney(order.totalAmount)} د.ع`} /></div></div>
       <div className="rounded-xl border border-border/30 bg-card p-4"><h2 className="mb-3 font-bold">مراحل الطلب</h2><div className="space-y-2">{PHOTO_STAGES.map((item, index) => { const current = PHOTO_STAGES.findIndex((stage) => stage.key === order.status); const done = index <= current; return <button key={item.key} type="button" disabled={busy || cancelled || item.key === order.status} onClick={() => status(item.key)} className={`flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 text-right text-sm disabled:opacity-60 ${item.key === order.status ? "border-primary bg-primary/10 text-primary" : done ? "border-status-success/30 bg-status-success/5 text-foreground" : "border-border/30 bg-background text-muted-foreground"}`}><span className={`grid h-6 w-6 place-items-center rounded-full ${done ? "bg-primary text-primary-foreground" : "border border-border"}`}>{done ? <Check className="h-3.5 w-3.5" /> : index + 1}</span>{item.label}</button>; })}</div></div>
       <div className="rounded-xl border border-border/30 bg-card p-4"><h2 className="mb-3 font-bold">الدفع</h2><div className="grid grid-cols-3 gap-2"><Info label="المبلغ" value={formatCurrency(order.totalAmount)} /><Info label="المدفوع" value={formatCurrency(order.paidAmount)} /><Info label="المتبقي" value={formatCurrency(order.remainingAmount)} /></div>{order.pendingAmount > 0 ? <div className="mt-3 rounded-lg bg-status-warning/10 p-2 text-xs text-status-warning">{formatCurrency(order.pendingAmount)} قيد اعتماد المدير</div> : null}{!cancelled && availableToCollect > 0 ? <div className="mt-4 space-y-2"><Input type="number" min="1" max={availableToCollect} value={collect} onChange={(e) => setCollect(e.target.value)} placeholder={`استلام دفعة حتى ${formatCurrency(availableToCollect)}`} /><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة الدفعة" /><Button className="w-full" onClick={requestPayment} disabled={busy || Number(collect) <= 0 || Number(collect) > availableToCollect}><WalletCards className="ml-2 h-4 w-4" /> استلام دفعة وإرسالها للاعتماد</Button></div> : null}</div>
+      <AssetsSection orderId={order.id} cancelled={cancelled} />
       {manager && !cancelled ? (
         <div className="space-y-2">
           {order.paidAmount > 0 || order.pendingAmount > 0 ? (
@@ -428,6 +430,117 @@ function OrderDetailPage({ id, me }: { id: number; me: AdminMe }) {
         </div>
       ) : null}
       {order.qr?.dataUrl ? <div className="rounded-xl border border-border/30 bg-card p-4 text-center"><img src={order.qr.dataUrl} alt="QR الطلب" className="mx-auto h-36 w-36 object-contain" /><p className="mt-2 text-xs text-muted-foreground">QR آمن لتتبع طلب الزبون</p></div> : null}
+    </div>
+  );
+}
+
+const ASSET_STATUS_LABEL: Record<string, string> = {
+  active: "متاح", checked_out: "مُخرَج بعهدة", maintenance: "صيانة", lost: "مفقود", retired: "خارج الخدمة", locked: "مقفل",
+};
+
+function AssetsSection({ orderId, cancelled }: { orderId: number; cancelled: boolean }) {
+  const { toast } = useToast();
+  const [assets, setAssets] = useState<PhotographyAsset[] | null>(null);
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<Array<{ productId: number; name: string; barcode: string | null; assetCode: string; imageUrl: string | null }>>([]);
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [ret, setRet] = useState<{ asset: PhotographyAsset; problem: "none" | "broken" | "lost"; note: string; cost: string; approval: boolean } | null>(null);
+  const load = useCallback(() => photographyApi.assets(orderId).then((r) => setAssets(r.assets)).catch(() => setAssets([])), [orderId]);
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const q = search.trim();
+    if (q.length < 2) { setResults([]); return; }
+    let alive = true;
+    const t = setTimeout(() => { photographyApi.searchAssets(q).then((r) => { if (alive) setResults(r.products); }).catch(() => {}); }, 250);
+    return () => { alive = false; clearTimeout(t); };
+  }, [search]);
+
+  async function op(payload: Record<string, unknown>, okMsg: string) {
+    setBusy(true);
+    try { await photographyApi.assetOp(orderId, payload); toast({ title: okMsg }); await load(); return true; }
+    catch (err: any) { toast({ title: "تعذّر التنفيذ", description: apiErrorMessage(err), variant: "destructive" }); return false; }
+    finally { setBusy(false); }
+  }
+  const linkProduct = (productId: number) => { void op({ mode: "link", productId }, "تم ربط الأصل").then((ok) => { if (ok) { setSearch(""); setResults([]); } }); };
+  const scanLink = (code: string) => { void op({ mode: "link", code }, "تم ربط الأصل بالمسح"); };
+  const checkout = (a: PhotographyAsset) => op({ mode: "checkout", productId: a.productId }, "تم إخراج الأصل");
+  async function confirmReturn() {
+    if (!ret) return;
+    const ok = await op({ mode: "return", productId: ret.asset.productId, problem: ret.problem, note: ret.note || undefined, cost: ret.problem === "broken" ? Number(ret.cost) || 0 : undefined, managerApproval: ret.problem === "lost" ? ret.approval : undefined }, "تم استلام الأصل");
+    if (ok) setRet(null);
+  }
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-card p-4">
+      <div className="mb-3 flex items-center gap-2"><Boxes className="h-4 w-4 text-primary" /><h2 className="font-bold">أصول ومعدات الطلب</h2>{assets ? <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-bold text-primary">{assets.length}</span> : null}</div>
+
+      {!cancelled ? (
+        <div className="mb-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/30 bg-background px-3"><Search className="h-4 w-4 flex-shrink-0 text-muted-foreground" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن أصل بالاسم أو الباركود..." className="min-h-11 w-full bg-transparent text-sm outline-none" /></div>
+            <button type="button" onClick={() => setScanning((s) => !s)} className={`grid h-11 w-11 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/30 text-muted-foreground"}`} aria-label="مسح QR"><ScanLine className="h-5 w-5" /></button>
+          </div>
+          {scanning ? <div className="overflow-hidden rounded-lg border border-border/30"><LiveScanner active={scanning} onDetect={scanLink} /></div> : null}
+          {results.length ? (
+            <div className="space-y-1 rounded-lg border border-border/30 bg-background p-1">
+              {results.map((r) => (
+                <button key={r.productId} type="button" disabled={busy} onClick={() => linkProduct(r.productId)} className="flex w-full items-center gap-2 rounded-md p-2 text-right text-sm hover:bg-primary/5 disabled:opacity-60">
+                  {r.imageUrl ? <img src={r.imageUrl} alt="" className="h-8 w-8 flex-shrink-0 rounded object-cover" /> : <span className="grid h-8 w-8 flex-shrink-0 place-items-center rounded bg-muted"><Boxes className="h-4 w-4 text-muted-foreground" /></span>}
+                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">{r.assetCode}</span>
+                  <Plus className="h-4 w-4 flex-shrink-0 text-primary" />
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {assets === null ? <div className="py-4 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" /></div>
+        : assets.length === 0 ? <Empty text="لا توجد أصول مرتبطة بهذا الطلب" />
+        : (
+          <div className="space-y-2">
+            {assets.map((a) => (
+              <div key={a.productId} className="rounded-lg border border-border/30 bg-background p-3">
+                <div className="flex items-center gap-2">
+                  {a.imageUrl ? <img src={a.imageUrl} alt="" className="h-10 w-10 flex-shrink-0 rounded object-cover" /> : <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded bg-muted"><Boxes className="h-5 w-5 text-muted-foreground" /></span>}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-foreground">{a.name}</div>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"><span className="font-mono">{a.assetCode}</span>{a.warehouse ? <span>· {a.warehouse}</span> : null}<span>· صحة {a.health}%</span></div>
+                  </div>
+                  <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${a.checkedOut ? "bg-status-warning/15 text-status-warning" : "bg-status-success/15 text-status-success"}`}>{ASSET_STATUS_LABEL[a.status] ?? a.status}</span>
+                </div>
+                {!cancelled ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    {a.checkedOut
+                      ? <button type="button" disabled={busy} onClick={() => setRet({ asset: a, problem: "none", note: "", cost: "", approval: false })} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-2 py-2 text-xs font-bold text-primary disabled:opacity-60"><Undo2 className="h-4 w-4" /> استلام</button>
+                      : <button type="button" disabled={busy} onClick={() => checkout(a)} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-accent/40 bg-accent/5 px-2 py-2 text-xs font-bold text-accent disabled:opacity-60"><Upload className="h-4 w-4" /> إخراج</button>}
+                    <button type="button" disabled={busy || a.checkedOut} onClick={() => { if (window.confirm("إزالة ربط هذا الأصل؟")) void op({ mode: "unlink", productId: a.productId }, "تم إزالة الربط"); }} className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border border-destructive/30 text-destructive disabled:opacity-40" aria-label="إزالة الربط"><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+
+      {ret ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={() => setRet(null)}>
+          <div className="w-full max-w-md rounded-t-2xl border border-border/30 bg-card p-4 sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between"><h3 className="font-bold">استلام الأصل — {ret.asset.name}</h3><button type="button" onClick={() => setRet(null)} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground"><X className="h-4 w-4" /></button></div>
+            <div className="grid grid-cols-3 gap-2">
+              {([["none", "سليم"], ["broken", "كسر"], ["lost", "فقدان"]] as const).map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setRet({ ...ret, problem: key })} className={`rounded-lg border py-2 text-sm font-bold ${ret.problem === key ? (key === "none" ? "border-status-success bg-status-success/10 text-status-success" : key === "broken" ? "border-status-warning bg-status-warning/10 text-status-warning" : "border-destructive bg-destructive/10 text-destructive") : "border-border/30 text-muted-foreground"}`}>{label}</button>
+              ))}
+            </div>
+            {ret.problem !== "none" ? <Textarea rows={2} className="mt-3" value={ret.note} onChange={(e) => setRet({ ...ret, note: e.target.value })} placeholder="ملاحظة (اختياري)" /> : null}
+            {ret.problem === "broken" ? <Input type="number" min="0" className="mt-2" value={ret.cost} onChange={(e) => setRet({ ...ret, cost: e.target.value })} placeholder="تكلفة الإصلاح التقديرية (اختياري)" /> : null}
+            {ret.problem === "lost" ? <label className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2 text-sm text-destructive"><input type="checkbox" checked={ret.approval} onChange={(e) => setRet({ ...ret, approval: e.target.checked })} /> أؤكد اعتماد المدير على تسجيل الفقدان</label> : null}
+            <Button className="mt-4 w-full" disabled={busy || (ret.problem === "lost" && !ret.approval)} onClick={confirmReturn}>{busy ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <PackageCheck className="ml-2 h-4 w-4" />} تأكيد الاستلام</Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

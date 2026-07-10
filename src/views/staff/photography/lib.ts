@@ -131,6 +131,22 @@ export const photographyApi = {
   reports: (opts: { scope?: "all"; photographerId?: number | null; from?: string; to?: string } = {}) => adminFetch<PhotographyReport>(`${base}/reports${reportQuery(opts)}`),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string; href: string | null; readAt: string | null; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
+  // ── Asset linking + checkout/return for a photography order (unified asset_links) ──
+  assets: (orderId: number) => adminFetch<{ assets: PhotographyAsset[] }>(`${base}/orders/${orderId}/assets`),
+  searchAssets: (q: string) => adminFetch<{ products: Array<{ productId: number; name: string; barcode: string | null; assetCode: string; imageUrl: string | null }> }>(`${base}/products?search=${encodeURIComponent(q)}`),
+  assetOp: (orderId: number, payload: Record<string, unknown>) => adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/orders/${orderId}/assets`, { method: "POST", body: JSON.stringify(payload) }),
+};
+
+export type PhotographyAsset = {
+  productId: number;
+  name: string;
+  assetCode: string;
+  barcode: string | null;
+  imageUrl: string | null;
+  status: string;
+  warehouse: string | null;
+  health: number;
+  checkedOut: boolean;
 };
 
 export function photoMoney(value: number | string | null | undefined) {

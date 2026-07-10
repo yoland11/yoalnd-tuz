@@ -31445,6 +31445,29 @@ async function handlePhotographyStaffPortal(
     }
   }
 
+  // Asset picker for the order's asset-linking section.
+  if (resource === "products" && method === "GET") {
+    const q = String(req.nextUrl.searchParams.get("search") ?? "").trim();
+    if (q.length < 2) return json({ products: [] });
+    const rows = await db.query.productsTable.findMany({
+      where: or(
+        ilike(productsTable.nameAr, `%${q}%`),
+        ilike(productsTable.name, `%${q}%`),
+        ilike(productsTable.barcode, `%${q}%`),
+      ),
+      limit: 20,
+    });
+    return json({
+      products: rows.map((p: any) => ({
+        productId: p.id,
+        name: p.nameAr || p.name,
+        barcode: p.barcode ?? null,
+        assetCode: `AJN-A${String(p.id).padStart(6, "0")}`,
+        imageUrl: (publicMediaList("product", p, p.images) ?? [])[0] ?? null,
+      })),
+    });
+  }
+
   if (resource === "orders") {
     if (method === "GET" && !ref) {
       const params = req.nextUrl.searchParams;
@@ -31647,6 +31670,111 @@ async function handlePhotographyStaffPortal(
         order.id,
       );
       return json({ ok: true });
+    }
+    // ── Asset linking + checkout/return for a photography order (unified asset_links + custody) ──
+    if (action === "assets") {
+      await ensureAssetLinksTable();
+      const actor = { id: auth.id, name: photographyStaffName(auth) };
+      const entityType = "photography";
+      const entityId = order.id;
+      if (method === "GET") {
+        const linkRows: any[] = ((await db.execute(sql`select id, product_id from "asset_links" where entity_type = 'photography' and entity_id = ${entityId} order by id`)) as any).rows ?? [];
+        const ids = linkRows.map((r) => Number(r.product_id)).filter(Boolean);
+        if (!ids.length) return json({ assets: [] });
+        const [products, passports, profiles, warehouses, custody] = await Promise.all([
+          db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }),
+          db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }),
+          db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }),
+          db.query.warehousesTable.findMany(),
+          db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }),
+        ]);
+        const pmap = new Map(products.map((p: any) => [p.id, p]));
+        const passMap = new Map(passports.map((p: any) => [p.productId, p]));
+        const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
+        const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
+        const outSet = new Set(custody.map((c) => c.productId));
+        return json({
+          assets: ids.map((pid) => {
+            const p: any = pmap.get(pid);
+            const pass: any = passMap.get(pid);
+            const prof: any = profMap.get(pid);
+            return {
+              productId: pid,
+              name: p?.nameAr || p?.name || `#${pid}`,
+              assetCode: `AJN-A${String(pid).padStart(6, "0")}`,
+              barcode: p?.barcode ?? null,
+              imageUrl: (publicMediaList("product", p, p?.images) ?? [])[0] ?? null,
+              status: outSet.has(pid) ? "checked_out" : (prof?.status ?? "active"),
+              warehouse: pass?.warehouseId ? (whMap.get(pass.warehouseId) ?? null) : null,
+              health: assetHealthScore(prof, assetMetadataObject(pass?.metadata)),
+              checkedOut: outSet.has(pid),
+            };
+          }),
+        });
+      }
+      if (method === "POST") {
+        const b = await body(req);
+        const mode = String(b?.mode ?? "link"); // link | checkout | return | unlink
+        let productId = optionalPositiveId(b?.productId) ?? 0;
+        if (!productId && b?.code) productId = await resolveAssetProductId(String(b.code)); // scan
+        if (!productId) return error("الأصل مطلوب", 400);
+        const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+        if (!product) return error("الأصل غير موجود", 404);
+        const tag = ` · ${entityType} #${entityId}`;
+        if (mode === "unlink") {
+          await db.execute(sql`delete from "asset_links" where product_id = ${productId} and entity_type = 'photography' and entity_id = ${entityId}`);
+          void logAdminActivity(req, "asset_unlinked", "product", productId, { entityType, entityId });
+          return json({ ok: true, productId });
+        }
+        if (mode === "checkout" || mode === "return") {
+          const linkedRows: any[] = ((await db.execute(sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = 'photography' and entity_id = ${entityId} limit 1`)) as any).rows ?? [];
+          if (!linkedRows.length) return error("هذا الأصل غير مرتبط بهذا الطلب", 409);
+          const activeCustody = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
+          if (mode === "checkout") {
+            const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+            if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+            if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
+            const staffId = auth.id;
+            const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity: 1, issuedBy: auth.id, notes: `إخراج${tag}` }).returning();
+            await db.insert(assetPassportsTable).values({ productId, lastStaffId: staffId, lastLocation: "بعهدة موظف" }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: staffId, lastLocation: "بعهدة موظف", updatedAt: new Date() } });
+            void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل", body: `${entityType} #${entityId}`, actor, metadata: { custodyId: row.id, entityType, entityId } });
+            void logAdminActivity(req, "asset_checkout", "product", productId, { entityType, entityId, custodyId: row.id });
+            return json({ ok: true, productId, name: product.nameAr || product.name });
+          }
+          // return: none | broken | lost
+          const problem = String(b?.problem ?? "none");
+          const note = nullableText(b?.note);
+          const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
+          const cost = String(Number(product.costPrice ?? 0));
+          if (problem === "lost") {
+            if (b?.managerApproval !== true) return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
+            await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
+            void addEntityTimeline({ entityType: "asset", entityId: productId, type: "lost", title: "⚠️ فقدان أصل", body: `${note ?? ""}${tag} · باعتماد المدير`, actor, metadata: { entityType, entityId } });
+            void logAdminActivity(req, "asset_lost", "product", productId, { entityType, entityId });
+            await createNotification({ type: "asset_lost", title: "فقدان أصل", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+          } else if (problem === "broken") {
+            await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "maintenance" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
+            if (repairCost > 0) await db.insert(assetPassportsTable).values({ productId, maintenanceCost: String(repairCost) }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`, updatedAt: new Date() } });
+            if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+            void addEntityTimeline({ entityType: "asset", entityId: productId, type: "damage", title: "🛠️ كسر — صيانة", body: [note, repairCost > 0 ? `تكلفة: ${repairCost}` : null].filter(Boolean).join(" · ") || null, actor, metadata: { entityType, entityId, repairCost } });
+            void logAdminActivity(req, "asset_broken", "product", productId, { entityType, entityId, repairCost });
+            await createNotification({ type: "asset_damage", title: "كسر أصل", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+          } else {
+            if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+            await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
+            const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+            if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+            void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع الأصل", body: `${entityType} #${entityId}`, actor, metadata: { entityType, entityId } });
+            void logAdminActivity(req, "asset_return", "product", productId, { entityType, entityId });
+          }
+          return json({ ok: true, productId, name: product.nameAr || product.name });
+        }
+        // link (default)
+        await db.execute(sql`insert into "asset_links" ("product_id","entity_type","entity_id","quantity","created_by") values (${productId}, 'photography', ${entityId}, ${Math.max(1, Math.round(Number(b?.quantity ?? 1)))}, ${auth.id}) on conflict ("product_id","entity_type","entity_id") do nothing`);
+        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 ربط الأصل", body: `${entityType} #${entityId}`, actor, metadata: { entityType, entityId } });
+        void logAdminActivity(req, "asset_linked", "product", productId, { entityType, entityId });
+        return json({ ok: true, productId, name: product.nameAr || product.name });
+      }
     }
     if (method === "PATCH" && !action) {
       if (!manager) return error("تعديل الطلب يخص المدير فقط", 403);
