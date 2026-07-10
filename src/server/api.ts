@@ -20137,7 +20137,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const serviceId = Number.parseInt(params.get("serviceId") ?? "", 10);
     const crew = params.get("crew")?.trim();
     const status = params.get("status")?.trim();
-    const [bookings, productOrders, services] = await Promise.all([
+    const [bookings, productOrders, services, koshaBookings] = await Promise.all([
       db.query.serviceOrdersTable.findMany({
         where: and(
           sql`${serviceOrdersTable.archivedAt} is null`,
@@ -20159,6 +20159,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         limit: 100,
       }),
       db.query.servicesTable.findMany(),
+      db.query.koshaBookingsTable.findMany({
+        where: sql`${koshaBookingsTable.archivedAt} is null and ${koshaBookingsTable.status} <> 'cancelled'`,
+        orderBy: [asc(koshaBookingsTable.eventDate)],
+        limit: 500,
+      }),
     ]);
     const serviceMap = new Map(
       services.map((service) => [service.id, service]),
@@ -20209,8 +20214,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .filter(Boolean)
         .join(" / "),
     }));
+    const koshaEvents = koshaBookings
+      .filter((b) => inRange(b.eventDate))
+      .map((b) => {
+        const d = (b.bookingDetails ?? {}) as any;
+        return {
+          id: b.id,
+          kind: "kosha" as const,
+          title: "حجز كوشة",
+          customerName: b.customerName,
+          trackingCode: b.trackingCode ?? `KB-${b.id}`,
+          status: b.status,
+          date: b.eventDate,
+          location: [b.province, b.area, b.hallLocation].filter(Boolean).join(" / "),
+          primaryEmployeeName: d.primaryEmployeeName ?? null,
+          assistantEmployeeName: d.assistantEmployeeName ?? null,
+        };
+      });
     return json({
-      events: [...serviceEvents, ...orderEvents],
+      events: [...serviceEvents, ...orderEvents, ...koshaEvents],
       services: services.map(formatService),
     });
   }

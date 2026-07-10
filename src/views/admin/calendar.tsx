@@ -8,7 +8,7 @@ import { EmptyState } from "./_layout";
 
 type CalendarEvent = {
   id: number;
-  kind: "service" | "order";
+  kind: "service" | "order" | "kosha";
   title: string;
   customerName: string;
   trackingCode: string | null;
@@ -16,6 +16,8 @@ type CalendarEvent = {
   serviceId?: number;
   serviceType?: string | null;
   crewName?: string;
+  primaryEmployeeName?: string | null;
+  assistantEmployeeName?: string | null;
   date: string;
   location: string;
 };
@@ -193,6 +195,9 @@ export default function CalendarPage() {
                       )}
                     </div>
                     <p className="text-xs opacity-80 mt-1">{event.customerName}</p>
+                    {(event.primaryEmployeeName || event.assistantEmployeeName) && (
+                      <p className="text-[11px] text-primary mt-0.5">فريق: {[event.primaryEmployeeName, event.assistantEmployeeName].filter(Boolean).join(" · ")}</p>
+                    )}
                     <div className="mt-2 flex items-center justify-between gap-2 text-[11px] opacity-80">
                       <span>{STATUS_LABELS[event.status] ?? event.status}</span>
                       <span className="font-mono">{event.trackingCode ?? `#${event.id}`}</span>
