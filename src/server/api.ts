@@ -21462,11 +21462,60 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const b = await body(req);
       const entityType = String(b?.entityType ?? "").trim();
       const entityId = optionalPositiveId(b?.entityId);
+      const mode = String(b?.mode ?? "link"); // link | checkout | return
       let productId = optionalPositiveId(b?.productId) ?? 0;
-      if (!productId && b?.code) productId = await resolveAssetProductId(String(b.code)); // scan-to-add
+      if (!productId && b?.code) productId = await resolveAssetProductId(String(b.code)); // scan
       if (!entityType || !entityId || !productId) return error("النوع والمعرّف والأصل مطلوبة", 400);
       const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
       if (!product) return error("الأصل غير موجود", 404);
+
+      // Checkout / return for a linked asset — reuses custody + passport + timeline + audit.
+      if (mode === "checkout" || mode === "return") {
+        const linkedRows: any[] = ((await db.execute(sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = ${entityType} and entity_id = ${entityId} limit 1`)) as any).rows ?? [];
+        if (!linkedRows.length) return error("هذا الأصل غير مرتبط بهذا الطلب", 409);
+        const activeCustody = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
+        const tag = ` · ${entityType} #${entityId}`;
+        if (mode === "checkout") {
+          const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+          if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+          if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
+          const staffId = optionalPositiveId(b?.staffId) ?? auth.id;
+          const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity: 1, issuedBy: auth.id, notes: `إخراج${tag}` }).returning();
+          await db.insert(assetPassportsTable).values({ productId, lastStaffId: staffId, lastLocation: "بعهدة موظف" }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: staffId, lastLocation: "بعهدة موظف", updatedAt: new Date() } });
+          void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل", body: `${entityType} #${entityId}`, actor: erpActorFromAdmin(auth), metadata: { custodyId: row.id, entityType, entityId } });
+          void logAdminActivity(req, "asset_checkout", "product", productId, { entityType, entityId, custodyId: row.id });
+          return json({ ok: true, productId, name: product.nameAr || product.name });
+        }
+        // return: none | broken | lost
+        const problem = String(b?.problem ?? "none");
+        const note = nullableText(b?.note);
+        const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
+        const cost = String(Number(product.costPrice ?? 0));
+        if (problem === "lost") {
+          if (b?.managerApproval !== true) return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
+          await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
+          void addEntityTimeline({ entityType: "asset", entityId: productId, type: "lost", title: "⚠️ فقدان أصل", body: `${note ?? ""}${tag} · باعتماد المدير`, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId } });
+          void logAdminActivity(req, "asset_lost", "product", productId, { entityType, entityId });
+          await createNotification({ type: "asset_lost", title: "فقدان أصل", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+        } else if (problem === "broken") {
+          await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "maintenance" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
+          if (repairCost > 0) await db.insert(assetPassportsTable).values({ productId, maintenanceCost: String(repairCost) }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`, updatedAt: new Date() } });
+          if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+          void addEntityTimeline({ entityType: "asset", entityId: productId, type: "damage", title: "🛠️ كسر — صيانة", body: [note, repairCost > 0 ? `تكلفة: ${repairCost}` : null].filter(Boolean).join(" · ") || null, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId, repairCost } });
+          void logAdminActivity(req, "asset_broken", "product", productId, { entityType, entityId, repairCost });
+          await createNotification({ type: "asset_damage", title: "كسر أصل", body: product.nameAr || product.name, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
+        } else {
+          if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
+          await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
+          const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+          if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+          void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع الأصل", body: `${entityType} #${entityId}`, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId } });
+          void logAdminActivity(req, "asset_return", "product", productId, { entityType, entityId });
+        }
+        return json({ ok: true, productId, name: product.nameAr || product.name });
+      }
+
+      // link (default)
       await db.execute(sql`insert into "asset_links" ("product_id","entity_type","entity_id","quantity","created_by") values (${productId}, ${entityType}, ${entityId}, ${Math.max(1, Math.round(Number(b?.quantity ?? 1)))}, ${auth.id}) on conflict ("product_id","entity_type","entity_id") do nothing`);
       void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 ربط الأصل", body: `${entityType} #${entityId}`, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId } });
       void logAdminActivity(req, "asset_linked", "product", productId, { entityType, entityId });

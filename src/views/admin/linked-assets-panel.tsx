@@ -42,6 +42,11 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
   const [scanMode, setScanMode] = useState<null | "add" | "remove">(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [returnFor, setReturnFor] = useState<LinkedAsset | null>(null);
+  const [problem, setProblem] = useState<"none" | "broken" | "lost">("none");
+  const [note, setNote] = useState("");
+  const [cost, setCost] = useState("");
+  const [managerApproval, setManagerApproval] = useState(false);
 
   const { data: products = [] } = useQuery<any[]>({
     queryKey: ["admin", "products-all"],
@@ -88,6 +93,33 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
       flash(true, `أُزيل ${name}`);
       await load();
     } catch (e) { flash(false, apiErrorMessage(e)); } finally { setBusy(false); }
+  }
+
+  async function checkout(a: LinkedAsset) {
+    setBusy(true);
+    try {
+      await adminFetch(`/admin/asset-links`, { method: "POST", body: JSON.stringify({ mode: "checkout", entityType, entityId, productId: a.productId }) });
+      flash(true, `تم إخراج ${a.name}`);
+      await load();
+    } catch (e) { flash(false, apiErrorMessage(e, "تعذّر الإخراج")); } finally { setBusy(false); }
+  }
+
+  function beginReturn(a: LinkedAsset) {
+    setReturnFor(a); setProblem("none"); setNote(""); setCost(""); setManagerApproval(false);
+  }
+
+  async function confirmReturn() {
+    if (!returnFor) return;
+    if (problem === "broken" && !note.trim()) return flash(false, "أدخل سبب الكسر");
+    if (problem === "lost" && !note.trim()) return flash(false, "أدخل سبب الفقدان");
+    if (problem === "lost" && !managerApproval) return flash(false, "الفقدان يتطلب اعتماد المدير");
+    setBusy(true);
+    try {
+      await adminFetch(`/admin/asset-links`, { method: "POST", body: JSON.stringify({ mode: "return", entityType, entityId, productId: returnFor.productId, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }) });
+      flash(true, `تم استلام ${returnFor.name}`);
+      setReturnFor(null);
+      await load();
+    } catch (e) { flash(false, apiErrorMessage(e, "تعذّر الاستلام")); } finally { setBusy(false); }
   }
 
   async function onScan(code: string) {
@@ -166,12 +198,47 @@ export function LinkedAssetsPanel({ entityType, entityId }: { entityType: string
                   <span className={`inline-flex items-center gap-0.5 ${healthColor(a.health)}`}><HeartPulse className="h-3 w-3" />{a.health}%</span>
                 </div>
               </div>
+              {a.checkedOut ? (
+                <button type="button" disabled={busy} onClick={() => beginReturn(a)} className="shrink-0 rounded-lg border border-status-success/40 px-2 py-1 text-[11px] font-bold text-status-success">استلام</button>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => checkout(a)} className="shrink-0 rounded-lg border border-status-warning/40 px-2 py-1 text-[11px] font-bold text-status-warning">إخراج</button>
+              )}
               <button type="button" disabled={busy} onClick={() => removeByProduct(a.productId, a.name)} className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-status-danger/10 hover:text-status-danger" title="إزالة">
                 <X className="h-4 w-4" />
               </button>
             </li>
           ))}
         </ul>
+      )}
+
+      {returnFor && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" onClick={() => !busy && setReturnFor(null)}>
+          <div className="w-full max-w-sm space-y-3 rounded-2xl border border-border/40 bg-card p-4" dir="rtl" onClick={(e) => e.stopPropagation()}>
+            <p className="font-bold text-foreground">استلام: {returnFor.name}</p>
+            <p className="text-sm text-muted-foreground">هل توجد مشكلة في هذا الأصل؟</p>
+            <div className="grid grid-cols-3 gap-2">
+              {([["none", "سليم"], ["broken", "يوجد كسر"], ["lost", "يوجد فقدان"]] as const).map(([v, l]) => (
+                <button key={v} type="button" onClick={() => setProblem(v)} className={`rounded-lg border py-1.5 text-xs font-medium ${problem === v ? "border-primary bg-primary/15 text-primary" : "border-border/40 text-muted-foreground"}`}>{l}</button>
+              ))}
+            </div>
+            {problem === "broken" && (
+              <div className="space-y-2">
+                <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="سبب الكسر *" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+                <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="تكلفة الإصلاح التقديرية" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+              </div>
+            )}
+            {problem === "lost" && (
+              <div className="space-y-2">
+                <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="سبب الفقدان *" className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+                <label className="flex items-center gap-2 text-sm text-foreground"><input type="checkbox" checked={managerApproval} onChange={(e) => setManagerApproval(e.target.checked)} className="accent-primary" /> اعتماد المدير *</label>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" disabled={busy} onClick={() => setReturnFor(null)}>إلغاء</Button>
+              <Button className="flex-1" disabled={busy} onClick={confirmReturn}>تأكيد الاستلام</Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
