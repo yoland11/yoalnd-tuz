@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
-import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
@@ -1136,6 +1136,10 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <BookingProductionSection bookingId={booking.id} />
         </KoshaDetailSection>
 
+        <KoshaDetailSection title="🔒 المخزون المحجوز">
+          <BookingReservationSection bookingId={booking.id} />
+        </KoshaDetailSection>
+
         <KoshaDetailSection title="الكوشة المختارة">
           <KoshaOptionTile name={booking.koshaName ?? kosha?.name ?? "—"} mainImage={kosha?.mainImage ?? null} price={kosha?.price ?? null} onZoom={setLightbox} />
         </KoshaDetailSection>
@@ -1292,6 +1296,127 @@ const PRODUCTION_STATUS_LABELS: Record<string, string> = {
   delivered: "تم التسليم",
   cancelled: "ملغي",
 };
+
+type ReservationRow = { productId: number; variantId: number | null; quantity: number; productName: string; variantLabel: string | null };
+
+// Reserve products/variants against a booking (holds stock without deducting). Confirming the
+// booking consumes the holds; cancelling releases them. Blocks quantities beyond available.
+function BookingReservationSection({ bookingId }: { bookingId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const [pickedProduct, setPickedProduct] = useState<{ id: number; name: string } | null>(null);
+  const [variantOptions, setVariantOptions] = useState<any[] | null>(null);
+  const [variantId, setVariantId] = useState<string>("");
+  const [qty, setQty] = useState(1);
+  const key = ["admin", "kosha-booking-reservations", bookingId] as const;
+
+  const { data } = useQuery<{ items: any[]; status: string }>({
+    queryKey: key,
+    queryFn: () => adminFetch(`/admin/kosha-bookings/${bookingId}/reservations`),
+  });
+  const { data: products = [] } = useQuery<Array<{ id: number; name: string; nameAr: string }>>({
+    queryKey: ["admin", "reservation-products-picker"],
+    queryFn: () => adminFetch("/admin/products?limit=1000"),
+    staleTime: 2 * 60 * 1000,
+    enabled: search.trim().length >= 2,
+  });
+
+  const reserved: ReservationRow[] = (data?.items ?? [])
+    .filter((r) => r.status === "reserved")
+    .map((r) => ({ productId: r.productId, variantId: r.variantId, quantity: r.quantity, productName: r.productName, variantLabel: r.variantLabel }));
+
+  const commit = useMutation({
+    mutationFn: (items: ReservationRow[]) =>
+      adminFetch(`/admin/kosha-bookings/${bookingId}/reservations`, {
+        method: "PUT",
+        body: JSON.stringify({ items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })) }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: key }),
+    onError: (e: any) => {
+      if (apiErrorStatus(e) === 409) toast({ title: "المخزون المتاح غير كافٍ", description: apiErrorMessage(e), variant: "destructive" });
+      else toast({ title: "تعذّر الحجز", description: apiErrorMessage(e), variant: "destructive" });
+    },
+  });
+
+  async function choose(p: { id: number; nameAr?: string; name: string }) {
+    setPickedProduct({ id: p.id, name: p.nameAr || p.name });
+    setVariantId("");
+    setSearch("");
+    try {
+      const stock = await adminFetch<any>(`/products/${p.id}/stock`);
+      setVariantOptions(stock.hasVariants ? stock.variants : []);
+    } catch { setVariantOptions([]); }
+  }
+  function addReservation() {
+    if (!pickedProduct) return;
+    const vId = variantId ? Number(variantId) : null;
+    const vLabel = vId ? (variantOptions?.find((v) => v.id === vId)?.color ?? "") + (variantOptions?.find((v) => v.id === vId)?.size ? " / " + variantOptions?.find((v) => v.id === vId)?.size : "") : null;
+    const next = [...reserved.filter((r) => !(r.productId === pickedProduct.id && r.variantId === vId)),
+      { productId: pickedProduct.id, variantId: vId, quantity: qty, productName: pickedProduct.name, variantLabel: vLabel }];
+    commit.mutate(next);
+    setPickedProduct(null); setVariantOptions(null); setVariantId(""); setQty(1);
+  }
+  function removeReservation(r: ReservationRow) {
+    commit.mutate(reserved.filter((x) => !(x.productId === r.productId && x.variantId === r.variantId)));
+  }
+
+  const searchResults = search.trim().length >= 2
+    ? products.filter((p) => [p.nameAr, p.name].some((v) => String(v ?? "").toLowerCase().includes(search.trim().toLowerCase()))).slice(0, 10)
+    : [];
+  const variantsNeedPick = variantOptions && variantOptions.length > 0;
+
+  return (
+    <div className="space-y-3">
+      {reserved.length ? (
+        <div className="space-y-2">
+          {reserved.map((r, i) => (
+            <div key={i} className="flex items-center gap-2 rounded-lg border border-border/25 bg-background/40 p-2">
+              <span className="flex-1 min-w-0 truncate text-sm text-foreground">
+                {r.productName}{r.variantLabel ? <span className="text-primary"> · {r.variantLabel}</span> : null}
+              </span>
+              <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-[11px] text-status-warning">🔒 {r.quantity}</span>
+              <button type="button" onClick={() => removeReservation(r)} className="p-1 text-status-danger hover:opacity-70"><Trash2 className="h-4 w-4" /></button>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-xs text-muted-foreground">لا يوجد مخزون محجوز لهذا الحجز.</p>}
+
+      {pickedProduct ? (
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-foreground">{pickedProduct.name}</span>
+            <button type="button" onClick={() => { setPickedProduct(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+          </div>
+          {variantsNeedPick && (
+            <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
+              <option value="">— اختر المتغيّر —</option>
+              {variantOptions!.map((v) => <option key={v.id} value={v.id}>{[v.color, v.size].filter(Boolean).join(" / ")} (متاح {v.available})</option>)}
+            </select>
+          )}
+          <div className="flex items-center gap-2">
+            <input type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))} className="w-20 rounded-lg border border-border/40 bg-background px-2 py-1 text-center text-sm" />
+            <Button size="sm" className="flex-1" disabled={commit.isPending || (Boolean(variantsNeedPick) && !variantId)} onClick={addReservation}>حجز</Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن منتج لحجزه..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          {searchResults.length ? (
+            <div className="divide-y divide-border/20 rounded-lg border border-border/30">
+              {searchResults.map((p) => (
+                <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
+                  <span>{p.nameAr || p.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
+      <p className="text-[10px] text-muted-foreground">يُحجز المخزون دون خصمه. عند تأكيد الحجز (قيد التنفيذ/مؤكد) يُخصم فعلياً، وعند الإلغاء يُحرَّر تلقائياً.</p>
+    </div>
+  );
+}
 
 // Attach production (BOM) products to a booking. Deducts recipe components, not finished items.
 function BookingProductionSection({ bookingId }: { bookingId: number }) {

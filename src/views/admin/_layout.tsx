@@ -55,6 +55,7 @@ import {
   Scissors,
   ScanLine,
   Factory,
+  Lock,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -251,6 +252,12 @@ const NAV: NavItem[] = [
     icon: BarChart3,
     perm: "production_view",
     anyPerm: ["production_view", "products"],
+  },
+  {
+    href: "/admin/reserved-stock",
+    label: "المخزون المحجوز",
+    icon: Lock,
+    perm: "products",
   },
   {
     href: "/admin/inventory-alerts",
@@ -625,6 +632,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/production"),
       navItem("/admin/production/reports"),
+      navItem("/admin/reserved-stock"),
       navItem("/admin/inventory-alerts"),
       navItem("/admin/inventory-value"),
       navItem("/admin/barcodes"),

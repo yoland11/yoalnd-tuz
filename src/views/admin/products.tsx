@@ -17,6 +17,7 @@ import { inspectImageFile, type ImageMetadata } from "@/lib/image-tools";
 import { ProductColorPicker, ProductColorDots } from "@/components/product-colors";
 import { normalizeColors, type ProductColor } from "@/lib/colors";
 import { AutoTranslateButton } from "./auto-translate-button";
+import { generateQrDataUrl } from "./label-helpers";
 
 type Category = { id: number; name: string; nameAr: string; slug: string; parentId: number | null; sortOrder: number; isActive: boolean };
 
@@ -535,7 +536,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   products: any[];
 }) {
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe" | "variants">("details");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [draggedImage, setDraggedImage] = useState<number | null>(null);
@@ -773,6 +774,13 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             >
               🧩 وصفة المنتج
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("variants")}
+              className={`flex-1 rounded-lg px-3 py-2 text-sm transition-colors ${activeTab === "variants" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              🎨 المتغيّرات
+            </button>
           </div>
         )}
 
@@ -782,6 +790,10 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
             sellingPrice={Number(form.price) || 0}
             products={products}
           />
+        ) : null}
+
+        {activeTab === "variants" && form.id ? (
+          <VariantsTab productId={form.id} />
         ) : null}
 
         {activeTab === "rentals" ? (
@@ -1679,6 +1691,222 @@ function RecipeTab({ productId, sellingPrice, products }: { productId: number; s
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ───── 🎨 Product Variants tab ─────
+type Variant = {
+  id: number; color: string | null; colorHex: string | null; size: string | null;
+  sku: string | null; barcode: string | null; qrToken: string | null; image: string | null;
+  price: number | null; cost: number | null; stock: number; minStock: number;
+  reserved: number; available: number; warehouseId: number | null; lowStock: boolean; outOfStock: boolean;
+};
+type VariantSummary = {
+  hasVariants: boolean; totalStock: number; reserved: number; available: number;
+  variants: Variant[]; lowStockVariants: number[]; outOfStockVariants: number[];
+  reservingSources?: Array<{ sourceType: string; sourceId: number; sourceLabel: string | null; variantId: number | null; quantity: number }>;
+};
+type VariantForm = {
+  id?: number; color: string; colorHex: string; size: string; sku: string; barcode: string;
+  price: string; cost: string; stock: string; minStock: string; warehouseId: string; image: string;
+};
+const blankVariant: VariantForm = { color: "", colorHex: "", size: "", sku: "", barcode: "", price: "", cost: "", stock: "0", minStock: "0", warehouseId: "", image: "" };
+
+function VariantQr({ token }: { token: string | null }) {
+  const [src, setSrc] = useState<string>("");
+  useEffect(() => { let ok = true; if (token) generateQrDataUrl(token, 120).then((d) => ok && setSrc(d)).catch(() => {}); return () => { ok = false; }; }, [token]);
+  if (!token) return null;
+  return src ? <img src={src} alt="QR" className="w-9 h-9 rounded bg-white p-0.5" /> : <div className="w-9 h-9 rounded bg-muted/40 animate-pulse" />;
+}
+
+function VariantsTab({ productId }: { productId: number }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState<VariantForm | null>(null);
+  const [busy, setBusy] = useState(false);
+  const key = ["admin", "product-variants", productId];
+  const { data, isLoading, refetch } = useQuery<VariantSummary>({
+    queryKey: key,
+    queryFn: () => adminFetch(`/products/${productId}/stock`),
+  });
+  const { data: warehouseData } = useQuery<any>({
+    queryKey: ["admin", "warehouse-list"],
+    queryFn: () => adminFetch("/admin/warehouse-transfers"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const warehouses: Array<{ id: number; name: string }> = warehouseData?.warehouses ?? [];
+  const variants = data?.variants ?? [];
+
+  async function save(form: VariantForm) {
+    setBusy(true);
+    try {
+      const payload: any = {
+        color: form.color || null, colorHex: form.colorHex || null, size: form.size || null,
+        sku: form.sku || null, barcode: form.barcode || null,
+        price: form.price === "" ? null : Number(form.price),
+        cost: form.cost === "" ? null : Number(form.cost),
+        stock: Number(form.stock) || 0, minStock: Number(form.minStock) || 0,
+        warehouseId: form.warehouseId ? Number(form.warehouseId) : null,
+      };
+      if (form.image && form.image.startsWith("data:")) payload.image = form.image;
+      if (form.id) await adminFetch(`/products/${productId}/variants/${form.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      else await adminFetch(`/products/${productId}/variants`, { method: "POST", body: JSON.stringify(payload) });
+      toast({ title: "تم حفظ المتغيّر ✅" });
+      setEditing(null);
+      await refetch();
+      qc.invalidateQueries({ queryKey: key });
+    } catch (e: any) {
+      toast({ title: "تعذر حفظ المتغيّر", description: apiErrorMessage(e), variant: "destructive" });
+    } finally { setBusy(false); }
+  }
+  async function remove(v: Variant) {
+    if (!confirm(`حذف المتغيّر ${[v.color, v.size].filter(Boolean).join(" / ") || v.id}؟`)) return;
+    try { await adminFetch(`/products/${productId}/variants/${v.id}`, { method: "DELETE" }); await refetch(); }
+    catch (e: any) { toast({ title: "تعذر الحذف", description: apiErrorMessage(e), variant: "destructive" }); }
+  }
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-background/40 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground">🎨 متغيّرات المنتج</h4>
+          <p className="mt-1 text-[11px] text-muted-foreground">إدارة المخزون لكل متغيّر (لون/حجم) على حدة — باركود و QR وسعر ومستودع مستقل.</p>
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={() => setEditing({ ...blankVariant })}>
+          <Plus className="w-4 h-4 ml-1" /> إضافة متغيّر
+        </Button>
+      </div>
+
+      {/* Product stock summary */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-lg border border-border/30 bg-card/60 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">📦 إجمالي المخزون</p>
+          <p className="mt-1 text-sm font-bold text-foreground">{data?.totalStock ?? 0}</p>
+        </div>
+        <div className="rounded-lg border border-status-warning/30 bg-status-warning/10 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">🔒 المحجوز</p>
+          <p className="mt-1 text-sm font-bold text-status-warning">{data?.reserved ?? 0}</p>
+        </div>
+        <div className="rounded-lg border border-status-success/30 bg-status-success/10 p-2.5 text-center">
+          <p className="text-[10px] text-muted-foreground">✅ المتاح</p>
+          <p className="mt-1 text-sm font-bold text-status-success">{data?.available ?? 0}</p>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="rounded-lg border border-border/25 bg-card/50 p-3 text-xs text-muted-foreground">جارٍ التحميل…</div>
+      ) : variants.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border/40 bg-card/40 p-6 text-center text-xs text-muted-foreground">
+          لا توجد متغيّرات بعد. أضف ألواناً/أحجاماً لإدارة المخزون لكل متغيّر.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {variants.map((v) => (
+            <div key={v.id} className="rounded-lg border border-border/25 bg-card/60 p-2.5">
+              <div className="flex items-center gap-2.5">
+                {v.image ? (
+                  <img src={v.image} alt="" className="w-10 h-10 rounded object-cover shrink-0" />
+                ) : (
+                  <span className="w-10 h-10 rounded shrink-0 border border-border/40" style={{ background: v.colorHex || "transparent" }} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-foreground">{[v.color, v.size].filter(Boolean).join(" / ") || `#${v.id}`}</span>
+                    {v.outOfStock ? (
+                      <span className="rounded-full border border-status-danger/30 bg-status-danger/10 px-1.5 py-0.5 text-[10px] text-status-danger">نفد</span>
+                    ) : v.lowStock ? (
+                      <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-1.5 py-0.5 text-[10px] text-status-warning">منخفض</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground font-mono truncate">{v.barcode}{v.sku ? ` · ${v.sku}` : ""}</p>
+                  <p className="mt-0.5 text-[11px]">
+                    <span className="text-foreground">📦 {v.stock}</span>
+                    <span className="text-status-warning"> · 🔒 {v.reserved}</span>
+                    <span className="text-status-success"> · ✅ {v.available}</span>
+                    {v.price != null && <span className="text-muted-foreground"> · {formatCurrency(v.price)}</span>}
+                  </p>
+                </div>
+                <VariantQr token={v.qrToken} />
+                <div className="flex flex-col gap-1 shrink-0">
+                  <button type="button" onClick={() => setEditing({ id: v.id, color: v.color ?? "", colorHex: v.colorHex ?? "", size: v.size ?? "", sku: v.sku ?? "", barcode: v.barcode ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", stock: String(v.stock), minStock: String(v.minStock), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "" })}
+                    className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Edit2 className="w-3.5 h-3.5" /></button>
+                  <button type="button" onClick={() => remove(v)} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reserving bookings */}
+      {data?.reservingSources && data.reservingSources.length > 0 && (
+        <div className="rounded-lg border border-border/25 bg-card/50 p-2.5">
+          <p className="text-[11px] font-semibold text-foreground mb-1">🔒 حجوزات تحجز هذا المخزون:</p>
+          {data.reservingSources.map((s, i) => (
+            <div key={i} className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{s.sourceLabel || `${s.sourceType} #${s.sourceId}`}</span>
+              <span>{s.quantity}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <VariantEditor form={editing} warehouses={warehouses} busy={busy} onChange={setEditing} onClose={() => setEditing(null)} onSave={save} />
+      )}
+    </div>
+  );
+}
+
+function VariantEditor({ form, warehouses, busy, onChange, onClose, onSave }: {
+  form: VariantForm; warehouses: Array<{ id: number; name: string }>; busy: boolean;
+  onChange: (f: VariantForm) => void; onClose: () => void; onSave: (f: VariantForm) => void;
+}) {
+  async function pickImage(files: FileList | null) {
+    if (!files?.[0]) return;
+    const dataUrl = await fileToDataUrl(files[0]);
+    onChange({ ...form, image: dataUrl });
+  }
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
+      <div className="bg-card border border-border/40 rounded-2xl max-w-md w-full max-h-[85dvh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-foreground">{form.id ? "تعديل متغيّر" : "متغيّر جديد"}</h4>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Inp label="اللون" value={form.color} onChange={(v) => onChange({ ...form, color: v })} />
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">لون العرض</label>
+            <input type="color" value={form.colorHex || "#22c55e"} onChange={(e) => onChange({ ...form, colorHex: e.target.value })} className="w-full h-9 bg-background border border-border/40 rounded-lg" />
+          </div>
+          <Inp label="الحجم (اختياري)" value={form.size} onChange={(v) => onChange({ ...form, size: v })} />
+          <Inp label="SKU" value={form.sku} onChange={(v) => onChange({ ...form, sku: v })} />
+          <Inp label="الباركود (تلقائي إن تُرك)" value={form.barcode} onChange={(v) => onChange({ ...form, barcode: v })} />
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1">المستودع</label>
+            <select value={form.warehouseId} onChange={(e) => onChange({ ...form, warehouseId: e.target.value })} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+              <option value="">—</option>
+              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </div>
+          <Inp label="سعر البيع (اختياري)" value={form.price} onChange={(v) => onChange({ ...form, price: v })} type="number" />
+          <Inp label="تكلفة الشراء (اختياري)" value={form.cost} onChange={(v) => onChange({ ...form, cost: v })} type="number" />
+          <Inp label="الكمية" value={form.stock} onChange={(v) => onChange({ ...form, stock: v })} type="number" />
+          <Inp label="الحد الأدنى" value={form.minStock} onChange={(v) => onChange({ ...form, minStock: v })} type="number" />
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">صورة المتغيّر</label>
+          <div className="flex items-center gap-2">
+            {form.image && <img src={form.image} alt="" className="w-12 h-12 rounded object-cover" />}
+            <input type="file" accept="image/*" onChange={(e) => pickImage(e.target.files)} className="text-xs text-muted-foreground" />
+          </div>
+        </div>
+        <Button type="button" onClick={() => onSave(form)} disabled={busy} className="w-full">
+          <Save className="w-4 h-4 ml-1" /> {busy ? "جارٍ الحفظ…" : "حفظ المتغيّر"}
+        </Button>
+      </div>
     </div>
   );
 }

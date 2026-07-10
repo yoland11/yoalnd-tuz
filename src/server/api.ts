@@ -339,6 +339,7 @@ let koshaTablesPromise: Promise<void> | null = null;
 let koshaStaffTablesPromise: Promise<void> | null = null;
 let photographyStaffTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
+let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
   string,
   { expiresAt: number; payload: any[] }
@@ -8560,6 +8561,422 @@ async function ensureProductionTables(): Promise<void> {
   return productionTablesPromise;
 }
 
+// ───── Product Variants & Reserved Stock ─────
+// Two runtime-provisioned tables (idempotent DDL, NO drizzle migration — matches the
+// ensureXTable convention): product_variants (per-variant inventory) + stock_reservations
+// (booking/order reservations against product or variant stock).
+async function ensureVariantTables(): Promise<void> {
+  if (!variantTablesPromise) {
+    variantTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "product_variants" (
+        "id" serial primary key,
+        "product_id" integer not null references "products" ("id") on delete cascade,
+        "color" varchar(60),
+        "color_hex" varchar(16),
+        "size" varchar(60),
+        "sku" varchar(80),
+        "barcode" varchar(100),
+        "qr_token" varchar(80),
+        "image" text,
+        "price" numeric(12,2),
+        "cost" numeric(12,2),
+        "stock" integer not null default 0,
+        "min_stock" integer not null default 0,
+        "warehouse_id" integer,
+        "is_active" boolean not null default true,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "product_variants_product_idx" on "product_variants" ("product_id");
+      create index if not exists "product_variants_barcode_idx" on "product_variants" ("barcode");
+      create index if not exists "product_variants_sku_idx" on "product_variants" ("sku");
+      create table if not exists "stock_reservations" (
+        "id" serial primary key,
+        "product_id" integer not null,
+        "variant_id" integer,
+        "quantity" numeric(12,3) not null default 0,
+        "source_type" varchar(40) not null,
+        "source_id" integer not null,
+        "source_label" text,
+        "status" varchar(20) not null default 'reserved',
+        "consumed_at" timestamp,
+        "released_at" timestamp,
+        "created_by" integer,
+        "created_by_name" text not null default '',
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "stock_reservations_product_idx" on "stock_reservations" ("product_id", "status");
+      create index if not exists "stock_reservations_variant_idx" on "stock_reservations" ("variant_id", "status");
+      create index if not exists "stock_reservations_source_idx" on "stock_reservations" ("source_type", "source_id");
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        variantTablesPromise = null;
+        throw err;
+      });
+  }
+  return variantTablesPromise;
+}
+
+function formatVariant(row: any, reserved = 0) {
+  const stock = Number(row.stock ?? 0);
+  const minStock = Number(row.min_stock ?? row.minStock ?? 0);
+  const available = Math.max(0, stock - reserved);
+  return {
+    id: Number(row.id),
+    productId: Number(row.product_id ?? row.productId),
+    color: row.color ?? null,
+    colorHex: row.color_hex ?? row.colorHex ?? null,
+    size: row.size ?? null,
+    sku: row.sku ?? null,
+    barcode: row.barcode ?? null,
+    qrToken: row.qr_token ?? row.qrToken ?? null,
+    image: row.image ?? null,
+    price: row.price != null ? Number(row.price) : null,
+    cost: row.cost != null ? Number(row.cost) : null,
+    stock,
+    minStock,
+    reserved: Math.round(reserved * 1000) / 1000,
+    available,
+    warehouseId: row.warehouse_id ?? row.warehouseId ?? null,
+    isActive: row.is_active ?? row.isActive ?? true,
+    sortOrder: Number(row.sort_order ?? row.sortOrder ?? 0),
+    lowStock: stock > 0 && available <= minStock,
+    outOfStock: available <= 0,
+  };
+}
+
+async function loadVariantRows(productId: number): Promise<any[]> {
+  await ensureVariantTables();
+  const res: any = await db.execute(
+    sql`select * from product_variants where product_id = ${productId} order by sort_order asc, id asc`,
+  );
+  return res.rows ?? res ?? [];
+}
+
+// Reserved quantity per variant AND product-level (variant_id null) for one product.
+async function loadReservedForProduct(
+  productId: number,
+): Promise<{ productLevel: number; byVariant: Map<number, number> }> {
+  await ensureVariantTables();
+  const res: any = await db.execute(sql`
+    select variant_id, coalesce(sum(quantity),0) as qty
+    from stock_reservations
+    where product_id = ${productId} and status = 'reserved'
+    group by variant_id
+  `);
+  const rows = res.rows ?? res ?? [];
+  let productLevel = 0;
+  const byVariant = new Map<number, number>();
+  for (const r of rows) {
+    const qty = Number(r.qty ?? 0);
+    if (r.variant_id == null) productLevel += qty;
+    else byVariant.set(Number(r.variant_id), qty);
+  }
+  return { productLevel, byVariant };
+}
+
+// Full stock summary for a product: total / reserved / available, plus variant breakdown.
+// When variants exist, total stock = sum of variant stocks (inventory managed per variant).
+async function getProductStockSummary(product: any) {
+  const productId = Number(product.id);
+  const [variantRows, reserved] = await Promise.all([
+    loadVariantRows(productId),
+    loadReservedForProduct(productId),
+  ]);
+  const hasVariants = variantRows.length > 0;
+  const variants = variantRows.map((v) =>
+    formatVariant(v, reserved.byVariant.get(Number(v.id)) ?? 0),
+  );
+  const variantReservedTotal = [...reserved.byVariant.values()].reduce((s, q) => s + q, 0);
+  const totalStock = hasVariants
+    ? variants.reduce((s, v) => s + v.stock, 0)
+    : Number(product.stock ?? 0);
+  const reservedRounded = Math.round((reserved.productLevel + variantReservedTotal) * 1000) / 1000;
+  const available = Math.max(0, totalStock - reservedRounded);
+  const minStock = Number(product.minStock ?? product.min_stock ?? 0);
+  return {
+    productId,
+    hasVariants,
+    totalStock,
+    reserved: reservedRounded,
+    available,
+    minStock,
+    lowStock: totalStock > 0 && available <= minStock,
+    outOfStock: available <= 0,
+    variants,
+    lowStockVariants: variants.filter((v) => v.lowStock).map((v) => v.id),
+    outOfStockVariants: variants.filter((v) => v.outOfStock).map((v) => v.id),
+  };
+}
+
+type ReservationItem = { productId: number; variantId?: number | null; quantity: number };
+
+// Reserve stock for a source (booking/order): replaces that source's active reservations.
+// Does NOT deduct inventory — only records the hold.
+async function reserveStockForSource(
+  sourceType: string,
+  sourceId: number,
+  sourceLabel: string | null,
+  items: ReservationItem[],
+  who: { id: number | null; name: string },
+): Promise<void> {
+  await ensureVariantTables();
+  // Drop prior still-reserved holds for this source (re-reservation on edit).
+  await db.execute(sql`
+    delete from stock_reservations
+    where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
+  `);
+  for (const it of items) {
+    const productId = Number(it.productId);
+    const qty = Number(it.quantity) || 0;
+    if (!productId || qty <= 0) continue;
+    await db.execute(sql`
+      insert into stock_reservations
+        (product_id, variant_id, quantity, source_type, source_id, source_label, status, created_by, created_by_name)
+      values
+        (${productId}, ${it.variantId ?? null}, ${qty}, ${sourceType}, ${sourceId}, ${sourceLabel},
+         'reserved', ${who.id}, ${who.name})
+    `);
+  }
+}
+
+async function adjustVariantStock(
+  variantId: number,
+  delta: number,
+  meta: { reason: string; sourceType?: string; sourceId?: number; who?: { id: number | null; name: string } },
+): Promise<void> {
+  if (!variantId || !delta) return;
+  await ensureVariantTables();
+  const res: any = await db.execute(sql`
+    update product_variants set stock = greatest(0, stock + ${Math.floor(delta)}), updated_at = now()
+    where id = ${variantId} returning product_id
+  `);
+  const row = (res.rows ?? res ?? [])[0];
+  // Mirror into stock_movements for a unified inventory ledger.
+  try {
+    await ensureStockTrackingTables();
+    await db.insert(stockMovementsTable).values({
+      productId: row?.product_id ?? null,
+      quantityChange: String(delta),
+      reason: meta.reason,
+      relatedType: "variant",
+      relatedId: variantId,
+      createdBy: meta.who?.id ?? null,
+      createdByName: meta.who?.name ?? "",
+    } as any);
+  } catch {
+    /* movement log is best-effort */
+  }
+}
+
+// Convert a source's reservations into real inventory deduction (checkout/preparation).
+async function consumeReservations(
+  sourceType: string,
+  sourceId: number,
+  who: { id: number | null; name: string },
+): Promise<void> {
+  await ensureVariantTables();
+  const res: any = await db.execute(sql`
+    select * from stock_reservations
+    where source_type = ${sourceType} and source_id = ${sourceId} and status = 'reserved'
+  `);
+  const rows = res.rows ?? res ?? [];
+  for (const r of rows) {
+    const qty = Number(r.quantity) || 0;
+    if (qty <= 0) continue;
+    if (r.variant_id != null) {
+      await adjustVariantStock(Number(r.variant_id), -qty, {
+        reason: `reservation_consumed:${sourceType}`,
+        who,
+      });
+    } else {
+      await adjustProductStock(Number(r.product_id), -qty, {
+        reason: `reservation_consumed:${sourceType}`,
+        relatedType: sourceType,
+        relatedId: sourceId,
+        createdBy: who.id,
+        createdByName: who.name,
+      });
+    }
+    await db.execute(sql`
+      update stock_reservations set status = 'consumed', consumed_at = now(), updated_at = now()
+      where id = ${Number(r.id)}
+    `);
+  }
+}
+
+// Release a source's holds. Reserved rows are freed (no stock change); already-consumed rows
+// are restored to inventory (e.g. cancelling a checked-out booking).
+async function releaseReservations(
+  sourceType: string,
+  sourceId: number,
+  who: { id: number | null; name: string },
+): Promise<void> {
+  await ensureVariantTables();
+  const res: any = await db.execute(sql`
+    select * from stock_reservations
+    where source_type = ${sourceType} and source_id = ${sourceId} and status in ('reserved','consumed')
+  `);
+  const rows = res.rows ?? res ?? [];
+  for (const r of rows) {
+    const qty = Number(r.quantity) || 0;
+    if (r.status === "consumed" && qty > 0) {
+      // Restore actual inventory that was deducted at checkout.
+      if (r.variant_id != null) {
+        await adjustVariantStock(Number(r.variant_id), qty, { reason: `reservation_restored:${sourceType}`, who });
+      } else {
+        await adjustProductStock(Number(r.product_id), qty, {
+          reason: `reservation_restored:${sourceType}`,
+          relatedType: sourceType,
+          relatedId: sourceId,
+          createdBy: who.id,
+          createdByName: who.name,
+        });
+      }
+    }
+    await db.execute(sql`
+      update stock_reservations set status = 'released', released_at = now(), updated_at = now()
+      where id = ${Number(r.id)}
+    `);
+  }
+}
+
+// Availability check across products/variants: blocks quantities exceeding available stock.
+async function checkAvailability(
+  items: ReservationItem[],
+  opts: { ignoreSourceType?: string; ignoreSourceId?: number } = {},
+) {
+  await ensureVariantTables();
+  const shortages: Array<{
+    productId: number;
+    variantId: number | null;
+    name: string;
+    requested: number;
+    available: number;
+  }> = [];
+  for (const it of items) {
+    const productId = Number(it.productId);
+    const variantId = it.variantId != null ? Number(it.variantId) : null;
+    const requested = Number(it.quantity) || 0;
+    if (!productId || requested <= 0) continue;
+    let stock = 0;
+    let name = `#${productId}`;
+    if (variantId) {
+      const vres: any = await db.execute(sql`select * from product_variants where id = ${variantId} limit 1`);
+      const v = (vres.rows ?? vres ?? [])[0];
+      stock = Number(v?.stock ?? 0);
+      name = [v?.color, v?.size].filter(Boolean).join(" / ") || `variant#${variantId}`;
+    } else {
+      const p = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+      const summary = p ? await getProductStockSummary(p) : null;
+      stock = summary?.totalStock ?? 0;
+      name = p?.nameAr || p?.name || name;
+    }
+    // Reserved for this product/variant, excluding the source being (re)checked.
+    const rres: any = await db.execute(sql`
+      select coalesce(sum(quantity),0) as qty from stock_reservations
+      where status = 'reserved'
+        and ${variantId ? sql`variant_id = ${variantId}` : sql`product_id = ${productId} and variant_id is null`}
+        ${opts.ignoreSourceType && opts.ignoreSourceId ? sql`and not (source_type = ${opts.ignoreSourceType} and source_id = ${opts.ignoreSourceId})` : sql``}
+    `);
+    const reserved = Number((rres.rows ?? rres ?? [])[0]?.qty ?? 0);
+    const available = Math.max(0, stock - reserved);
+    if (requested > available) {
+      shortages.push({ productId, variantId, name, requested, available });
+    }
+  }
+  return { ok: shortages.length === 0, shortages };
+}
+
+// Bookings/orders currently reserving a given product (for the "who reserves this" panel).
+async function loadReservingSources(productId: number) {
+  await ensureVariantTables();
+  const res: any = await db.execute(sql`
+    select source_type, source_id, source_label, variant_id, sum(quantity) as qty
+    from stock_reservations
+    where product_id = ${productId} and status = 'reserved'
+    group by source_type, source_id, source_label, variant_id
+    order by qty desc limit 50
+  `);
+  return (res.rows ?? res ?? []).map((r: any) => ({
+    sourceType: r.source_type,
+    sourceId: Number(r.source_id),
+    sourceLabel: r.source_label ?? null,
+    variantId: r.variant_id != null ? Number(r.variant_id) : null,
+    quantity: Number(r.qty ?? 0),
+  }));
+}
+
+// Reserved-stock dashboard: aggregate total/reserved/available + low/out/high-reserved alerts.
+async function buildReservedStockSummary() {
+  await ensureVariantTables();
+  const round = (n: number) => Math.round(n * 1000) / 1000;
+  const totalsRes: any = await db.execute(sql`
+    select
+      (select coalesce(sum(stock),0) from products p where p.is_active = true
+         and not exists (select 1 from product_variants v where v.product_id = p.id)) as non_variant_stock,
+      (select coalesce(sum(stock),0) from product_variants) as variant_stock,
+      (select coalesce(sum(quantity),0) from stock_reservations where status = 'reserved') as reserved
+  `);
+  const t = (totalsRes.rows ?? totalsRes ?? [])[0] ?? {};
+  const totalStock = Number(t.non_variant_stock ?? 0) + Number(t.variant_stock ?? 0);
+  const reserved = round(Number(t.reserved ?? 0));
+  const available = Math.max(0, round(totalStock - reserved));
+
+  // Variant-level low/out-of-stock alerts.
+  const vres: any = await db.execute(sql`
+    select v.id, coalesce(p.name_ar, p.name) as product_name, v.color, v.size, v.stock, v.min_stock,
+      coalesce((select sum(quantity) from stock_reservations r where r.variant_id = v.id and r.status = 'reserved'),0) as reserved
+    from product_variants v join products p on p.id = v.product_id
+  `);
+  const variantAlerts = (vres.rows ?? vres ?? []).map((r: any) => {
+    const stock = Number(r.stock ?? 0);
+    const rsv = Number(r.reserved ?? 0);
+    const avail = Math.max(0, stock - rsv);
+    return {
+      variantId: Number(r.id),
+      name: [r.product_name, [r.color, r.size].filter(Boolean).join(" / ")].filter(Boolean).join(" · "),
+      stock,
+      reserved: round(rsv),
+      available: avail,
+      minStock: Number(r.min_stock ?? 0),
+    };
+  });
+  const lowStock = variantAlerts.filter((v: any) => v.available > 0 && v.available <= v.minStock).slice(0, 30);
+  const outOfStock = variantAlerts.filter((v: any) => v.available <= 0).slice(0, 30);
+
+  // Products with a high share of stock reserved (>50%).
+  const hres: any = await db.execute(sql`
+    select p.id, coalesce(p.name_ar, p.name) as name,
+      case when exists (select 1 from product_variants v where v.product_id = p.id)
+        then coalesce((select sum(stock) from product_variants v where v.product_id = p.id),0)
+        else p.stock end as total,
+      coalesce((select sum(quantity) from stock_reservations r where r.product_id = p.id and r.status = 'reserved'),0) as reserved
+    from products p
+    where exists (select 1 from stock_reservations r where r.product_id = p.id and r.status = 'reserved')
+  `);
+  const highReserved = (hres.rows ?? hres ?? [])
+    .map((r: any) => {
+      const total = Number(r.total ?? 0);
+      const rsv = Number(r.reserved ?? 0);
+      return { productId: Number(r.id), name: r.name, total, reserved: round(rsv), available: Math.max(0, total - rsv), ratio: total > 0 ? Math.round((rsv / total) * 100) : 100 };
+    })
+    .filter((r: any) => r.ratio >= 50)
+    .sort((a: any, b: any) => b.ratio - a.ratio)
+    .slice(0, 30);
+
+  return {
+    totals: { totalStock, reserved, available },
+    alerts: { lowStock, outOfStock, highReserved, lowStockCount: lowStock.length, outOfStockCount: outOfStock.length, highReservedCount: highReserved.length },
+  };
+}
+
 type RecipeComponentInput = {
   componentProductId: number;
   quantity: number;
@@ -8902,6 +9319,130 @@ async function handleProductRecipe(
   return null;
 }
 
+// Search across products + variants by name / color / size / SKU / barcode / QR token.
+async function searchVariants(q: string) {
+  await ensureVariantTables();
+  if (!q) return { products: [], variants: [] };
+  const like = `%${q}%`;
+  const vres: any = await db.execute(sql`
+    select v.*, coalesce(p.name_ar, p.name) as product_name
+    from product_variants v join products p on p.id = v.product_id
+    where v.sku ilike ${like} or v.barcode ilike ${like} or v.color ilike ${like}
+       or v.size ilike ${like} or v.qr_token ilike ${like}
+    order by v.id desc limit 40
+  `);
+  const variantRows = vres.rows ?? vres ?? [];
+  const products = await db.query.productsTable.findMany({
+    where: or(
+      ilike(productsTable.nameAr, like),
+      ilike(productsTable.name, like),
+      ilike(productsTable.barcode, like),
+    ),
+    limit: 20,
+  });
+  return {
+    products: products.map((p) => ({ id: p.id, name: p.nameAr || p.name, barcode: p.barcode, stock: p.stock })),
+    variants: variantRows.map((v: any) => ({ ...formatVariant(v), productName: v.product_name })),
+  };
+}
+
+// Product Variants CRUD. Auto-generates a barcode + QR token on create; persists variant image.
+async function handleProductVariants(
+  req: NextRequest,
+  parts: string[],
+  method: string,
+  productId: number,
+): Promise<NextResponse | null> {
+  const auth = await requirePermission(req, "products");
+  if (isResponse(auth)) return auth;
+  await ensureVariantTables();
+  const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+  if (!product) return error("المنتج غير موجود", 404);
+  const variantId = parts[3] ? int(parts[3]) : null;
+
+  // GET /products/:id/variants → variants + stock summary (total/reserved/available)
+  if (method === "GET" && !parts[3]) {
+    return json(await getProductStockSummary(product));
+  }
+
+  // POST /products/:id/variants → create a variant
+  if (method === "POST" && !parts[3]) {
+    const b = await body(req);
+    const image = b?.image ? await persistMediaValue(b.image, "variants") : null;
+    const [row]: any = (
+      await db.execute(sql`
+      insert into product_variants
+        (product_id, color, color_hex, size, sku, image, price, cost, stock, min_stock, warehouse_id, sort_order)
+      values
+        (${productId}, ${b?.color ?? null}, ${b?.colorHex ?? null}, ${b?.size ?? null}, ${b?.sku ?? null},
+         ${image}, ${b?.price != null && b.price !== "" ? Number(b.price) : null},
+         ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
+         ${Math.max(0, Math.floor(Number(b?.stock) || 0))}, ${Math.max(0, Math.floor(Number(b?.minStock) || 0))},
+         ${b?.warehouseId ? Number(b.warehouseId) : null}, ${Math.floor(Number(b?.sortOrder) || 0)})
+      returning *
+    `)
+    ).rows ?? [];
+    const newId = Number(row.id);
+    const barcode = normalizeProductBarcode(b?.barcode) || `AJN-V${String(newId).padStart(6, "0")}`;
+    const qrToken = (typeof b?.qrToken === "string" && b.qrToken.trim()) || randomUUID().replace(/-/g, "").slice(0, 24);
+    const [updated]: any = (
+      await db.execute(sql`
+        update product_variants set barcode = ${barcode}, qr_token = ${qrToken}, updated_at = now()
+        where id = ${newId} returning *
+      `)
+    ).rows ?? [];
+    void addEntityTimeline({
+      entityType: "product",
+      entityId: productId,
+      type: "variant",
+      title: "🎨 إضافة متغيّر منتج",
+      body: [row.color, row.size].filter(Boolean).join(" / ") || `#${newId}`,
+      actor: actor(auth),
+      metadata: { variantId: newId },
+    });
+    return json(formatVariant(updated ?? row, 0), 201);
+  }
+
+  // PATCH /products/:id/variants/:variantId → update a variant
+  if (method === "PATCH" && variantId) {
+    const b = await body(req);
+    const image = b?.image && !String(b.image).startsWith("http") && !String(b.image).startsWith("/")
+      ? await persistMediaValue(b.image, "variants")
+      : (b?.image ?? null);
+    const [row]: any = (
+      await db.execute(sql`
+      update product_variants set
+        color = coalesce(${b?.color ?? null}, color),
+        color_hex = ${b?.colorHex ?? null},
+        size = ${b?.size ?? null},
+        sku = ${b?.sku ?? null},
+        barcode = coalesce(${normalizeProductBarcode(b?.barcode) ?? null}, barcode),
+        image = coalesce(${image}, image),
+        price = ${b?.price != null && b.price !== "" ? Number(b.price) : null},
+        cost = ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
+        stock = ${Math.max(0, Math.floor(Number(b?.stock ?? 0)))},
+        min_stock = ${Math.max(0, Math.floor(Number(b?.minStock ?? 0)))},
+        warehouse_id = ${b?.warehouseId ? Number(b.warehouseId) : null},
+        updated_at = now()
+      where id = ${variantId} and product_id = ${productId}
+      returning *
+    `)
+    ).rows ?? [];
+    if (!row) return error("المتغيّر غير موجود", 404);
+    const reserved = await loadReservedForProduct(productId);
+    return json(formatVariant(row, reserved.byVariant.get(variantId) ?? 0));
+  }
+
+  // DELETE /products/:id/variants/:variantId → remove a variant (+ its reservations)
+  if (method === "DELETE" && variantId) {
+    await db.execute(sql`delete from stock_reservations where variant_id = ${variantId}`);
+    await db.execute(sql`delete from product_variants where id = ${variantId} and product_id = ${productId}`);
+    return json({ ok: true });
+  }
+
+  return null;
+}
+
 async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureAdminProductsColumns();
@@ -8936,6 +9477,49 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       productId,
     );
     if (recipeResponse) return recipeResponse;
+  }
+
+  // ── Availability check (POST /products/stock/check) ──
+  // Body: { items: [{ productId, variantId?, quantity }] } → { ok, shortages }.
+  if (parts[1] === "stock" && parts[2] === "check") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    if (method !== "POST") return error("غير مدعوم", 405);
+    const b = await body(req);
+    const items = (Array.isArray(b?.items) ? b.items : []).map((it: any) => ({
+      productId: Number(it?.productId),
+      variantId: it?.variantId != null ? Number(it.variantId) : null,
+      quantity: Number(it?.quantity),
+    }));
+    return json(await checkAvailability(items, { ignoreSourceType: b?.ignoreSourceType, ignoreSourceId: b?.ignoreSourceId }));
+  }
+
+  // ── Variant/stock search (GET /products/variant-search?q=) ──
+  if (method === "GET" && parts[1] === "variant-search") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    return json(await searchVariants(req.nextUrl.searchParams.get("q")?.trim() ?? ""));
+  }
+
+  // ── Product stock summary (GET /products/:id/stock) ──
+  if (method === "GET" && parts[2] === "stock") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    const productId = int(parts[1]);
+    if (!productId) return error("معرف المنتج غير صحيح", 400);
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    if (!product) return error("المنتج غير موجود", 404);
+    const summary = await getProductStockSummary(product);
+    const reservingSources = await loadReservingSources(productId);
+    return json({ ...summary, reservingSources });
+  }
+
+  // ── Product Variants CRUD (/products/:id/variants[...]) ──
+  if (parts[2] === "variants") {
+    const productId = int(parts[1]);
+    if (!productId) return error("معرف المنتج غير صحيح", 400);
+    const variantResponse = await handleProductVariants(req, parts, method, productId);
+    if (variantResponse) return variantResponse;
   }
 
   if (method === "GET" && parts[1] === "featured") {
@@ -13933,6 +14517,58 @@ async function handleAdminKoshas(
       });
       if (!existing) return error("الحجز غير موجود", 404);
 
+      // Booking ↔ Reserved products/variants. Reserves (holds) stock without deducting until
+      // the booking is confirmed/checked out. Stored in stock_reservations (source=kosha_booking).
+      if (parts[3] === "reservations") {
+        await ensureVariantTables();
+        const label = existing.customerName || `حجز #${id}`;
+        if (method === "GET") {
+          const res: any = await db.execute(sql`
+            select r.*, coalesce(p.name_ar, p.name) as product_name,
+                   v.color, v.size
+            from stock_reservations r
+            left join products p on p.id = r.product_id
+            left join product_variants v on v.id = r.variant_id
+            where r.source_type = 'kosha_booking' and r.source_id = ${id}
+            order by r.id desc
+          `);
+          const items = (res.rows ?? res ?? []).map((r: any) => ({
+            id: Number(r.id),
+            productId: Number(r.product_id),
+            variantId: r.variant_id != null ? Number(r.variant_id) : null,
+            productName: r.product_name || `#${r.product_id}`,
+            variantLabel: [r.color, r.size].filter(Boolean).join(" / ") || null,
+            quantity: Number(r.quantity),
+            status: r.status,
+          }));
+          return json({ items, status: (existing.bookingDetails as any)?.reservationStatus ?? "reserved" });
+        }
+        if (method === "PUT" || method === "POST") {
+          const b = await body(req);
+          const items = (Array.isArray(b?.items) ? b.items : [])
+            .map((it: any) => ({
+              productId: Number(it?.productId),
+              variantId: it?.variantId != null ? Number(it.variantId) : null,
+              quantity: Number(it?.quantity),
+            }))
+            .filter((it: any) => it.productId && it.quantity > 0);
+          // Block if any item exceeds available (ignoring this booking's own current holds).
+          const availability = await checkAvailability(items, {
+            ignoreSourceType: "kosha_booking",
+            ignoreSourceId: id,
+          });
+          if (!availability.ok) {
+            return json(
+              { error: "المخزون المتاح غير كافٍ", shortages: availability.shortages },
+              409,
+            );
+          }
+          await reserveStockForSource("kosha_booking", id, label, items, actor(auth));
+          return json({ ok: true, count: items.length });
+        }
+        return error("غير مدعوم", 405);
+      }
+
       // Booking ↔ Production items (BOM). Stored in bookingDetails.productionItems +
       // productionStatus. Deducts recipe components (not the finished item) when produced.
       if (parts[3] === "production") {
@@ -14474,6 +15110,14 @@ async function handleAdminKoshas(
             actor: erpActorFromAdmin(auth),
             metadata: { from: existing.status, to: row.status },
           });
+          // Reserved-stock lifecycle: confirming/preparing consumes the holds into real
+          // inventory deduction; cancelling releases (and restores any already-consumed).
+          const who = actor(auth);
+          if (["confirmed", "in_progress", "completed"].includes(row.status)) {
+            await consumeReservations("kosha_booking", row.id, who);
+          } else if (row.status === "cancelled") {
+            await releaseReservations("kosha_booking", row.id, who);
+          }
         }
         await syncKoshaFinancialPayment(row, financialActor(auth));
         const wasPendingPricing =
@@ -18639,6 +19283,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "production") {
     const production = await handleProduction(req, parts, method);
     if (production) return production;
+  }
+
+  // Reserved-stock dashboard: GET /admin/inventory/reserved-summary
+  if (section === "inventory" && parts[2] === "reserved-summary") {
+    const auth = await requirePermission(req, "products");
+    if (isResponse(auth)) return auth;
+    return json(await buildReservedStockSummary());
   }
 
   if (section === "auth") {

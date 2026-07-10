@@ -36,6 +36,7 @@ const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const ProductionPage = lazy(() => import("./production"));
 const ProductionReportsPage = lazy(() => import("./production-reports"));
+const ReservedStockPage = lazy(() => import("./reserved-stock"));
 const POSPage = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
@@ -393,6 +394,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} anyPerm={["production_view", "products"]}>
                 <ProductionReportsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/reserved-stock">
+            {() => (
+              <Guard me={me} perm="products">
+                <ReservedStockPage />
               </Guard>
             )}
           </Route>
