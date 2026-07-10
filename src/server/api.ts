@@ -21380,7 +21380,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           ...koshaRows.map((k) => ({ entityType: "kosha", entityId: Number(k.id), label: `كوشة #${k.id}${k.customer_name ? ` — ${k.customer_name}` : ""}`, date: k.event_date ?? null, status: k.status ?? null })),
           ...linkRows.map((r) => ({ entityType: String(r.entity_type), entityId: Number(r.entity_id), label: `${TYPE_LABEL[r.entity_type] ?? r.entity_type} #${r.entity_id}`, date: null, status: null })),
         ];
-        return json({ links });
+        // Usage history — checkout/return times + employee from custody records.
+        const custodyHist = await db.query.equipmentCustodyTable.findMany({
+          where: eq(equipmentCustodyTable.productId, productIdParam),
+          orderBy: [desc(equipmentCustodyTable.issuedAt)],
+          limit: 15,
+        });
+        const histStaffIds = [...new Set(custodyHist.map((c) => c.staffId).filter(Boolean))] as number[];
+        const histStaff = histStaffIds.length ? await db.query.staffTable.findMany({ where: inArray(staffTable.id, histStaffIds) }) : [];
+        const histStaffName = new Map(histStaff.map((s) => [s.id, s.fullName || s.username]));
+        const history = custodyHist.map((c) => ({
+          staff: histStaffName.get(c.staffId) ?? `#${c.staffId}`,
+          issuedAt: c.issuedAt ? new Date(c.issuedAt).toISOString() : null,
+          returnedAt: c.returnedAt ? new Date(c.returnedAt).toISOString() : null,
+          status: c.status,
+          notes: c.notes ?? null,
+        }));
+        return json({ links, history });
       }
       const entityType = String(req.nextUrl.searchParams.get("entityType") ?? "").trim();
       const entityId = int(String(req.nextUrl.searchParams.get("entityId") ?? "")) ?? 0;

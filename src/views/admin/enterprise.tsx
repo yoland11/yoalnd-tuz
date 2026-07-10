@@ -2210,7 +2210,10 @@ function AssetPassportModal({
     retry: false,
     enabled: tab === "overview",
   });
-  const linkedBookings = useQuery<{ links: Array<{ entityType: string; entityId: number; label: string; date: string | null; status: string | null }> }>({
+  const linkedBookings = useQuery<{
+    links: Array<{ entityType: string; entityId: number; label: string; date: string | null; status: string | null }>;
+    history?: Array<{ staff: string; issuedAt: string | null; returnedAt: string | null; status: string; notes: string | null }>;
+  }>({
     queryKey: ["asset-linked-bookings", row.productId],
     queryFn: () => adminFetch(`/admin/asset-links?productId=${row.productId}`),
     retry: false,
@@ -2368,6 +2371,26 @@ function AssetPassportModal({
                         </li>
                       ))}
                     </ul>
+                  )}
+                  {(linkedBookings.data?.history ?? []).length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-xs text-muted-foreground">سجل الاستخدام (إخراج / استلام)</div>
+                      <ul className="mt-1 space-y-1">
+                        {(linkedBookings.data?.history ?? []).slice(0, 6).map((h, i) => (
+                          <li key={i} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate text-foreground">
+                              {h.staff}
+                              {h.notes ? ` · ${h.notes}` : ""}
+                            </span>
+                            <span className="shrink-0 text-muted-foreground">
+                              {h.issuedAt ? new Date(h.issuedAt).toLocaleDateString("ar") : "—"}
+                              {" → "}
+                              {h.returnedAt ? new Date(h.returnedAt).toLocaleDateString("ar") : (h.status === "issued" ? "بالعهدة" : "—")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </div>
               </div>
