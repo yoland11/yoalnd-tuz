@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, BarChart3, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Minus, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
+import { LiveScanner } from "../staff/live-scanner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -1239,7 +1240,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <BookingProductionSection bookingId={booking.id} />
         </KoshaDetailSection>
 
-        <KoshaDetailSection title="🔒 المخزون المحجوز">
+        <KoshaDetailSection title="🛒 المنتجات من المتجر">
           <BookingReservationSection bookingId={booking.id} />
         </KoshaDetailSection>
 
@@ -1404,86 +1405,159 @@ type ReservationRow = { productId: number; variantId: number | null; quantity: n
 
 // Reserve products/variants against a booking (holds stock without deducting). Confirming the
 // booking consumes the holds; cancelling releases them. Blocks quantities beyond available.
+type StoreLine = {
+  productId: number; variantId: number | null; productName: string; variantLabel: string | null;
+  imageUrl: string | null; quantity: number; status: string; barcode: string | null;
+  unitPrice: number; free: boolean; lineTotal: number; note: string | null;
+};
+
+const STORE_STATUS_BADGE: Record<string, { t: string; c: string }> = {
+  reserved: { t: "🔒 محجوز", c: "border-status-warning/30 bg-status-warning/10 text-status-warning" },
+  consumed: { t: "✅ مخصوم", c: "border-status-success/30 bg-status-success/10 text-status-success" },
+  released: { t: "↩︎ محرَّر", c: "border-border/30 text-muted-foreground" },
+};
+
 function BookingReservationSection({ bookingId }: { bookingId: number }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
-  const [pickedProduct, setPickedProduct] = useState<{ id: number; name: string } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [showReports, setShowReports] = useState(false);
+  const [pickedProduct, setPickedProduct] = useState<{ id: number; name: string; price: number } | null>(null);
   const [variantOptions, setVariantOptions] = useState<any[] | null>(null);
   const [variantId, setVariantId] = useState<string>("");
   const [qty, setQty] = useState(1);
   const key = ["admin", "kosha-booking-reservations", bookingId] as const;
 
-  const { data } = useQuery<{ items: any[]; status: string }>({
+  const { data } = useQuery<{ items: StoreLine[]; subtotal: number; status: string }>({
     queryKey: key,
     queryFn: () => adminFetch(`/admin/kosha-bookings/${bookingId}/reservations`),
+    refetchInterval: 15_000, // reflect consumption/release on status change without refresh
   });
-  const { data: products = [] } = useQuery<Array<{ id: number; name: string; nameAr: string }>>({
+  const { data: products = [] } = useQuery<any[]>({
     queryKey: ["admin", "reservation-products-picker"],
     queryFn: () => adminFetch("/admin/products?limit=1000"),
     staleTime: 2 * 60 * 1000,
-    enabled: search.trim().length >= 2,
   });
 
-  const reserved: ReservationRow[] = (data?.items ?? [])
-    .filter((r) => r.status === "reserved")
-    .map((r) => ({ productId: r.productId, variantId: r.variantId, quantity: r.quantity, productName: r.productName, variantLabel: r.variantLabel }));
+  const lines: StoreLine[] = (data?.items ?? []).filter((r) => r.status !== "released");
+  const subtotal = data?.subtotal ?? lines.reduce((s, l) => s + (l.free ? 0 : l.unitPrice * l.quantity), 0);
+  const productImage = (p: any): string | null => (Array.isArray(p?.images) ? p.images[0] : null) ?? p?.mainImage ?? null;
 
   const commit = useMutation({
-    mutationFn: (items: ReservationRow[]) =>
+    mutationFn: (items: StoreLine[]) =>
       adminFetch(`/admin/kosha-bookings/${bookingId}/reservations`, {
         method: "PUT",
-        body: JSON.stringify({ items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })) }),
+        body: JSON.stringify({ items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity, unitPrice: i.unitPrice, free: i.free, note: i.note })) }),
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: key }),
     onError: (e: any) => {
       if (apiErrorStatus(e) === 409) toast({ title: "المخزون المتاح غير كافٍ", description: apiErrorMessage(e), variant: "destructive" });
-      else toast({ title: "تعذّر الحجز", description: apiErrorMessage(e), variant: "destructive" });
+      else toast({ title: "تعذّر الحفظ", description: apiErrorMessage(e), variant: "destructive" });
     },
   });
+  const editable = lines.every((l) => l.status === "reserved"); // once consumed, holds are locked
 
-  async function choose(p: { id: number; nameAr?: string; name: string }) {
-    setPickedProduct({ id: p.id, name: p.nameAr || p.name });
-    setVariantId("");
-    setSearch("");
-    try {
-      const stock = await adminFetch<any>(`/products/${p.id}/stock`);
-      setVariantOptions(stock.hasVariants ? stock.variants : []);
-    } catch { setVariantOptions([]); }
+  function updateLine(target: StoreLine, patch: Partial<StoreLine>) {
+    commit.mutate(lines.map((l) => (l === target ? { ...l, ...patch } : l)));
   }
-  function addReservation() {
-    if (!pickedProduct) return;
-    const vId = variantId ? Number(variantId) : null;
-    const vLabel = vId ? (variantOptions?.find((v) => v.id === vId)?.color ?? "") + (variantOptions?.find((v) => v.id === vId)?.size ? " / " + variantOptions?.find((v) => v.id === vId)?.size : "") : null;
-    const next = [...reserved.filter((r) => !(r.productId === pickedProduct.id && r.variantId === vId)),
-      { productId: pickedProduct.id, variantId: vId, quantity: qty, productName: pickedProduct.name, variantLabel: vLabel }];
+  function removeLine(target: StoreLine) {
+    commit.mutate(lines.filter((l) => l !== target));
+  }
+  function addOrBump(p: any, variant: { id: number | null; label: string | null }, addQty: number) {
+    const existing = lines.find((l) => l.productId === p.id && l.variantId === variant.id);
+    const next = existing
+      ? lines.map((l) => (l === existing ? { ...l, quantity: l.quantity + addQty } : l))
+      : [...lines, {
+          productId: p.id, variantId: variant.id, productName: p.nameAr || p.name, variantLabel: variant.label,
+          imageUrl: productImage(p), quantity: addQty, status: "reserved", barcode: p.barcode ?? null,
+          unitPrice: Number(p.price ?? 0), free: false, lineTotal: 0, note: null,
+        }];
     commit.mutate(next);
+  }
+
+  async function choose(p: any) {
+    setPickedProduct({ id: p.id, name: p.nameAr || p.name, price: Number(p.price ?? 0) });
+    setVariantId(""); setSearch("");
+    try { const stock = await adminFetch<any>(`/products/${p.id}/stock`); setVariantOptions(stock.hasVariants ? stock.variants : []); }
+    catch { setVariantOptions([]); }
+  }
+  function addPicked() {
+    if (!pickedProduct) return;
+    const src = products.find((x) => x.id === pickedProduct.id) ?? { id: pickedProduct.id, name: pickedProduct.name, price: pickedProduct.price };
+    const vId = variantId ? Number(variantId) : null;
+    const v = variantOptions?.find((x) => x.id === vId);
+    const vLabel = v ? [v.color, v.size].filter(Boolean).join(" / ") || null : null;
+    addOrBump(src, { id: vId, label: vLabel }, qty);
     setPickedProduct(null); setVariantOptions(null); setVariantId(""); setQty(1);
   }
-  function removeReservation(r: ReservationRow) {
-    commit.mutate(reserved.filter((x) => !(x.productId === r.productId && x.variantId === r.variantId)));
+  function onScan(code: string) {
+    const c = code.trim().toLowerCase();
+    const p = products.find((x) => String(x.barcode ?? "").toLowerCase() === c || `ajn-a${String(x.id).padStart(6, "0")}` === c);
+    if (!p) { toast({ title: "لم يُعثر على منتج بهذا الباركود", variant: "destructive" }); return; }
+    addOrBump(p, { id: null, label: null }, 1);
+    toast({ title: `تمت إضافة ${p.nameAr || p.name}` });
   }
 
   const searchResults = search.trim().length >= 2
-    ? products.filter((p) => [p.nameAr, p.name].some((v) => String(v ?? "").toLowerCase().includes(search.trim().toLowerCase()))).slice(0, 10)
+    ? products.filter((p) => [p.nameAr, p.name, p.barcode].some((v) => String(v ?? "").toLowerCase().includes(search.trim().toLowerCase()))).slice(0, 10)
     : [];
   const variantsNeedPick = variantOptions && variantOptions.length > 0;
 
   return (
     <div className="space-y-3">
-      {reserved.length ? (
-        <div className="space-y-2">
-          {reserved.map((r, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-lg border border-border/25 bg-background/40 p-2">
-              <span className="flex-1 min-w-0 truncate text-sm text-foreground">
-                {r.productName}{r.variantLabel ? <span className="text-primary"> · {r.variantLabel}</span> : null}
-              </span>
-              <span className="rounded-full border border-status-warning/30 bg-status-warning/10 px-2 py-0.5 text-[11px] text-status-warning">🔒 {r.quantity}</span>
-              <button type="button" onClick={() => removeReservation(r)} className="p-1 text-status-danger hover:opacity-70"><Trash2 className="h-4 w-4" /></button>
-            </div>
-          ))}
+      {lines.length ? (
+        <div className="overflow-x-auto rounded-lg border border-border/25">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead className="bg-muted/30 text-[11px] text-muted-foreground">
+              <tr>{["", "المنتج", "الكمية", "سعر الوحدة", "الإجمالي", "الحالة", "ملاحظة", ""].map((h, i) => <th key={i} className="px-2 py-2 text-right font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {lines.map((l, i) => {
+                const badge = STORE_STATUS_BADGE[l.status] ?? STORE_STATUS_BADGE.reserved;
+                return (
+                  <tr key={i} className="border-t border-border/20">
+                    <td className="px-2 py-2">{l.imageUrl ? <img src={l.imageUrl} alt="" className="h-9 w-9 rounded object-cover" /> : <span className="grid h-9 w-9 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}</td>
+                    <td className="px-2 py-2"><div className="font-medium text-foreground">{l.productName}</div>{l.variantLabel ? <div className="text-[11px] text-primary">{l.variantLabel}</div> : null}</td>
+                    <td className="px-2 py-2">
+                      {editable ? (
+                        <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => (l.quantity > 1 ? updateLine(l, { quantity: l.quantity - 1 }) : removeLine(l))} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Minus className="h-3 w-3" /></button>
+                          <span className="w-7 text-center font-bold">{l.quantity}</span>
+                          <button type="button" onClick={() => updateLine(l, { quantity: l.quantity + 1 })} className="grid h-6 w-6 place-items-center rounded border border-border/40"><Plus className="h-3 w-3" /></button>
+                        </div>
+                      ) : <span className="font-bold">{l.quantity}</span>}
+                    </td>
+                    <td className="px-2 py-2">
+                      {l.free ? <span className="text-status-success">مجاناً</span> : editable ? (
+                        <input type="number" min={0} defaultValue={l.unitPrice} onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== l.unitPrice) updateLine(l, { unitPrice: v }); }} className="w-24 rounded border border-border/40 bg-background px-2 py-1 text-xs" />
+                      ) : formatCurrency(l.unitPrice)}
+                    </td>
+                    <td className="px-2 py-2 font-bold text-foreground">{l.free ? "—" : formatCurrency(l.unitPrice * l.quantity)}</td>
+                    <td className="px-2 py-2"><span className={`inline-block rounded-full border px-2 py-0.5 text-[10px] ${badge.c}`}>{badge.t} {l.quantity}</span></td>
+                    <td className="px-2 py-2">
+                      {editable ? <input defaultValue={l.note ?? ""} placeholder="—" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (l.note ?? "")) updateLine(l, { note: v || null }); }} className="w-28 rounded border border-border/40 bg-background px-2 py-1 text-xs" /> : <span className="text-xs text-muted-foreground">{l.note ?? "—"}</span>}
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="flex items-center gap-1">
+                        <button type="button" title="مجاني / مشمول" onClick={() => updateLine(l, { free: !l.free })} disabled={!editable} className={`grid h-6 w-6 place-items-center rounded border ${l.free ? "border-status-success/40 bg-status-success/10 text-status-success" : "border-border/40 text-muted-foreground"} disabled:opacity-40`}><Gift className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => removeLine(l)} disabled={!editable} className="grid h-6 w-6 place-items-center rounded border border-destructive/30 text-destructive disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-      ) : <p className="text-xs text-muted-foreground">لا يوجد مخزون محجوز لهذا الحجز.</p>}
+      ) : <p className="text-xs text-muted-foreground">لا توجد منتجات متجر مضافة لهذا الحجز.</p>}
+
+      {lines.length > 0 && (
+        <div className="flex items-center justify-between rounded-lg bg-background/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">إجمالي منتجات المتجر</span>
+          <span className="font-bold text-primary">{formatCurrency(subtotal)}</span>
+        </div>
+      )}
 
       {pickedProduct ? (
         <div className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-2">
@@ -1493,30 +1567,68 @@ function BookingReservationSection({ bookingId }: { bookingId: number }) {
           </div>
           {variantsNeedPick && (
             <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
-              <option value="">— اختر المتغيّر —</option>
+              <option value="">— اختر المتغيّر (لون / مقاس) —</option>
               {variantOptions!.map((v) => <option key={v.id} value={v.id}>{[v.color, v.size].filter(Boolean).join(" / ")} (متاح {v.available})</option>)}
             </select>
           )}
           <div className="flex items-center gap-2">
             <input type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))} className="w-20 rounded-lg border border-border/40 bg-background px-2 py-1 text-center text-sm" />
-            <Button size="sm" className="flex-1" disabled={commit.isPending || (Boolean(variantsNeedPick) && !variantId)} onClick={addReservation}>حجز</Button>
+            <Button size="sm" className="flex-1" disabled={commit.isPending || (Boolean(variantsNeedPick) && !variantId)} onClick={addPicked}>إضافة وحجز</Button>
           </div>
         </div>
       ) : (
         <>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن منتج لحجزه..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <div className="flex items-center gap-2">
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم أو الباركود أو SKU..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+            <button type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></button>
+          </div>
+          {scanning ? <div className="overflow-hidden rounded-lg border border-border/30"><LiveScanner active={scanning} onDetect={onScan} /></div> : null}
           {searchResults.length ? (
             <div className="divide-y divide-border/20 rounded-lg border border-border/30">
               {searchResults.map((p) => (
-                <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-background/60">
-                  <span>{p.nameAr || p.name}</span>
+                <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
+                  {productImage(p) ? <img src={productImage(p)!} alt="" className="h-8 w-8 rounded object-cover" /> : <span className="grid h-8 w-8 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
+                  <span className="min-w-0 flex-1 truncate text-right">{p.nameAr || p.name}</span>
+                  <span className="text-[11px] text-muted-foreground">متاح {Number(p.stock ?? 0)}</span>
+                  <Plus className="h-4 w-4 text-primary" />
                 </button>
               ))}
             </div>
           ) : null}
         </>
       )}
-      <p className="text-[10px] text-muted-foreground">يُحجز المخزون دون خصمه. عند تأكيد الحجز (قيد التنفيذ/مؤكد) يُخصم فعلياً، وعند الإلغاء يُحرَّر تلقائياً.</p>
+
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-muted-foreground">يُحجز المخزون دون خصمه. عند تأكيد الحجز (مؤكد/قيد التنفيذ/مكتمل) يُخصم فعلياً، وعند الإلغاء يُحرَّر تلقائياً.</p>
+        <button type="button" onClick={() => setShowReports((s) => !s)} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"><BarChart3 className="h-3.5 w-3.5" /> تقارير المنتجات</button>
+      </div>
+      {showReports && <StoreProductsReport />}
+    </div>
+  );
+}
+
+function StoreProductsReport() {
+  const { data } = useQuery<{ mostUsed: any[]; byCustomer: any[]; products: any[] }>({
+    queryKey: ["admin", "kosha-store-products-report"],
+    queryFn: () => adminFetch("/admin/kosha-store-products"),
+  });
+  if (!data) return <p className="text-xs text-muted-foreground">جارٍ التحميل…</p>;
+  const totalProfit = (data.products ?? []).reduce((s, p) => s + Number(p.profit || 0), 0);
+  return (
+    <div className="grid gap-3 rounded-lg border border-border/25 bg-background/30 p-3 sm:grid-cols-2">
+      <div>
+        <p className="mb-1 text-xs font-semibold text-foreground">الأكثر استخداماً</p>
+        {(data.mostUsed ?? []).length ? (data.mostUsed).map((p: any) => (
+          <div key={p.productId} className="flex justify-between text-xs"><span className="truncate text-foreground">{p.name}</span><span className="text-muted-foreground">{p.qty} · ربح {formatCurrency(p.profit)}</span></div>
+        )) : <p className="text-xs text-muted-foreground">لا بيانات</p>}
+      </div>
+      <div>
+        <p className="mb-1 text-xs font-semibold text-foreground">حسب الزبون</p>
+        {(data.byCustomer ?? []).length ? (data.byCustomer).slice(0, 8).map((c: any, i: number) => (
+          <div key={i} className="flex justify-between text-xs"><span className="truncate text-foreground">{c.customer}</span><span className="text-muted-foreground">{c.qty} قطعة · {c.bookings} حجز</span></div>
+        )) : <p className="text-xs text-muted-foreground">لا بيانات</p>}
+        <div className="mt-2 flex justify-between border-t border-border/20 pt-1 text-xs font-bold"><span>إجمالي ربحية المنتجات</span><span className="text-status-success">{formatCurrency(totalProfit)}</span></div>
+      </div>
     </div>
   );
 }

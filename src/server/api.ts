@@ -14551,6 +14551,7 @@ async function handleAdminKoshas(
         if (method === "GET") {
           const res: any = await db.execute(sql`
             select r.*, coalesce(p.name_ar, p.name) as product_name,
+                   p.images as images, p.barcode as barcode, p.price as product_price,
                    v.color, v.size
             from stock_reservations r
             left join products p on p.id = r.product_id
@@ -14558,31 +14559,60 @@ async function handleAdminKoshas(
             where r.source_type = 'kosha_booking' and r.source_id = ${id}
             order by r.id desc
           `);
-          const items = (res.rows ?? res ?? []).map((r: any) => ({
-            id: Number(r.id),
-            productId: Number(r.product_id),
-            variantId: r.variant_id != null ? Number(r.variant_id) : null,
-            productName: r.product_name || `#${r.product_id}`,
-            variantLabel: [r.color, r.size].filter(Boolean).join(" / ") || null,
-            quantity: Number(r.quantity),
-            status: r.status,
-          }));
-          return json({ items, status: (existing.bookingDetails as any)?.reservationStatus ?? "reserved" });
+          // Per-line commerce metadata (price / free / note / warehouse) lives in
+          // bookingDetails.storeProductsMeta, keyed by `${productId}:${variantId||0}`.
+          const meta = ((existing.bookingDetails as any)?.storeProductsMeta ?? {}) as Record<string, any>;
+          const metaKey = (pid: number, vid: number | null) => `${pid}:${vid ?? 0}`;
+          const items = (res.rows ?? res ?? []).map((r: any) => {
+            const productId = Number(r.product_id);
+            const variantId = r.variant_id != null ? Number(r.variant_id) : null;
+            const m = meta[metaKey(productId, variantId)] ?? {};
+            const quantity = Number(r.quantity);
+            const unitPrice = Number(m.unitPrice ?? r.product_price ?? 0);
+            const free = m.free === true;
+            return {
+              id: Number(r.id),
+              productId,
+              variantId,
+              productName: r.product_name || `#${productId}`,
+              variantLabel: [r.color, r.size].filter(Boolean).join(" / ") || null,
+              imageUrl: (publicMediaList("product", { images: r.images }, r.images) ?? [])[0] ?? null,
+              quantity,
+              status: r.status, // reserved | consumed | released
+              barcode: r.barcode ?? null,
+              unitPrice,
+              free,
+              lineTotal: free ? 0 : unitPrice * quantity,
+              note: m.note ?? null,
+            };
+          });
+          const subtotal = items.filter((i: any) => i.status !== "released").reduce((s: number, i: any) => s + Number(i.lineTotal || 0), 0);
+          return json({ items, subtotal, status: (existing.bookingDetails as any)?.reservationStatus ?? "reserved" });
         }
         if (method === "PUT" || method === "POST") {
           const b = await body(req);
-          const items = (Array.isArray(b?.items) ? b.items : [])
-            .map((it: any) => ({
-              productId: Number(it?.productId),
+          const raw = Array.isArray(b?.items) ? b.items : [];
+          // Resolve any scanned barcode/SKU (`code`) to a productId, then normalise lines.
+          const items: Array<{ productId: number; variantId: number | null; quantity: number; unitPrice?: number; free?: boolean; note?: string | null }> = [];
+          for (const it of raw) {
+            let productId = Number(it?.productId) || 0;
+            if (!productId && it?.code) productId = await resolveAssetProductId(String(it.code));
+            const quantity = Number(it?.quantity);
+            if (!productId || !(quantity > 0)) continue;
+            items.push({
+              productId,
               variantId: it?.variantId != null ? Number(it.variantId) : null,
-              quantity: Number(it?.quantity),
-            }))
-            .filter((it: any) => it.productId && it.quantity > 0);
+              quantity,
+              unitPrice: it?.unitPrice != null ? Math.max(0, Number(it.unitPrice) || 0) : undefined,
+              free: it?.free === true,
+              note: it?.note != null ? nullableText(it.note) : undefined,
+            });
+          }
           // Block if any item exceeds available (ignoring this booking's own current holds).
-          const availability = await checkAvailability(items, {
-            ignoreSourceType: "kosha_booking",
-            ignoreSourceId: id,
-          });
+          const availability = await checkAvailability(
+            items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })),
+            { ignoreSourceType: "kosha_booking", ignoreSourceId: id },
+          );
           if (!availability.ok) {
             return json(
               { error: "المخزون المتاح غير كافٍ", shortages: availability.shortages },
@@ -14590,7 +14620,30 @@ async function handleAdminKoshas(
             );
           }
           await reserveStockForSource("kosha_booking", id, label, items, actor(auth));
-          return json({ ok: true, count: items.length });
+          // Persist per-line commerce metadata (price / free / note) into bookingDetails.
+          const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+          const storeProductsMeta: Record<string, any> = {};
+          let subtotal = 0;
+          for (const it of items) {
+            const price = it.unitPrice ?? 0;
+            storeProductsMeta[`${it.productId}:${it.variantId ?? 0}`] = { unitPrice: price, free: it.free === true, note: it.note ?? null };
+            if (!it.free) subtotal += price * it.quantity;
+          }
+          await db
+            .update(koshaBookingsTable)
+            .set({ bookingDetails: { ...details, storeProductsMeta, storeProductsTotal: subtotal }, updatedAt: new Date() })
+            .where(eq(koshaBookingsTable.id, id));
+          void addEntityTimeline({
+            entityType: "kosha_booking",
+            entityId: id,
+            type: "store_products_updated",
+            title: "🛒 تحديث منتجات المتجر",
+            body: `${items.length} منتج · محجوز · إجمالي ${formatCurrency(subtotal)}`,
+            actor: erpActorFromAdmin(auth),
+            metadata: { count: items.length, subtotal },
+          });
+          void logAdminActivity(req, "kosha_store_products_updated", "kosha_booking", id, { count: items.length, subtotal });
+          return json({ ok: true, count: items.length, subtotal });
         }
         return error("غير مدعوم", 405);
       }
@@ -19746,6 +19799,52 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         );
       return json({ message: "تم حذف الإشعار" });
     }
+  }
+
+  if (section === "kosha-store-products" && method === "GET") {
+    const auth = await requireAnyPermission(req, ["koshas", "products", "accounting", "dashboard"]);
+    if (isResponse(auth)) return auth;
+    await ensureVariantTables();
+    const active = sql`r.source_type = 'kosha_booking' and r.status in ('reserved','consumed')`;
+    const [byProduct, byBooking, byCustomer] = await Promise.all([
+      db.execute(sql`
+        select r.product_id, coalesce(p.name_ar, p.name) as name, coalesce(p.barcode,'') as barcode,
+          coalesce(p.price::numeric,0)::float as price, coalesce(p.cost_price::numeric,0)::float as cost,
+          coalesce(sum(r.quantity),0)::int as qty,
+          coalesce(sum(case when r.status='consumed' then r.quantity else 0 end),0)::int as consumed,
+          count(distinct r.source_id)::int as bookings
+        from stock_reservations r join products p on p.id = r.product_id
+        where ${active}
+        group by r.product_id, name, barcode, price, cost
+        order by qty desc limit 100
+      `),
+      db.execute(sql`
+        select r.source_id as booking_id, coalesce(kb.customer_name,'') as customer,
+          coalesce(sum(r.quantity),0)::int as qty, count(distinct r.product_id)::int as products
+        from stock_reservations r left join kosha_bookings kb on kb.id = r.source_id
+        where ${active}
+        group by r.source_id, customer order by qty desc limit 50
+      `),
+      db.execute(sql`
+        select coalesce(kb.customer_name,'—') as customer,
+          coalesce(sum(r.quantity),0)::int as qty, count(distinct r.source_id)::int as bookings
+        from stock_reservations r join kosha_bookings kb on kb.id = r.source_id
+        where ${active}
+        group by customer order by qty desc limit 50
+      `),
+    ]);
+    const products = ((byProduct as any).rows ?? []).map((r: any) => ({
+      productId: Number(r.product_id), name: r.name, barcode: r.barcode || null,
+      qty: Number(r.qty), consumed: Number(r.consumed), bookings: Number(r.bookings),
+      revenue: Number(r.price) * Number(r.qty),
+      profit: (Number(r.price) - Number(r.cost)) * Number(r.qty),
+    }));
+    return json({
+      products,
+      mostUsed: products.slice(0, 10),
+      byBooking: ((byBooking as any).rows ?? []).map((r: any) => ({ bookingId: Number(r.booking_id), customer: r.customer, qty: Number(r.qty), products: Number(r.products) })),
+      byCustomer: ((byCustomer as any).rows ?? []).map((r: any) => ({ customer: r.customer, qty: Number(r.qty), bookings: Number(r.bookings) })),
+    });
   }
 
   if (section === "employee-performance") {
