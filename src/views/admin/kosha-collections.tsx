@@ -11,7 +11,14 @@ export default function KoshaCollectionsPage() {
     queryFn: () => staffApi.paymentRequests("pending"),
     refetchInterval: 30000,
   });
-  const approve = useMutation({ mutationFn: (id: number) => staffApi.approve(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["kosha-collections"] }) });
+  const approve = useMutation({
+    mutationFn: (id: number) => staffApi.approve(id),
+    onSuccess: () => {
+      // Refresh the pending list AND the bookings table so Paid/Remaining update live.
+      qc.invalidateQueries({ queryKey: ["kosha-collections"] });
+      qc.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+    },
+  });
   const reject = useMutation({ mutationFn: (id: number) => staffApi.reject(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["kosha-collections"] }) });
   const busyId = approve.isPending ? approve.variables : reject.isPending ? reject.variables : null;
 

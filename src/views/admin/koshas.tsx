@@ -133,6 +133,21 @@ function koshaBookingAmountLabel(booking: Pick<KoshaBooking, "paymentStatus" | "
   return isKoshaPendingPricing(booking) ? "بانتظار التسعير" : formatCurrency(booking.totalAmount);
 }
 
+/** Remaining = Total − Paid (prefers the server-computed value, falls back to the difference). */
+function koshaRemaining(booking: Pick<KoshaBooking, "totalAmount" | "paidAmount" | "remainingAmount">) {
+  const total = Number(booking.totalAmount ?? 0);
+  const paid = Number(booking.paidAmount ?? 0);
+  const stored = booking.remainingAmount;
+  return stored === null || stored === undefined ? Math.max(0, total - paid) : Number(stored);
+}
+
+/** Colour rule: 0 = green · <50% of total = orange · ≥50% of total = red. */
+function koshaRemainingTone(remaining: number, total: number) {
+  if (remaining <= 0) return "text-status-success";
+  if (total > 0 && remaining < total * 0.5) return "text-status-warning";
+  return "text-destructive";
+}
+
 type KoshaCatalogEndpoint = "kosha-addons" | "kosha-welcome-boards" | "kosha-accessories";
 
 const EMPTY_KOSHA_OPTION = {
@@ -810,10 +825,35 @@ export function AdminKoshaBookingsPage() {
   const [status, setStatus] = useState("");
   const [editing, setEditing] = useState<KoshaBooking | null>(null);
   const [detailing, setDetailing] = useState<KoshaBooking | null>(null);
+  const [sortRemaining, setSortRemaining] = useState<null | "asc" | "desc">(null);
   const { data = [], isLoading } = useQuery({
-    queryKey: ["admin", "kosha-bookings", search, status],
-    queryFn: () => adminFetch<KoshaBooking[]>(`/admin/kosha-bookings?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
+    queryKey: ["admin", "kosha-bookings", status],
+    queryFn: () => adminFetch<KoshaBooking[]>(`/admin/kosha-bookings?search=&status=${encodeURIComponent(status)}`),
+    refetchInterval: 15_000, // live update after collections are approved, no manual refresh
   });
+
+  // Search (incl. the Remaining amount) + optional sort by Remaining — done client-side
+  // so the new numeric column is fully searchable/sortable without changing the API.
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = data;
+    if (q) {
+      list = data.filter((item) => {
+        const remaining = koshaRemaining(item);
+        return [
+          item.customerName, item.phone, item.brideName, item.groomName, item.koshaName, item.packageName,
+          item.province, item.area, item.cityArea, item.primaryEmployeeName, item.assistantEmployeeName,
+          String(item.totalAmount ?? ""), String(item.paidAmount ?? ""), String(remaining),
+        ].filter(Boolean).join(" ").toLowerCase().includes(q);
+      });
+    }
+    if (sortRemaining) {
+      list = [...list].sort((a, b) =>
+        sortRemaining === "asc" ? koshaRemaining(a) - koshaRemaining(b) : koshaRemaining(b) - koshaRemaining(a),
+      );
+    }
+    return list;
+  }, [data, search, sortRemaining]);
   const update = useMutation({
     mutationFn: ({ id, values }: { id: number; values: Partial<KoshaBooking> }) => adminFetch(`/admin/kosha-bookings/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم تحديث الحجز" }); },
@@ -821,10 +861,10 @@ export function AdminKoshaBookingsPage() {
   });
 
   const csv = useMemo(() => {
-    const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الموظف الأساسي", "الموظف المساعد", "الاكسسوارات", "الإجمالي", "الحالة"];
-    const rows = data.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.primaryEmployeeName ?? "", item.assistantEmployeeName ?? "", item.selectedAccessories?.join("، ") ?? "", koshaBookingAmountLabel(item), STATUS_LABELS[item.status] ?? item.status]);
-    return [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
-  }, [data]);
+    const header = ["الرقم", "الباقة", "الكوشة", "الزبون", "الهاتف", "العروس", "العريس", "التاريخ", "الوقت", "المحافظة", "المنطقة", "الموظف الأساسي", "الموظف المساعد", "الاكسسوارات", "الإجمالي", "المدفوع", "المتبقي", "الحالة"];
+    const csvRows = rows.map((item) => [item.id, item.packageName ?? "", item.koshaName ?? "", item.customerName, item.phone, item.brideName, item.groomName, item.eventDate, item.eventTime, item.province, item.area || item.cityArea, item.primaryEmployeeName ?? "", item.assistantEmployeeName ?? "", item.selectedAccessories?.join("، ") ?? "", koshaBookingAmountLabel(item), Number(item.paidAmount ?? 0), koshaRemaining(item), STATUS_LABELS[item.status] ?? item.status]);
+    return [header, ...csvRows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+  }, [rows]);
 
   function exportCsv() {
     const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
@@ -953,7 +993,7 @@ export function AdminKoshaBookingsPage() {
           {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </div>
-      {isLoading ? <Skeleton className="h-80 rounded-xl" /> : data.length === 0 ? <EmptyState /> : (
+      {isLoading ? <Skeleton className="h-80 rounded-xl" /> : rows.length === 0 ? <EmptyState /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -965,12 +1005,23 @@ export function AdminKoshaBookingsPage() {
                   <th className="px-4 py-3 text-right">الموعد</th>
                   <th className="px-4 py-3 text-right">الإجمالي</th>
                   <th className="px-4 py-3 text-right">التفاصيل</th>
+                  <th className="px-4 py-3 text-right">المدفوع</th>
+                  <th className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => setSortRemaining((s) => (s === "desc" ? "asc" : s === "asc" ? null : "desc"))}
+                      className="inline-flex items-center gap-1 font-medium hover:text-foreground"
+                      title="ترتيب حسب المتبقي"
+                    >
+                      💰 المتبقي {sortRemaining === "desc" ? "▼" : sortRemaining === "asc" ? "▲" : ""}
+                    </button>
+                  </th>
                   <th className="px-4 py-3 text-right">الحالة</th>
                   <th className="px-4 py-3 text-right">إجراءات</th>
                 </tr>
               </thead>
               <tbody>
-                {data.map((item) => (
+                {rows.map((item) => (
                   <tr key={item.id} className="border-t border-border/30">
                     <td className="px-4 py-3"><div>{item.koshaName ?? "-"}</div>{item.packageName ? <div className="mt-1 text-xs font-semibold text-primary">{item.packageName}</div> : null}</td>
                     <td className="px-4 py-3">
@@ -989,6 +1040,17 @@ export function AdminKoshaBookingsPage() {
                         <br />
                         {[item.province, item.area || item.cityArea, item.nearestPoint].filter(Boolean).join(" - ")}
                       </div>
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-foreground">{isKoshaPendingPricing(item) ? "—" : formatCurrency(item.paidAmount ?? 0)}</td>
+                    <td className="px-4 py-3">
+                      {isKoshaPendingPricing(item) ? (
+                        <span className="text-status-warning">—</span>
+                      ) : (
+                        (() => {
+                          const remaining = koshaRemaining(item);
+                          return <span className={`font-bold ${koshaRemainingTone(remaining, Number(item.totalAmount ?? 0))}`}>{formatCurrency(remaining)}</span>;
+                        })()
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <select value={item.status} onChange={(event) => update.mutate({ id: item.id, values: { status: event.target.value } })} className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs">
