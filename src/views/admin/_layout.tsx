@@ -61,7 +61,7 @@ import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { AdminNotificationsBell } from "./notifications-bell";
 
-type NavItem = {
+export type NavItem = {
   href: string;
   label: string;
   icon: any;
@@ -74,11 +74,17 @@ type NavAction = { label: string; icon: any; action: "logout" };
 type NavEntry = NavItem | NavAction;
 type NavGroup = { id: string; label: string; icon: any; items: NavEntry[] };
 
-const NAV: NavItem[] = [
+export const NAV: NavItem[] = [
   {
     href: "/admin/dashboard",
     label: "الرئيسية",
     icon: LayoutDashboard,
+    perm: "dashboard",
+  },
+  {
+    href: "/admin/workspace",
+    label: "مساحة العمل",
+    icon: Sparkles,
     perm: "dashboard",
   },
   {
@@ -581,6 +587,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "الرئيسية",
     icon: Home,
     items: [
+      navItem("/admin/workspace"),
       navItem("/admin/dashboard"),
       navItem("/admin/command-center"),
       navItem("/admin/notifications"),
@@ -781,7 +788,7 @@ function isNavItem(item: NavEntry): item is NavItem {
   return "href" in item;
 }
 
-function canSeeItem(me: AdminMe, item: NavEntry) {
+export function canSeeItem(me: AdminMe, item: NavEntry) {
   if (!isNavItem(item)) return true;
   if (item.adminOnly && me.role !== "admin") return false;
   if (item.anyPerm) return item.anyPerm.some((p) => hasPerm(me, p));

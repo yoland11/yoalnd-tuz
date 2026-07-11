@@ -19801,6 +19801,50 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  // Per-user customizable workspace layout + manager default. Stored in the
+  // existing key-value `settings` table (workspace:user:<id> / workspace:default).
+  if (section === "workspace") {
+    const user = await getAdminUser(req);
+    if (!user) return error("غير مخول", 401);
+    const sub = parts[2];
+    const userKey = `workspace:user:${user.id}`;
+    const defaultKey = "workspace:default";
+    const normalizeWs = (raw: unknown) =>
+      (Array.isArray(raw) ? raw : [])
+        .map((it: any) => ({ key: String(it?.key ?? "").slice(0, 160), size: ["sm", "md", "lg"].includes(it?.size) ? it.size : "md" }))
+        .filter((it: any) => it.key)
+        .slice(0, 80);
+
+    if (method === "GET" && !sub) {
+      const [mine, def] = await Promise.all([
+        db.query.settingsTable.findFirst({ where: eq(settingsTable.key, userKey) }),
+        db.query.settingsTable.findFirst({ where: eq(settingsTable.key, defaultKey) }),
+      ]);
+      if ((mine?.value as any)?.items) return json({ items: (mine!.value as any).items, source: "user" });
+      if ((def?.value as any)?.items) return json({ items: (def!.value as any).items, source: "default" });
+      return json({ items: [], source: "empty" });
+    }
+    if (method === "PUT" && !sub) {
+      const items = normalizeWs((await body(req))?.items);
+      await db.insert(settingsTable).values({ key: userKey, value: { items } as any })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: { items } as any, updatedAt: new Date() } });
+      return json({ ok: true, items });
+    }
+    if (method === "GET" && sub === "default") {
+      const def = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, defaultKey) });
+      return json({ items: (def?.value as any)?.items ?? [] });
+    }
+    if (method === "PUT" && sub === "default") {
+      if (!(user.role === "admin" || user.role === "manager")) return error("تعيين الواجهة الافتراضية متاح للمدير فقط", 403);
+      const items = normalizeWs((await body(req))?.items);
+      await db.insert(settingsTable).values({ key: defaultKey, value: { items } as any })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: { items } as any, updatedAt: new Date() } });
+      void logAdminActivity(req, "workspace_default_set", "settings", 0, { count: items.length });
+      return json({ ok: true, items });
+    }
+    return error("غير مدعوم", 405);
+  }
+
   if (section === "kosha-store-products" && method === "GET") {
     const auth = await requireAnyPermission(req, ["koshas", "products", "accounting", "dashboard"]);
     if (isResponse(auth)) return auth;
