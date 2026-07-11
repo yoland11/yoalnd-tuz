@@ -376,6 +376,7 @@ const NAV: NavItem[] = [
   },
   { href: "/admin/crews", label: "إدارة الكادر", icon: UserCog, perm: "staff" },
   { href: "/admin/staff", label: "الموظفون", icon: UserCog, perm: "staff" },
+  { href: "/admin/employee-performance", label: "أداء الموظفين", icon: Trophy, perm: "staff" },
   {
     href: "/admin/activity-log",
     label: "سجل النشاط",
@@ -665,6 +666,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/crews"),
       navItem("/admin/staff"),
+      navItem("/admin/employee-performance"),
       navItem("/admin/activity-log"),
       navItem("/admin/tasks"),
       navItem("/admin/attendance"),

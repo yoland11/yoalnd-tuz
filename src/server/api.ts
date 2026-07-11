@@ -182,6 +182,14 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import {
+  computeEmployeeScores,
+  ensureEmployeePerformanceTables,
+  getEmployeeProfile,
+  getLeaderboards,
+  getPerformanceTrends,
+  LEVEL_LABEL,
+} from "@/server/employee-performance";
+import {
   getTelegramSettings,
   notifyTelegramDailyReport,
   notifyTelegramInvoice,
@@ -19738,6 +19746,98 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         );
       return json({ message: "تم حذف الإشعار" });
     }
+  }
+
+  if (section === "employee-performance") {
+    const auth = await requireAnyPermission(req, ["staff", "dashboard", "accounting", "tasks"]);
+    if (isResponse(auth)) return auth;
+    await ensureEmployeePerformanceTables();
+    const sub = parts[2];
+    const params = req.nextUrl.searchParams;
+    const range = params.get("from") && params.get("to")
+      ? { from: String(params.get("from")), to: String(params.get("to")) }
+      : undefined;
+
+    if (method === "GET" && !sub) {
+      const [employees, leaderboards] = await Promise.all([
+        computeEmployeeScores(range),
+        getLeaderboards(range),
+      ]);
+      const levelLabels = LEVEL_LABEL;
+      const departments = new Map<string, { department: string; count: number; total: number }>();
+      for (const e of employees) {
+        if (e.suspended) continue;
+        const d = departments.get(e.department) ?? { department: e.department, count: 0, total: 0 };
+        d.count += 1;
+        d.total += e.overall;
+        departments.set(e.department, d);
+      }
+      return json({
+        employees,
+        leaderboards,
+        levelLabels,
+        departments: [...departments.values()].map((d) => ({ department: d.department, count: d.count, avg: Math.round(d.total / d.count) })),
+      });
+    }
+
+    if (method === "GET" && sub === "leaderboards") {
+      return json({ leaderboards: await getLeaderboards(range) });
+    }
+
+    if (method === "GET" && sub === "trends") {
+      const staffId = int(String(params.get("staffId") ?? "")) || null;
+      const gran = (["week", "month", "year"].includes(String(params.get("granularity"))) ? params.get("granularity") : "month") as "week" | "month" | "year";
+      return json({ trends: await getPerformanceTrends(staffId, gran) });
+    }
+
+    if (method === "GET" && sub && int(sub)) {
+      const profile = await getEmployeeProfile(int(sub)!, range);
+      return profile ? json(profile) : error("الموظف غير موجود", 404);
+    }
+
+    // Manager actions: note | reward | penalty | bonus | suspend | unsuspend
+    if (method === "POST" && sub && int(sub) && parts[3] === "actions") {
+      if (!(auth.role === "admin" || auth.role === "manager"))
+        return error("هذا الإجراء متاح للمدير فقط", 403);
+      const staffId = int(sub)!;
+      const b = await body(req);
+      const kind = String(b?.kind ?? "").toLowerCase();
+      if (!["note", "reward", "penalty", "bonus", "suspend", "unsuspend"].includes(kind))
+        return error("نوع الإجراء غير صحيح", 400);
+      const points = Math.abs(Math.round(Number(b?.points ?? 0))) || 0;
+      const title = nullableText(b?.title);
+      const note = nullableText(b?.note);
+      const staff = await db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) });
+      if (!staff) return error("الموظف غير موجود", 404);
+      await db.execute(sql`
+        insert into "employee_performance_actions" ("staff_id","kind","points","title","note","created_by","created_by_name")
+        values (${staffId}, ${kind}, ${points}, ${title}, ${note}, ${auth.id}, ${auth.fullName || auth.username})
+      `);
+      const KIND_LABEL: Record<string, string> = { note: "ملاحظة", reward: "مكافأة", penalty: "عقوبة", bonus: "علاوة", suspend: "إيقاف التقييم", unsuspend: "استئناف التقييم" };
+      void addEntityTimeline({
+        entityType: "staff",
+        entityId: staffId,
+        type: `performance_${kind}`,
+        title: `⭐ ${KIND_LABEL[kind]}`,
+        body: [title, note, points ? `${points} نقطة` : null].filter(Boolean).join(" · ") || null,
+        actor: erpActorFromAdmin(auth),
+        metadata: { kind, points },
+      });
+      void logAdminActivity(req, `employee_performance_${kind}`, "staff", staffId, { points, title });
+      await createNotification({
+        audienceType: "admin",
+        staffId,
+        type: `performance_${kind}`,
+        title: `تقييم الأداء: ${KIND_LABEL[kind]}`,
+        body: [title, note].filter(Boolean).join(" — ") || KIND_LABEL[kind],
+        entityType: "staff",
+        entityId: staffId,
+        href: "/admin/employee-performance",
+      });
+      return json({ ok: true });
+    }
+
+    return error("غير مدعوم", 405);
   }
 
   if (section === "approvals") {

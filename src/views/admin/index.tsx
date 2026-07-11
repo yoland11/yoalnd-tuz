@@ -78,6 +78,7 @@ const FinanceReportsPage = lazy(() =>
   })),
 );
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
+const EmployeePerformancePage = lazy(() => import("./employee-performance"));
 const FinancialRequestPage = lazy(() =>
   import("./master-cash").then((module) => ({
     default: module.FinancialRequestPage,
@@ -487,6 +488,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="accounting">
                 <MasterCashBoxPage me={me} />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/employee-performance">
+            {() => (
+              <Guard me={me} perm="staff">
+                <EmployeePerformancePage me={me} />
               </Guard>
             )}
           </Route>
