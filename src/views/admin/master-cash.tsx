@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Check,
   CircleDollarSign,
+  ExternalLink,
   FileDown,
   FileSpreadsheet,
   Filter,
@@ -73,6 +74,8 @@ type FinancialTransaction = {
   paymentMethod: string;
   sourceType: string | null;
   sourceId: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
   approvalStatus: "draft" | "pending" | "approved" | "rejected" | "executed";
   requestedByName: string;
   approvedByName: string;
@@ -119,6 +122,73 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "مرفوضة",
   executed: "منفذة",
 };
+
+// Human label for the transaction's origin (shown in the "نوع المصدر" column).
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  kosha_booking: "كوشة",
+  photography_order: "تصوير",
+  service_order: "خدمة",
+  order: "طلب متجر",
+  rental_order: "إيجار",
+  sales_invoice: "فاتورة مبيعات",
+  purchase_invoice: "فاتورة مشتريات",
+  expense: "مصروف",
+};
+const sourceTypeLabel = (sourceType: string | null | undefined) =>
+  (sourceType && SOURCE_TYPE_LABELS[sourceType]) || "طلب مالي";
+
+// Top-of-approvals filter buckets. Bucketing is by sourceType (reliable) — NOT
+// by department, because service bookings inherit their department by keyword.
+type ApprovalBucket = "all" | "koshas" | "store" | "photography" | "services" | "finance";
+const APPROVAL_FILTERS: Array<{ value: ApprovalBucket; label: string }> = [
+  { value: "all", label: "الكل" },
+  { value: "koshas", label: "الكوشات" },
+  { value: "store", label: "المتجر" },
+  { value: "photography", label: "التصوير" },
+  { value: "services", label: "الخدمات" },
+  { value: "finance", label: "طلبات مالية" },
+];
+function sourceBucket(sourceType: string | null | undefined): ApprovalBucket {
+  switch (sourceType) {
+    case "kosha_booking":
+      return "koshas";
+    case "photography_order":
+      return "photography";
+    case "service_order":
+      return "services";
+    case "order":
+    case "rental_order":
+    case "sales_invoice":
+    case "purchase_invoice":
+      return "store";
+    default:
+      return "finance";
+  }
+}
+
+/** Route to the original booking / invoice / financial request for "View Source". */
+function sourceHref(sourceType: string | null | undefined, sourceId: string | null | undefined): string {
+  const id = sourceId ? encodeURIComponent(sourceId) : "";
+  switch (sourceType) {
+    case "photography_order":
+      return `/staff/photography/orders/${id}`; // exact per-record page
+    case "kosha_booking":
+      return `/admin/kosha-bookings?focus=${id}`;
+    case "order":
+    case "rental_order":
+      return `/admin/orders?focus=${id}`;
+    case "service_order":
+      return `/admin/services?focus=${id}`;
+    case "sales_invoice":
+      return `/admin/sales?focus=${id}`;
+    case "purchase_invoice":
+      return `/admin/purchases?focus=${id}`;
+    case "expense":
+      return `/admin/finance/expenses?focus=${id}`;
+    default:
+      return `/admin/finance/request`;
+  }
+}
 
 const STATUS_CLASSES: Record<string, string> = {
   draft: "bg-muted text-muted-foreground",
@@ -274,6 +344,14 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     queryFn: () => adminFetch<TransactionList>(`/admin/master-cash/transactions?${queryString}`),
     refetchInterval: 15_000,
   });
+  // Pending approvals feed — the SAME source/query the dashboard badge counts:
+  // every financial_transactions row with approval_status = 'pending', no date
+  // window, no pagination truncation. Guarantees rows displayed === badge count.
+  const pendingApprovals = useQuery({
+    queryKey: ["admin", "master-cash", "pending-approvals"],
+    queryFn: () => adminFetch<TransactionList>("/admin/master-cash/transactions?status=pending&limit=500"),
+    refetchInterval: 15_000,
+  });
   const detail = useQuery({
     queryKey: ["admin", "master-cash", "transaction", selectedId],
     queryFn: () => adminFetch<TransactionDetail>(`/admin/master-cash/transactions/${selectedId}`),
@@ -306,8 +384,21 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   });
 
   const rows = transactions.data?.data ?? [];
-  const pendingRows = useMemo(() => rows.filter((row) => row.approvalStatus === "pending"), [rows]);
   const [mcTab, setMcTab] = useState("overview");
+  const [approvalFilter, setApprovalFilter] = useState<ApprovalBucket>("all");
+
+  // All pending rows (server-filtered, unpaginated) + the top-filter view.
+  const allPending = pendingApprovals.data?.data ?? [];
+  const pendingTotal = pendingApprovals.data?.total ?? allPending.length;
+  const approvalCounts = useMemo(() => {
+    const counts: Record<ApprovalBucket, number> = { all: allPending.length, koshas: 0, store: 0, photography: 0, services: 0, finance: 0 };
+    for (const row of allPending) counts[sourceBucket(row.sourceType)] += 1;
+    return counts;
+  }, [allPending]);
+  const filteredApprovals = useMemo(
+    () => (approvalFilter === "all" ? allPending : allPending.filter((row) => sourceBucket(row.sourceType) === approvalFilter)),
+    [allPending, approvalFilter],
+  );
 
   if (dashboard.isLoading || !dashboard.data) {
     return <div className="space-y-4"><Skeleton className="h-24 rounded-xl" /><Skeleton className="h-64 rounded-xl" /><Skeleton className="h-80 rounded-xl" /></div>;
@@ -347,7 +438,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
       </div>
 
       <Tabs value={mcTab} onValueChange={setMcTab} className="space-y-4">
-        <TabsList className="print:hidden"><TabsTrigger value="overview">الملخص</TabsTrigger><TabsTrigger value="ledger">دفتر الحركات</TabsTrigger><TabsTrigger value="approvals">الموافقات ({data.pending.count})</TabsTrigger></TabsList>
+        <TabsList className="print:hidden"><TabsTrigger value="overview">الملخص</TabsTrigger><TabsTrigger value="ledger">دفتر الحركات</TabsTrigger><TabsTrigger value="approvals">الموافقات ({(pendingApprovals.data?.total ?? data.pending.count).toLocaleString("ar-IQ")})</TabsTrigger></TabsList>
         <TabsContent value="overview" className="space-y-4">
           <div className="grid gap-4 xl:grid-cols-[1.35fr_1fr]">
             <div className="rounded-xl border border-border/30 bg-card p-4"><h2 className="mb-4 font-semibold text-foreground">اتجاه الإيرادات والمصاريف</h2>{data.trend.length === 0 ? <EmptyState message="لا توجد حركات منفذة لعرض الاتجاه" /> : <div className="h-72" dir="ltr"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.trend}><CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" /><XAxis dataKey="month" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} /><YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }} tickFormatter={(value) => formatMoney(Number(value))} /><Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} formatter={(value) => formatCurrency(Number(value))} /><Legend /><Bar dataKey="revenue" name="الإيرادات" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} /><Bar dataKey="expenses" name="المصاريف" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div>}</div>
@@ -361,7 +452,21 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
         </TabsContent>
 
-        <TabsContent value="approvals"><TransactionTable rows={pendingRows} loading={transactions.isLoading} isManager={isManager} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} emptyMessage="لا توجد معاملات بانتظار الموافقة ضمن الصفحة الحالية" /></TabsContent>
+        <TabsContent value="approvals">
+          <ApprovalsPanel
+            rows={filteredApprovals}
+            counts={approvalCounts}
+            total={pendingTotal}
+            filter={approvalFilter}
+            onFilter={setApprovalFilter}
+            loading={pendingApprovals.isLoading}
+            isManager={isManager}
+            busy={approve.isPending || reject.isPending}
+            onOpen={setSelectedId}
+            onApprove={(id) => approve.mutate(id)}
+            onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }}
+          />
+        </TabsContent>
       </Tabs>
 
       <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88dvh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل الحركة المالية</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} busy={reverse.isPending} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
@@ -371,6 +476,96 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
 
 function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onReject, busy, emptyMessage = "لا توجد حركات ضمن الفلاتر" }: { rows: FinancialTransaction[]; loading: boolean; isManager: boolean; onOpen: (id: number) => void; onApprove: (id: number) => void; onReject: (id: number) => void; busy: boolean; emptyMessage?: string }) {
   return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}>{row.direction === "revenue" ? "إيراد" : "مصروف"}</td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>)}</tbody></table>}</div>;
+}
+
+/**
+ * Unified financial-approvals panel. Rows come from the SAME source the dashboard
+ * badge counts (all pending financial_transactions), so the visible count always
+ * equals the badge. Includes every approval type (Kosha / Store / Photography /
+ * Service / Financial requests) and a top filter that buckets by source type.
+ */
+function ApprovalsPanel({
+  rows, counts, total, filter, onFilter, loading, isManager, busy, onOpen, onApprove, onReject,
+}: {
+  rows: FinancialTransaction[];
+  counts: Record<ApprovalBucket, number>;
+  total: number;
+  filter: ApprovalBucket;
+  onFilter: (value: ApprovalBucket) => void;
+  loading: boolean;
+  isManager: boolean;
+  busy: boolean;
+  onOpen: (id: number) => void;
+  onApprove: (id: number) => void;
+  onReject: (id: number) => void;
+}) {
+  const columns = ["رقم الحركة", "نوع المصدر", "الزبون", "رقم الحجز/الفاتورة", "المبلغ", "مُقدّم الطلب", "تاريخ الطلب", "الحالة", "المصدر"];
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden">
+        {APPROVAL_FILTERS.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            onClick={() => onFilter(item.value)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+              filter === item.value ? "border-primary/60 bg-primary/10 text-primary" : "border-border/40 bg-background/50 text-muted-foreground hover:border-primary/35"
+            }`}
+          >
+            {item.label}
+            <span className={`rounded-full px-1.5 text-[11px] ${filter === item.value ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}>
+              {(counts[item.value] ?? 0).toLocaleString("ar-IQ")}
+            </span>
+          </button>
+        ))}
+        <span className="ms-auto text-xs text-muted-foreground">إجمالي بانتظار الموافقة: {total.toLocaleString("ar-IQ")}</span>
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">
+        {loading ? (
+          <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div>
+        ) : rows.length === 0 ? (
+          <EmptyState message="لا توجد طلبات بانتظار الموافقة ضمن هذا التصنيف" />
+        ) : (
+          <table className="w-full min-w-[980px] text-sm">
+            <thead>
+              <tr className="border-b border-border/30 text-xs text-muted-foreground">
+                {columns.map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}
+                {isManager && <th className="px-3 py-3 text-center font-medium">إجراء</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]">
+                  <td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td>
+                  <td className="px-3 py-3 text-center"><span className="inline-flex rounded-full bg-muted px-2 py-1 text-[11px] text-foreground">{sourceTypeLabel(row.sourceType)}</span></td>
+                  <td className="max-w-40 px-3 py-3 text-center"><p className="truncate text-foreground" title={row.customerName ?? ""}>{row.customerName || "—"}</p></td>
+                  <td className="px-3 py-3 text-center font-mono text-xs text-muted-foreground">{row.sourceId ? `#${row.sourceId}` : "—"}</td>
+                  <td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td>
+                  <td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td>
+                  <td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td>
+                  <td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td>
+                  <td className="px-3 py-3 text-center">
+                    <a href={sourceHref(row.sourceType, row.sourceId)} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2 py-1 text-xs text-primary hover:border-primary/50">
+                      <ExternalLink className="h-3.5 w-3.5" /> عرض المصدر
+                    </a>
+                  </td>
+                  {isManager && (
+                    <td className="px-3 py-3">
+                      <div className="flex justify-center gap-1">
+                        <Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function TransactionDetailView({ data, isManager, busy, onReverse }: { data: TransactionDetail; isManager: boolean; busy: boolean; onReverse: (reason: string) => void }) {

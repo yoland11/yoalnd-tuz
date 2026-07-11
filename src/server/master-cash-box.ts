@@ -80,7 +80,9 @@ export const financialTransactionListSchema = z.object({
   department: z.string().trim().max(40).optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
-  limit: z.coerce.number().int().min(5).max(100).optional().default(20),
+  // Cap raised to 500 so the Approvals feed can pull every pending row in one
+  // page (keeping the displayed rows exactly equal to the dashboard count).
+  limit: z.coerce.number().int().min(5).max(500).optional().default(20),
 });
 
 const ACCOUNT_SEEDS = [
