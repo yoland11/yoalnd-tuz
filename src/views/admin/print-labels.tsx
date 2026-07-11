@@ -586,9 +586,13 @@ export default function PrintLabelsPage() {
       </div>
 
       {tab === "design" && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(260px,340px)_1fr_minmax(300px,360px)]">
-          {/* Source list / warehouse fields */}
-          <div className="bg-card rounded-xl border border-border/30 p-4 space-y-3">
+        // RTL 3-col: track order is right→left, so track1=Products (right),
+        // track2=Preview (shrinks first, min-width:0), track3=Settings (left,
+        // fixed 360px). minmax(0,1fr) lets the wide A4 preview shrink instead
+        // of squeezing the settings panel off-screen.
+        <div className="grid gap-4 min-w-0 xl:grid-cols-[minmax(300px,340px)_minmax(0,1fr)_360px]">
+          {/* Source list / warehouse fields (Products, right in RTL) */}
+          <div className="bg-card rounded-xl border border-border/30 p-4 space-y-3 min-w-0">
             {isWarehouseKind ? (
               <div className="space-y-3">
                 <p className="font-semibold text-sm text-foreground">بيانات رف المخزن</p>
@@ -666,7 +670,7 @@ export default function PrintLabelsPage() {
           </div>
 
           {/* Live preview */}
-          <div className="bg-card rounded-xl border border-border/30 p-4 flex flex-col">
+          <div className="bg-card rounded-xl border border-border/30 p-4 flex flex-col min-w-0">
             <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
               <p className="font-semibold text-foreground flex items-center gap-2">
                 <Maximize2 className="w-4 h-4 text-primary" /> معاينة مباشرة
@@ -794,8 +798,9 @@ export default function PrintLabelsPage() {
             </div>
           </div>
 
-          {/* Design panel */}
-          <div className="bg-card rounded-xl border border-border/30 p-4 space-y-4">
+          {/* Design panel (Settings, left in RTL) — independent scroll so all
+              controls stay reachable even when taller than the viewport. */}
+          <div className="bg-card rounded-xl border border-border/30 p-4 space-y-4 min-w-0 xl:sticky xl:top-4 xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto">
             <div>
               <p className="font-semibold text-sm text-foreground flex items-center gap-2 mb-2">
                 <Tag className="w-4 h-4 text-primary" /> عناصر الملصق
