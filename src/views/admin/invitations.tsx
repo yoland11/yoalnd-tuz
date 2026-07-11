@@ -11,6 +11,22 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { generateQrDataUrl } from "./label-helpers";
 import { InvitationCard, ANIMATION_STYLES, type InvitationData } from "../invite";
+import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
+import { usePublicSettings } from "@/lib/public-settings";
+
+// Preset style templates — one-click apply of colours + font + animation.
+const TEMPLATES: Array<{ name: string; category: string; bg: string; fg: string; font: string; anim: string }> = [
+  { name: "ملكي", category: "Royal", bg: "#1b1130", fg: "#f3e9c9", font: "Amiri", anim: "glow" },
+  { name: "فخم ذهبي", category: "Luxury", bg: "#0f0f12", fg: "#e9c46a", font: "Reem Kufi", anim: "zoom" },
+  { name: "عصري", category: "Modern", bg: "#f4f6f8", fg: "#1f2937", font: "Tajawal", anim: "slide" },
+  { name: "بسيط", category: "Minimal", bg: "#ffffff", fg: "#2a2118", font: "IBM Plex Sans Arabic", anim: "fade" },
+  { name: "كلاسيكي", category: "Classic", bg: "#f7f1e8", fg: "#4a3b2a", font: "Amiri", anim: "fade" },
+  { name: "إسلامي", category: "Islamic", bg: "#0d3b34", fg: "#e6d9a8", font: "Reem Kufi", anim: "glow" },
+  { name: "ذهبي", category: "Gold", bg: "#faf6ec", fg: "#8a6d1f", font: "Amiri", anim: "float" },
+  { name: "أسود", category: "Black", bg: "#111111", fg: "#f0f0f0", font: "Cairo", anim: "zoom" },
+  { name: "أبيض", category: "White", bg: "#ffffff", fg: "#333333", font: "Tajawal", anim: "fade" },
+  { name: "وردي", category: "Flowers", bg: "#fdeef2", fg: "#8a2846", font: "Amiri", anim: "float" },
+];
 
 type Card = InvitationData & { id: number; code?: string; status: string; views?: number; rsvpTotal?: number; confirmed?: number; companions?: number; customerPhone?: string | null; customerEmail?: string | null; bookingId?: number | null };
 type Rsvp = { id: number; guestName: string; guestPhone: string | null; guestToken: string | null; attendanceStatus: string; companionsCount: number; guestMessage: string | null; viewedAt: string | null; respondedAt: string | null; createdAt: string };
@@ -88,6 +104,7 @@ function InvitationEditor({ id }: { id: number }) {
   const [qr, setQr] = useState<string | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { data: publicSettings } = usePublicSettings();
 
   const { data, isLoading } = useQuery<CardDetail>({ queryKey: ["admin", "invitations", id], queryFn: () => adminFetch(`/admin/invitations/${id}`) });
   useEffect(() => { if (data && !form) setForm(data); }, [data, form]);
@@ -103,6 +120,14 @@ function InvitationEditor({ id }: { id: number }) {
     dirtyRef.current = true;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => { patch.mutate({ [key]: value } as any); }, 800);
+  }
+  // Batch update (templates / image upload) — applied + saved immediately.
+  function applyFields(values: Partial<Card>) {
+    setForm((f) => (f ? { ...f, ...values } : f));
+    patch.mutate(values);
+  }
+  function applyTemplate(t: (typeof TEMPLATES)[number]) {
+    applyFields({ backgroundColor: t.bg, textColor: t.fg, fontFamily: t.font, animationStyle: t.anim });
   }
 
   const del = useMutation({
@@ -146,6 +171,21 @@ function InvitationEditor({ id }: { id: number }) {
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
           {/* Editor form */}
           <div className="space-y-3 rounded-xl border border-border/30 bg-card p-4">
+            <div>
+              <div className="mb-1.5 text-xs font-semibold text-foreground">🎨 القوالب الجاهزة</div>
+              <div className="flex flex-wrap gap-2">
+                {TEMPLATES.map((t) => {
+                  const active = form.backgroundColor === t.bg && form.textColor === t.fg;
+                  return (
+                    <button key={t.name} type="button" onClick={() => applyTemplate(t)} title={t.category}
+                      className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${active ? "border-primary ring-1 ring-primary" : "border-border/40 hover:border-primary/40"}`}>
+                      <span className="h-4 w-4 rounded-full border" style={{ background: t.bg, borderColor: t.fg }} />
+                      {t.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <Fld label="نوع المناسبة"><select value={form.type ?? "wedding"} onChange={(e) => setField("type", e.target.value)} className={inp}>{Object.entries(TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Fld>
               <Fld label="الحالة"><select value={form.status} onChange={(e) => setField("status", e.target.value)} className={inp}>{Object.entries(STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Fld>
@@ -157,8 +197,24 @@ function InvitationEditor({ id }: { id: number }) {
               <Fld label="اسم القاعة"><input value={form.venueName ?? ""} onChange={(e) => setField("venueName", e.target.value)} className={inp} /></Fld>
               <Fld label="عنوان القاعة"><input value={form.venueAddress ?? ""} onChange={(e) => setField("venueAddress", e.target.value)} className={inp} /></Fld>
               <Fld label="رابط الخريطة"><input value={form.mapUrl ?? ""} onChange={(e) => setField("mapUrl", e.target.value)} dir="ltr" className={inp} /></Fld>
-              <Fld label="رابط الصورة الرئيسية"><input value={form.mainImageUrl ?? ""} onChange={(e) => setField("mainImageUrl", e.target.value)} dir="ltr" className={inp} placeholder="https://..." /></Fld>
+              <Fld label="الصورة الرئيسية">
+                <div className="flex items-center gap-2">
+                  {form.mainImageUrl ? <img src={form.mainImageUrl} alt="" className="h-10 w-10 flex-shrink-0 rounded object-cover" /> : null}
+                  <ImageUploadEditor kind="gallery" label="رفع صورة" currentImage={form.mainImageUrl ?? null} settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(r: ImageEditResult[]) => r[0] && applyFields({ mainImageUrl: r[0].dataUrl })} onRemove={() => applyFields({ mainImageUrl: null })} />
+                </div>
+              </Fld>
             </div>
+            <Fld label="صور إضافية (المعرض)">
+              <div className="flex flex-wrap items-center gap-2">
+                {(form.galleryImages ?? []).map((g, i) => (
+                  <div key={i} className="relative">
+                    <img src={g} alt="" className="h-12 w-12 rounded object-cover" />
+                    <button type="button" onClick={() => applyFields({ galleryImages: (form.galleryImages ?? []).filter((_, xi) => xi !== i) })} className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-destructive text-[10px] text-white">×</button>
+                  </div>
+                ))}
+                <ImageUploadEditor kind="gallery" label="إضافة صورة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(r: ImageEditResult[]) => r[0] && applyFields({ galleryImages: [...(form.galleryImages ?? []), r[0].dataUrl] })} />
+              </div>
+            </Fld>
             <Fld label="رسالة الترحيب"><textarea value={form.welcomeMessage ?? ""} onChange={(e) => setField("welcomeMessage", e.target.value)} rows={2} className={inp} /></Fld>
             <Fld label="رسالة الشكر (بعد الرد)"><textarea value={form.thankYouMessage ?? ""} onChange={(e) => setField("thankYouMessage", e.target.value)} rows={2} className={inp} /></Fld>
             <div className="grid gap-2 sm:grid-cols-3">
