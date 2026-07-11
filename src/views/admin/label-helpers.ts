@@ -45,7 +45,30 @@ export type LabelTemplateConfig = {
   fields: LabelFieldToggles;
 };
 
-/** Physical + quality settings. Defaults target the Xprinter XP-236B 40×30 stock. */
+/**
+ * Print layout mode:
+ * - "roll"  — one label per physical page (thermal roll, e.g. Xprinter XP-236B). Original behaviour.
+ * - "sheet" — many labels tiled into a grid on A4/A5/Letter/custom pages (commercial label-sheet style).
+ */
+export type LabelLayoutMode = "roll" | "sheet";
+
+export type LabelPaperSize = "a4" | "a5" | "letter" | "custom";
+
+/** Multi-label sheet layout. Each label keeps its exact widthMm×heightMm; only tiling changes. */
+export type SheetLayout = {
+  paper: LabelPaperSize;
+  /** Used only when paper === "custom". */
+  paperWidthMm: number;
+  paperHeightMm: number;
+  orientation: "portrait" | "landscape";
+  columns: number; // labels across the sheet
+  rows: number; // labels down the sheet (rows per page). perPage = columns × rows.
+  pageMarginMm: number; // outer page margin
+  hGapMm: number; // horizontal spacing between labels
+  vGapMm: number; // vertical spacing between labels
+};
+
+/** Physical + quality settings. Defaults target the Xprinter XP-236B 40×60 stock. */
 export type LabelSettings = {
   widthMm: number;
   heightMm: number;
@@ -58,7 +81,58 @@ export type LabelSettings = {
   printerName: string;
   /** Print rotation in degrees (0/90/180/270) to compensate for the printer's feed direction. */
   rotation?: number;
+  /** Print layout mode — roll (default) or multi-label sheet. */
+  layoutMode: LabelLayoutMode;
+  /** Sheet-mode tiling settings. */
+  sheet: SheetLayout;
 };
+
+/** Standard paper sizes in millimetres (portrait). */
+export const PAPER_SIZES_MM: Record<Exclude<LabelPaperSize, "custom">, { w: number; h: number }> = {
+  a4: { w: 210, h: 297 },
+  a5: { w: 148, h: 210 },
+  letter: { w: 215.9, h: 279.4 },
+};
+
+export const PAPER_LABELS: Record<LabelPaperSize, string> = {
+  a4: "A4", a5: "A5", letter: "Letter", custom: "مخصص",
+};
+
+/** Resolve the effective page dimensions (mm) for a sheet layout, honouring orientation. */
+export function sheetPaperDims(sheet: SheetLayout): { w: number; h: number } {
+  const base =
+    sheet.paper === "custom"
+      ? { w: sheet.paperWidthMm || 210, h: sheet.paperHeightMm || 297 }
+      : PAPER_SIZES_MM[sheet.paper];
+  return sheet.orientation === "landscape" ? { w: base.h, h: base.w } : { w: base.w, h: base.h };
+}
+
+/** Grid math: labels per page and total pages needed to fit every label. */
+export function sheetPlan(totalLabels: number, sheet: SheetLayout): { columns: number; rows: number; perPage: number; totalPages: number } {
+  const columns = Math.max(1, Math.round(sheet.columns || 1));
+  const rows = Math.max(1, Math.round(sheet.rows || 1));
+  const perPage = columns * rows;
+  const totalPages = Math.max(1, Math.ceil(Math.max(totalLabels, 1) / perPage));
+  return { columns, rows, perPage, totalPages };
+}
+
+/** Turn a desired "labels per page" into a portrait-friendly columns×rows grid (e.g. 12 → 3×4). */
+export function factorizePerPage(n: number): { columns: number; rows: number } {
+  const target = Math.max(1, Math.round(n));
+  let best = { columns: 1, rows: target };
+  let bestScore = Infinity;
+  for (let cols = 1; cols <= target; cols += 1) {
+    if (target % cols !== 0) continue;
+    const rows = target / cols;
+    // Favour near-square grids, tie-break toward fewer columns (taller / portrait-friendly).
+    const score = Math.abs(cols - rows) * 2 + cols;
+    if (score < bestScore) {
+      bestScore = score;
+      best = { columns: cols, rows };
+    }
+  }
+  return best;
+}
 
 /** Resolved, ready-to-render data for a single label. */
 export type LabelData = {
@@ -88,6 +162,18 @@ export const DEFAULT_LABEL_SETTINGS: LabelSettings = {
   highQuality: true,
   printerName: "Xprinter XP-236B",
   rotation: 0,
+  layoutMode: "roll",
+  sheet: {
+    paper: "a4",
+    paperWidthMm: 210,
+    paperHeightMm: 297,
+    orientation: "portrait",
+    columns: 3,
+    rows: 4,
+    pageMarginMm: 8,
+    hGapMm: 3,
+    vGapMm: 3,
+  },
 };
 
 const BASE_FIELDS: LabelFieldToggles = {
@@ -315,53 +401,13 @@ export async function buildLabelMarkup(
  * output matches the stock exactly regardless of screen DPI. `scoped` renders
  * the same look inside the on-screen preview (screen media).
  */
-export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {}): string {
-  const w = settings.widthMm;
-  const h = settings.heightMm;
-  const pad = Math.max(settings.marginMm, 0.8);
-  // Quality knobs: crisp barcode/QR edges, forced black ink, no anti-alias blur.
-  const rendering = settings.highQuality ? "crisp-edges" : "auto";
-  const centerBody = settings.autoCenter && opts.screen ? "align-items:center;justify-content:center;" : "";
-  // Print rotation to compensate for the printer's feed direction. When rotating
-  // 90/270 the page bounding box swaps W↔H so the label still fits its page.
-  const rot = (((settings.rotation ?? 0) % 360) + 360) % 360;
-  const swap = rot === 90 || rot === 270;
-  const pageW = swap ? h : w;
-  const pageH = swap ? w : h;
-  // Tall labels (e.g. 40×60) use a vertical layout with a big centered QR so they
-  // fill the stock instead of leaving the bottom blank.
-  const portrait = h >= w * 1.35;
-  const qrMm = portrait ? Math.min(w - 6, 28) : 13;
-
+/**
+ * The inner label styles (brand / body / qr / fields / barcode). Identical for
+ * roll and sheet modes — shared so there is a single source of truth for how a
+ * label looks. Only the `.lb-label` box + page tiling differ between modes.
+ */
+function labelInnerCss(portrait: boolean, qrMm: number, rendering: string): string {
   return `
-    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap');
-    ${opts.screen ? "" : `@page { size: ${pageW}mm ${pageH}mm; margin: 0; }`}
-    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    ${opts.screen ? "" : `html, body { margin: 0; padding: 0; background: #fff; }`}
-    .lb-sheet { display: block; }
-    ${opts.screen ? "" : `
-    .lb-page {
-      width: ${pageW}mm; height: ${pageH}mm;
-      display: flex; align-items: center; justify-content: center;
-      overflow: hidden;
-      page-break-after: always; break-after: page;
-    }
-    .lb-page:last-child { page-break-after: auto; break-after: auto; }
-    `}
-    .lb-label {
-      position: relative;
-      width: ${w}mm;
-      height: ${h}mm;
-      padding: ${pad}mm;
-      background: #fff;
-      color: #000;
-      direction: rtl;
-      font-family: Cairo, Tahoma, Arial, sans-serif;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      ${opts.screen ? centerBody : `transform: rotate(${rot}deg); transform-origin: center center; flex: 0 0 auto;`}
-    }
     .lb-label * { color: #000 !important; }
     .lb-brand {
       text-align: center;
@@ -394,6 +440,118 @@ export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {
   `;
 }
 
+const CAIRO_FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap');";
+
+/**
+ * Sheet mode: tile many labels into a CSS grid on A4/A5/Letter/custom pages.
+ * Each cell is exactly widthMm×heightMm (barcode/QR never resized); pages break
+ * via `page-break-after`. Filling flows right→left, top→bottom (RTL). The last
+ * page holds only the remaining labels — the grid never pads blank placeholders.
+ */
+function sheetLabelCss(settings: LabelSettings, opts: { screen?: boolean }): string {
+  const w = settings.widthMm;
+  const h = settings.heightMm;
+  const pad = Math.max(settings.marginMm, 0.8);
+  const rendering = settings.highQuality ? "crisp-edges" : "auto";
+  const s = settings.sheet;
+  const { w: paperW, h: paperH } = sheetPaperDims(s);
+  const columns = Math.max(1, Math.round(s.columns || 1));
+  const portrait = h >= w * 1.35;
+  const qrMm = portrait ? Math.min(w - 6, 28) : 13;
+  const justify = settings.autoCenter ? "center" : "start";
+
+  return `
+    ${CAIRO_FONT_IMPORT}
+    ${opts.screen ? "" : `@page { size: ${paperW}mm ${paperH}mm; margin: 0; }`}
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    ${opts.screen ? "" : `html, body { margin: 0; padding: 0; background: #fff; }`}
+    .lb-sheet { display: block; }
+    .lb-page {
+      width: ${paperW}mm; height: ${paperH}mm;
+      padding: ${Math.max(s.pageMarginMm, 0)}mm;
+      background: #fff;
+      display: grid;
+      grid-template-columns: repeat(${columns}, ${w}mm);
+      grid-auto-rows: ${h}mm;
+      column-gap: ${Math.max(s.hGapMm, 0)}mm;
+      row-gap: ${Math.max(s.vGapMm, 0)}mm;
+      justify-content: ${justify};
+      align-content: start;
+      direction: rtl;
+      ${opts.screen ? "box-shadow: 0 2px 14px rgba(0,0,0,0.18); margin: 0 auto 6mm;" : "overflow: hidden; page-break-after: always; break-after: page;"}
+    }
+    ${opts.screen ? "" : ".lb-page:last-child { page-break-after: auto; break-after: auto; }"}
+    .lb-label {
+      position: relative;
+      width: ${w}mm;
+      height: ${h}mm;
+      padding: ${pad}mm;
+      background: #fff;
+      color: #000;
+      direction: rtl;
+      font-family: Cairo, Tahoma, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      ${opts.screen ? "outline: 0.2mm dashed rgba(0,0,0,0.25);" : ""}
+    }
+    ${labelInnerCss(portrait, qrMm, rendering)}
+  `;
+}
+
+export function labelCss(settings: LabelSettings, opts: { screen?: boolean } = {}): string {
+  if (settings.layoutMode === "sheet") return sheetLabelCss(settings, opts);
+
+  const w = settings.widthMm;
+  const h = settings.heightMm;
+  const pad = Math.max(settings.marginMm, 0.8);
+  // Quality knobs: crisp barcode/QR edges, forced black ink, no anti-alias blur.
+  const rendering = settings.highQuality ? "crisp-edges" : "auto";
+  const centerBody = settings.autoCenter && opts.screen ? "align-items:center;justify-content:center;" : "";
+  // Print rotation to compensate for the printer's feed direction. When rotating
+  // 90/270 the page bounding box swaps W↔H so the label still fits its page.
+  const rot = (((settings.rotation ?? 0) % 360) + 360) % 360;
+  const swap = rot === 90 || rot === 270;
+  const pageW = swap ? h : w;
+  const pageH = swap ? w : h;
+  // Tall labels (e.g. 40×60) use a vertical layout with a big centered QR so they
+  // fill the stock instead of leaving the bottom blank.
+  const portrait = h >= w * 1.35;
+  const qrMm = portrait ? Math.min(w - 6, 28) : 13;
+
+  return `
+    ${CAIRO_FONT_IMPORT}
+    ${opts.screen ? "" : `@page { size: ${pageW}mm ${pageH}mm; margin: 0; }`}
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    ${opts.screen ? "" : `html, body { margin: 0; padding: 0; background: #fff; }`}
+    .lb-sheet { display: block; }
+    ${opts.screen ? "" : `
+    .lb-page {
+      width: ${pageW}mm; height: ${pageH}mm;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      page-break-after: always; break-after: page;
+    }
+    .lb-page:last-child { page-break-after: auto; break-after: auto; }
+    `}
+    .lb-label {
+      position: relative;
+      width: ${w}mm;
+      height: ${h}mm;
+      padding: ${pad}mm;
+      background: #fff;
+      color: #000;
+      direction: rtl;
+      font-family: Cairo, Tahoma, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      ${opts.screen ? centerBody : `transform: rotate(${rot}deg); transform-origin: center center; flex: 0 0 auto;`}
+    }
+    ${labelInnerCss(portrait, qrMm, rendering)}
+  `;
+}
+
 // ───── Print window ─────
 
 /** Build the full printable HTML document for one or more labels. */
@@ -404,7 +562,21 @@ export async function buildLabelSheetHtml(
   opts: { title?: string; autoPrint?: boolean } = {},
 ): Promise<string> {
   const markups = await Promise.all(labels.map((d) => buildLabelMarkup(d, config)));
-  const sheet = markups.map((m) => `<div class="lb-page"><div class="lb-label">${m}</div></div>`).join("\n");
+  let sheet: string;
+  if (settings.layoutMode === "sheet") {
+    // Multi-label grid: chunk labels into pages of `perPage`, filling each page
+    // before starting the next. The last page carries only what remains.
+    const { perPage } = sheetPlan(markups.length, settings.sheet);
+    const pages: string[] = [];
+    for (let i = 0; i < markups.length; i += perPage) {
+      const cells = markups.slice(i, i + perPage).map((m) => `<div class="lb-label">${m}</div>`).join("");
+      pages.push(`<div class="lb-page">${cells}</div>`);
+    }
+    sheet = (pages.length ? pages : [`<div class="lb-page"></div>`]).join("\n");
+  } else {
+    // Roll: one label per physical page.
+    sheet = markups.map((m) => `<div class="lb-page"><div class="lb-label">${m}</div></div>`).join("\n");
+  }
   return `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8" />
     <title>${esc(opts.title ?? "طباعة الملصقات")}</title>
     <style>${labelCss(settings)}</style>
@@ -423,7 +595,8 @@ export async function openLabelPrintWindow(
 ): Promise<void> {
   if (!labels.length) throw new Error("لا توجد ملصقات للطباعة");
   const html = await buildLabelSheetHtml(labels, config, settings, opts);
-  const w = window.open("", "_blank", "width=420,height=560");
+  const win = settings.layoutMode === "sheet" ? "width=760,height=900" : "width=420,height=560";
+  const w = window.open("", "_blank", win);
   if (!w) throw new Error("تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة.");
   w.document.write(html);
   w.document.close();

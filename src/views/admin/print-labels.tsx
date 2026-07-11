@@ -30,9 +30,13 @@ import {
   DEFAULT_TEMPLATES,
   DEFAULT_LABEL_SETTINGS,
   TEMPLATE_LABELS,
+  PAPER_LABELS,
   buildLabelMarkup,
   openLabelPrintWindow,
   labelCss,
+  sheetPlan,
+  sheetPaperDims,
+  factorizePerPage,
   getLabelHistory,
   recordLabelPrint,
   clearLabelHistory,
@@ -42,6 +46,9 @@ import {
   type LabelTemplateConfig,
   type LabelSettings,
   type LabelFieldToggles,
+  type LabelLayoutMode,
+  type LabelPaperSize,
+  type SheetLayout,
   type BarcodeFormat,
   type LabelHistoryEntry,
 } from "./label-helpers";
@@ -77,12 +84,23 @@ function assetCode(id: number) {
 function loadSettings(): LabelSettings {
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...DEFAULT_LABEL_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Deep-merge `sheet` so settings saved before sheet mode existed still gain
+      // every new field from the defaults.
+      return {
+        ...DEFAULT_LABEL_SETTINGS,
+        ...parsed,
+        sheet: { ...DEFAULT_LABEL_SETTINGS.sheet, ...(parsed?.sheet ?? {}) },
+      };
+    }
   } catch {
     /* ignore */
   }
   return { ...DEFAULT_LABEL_SETTINGS };
 }
+
+const PER_PAGE_PRESETS = [1, 2, 4, 6, 8, 10, 12, 16, 20, 24];
 
 /** Map a product row to label data for the active template kind. */
 function productToLabel(product: Product, kind: LabelKind): LabelData {
@@ -137,6 +155,10 @@ export default function PrintLabelsPage() {
   const [rotate, setRotate] = useState(0);
   const [darkPreview, setDarkPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
+  // Sheet-mode preview: HTML of the first page's cells + how many pages/labels total.
+  const [sheetPreviewHtml, setSheetPreviewHtml] = useState("");
+  const [sheetPages, setSheetPages] = useState(1);
+  const [sheetTotal, setSheetTotal] = useState(0);
 
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [history, setHistory] = useState<LabelHistoryEntry[]>([]);
@@ -354,6 +376,47 @@ export default function PrintLabelsPage() {
 
   const copies = Math.min(Math.max(Number.parseInt(quantity, 10) || 1, 1), 200);
 
+  const isSheet = settings.layoutMode === "sheet";
+
+  // Sheet mode: the full list of labels that "طباعة المحدد/متعدد" would produce.
+  // Drives the page-count math and the multi-label preview.
+  const sheetLabelList = useMemo<LabelData[]>(() => {
+    if (!isSheet) return [];
+    if (isWarehouseKind) return Array.from({ length: copies }, () => previewLabel);
+    const out: LabelData[] = [];
+    for (const p of selectedProducts) {
+      const label = productToLabel(p, kind);
+      for (let i = 0; i < copies; i += 1) out.push(label);
+    }
+    return out;
+  }, [isSheet, isWarehouseKind, copies, previewLabel, selectedProducts, kind]);
+
+  // Build the first page's cell markup (async QR/barcode) + page/label totals.
+  useEffect(() => {
+    if (!isSheet) return;
+    let alive = true;
+    // With nothing selected, fill one page with the sample so the grid is legible.
+    const { perPage } = sheetPlan(Math.max(sheetLabelList.length, 1), settings.sheet);
+    const source = sheetLabelList.length ? sheetLabelList : Array.from({ length: perPage }, () => previewLabel);
+    const { totalPages } = sheetPlan(source.length, settings.sheet);
+    const firstPage = source.slice(0, perPage);
+    Promise.all(firstPage.map((d) => buildLabelMarkup(d, config)))
+      .then((markups) => {
+        if (!alive) return;
+        setSheetPreviewHtml(markups.map((m) => `<div class="lb-label">${m}</div>`).join(""));
+        setSheetPages(totalPages);
+        setSheetTotal(sheetLabelList.length);
+      })
+      .catch(() => alive && setSheetPreviewHtml(""));
+    return () => {
+      alive = false;
+    };
+  }, [isSheet, sheetLabelList, settings.sheet, config, previewLabel]);
+
+  const setSheet = (patch: Partial<SheetLayout>) => persistSettings({ ...settings, sheet: { ...settings.sheet, ...patch } });
+  const applyPerPage = (n: number) => setSheet(factorizePerPage(n));
+  const currentPerPage = Math.max(1, Math.round(settings.sheet.columns || 1)) * Math.max(1, Math.round(settings.sheet.rows || 1));
+
   const printCurrent = () =>
     runPrint(isWarehouseKind ? warehouseLabels(1) : buildLabels(currentProducts(), 1), "printed");
   const printSelected = () =>
@@ -454,7 +517,10 @@ export default function PrintLabelsPage() {
             <QrCode className="w-6 h-6 text-primary" /> طباعة الملصقات
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            ملصقات QR وباركود احترافية — Xprinter XP-236B ‏· {settings.widthMm}×{settings.heightMm} مم ‏· {settings.dpi} DPI
+            ملصقات QR وباركود احترافية ‏· {settings.widthMm}×{settings.heightMm} مم ‏·{" "}
+            {isSheet
+              ? `ورقة ${PAPER_LABELS[settings.sheet.paper]} — ${currentPerPage} ملصق/صفحة`
+              : `رول حراري — ${settings.printerName}`}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -625,22 +691,46 @@ export default function PrintLabelsPage() {
               </div>
             </div>
 
+            {isSheet && (
+              <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs">
+                <span className="font-medium text-foreground">
+                  {PAPER_LABELS[settings.sheet.paper]} · {currentPerPage} ملصق/صفحة ({settings.sheet.columns}×{settings.sheet.rows})
+                </span>
+                <span className="text-muted-foreground">
+                  الإجمالي: {sheetTotal} ملصق · {sheetPages} صفحة · معاينة الصفحة 1
+                </span>
+              </div>
+            )}
             <div
-              className={`flex-1 min-h-[300px] rounded-lg border border-dashed border-border/40 grid place-items-center overflow-auto p-6 transition-colors ${
-                darkPreview ? "bg-zinc-900" : "bg-zinc-100"
-              }`}
+              className={`flex-1 min-h-[300px] rounded-lg border border-dashed border-border/40 grid ${
+                isSheet ? "place-items-start justify-center" : "place-items-center"
+              } overflow-auto p-6 transition-colors ${darkPreview ? "bg-zinc-900" : "bg-zinc-100"}`}
             >
               <style>{labelCss(settings, { screen: true })}</style>
-              <div
-                style={{
-                  transform: `scale(${zoom}) rotate(${rotate}deg)`,
-                  transformOrigin: "center",
-                  transition: "transform 0.15s ease",
-                  boxShadow: "0 2px 14px rgba(0,0,0,0.25)",
-                }}
-              >
-                <div className="lb-label" dangerouslySetInnerHTML={{ __html: previewHtml }} />
-              </div>
+              {isSheet ? (
+                <div
+                  style={{
+                    transform: `scale(${(Math.min(0.9, 520 / (sheetPaperDims(settings.sheet).w * 3.7795)) * zoom) / 4})`,
+                    transformOrigin: "top center",
+                    transition: "transform 0.15s ease",
+                  }}
+                >
+                  <div className="lb-sheet">
+                    <div className="lb-page" dangerouslySetInnerHTML={{ __html: sheetPreviewHtml }} />
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    transform: `scale(${zoom}) rotate(${rotate}deg)`,
+                    transformOrigin: "center",
+                    transition: "transform 0.15s ease",
+                    boxShadow: "0 2px 14px rgba(0,0,0,0.25)",
+                  }}
+                >
+                  <div className="lb-label" dangerouslySetInnerHTML={{ __html: previewHtml }} />
+                </div>
+              )}
             </div>
 
             {/* Print buttons */}
@@ -801,7 +891,161 @@ export default function PrintLabelsPage() {
 
       {tab === "settings" && (
         <div className="bg-card rounded-xl border border-border/30 p-5 max-w-2xl space-y-4">
-          <p className="font-semibold text-foreground">إعدادات الطابعة والملصق</p>
+          {/* ── Print layout mode ── */}
+          <div>
+            <p className="font-semibold text-foreground mb-2">نمط الطباعة</p>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                ["roll", "رول حراري", "ملصق واحد لكل صفحة (Xprinter وما شابه)"],
+                ["sheet", "ورقة متعددة", "شبكة ملصقات على A4/A5/Letter"],
+              ] as const).map(([mode, title, desc]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => persistSettings({ ...settings, layoutMode: mode as LabelLayoutMode })}
+                  className={`rounded-lg border p-3 text-right transition-colors ${
+                    settings.layoutMode === mode
+                      ? "border-primary/60 bg-primary/10"
+                      : "border-border/40 bg-background/50 hover:border-primary/35"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold text-foreground">{title}</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">{desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Sheet (multi-label) layout ── */}
+          {isSheet && (
+            <div className="rounded-lg border border-border/40 bg-background/40 p-4 space-y-4">
+              <p className="font-semibold text-sm text-foreground">تخطيط الورقة المتعددة</p>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block text-xs text-muted-foreground">
+                  حجم الورق
+                  <select
+                    value={settings.sheet.paper}
+                    onChange={(e) => setSheet({ paper: e.target.value as LabelPaperSize })}
+                    className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                  >
+                    {(["a4", "a5", "letter", "custom"] as LabelPaperSize[]).map((p) => (
+                      <option key={p} value={p}>{PAPER_LABELS[p]}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs text-muted-foreground">
+                  الاتجاه
+                  <select
+                    value={settings.sheet.orientation}
+                    onChange={(e) => setSheet({ orientation: e.target.value as "portrait" | "landscape" })}
+                    className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                  >
+                    <option value="portrait">عمودي</option>
+                    <option value="landscape">أفقي</option>
+                  </select>
+                </label>
+                {settings.sheet.paper === "custom" && (
+                  <>
+                    <label className="block text-xs text-muted-foreground">
+                      عرض الورقة (مم)
+                      <input
+                        type="number"
+                        value={settings.sheet.paperWidthMm}
+                        onChange={(e) => setSheet({ paperWidthMm: Number(e.target.value) || 210 })}
+                        className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="block text-xs text-muted-foreground">
+                      ارتفاع الورقة (مم)
+                      <input
+                        type="number"
+                        value={settings.sheet.paperHeightMm}
+                        onChange={(e) => setSheet({ paperHeightMm: Number(e.target.value) || 297 })}
+                        className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+
+              <label className="block text-xs text-muted-foreground">
+                عدد الملصقات في الصفحة
+                <select
+                  value={PER_PAGE_PRESETS.includes(currentPerPage) ? String(currentPerPage) : "custom"}
+                  onChange={(e) => { if (e.target.value !== "custom") applyPerPage(Number(e.target.value)); }}
+                  className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                >
+                  {PER_PAGE_PRESETS.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                  <option value="custom">مخصص ({currentPerPage})</option>
+                </select>
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block text-xs text-muted-foreground">
+                  الأعمدة
+                  <input
+                    type="number"
+                    min={1}
+                    value={settings.sheet.columns}
+                    onChange={(e) => setSheet({ columns: Math.max(1, Number(e.target.value) || 1) })}
+                    className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="block text-xs text-muted-foreground">
+                  الصفوف
+                  <input
+                    type="number"
+                    min={1}
+                    value={settings.sheet.rows}
+                    onChange={(e) => setSheet({ rows: Math.max(1, Number(e.target.value) || 1) })}
+                    className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="block text-xs text-muted-foreground">
+                  هامش الصفحة (مم)
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    value={settings.sheet.pageMarginMm}
+                    onChange={(e) => setSheet({ pageMarginMm: Math.max(0, Number(e.target.value) || 0) })}
+                    className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-xs text-muted-foreground">
+                    تباعد أفقي (مم)
+                    <input
+                      type="number"
+                      step="0.5"
+                      min={0}
+                      value={settings.sheet.hGapMm}
+                      onChange={(e) => setSheet({ hGapMm: Math.max(0, Number(e.target.value) || 0) })}
+                      className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                    />
+                  </label>
+                  <label className="block text-xs text-muted-foreground">
+                    تباعد عمودي (مم)
+                    <input
+                      type="number"
+                      step="0.5"
+                      min={0}
+                      value={settings.sheet.vGapMm}
+                      onChange={(e) => setSheet({ vGapMm: Math.max(0, Number(e.target.value) || 0) })}
+                      className="mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+                    />
+                  </label>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                كل ملصق يحافظ على مقاسه ({settings.widthMm}×{settings.heightMm} مم) — لا يتم تكبير/تصغير الباركود. تُملأ كل صفحة بالكامل ثم تبدأ صفحة جديدة.
+              </p>
+            </div>
+          )}
+
+          <p className="font-semibold text-foreground pt-1">إعدادات الطابعة والملصق</p>
           <div className="grid grid-cols-2 gap-4">
             <label className="block text-xs text-muted-foreground">
               الطابعة
