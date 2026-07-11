@@ -8871,6 +8871,39 @@ async function releaseReservations(
   }
 }
 
+// Store products linked to a Kosha management section (accessory/addon/board/…).
+// Stored in the key-value settings table (kosha-section-products:<type>:<id>) —
+// no new table. Returns items enriched with name/image/variant for display.
+async function loadKoshaSectionProducts(type: string, id: number) {
+  const row = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, `kosha-section-products:${type}:${id}`) });
+  const raw = (((row?.value as any)?.items ?? []) as any[]).filter((r) => Number(r?.productId));
+  if (!raw.length) return [];
+  const productIds = [...new Set(raw.map((r) => Number(r.productId)))];
+  const variantIds = [...new Set(raw.map((r) => Number(r.variantId)).filter(Boolean))] as number[];
+  const products = await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) });
+  const pmap = new Map(products.map((p: any) => [p.id, p]));
+  const vmap = new Map<number, any>();
+  if (variantIds.length) {
+    const vres: any = await db.execute(sql`select id, color, size from product_variants where id in (${sql.join(variantIds.map((v) => sql`${v}`), sql`, `)})`);
+    for (const v of vres.rows ?? []) vmap.set(Number(v.id), v);
+  }
+  return raw
+    .filter((r) => pmap.has(Number(r.productId)))
+    .map((r) => {
+      const p: any = pmap.get(Number(r.productId));
+      const v = r.variantId ? vmap.get(Number(r.variantId)) : null;
+      return {
+        productId: Number(r.productId),
+        variantId: r.variantId ? Number(r.variantId) : null,
+        name: p?.nameAr || p?.name || `#${r.productId}`,
+        imageUrl: (publicMediaList("product", p, p?.images) ?? [])[0] ?? null,
+        barcode: p?.barcode ?? null,
+        variantLabel: v ? [v.color, v.size].filter(Boolean).join(" / ") || null : null,
+        quantity: Math.max(1, Number(r.quantity) || 1),
+      };
+    });
+}
+
 // Availability check across products/variants: blocks quantities exceeding available stock.
 async function checkAvailability(
   items: ReservationItem[],
@@ -19841,6 +19874,50 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .onConflictDoUpdate({ target: settingsTable.key, set: { value: { items } as any, updatedAt: new Date() } });
       void logAdminActivity(req, "workspace_default_set", "settings", 0, { count: items.length });
       return json({ ok: true, items });
+    }
+    return error("غير مدعوم", 405);
+  }
+
+  // Link Store Products to a Kosha management section (accessory/addon/board/…).
+  // Persisted in settings (kosha-section-products:<type>:<id>) — no new table.
+  if (section === "kosha-section-products") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureVariantTables();
+    const p = req.nextUrl.searchParams;
+    if (method === "GET") {
+      // Bulk: ?keys=type:id,type:id  (used by the booking form for selected sections)
+      const keysParam = String(p.get("keys") ?? "").trim();
+      if (keysParam) {
+        const sections: Record<string, any[]> = {};
+        for (const pair of keysParam.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 50)) {
+          const [t, i] = pair.split(":");
+          if (t && Number(i)) sections[pair] = await loadKoshaSectionProducts(t, Number(i));
+        }
+        return json({ sections });
+      }
+      const type = String(p.get("type") ?? "").trim();
+      const idn = int(String(p.get("id") ?? "")) ?? 0;
+      if (!type || !idn) return error("type و id مطلوبان", 400);
+      return json({ items: await loadKoshaSectionProducts(type, idn) });
+    }
+    if (method === "PUT") {
+      const b = await body(req);
+      const type = String(b?.type ?? "").trim();
+      const idn = optionalPositiveId(b?.id) ?? 0;
+      if (!type || !idn) return error("type و id مطلوبان", 400);
+      const items = (Array.isArray(b?.items) ? b.items : [])
+        .map((it: any) => ({
+          productId: optionalPositiveId(it?.productId) ?? 0,
+          variantId: it?.variantId != null ? optionalPositiveId(it.variantId) ?? null : null,
+          quantity: Math.max(1, Math.floor(Number(it?.quantity) || 1)),
+        }))
+        .filter((it: any) => it.productId)
+        .slice(0, 60);
+      await db.insert(settingsTable).values({ key: `kosha-section-products:${type}:${idn}`, value: { items } as any })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: { items } as any, updatedAt: new Date() } });
+      void logAdminActivity(req, "kosha_section_products_linked", "settings", idn, { type, count: items.length });
+      return json({ ok: true, items: await loadKoshaSectionProducts(type, idn) });
     }
     return error("غير مدعوم", 405);
   }

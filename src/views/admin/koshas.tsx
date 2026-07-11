@@ -335,6 +335,7 @@ function KoshaCatalogOptionsManager({
               item={item}
               settings={publicSettings?.image_settings}
               watermarkText={publicSettings?.site_name}
+              endpoint={endpoint}
               onSave={(values) => update.mutate({ id: item.id, values })}
               onDelete={() => confirm("حذف العنصر؟") && remove.mutate(item.id)}
             />
@@ -350,12 +351,14 @@ function KoshaCatalogOptionRow({
   item,
   settings,
   watermarkText,
+  endpoint,
   onSave,
   onDelete,
 }: {
   item: KoshaOption;
   settings: any;
   watermarkText?: string;
+  endpoint: KoshaCatalogEndpoint;
   onSave: (values: Partial<KoshaOption>) => void;
   onDelete: () => void;
 }) {
@@ -409,6 +412,7 @@ function KoshaCatalogOptionRow({
           </div>
         </div>
       </div>
+      <LinkedStoreProductsPanel sectionType={endpoint} sectionId={item.id} />
     </div>
   );
 }
@@ -489,6 +493,137 @@ function KoshaOptionRow({ item, onSave, onDelete }: { item: KoshaOption; onSave:
       <Button type="button" size="sm" variant="outline" onClick={() => onSave({ isActive: !item.isActive })}>{item.isActive ? "تعطيل" : "تفعيل"}</Button>
       <Button type="button" size="sm" onClick={() => onSave({ name, sortOrder: Number(sortOrder) || 0 })}>حفظ</Button>
       <Button type="button" size="sm" variant="outline" onClick={onDelete} className="text-status-danger hover:text-status-danger">حذف</Button>
+    </div>
+  );
+}
+
+type LinkedProduct = { productId: number; variantId: number | null; name: string; imageUrl: string | null; barcode: string | null; variantLabel: string | null; quantity: number };
+
+/**
+ * 🛒 Store products permanently linked to a Kosha section (accessory/addon/board).
+ * Reuses the store product catalogue + variants; persisted in settings (no new table).
+ * When a booking selects this section, these products are surfaced automatically.
+ */
+function LinkedStoreProductsPanel({ sectionType, sectionId }: { sectionType: string; sectionId: number }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [adding, setAdding] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [search, setSearch] = useState("");
+  const [picked, setPicked] = useState<{ id: number; name: string } | null>(null);
+  const [variantOptions, setVariantOptions] = useState<any[] | null>(null);
+  const [variantId, setVariantId] = useState("");
+  const key = ["admin", "kosha-section-products", sectionType, sectionId] as const;
+
+  const { data } = useQuery<{ items: LinkedProduct[] }>({
+    queryKey: key,
+    queryFn: () => adminFetch(`/admin/kosha-section-products?type=${sectionType}&id=${sectionId}`),
+  });
+  const { data: products = [] } = useQuery<any[]>({
+    queryKey: ["admin", "reservation-products-picker"],
+    queryFn: () => adminFetch("/admin/products?limit=1000"),
+    staleTime: 2 * 60 * 1000,
+    enabled: adding,
+  });
+  const items = data?.items ?? [];
+  const productImg = (p: any): string | null => (Array.isArray(p?.images) ? p.images[0] : null) ?? p?.mainImage ?? null;
+
+  const save = useMutation({
+    mutationFn: (next: LinkedProduct[]) => adminFetch("/admin/kosha-section-products", { method: "PUT", body: JSON.stringify({ type: sectionType, id: sectionId, items: next.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })) }) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: key }),
+    onError: (e: any) => toast({ title: "تعذّر الحفظ", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+
+  function addProduct(p: any, vId: number | null, vLabel: string | null) {
+    if (items.some((i) => i.productId === p.id && i.variantId === vId)) { toast({ title: "المنتج مضاف مسبقاً" }); return; }
+    save.mutate([...items, { productId: p.id, variantId: vId, name: p.nameAr || p.name, imageUrl: productImg(p), barcode: p.barcode ?? null, variantLabel: vLabel, quantity: 1 }]);
+  }
+  async function choose(p: any) {
+    setPicked({ id: p.id, name: p.nameAr || p.name }); setVariantId(""); setSearch("");
+    try { const stock = await adminFetch<any>(`/products/${p.id}/stock`); setVariantOptions(stock.hasVariants ? stock.variants : []); }
+    catch { setVariantOptions([]); }
+  }
+  function confirmPicked() {
+    const src = products.find((x) => x.id === picked?.id);
+    if (!src) return;
+    const vId = variantId ? Number(variantId) : null;
+    const v = variantOptions?.find((x) => x.id === vId);
+    addProduct(src, vId, v ? [v.color, v.size].filter(Boolean).join(" / ") || null : null);
+    setPicked(null); setVariantOptions(null); setVariantId("");
+  }
+  function onScan(code: string) {
+    const c = code.trim().toLowerCase();
+    const p = products.find((x) => String(x.barcode ?? "").toLowerCase() === c);
+    if (!p) { toast({ title: "لم يُعثر على منتج بهذا الباركود", variant: "destructive" }); return; }
+    addProduct(p, null, null);
+    toast({ title: `تمت إضافة ${p.nameAr || p.name}` });
+  }
+
+  const results = search.trim().length >= 2
+    ? products.filter((p) => [p.nameAr, p.name, p.barcode].some((v) => String(v ?? "").toLowerCase().includes(search.trim().toLowerCase()))).slice(0, 10)
+    : [];
+  const variantsNeedPick = variantOptions && variantOptions.length > 0;
+
+  return (
+    <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-foreground">🛒 المنتجات المرتبطة من المتجر {items.length ? `(${items.length})` : ""}</span>
+        <Button size="sm" variant="outline" className="gap-1" onClick={() => setAdding((a) => !a)}><Plus className="h-3.5 w-3.5" /> إضافة من المتجر</Button>
+      </div>
+
+      {items.length ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {items.map((it, i) => (
+            <div key={i} className="flex items-center gap-2 rounded-lg border border-border/30 bg-background/60 p-2">
+              {it.imageUrl ? <img src={it.imageUrl} alt="" className="h-10 w-10 flex-shrink-0 rounded object-cover" /> : <span className="grid h-10 w-10 flex-shrink-0 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-foreground">{it.name}</div>
+                {it.variantLabel ? <div className="text-[11px] text-primary">{it.variantLabel}</div> : null}
+              </div>
+              <label className="flex items-center gap-1 text-[11px] text-muted-foreground">كمية
+                <input type="number" min={1} defaultValue={it.quantity} onBlur={(e) => { const q = Math.max(1, Number(e.target.value) || 1); if (q !== it.quantity) save.mutate(items.map((x, xi) => (xi === i ? { ...x, quantity: q } : x))); }} className="w-14 rounded border border-border/40 bg-background px-1 py-0.5 text-center text-xs" />
+              </label>
+              <button type="button" onClick={() => save.mutate(items.filter((_, xi) => xi !== i))} className="grid h-7 w-7 flex-shrink-0 place-items-center rounded border border-destructive/30 text-destructive"><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-xs text-muted-foreground">لا توجد منتجات مرتبطة بهذا القسم بعد.</p>}
+
+      {adding && (
+        <div className="mt-3 space-y-2 border-t border-border/20 pt-3">
+          {picked ? (
+            <div className="rounded-lg border border-primary/20 bg-background/60 p-2 space-y-2">
+              <div className="flex items-center justify-between"><span className="text-sm text-foreground">{picked.name}</span><button type="button" onClick={() => { setPicked(null); setVariantOptions(null); }} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button></div>
+              {variantsNeedPick && (
+                <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
+                  <option value="">— اختر المتغيّر (لون / مقاس) —</option>
+                  {variantOptions!.map((v) => <option key={v.id} value={v.id}>{[v.color, v.size].filter(Boolean).join(" / ")} (متاح {v.available})</option>)}
+                </select>
+              )}
+              <Button size="sm" className="w-full" disabled={save.isPending || (Boolean(variantsNeedPick) && !variantId)} onClick={confirmPicked}>ربط المنتج</Button>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم أو الباركود أو SKU..." className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+                <button type="button" onClick={() => setScanning((s) => !s)} className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-lg border ${scanning ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`} title="مسح باركود"><ScanLine className="h-4 w-4" /></button>
+              </div>
+              {scanning ? <div className="overflow-hidden rounded-lg border border-border/30"><LiveScanner active={scanning} onDetect={onScan} /></div> : null}
+              {results.length ? (
+                <div className="divide-y divide-border/20 rounded-lg border border-border/30">
+                  {results.map((p) => (
+                    <button key={p.id} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-background/60">
+                      {productImg(p) ? <img src={productImg(p)!} alt="" className="h-8 w-8 rounded object-cover" /> : <span className="grid h-8 w-8 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
+                      <span className="min-w-0 flex-1 truncate text-right">{p.nameAr || p.name}</span>
+                      <Plus className="h-4 w-4 text-primary" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
