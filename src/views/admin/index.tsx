@@ -80,6 +80,7 @@ const FinanceReportsPage = lazy(() =>
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
 const WorkspacePage = lazy(() => import("./workspace"));
+const InvitationStudioPage = lazy(() => import("./invitations"));
 const FinancialRequestPage = lazy(() =>
   import("./master-cash").then((module) => ({
     default: module.FinancialRequestPage,
@@ -503,6 +504,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="dashboard">
                 <WorkspacePage me={me} />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/invitations/:id">
+            {() => (
+              <Guard me={me} perm="koshas">
+                <InvitationStudioPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/invitations">
+            {() => (
+              <Guard me={me} perm="koshas">
+                <InvitationStudioPage />
               </Guard>
             )}
           </Route>

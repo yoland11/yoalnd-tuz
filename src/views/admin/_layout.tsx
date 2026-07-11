@@ -13,6 +13,7 @@ import {
   Tag,
   UserCog,
   Sparkles,
+  Mail,
   Wallet,
   MessageCircle,
   Database,
@@ -383,6 +384,7 @@ export const NAV: NavItem[] = [
   { href: "/admin/crews", label: "إدارة الكادر", icon: UserCog, perm: "staff" },
   { href: "/admin/staff", label: "الموظفون", icon: UserCog, perm: "staff" },
   { href: "/admin/employee-performance", label: "أداء الموظفين", icon: Trophy, perm: "staff" },
+  { href: "/admin/invitations", label: "استوديو الدعوات", icon: Mail, perm: "koshas" },
   {
     href: "/admin/activity-log",
     label: "سجل النشاط",
@@ -627,6 +629,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/koshas"),
       navItem("/admin/kosha-packages"),
       navItem("/admin/kosha-bookings"),
+      navItem("/admin/invitations"),
       navItem("/admin/products"),
       navItem("/admin/categories"),
       navItem("/admin/gallery"),

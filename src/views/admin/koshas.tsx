@@ -1379,6 +1379,10 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <BookingReservationSection bookingId={booking.id} />
         </KoshaDetailSection>
 
+        <KoshaDetailSection title="💌 الدعوة الإلكترونية">
+          <BookingInvitationButton bookingId={booking.id} />
+        </KoshaDetailSection>
+
         <KoshaDetailSection title="الكوشة المختارة">
           <KoshaOptionTile name={booking.koshaName ?? kosha?.name ?? "—"} mainImage={kosha?.mainImage ?? null} price={kosha?.price ?? null} onZoom={setLightbox} />
         </KoshaDetailSection>
@@ -1551,6 +1555,22 @@ const STORE_STATUS_BADGE: Record<string, { t: string; c: string }> = {
   consumed: { t: "✅ مخصوم", c: "border-status-success/30 bg-status-success/10 text-status-success" },
   released: { t: "↩︎ محرَّر", c: "border-border/30 text-muted-foreground" },
 };
+
+// Create an electronic invitation pre-filled from this booking (no duplicate entry).
+function BookingInvitationButton({ bookingId }: { bookingId: number }) {
+  const { toast } = useToast();
+  const create = useMutation({
+    mutationFn: () => adminFetch<{ id: number }>("/admin/invitations", { method: "POST", body: JSON.stringify({ type: "wedding", bookingId }) }),
+    onSuccess: (card) => { window.location.assign(`/admin/invitations/${card.id}`); },
+    onError: (e: any) => toast({ title: "تعذّر إنشاء الدعوة", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" onClick={() => create.mutate()} disabled={create.isPending} className="gap-1">💌 إنشاء دعوة إلكترونية</Button>
+      <span className="text-xs text-muted-foreground">تُستورد بيانات العروسين والتاريخ والموقع والهاتف تلقائياً من الحجز.</span>
+    </div>
+  );
+}
 
 function BookingReservationSection({ bookingId }: { bookingId: number }) {
   const queryClient = useQueryClient();

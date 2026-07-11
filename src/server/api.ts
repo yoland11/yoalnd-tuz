@@ -19834,6 +19834,125 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  // 💌 Invitation Studio — admin CRUD + per-card RSVP dashboard.
+  if (section === "invitations") {
+    const auth = await requireAnyPermission(req, ["koshas", "bookings", "customers", "dashboard"]);
+    if (isResponse(auth)) return auth;
+    await ensureInvitationTables();
+    const cardId = parts[2] ? int(parts[2]) : null;
+
+    const adminView = (row: any, extra: Record<string, unknown> = {}) => ({
+      id: Number(row.id),
+      ...invitationPublicView(row, null),
+      code: row.code, bookingId: row.booking_id ?? null, customerId: row.customer_id ?? null,
+      customerPhone: row.customer_phone, customerEmail: row.customer_email,
+      status: row.status, isActive: row.is_active, views: Number(row.views ?? 0),
+      createdAt: row.created_at, updatedAt: row.updated_at, ...extra,
+    });
+
+    if (method === "GET" && !cardId) {
+      const res: any = await db.execute(sql`
+        select c.*,
+          coalesce(count(r.id),0)::int as rsvp_total,
+          coalesce(count(r.id) filter (where r.attendance_status='confirmed'),0)::int as confirmed,
+          coalesce(sum(case when r.attendance_status='confirmed' then r.companions_count else 0 end),0)::int as companions
+        from invitation_cards c left join invitation_card_rsvps r on r.card_id = c.id
+        group by c.id order by c.created_at desc limit 200`);
+      return json({ cards: (res.rows ?? []).map((row: any) => adminView(row, { rsvpTotal: Number(row.rsvp_total), confirmed: Number(row.confirmed), companions: Number(row.companions) })) });
+    }
+
+    if (method === "POST" && !cardId) {
+      const parsed = invitationCardSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("invitations.create", parsed);
+      const d: any = parsed.data;
+      // Auto-import from a kosha booking (no duplicate entry).
+      if (d.bookingId) {
+        const b = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, d.bookingId) });
+        if (b) {
+          const det = (b.bookingDetails ?? {}) as any;
+          d.brideName = d.brideName ?? b.brideName ?? null;
+          d.groomName = d.groomName ?? b.groomName ?? null;
+          d.eventDate = d.eventDate ?? b.eventDate ?? null;
+          d.eventTime = d.eventTime ?? b.eventTime ?? null;
+          d.venueName = d.venueName ?? det.venueType ?? null;
+          d.venueAddress = d.venueAddress ?? ([b.province, det.area ?? det.cityArea, det.nearestPoint].filter(Boolean).join(" - ") || null);
+          d.customerPhone = d.customerPhone ?? b.phone ?? null;
+          d.eventName = d.eventName ?? ([b.brideName, b.groomName].filter(Boolean).join(" و ") || null);
+        }
+      }
+      const slug = inviteSlug();
+      const res: any = await db.execute(sql`
+        insert into invitation_cards (slug, code, type, booking_id, customer_id, bride_name, groom_name, event_name,
+          event_date, event_time, venue_name, venue_address, map_url, customer_phone, customer_email,
+          welcome_message, thank_you_message, main_image_url, gallery_images, font_family, custom_font_url,
+          text_color, background_color, animation_style, music_url, video_url, status, created_by)
+        values (${slug}, ${slug}, ${d.type ?? "wedding"}, ${d.bookingId ?? null}, ${d.customerId ?? null},
+          ${d.brideName ?? null}, ${d.groomName ?? null}, ${d.eventName ?? null}, ${d.eventDate ?? null}, ${d.eventTime ?? null},
+          ${d.venueName ?? null}, ${d.venueAddress ?? null}, ${d.mapUrl ?? null}, ${d.customerPhone ?? null}, ${d.customerEmail ?? null},
+          ${d.welcomeMessage ?? null}, ${d.thankYouMessage ?? null}, ${d.mainImageUrl ?? null},
+          ${JSON.stringify(d.galleryImages ?? [])}::jsonb, ${d.fontFamily ?? "Cairo"}, ${d.customFontUrl ?? null},
+          ${d.textColor ?? "#2a2118"}, ${d.backgroundColor ?? "#f7f1e8"}, ${d.animationStyle ?? "fade"},
+          ${d.musicUrl ?? null}, ${d.videoUrl ?? null}, ${d.status ?? "draft"}, ${auth.id}) returning *`);
+      const row = (res.rows ?? [])[0];
+      void logAdminActivity(req, "invitation_created", "invitation_card", Number(row.id), { slug });
+      void addEntityTimeline({ entityType: "invitation_card", entityId: Number(row.id), type: "created", title: "💌 إنشاء دعوة", body: row.event_name ?? null, actor: erpActorFromAdmin(auth) });
+      return json(adminView(row), 201);
+    }
+
+    if (cardId) {
+      const existingRes: any = await db.execute(sql`select * from invitation_cards where id = ${cardId} limit 1`);
+      const existing = (existingRes.rows ?? [])[0];
+      if (!existing) return error("الدعوة غير موجودة", 404);
+
+      if (method === "GET") {
+        const [statsRes, rsvpsRes]: any = await Promise.all([
+          db.execute(sql`
+            select coalesce(count(*),0)::int as total,
+              coalesce(count(*) filter (where attendance_status='confirmed'),0)::int as confirmed,
+              coalesce(count(*) filter (where attendance_status='declined'),0)::int as declined,
+              coalesce(count(*) filter (where attendance_status='maybe'),0)::int as maybe,
+              coalesce(sum(case when attendance_status='confirmed' then companions_count else 0 end),0)::int as companions,
+              coalesce(count(*) filter (where responded_at is null),0)::int as no_response
+            from invitation_card_rsvps where card_id = ${cardId}`),
+          db.execute(sql`select id, guest_name, guest_phone, guest_token, attendance_status, companions_count, guest_message, viewed_at, responded_at, created_at from invitation_card_rsvps where card_id = ${cardId} order by coalesce(responded_at, created_at) desc limit 500`),
+        ]);
+        const s = (statsRes.rows ?? [])[0] ?? {};
+        return json(adminView(existing, {
+          stats: { views: Number(existing.views ?? 0), total: Number(s.total ?? 0), confirmed: Number(s.confirmed ?? 0), declined: Number(s.declined ?? 0), maybe: Number(s.maybe ?? 0), companions: Number(s.companions ?? 0), noResponse: Number(s.no_response ?? 0) },
+          rsvps: (rsvpsRes.rows ?? []).map((r: any) => ({ id: Number(r.id), guestName: r.guest_name, guestPhone: r.guest_phone, guestToken: r.guest_token, attendanceStatus: r.attendance_status, companionsCount: Number(r.companions_count ?? 0), guestMessage: r.guest_message, viewedAt: r.viewed_at, respondedAt: r.responded_at, createdAt: r.created_at })),
+        }));
+      }
+
+      if (method === "PATCH") {
+        const parsed = invitationCardSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("invitations.update", parsed);
+        const d: any = parsed.data;
+        const col: Record<string, string> = {
+          type: "type", brideName: "bride_name", groomName: "groom_name", eventName: "event_name",
+          eventDate: "event_date", eventTime: "event_time", venueName: "venue_name", venueAddress: "venue_address",
+          mapUrl: "map_url", customerPhone: "customer_phone", customerEmail: "customer_email",
+          welcomeMessage: "welcome_message", thankYouMessage: "thank_you_message", mainImageUrl: "main_image_url",
+          fontFamily: "font_family", customFontUrl: "custom_font_url", textColor: "text_color", backgroundColor: "background_color",
+          animationStyle: "animation_style", musicUrl: "music_url", videoUrl: "video_url", status: "status", isActive: "is_active",
+        };
+        const sets: any[] = [];
+        for (const [k, c] of Object.entries(col)) if (k in d) sets.push(sql`${sql.raw(`"${c}"`)} = ${d[k] ?? null}`);
+        if ("galleryImages" in d) sets.push(sql`"gallery_images" = ${JSON.stringify(d.galleryImages ?? [])}::jsonb`);
+        sets.push(sql`"updated_at" = now()`);
+        const res: any = await db.execute(sql`update invitation_cards set ${sql.join(sets, sql`, `)} where id = ${cardId} returning *`);
+        return json(adminView((res.rows ?? [])[0]));
+      }
+
+      if (method === "DELETE") {
+        await db.execute(sql`delete from invitation_card_rsvps where card_id = ${cardId}`);
+        await db.execute(sql`delete from invitation_cards where id = ${cardId}`);
+        void logAdminActivity(req, "invitation_deleted", "invitation_card", cardId, {});
+        return json({ ok: true });
+      }
+    }
+    return error("غير مدعوم", 405);
+  }
+
   // Per-user customizable workspace layout + manager default. Stored in the
   // existing key-value `settings` table (workspace:user:<id> / workspace:default).
   if (section === "workspace") {
@@ -35631,6 +35750,178 @@ async function handleBackup(
   return null;
 }
 
+// ───────────────────────── AJN Invitation Studio ─────────────────────────────
+// Electronic invitation cards + guest RSVP. Two runtime-provisioned tables
+// (invitation_cards, invitation_card_rsvps); reuses customers/bookings/QR/
+// notifications/Telegram/timeline. Public pages use a secure slug (never IDs).
+
+const INVITATION_TYPES = ["wedding", "engagement", "henna", "graduation", "birthday", "opening", "baby_shower", "conference", "private"] as const;
+const INVITATION_STATUSES = ["draft", "designing", "waiting_approval", "approved", "published", "completed", "archived"] as const;
+
+const invitationCardSchema = z.object({
+  type: z.enum(INVITATION_TYPES).optional(),
+  bookingId: z.number().int().positive().nullable().optional(),
+  customerId: z.number().int().positive().nullable().optional(),
+  brideName: z.string().max(120).nullable().optional(),
+  groomName: z.string().max(120).nullable().optional(),
+  eventName: z.string().max(160).nullable().optional(),
+  eventDate: z.string().max(20).nullable().optional(),
+  eventTime: z.string().max(20).nullable().optional(),
+  venueName: z.string().max(200).nullable().optional(),
+  venueAddress: z.string().max(400).nullable().optional(),
+  mapUrl: z.string().max(500).nullable().optional(),
+  customerPhone: z.string().max(30).nullable().optional(),
+  customerEmail: z.string().max(160).nullable().optional(),
+  welcomeMessage: z.string().max(1200).nullable().optional(),
+  thankYouMessage: z.string().max(1200).nullable().optional(),
+  mainImageUrl: z.string().max(600).nullable().optional(),
+  galleryImages: z.array(z.string().max(600)).max(30).optional(),
+  fontFamily: z.string().max(80).optional(),
+  customFontUrl: z.string().max(600).nullable().optional(),
+  textColor: z.string().max(20).optional(),
+  backgroundColor: z.string().max(20).optional(),
+  animationStyle: z.string().max(30).optional(),
+  musicUrl: z.string().max(600).nullable().optional(),
+  videoUrl: z.string().max(600).nullable().optional(),
+  status: z.enum(INVITATION_STATUSES).optional(),
+  isActive: z.boolean().optional(),
+});
+
+const invitationRsvpSchema = z.object({
+  guestName: z.string().min(1).max(120),
+  guestPhone: z.string().max(30).optional().nullable(),
+  attendanceStatus: z.enum(["confirmed", "declined", "maybe"]),
+  companionsCount: z.coerce.number().int().min(0).max(50).optional().default(0),
+  guestMessage: z.string().max(1000).optional().nullable(),
+  guestToken: z.string().max(24).optional().nullable(),
+});
+
+async function ensureInvitationTables(): Promise<void> {
+  await db.execute(sql`
+    create table if not exists "invitation_cards" (
+      "id" serial primary key,
+      "slug" varchar(24) not null unique,
+      "code" varchar(24),
+      "type" varchar(30) not null default 'wedding',
+      "booking_id" integer,
+      "customer_id" integer,
+      "bride_name" text, "groom_name" text, "event_name" text,
+      "event_date" varchar(20), "event_time" varchar(20),
+      "venue_name" text, "venue_address" text, "map_url" text,
+      "customer_phone" varchar(30), "customer_email" text,
+      "welcome_message" text, "thank_you_message" text,
+      "main_image_url" text, "gallery_images" jsonb not null default '[]',
+      "font_family" varchar(80) not null default 'Cairo', "custom_font_url" text,
+      "text_color" varchar(20) not null default '#2a2118',
+      "background_color" varchar(20) not null default '#f7f1e8',
+      "animation_style" varchar(30) not null default 'fade',
+      "music_url" text, "video_url" text,
+      "status" varchar(20) not null default 'draft',
+      "is_active" boolean not null default true, "views" integer not null default 0,
+      "created_by" integer,
+      "created_at" timestamp not null default now(),
+      "updated_at" timestamp not null default now()
+    )
+  `);
+  await db.execute(sql`
+    create table if not exists "invitation_card_rsvps" (
+      "id" serial primary key,
+      "card_id" integer not null,
+      "guest_name" text, "guest_phone" varchar(30), "guest_token" varchar(24),
+      "attendance_status" varchar(12) not null default 'pending',
+      "companions_count" integer not null default 0,
+      "guest_message" text, "viewed_at" timestamp, "responded_at" timestamp,
+      "created_at" timestamp not null default now()
+    )
+  `);
+  await db.execute(sql`create index if not exists "invitation_rsvps_card_idx" on "invitation_card_rsvps" ("card_id")`);
+}
+
+/** URL-safe code; never a raw DB id. */
+function inviteSlug(): string {
+  return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+}
+
+function invitationPublicView(row: any, guestName: string | null) {
+  return {
+    slug: row.slug,
+    type: row.type,
+    brideName: row.bride_name, groomName: row.groom_name, eventName: row.event_name,
+    eventDate: row.event_date, eventTime: row.event_time,
+    venueName: row.venue_name, venueAddress: row.venue_address, mapUrl: row.map_url,
+    welcomeMessage: row.welcome_message, thankYouMessage: row.thank_you_message,
+    mainImageUrl: row.main_image_url, galleryImages: row.gallery_images ?? [],
+    fontFamily: row.font_family, customFontUrl: row.custom_font_url,
+    textColor: row.text_color, backgroundColor: row.background_color,
+    animationStyle: row.animation_style, musicUrl: row.music_url, videoUrl: row.video_url,
+    guestName,
+  };
+}
+
+// Public invitation page + guest RSVP (root = "invite"). Secure slug only.
+async function handleInvite(req: NextRequest, parts: string[]): Promise<NextResponse> {
+  await ensureInvitationTables();
+  const slug = parts[1] ? String(parts[1]).slice(0, 24) : "";
+  const action = parts[2];
+  if (!slug) return error("رابط غير صالح", 404);
+  const cardRes: any = await db.execute(sql`select * from invitation_cards where slug = ${slug} and is_active = true limit 1`);
+  const row = (cardRes.rows ?? [])[0];
+  if (!row) return error("الدعوة غير موجودة", 404);
+
+  if (req.method === "GET" && !action) {
+    const guestToken = req.nextUrl.searchParams.get("guest");
+    let guestName: string | null = null;
+    if (guestToken) {
+      const g: any = await db.execute(sql`select guest_name from invitation_card_rsvps where card_id = ${row.id} and guest_token = ${guestToken} limit 1`);
+      guestName = (g.rows ?? [])[0]?.guest_name ?? null;
+      await db.execute(sql`update invitation_card_rsvps set viewed_at = coalesce(viewed_at, now()) where card_id = ${row.id} and guest_token = ${guestToken}`);
+    }
+    await db.execute(sql`update invitation_cards set views = views + 1 where id = ${row.id}`);
+    return json(invitationPublicView(row, guestName));
+  }
+
+  if (req.method === "POST" && action === "rsvp") {
+    const parsed = invitationRsvpSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("invite.rsvp", parsed);
+    const d = parsed.data;
+    let rsvpId: number | undefined;
+    if (d.guestToken) {
+      const upd: any = await db.execute(sql`
+        update invitation_card_rsvps set guest_name = ${d.guestName}, guest_phone = ${d.guestPhone ?? null},
+          attendance_status = ${d.attendanceStatus}, companions_count = ${d.companionsCount ?? 0},
+          guest_message = ${d.guestMessage ?? null}, responded_at = now()
+        where card_id = ${row.id} and guest_token = ${d.guestToken} returning id`);
+      rsvpId = (upd.rows ?? [])[0]?.id;
+    }
+    if (!rsvpId) {
+      const ins: any = await db.execute(sql`
+        insert into invitation_card_rsvps (card_id, guest_name, guest_phone, guest_token, attendance_status, companions_count, guest_message, responded_at)
+        values (${row.id}, ${d.guestName}, ${d.guestPhone ?? null}, ${d.guestToken ?? null}, ${d.attendanceStatus}, ${d.companionsCount ?? 0}, ${d.guestMessage ?? null}, now()) returning id`);
+      rsvpId = (ins.rows ?? [])[0]?.id;
+    }
+    const label = d.attendanceStatus === "confirmed" ? "تأكيد حضور" : d.attendanceStatus === "declined" ? "اعتذار" : "غير متأكد";
+    const eventLabel = row.event_name || [row.bride_name, row.groom_name].filter(Boolean).join(" و ") || "الدعوة";
+    try {
+      await createNotification({
+        audienceType: "admin", type: "invitation_rsvp",
+        title: `رد جديد على الدعوة: ${label}`,
+        body: `${d.guestName}${d.companionsCount ? ` (+${d.companionsCount})` : ""} — ${eventLabel}`,
+        entityType: "invitation_card", entityId: Number(row.id), href: `/admin/invitations/${row.id}`,
+      });
+    } catch { /* notification best-effort */ }
+    try {
+      await sendTelegramMessage(`💌 <b>رد جديد على دعوة</b>\nالمناسبة: ${telegramText(eventLabel)}\nالضيف: ${telegramText(d.guestName)}\nالحالة: ${telegramText(label)}\nمرافقون: ${d.companionsCount ?? 0}${d.guestMessage ? `\nرسالة: ${telegramText(d.guestMessage)}` : ""}`);
+    } catch { /* Telegram failure must not block the RSVP */ }
+    void addEntityTimeline({
+      entityType: "invitation_card", entityId: Number(row.id), type: "rsvp",
+      title: `💌 ${label}`, body: `${d.guestName}${d.guestMessage ? ` — ${d.guestMessage}` : ""}`,
+      actor: { id: null, name: d.guestName }, metadata: { attendanceStatus: d.attendanceStatus, companions: d.companionsCount ?? 0 },
+    });
+    return json({ ok: true });
+  }
+  return error("غير مدعوم", 405);
+}
+
 export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const parts = rawParts.map((p) => decodeURIComponent(p)).filter(Boolean);
   const root = parts[0];
@@ -35747,6 +36038,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     const route =
       root === "auth"
         ? await handleAuth(req, parts)
+        : root === "invite"
+        ? await handleInvite(req, parts)
         : root === "media"
           ? await handleMedia(req, parts)
           : root === "settings"

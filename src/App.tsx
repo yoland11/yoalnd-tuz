@@ -33,6 +33,7 @@ const PhotographyStaffPortal = lazy(
 const ProductDetail = lazy(() => import("@/views/store/id"));
 const Track = lazy(() => import("@/views/track"));
 const KoshaTracking = lazy(() => import("@/views/kosha-tracking"));
+const InvitePage = lazy(() => import("@/views/invite"));
 const Checkout = lazy(() => import("@/views/checkout"));
 const Gallery = lazy(() => import("@/views/gallery"));
 const Favorites = lazy(() => import("@/views/favorites"));
@@ -241,6 +242,11 @@ function Router() {
               <Route path="/kosha-tracking/:token">
                 <Suspense fallback={<PageSpinner />}>
                   <KoshaTracking />
+                </Suspense>
+              </Route>
+              <Route path="/invite/:slug">
+                <Suspense fallback={<PageSpinner />}>
+                  <InvitePage />
                 </Suspense>
               </Route>
               <Route path="/gallery">
