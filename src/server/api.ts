@@ -19850,6 +19850,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       createdAt: row.created_at, updatedAt: row.updated_at, ...extra,
     });
 
+    // Secure custom-font upload — validates real font magic bytes; rejects unsafe files.
+    if (method === "POST" && cardId && parts[3] === "upload-font") {
+      const b = await body(req);
+      const dataUrl = String(b?.dataUrl ?? "");
+      const family = String(b?.family ?? "").replace(/[^\w؀-ۿ \-]/g, "").slice(0, 60).trim();
+      const m = dataUrl.match(/^data:([\w.+/-]*);base64,([A-Za-z0-9+/=]+)$/);
+      if (!m || !family) return error("ملف الخط غير صالح", 400);
+      let buf: Buffer;
+      try { buf = Buffer.from(m[2], "base64"); } catch { return error("ملف الخط غير صالح", 400); }
+      if (buf.length < 8 || buf.length > 1_800_000) return error("حجم الخط غير مسموح (حتى ~1.7MB)", 413);
+      const sig = buf.subarray(0, 4);
+      const s4 = sig.toString("latin1");
+      const isFont = s4 === "wOFF" || s4 === "wOF2" || s4 === "OTTO" || s4 === "true" || s4 === "ttcf" ||
+        (sig[0] === 0x00 && sig[1] === 0x01 && sig[2] === 0x00 && sig[3] === 0x00);
+      if (!isFont) return error("الملف ليس خطاً صالحاً (woff/woff2/ttf/otf فقط)", 415);
+      void logAdminActivity(req, "invitation_font_uploaded", "invitation_card", cardId, { family, bytes: buf.length });
+      return json({ ok: true, url: dataUrl, family });
+    }
+
     if (method === "GET" && !cardId) {
       const res: any = await db.execute(sql`
         select c.*,

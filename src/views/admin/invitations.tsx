@@ -26,6 +26,11 @@ const TEMPLATES: Array<{ name: string; category: string; bg: string; fg: string;
   { name: "أسود", category: "Black", bg: "#111111", fg: "#f0f0f0", font: "Cairo", anim: "zoom" },
   { name: "أبيض", category: "White", bg: "#ffffff", fg: "#333333", font: "Tajawal", anim: "fade" },
   { name: "وردي", category: "Flowers", bg: "#fdeef2", fg: "#8a2846", font: "Amiri", anim: "float" },
+  { name: "زجاجي", category: "Glass", bg: "#e8eef3", fg: "#274060", font: "Tajawal", anim: "zoom" },
+  { name: "ثلاثي الأبعاد", category: "3D", bg: "#1a1a2e", fg: "#00d4ff", font: "Cairo", anim: "float" },
+  { name: "أطفال", category: "Kids", bg: "#fff6e0", fg: "#ef6c57", font: "Tajawal", anim: "float" },
+  { name: "شركات", category: "Corporate", bg: "#0e1726", fg: "#7aa2ff", font: "IBM Plex Sans Arabic", anim: "slide" },
+  { name: "تخرّج", category: "Graduation", bg: "#0b132b", fg: "#e0b02c", font: "Reem Kufi", anim: "glow" },
 ];
 
 type Card = InvitationData & { id: number; code?: string; status: string; views?: number; rsvpTotal?: number; confirmed?: number; companions?: number; customerPhone?: string | null; customerEmail?: string | null; bookingId?: number | null };
@@ -142,6 +147,16 @@ function InvitationEditor({ id }: { id: number }) {
   function applyTemplate(t: (typeof TEMPLATES)[number]) {
     applyFields({ backgroundColor: t.bg, textColor: t.fg, fontFamily: t.font, animationStyle: t.anim });
   }
+  async function uploadFont(file: File) {
+    if (file.size > 1_800_000) { toast({ title: "حجم الخط كبير (حتى ~1.7MB)", variant: "destructive" }); return; }
+    const family = file.name.replace(/\.(woff2?|ttf|otf)$/i, "").replace(/[^\w؀-ۿ \-]/g, "").slice(0, 60) || "CustomFont";
+    const dataUrl = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
+    try {
+      const out = await adminFetch<{ url: string; family: string }>(`/admin/invitations/${id}/upload-font`, { method: "POST", body: JSON.stringify({ dataUrl, family }) });
+      applyFields({ customFontUrl: out.url, fontFamily: out.family });
+      toast({ title: `تم رفع الخط: ${out.family}` });
+    } catch (e: any) { toast({ title: "تعذّر رفع الخط", description: apiErrorMessage(e), variant: "destructive" }); }
+  }
 
   const del = useMutation({
     mutationFn: () => adminFetch(`/admin/invitations/${id}`, { method: "DELETE" }),
@@ -240,6 +255,13 @@ function InvitationEditor({ id }: { id: number }) {
               <Fld label="الخط"><select value={form.fontFamily ?? "Cairo"} onChange={(e) => setField("fontFamily", e.target.value)} className={inp}>{ARABIC_FONTS.map((f) => <option key={f} value={f}>{f}</option>)}</select></Fld>
               <Fld label="لون النص"><input type="color" value={form.textColor ?? "#2a2118"} onChange={(e) => setField("textColor", e.target.value)} className="h-10 w-full rounded-lg border border-border/40 bg-background" /></Fld>
               <Fld label="لون الخلفية"><input type="color" value={form.backgroundColor ?? "#f7f1e8"} onChange={(e) => setField("backgroundColor", e.target.value)} className="h-10 w-full rounded-lg border border-border/40 bg-background" /></Fld>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-border/40 px-3 py-1.5 text-xs font-medium text-foreground hover:border-primary/40">
+                ⬆️ رفع خط مخصّص
+                <input type="file" accept=".woff,.woff2,.ttf,.otf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFont(f); e.target.value = ""; }} />
+              </label>
+              {form.customFontUrl ? <span className="text-xs text-status-success">خط مخصّص مفعّل: {form.fontFamily}</span> : <span className="text-[11px] text-muted-foreground">woff/woff2/ttf/otf — حتى ~1.7MB</span>}
             </div>
             <Fld label="الحركة"><select value={form.animationStyle ?? "fade"} onChange={(e) => setField("animationStyle", e.target.value)} className={inp}>{ANIMATION_STYLES.map((a) => <option key={a} value={a}>{a}</option>)}</select></Fld>
             <div className="pt-2">
