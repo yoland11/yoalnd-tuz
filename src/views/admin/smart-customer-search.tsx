@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Loader2, MapPin, Phone, Search, UserPlus, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { BarChart3, Loader2, MapPin, Phone, Search, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
 import { useToast } from "@/hooks/use-toast";
 
@@ -148,6 +150,7 @@ function CreateCustomerDialog({ defaultName, onClose, onCreated, onDuplicate }: 
 
 export default function CustomerHubPage() {
   const [selected, setSelected] = useState<SmartCustomer | null>(null);
+  const [tab, setTab] = useState<"search" | "reports">("search");
   return (
     <div className="space-y-5" dir="rtl">
       <div>
@@ -155,6 +158,13 @@ export default function CustomerHubPage() {
         <p className="mt-1 text-sm text-muted-foreground">ابحث فوراً بالاسم أو الهاتف أو رمز العميل — لا تكرار للعملاء (عميل واحد لكل رقم هاتف).</p>
       </div>
 
+      <div className="flex gap-1 border-b border-border/40">
+        {([["search", "البحث", Search], ["reports", "تقارير العملاء", BarChart3]] as const).map(([k, l, Icon]) => (
+          <button key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</button>
+        ))}
+      </div>
+
+      {tab === "reports" ? <CustomerReports /> : (
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-border/30 bg-card p-4">
           <SmartCustomerSearch onSelect={setSelected} autoFocus />
@@ -180,6 +190,45 @@ export default function CustomerHubPage() {
             </div>
           </div>
         )}
+      </div>
+      )}
+    </div>
+  );
+}
+
+type ReportRow = { id: number; name: string; phone: string; code: string; city: string | null; invoices: number; total: number; remaining: number };
+type Reports = { mostActive: ReportRow[]; highestSales: ReportRow[]; highestRemaining: ReportRow[]; newest: ReportRow[]; inactive: ReportRow[]; totalCustomers: number };
+
+function CustomerReports() {
+  const { data, isLoading } = useQuery<Reports>({ queryKey: ["admin", "customer-reports"], queryFn: () => adminFetch("/admin/customers/reports") });
+  if (isLoading || !data) return <Skeleton className="h-72 rounded-xl" />;
+  const lists: Array<{ title: string; rows: ReportRow[]; metric: (r: ReportRow) => string }> = [
+    { title: "🔥 الأكثر نشاطاً", rows: data.mostActive, metric: (r) => `${r.invoices} فاتورة` },
+    { title: "💰 أعلى مشتريات", rows: data.highestSales, metric: (r) => formatCurrency(r.total) },
+    { title: "⚠️ أعلى رصيد متبقٍ", rows: data.highestRemaining, metric: (r) => formatCurrency(r.remaining) },
+    { title: "🆕 أحدث العملاء", rows: data.newest, metric: (r) => r.code },
+    { title: "💤 عملاء خاملون (+90 يوم)", rows: data.inactive, metric: (r) => `${r.invoices} فاتورة` },
+  ];
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {lists.map((l) => (
+        <div key={l.title} className="rounded-xl border border-border/30 bg-card p-4">
+          <h3 className="mb-2 text-sm font-bold text-foreground">{l.title}</h3>
+          {l.rows.length === 0 ? <p className="text-xs text-muted-foreground">لا بيانات</p> : (
+            <div className="space-y-1.5">
+              {l.rows.map((r, i) => (
+                <Link key={r.id} href={`/admin/customers?focus=${r.id}`} className="flex items-center justify-between gap-2 rounded-lg bg-background/50 px-2.5 py-1.5 text-xs hover:bg-primary/5">
+                  <span className="min-w-0 truncate text-foreground">{i + 1}. {r.name}</span>
+                  <span className="flex-shrink-0 font-bold text-primary">{l.metric(r)}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+      <div className="rounded-xl border border-border/30 bg-card p-4 text-center">
+        <div className="text-3xl font-extrabold text-foreground">{data.totalCustomers.toLocaleString("ar-IQ")}</div>
+        <div className="mt-1 text-xs text-muted-foreground">إجمالي العملاء</div>
       </div>
     </div>
   );

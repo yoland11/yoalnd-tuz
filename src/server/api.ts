@@ -25200,6 +25200,40 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       return json(result);
     }
+    // Customer reports — most active / highest sales / highest remaining / newest / inactive.
+    if (method === "GET" && parts[2] === "reports") {
+      const aggRes: any = await db.execute(sql`
+        select c.id, c.name, c.phone, c.city, c.created_at,
+          coalesce(si.cnt,0) + coalesce(o.cnt,0) as invoices,
+          coalesce(si.total,0) + coalesce(o.total,0) as total,
+          coalesce(si.remaining,0) + coalesce(o.remaining,0) as remaining,
+          greatest(coalesce(si.last, c.created_at), coalesce(o.last, c.created_at)) as last_activity
+        from customers c
+        left join (select customer_id, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from sales_invoices where status <> 'cancelled' group by customer_id) si on si.customer_id = c.id
+        left join (select customer_phone, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from orders where archived_at is null and status <> 'cancelled' group by customer_phone) o on o.customer_phone = c.phone
+        where c.status <> 'deleted'
+        limit 5000`);
+      const rows = (aggRes.rows ?? []).map((r: any) => ({
+        id: Number(r.id), name: r.name || "زبون", phone: r.phone, city: r.city ?? null,
+        code: `CUS-${String(r.id).padStart(6, "0")}`,
+        invoices: Number(r.invoices ?? 0), total: Number(r.total ?? 0), remaining: Number(r.remaining ?? 0),
+        createdAt: r.created_at, lastActivity: r.last_activity,
+      }));
+      const now = Date.now();
+      const withActivity = rows.filter((r: any) => r.invoices > 0);
+      const top = (arr: any[], key: string, n = 10) => [...arr].sort((a, b) => b[key] - a[key]).slice(0, n);
+      const inactive = rows.filter((r: any) => now - new Date(r.lastActivity).getTime() > 90 * 86400000)
+        .sort((a: any, b: any) => new Date(a.lastActivity).getTime() - new Date(b.lastActivity).getTime()).slice(0, 15);
+      return json({
+        mostActive: top(withActivity, "invoices"),
+        highestSales: top(withActivity, "total"),
+        highestRemaining: top(rows.filter((r: any) => r.remaining > 0), "remaining"),
+        newest: [...rows].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 10),
+        inactive,
+        totalCustomers: rows.length,
+      });
+    }
+
     // Smart Customer Search — enriched results (code/city/invoice count/remaining/last).
     if (method === "GET" && parts[2] === "smart-search") {
       const q = (req.nextUrl.searchParams.get("q") ?? "").trim();
