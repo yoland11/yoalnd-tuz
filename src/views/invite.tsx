@@ -159,6 +159,14 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
             </div>
           ) : null}
 
+          {data.galleryImages && data.galleryImages.length ? (
+            <div className="-mx-2 flex snap-x gap-2 overflow-x-auto px-2 py-1" style={{ scrollbarWidth: "none" }}>
+              {data.galleryImages.map((g, i) => (
+                <img key={i} src={g} alt="" className="h-24 w-24 flex-shrink-0 snap-center rounded-xl object-cover" style={{ border: `1px solid ${gold}44` }} />
+              ))}
+            </div>
+          ) : null}
+
           {qrDataUrl ? <img src={qrDataUrl} alt="QR" className="mx-auto h-24 w-24 rounded-lg bg-white p-1" /> : null}
         </div>
       </div>
