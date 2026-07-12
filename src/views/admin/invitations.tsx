@@ -14,8 +14,12 @@ import { InvitationCard, ANIMATION_STYLES, type InvitationData } from "../invite
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
 
+type Tpl = { name: string; category: string; bg: string; fg: string; font: string; anim: string; custom?: boolean };
+function lsGet<T>(key: string, fallback: T): T { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } }
+function lsSet(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* ignore */ } }
+
 // Preset style templates — one-click apply of colours + font + animation.
-const TEMPLATES: Array<{ name: string; category: string; bg: string; fg: string; font: string; anim: string }> = [
+const TEMPLATES: Tpl[] = [
   { name: "ملكي", category: "Royal", bg: "#1b1130", fg: "#f3e9c9", font: "Amiri", anim: "glow" },
   { name: "فخم ذهبي", category: "Luxury", bg: "#0f0f12", fg: "#e9c46a", font: "Reem Kufi", anim: "zoom" },
   { name: "عصري", category: "Modern", bg: "#f4f6f8", fg: "#1f2937", font: "Tajawal", anim: "slide" },
@@ -144,9 +148,24 @@ function InvitationEditor({ id }: { id: number }) {
     setForm((f) => (f ? { ...f, ...values } : f));
     patch.mutate(values);
   }
-  function applyTemplate(t: (typeof TEMPLATES)[number]) {
+  function applyTemplate(t: Tpl) {
     applyFields({ backgroundColor: t.bg, textColor: t.fg, fontFamily: t.font, animationStyle: t.anim });
   }
+  // Custom templates + favourites (per-device, localStorage — no backend needed).
+  const [customTpls, setCustomTpls] = useState<Tpl[]>(() => lsGet<Tpl[]>("ajn-invite-templates", []));
+  const [favs, setFavs] = useState<string[]>(() => lsGet<string[]>("ajn-invite-fav-templates", []));
+  const persistCustom = (v: Tpl[]) => { setCustomTpls(v); lsSet("ajn-invite-templates", v); };
+  const persistFavs = (v: string[]) => { setFavs(v); lsSet("ajn-invite-fav-templates", v); };
+  function saveAsTemplate() {
+    if (!form) return;
+    const name = window.prompt("اسم القالب:");
+    if (!name?.trim()) return;
+    persistCustom([...customTpls.filter((t) => t.name !== name.trim()), { name: name.trim(), category: "مخصّص", custom: true, bg: form.backgroundColor || "#f7f1e8", fg: form.textColor || "#2a2118", font: form.fontFamily || "Cairo", anim: form.animationStyle || "fade" }]);
+    toast({ title: "تم حفظ القالب" });
+  }
+  const toggleFav = (name: string) => persistFavs(favs.includes(name) ? favs.filter((n) => n !== name) : [...favs, name]);
+  const allTpls: Tpl[] = [...TEMPLATES, ...customTpls];
+  const orderedTpls = [...allTpls].sort((a, b) => Number(favs.includes(b.name)) - Number(favs.includes(a.name)));
   async function uploadFont(file: File) {
     if (file.size > 1_800_000) { toast({ title: "حجم الخط كبير (حتى ~1.7MB)", variant: "destructive" }); return; }
     const family = file.name.replace(/\.(woff2?|ttf|otf)$/i, "").replace(/[^\w؀-ۿ \-]/g, "").slice(0, 60) || "CustomFont";
@@ -206,16 +225,23 @@ function InvitationEditor({ id }: { id: number }) {
           {/* Editor form */}
           <div className="space-y-3 rounded-xl border border-border/30 bg-card p-4">
             <div>
-              <div className="mb-1.5 text-xs font-semibold text-foreground">🎨 القوالب الجاهزة</div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs font-semibold text-foreground">🎨 القوالب الجاهزة</span>
+                <button type="button" onClick={saveAsTemplate} className="text-[11px] text-primary hover:underline">💾 حفظ التصميم كقالب</button>
+              </div>
               <div className="flex flex-wrap gap-2">
-                {TEMPLATES.map((t) => {
+                {orderedTpls.map((t) => {
                   const active = form.backgroundColor === t.bg && form.textColor === t.fg;
+                  const fav = favs.includes(t.name);
                   return (
-                    <button key={t.name} type="button" onClick={() => applyTemplate(t)} title={t.category}
-                      className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${active ? "border-primary ring-1 ring-primary" : "border-border/40 hover:border-primary/40"}`}>
-                      <span className="h-4 w-4 rounded-full border" style={{ background: t.bg, borderColor: t.fg }} />
-                      {t.name}
-                    </button>
+                    <div key={t.name} className={`group flex items-center gap-1 rounded-lg border px-1.5 py-1 text-xs font-medium transition-colors ${active ? "border-primary ring-1 ring-primary" : "border-border/40 hover:border-primary/40"}`}>
+                      <button type="button" onClick={() => toggleFav(t.name)} title="مفضّلة" className={fav ? "text-amber-500" : "text-muted-foreground/50 hover:text-amber-500"}>{fav ? "★" : "☆"}</button>
+                      <button type="button" onClick={() => applyTemplate(t)} title={t.category} className="flex items-center gap-1.5">
+                        <span className="h-4 w-4 rounded-full border" style={{ background: t.bg, borderColor: t.fg }} />
+                        {t.name}
+                      </button>
+                      {t.custom ? <button type="button" onClick={() => persistCustom(customTpls.filter((c) => c.name !== t.name))} title="حذف القالب" className="text-muted-foreground/50 hover:text-destructive">×</button> : null}
+                    </div>
                   );
                 })}
               </div>
