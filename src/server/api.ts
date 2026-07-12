@@ -19995,6 +19995,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const sets: any[] = [];
         for (const [k, c] of Object.entries(col)) if (k in d) sets.push(sql`${sql.raw(`"${c}"`)} = ${d[k] ?? null}`);
         if ("galleryImages" in d) sets.push(sql`"gallery_images" = ${JSON.stringify(d.galleryImages ?? [])}::jsonb`);
+        if ("socialLinks" in d) sets.push(sql`"social_links" = ${JSON.stringify(d.socialLinks ?? {})}::jsonb`);
         sets.push(sql`"updated_at" = now()`);
         const res: any = await db.execute(sql`update invitation_cards set ${sql.join(sets, sql`, `)} where id = ${cardId} returning *`);
         return json(adminView((res.rows ?? [])[0]));
@@ -35840,6 +35841,7 @@ const invitationCardSchema = z.object({
   animationStyle: z.string().max(30).optional(),
   musicUrl: z.string().max(600).nullable().optional(),
   videoUrl: z.string().max(600).nullable().optional(),
+  socialLinks: z.record(z.string().max(20), z.string().max(300)).optional(),
   status: z.enum(INVITATION_STATUSES).optional(),
   isActive: z.boolean().optional(),
 });
@@ -35892,6 +35894,7 @@ async function ensureInvitationTables(): Promise<void> {
     )
   `);
   await db.execute(sql`create index if not exists "invitation_rsvps_card_idx" on "invitation_card_rsvps" ("card_id")`);
+  await db.execute(sql`alter table "invitation_cards" add column if not exists "social_links" jsonb not null default '{}'::jsonb`);
 }
 
 /** URL-safe code; never a raw DB id. */
@@ -35911,6 +35914,7 @@ function invitationPublicView(row: any, guestName: string | null) {
     fontFamily: row.font_family, customFontUrl: row.custom_font_url,
     textColor: row.text_color, backgroundColor: row.background_color,
     animationStyle: row.animation_style, musicUrl: row.music_url, videoUrl: row.video_url,
+    socialLinks: row.social_links ?? {},
     guestName,
   };
 }

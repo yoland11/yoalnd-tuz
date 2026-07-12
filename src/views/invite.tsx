@@ -25,8 +25,18 @@ export type InvitationData = {
   animationStyle?: string | null;
   musicUrl?: string | null;
   videoUrl?: string | null;
+  socialLinks?: Record<string, string> | null;
   guestName?: string | null;
 };
+
+export const SOCIAL_PLATFORMS: Array<{ key: string; label: string; icon: string }> = [
+  { key: "instagram", label: "Instagram", icon: "📷" },
+  { key: "facebook", label: "Facebook", icon: "📘" },
+  { key: "tiktok", label: "TikTok", icon: "🎵" },
+  { key: "snapchat", label: "Snapchat", icon: "👻" },
+  { key: "telegram", label: "Telegram", icon: "✈️" },
+  { key: "website", label: "Website", icon: "🌐" },
+];
 
 export const ANIMATION_STYLES = ["fade", "zoom", "slide", "float", "glow"] as const;
 
@@ -140,6 +150,14 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
             {data.customerPhone ? <a href={`https://wa.me/${String(data.customerPhone).replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>واتساب</a> : null}
             {data.customerPhone ? <a href={`tel:${data.customerPhone}`} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>اتصال</a> : null}
           </div>
+
+          {data.socialLinks && SOCIAL_PLATFORMS.some((p) => data.socialLinks?.[p.key]) ? (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {SOCIAL_PLATFORMS.filter((p) => data.socialLinks?.[p.key]).map((p) => (
+                <a key={p.key} href={data.socialLinks![p.key]} target="_blank" rel="noreferrer" title={p.label} className="grid h-9 w-9 place-items-center rounded-full border text-lg" style={{ borderColor: `${gold}66` }}>{p.icon}</a>
+              ))}
+            </div>
+          ) : null}
 
           {qrDataUrl ? <img src={qrDataUrl} alt="QR" className="mx-auto h-24 w-24 rounded-lg bg-white p-1" /> : null}
         </div>

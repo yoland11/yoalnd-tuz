@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { generateQrDataUrl } from "./label-helpers";
-import { InvitationCard, ANIMATION_STYLES, type InvitationData } from "../invite";
+import { InvitationCard, ANIMATION_STYLES, SOCIAL_PLATFORMS, type InvitationData } from "../invite";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
 
@@ -278,6 +278,14 @@ function InvitationEditor({ id }: { id: number }) {
             <div className="grid gap-2 sm:grid-cols-2">
               <Fld label="رابط موسيقى خلفية (mp3)"><input value={form.musicUrl ?? ""} onChange={(e) => setField("musicUrl", e.target.value)} dir="ltr" className={inp} placeholder="https://...mp3" /></Fld>
               <Fld label="رابط فيديو (mp4)"><input value={form.videoUrl ?? ""} onChange={(e) => setField("videoUrl", e.target.value)} dir="ltr" className={inp} placeholder="https://...mp4" /></Fld>
+            </div>
+            <div>
+              <div className="mb-1.5 text-xs font-semibold text-foreground">🔗 روابط التواصل الاجتماعي</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {SOCIAL_PLATFORMS.map((p) => (
+                  <input key={p.key} value={form.socialLinks?.[p.key] ?? ""} onChange={(e) => setField("socialLinks", { ...(form.socialLinks ?? {}), [p.key]: e.target.value })} dir="ltr" placeholder={`${p.icon} ${p.label}`} className={inp} />
+                ))}
+              </div>
             </div>
             <Fld label="رسالة الترحيب"><textarea value={form.welcomeMessage ?? ""} onChange={(e) => setField("welcomeMessage", e.target.value)} rows={2} className={inp} /></Fld>
             <Fld label="رسالة الشكر (بعد الرد)"><textarea value={form.thankYouMessage ?? ""} onChange={(e) => setField("thankYouMessage", e.target.value)} rows={2} className={inp} /></Fld>
