@@ -376,6 +376,12 @@ export const NAV: NavItem[] = [
     perm: "customers",
   },
   {
+    href: "/admin/customer-hub",
+    label: "البحث الذكي عن العملاء",
+    icon: Users,
+    perm: "customers",
+  },
+  {
     href: "/admin/loyalty",
     label: "نقاط الولاء",
     icon: Trophy,
@@ -635,6 +641,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/gallery"),
       navItem("/admin/delivery"),
       navItem("/admin/customers"),
+      navItem("/admin/customer-hub"),
     ],
   },
   {

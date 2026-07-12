@@ -81,6 +81,7 @@ const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
 const WorkspacePage = lazy(() => import("./workspace"));
 const InvitationStudioPage = lazy(() => import("./invitations"));
+const CustomerHubPage = lazy(() => import("./smart-customer-search"));
 const FinancialRequestPage = lazy(() =>
   import("./master-cash").then((module) => ({
     default: module.FinancialRequestPage,
@@ -518,6 +519,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="koshas">
                 <InvitationStudioPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/customer-hub">
+            {() => (
+              <Guard me={me} perm="customers">
+                <CustomerHubPage />
               </Guard>
             )}
           </Route>

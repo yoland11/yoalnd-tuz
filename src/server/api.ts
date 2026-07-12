@@ -25200,6 +25200,51 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       return json(result);
     }
+    // Smart Customer Search — enriched results (code/city/invoice count/remaining/last).
+    if (method === "GET" && parts[2] === "smart-search") {
+      const q = (req.nextUrl.searchParams.get("q") ?? "").trim();
+      if (q.length < 1) return json({ results: [] });
+      const digits = normalizePhoneDigits(q);
+      const codeMatch = q.match(/CUS-?0*(\d+)/i);
+      const codeId = codeMatch ? Number(codeMatch[1]) : (/^\d{1,6}$/.test(q) ? Number(q) : 0);
+      const matches = await db.query.customersTable.findMany({
+        where: and(
+          ne(customersTable.status, "deleted"),
+          or(
+            ilike(customersTable.name, `%${q}%`),
+            ilike(customersTable.fullName, `%${q}%`),
+            digits ? like(customersTable.phone, `%${digits}%`) : (sql`false` as any),
+            codeId ? eq(customersTable.id, codeId) : (sql`false` as any),
+          ),
+        ),
+        orderBy: (c, { desc }) => [desc(c.id)],
+        limit: 15,
+      });
+      if (!matches.length) return json({ results: [] });
+      const ids = matches.map((m) => m.id);
+      const phones = [...new Set(matches.map((m) => m.phone))];
+      const [invAgg, ordAgg]: any = await Promise.all([
+        db.execute(sql`select customer_id, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from sales_invoices where status <> 'cancelled' and customer_id in (${sql.join(ids.map((i) => sql`${i}`), sql`, `)}) group by customer_id`),
+        db.execute(sql`select customer_phone, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from orders where archived_at is null and status <> 'cancelled' and customer_phone in (${sql.join(phones.map((p) => sql`${p}`), sql`, `)}) group by customer_phone`),
+      ]);
+      const invBy = new Map((invAgg.rows ?? []).map((r: any) => [Number(r.customer_id), r]));
+      const ordBy = new Map((ordAgg.rows ?? []).map((r: any) => [String(r.customer_phone), r]));
+      const results = matches.map((m) => {
+        const inv: any = invBy.get(m.id) ?? {}; const ord: any = ordBy.get(m.phone) ?? {};
+        const lastA = inv.last ? new Date(inv.last).getTime() : 0; const lastB = ord.last ? new Date(ord.last).getTime() : 0;
+        const last = Math.max(lastA, lastB);
+        return {
+          id: m.id, name: m.name || m.fullName || "زبون", phone: m.phone,
+          code: `CUS-${String(m.id).padStart(6, "0")}`, city: m.city ?? null,
+          invoiceCount: Number(inv.cnt ?? 0) + Number(ord.cnt ?? 0),
+          remaining: Number(inv.remaining ?? 0) + Number(ord.remaining ?? 0),
+          totalSpent: Number(inv.total ?? 0) + Number(ord.total ?? 0),
+          lastInvoice: last ? new Date(last).toISOString().slice(0, 10) : null,
+        };
+      });
+      return json({ results });
+    }
+
     if (method === "GET" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
