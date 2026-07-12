@@ -19858,7 +19858,45 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           coalesce(sum(case when r.attendance_status='confirmed' then r.companions_count else 0 end),0)::int as companions
         from invitation_cards c left join invitation_card_rsvps r on r.card_id = c.id
         group by c.id order by c.created_at desc limit 200`);
-      return json({ cards: (res.rows ?? []).map((row: any) => adminView(row, { rsvpTotal: Number(row.rsvp_total), confirmed: Number(row.confirmed), companions: Number(row.companions) })) });
+      // Command-Center widgets: active/today/views-today/new-RSVPs/confirmed/pending.
+      const wRes: any = await db.execute(sql`
+        select
+          coalesce(count(*) filter (where c.is_active and c.status <> 'archived'),0)::int as active,
+          coalesce(count(*) filter (where c.event_date = to_char(now(),'YYYY-MM-DD')),0)::int as today,
+          coalesce(sum(c.views),0)::int as views_total
+        from invitation_cards c`);
+      const rRes: any = await db.execute(sql`
+        select
+          coalesce(count(*) filter (where r.responded_at >= date_trunc('day', now())),0)::int as new_today,
+          coalesce(count(*) filter (where r.attendance_status='confirmed'),0)::int as confirmed,
+          coalesce(count(*) filter (where r.responded_at is null),0)::int as pending
+        from invitation_card_rsvps r`);
+      const w = (wRes.rows ?? [])[0] ?? {}; const rr = (rRes.rows ?? [])[0] ?? {};
+      return json({
+        cards: (res.rows ?? []).map((row: any) => adminView(row, { rsvpTotal: Number(row.rsvp_total), confirmed: Number(row.confirmed), companions: Number(row.companions) })),
+        widgets: { active: Number(w.active ?? 0), today: Number(w.today ?? 0), viewsTotal: Number(w.views_total ?? 0), newRsvpsToday: Number(rr.new_today ?? 0), confirmedGuests: Number(rr.confirmed ?? 0), pendingGuests: Number(rr.pending ?? 0) },
+      });
+    }
+
+    // Duplicate an invitation (Save-As / Duplicate Template) with a fresh slug.
+    if (method === "POST" && cardId && parts[3] === "duplicate") {
+      const srcRes: any = await db.execute(sql`select * from invitation_cards where id = ${cardId} limit 1`);
+      const src = (srcRes.rows ?? [])[0];
+      if (!src) return error("الدعوة غير موجودة", 404);
+      const slug = inviteSlug();
+      const dupRes: any = await db.execute(sql`
+        insert into invitation_cards (slug, code, type, booking_id, customer_id, bride_name, groom_name, event_name,
+          event_date, event_time, venue_name, venue_address, map_url, customer_phone, customer_email,
+          welcome_message, thank_you_message, main_image_url, gallery_images, font_family, custom_font_url,
+          text_color, background_color, animation_style, music_url, video_url, status, created_by)
+        select ${slug}, ${slug}, type, null, customer_id, bride_name, groom_name, event_name,
+          event_date, event_time, venue_name, venue_address, map_url, customer_phone, customer_email,
+          welcome_message, thank_you_message, main_image_url, gallery_images, font_family, custom_font_url,
+          text_color, background_color, animation_style, music_url, video_url, 'draft', ${auth.id}
+        from invitation_cards where id = ${cardId} returning *`);
+      const row = (dupRes.rows ?? [])[0];
+      void logAdminActivity(req, "invitation_duplicated", "invitation_card", Number(row.id), { from: cardId });
+      return json(adminView(row), 201);
     }
 
     if (method === "POST" && !cardId) {

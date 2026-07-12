@@ -31,6 +31,7 @@ const TEMPLATES: Array<{ name: string; category: string; bg: string; fg: string;
 type Card = InvitationData & { id: number; code?: string; status: string; views?: number; rsvpTotal?: number; confirmed?: number; companions?: number; customerPhone?: string | null; customerEmail?: string | null; bookingId?: number | null };
 type Rsvp = { id: number; guestName: string; guestPhone: string | null; guestToken: string | null; attendanceStatus: string; companionsCount: number; guestMessage: string | null; viewedAt: string | null; respondedAt: string | null; createdAt: string };
 type CardDetail = Card & { stats: { views: number; total: number; confirmed: number; declined: number; maybe: number; companions: number; noResponse: number }; rsvps: Rsvp[] };
+type Widgets = { active: number; today: number; viewsTotal: number; newRsvpsToday: number; confirmedGuests: number; pendingGuests: number };
 
 const TYPE_LABELS: Record<string, string> = {
   wedding: "زواج", engagement: "خطوبة", henna: "حنّة", graduation: "تخرّج", birthday: "عيد ميلاد",
@@ -52,7 +53,7 @@ function InvitationList() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery<{ cards: Card[] }>({ queryKey: ["admin", "invitations"], queryFn: () => adminFetch("/admin/invitations") });
+  const { data, isLoading } = useQuery<{ cards: Card[]; widgets?: Widgets }>({ queryKey: ["admin", "invitations"], queryFn: () => adminFetch("/admin/invitations") });
   const create = useMutation({
     mutationFn: () => adminFetch<Card>("/admin/invitations", { method: "POST", body: JSON.stringify({ type: "wedding" }) }),
     onSuccess: (card) => { queryClient.invalidateQueries({ queryKey: ["admin", "invitations"] }); navigate(`/admin/invitations/${card.id}`); },
@@ -69,6 +70,18 @@ function InvitationList() {
         </div>
         <Button onClick={() => create.mutate()} disabled={create.isPending} className="gap-1.5">{create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} دعوة جديدة</Button>
       </div>
+
+      {/* Command-Center widgets */}
+      {data?.widgets && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {([["دعوات نشطة", data.widgets.active], ["دعوات اليوم", data.widgets.today], ["إجمالي المشاهدات", data.widgets.viewsTotal], ["ردود جديدة اليوم", data.widgets.newRsvpsToday], ["ضيوف مؤكدون", data.widgets.confirmedGuests], ["بانتظار الرد", data.widgets.pendingGuests]] as const).map(([l, v]) => (
+            <div key={l} className="rounded-xl border border-border/30 bg-card p-3 text-center">
+              <div className="text-xl font-extrabold text-primary">{Number(v).toLocaleString("ar-IQ")}</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">{l}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {isLoading ? <Skeleton className="h-64 rounded-xl" /> : cards.length === 0 ? <EmptyState message="لا توجد دعوات بعد — أنشئ أول دعوة." /> : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -134,6 +147,11 @@ function InvitationEditor({ id }: { id: number }) {
     mutationFn: () => adminFetch(`/admin/invitations/${id}`, { method: "DELETE" }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "invitations"] }); window.history.back(); },
   });
+  const duplicate = useMutation({
+    mutationFn: () => adminFetch<Card>(`/admin/invitations/${id}/duplicate`, { method: "POST", body: "{}" }),
+    onSuccess: (card) => { queryClient.invalidateQueries({ queryKey: ["admin", "invitations"] }); window.location.assign(`/admin/invitations/${card.id}`); },
+    onError: (e: any) => toast({ title: "تعذّر النسخ", description: apiErrorMessage(e), variant: "destructive" }),
+  });
 
   async function copyLink() { try { await navigator.clipboard.writeText(publicUrl(form?.slug)); toast({ title: "تم نسخ الرابط" }); } catch { toast({ title: "تعذّر النسخ", variant: "destructive" }); } }
   function downloadQr() { if (!qr) return; const a = document.createElement("a"); a.href = qr; a.download = `invitation-${form?.slug}.png`; a.click(); }
@@ -158,6 +176,7 @@ function InvitationEditor({ id }: { id: number }) {
           <Button size="sm" variant="outline" onClick={copyLink} className="gap-1"><Copy className="h-4 w-4" /> نسخ الرابط</Button>
           <Button size="sm" variant="outline" onClick={downloadQr} className="gap-1"><QrCode className="h-4 w-4" /> تحميل QR</Button>
           <Button size="sm" variant="outline" onClick={share} className="gap-1"><Share2 className="h-4 w-4" /> مشاركة</Button>
+          <Button size="sm" variant="outline" onClick={() => duplicate.mutate()} disabled={duplicate.isPending} className="gap-1"><Copy className="h-4 w-4" /> نسخ الدعوة</Button>
         </div>
       </div>
 
