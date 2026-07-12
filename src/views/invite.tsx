@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 
@@ -23,6 +23,8 @@ export type InvitationData = {
   textColor?: string | null;
   backgroundColor?: string | null;
   animationStyle?: string | null;
+  musicUrl?: string | null;
+  videoUrl?: string | null;
   guestName?: string | null;
 };
 
@@ -58,6 +60,23 @@ function useCountdown(dateStr?: string | null) {
   }, [dateStr, now]);
 }
 
+function MusicButton({ src, gold }: { src: string; gold: string }) {
+  const [playing, setPlaying] = useState(false);
+  const ref = useRef<HTMLAudioElement | null>(null);
+  function toggle() {
+    const a = ref.current; if (!a) return;
+    if (a.paused) { a.play().then(() => setPlaying(true)).catch(() => {}); } else { a.pause(); setPlaying(false); }
+  }
+  return (
+    <>
+      <audio ref={ref} src={src} loop preload="none" />
+      <button type="button" onClick={toggle} aria-label="الموسيقى" className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full text-white shadow-lg" style={{ background: gold }}>
+        {playing ? "❚❚" : "♪"}
+      </button>
+    </>
+  );
+}
+
 /** Pure invitation renderer — shared by the admin live preview and the public page. */
 export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDataUrl?: string | null }) {
   const cd = useCountdown(data.eventDate);
@@ -79,6 +98,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
             <div className="grid h-40 w-full place-items-center text-5xl" style={{ background: `linear-gradient(135deg, ${gold}22, transparent)` }}>💍</div>
           )}
           <div className="pointer-events-none absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, transparent, ${gold}, transparent)` }} />
+          {data.musicUrl ? <MusicButton src={data.musicUrl} gold={gold} /> : null}
         </div>
 
         <div className="space-y-5 px-6 py-7 text-center">
@@ -94,6 +114,8 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
           </div>
 
           {data.welcomeMessage ? <p className="text-sm leading-7 opacity-90">{data.welcomeMessage}</p> : null}
+
+          {data.videoUrl ? <video src={data.videoUrl} controls playsInline className="mx-auto max-h-64 w-full rounded-xl" /> : null}
 
           <div className="mx-auto h-px w-24" style={{ background: gold }} />
 

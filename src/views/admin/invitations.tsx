@@ -275,6 +275,10 @@ function InvitationEditor({ id }: { id: number }) {
                 <ImageUploadEditor kind="gallery" label="إضافة صورة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(r: ImageEditResult[]) => r[0] && applyFields({ galleryImages: [...(form.galleryImages ?? []), r[0].dataUrl] })} />
               </div>
             </Fld>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Fld label="رابط موسيقى خلفية (mp3)"><input value={form.musicUrl ?? ""} onChange={(e) => setField("musicUrl", e.target.value)} dir="ltr" className={inp} placeholder="https://...mp3" /></Fld>
+              <Fld label="رابط فيديو (mp4)"><input value={form.videoUrl ?? ""} onChange={(e) => setField("videoUrl", e.target.value)} dir="ltr" className={inp} placeholder="https://...mp4" /></Fld>
+            </div>
             <Fld label="رسالة الترحيب"><textarea value={form.welcomeMessage ?? ""} onChange={(e) => setField("welcomeMessage", e.target.value)} rows={2} className={inp} /></Fld>
             <Fld label="رسالة الشكر (بعد الرد)"><textarea value={form.thankYouMessage ?? ""} onChange={(e) => setField("thankYouMessage", e.target.value)} rows={2} className={inp} /></Fld>
             <div className="grid gap-2 sm:grid-cols-3">
