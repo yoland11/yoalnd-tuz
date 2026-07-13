@@ -201,6 +201,20 @@ import {
   updateEmployeeAdvance,
 } from "@/server/employee-advances";
 import {
+  addCareerEvent,
+  createEvaluation,
+  createManualIncentive,
+  createPayrollRun,
+  ensureHrTables,
+  evaluateAutomaticIncentives,
+  executiveDashboard,
+  getPayrollRun,
+  hrDashboard,
+  listPayrollRuns,
+  payPayrollRun,
+  upsertTarget,
+} from "@/server/hr-intelligence";
+import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
   getEmployeeProfile,
@@ -310,6 +324,8 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  "hr",
+  "executive",
   "production_view",
   "production_create",
   "production_edit",
@@ -19439,6 +19455,70 @@ async function resolveAssetProductId(raw: string): Promise<number> {
   return found?.id ?? 0;
 }
 
+async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "hr") return null;
+  await ensureHrTables();
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive"]);
+  if (isResponse(auth)) return auth;
+  const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
+  const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
+  const adminOnly = () => auth.role === "admin" || auth.role === "manager" || auth.role === "accountant";
+  try {
+    if (method === "GET" && (!resource || resource === "dashboard")) return json(await hrDashboard(String(req.nextUrl.searchParams.get("period") || "" ) || undefined));
+    if (method === "GET" && resource === "executive") {
+      if (!hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("ليس لديك صلاحية", 403);
+      return json(await executiveDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
+    }
+    if (resource === "incentives") {
+      if (method === "POST" && parts[3] === "evaluate") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const result = await evaluateAutomaticIncentives(String((await body(req))?.period || "") || undefined);
+        void logAdminActivity(req, "hr_incentives_evaluated", "hr_incentive", undefined, { count: result.length });
+        return json({ created: result });
+      }
+      if (method === "POST") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const event = await createManualIncentive(await body(req), actor);
+        void logAdminActivity(req, "hr_incentive_created", "hr_incentive", event.id, { newValues: event as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(event, 201);
+      }
+    }
+    if (resource === "payroll") {
+      if (method === "GET" && !id) return json(await listPayrollRuns());
+      if (method === "GET" && id) { const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
+      if (method === "POST" && !id) {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const payload = await body(req); const run = await createPayrollRun(String(payload?.period || ""), actor, String(payload?.notes || ""));
+        void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
+        return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "pay") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const run = await payPayrollRun(id, actor);
+        void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
+        return json(run);
+      }
+    }
+    if (resource === "targets" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const target = await upsertTarget(await body(req), actor); void logAdminActivity(req, "hr_target_created", "employee_target", target.id, { newValues: target as any }); return json(target, 201);
+    }
+    if (resource === "evaluations" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const evaluation = await createEvaluation(await body(req), actor); void logAdminActivity(req, "employee_evaluated", "employee_evaluation", evaluation.id, { newValues: evaluation as any }); return json(evaluation, 201);
+    }
+    if (resource === "career" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const event = await addCareerEvent(await body(req), actor); void logAdminActivity(req, "employee_career_updated", "employee_career", event.id, { newValues: event as any }); return json(event, 201);
+    }
+  } catch (err: any) {
+    console.error("HR operation failed", { resource, id, message: err?.message });
+    return error(String(err?.message || "تعذر إكمال عملية الموارد البشرية"), 400);
+  }
+  return error("المسار غير مدعوم", 404);
+}
+
 async function handleEmployeeAdvancesAdmin(
   req: NextRequest,
   parts: string[],
@@ -19608,6 +19688,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  const hr = await handleHrAdmin(req, parts, section);
+  if (hr) return hr;
 
   const employeeAdvances = await handleEmployeeAdvancesAdmin(req, parts, section);
   if (employeeAdvances) return employeeAdvances;

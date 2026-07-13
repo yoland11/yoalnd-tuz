@@ -25,6 +25,8 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  "hr",
+  "executive",
   "production_view",
   "production_create",
   "production_edit",
@@ -34,6 +36,8 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  hr: "الموارد البشرية والرواتب",
+  executive: "لوحة القيادة التنفيذية",
   dashboard: "مشاهدة لوحة التحكم",
   orders: "إدارة الطلبات",
   bookings: "إدارة الحجوزات",

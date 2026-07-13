@@ -35,3 +35,4 @@ export * from "./enterprise";
 export * from "./desktop";
 export * from "./graduation";
 export * from "./employee-advances";
+export * from "./hr";

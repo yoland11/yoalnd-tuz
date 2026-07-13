@@ -87,6 +87,7 @@ export const financialTransactionListSchema = z.object({
 
 const ACCOUNT_SEEDS = [
   ["1300", "Employee advances", "asset", "hr"],
+  ["5070", "Payroll and incentives", "expense", "hr"],
   ["1000", "الصندوق الرئيسي", "asset", null],
   ["4000", "إيرادات عامة", "revenue", "general"],
   ["4010", "إيرادات المتجر", "revenue", "store"],
@@ -351,6 +352,7 @@ function counterAccountCode(
     audio: "5040",
     gifts: "5050",
     graduation: "5060",
+    hr: "5070",
   };
   return direction === "revenue"
     ? (revenue[department] ?? "4000")
