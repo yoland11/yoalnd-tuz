@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
 import { EmptyState } from "./_layout";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 
 type Staff = {
   id: number;
@@ -16,6 +17,15 @@ type Staff = {
   isActive: boolean;
   createdAt: string;
   lastActivityAt?: string | null;
+  department?: string;
+  baseSalary?: number;
+  hiredAt?: string | null;
+  advanceSummary?: {
+    totalAdvances: number;
+    outstandingBalance: number;
+    paidAmount: number;
+    lastAdvanceDate: string | null;
+  };
 };
 
 const PERMISSIONS = ALL_PERMISSIONS.map((id) => ({
@@ -38,6 +48,9 @@ type Editing = {
   password: string;
   fullName: string;
   role: string;
+  department: string;
+  baseSalary: string;
+  hiredAt: string;
   permissions: string[];
   isActive: boolean;
 };
@@ -89,6 +102,9 @@ const blank: Editing = {
   password: "",
   fullName: "",
   role: "booking_staff",
+  department: "general",
+  baseSalary: "0",
+  hiredAt: new Date().toISOString().slice(0, 10),
   permissions: ROLE_PRESETS.booking_staff,
   isActive: true,
 };
@@ -118,6 +134,9 @@ export default function StaffPage() {
     mutationFn: (e: Editing) => {
       const body: any = {
         fullName: e.fullName ?? "",
+        department: e.department ?? "general",
+        baseSalary: Number(e.baseSalary ?? 0),
+        hiredAt: e.hiredAt || undefined,
         role: e.role,
         permissions: e.permissions ?? [],
         isActive: e.isActive,
@@ -255,6 +274,17 @@ export default function StaffPage() {
                   ))}
                 </div>
               )}
+              <div className="mb-3 rounded-lg border border-primary/15 bg-primary/5 p-2 text-xs">
+                <div className="mb-1 flex items-center justify-between font-medium text-primary">
+                  <span>سلف الموظف</span>
+                  <Link href={`/admin/employee-advances?employeeId=${s.id}`} className="underline">التفاصيل</Link>
+                </div>
+                <div className="grid grid-cols-3 gap-1 text-muted-foreground">
+                  <span>إجمالي: {Number(s.advanceSummary?.totalAdvances ?? 0).toLocaleString("ar-IQ")}</span>
+                  <span>مسدد: {Number(s.advanceSummary?.paidAmount ?? 0).toLocaleString("ar-IQ")}</span>
+                  <span>متبقي: {Number(s.advanceSummary?.outstandingBalance ?? 0).toLocaleString("ar-IQ")}</span>
+                </div>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() =>
@@ -264,6 +294,9 @@ export default function StaffPage() {
                       password: "",
                       fullName: s.fullName,
                       role: s.role === "staff" ? "employee" : s.role,
+                      department: s.department ?? "general",
+                      baseSalary: String(s.baseSalary ?? 0),
+                      hiredAt: s.hiredAt ? String(s.hiredAt).slice(0, 10) : new Date().toISOString().slice(0, 10),
                       permissions: s.permissions,
                       isActive: s.isActive,
                     })
@@ -313,6 +346,11 @@ export default function StaffPage() {
               value={editing.fullName}
               onChange={(v) => setEditing((s) => ({ ...s!, fullName: v }))}
             />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="القسم" value={editing.department} onChange={(v) => setEditing((s) => ({ ...s!, department: v }))} />
+              <Field label="الراتب الأساسي (IQD)" type="number" value={editing.baseSalary} onChange={(v) => setEditing((s) => ({ ...s!, baseSalary: v }))} />
+            </div>
+            <Field label="تاريخ التعيين" type="date" value={editing.hiredAt} onChange={(v) => setEditing((s) => ({ ...s!, hiredAt: v }))} />
             {!editing.id && (
               <Field
                 label="اسم المستخدم"

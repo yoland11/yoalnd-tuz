@@ -1,4 +1,4 @@
-import { pgTable, serial, text, boolean, varchar, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, boolean, varchar, timestamp, jsonb, numeric, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -9,6 +9,9 @@ export const staffTable = pgTable("staff", {
   fullName: text("full_name").notNull().default(""),
   role: varchar("role", { length: 30 }).notNull().default("employee"),
   permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
+  department: varchar("department", { length: 60 }).notNull().default("general"),
+  baseSalary: numeric("base_salary", { precision: 16, scale: 2 }).notNull().default("0"),
+  hiredAt: date("hired_at").notNull().defaultNow(),
   isActive: boolean("is_active").notNull().default(true),
   lastActivityAt: timestamp("last_activity_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

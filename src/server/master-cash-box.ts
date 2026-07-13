@@ -86,6 +86,7 @@ export const financialTransactionListSchema = z.object({
 });
 
 const ACCOUNT_SEEDS = [
+  ["1300", "Employee advances", "asset", "hr"],
   ["1000", "الصندوق الرئيسي", "asset", null],
   ["4000", "إيرادات عامة", "revenue", "general"],
   ["4010", "إيرادات المتجر", "revenue", "store"],
@@ -328,6 +329,11 @@ function counterAccountCode(
   department: string,
   transactionType: string,
 ) {
+  if (
+    transactionType === "employee_advance" ||
+    transactionType === "employee_advance_repayment"
+  )
+    return "1300";
   if (direction === "expense" && transactionType === "damage_loss")
     return "5090";
   const revenue: Record<string, string> = {
@@ -730,11 +736,17 @@ export async function approveAndExecuteFinancialTransaction(
       .onConflictDoNothing();
 
     const isReversal = transaction.transactionType.endsWith("_reversal");
+    // An employee advance and its repayment move value between cash and a
+    // receivable asset. They must not inflate operating revenue/expenses.
+    const isBalanceSheetTransfer = [
+      "employee_advance",
+      "employee_advance_repayment",
+    ].includes(transaction.transactionType);
     const nextRevenue = money(
       Math.max(
         0,
         money(cashRaw.total_revenue) +
-          (transaction.direction === "revenue" && !isReversal ? amount : 0) -
+          (transaction.direction === "revenue" && !isReversal && !isBalanceSheetTransfer ? amount : 0) -
           (transaction.direction === "expense" && isReversal ? amount : 0),
       ),
     );
@@ -742,7 +754,7 @@ export async function approveAndExecuteFinancialTransaction(
       Math.max(
         0,
         money(cashRaw.total_expenses) +
-          (transaction.direction === "expense" && !isReversal ? amount : 0) -
+          (transaction.direction === "expense" && !isReversal && !isBalanceSheetTransfer ? amount : 0) -
           (transaction.direction === "revenue" && isReversal ? amount : 0),
       ),
     );

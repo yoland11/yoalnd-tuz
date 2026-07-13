@@ -321,6 +321,12 @@ export const NAV: NavItem[] = [
     perm: "accounting",
   },
   {
+    href: "/admin/employee-advances",
+    label: "سلف الموظفين",
+    icon: Wallet,
+    perm: "accounting",
+  },
+  {
     href: "/admin/finance/request",
     label: "طلب حركة مالية",
     icon: Wallet,
@@ -701,6 +707,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/finance"),
       navItem("/admin/finance/master-cash"),
+      navItem("/admin/employee-advances"),
       navItem("/admin/finance/request"),
       navItem("/admin/finance/daily-report"),
       navItem("/admin/finance/reconciliation"),

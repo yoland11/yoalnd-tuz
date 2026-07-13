@@ -51,6 +51,7 @@ import {
   customerRewardHistoryTable,
   customersTable,
   deliveryZonesTable,
+  employeeAdvancesTable,
   disasterRecoverySnapshotsTable,
   entityDocumentsTable,
   entityTimelineTable,
@@ -181,6 +182,24 @@ import {
   updateFinancialTransaction,
   type FinancialActor,
 } from "@/server/master-cash-box";
+import {
+  advanceFilterSchema,
+  applyPayrollAdvanceDeductions,
+  approveEmployeeAdvance,
+  cancelEmployeeAdvance,
+  createEmployeeAdvance,
+  ensureEmployeeAdvanceTables,
+  getAdvanceSettings,
+  getEmployeeAdvance,
+  getEmployeeAdvanceDashboard,
+  getEmployeeAdvanceReport,
+  getEmployeeAdvanceSummary,
+  listEmployeeAdvances,
+  recordEmployeeAdvanceRepayment,
+  rejectEmployeeAdvance,
+  saveAdvanceSettings,
+  updateEmployeeAdvance,
+} from "@/server/employee-advances";
 import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
@@ -5062,6 +5081,9 @@ function formatStaff(s: any) {
     fullName: s.fullName,
     role: s.role,
     permissions: s.permissions ?? [],
+    department: s.department ?? "general",
+    baseSalary: Number(s.baseSalary ?? 0),
+    hiredAt: s.hiredAt ? String(s.hiredAt) : null,
     isActive: s.isActive,
     lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
     createdAt: s.createdAt.toISOString(),
@@ -5481,6 +5503,9 @@ async function ensureStaffTableShape(): Promise<void> {
           add column if not exists "password_hash" text,
           add column if not exists "full_name" text not null default '',
           add column if not exists "role" varchar(30) not null default 'employee',
+          add column if not exists "department" varchar(60) not null default 'general',
+          add column if not exists "base_salary" numeric(16,2) not null default 0,
+          add column if not exists "hired_at" date not null default current_date,
           add column if not exists "is_active" boolean not null default true,
           add column if not exists "last_activity_at" timestamp,
           add column if not exists "created_at" timestamp not null default now()
@@ -19414,12 +19439,178 @@ async function resolveAssetProductId(raw: string): Promise<number> {
   return found?.id ?? 0;
 }
 
+async function handleEmployeeAdvancesAdmin(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "employee-advances") return null;
+  await ensureEmployeeAdvanceTables();
+  const method = req.method;
+  const resource = parts[2];
+  const id = resource ? int(resource) : null;
+  const action = parts[3];
+  const currentUser = await getAdminUser(req);
+  if (!currentUser) return error("غير مخول", 401);
+  const actor = {
+    id: currentUser.id,
+    name: currentUser.fullName || currentUser.username,
+    role: currentUser.role,
+  };
+  const managerAccess = async () => {
+    const auth = await requireAnyPermission(req, ["staff", "accounting"]);
+    return isResponse(auth) ? null : auth;
+  };
+  const notify = (type: string, title: string, message: string, advance: any) => {
+    runAfter(`employee-advance:${type}`, async () => {
+      try {
+        await createNotification({
+          audienceType: "admin",
+          staffId: advance.employeeId,
+          type,
+          title,
+          body: message,
+          entityType: "employee_advance",
+          entityId: advance.id,
+          href: "/admin/employee-advances",
+          metadata: { advanceNo: advance.advanceNo, employeeId: advance.employeeId },
+        });
+      } catch {
+        /* Internal notifications are best-effort. */
+      }
+      try {
+        await sendTelegramMessage(`💰 <b>${title}</b>\n${message}`);
+      } catch {
+        /* Telegram must never prevent saving an advance. */
+      }
+    });
+  };
+
+  try {
+    if (method === "GET" && resource === "dashboard") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      return json(await getEmployeeAdvanceDashboard(query(req)));
+    }
+    if (method === "GET" && resource === "settings") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      return json(await getAdvanceSettings());
+    }
+    if ((method === "PUT" || method === "PATCH") && resource === "settings") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      const saved = await saveAdvanceSettings(await body(req), actor);
+      void logAdminActivity(req, "employee_advance_settings_updated", "employee_advance_settings", saved.id, { newValues: saved as any });
+      return json(saved);
+    }
+    if (method === "GET" && resource === "report") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const report = await getEmployeeAdvanceReport(query(req));
+      const format = req.nextUrl.searchParams.get("format");
+      if (format === "csv" || format === "excel") {
+        const headings = ["Advance No", "Employee", "Department", "Date", "Type", "Amount", "Repaid", "Outstanding", "Status", "Notes"];
+        const csv = [headings, ...report.map((row) => [row.number, row.employee, row.department, row.date, row.type, row.amount, row.repaid, row.outstanding, row.status, row.notes])]
+          .map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(","))
+          .join("\n");
+        return text(`\uFEFF${csv}`, 200, {
+          "content-type": format === "excel" ? "application/vnd.ms-excel; charset=utf-8" : "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="employee-advances-${new Date().toISOString().slice(0, 10)}.${format === "excel" ? "xls" : "csv"}"`,
+        });
+      }
+      return json({ rows: report, generatedAt: new Date().toISOString() });
+    }
+    if (method === "GET" && resource === "employee" && parts[3]) {
+      const employeeId = int(parts[3]);
+      if (!employeeId) return error("معرف الموظف غير صالح", 400);
+      if (employeeId !== currentUser.id && !(await managerAccess())) return error("ليس لديك صلاحية", 403);
+      return json(await getEmployeeAdvanceSummary(employeeId));
+    }
+    if (method === "POST" && resource === "payroll-deductions") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      const payload = await body(req);
+      const employeeId = Number(payload?.employeeId);
+      const payrollReference = String(payload?.payrollReference ?? "").trim();
+      if (!Number.isInteger(employeeId) || employeeId <= 0 || !payrollReference) return error("الموظف ومرجع الراتب مطلوبان", 400);
+      const deductions = await applyPayrollAdvanceDeductions({ employeeId, payrollReference, amount: payload?.amount === undefined ? undefined : Number(payload.amount) }, actor);
+      void logAdminActivity(req, "employee_advance_payroll_deduction", "employee_advance", employeeId, { payrollReference, count: deductions.length });
+      return json({ deductions, total: deductions.reduce((sum: number, item: any) => sum + Number(item.repayment.amount), 0) });
+    }
+    if (method === "GET" && !resource) {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      return json(await listEmployeeAdvances(query(req)));
+    }
+    if (method === "POST" && !resource) {
+      const payload = await body(req);
+      const targetId = Number(payload?.employeeId);
+      if (targetId !== currentUser.id && !(await managerAccess())) return error("إنشاء طلب لموظف آخر يتطلب صلاحية الموظفين أو الحسابات", 403);
+      const advance = await createEmployeeAdvance(payload, actor);
+      void logAdminActivity(req, "employee_advance_created", "employee_advance", advance.id, { newValues: advance as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_requested", "طلب سلفة جديد", `الطلب ${advance.advanceNo} بانتظار الاعتماد.`, advance);
+      return json(advance, 201);
+    }
+    if (method === "GET" && id) {
+      const advance = await getEmployeeAdvance(id);
+      if (!advance) return error("السلفة غير موجودة", 404);
+      if (advance.employeeId !== currentUser.id && !(await managerAccess())) return error("ليس لديك صلاحية", 403);
+      return json(advance);
+    }
+    if ((method === "PATCH" || method === "PUT") && id && !action) {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await updateEmployeeAdvance(id, await body(req), actor);
+      void logAdminActivity(req, "employee_advance_updated", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "approve") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const payload = await body(req);
+      const result = await approveEmployeeAdvance(id, actor, String(payload?.note ?? ""));
+      void logAdminActivity(req, "employee_advance_approved", "employee_advance", id, { newValues: result.advance as any, financialTransactionId: result.transaction?.id, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_approved", "تم اعتماد وصرف السلفة", `تم صرف ${result.advance.advanceNo} وربطها بحركة الصندوق.`, result.advance);
+      return json(result);
+    }
+    if (method === "POST" && id && action === "reject") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await rejectEmployeeAdvance(id, actor, String((await body(req))?.reason ?? ""));
+      void logAdminActivity(req, "employee_advance_rejected", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_rejected", "تم رفض طلب السلفة", `تم رفض ${result.saved.advanceNo}: ${result.saved.rejectionReason}`, result.saved);
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "cancel") {
+      const result = await cancelEmployeeAdvance(id, actor, String((await body(req))?.reason ?? ""));
+      void logAdminActivity(req, "employee_advance_cancelled", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "repay") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await recordEmployeeAdvanceRepayment(id, await body(req), actor);
+      void logAdminActivity(req, "employee_advance_repayment", "employee_advance", id, { oldValues: result.before as any, newValues: result.advance as any, repayment: result.repayment as any, financialTransactionId: result.transaction?.id, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_repayment", "تسديد سلفة", `تم تسجيل تسديد للسلفة ${result.advance.advanceNo}. المتبقي: ${result.advance.remainingAmount}`, result.advance);
+      return json(result);
+    }
+  } catch (err: any) {
+    console.error("employee advance operation failed", { method, resource, id, action, message: err?.message, userId: currentUser.id });
+    return error(String(err?.message || "تعذر إكمال عملية السلفة"), /غير موجود/.test(String(err?.message)) ? 404 : /صلاحية|مخول/.test(String(err?.message)) ? 403 : 400);
+  }
+  return error("المسار غير مدعوم", 404);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  const employeeAdvances = await handleEmployeeAdvancesAdmin(req, parts, section);
+  if (employeeAdvances) return employeeAdvances;
 
   const collection = await handleCollections(req, parts, section);
   if (collection) return collection;
@@ -24800,10 +24991,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (isResponse(auth)) return auth;
     await ensureStaffTableShape();
     if (method === "GET") {
+      await ensureEmployeeAdvanceTables();
       const rows = await db.query.staffTable.findMany({
         orderBy: (s, { asc }) => [asc(s.id)],
       });
-      return json(rows.map(formatStaff));
+      const advances = await db.query.employeeAdvancesTable.findMany();
+      const summaries = new Map<number, { totalAdvances: number; outstandingBalance: number; paidAmount: number; lastAdvanceDate: string | null }>();
+      for (const advance of advances) {
+        const current = summaries.get(advance.employeeId) ?? { totalAdvances: 0, outstandingBalance: 0, paidAmount: 0, lastAdvanceDate: null };
+        if (["approved", "paid", "completed"].includes(advance.status)) current.totalAdvances += Number(advance.amount ?? 0);
+        current.outstandingBalance += Number(advance.remainingAmount ?? 0);
+        current.paidAmount += Number(advance.repaidAmount ?? 0);
+        if (!current.lastAdvanceDate || String(advance.requestDate) > current.lastAdvanceDate) current.lastAdvanceDate = String(advance.requestDate);
+        summaries.set(advance.employeeId, current);
+      }
+      return json(rows.map((row) => ({ ...formatStaff(row), advanceSummary: summaries.get(row.id) ?? { totalAdvances: 0, outstandingBalance: 0, paidAmount: 0, lastAdvanceDate: null } })));
     }
     if (method === "POST") {
       const payload = await body(req);
@@ -24831,6 +25033,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             passwordHash: hashPassword(cleanPassword),
             fullName: String(payload?.fullName ?? ""),
             role: normalizedRole,
+            department: String(payload?.department ?? "general").trim().slice(0, 60) || "general",
+            baseSalary: String(Math.max(0, Number(payload?.baseSalary ?? 0) || 0)),
+            hiredAt: normalizeDateOnly(payload?.hiredAt) ?? new Date().toISOString().slice(0, 10),
             permissions: permissionsForRole(
               normalizedRole,
               explicitPermissions ?? payload?.permissions,
@@ -24874,6 +25079,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const b = await body(req);
       const update: any = {};
       if (b?.fullName !== undefined) update.fullName = String(b.fullName ?? "");
+      if (b?.department !== undefined)
+        update.department = String(b.department ?? "general").trim().slice(0, 60) || "general";
+      if (b?.baseSalary !== undefined)
+        update.baseSalary = String(Math.max(0, Number(b.baseSalary) || 0));
+      if (b?.hiredAt !== undefined)
+        update.hiredAt = normalizeDateOnly(b.hiredAt) ?? existing.hiredAt;
       if (b?.isActive !== undefined) update.isActive = b.isActive === true;
       if (b?.username !== undefined) {
         const nextUsername = staffUsername(b.username);
