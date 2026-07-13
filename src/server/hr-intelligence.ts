@@ -15,6 +15,9 @@ const validPeriod = (period: string) => /^\d{4}-\d{2}$/.test(period);
 export async function ensureHrTables() {
   await ensureMasterCashBoxTables();
   await db.execute(sql`
+    alter table "staff" add column if not exists "department" varchar(60) not null default 'general';
+    alter table "staff" add column if not exists "base_salary" numeric(16,2) not null default 0;
+    alter table "staff" add column if not exists "hired_at" date not null default current_date;
     create table if not exists hr_incentive_rules (id serial primary key, code varchar(60) not null unique, name text not null, kind varchar(20) not null default 'bonus', metric varchar(60) not null, operator varchar(10) not null default 'gte', threshold numeric(16,2) not null default 0, amount numeric(16,2) not null default 0, department varchar(60), is_active integer not null default 1, metadata jsonb not null default '{}'::jsonb, created_at timestamp not null default now(), updated_at timestamp not null default now());
     create table if not exists hr_incentive_events (id serial primary key, staff_id integer not null references staff(id) on delete restrict, rule_id integer references hr_incentive_rules(id) on delete set null, period varchar(7) not null, kind varchar(20) not null, amount numeric(16,2) not null default 0, points integer not null default 0, title text not null default '', reason text, status varchar(20) not null default 'pending', payroll_line_id integer, created_by integer references staff(id) on delete set null, created_by_name text not null default 'system', created_at timestamp not null default now());
     create index if not exists hr_incentive_events_staff_period_idx on hr_incentive_events(staff_id, period);
