@@ -448,9 +448,19 @@ function validationError(
   );
 }
 
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+
+class RequestBodyTooLargeError extends Error {}
+
 async function body(req: NextRequest): Promise<any> {
   if (req.method === "GET" || req.method === "HEAD") return {};
+  const declaredSize = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_REQUEST_BODY_BYTES)
+    throw new RequestBodyTooLargeError("request body exceeds limit");
   const raw = await req.text();
+  if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BODY_BYTES)
+    throw new RequestBodyTooLargeError("request body exceeds limit");
   if (!raw.trim()) return {};
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("application/x-www-form-urlencoded")) {
@@ -473,6 +483,10 @@ function int(value: string | undefined): number | null {
 }
 
 function ip(req: NextRequest): string {
+  // Forwarded headers are client-controlled unless the deployment explicitly
+  // declares its reverse proxy as trusted.
+  if (process.env.TRUST_PROXY !== "true" && !process.env.VERCEL)
+    return "untrusted-proxy";
   return (
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
@@ -515,11 +529,9 @@ function generateOtp(): string {
 }
 
 function generateTrackingCode(prefix = "AJN"): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = prefix;
-  for (let i = 0; i < 7; i++)
-    code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
+  // Tracking links are public capabilities. Use an unguessable token, never a
+  // phone-derived value or Math.random(), so a link cannot enumerate customers.
+  return `${prefix}-${randomBytes(16).toString("hex").toUpperCase()}`;
 }
 
 function phoneLast4(value: string | null | undefined): string {
@@ -528,9 +540,12 @@ function phoneLast4(value: string | null | undefined): string {
   return digits.length >= 4 ? digits.slice(-4) : "";
 }
 
-function trackingCodeForPhone(phone: string): string {
-  const last4 = phoneLast4(phone);
-  return last4 ? `AJN-${last4}` : generateTrackingCode();
+function trackingCodeForPhone(_phone: string): string {
+  return generateTrackingCode();
+}
+
+function isSecureTrackingCode(value: string): boolean {
+  return /^AJN-[A-F0-9]{32}$/.test(value);
 }
 
 function normalizeTrackingCode(value: string): string {
@@ -628,14 +643,13 @@ function paymentSummary(
 }
 
 function sessionSecret(): string {
-  return (
+  const secret =
     process.env.AUTH_SECRET ||
     process.env.SESSION_SECRET ||
-    process.env.NEXTAUTH_SECRET ||
-    process.env.ADMIN_PASSWORD ||
-    process.env.DATABASE_URL ||
-    "ajn-dev-secret"
-  );
+    process.env.NEXTAUTH_SECRET;
+  if (!secret || secret.length < 32)
+    throw new Error("AUTH_SECRET أو SESSION_SECRET قوي (32 حرفاً على الأقل) مطلوب");
+  return secret;
 }
 
 function otpSecret(): string {
@@ -690,7 +704,15 @@ function verifyCustomerToken(token: string): number | null {
     return null;
   }
   const customerId = Number.parseInt(idText, 10);
-  return Number.isFinite(customerId) ? customerId : null;
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  if (
+    !Number.isFinite(customerId) ||
+    !Number.isFinite(issuedAtMs) ||
+    issuedAtMs > Date.now() + 60_000 ||
+    Date.now() - issuedAtMs > SESSION_TTL_MS
+  )
+    return null;
+  return customerId;
 }
 
 function bearer(req: NextRequest): string | null {
@@ -789,9 +811,7 @@ async function seedAdminUser(): Promise<void> {
     const username = process.env.ADMIN_USERNAME?.trim() || "alijan";
     const password = process.env.ADMIN_PASSWORD?.trim();
     const fullName = process.env.ADMIN_FULL_NAME?.trim() || "المدير الرئيسي";
-    const fallbackPassword =
-      process.env.NODE_ENV === "production" ? null : "123123";
-    const initialPassword = password || fallbackPassword;
+    const initialPassword = password || null;
 
     const legacy = await db.query.staffTable.findFirst({
       where: eq(staffTable.username, "admin"),
@@ -834,7 +854,7 @@ async function seedAdminUser(): Promise<void> {
 
     if (!initialPassword) {
       console.error(
-        "ADMIN_PASSWORD is required to seed the first admin in production.",
+        "ADMIN_PASSWORD is required to seed the first admin.",
       );
       return;
     }
@@ -2743,6 +2763,7 @@ function parseDataUrl(value: string): { mime: string; bytes: Buffer } | null {
     const bytes = match[2]
       ? Buffer.from(payload, "base64")
       : Buffer.from(decodeURIComponent(payload), "utf8");
+    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
     return { mime, bytes };
   } catch {
     return null;
@@ -10157,21 +10178,19 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
   if (method === "GET" && parts[1] === "track" && parts[2]) {
     await ensureAdminExtensionsTables();
     const ref = decodeURIComponent(parts[2]).trim();
-    let booking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.trackingCode, ref),
+    if (!/^[a-f0-9]{32,80}$/i.test(ref))
+      return error("رمز التتبع غير صالح", 404);
+    const qr = await db.query.qrTokensTable.findFirst({
+      where: and(
+        eq(qrTokensTable.entityType, "kosha_booking"),
+        eq(qrTokensTable.token, ref),
+      ),
     });
-    if (!booking) {
-      const qr = await db.query.qrTokensTable.findFirst({
-        where: and(
-          eq(qrTokensTable.entityType, "kosha_booking"),
-          eq(qrTokensTable.token, ref),
-        ),
-      });
-      if (qr)
-        booking = await db.query.koshaBookingsTable.findFirst({
+    const booking = qr
+      ? await db.query.koshaBookingsTable.findFirst({
           where: eq(koshaBookingsTable.id, qr.entityId),
-        });
-    }
+        })
+      : null;
     if (!booking) return error("لم يتم العثور على الحجز", 404);
     const formatted = await formatKoshaBooking(booking);
     const currentIndex = Math.max(
@@ -11155,10 +11174,8 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     parts[2] &&
     parts[3] === "respond"
   ) {
-    const reqIp = ip(req);
-    if (rollingRateLimited(respondHits, reqIp, 10, 60_000)) {
-      return error("محاولات كثيرة، حاول لاحقاً", 429);
-    }
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("سجل الدخول لتأكيد الحجز أو طلب تأجيله", 401);
     const parsed = RespondToBookingBody.safeParse(await body(req));
     if (!parsed.success)
       return validationError("service-orders.respond", parsed);
@@ -11174,6 +11191,11 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         : eq(serviceOrdersTable.trackingCode, trackingCode),
     });
     if (!so) return error("لم يتم العثور على الحجز", 404);
+    const customer = await db.query.customersTable.findFirst({
+      where: eq(customersTable.id, customerId),
+    });
+    if (!customer || !phoneBelongsToLookup(so.phone, customer.phone))
+      return error("لا تملك صلاحية تعديل هذا الحجز", 403);
     if (action === "reschedule" && !requestedDate)
       return error("يلزم تحديد موعد جديد", 400);
 
@@ -11418,33 +11440,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 
   if (method === "GET" && parts[1] === "track" && parts[2]) {
     const code = normalizeTrackingCode(parts[2]);
-    const last4 = trackingCodeLast4(code);
-    if (last4) {
-      const productOrders = await db.query.ordersTable.findMany({
-        where: or(
-          eq(ordersTable.trackingCode, code),
-          eq(ordersTable.phoneLast4, last4),
-          like(ordersTable.customerPhone, `%${last4}`),
-        ),
-        orderBy: [desc(ordersTable.createdAt)],
-        limit: 20,
-      });
-      const serviceOrders = await db.query.serviceOrdersTable.findMany({
-        where: or(
-          eq(serviceOrdersTable.trackingCode, code),
-          eq(serviceOrdersTable.phoneLast4, last4),
-          like(serviceOrdersTable.phone, `%${last4}`),
-        ),
-        orderBy: [desc(serviceOrdersTable.createdAt)],
-        limit: 20,
-      });
-      const results = [
-        ...(await Promise.all(productOrders.map(buildTracking))),
-        ...(await Promise.all(serviceOrders.map(buildServiceTracking))),
-      ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      if (results.length === 1) return json(results[0]);
-      if (results.length > 1) return json(results);
-    }
+    if (!isSecureTrackingCode(code))
+      return error("رمز التتبع غير صالح. سجل الدخول للوصول إلى طلباتك.", 404);
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.trackingCode, code),
     });
@@ -11457,24 +11454,26 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "track-by-phone" && parts[2]) {
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("سجل الدخول للوصول إلى طلباتك", 401);
+    const customer = await db.query.customersTable.findFirst({
+      where: eq(customersTable.id, customerId),
+    });
     const last4 = parts[2].replace(/\D/g, "");
-    if (!/^\d{4}$/.test(last4)) return error("يلزم آخر 4 أرقام بالضبط", 400);
-    const reqIp = ip(req);
-    if (rollingRateLimited(phoneLookupHits, reqIp, 10, 60_000)) {
-      return error("محاولات كثيرة، حاول لاحقاً", 429);
-    }
+    if (!customer || !/^\d{4}$/.test(last4) || phoneLast4(customer.phone) !== last4)
+      return error("لا تملك صلاحية الوصول إلى هذه الطلبات", 403);
     const productOrders = await db.query.ordersTable.findMany({
       where: or(
-        eq(ordersTable.phoneLast4, last4),
-        like(ordersTable.customerPhone, `%${last4}`),
+        eq(ordersTable.customerId, customerId),
+        eq(ordersTable.customerPhone, customer.phone),
       ),
       orderBy: [desc(ordersTable.createdAt)],
       limit: 20,
     });
     const serviceOrders = await db.query.serviceOrdersTable.findMany({
       where: or(
-        eq(serviceOrdersTable.phoneLast4, last4),
-        like(serviceOrdersTable.phone, `%${last4}`),
+        eq(serviceOrdersTable.phone, customer.phone),
+        inArray(serviceOrdersTable.phone, iraqiPhoneVariants(customer.phone)),
       ),
       orderBy: [desc(serviceOrdersTable.createdAt)],
       limit: 20,
@@ -11482,9 +11481,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const results = [
       ...(await Promise.all(productOrders.map(buildTracking))),
       ...(await Promise.all(serviceOrders.map(buildServiceTracking))),
-    ]
-      .map(stripPii)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return json(results);
   }
 
@@ -11848,13 +11845,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
   if (req.method !== "GET" || parts[1] !== "by-phone") return null;
 
+  const customerId = getCurrentCustomerId(req);
+  if (!customerId) return error("سجل الدخول للوصول إلى طلباتك", 401);
+  const customer = await db.query.customersTable.findFirst({
+    where: eq(customersTable.id, customerId),
+  });
   const rawPhone = req.nextUrl.searchParams.get("phone") ?? "";
   const normalizedPhone = normalizeIraqiPhone(rawPhone);
-  if (!normalizedPhone)
-    return error("أدخل رقم هاتف عراقي صحيح مثل 0770xxxxxxx", 400);
-  if (rollingRateLimited(phoneLookupHits, ip(req), 10, 60_000)) {
-    return error("محاولات كثيرة، حاول لاحقاً", 429);
-  }
+  if (!customer || !normalizedPhone || !phoneBelongsToLookup(customer.phone, normalizedPhone))
+    return error("لا تملك صلاحية الوصول إلى هذه الطلبات", 403);
 
   await Promise.all([
     ensureTrackingColumns(),
@@ -35954,6 +35953,26 @@ function storagePathFromPublicUrl(url: string) {
   }
 }
 
+function safeBackupMediaUrl(raw: string): string | null {
+  if (!STORAGE_URL) return null;
+  try {
+    const url = new URL(raw);
+    const storage = new URL(STORAGE_URL);
+    const publicPrefix = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      url.origin !== storage.origin ||
+      !url.pathname.startsWith(publicPrefix)
+    )
+      return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function buildBackupMediaArchive(urls: string[]) {
   const maxBytes = Number(process.env.AJN_BACKUP_MEDIA_MAX_BYTES ?? 25_000_000);
   const maxFileBytes = Number(
@@ -35962,9 +35981,10 @@ async function buildBackupMediaArchive(urls: string[]) {
   const files: BackupPayload["mediaFiles"] = [];
   const skipped: BackupPayload["mediaSkipped"] = [];
   let totalBytes = 0;
-  for (const url of urls) {
-    if (!/^https?:\/\//i.test(url)) {
-      skipped.push({ url, reason: "not_remote_url" });
+  for (const rawUrl of urls) {
+    const url = safeBackupMediaUrl(rawUrl);
+    if (!url) {
+      skipped.push({ url: rawUrl, reason: "untrusted_media_origin" });
       continue;
     }
     try {
@@ -36371,10 +36391,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       req.method === "GET"
     ) {
       const secret = process.env.CRON_SECRET;
-      if (secret) {
-        const auth = req.headers.get("authorization") ?? "";
-        if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      }
+      if (!secret) return error("خدمة Cron غير مهيأة", 503);
+      const auth = req.headers.get("authorization") ?? "";
+      if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
       const summary = await runSmartNotificationsSweep();
       return json({ ok: true, summary });
     }
@@ -36549,6 +36568,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof RequestBodyTooLargeError)
+      return error("حجم الطلب يتجاوز الحد المسموح", 413);
     console.error("API route failed", {
       method: req.method,
       path: req.nextUrl.pathname,

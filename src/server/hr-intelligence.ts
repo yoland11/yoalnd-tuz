@@ -132,6 +132,9 @@ export async function listPayrollRuns() { await ensureHrTables(); const result =
 export async function payPayrollRun(id: number, actor: HrActor) {
   if (!['admin', 'manager', 'accountant'].includes(actor.role)) throw new Error("دفع الرواتب يتطلب صلاحية إدارية أو محاسبية");
   const run = await getPayrollRun(id); if (!run) throw new Error("دورة الرواتب غير موجودة"); if (run.status === 'paid') return run; if (run.status !== 'draft') throw new Error("دورة الرواتب غير قابلة للدفع");
+  const claimed = rows<any>(await db.execute(sql`update payroll_runs set status='processing',updated_at=now() where id=${id} and status='draft' returning id`))[0];
+  if (!claimed) throw new Error("دورة الرواتب قيد المعالجة بالفعل؛ لا تعِد الدفع حتى تكتمل أو تُراجع.");
+  try {
   for (const line of run.lines) {
     if (line.netSalary <= 0) continue;
     const tx = await createFinancialTransaction({ transactionDate: `${run.period}-01`, direction: 'expense', amount: line.netSalary, department: 'hr', transactionType: 'payroll_salary', description: `راتب ${run.period}: ${line.employeeName}`, paymentMethod: 'cash', sourceType: 'payroll_line', sourceId: String(line.id), sourceEvent: 'salary_paid', idempotencyKey: `payroll:${id}:line:${line.id}`, approvalStatus: 'pending', responsibleUserId: line.staff_id, responsibleUserName: line.employeeName, notes: `دورة رواتب ${run.run_no}`, attachments: [] }, actor);
@@ -142,6 +145,10 @@ export async function payPayrollRun(id: number, actor: HrActor) {
   await db.execute(sql`update hr_incentive_events set status='paid' where period=${run.period} and status='pending'`);
   await db.execute(sql`update payroll_runs set status='paid', approved_by=${actor.id},approved_by_name=${actor.name},approved_at=now(),paid_at=now(),updated_at=now() where id=${id}`);
   return getPayrollRun(id);
+  } catch (err) {
+    await db.execute(sql`update payroll_runs set status='draft',updated_at=now() where id=${id} and status='processing'`);
+    throw err;
+  }
 }
 
 export async function upsertTarget(input: any, actor: HrActor) {

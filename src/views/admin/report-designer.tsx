@@ -40,6 +40,24 @@ const AJN_PATHS = [
 ];
 
 function ptToPx(pt: number) { return Math.round(pt * (96 / 72)); }
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+function safeCssColor(value: string | null | undefined, fallback = "#333"): string {
+  const color = String(value ?? "").trim();
+  return /^(?:#[0-9a-f]{3,8}|rgba?\([0-9.,\s%]+\)|[a-z]{3,20})$/i.test(color)
+    ? color
+    : fallback;
+}
+function safeFontFamily(value: string | null | undefined): string {
+  const family = String(value ?? "").trim();
+  return /^[a-z0-9 ,_-]{1,80}$/i.test(family) ? family : "Tahoma";
+}
 function alignToCss(a: string | null): { h: "left" | "center" | "right"; v: string } {
   const s = (a ?? "TopLeft").toLowerCase();
   const h = s.includes("center") ? "center" : s.includes("right") ? "right" : "left";
@@ -48,7 +66,7 @@ function alignToCss(a: string | null): { h: "left" | "center" | "right"; v: stri
 }
 function bordersToCss(b: string | null, color: string | null): string {
   if (!b) return "";
-  const c = color || "#333";
+  const c = safeCssColor(color);
   const has = (k: string) => new RegExp(k, "i").test(b);
   if (has("all")) return `border:1px solid ${c};`;
   let css = "";
@@ -63,29 +81,37 @@ function bindText(el: RepxElement, mapping: Record<string, string>, sample: Reco
   return raw.replace(/\[([A-Za-z_][\w.]*)\]/g, (_m, f) => (sample[f]?.trim() ? sample[f] : `«${mapping[f] || f}»`));
 }
 
+function safeBindText(el: RepxElement, mapping: Record<string, string>, sample: Record<string, string>): string {
+  return escapeHtml(bindText(el, mapping, sample));
+}
+
 // ---- HTML string renderer (print + PNG/SVG export) ----
 function elHtml(el: RepxElement, mapping: Record<string, string>, sample: Record<string, string>): string {
   if (el.visible === false) return "";
   const align = alignToCss(el.textAlignment);
   const fontPx = el.font ? ptToPx(el.font.size) : 12;
+  const foreColor = safeCssColor(el.foreColor, "#111");
+  const backColor = el.backColor ? safeCssColor(el.backColor, "transparent") : "";
+  const fontFamily = safeFontFamily(el.font?.family);
   const style = [
     "position:absolute", `left:${el.x}px`, `top:${el.y}px`, `width:${el.width}px`, `min-height:${el.height}px`,
-    el.foreColor ? `color:${el.foreColor}` : "", el.backColor ? `background:${el.backColor}` : "",
-    el.font ? `font-family:'${el.font.family}',sans-serif` : "", `font-size:${fontPx}px`,
+    el.foreColor ? `color:${foreColor}` : "", backColor ? `background:${backColor}` : "",
+    el.font ? `font-family:'${fontFamily}',sans-serif` : "", `font-size:${fontPx}px`,
     el.font?.bold ? "font-weight:700" : "", el.font?.italic ? "font-style:italic" : "", el.font?.underline ? "text-decoration:underline" : "",
     el.angle ? `transform:rotate(${-el.angle}deg)` : "",
     "display:flex", "overflow:hidden", "box-sizing:border-box", "padding:1px 2px",
     `justify-content:${align.h === "center" ? "center" : align.h === "right" ? "flex-end" : "flex-start"}`,
     `align-items:${align.v}`, `text-align:${align.h}`, bordersToCss(el.borders, el.borderColor),
   ].filter(Boolean).join(";");
-  if (el.type === "line") return `<div style="position:absolute;left:${el.x}px;top:${el.y}px;width:${el.width}px;border-top:1px solid ${el.foreColor || "#333"};"></div>`;
-  if (el.type === "qrcode" || el.type === "barcode") return `<div style="${style};flex-direction:column;border:1px dashed #999;color:#666;font-size:10px;">${el.type === "qrcode" ? "▣ QR" : "❘❘❘❘"}<span>${el.dataField || el.symbology || ""}</span></div>`;
+  if (el.type === "line") return `<div style="position:absolute;left:${el.x}px;top:${el.y}px;width:${el.width}px;border-top:1px solid ${foreColor};"></div>`;
+  if (el.type === "qrcode" || el.type === "barcode")
+    return `<div style="${style};flex-direction:column;border:1px dashed #999;color:#666;font-size:10px;"><span>${escapeHtml(el.dataField || el.symbology || "")}</span></div>`;
   if (el.type === "picture") return `<div style="${style};border:1px dashed #999;color:#666;font-size:10px;">🖼️</div>`;
   if (el.type === "table") {
-    const rows = el.rows.map((cells) => `<tr>${cells.map((c) => { const a = alignToCss(c.textAlignment); return `<td style="border:1px solid #999;padding:2px 4px;text-align:${a.h};font-size:${c.font ? ptToPx(c.font.size) : 11}px;${c.font?.bold ? "font-weight:700;" : ""}${c.backColor ? `background:${c.backColor};` : ""}">${bindText(c, mapping, sample) || "&nbsp;"}</td>`; }).join("")}</tr>`).join("");
+    const rows = el.rows.map((cells) => `<tr>${cells.map((c) => { const a = alignToCss(c.textAlignment); const background = c.backColor ? safeCssColor(c.backColor, "transparent") : ""; return `<td style="border:1px solid #999;padding:2px 4px;text-align:${a.h};font-size:${c.font ? ptToPx(c.font.size) : 11}px;${c.font?.bold ? "font-weight:700;" : ""}${background ? `background:${background};` : ""}">${safeBindText(c, mapping, sample) || "&nbsp;"}</td>`; }).join("")}</tr>`).join("");
     return `<div style="position:absolute;left:${el.x}px;top:${el.y}px;width:${el.width}px;"><table style="width:100%;border-collapse:collapse;table-layout:fixed;">${rows}</table></div>`;
   }
-  return `<div style="${style}">${bindText(el, mapping, sample) || ""}</div>`;
+  return `<div style="${style}">${safeBindText(el, mapping, sample) || ""}</div>`;
 }
 function bandHtml(band: RepxBand, mapping: Record<string, string>, vals: Record<string, string>): string {
   return `<div style="position:relative;width:100%;height:${Math.max(band.height, 16)}px;">${band.elements.map((e) => elHtml(e, mapping, vals)).join("")}</div>`;
@@ -240,7 +266,7 @@ export function ReportDesignerPage() {
     if (!model) return;
     const w = window.open("", "_blank", "width=900,height=1100"); if (!w) return;
     const sizeCss = `@page { size: ${model.page.widthPx > model.page.heightPx ? "landscape" : "portrait"}; margin: 0; }`;
-    w.document.write(`<!doctype html><html dir="ltr"><head><meta charset="utf-8"><title>${detail.data?.name ?? "تقرير"}</title><style>${sizeCss} body{margin:0;}</style></head><body onload="window.print()">${repxModelToHtml(model, mapping, sample, rows)}</body></html>`);
+    w.document.write(`<!doctype html><html dir="ltr"><head><meta charset="utf-8"><title>${escapeHtml(detail.data?.name ?? "تقرير")}</title><style>${sizeCss} body{margin:0;}</style></head><body onload="window.print()">${repxModelToHtml(model, mapping, sample, rows)}</body></html>`);
     w.document.close();
   }
 

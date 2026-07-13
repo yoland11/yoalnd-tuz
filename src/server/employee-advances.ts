@@ -140,6 +140,16 @@ export async function ensureEmployeeAdvanceTables() {
     );
     INSERT INTO "employee_advance_settings" ("id") VALUES (1) ON CONFLICT ("id") DO NOTHING;
   `);
+  try {
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS "employee_advance_repayments_payroll_unique_idx"
+        ON "employee_advance_repayments" ("advance_id", "payroll_reference")
+        WHERE "kind" = 'payroll' AND "payroll_reference" IS NOT NULL
+    `);
+  } catch {
+    // Preserve historical financial records if legacy duplicate deductions exist.
+    // The idempotency guard in recordEmployeeAdvanceRepayment still prevents new duplicates.
+  }
 }
 
 export async function getAdvanceSettings() {
@@ -323,6 +333,38 @@ export async function recordEmployeeAdvanceRepayment(id: number, input: unknown,
   const advance = await db.query.employeeAdvancesTable.findFirst({ where: eq(employeeAdvancesTable.id, id) });
   if (!advance) throw new Error("السلفة غير موجودة");
   if (!["approved", "paid"].includes(advance.status) || asNumber(advance.remainingAmount) <= 0) throw new Error("هذه السلفة غير قابلة للتسديد");
+  if (kind === "payroll" && data.payrollReference) {
+    const existingRepayment = await db.query.employeeAdvanceRepaymentsTable.findFirst({
+      where: and(
+        eq(employeeAdvanceRepaymentsTable.advanceId, advance.id),
+        eq(employeeAdvanceRepaymentsTable.kind, "payroll"),
+        eq(employeeAdvanceRepaymentsTable.payrollReference, data.payrollReference),
+      ),
+    });
+    if (existingRepayment) {
+      const repayments = await db.query.employeeAdvanceRepaymentsTable.findMany({
+        where: eq(employeeAdvanceRepaymentsTable.advanceId, advance.id),
+      });
+      const reconciledRepaid = Math.min(
+        asNumber(advance.amount),
+        repayments.reduce((sum, item) => sum + asNumber(item.amount), 0),
+      );
+      const reconciledRemaining = Math.max(0, asNumber(advance.amount) - reconciledRepaid);
+      const [saved] = await db
+        .update(employeeAdvancesTable)
+        .set({
+          repaidAmount: String(reconciledRepaid),
+          remainingAmount: String(reconciledRemaining),
+          status: reconciledRemaining === 0 ? "completed" : "paid",
+          lastDeductionAt: new Date(),
+          payrollReference: data.payrollReference,
+          updatedAt: new Date(),
+        })
+        .where(eq(employeeAdvancesTable.id, advance.id))
+        .returning();
+      return { before: advance, advance: saved, repayment: existingRepayment, transaction: null };
+    }
+  }
   const paid = Math.min(data.amount, asNumber(advance.remainingAmount));
   if (paid <= 0) throw new Error("مبلغ التسديد غير صالح");
   let transaction: any = null;
