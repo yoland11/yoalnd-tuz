@@ -201,6 +201,7 @@ import {
   rejectEmployeeAdvance,
   saveAdvanceSettings,
   updateEmployeeAdvance,
+  employeeAdvanceErrorMessage,
 } from "@/server/employee-advances";
 import {
   addCareerEvent,
@@ -19753,8 +19754,9 @@ async function handleEmployeeAdvancesAdmin(
       return json(result);
     }
   } catch (err: any) {
-    console.error("employee advance operation failed", { method, resource, id, action, message: err?.message, userId: currentUser.id });
-    return error(String(err?.message || "تعذر إكمال عملية السلفة"), /غير موجود/.test(String(err?.message)) ? 404 : /صلاحية|مخول/.test(String(err?.message)) ? 403 : 400);
+    console.error("employee advance operation failed", { method, resource, id, action, userId: currentUser.id, code: err?.code ?? null, constraint: err?.constraint ?? null, detail: err?.detail ?? null, message: err?.message, stack: err?.stack });
+    const message = err?.code ? employeeAdvanceErrorMessage(err) : String(err?.message || "تعذر إكمال عملية السلفة");
+    return error(message, /غير موجود/.test(message) ? 404 : /صلاحية|مخول|جلسة/.test(message) ? 403 : 400);
   }
   return error("المسار غير مدعوم", 404);
 }

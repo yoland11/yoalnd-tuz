@@ -101,6 +101,34 @@ function canManage(actor: AdvanceActor) {
   return actor.role === "admin" || actor.role === "manager" || actor.role === "accountant";
 }
 
+type DatabaseError = Error & { code?: string; constraint?: string; detail?: string; table?: string };
+
+export function employeeAdvanceErrorMessage(error: unknown): string {
+  const dbError = error as DatabaseError;
+  if (dbError.code === "23503") {
+    if (dbError.constraint === "employee_advances_employee_id_fkey") return "الموظف المحدد لم يعد موجوداً. حدّث قائمة الموظفين ثم اختر موظفاً فعّالاً.";
+    if (dbError.constraint === "employee_advances_requested_by_fkey") return "جلسة مقدم الطلب غير صالحة. سجّل الدخول مرة أخرى ثم أعد المحاولة.";
+    return "تعذر ربط السلفة بسجل موجود. حدّث الصفحة وتحقق من الموظف ثم أعد المحاولة.";
+  }
+  if (dbError.code === "23505") return "تعذر إنشاء رقم سلفة فريد. أعد المحاولة.";
+  if (dbError.code === "23502") return "تعذر حفظ السلفة لأن بعض البيانات المطلوبة غير مكتملة.";
+  if (dbError.code === "22P02" || dbError.code === "22007") return "يوجد رقم أو تاريخ بصيغة غير صحيحة. تحقق من البيانات المدخلة.";
+  return "تعذر حفظ طلب السلفة. راجع البيانات ثم أعد المحاولة.";
+}
+
+function logAdvanceDatabaseError(action: string, error: unknown, context: Record<string, unknown>) {
+  const dbError = error as DatabaseError;
+  console.error("employee advance database failure", {
+    action,
+    code: dbError.code ?? "unknown",
+    constraint: dbError.constraint ?? null,
+    detail: dbError.detail ?? null,
+    table: dbError.table ?? null,
+    message: dbError.message,
+    ...context,
+  });
+}
+
 export async function ensureEmployeeAdvanceTables() {
   await ensureMasterCashBoxTables();
   await db.execute(sql`
@@ -203,27 +231,40 @@ async function enforceLimits(employeeId: number, requestedAmount: number) {
 export async function createEmployeeAdvance(input: unknown, actor: AdvanceActor) {
   const data = createAdvanceSchema.parse(input);
   await ensureEmployeeAdvanceTables();
-  await enforceLimits(data.employeeId, data.amount);
+  const { employee } = await enforceLimits(data.employeeId, data.amount);
+  const requesterId = Number(actor.id);
+  if (!Number.isInteger(requesterId) || requesterId <= 0) throw new Error("جلسة مقدم الطلب غير صالحة. سجّل الدخول مرة أخرى ثم أعد المحاولة.");
+  const requester = await db.query.staffTable.findFirst({ where: eq(staffTable.id, requesterId) });
+  if (!requester || !requester.isActive) throw new Error("جلسة مقدم الطلب غير صالحة. سجّل الدخول مرة أخرى ثم أعد المحاولة.");
   const now = new Date();
-  const [created] = await db.insert(employeeAdvancesTable).values({
-    advanceNo: `ADV-TMP-${crypto.randomUUID()}`,
-    employeeId: data.employeeId,
-    requestDate: data.requestDate ?? dateInBaghdad(),
-    advanceType: data.advanceType,
-    amount: String(data.amount),
-    remainingAmount: String(data.amount),
-    monthlyDeduction: String(data.monthlyDeduction),
-    reason: data.reason,
-    notes: data.notes || null,
-    attachmentUrl: data.attachmentUrl || null,
-    dueDate: data.dueDate || null,
-    requestedBy: actor.id,
-    requestedByName: actor.name,
-    createdAt: now,
-    updatedAt: now,
-  }).returning();
-  const [saved] = await db.update(employeeAdvancesTable).set({ advanceNo: advanceNumber(created.id) }).where(eq(employeeAdvancesTable.id, created.id)).returning();
-  return saved;
+  try {
+    return await db.transaction(async (tx) => {
+      const [created] = await tx.insert(employeeAdvancesTable).values({
+        advanceNo: `ADV-TMP-${crypto.randomUUID()}`,
+        employeeId: employee.id,
+        requestDate: data.requestDate ?? dateInBaghdad(),
+        advanceType: data.advanceType,
+        amount: String(data.amount),
+        repaidAmount: "0",
+        remainingAmount: String(data.amount),
+        monthlyDeduction: String(data.monthlyDeduction),
+        reason: data.reason,
+        notes: data.notes || null,
+        attachmentUrl: data.attachmentUrl || null,
+        status: "pending",
+        dueDate: data.dueDate || null,
+        requestedBy: requesterId,
+        requestedByName: actor.name,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+      const [saved] = await tx.update(employeeAdvancesTable).set({ advanceNo: advanceNumber(created.id), updatedAt: new Date() }).where(eq(employeeAdvancesTable.id, created.id)).returning();
+      return saved;
+    });
+  } catch (error) {
+    logAdvanceDatabaseError("create", error, { employeeId: data.employeeId, requesterId, amount: data.amount, advanceType: data.advanceType });
+    throw new Error(employeeAdvanceErrorMessage(error));
+  }
 }
 
 export async function listEmployeeAdvances(input: unknown = {}) {
