@@ -93,8 +93,10 @@ export async function adminFetch<T = any>(
   });
   if (!res.ok) {
     let msg = res.statusText;
+    let payload: any = null;
     try {
       const j = await res.json();
+      payload = j;
       const details = Array.isArray(j?.details)
         ? j.details
             .slice(0, 4)
@@ -112,6 +114,7 @@ export async function adminFetch<T = any>(
       status?: number;
     };
     (err as any).status = res.status;
+    (err as any).data = payload;
     throw err;
   }
   if (res.status === 204) return null as T;

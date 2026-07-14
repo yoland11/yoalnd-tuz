@@ -206,6 +206,7 @@ import {
   createEvaluation,
   createManualIncentive,
   createPayrollRun,
+  deleteDraftPayrollRun,
   PayrollConflictError,
   ensureHrTables,
   evaluateAutomaticIncentives,
@@ -214,7 +215,9 @@ import {
   hrDashboard,
   listPayrollRuns,
   payPayrollRun,
+  payrollDashboard,
   previewPayrollRun,
+  recalculatePayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
 import {
@@ -19525,6 +19528,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         return json(event, 201);
       }
     }
+    if (resource === "payroll" && method === "GET" && parts[3] === "dashboard") {
+      return json(await payrollDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
+    }
     if (resource === "payroll" && method === "POST" && !id && parts[3] === "preview") {
       if (!adminOnly()) return error("ليس لديك صلاحية", 403);
       return json(await previewPayrollRun(await body(req)));
@@ -19537,6 +19543,16 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const payload = await body(req); const run = await createPayrollRun(payload, actor);
         void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
         return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "recalculate") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        return json(await recalculatePayrollRun(id, actor));
+      }
+      if (method === "DELETE" && id) {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        await deleteDraftPayrollRun(id);
+        void logAdminActivity(req, "payroll_draft_deleted", "payroll_run", id);
+        return json({ id });
       }
       if (method === "POST" && id && parts[4] === "approve") {
         if (!adminOnly()) return error("ليس لديك صلاحية", 403);
