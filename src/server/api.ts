@@ -27837,6 +27837,11 @@ async function ensurePurchasesTables() {
         notes TEXT, balance TEXT NOT NULL DEFAULT '0', is_active INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_code VARCHAR(40), ADD COLUMN IF NOT EXISTS company TEXT, ADD COLUMN IF NOT EXISTS contact_person TEXT, ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(30), ADD COLUMN IF NOT EXISTS category VARCHAR(60), ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(80), ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
+      CREATE UNIQUE INDEX IF NOT EXISTS suppliers_code_unique_idx ON suppliers(supplier_code) WHERE supplier_code IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS supplier_products (id SERIAL PRIMARY KEY, supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, last_purchase_price NUMERIC(16,2) NOT NULL DEFAULT 0, supplier_sku VARCHAR(100), supplier_barcode VARCHAR(100), is_default BOOLEAN NOT NULL DEFAULT false, is_preferred BOOLEAN NOT NULL DEFAULT false, created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW());
+      CREATE UNIQUE INDEX IF NOT EXISTS supplier_products_supplier_product_idx ON supplier_products(supplier_id, product_id);
+      CREATE INDEX IF NOT EXISTS supplier_products_product_idx ON supplier_products(product_id);
       CREATE TABLE IF NOT EXISTS purchase_invoices (
         id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
         supplier_name TEXT NOT NULL DEFAULT '', supplier_id INTEGER REFERENCES suppliers(id),
@@ -27957,6 +27962,37 @@ async function handleSalesInvoices(
   await ensureStockTrackingTables();
   const method = req.method;
   const id = parts[2] ? int(parts[2]) : null;
+  const resultRows = (result: any) => result?.rows ?? result ?? [];
+
+  if (method === "GET" && parts[2] === "dashboard") {
+    const [summary, top] = await Promise.all([
+      db.execute(sql`select count(*)::int as total, count(*) filter(where status='active' and is_active=1)::int as active, coalesce(sum(balance::numeric),0)::float as outstanding, coalesce((select sum(total::numeric) from purchase_invoices where date >= date_trunc('month',current_date) and status='active'),0)::float as monthly_purchases from suppliers`),
+      db.execute(sql`select s.id,s.name,s.supplier_code,coalesce(sum(p.total::numeric),0)::float as purchases,coalesce(sum(p.remaining_amount::numeric),0)::float as outstanding from suppliers s left join purchase_invoices p on p.supplier_id=s.id and p.status='active' group by s.id order by purchases desc limit 8`),
+    ]);
+    return json({ ...(resultRows(summary)[0] ?? {}), topSuppliers: resultRows(top) });
+  }
+
+  if (method === "GET" && id && parts[3] === "profile") {
+    const supplier = await db.query.suppliersTable.findFirst({ where: eq(suppliersTable.id, id) }); if (!supplier) return error("المورد غير موجود", 404);
+    const [invoices, products, transactions] = await Promise.all([
+      db.execute(sql`select * from purchase_invoices where supplier_id=${id} order by date desc limit 30`),
+      db.execute(sql`select sp.*,p.name_ar,p.name from supplier_products sp left join products p on p.id=sp.product_id where sp.supplier_id=${id} order by sp.is_preferred desc,sp.updated_at desc`),
+      db.execute(sql`select id,transaction_no,transaction_date,amount,payment_method,approval_status,description from financial_transactions where source_type='purchase_invoice' and source_id in (select id::text from purchase_invoices where supplier_id=${id}) order by transaction_date desc limit 30`),
+    ]);
+    return json({ supplier, invoices: resultRows(invoices), products: resultRows(products), payments: resultRows(transactions), outstandingBalance: Number(supplier.balance ?? 0) });
+  }
+
+  if (method === "POST" && id && parts[3] === "products") {
+    const b = await body(req); const productId = Number(b?.productId); if (!Number.isInteger(productId) || productId <= 0) return error("المنتج مطلوب", 400);
+    await db.execute(sql`insert into supplier_products(supplier_id,product_id,last_purchase_price,supplier_sku,supplier_barcode,is_default,is_preferred,updated_at) values(${id},${productId},${Math.max(0,Number(b?.lastPurchasePrice)||0)},${nullableText(b?.supplierSku)},${nullableText(b?.supplierBarcode)},${b?.isDefault===true},${b?.isPreferred===true},now()) on conflict(supplier_id,product_id) do update set last_purchase_price=excluded.last_purchase_price,supplier_sku=excluded.supplier_sku,supplier_barcode=excluded.supplier_barcode,is_default=excluded.is_default,is_preferred=excluded.is_preferred,updated_at=now()`);
+    return json({ supplierId: id, productId });
+  }
+
+  if (method === "GET" && parts[2] === "search") {
+    const q = `%${String(req.nextUrl.searchParams.get("q") ?? "").trim()}%`;
+    const result = await db.execute(sql`select * from suppliers where is_active=1 and status='active' and (name ilike ${q} or coalesce(phone,'') ilike ${q} or coalesce(supplier_code,'') ilike ${q} or coalesce(company,'') ilike ${q}) order by name limit 30`);
+    return json(resultRows(result));
+  }
 
   if (method === "GET" && !id) {
     const from = req.nextUrl.searchParams.get("from") ?? undefined;
@@ -28675,6 +28711,13 @@ async function handlePurchaseInvoices(
       }
     }
 
+    if (inv.supplierId) {
+      for (const item of processedItems) if (item.productId) {
+        await db.execute(sql`insert into supplier_products(supplier_id,product_id,last_purchase_price,supplier_barcode,is_default,is_preferred,updated_at) values(${inv.supplierId},${item.productId},${item.costPrice},${item.barcode || null},false,false,now()) on conflict(supplier_id,product_id) do update set last_purchase_price=excluded.last_purchase_price,supplier_barcode=coalesce(excluded.supplier_barcode,supplier_products.supplier_barcode),updated_at=now()`);
+      }
+      await db.execute(sql`update suppliers set balance=(select coalesce(sum(remaining_amount::numeric),0) from purchase_invoices where supplier_id=${inv.supplierId} and status='active')::text,updated_at=now() where id=${inv.supplierId}`);
+    }
+
     const final = await db.query.purchaseInvoicesTable.findFirst({
       where: eq(purchaseInvoicesTable.id, inv.id),
     });
@@ -28985,6 +29028,8 @@ async function handleSuppliers(
       .insert(suppliersTable)
       .values({
         name: supplierName,
+        supplierCode: `SUP-${Date.now().toString(36).toUpperCase()}`,
+        company: nullableText(b?.company), contactPerson: nullableText(b?.contactPerson), whatsapp: nullableText(b?.whatsapp), category: nullableText(b?.category), paymentTerms: nullableText(b?.paymentTerms), creditLimit: String(Math.max(0, Number(b?.creditLimit) || 0)), openingBalance: String(Number(b?.openingBalance) || 0), balance: String(Number(b?.openingBalance) || 0), status: ["active", "inactive", "blocked"].includes(String(b?.status)) ? b.status : "active",
         phone: nullableText(b?.phone),
         email: nullableText(b?.email),
         address: nullableText(b?.address),
@@ -29006,6 +29051,9 @@ async function handleSuppliers(
     if (b.email !== undefined) update.email = nullableText(b.email);
     if (b.address !== undefined) update.address = nullableText(b.address);
     if (b.notes !== undefined) update.notes = nullableText(b.notes);
+    for (const key of ["company", "contactPerson", "whatsapp", "category", "paymentTerms"] as const) if (b[key] !== undefined) update[key] = nullableText(b[key]);
+    for (const key of ["creditLimit", "openingBalance"] as const) if (b[key] !== undefined) update[key] = String(Number(b[key]) || 0);
+    if (b.status !== undefined && ["active", "inactive", "blocked"].includes(String(b.status))) { update.status = b.status; update.isActive = b.status === "active" ? 1 : 0; }
     update.updatedAt = new Date();
     const [row] = await db
       .update(suppliersTable)

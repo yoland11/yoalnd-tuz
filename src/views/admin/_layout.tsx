@@ -321,6 +321,12 @@ export const NAV: NavItem[] = [
     perm: "accounting",
   },
   {
+    href: "/admin/suppliers",
+    label: "الموردون",
+    icon: Truck,
+    perm: "accounting",
+  },
+  {
     href: "/admin/employee-advances",
     label: "سلف الموظفين",
     icon: Wallet,

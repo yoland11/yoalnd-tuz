@@ -64,6 +64,8 @@ export default function PurchasesPage() {
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
+  const [quickSupplier, setQuickSupplier] = useState(false);
+  const [quickSupplierForm, setQuickSupplierForm] = useState({ name: "", phone: "", company: "" });
   const firstFieldRef = useRef<HTMLSelectElement>(null);
 
   const { data: products = [] } = useQuery<Product[]>({
@@ -86,6 +88,16 @@ export default function PurchasesPage() {
     ),
     enabled: listMode,
   });
+
+  async function createQuickSupplier() {
+    if (!quickSupplierForm.name.trim()) { toast({ title: "اسم المورد مطلوب", variant: "destructive" }); return; }
+    try {
+      const supplier = await adminFetch<Supplier>("/admin/suppliers", { method: "POST", body: JSON.stringify(quickSupplierForm) });
+      queryClient.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+      setForm((f) => ({ ...f, supplierId: supplier.id, supplierName: supplier.name })); setQuickSupplier(false); setQuickSupplierForm({ name: "", phone: "", company: "" });
+      toast({ title: "تمت إضافة المورد واختياره" });
+    } catch (error: any) { toast({ title: "تعذرت إضافة المورد", description: error.message, variant: "destructive" }); }
+  }
 
   // ── Totals ───────────────────────────────────────────────────────────────
   const subtotal = items.reduce((s, i) => s + i.total, 0);
@@ -457,6 +469,7 @@ export default function PurchasesPage() {
                 />
               </div>
             )}
+            <Button type="button" variant="outline" size="sm" className="w-full" onClick={() => setQuickSupplier(true)}><Plus className="ml-1 h-4 w-4" />إنشاء مورد جديد</Button>
           </div>
 
           {/* Totals */}
@@ -581,6 +594,7 @@ export default function PurchasesPage() {
           </Button>
         </div>
       </div>
+      {quickSupplier && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" dir="rtl"><div className="w-full max-w-md space-y-3 rounded-xl border bg-card p-5 shadow-xl"><div className="flex items-center justify-between"><h3 className="font-bold">مورد جديد</h3><Button variant="ghost" size="sm" onClick={() => setQuickSupplier(false)}><X className="h-4 w-4" /></Button></div><input autoFocus value={quickSupplierForm.name} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, name: e.target.value }))} placeholder="اسم المورد *" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.company} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, company: e.target.value }))} placeholder="الشركة" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.phone} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, phone: e.target.value }))} placeholder="الهاتف" className="w-full rounded-lg border bg-background p-2 text-sm" /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setQuickSupplier(false)}>إلغاء</Button><Button onClick={createQuickSupplier}>حفظ واختيار</Button></div></div></div>}
     </div>
   );
 }
