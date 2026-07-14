@@ -349,7 +349,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   // window, no pagination truncation. Guarantees rows displayed === badge count.
   const pendingApprovals = useQuery({
     queryKey: ["admin", "master-cash", "pending-approvals"],
-    queryFn: () => adminFetch<TransactionList>("/admin/master-cash/transactions?status=pending&limit=500"),
+    queryFn: () => adminFetch<TransactionList>("/admin/master-cash/transactions?status=pending&limit=5000"),
     refetchInterval: 15_000,
   });
   const detail = useQuery({

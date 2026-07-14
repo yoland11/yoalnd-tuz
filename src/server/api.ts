@@ -4106,6 +4106,7 @@ async function formatKoshaBooking(row: any) {
       row.packagePrice == null && row.package_price == null
         ? null
         : Number(row.packagePrice ?? row.package_price),
+    customerId: row.customerId ?? row.customer_id ?? null,
     customerName: row.customerName,
     phone: formatIraqiPhone(row.phone) ?? row.phone,
     brideName: row.brideName ?? row.bride_name ?? "",
@@ -6164,6 +6165,7 @@ async function ensureKoshaTables(): Promise<void> {
       );
 
       alter table "kosha_bookings"
+        add column if not exists "customer_id" integer references "customers" ("id") on delete set null,
         add column if not exists "bride_name" text,
         add column if not exists "groom_name" text,
         add column if not exists "event_type" varchar(40),
@@ -6191,6 +6193,15 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "archived_at" timestamp,
         add column if not exists "tracking_code" varchar(40),
         add column if not exists "tracking_status" varchar(40) not null default 'booked';
+      -- Backfill the canonical customer relation for legacy bookings that only
+      -- stored a phone number. This is deterministic and leaves unmatched rows
+      -- untouched for manual reconciliation.
+      update "kosha_bookings" b
+      set "customer_id" = c.id
+      from "customers" c
+      where b."customer_id" is null
+        and regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g') <> ''
+        and regexp_replace(coalesce(c."phone", ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g');
       update "kosha_bookings" set "tracking_code" = 'AJN-KOSHA-' || lpad("id"::text, 4, '0') where "tracking_code" is null;
       create unique index if not exists "kosha_bookings_tracking_code_idx" on "kosha_bookings" ("tracking_code");
 
@@ -6288,6 +6299,7 @@ async function ensureKoshaTables(): Promise<void> {
       create index if not exists "kosha_packages_active_sort_idx" on "kosha_packages" ("is_active", "sort_order", "id");
       create index if not exists "kosha_package_components_package_idx" on "kosha_package_components" ("package_id", "sort_order", "id");
       create index if not exists "kosha_bookings_package_idx" on "kosha_bookings" ("package_id", "created_at");
+      create index if not exists "kosha_bookings_customer_id_idx" on "kosha_bookings" ("customer_id");
 
       insert into "kosha_addons" ("name", "sort_order")
       values
@@ -6458,9 +6470,13 @@ async function ensureKoshaStaffTables(): Promise<void> {
         "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
         "reviewed_by_name" text,
         "reviewed_at" timestamp,
+        "financial_transaction_id" integer,
         "created_at" timestamp not null default now()
       );
+      alter table "kosha_payment_requests"
+        add column if not exists "financial_transaction_id" integer;
       create index if not exists "kosha_payment_requests_status_idx" on "kosha_payment_requests" ("status");
+      create index if not exists "kosha_payment_requests_financial_idx" on "kosha_payment_requests" ("financial_transaction_id");
 
       create table if not exists "kosha_staff_notifications" (
         "id" serial primary key,
@@ -10445,11 +10461,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       ? packageDetails.price
       : koshaPrice + optionsTotal;
     // Surface the booking's customer on /admin/customers — create-or-link by phone.
-    await ensureCustomerForPhone(phone, customerName);
+    const customer = await ensureCustomerForPhone(phone, customerName);
     const [booking] = await db
       .insert(koshaBookingsTable)
       .values({
         koshaId: kosha.id,
+        customerId: customer?.id ?? null,
         packageId: packageDetails?.id ?? null,
         packageName: packageDetails?.name ?? null,
         packagePrice: packageDetails ? String(packageDetails.price) : null,
@@ -14682,9 +14699,100 @@ async function handleAdminKoshas(
         orderBy: (b, { desc }) => [desc(b.createdAt)],
         limit: 150,
       });
-      return json(
-        await Promise.all(rows.map((row) => formatKoshaBooking(row))),
-      );
+      const formatted = await Promise.all(rows.map((row) => formatKoshaBooking(row)));
+      const latestPayments = rows.length
+        ? await db.query.financialTransactionsTable.findMany({
+            where: and(
+              eq(financialTransactionsTable.sourceType, "kosha_booking"),
+              inArray(financialTransactionsTable.sourceId, rows.map((row) => String(row.id))),
+              eq(financialTransactionsTable.sourceEvent, "payment"),
+              eq(financialTransactionsTable.approvalStatus, "executed"),
+            ),
+            orderBy: [desc(financialTransactionsTable.createdAt)],
+          })
+        : [];
+      const latestByBooking = new Map<number, string>();
+      for (const payment of latestPayments) {
+        const bookingId = Number(payment.sourceId);
+        if (!latestByBooking.has(bookingId)) latestByBooking.set(bookingId, payment.transactionDate);
+      }
+      return json(formatted.map((item) => ({
+        ...item,
+        latestPaymentDate: latestByBooking.get(item.id) ?? null,
+      })));
+    }
+
+    // Read-only unified financial projection for a booking.  This deliberately
+    // derives the totals from the existing booking, collection requests and
+    // posted financial movements; it never rewrites historical transactions.
+    if (parts[2] === "reconciliation" && method === "GET") {
+      const bookings = await db.query.koshaBookingsTable.findMany({
+        where: sql`${koshaBookingsTable.archivedAt} is null`,
+        orderBy: (b, { desc }) => [desc(b.id)],
+        limit: 2000,
+      });
+      const ids = bookings.map((b) => b.id);
+      const [requests, transactions] = ids.length
+        ? await Promise.all([
+            db.query.koshaPaymentRequestsTable.findMany({
+              where: inArray(koshaPaymentRequestsTable.bookingId, ids),
+            }),
+            db.query.financialTransactionsTable.findMany({
+              where: and(
+                eq(financialTransactionsTable.sourceType, "kosha_booking"),
+                inArray(financialTransactionsTable.sourceId, ids.map(String)),
+              ),
+            }),
+          ])
+        : [[], []];
+      const approvedByBooking = new Map<number, number>();
+      for (const row of requests as any[]) {
+        if (row.status === "approved")
+          approvedByBooking.set(row.bookingId, money(approvedByBooking.get(row.bookingId) ?? 0) + money(row.amount));
+      }
+      const txByBooking = new Map<number, any[]>();
+      for (const row of transactions as any[]) {
+        const id = Number(row.sourceId);
+        const list = txByBooking.get(id) ?? [];
+        list.push(row);
+        txByBooking.set(id, list);
+      }
+      const report = bookings.map((booking) => {
+        const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+        const pricing = (details.pricing ?? {}) as Record<string, any>;
+        const approved = money(approvedByBooking.get(booking.id) ?? 0);
+        const txs = txByBooking.get(booking.id) ?? [];
+        const executed = txs.filter((t) => t.approvalStatus === "executed");
+        const expected = money(booking.paidAmount);
+        const posted = money(executed.reduce((sum, t) => sum + (t.direction === "revenue" ? money(t.amount) : -money(t.amount)), 0));
+        return {
+          bookingId: booking.id,
+          bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
+          customerName: booking.customerName,
+          totalAmount: money(booking.totalAmount),
+          paidAmount: expected,
+          approvedCollectedAmount: approved,
+          remainingAmount: money(booking.remainingAmount),
+          status: booking.paymentStatus,
+          missingCashbox: expected > 0 && posted <= 0,
+          mismatched: Math.abs(posted - expected) >= 0.01,
+          duplicate: executed.length > 1 && new Set(executed.map((t) => t.idempotencyKey)).size < executed.length,
+          postedAmount: posted,
+          transactionCount: txs.length,
+          discount: money(pricing.discountAmount),
+          additionalCharges: money(pricing.additionalCharges ?? pricing.additionalAmount),
+        };
+      });
+      return json({
+        generatedAt: new Date().toISOString(),
+        fixed: [],
+        missing: report.filter((r) => r.missingCashbox),
+        duplicate: report.filter((r) => r.duplicate),
+        mismatched: report.filter((r) => r.mismatched),
+        skipped: [],
+        needsManualReview: report.filter((r) => r.missingCashbox || r.mismatched || r.duplicate),
+        rows: report,
+      });
     }
 
     if (parts[2]) {
@@ -14694,6 +14802,86 @@ async function handleAdminKoshas(
         where: eq(koshaBookingsTable.id, id),
       });
       if (!existing) return error("الحجز غير موجود", 404);
+
+      if (parts[3] === "finance" && method === "GET") {
+        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+        const pricing = (details.pricing ?? {}) as Record<string, any>;
+        const requests = await db.query.koshaPaymentRequestsTable.findMany({
+          where: eq(koshaPaymentRequestsTable.bookingId, id),
+          orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
+        });
+        const txRows = await db.query.financialTransactionsTable.findMany({
+          where: or(
+            and(
+              eq(financialTransactionsTable.sourceType, "kosha_booking"),
+              eq(financialTransactionsTable.sourceId, String(id)),
+            ),
+            inArray(financialTransactionsTable.id, requests.map((r) => r.financialTransactionId).filter((v): v is number => Number.isInteger(v))),
+          ),
+          orderBy: [desc(financialTransactionsTable.createdAt)],
+        });
+        const journalRows = txRows.length
+          ? await db.query.financialLedgerEntriesTable.findMany({
+              where: inArray(financialLedgerEntriesTable.transactionId, txRows.map((t) => t.id)),
+            })
+          : [];
+        const customerId = (existing as any).customerId ?? (await findCustomerByPhone(existing.phone))?.id ?? null;
+        const approvedCollectedAmount = money(requests.filter((r) => r.status === "approved").reduce((sum, r) => sum + money(r.amount), 0));
+        const pendingCollectionAmount = money(requests.filter((r) => r.status === "pending").reduce((sum, r) => sum + money(r.amount), 0));
+        const refundedAmount = money(txRows.filter((t) => t.sourceEvent === "refund" || t.transactionType.includes("refund")).reduce((sum, t) => sum + money(t.amount), 0));
+        const discount = money(pricing.discountAmount);
+        const additionalCharges = money(pricing.additionalCharges ?? pricing.additionalAmount);
+        const directPaid = money(Math.max(0, money(existing.paidAmount) - approvedCollectedAmount));
+        const remainingAmount = money(Math.max(0, money(existing.totalAmount) + additionalCharges - discount - directPaid - approvedCollectedAmount + refundedAmount));
+        const movement = (row: any) => ({
+          id: row.id,
+          transactionNo: row.transactionNo,
+          amount: money(row.amount),
+          date: row.transactionDate,
+          status: row.approvalStatus,
+          method: row.paymentMethod,
+          source: row.sourceType,
+          collector: row.requestedByName || null,
+          approvedBy: row.approvedByName || null,
+          balanceBefore: row.balanceBefore == null ? null : money(row.balanceBefore),
+          balanceAfter: row.balanceAfter == null ? null : money(row.balanceAfter),
+        });
+        return json({
+          bookingId: id,
+          bookingNo: existing.trackingCode ?? `KB-${id}`,
+          customerId,
+          totalAmount: money(existing.totalAmount),
+          paidAmount: directPaid,
+          approvedCollectedAmount,
+          pendingCollectionAmount,
+          refundedAmount,
+          discount,
+          additionalCharges,
+          remainingAmount,
+          paymentStatus: existing.paymentStatus,
+          latestPaymentDate: txRows[0]?.transactionDate ?? null,
+          payments: txRows.map(movement),
+          collections: requests.map((r: any) => ({
+            id: r.id,
+            amount: money(r.amount),
+            status: r.status,
+            source: "kosha_staff_collection",
+            collector: r.staffName,
+            approvedBy: r.reviewedByName,
+            date: r.createdAt?.toISOString?.() ?? String(r.createdAt),
+            financialTransactionId: r.financialTransactionId ?? null,
+          })),
+          cashboxMovements: txRows.map(movement),
+          journalEntries: journalRows.map((entry: any) => ({
+            id: entry.id,
+            transactionId: entry.transactionId,
+            entryNo: txRows.find((t) => t.id === entry.transactionId)?.transactionNo ?? null,
+            amount: money(entry.amount),
+            status: "posted",
+            source: entry.entrySide,
+          })),
+        });
+      }
 
       // Booking ↔ Reserved products/variants. Reserves (holds) stock without deducting until
       // the booking is confirmed/checked out. Stored in stock_reservations (source=kosha_booking).
@@ -25729,13 +25917,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "GET" && parts[2] === "reports") {
       const aggRes: any = await db.execute(sql`
         select c.id, c.name, c.phone, c.city, c.created_at,
-          coalesce(si.cnt,0) + coalesce(o.cnt,0) as invoices,
-          coalesce(si.total,0) + coalesce(o.total,0) as total,
-          coalesce(si.remaining,0) + coalesce(o.remaining,0) as remaining,
-          greatest(coalesce(si.last, c.created_at), coalesce(o.last, c.created_at)) as last_activity
+          coalesce(si.cnt,0) + coalesce(o.cnt,0) + coalesce(kb.cnt,0) as invoices,
+          coalesce(si.total,0) + coalesce(o.total,0) + coalesce(kb.total,0) as total,
+          coalesce(si.remaining,0) + coalesce(o.remaining,0) + coalesce(kb.remaining,0) as remaining,
+          greatest(coalesce(si.last, c.created_at), coalesce(o.last, c.created_at), coalesce(kb.last, c.created_at)) as last_activity
         from customers c
         left join (select customer_id, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from sales_invoices where status <> 'cancelled' group by customer_id) si on si.customer_id = c.id
         left join (select customer_phone, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from orders where archived_at is null and status <> 'cancelled' group by customer_phone) o on o.customer_phone = c.phone
+        left join (select customer_id, count(*)::int cnt, coalesce(sum(total_amount::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from kosha_bookings where archived_at is null and status <> 'cancelled' and customer_id is not null group by customer_id) kb on kb.customer_id = c.id
         where c.status <> 'deleted'
         limit 5000`);
       const rows = (aggRes.rows ?? []).map((r: any) => ({
@@ -25782,22 +25971,24 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!matches.length) return json({ results: [] });
       const ids = matches.map((m) => m.id);
       const phones = [...new Set(matches.map((m) => m.phone))];
-      const [invAgg, ordAgg]: any = await Promise.all([
+      const [invAgg, ordAgg, koshaAgg]: any = await Promise.all([
         db.execute(sql`select customer_id, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from sales_invoices where status <> 'cancelled' and customer_id in (${sql.join(ids.map((i) => sql`${i}`), sql`, `)}) group by customer_id`),
         db.execute(sql`select customer_phone, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from orders where archived_at is null and status <> 'cancelled' and customer_phone in (${sql.join(phones.map((p) => sql`${p}`), sql`, `)}) group by customer_phone`),
+        db.execute(sql`select customer_id, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total_amount::numeric),0)::float as total, max(created_at) as last from kosha_bookings where archived_at is null and status <> 'cancelled' and customer_id in (${sql.join(ids.map((i) => sql`${i}`), sql`, `)}) group by customer_id`),
       ]);
       const invBy = new Map((invAgg.rows ?? []).map((r: any) => [Number(r.customer_id), r]));
       const ordBy = new Map((ordAgg.rows ?? []).map((r: any) => [String(r.customer_phone), r]));
+      const koshaBy = new Map((koshaAgg.rows ?? []).map((r: any) => [Number(r.customer_id), r]));
       const results = matches.map((m) => {
-        const inv: any = invBy.get(m.id) ?? {}; const ord: any = ordBy.get(m.phone) ?? {};
-        const lastA = inv.last ? new Date(inv.last).getTime() : 0; const lastB = ord.last ? new Date(ord.last).getTime() : 0;
-        const last = Math.max(lastA, lastB);
+        const inv: any = invBy.get(m.id) ?? {}; const ord: any = ordBy.get(m.phone) ?? {}; const kosha: any = koshaBy.get(m.id) ?? {};
+        const lastA = inv.last ? new Date(inv.last).getTime() : 0; const lastB = ord.last ? new Date(ord.last).getTime() : 0; const lastC = kosha.last ? new Date(kosha.last).getTime() : 0;
+        const last = Math.max(lastA, lastB, lastC);
         return {
           id: m.id, name: m.name || m.fullName || "زبون", phone: m.phone,
           code: `CUS-${String(m.id).padStart(6, "0")}`, city: m.city ?? null,
-          invoiceCount: Number(inv.cnt ?? 0) + Number(ord.cnt ?? 0),
-          remaining: Number(inv.remaining ?? 0) + Number(ord.remaining ?? 0),
-          totalSpent: Number(inv.total ?? 0) + Number(ord.total ?? 0),
+          invoiceCount: Number(inv.cnt ?? 0) + Number(ord.cnt ?? 0) + Number(kosha.cnt ?? 0),
+          remaining: Number(inv.remaining ?? 0) + Number(ord.remaining ?? 0) + Number(kosha.remaining ?? 0),
+          totalSpent: Number(inv.total ?? 0) + Number(ord.total ?? 0) + Number(kosha.total ?? 0),
           lastInvoice: last ? new Date(last).toISOString().slice(0, 10) : null,
         };
       });
@@ -25822,6 +26013,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         whatsappLogs,
         messageThreads,
         invoices,
+        koshaBookings,
         customerPayments,
       ] = await Promise.all([
         db.query.ordersTable.findMany({
@@ -25882,6 +26074,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orderBy: [desc(salesInvoicesTable.createdAt)],
           limit: 20,
         }),
+        db.query.koshaBookingsTable.findMany({
+          where: and(
+            sql`${koshaBookingsTable.archivedAt} is null`,
+            or(
+              eq(koshaBookingsTable.customerId, id),
+              inArray(koshaBookingsTable.phone, phoneVariants),
+            ),
+          ),
+          orderBy: [desc(koshaBookingsTable.createdAt)],
+          limit: 50,
+        }),
         db.query.financialTransactionsTable.findMany({
           where: and(
             or(
@@ -25907,13 +26110,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         (sum, row) => sum + money(row.total),
         0,
       );
+      const koshaTotal = koshaBookings.reduce(
+        (sum, row) => sum + money(row.totalAmount),
+        0,
+      );
       const remainingTotal =
         orders.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
         serviceOrders.reduce(
           (sum, row) => sum + money(row.remainingAmount),
           0,
         ) +
-        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0);
+        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
+        koshaBookings.reduce((sum, row) => sum + money(row.remainingAmount), 0);
       const unpaidCount =
         orders.filter(
           (row) =>
@@ -25926,8 +26134,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         invoices.filter(
           (row) =>
             row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
+        ).length +
+        koshaBookings.filter(
+          (row) =>
+            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
         ).length;
-      const totalCharges = productTotal + serviceTotal + invoiceTotal;
+      const totalCharges = productTotal + serviceTotal + invoiceTotal + koshaTotal;
       const totalPaid = Math.max(totalCharges - remainingTotal, 0);
       return json({
         id: customer.id,
@@ -25953,6 +26165,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           productOrders: orders.length,
           serviceOrders: serviceOrders.length,
           invoices: invoices.length,
+          koshaBookings: koshaBookings.length,
           totalSpent: totalCharges,
           totalCharges,
           totalPaid,
@@ -25999,6 +26212,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           remainingAmount: Number.parseFloat(invoice.remainingAmount ?? "0"),
           paymentStatus: invoice.paymentStatus,
           createdAt: invoice.createdAt.toISOString(),
+        })),
+        koshaBookings: koshaBookings.map((booking) => ({
+          id: booking.id,
+          trackingCode: booking.trackingCode,
+          total: money(booking.totalAmount),
+          paidAmount: money(booking.paidAmount),
+          remainingAmount: money(booking.remainingAmount),
+          paymentStatus: booking.paymentStatus,
+          status: booking.status,
+          eventDate: booking.eventDate ?? null,
+          createdAt: booking.createdAt.toISOString(),
         })),
         payments: customerPayments.map((payment) => ({
           id: payment.id,
@@ -30453,6 +30677,7 @@ async function ensureAccountingVoucherTables() {
           ADD COLUMN IF NOT EXISTS "customer_id" integer,
           ADD COLUMN IF NOT EXISTS "order_id" integer,
           ADD COLUMN IF NOT EXISTS "booking_id" integer,
+          ADD COLUMN IF NOT EXISTS "kosha_booking_id" integer,
           ADD COLUMN IF NOT EXISTS "reference" text,
           ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
           ADD COLUMN IF NOT EXISTS "notes" text,
@@ -30488,6 +30713,7 @@ async function ensureAccountingVoucherTables() {
         CREATE INDEX IF NOT EXISTS "payment_vouchers_created_by_idx" ON "payment_vouchers" ("created_by");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_approval_status_idx" ON "receipt_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_financial_transaction_id_idx" ON "receipt_vouchers" ("financial_transaction_id");
+        CREATE INDEX IF NOT EXISTS "receipt_vouchers_kosha_booking_idx" ON "receipt_vouchers" ("kosha_booking_id");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_approval_status_idx" ON "payment_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_financial_transaction_id_idx" ON "payment_vouchers" ("financial_transaction_id");
       `),
@@ -30629,6 +30855,11 @@ async function syncKoshaFinancialPayment(
   const targetPaid =
     order.status === "cancelled" ? 0 : Number(order.paidAmount);
   const paymentMethod = (order.bookingDetails as any)?.pricing?.paymentMethod;
+  // Kosha bookings predate the unified customer relation and only carry a
+  // phone number. Resolve the canonical customer id while posting the
+  // financial movement so cashbox transactions and statements are grouped by
+  // customer_id (with the phone fallback retained for legacy rows).
+  const customer = await findCustomerByPhone(order.phone);
   return syncSourcePaymentTarget(
     {
       sourceType: "kosha_booking",
@@ -30646,6 +30877,7 @@ async function syncKoshaFinancialPayment(
           : paymentMethod === "pos" || paymentMethod === "card"
             ? "pos"
             : "cash",
+      customerId: (order as any).customerId ?? customer?.id ?? null,
       customerName: order.customerName,
       customerPhone: order.phone,
       dueDate: order.dueDate,
@@ -30917,6 +31149,7 @@ async function collectionSourceSummary(
     });
     if (source) {
       reference = source.trackingCode ?? `KB-${source.id}`;
+      customerId = (source as any).customerId ?? null;
       customerName = source.customerName;
       customerPhone = source.phone;
       total = money(source.totalAmount);
@@ -31050,6 +31283,8 @@ async function handleCollections(
   const paymentStatus = remaining <= 0 ? "paid" : "partial";
   const a = actor(currentUser);
   const sourceMethod = data.paymentMethod === "transfer" ? "transfer" : data.paymentMethod === "card" || data.paymentMethod === "pos" ? "pos" : "cash";
+  let createdVoucherId: number | null = null;
+  let createdFinancial: any = null;
 
   try {
     if (data.sourceType === "order") {
@@ -31102,6 +31337,7 @@ async function handleCollections(
       customerId: before.customerId,
       orderId: data.sourceType === "order" ? data.sourceId : null,
       bookingId: data.sourceType === "service_order" ? data.sourceId : null,
+      koshaBookingId: data.sourceType === "kosha_booking" ? data.sourceId : null,
       reference: nullableText(
         data.receiptNo
           ? `${before.reference} | ${data.receiptNo}`
@@ -31112,6 +31348,7 @@ async function handleCollections(
       createdBy: a.id,
       createdByName: a.name,
     }).returning();
+    createdVoucherId = voucher.id;
     const [savedVoucher] = await db.update(receiptVouchersTable).set({
       voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
     }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
@@ -31142,7 +31379,20 @@ async function handleCollections(
           customerPhone: updated.customerPhone,
           notes: data.notes,
         }, financialActor(currentUser));
+      createdFinancial = financialTransaction;
     }
+    createdFinancial = financialTransaction;
+    if (
+      financialTransaction?.approvalStatus === "pending" &&
+      canApproveFinancialTransactions(financialActor(currentUser))
+      ) {
+        financialTransaction = await approveAndExecuteFinancialTransaction(
+        financialTransaction.id,
+        financialActor(currentUser),
+          "ØªØ­ØµÙŠÙ„ Ù…Ø¨Ø§Ø´Ø± Ù…Ù† Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©",
+        );
+        createdFinancial = financialTransaction;
+      }
     if (financialTransaction) {
       await db.update(receiptVouchersTable).set({
         approvalStatus: financialTransaction.approvalStatus,
@@ -31216,6 +31466,25 @@ async function handleCollections(
       summary: await collectionSourceSummary(data.sourceType, data.sourceId),
     }, 201);
   } catch (err: any) {
+    // A booking balance must never be left ahead of its cashbox/journal post.
+    // Restore the pre-payment projection and cancel any unexecuted request;
+    // posted financial history is retained for audit and must be reversed, not
+    // deleted.
+    if (data.sourceType === "kosha_booking" && before.source && createdFinancial?.approvalStatus !== "executed") {
+      await db.update(koshaBookingsTable).set({
+        paidAmount: before.source.paidAmount,
+        remainingAmount: before.source.remainingAmount,
+        paymentStatus: before.source.paymentStatus,
+        bookingDetails: before.source.bookingDetails,
+        updatedAt: new Date(),
+      }).where(eq(koshaBookingsTable.id, data.sourceId));
+    }
+    if (createdFinancial?.id && createdFinancial.approvalStatus !== "executed") {
+      await cancelFinancialTransactionRequest(createdFinancial.id, financialActor(currentUser), "فشل نشر دفعة حجز الكوشة");
+    }
+    if (createdVoucherId && createdFinancial?.approvalStatus !== "executed") {
+      await db.delete(receiptVouchersTable).where(eq(receiptVouchersTable.id, createdVoucherId));
+    }
     console.error("payment collection failed", {
       sourceType: data.sourceType,
       sourceId: data.sourceId,
@@ -33595,6 +33864,8 @@ async function handleStaffPortal(
       id &&
       (action === "approve" || action === "reject")
     ) {
+      if (action === "approve" && !canApproveFinancialTransactions(financialActor(auth)))
+        return error("اعتماد التحصيل متاح للمدير فقط", 403);
       const reqRow = await db.query.koshaPaymentRequestsTable.findFirst({
         where: eq(koshaPaymentRequestsTable.id, id),
       });
@@ -33643,17 +33914,10 @@ async function handleStaffPortal(
         Number(booking.remainingAmount) - amount,
       );
       const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
-      const [updated] = await db
-        .update(koshaBookingsTable)
-        .set({
-          paidAmount: String(newPaid),
-          remainingAmount: String(newRemaining),
-          paymentStatus,
-          updatedAt: new Date(),
-        })
-        .where(eq(koshaBookingsTable.id, booking.id))
-        .returning();
-      await db
+      // Claim the request atomically before touching the booking. This closes
+      // the double-click/concurrent approval race and prevents duplicate
+      // financial postings for the same collection request.
+      const [claimedRequest] = await db
         .update(koshaPaymentRequestsTable)
         .set({
           status: "approved",
@@ -33661,15 +33925,55 @@ async function handleStaffPortal(
           reviewedByName: auth.fullName || auth.username,
           reviewedAt: new Date(),
         })
-        .where(eq(koshaPaymentRequestsTable.id, id));
+        .where(and(eq(koshaPaymentRequestsTable.id, id), eq(koshaPaymentRequestsTable.status, "pending")))
+        .returning();
+      if (!claimedRequest) return error("ØªÙ…Øª Ù…Ø¹Ø§Ù„Ø¬Ø© Ù‡Ø°Ø§ Ø§Ù„Ø·Ù„Ø¨ Ù…Ø³Ø¨Ù‚Ù‹Ø§", 409);
+
+      let updated: typeof booking | undefined;
       try {
-        await syncKoshaFinancialPayment(updated, financialActor(auth));
-      } catch (err) {
-        console.error("kosha payment finance sync failed", {
-          bookingId: booking.id,
-          error: err instanceof Error ? err.message : "unknown",
-        });
+        [updated] = await db
+          .update(koshaBookingsTable)
+          .set({
+            paidAmount: String(newPaid),
+            remainingAmount: String(newRemaining),
+            paymentStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(koshaBookingsTable.id, booking.id))
+          .returning();
+      } catch (bookingError) {
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        throw bookingError;
       }
+      if (!updated) {
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        return error("ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø­Ø¬Ø²", 409);
+      }
+      let financial: Awaited<ReturnType<typeof syncKoshaFinancialPayment>> = null;
+      try {
+        financial = await syncKoshaFinancialPayment(updated, financialActor(auth));
+        if (financial?.approvalStatus === "pending" && canApproveFinancialTransactions(financialActor(auth))) {
+          financial = await approveAndExecuteFinancialTransaction(financial.id, financialActor(auth), "Ù…ÙˆØ§ÙÙ‚Ø© ØªØ­ØµÙŠÙ„ ÙƒÙˆØ´Ø©");
+        }
+      } catch (financeError) {
+        // Do not leave a booking marked paid when the unified posting failed.
+        // Any newly-created pending request is cancelled (never deleted) so
+        // the retry remains auditable and cannot be executed accidentally.
+        if (financial?.approvalStatus && financial.approvalStatus !== "executed") {
+          await cancelFinancialTransactionRequest(financial.id, financialActor(auth), "ÙØ´Ù„ Ù†Ø´Ø± ØªØ­ØµÙŠÙ„ Ø§Ù„ÙƒÙˆØ´Ø©");
+        }
+        await db.update(koshaBookingsTable).set({
+          paidAmount: booking.paidAmount,
+          remainingAmount: booking.remainingAmount,
+          paymentStatus: booking.paymentStatus,
+          updatedAt: new Date(),
+        }).where(eq(koshaBookingsTable.id, booking.id));
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        throw financeError;
+      }
+      await db.update(koshaPaymentRequestsTable)
+        .set({ financialTransactionId: financial?.id ?? null })
+        .where(eq(koshaPaymentRequestsTable.id, reqRow.id));
       await addKoshaEvent({
         bookingId: booking.id,
         staff: auth,
@@ -33691,6 +33995,7 @@ async function handleStaffPortal(
         status: "approved",
         paidAmount: newPaid,
         remainingAmount: newRemaining,
+        financialTransactionId: financial?.id ?? null,
       });
     }
     return error("المسار غير موجود", 404);
@@ -35749,7 +36054,7 @@ async function handleAccounting(
             total_amount::numeric, deposit_amount::numeric, remaining_amount::numeric
           FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled'
           UNION ALL
-          SELECT NULL, customer_name, phone, coalesce(tracking_code, 'KB-' || id),
+          SELECT customer_id, customer_name, phone, coalesce(tracking_code, 'KB-' || id),
             'حجز كوشة', created_at::date, due_date,
             total_amount::numeric, paid_amount::numeric, remaining_amount::numeric
           FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled'
@@ -35799,7 +36104,7 @@ async function handleAccounting(
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
       const phoneVariants = iraqiPhoneVariants(phone);
-      const [orders, bookings, receipts, salesInvoices] = await Promise.all([
+      const [orders, bookings, koshaBookings, receipts, salesInvoices] = await Promise.all([
         db
           .select({
             id: ordersTable.id,
@@ -35822,6 +36127,32 @@ async function handleAccounting(
           .from(serviceOrdersTable)
           .where(inArray(serviceOrdersTable.phone, phoneVariants))
           .orderBy(desc(serviceOrdersTable.createdAt)),
+        db
+          .select({
+            id: koshaBookingsTable.id,
+            trackingCode: koshaBookingsTable.trackingCode,
+            totalAmount: koshaBookingsTable.totalAmount,
+            paidAmount: koshaBookingsTable.paidAmount,
+            remainingAmount: koshaBookingsTable.remainingAmount,
+            customerId: koshaBookingsTable.customerId,
+            customerName: koshaBookingsTable.customerName,
+            phone: koshaBookingsTable.phone,
+            createdAt: koshaBookingsTable.createdAt,
+            status: koshaBookingsTable.status,
+          })
+          .from(koshaBookingsTable)
+          .where(
+            and(
+              sql`${koshaBookingsTable.archivedAt} is null`,
+              customer
+                ? or(
+                    inArray(koshaBookingsTable.phone, phoneVariants),
+                    eq(koshaBookingsTable.customerId, customer.id),
+                  )
+                : inArray(koshaBookingsTable.phone, phoneVariants),
+            ),
+          )
+          .orderBy(desc(koshaBookingsTable.createdAt)),
         customer
           ? db
               .select({
@@ -35831,6 +36162,7 @@ async function handleAccounting(
                 payerName: receiptVouchersTable.payerName,
                 orderId: receiptVouchersTable.orderId,
                 bookingId: receiptVouchersTable.bookingId,
+                koshaBookingId: receiptVouchersTable.koshaBookingId,
                 reference: receiptVouchersTable.reference,
                 method: receiptVouchersTable.method,
               })
@@ -35894,6 +36226,17 @@ async function handleAccounting(
           href: `/admin/invoice/${b.id}?type=booking`,
         });
       }
+      for (const b of koshaBookings) {
+        entries.push({
+          date: b.createdAt.toISOString(),
+          kind: "booking",
+          ref: b.trackingCode ?? `KB-${b.id}`,
+          description: "حجز كوشة",
+          debit: Number.parseFloat(b.totalAmount ?? "0"),
+          credit: Number.parseFloat(b.paidAmount ?? "0"),
+          href: `/admin/kosha-bookings?booking=${b.id}`,
+        });
+      }
       // Sales invoices — the charge (debit) and any amount paid against it (credit).
       for (const si of salesInvoices) {
         const when = si.createdAt
@@ -35922,8 +36265,12 @@ async function handleAccounting(
           });
       }
       for (const r of receipts) {
-        if (r.orderId || r.bookingId) continue;
-        if (salesInvoices.some((invoice) => String(r.reference ?? "").startsWith(invoice.invoiceNo))) continue;
+        if (r.orderId || r.bookingId || r.koshaBookingId) continue;
+        // Kosha receipts are linked by their KB-* reference until legacy
+        // receipt_vouchers gains a dedicated kosha_booking_id column. The
+        // booking row already carries the paid amount, so do not double count.
+        if (/^(KB-|AJN-KOSHA-)/i.test(String(r.reference ?? "").trim())) continue;
+        if (salesInvoices.some((invoice: any) => String(r.reference ?? "").startsWith(invoice.invoiceNo))) continue;
         entries.push({
           date: new Date(r.date).toISOString(),
           kind: "receipt",

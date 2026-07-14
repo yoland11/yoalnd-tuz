@@ -73,6 +73,9 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   packageId: integer("package_id").references(() => koshaPackagesTable.id, { onDelete: "set null" }),
   packageName: text("package_name"),
   packagePrice: numeric("package_price", { precision: 14, scale: 2 }),
+  // Stable customer link used by accounting, statements and cashbox movements.
+  // Older bookings may be backfilled from their normalized phone number.
+  customerId: integer("customer_id"),
   customerName: text("customer_name").notNull(),
   phone: varchar("phone", { length: 20 }).notNull(),
   brideName: text("bride_name"),

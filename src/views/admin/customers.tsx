@@ -61,6 +61,12 @@ export default function CustomersPage() {
   const [notePriority, setNotePriority] = useState("normal");
   const [editing, setEditing] = useState<null | { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }>(null);
 
+  // Deep links from booking finance summaries open the matching customer.
+  useEffect(() => {
+    const focus = Number(new URLSearchParams(window.location.search).get("focus"));
+    if (Number.isInteger(focus) && focus > 0) setSelectedId(focus);
+  }, []);
+
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "customers", search],
     queryFn: () => adminFetch<Customer[]>(`/admin/customers${search ? `?search=${encodeURIComponent(search)}` : ""}`),

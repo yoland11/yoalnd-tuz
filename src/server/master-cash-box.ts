@@ -80,9 +80,9 @@ export const financialTransactionListSchema = z.object({
   department: z.string().trim().max(40).optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
-  // Cap raised to 500 so the Approvals feed can pull every pending row in one
-  // page (keeping the displayed rows exactly equal to the dashboard count).
-  limit: z.coerce.number().int().min(5).max(500).optional().default(20),
+  // Approval feeds request a large single page so the displayed rows match
+  // the dashboard badge even when older pending rows accumulate.
+  limit: z.coerce.number().int().min(5).max(5000).optional().default(20),
 });
 
 const ACCOUNT_SEEDS = [

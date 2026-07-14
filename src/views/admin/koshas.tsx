@@ -64,10 +64,52 @@ type KoshaBooking = {
   totalAmount: number;
   paidAmount: number;
   remainingAmount: number;
+  /** Unified financial projection (populated by the booking finance API when available). */
+  approvedCollectedAmount?: number;
+  pendingCollectionAmount?: number;
+  refundedAmount?: number;
+  discount?: number;
+  additionalCharges?: number;
+  latestPaymentDate?: string | null;
+  customerId?: number | null;
+  finance?: KoshaBookingFinance | null;
   paymentStatus: string;
   dueDate?: string | null;
   createdAt: string;
 };
+
+type KoshaBookingFinanceMovement = {
+  id?: number | string;
+  transactionNo?: string | null;
+  amount: number;
+  date?: string | null;
+  status?: string | null;
+  method?: string | null;
+  source?: string | null;
+  collector?: string | null;
+  approvedBy?: string | null;
+  balanceBefore?: number | null;
+  balanceAfter?: number | null;
+};
+
+type KoshaBookingFinance = {
+  totalAmount?: number;
+  paidAmount?: number;
+  approvedCollectedAmount?: number;
+  pendingCollectionAmount?: number;
+  refundedAmount?: number;
+  discount?: number;
+  additionalCharges?: number;
+  remainingAmount?: number;
+  paymentStatus?: string;
+  latestPaymentDate?: string | null;
+  payments?: KoshaBookingFinanceMovement[];
+  collections?: KoshaBookingFinanceMovement[];
+  cashboxMovements?: KoshaBookingFinanceMovement[];
+  journalEntries?: Array<KoshaBookingFinanceMovement & { entryNo?: string | null }>;
+  customerId?: number | null;
+};
+type KoshaBookingFinanceResponse = KoshaBookingFinance & { finance?: KoshaBookingFinance | null };
 
 type KoshaOption = {
   id: number;
@@ -1152,6 +1194,8 @@ export function AdminKoshaBookingsPage() {
                       💰 المتبقي {sortRemaining === "desc" ? "▼" : sortRemaining === "asc" ? "▲" : ""}
                     </button>
                   </th>
+                  <th className="px-4 py-3 text-right">حالة الدفع</th>
+                  <th className="px-4 py-3 text-right">آخر دفعة</th>
                   <th className="px-4 py-3 text-right">الحالة</th>
                   <th className="px-4 py-3 text-right">إجراءات</th>
                 </tr>
@@ -1188,6 +1232,8 @@ export function AdminKoshaBookingsPage() {
                         })()
                       )}
                     </td>
+                    <td className="px-4 py-3"><span className={item.paymentStatus === "paid" ? "text-status-success" : item.paymentStatus === "partial" ? "text-status-warning" : "text-muted-foreground"}>{item.paymentStatus ?? "unpaid"}</span></td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{item.latestPaymentDate ?? "—"}</td>
                     <td className="px-4 py-3">
                       <select value={item.status} onChange={(event) => update.mutate({ id: item.id, values: { status: event.target.value } })} className="rounded-lg border border-border/40 bg-background px-2 py-1 text-xs">
                         {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -1277,11 +1323,52 @@ function KoshaNoExtras() {
   return <p className="rounded-lg border border-dashed border-border/40 bg-background/40 p-3 text-center text-sm text-muted-foreground">لا توجد إضافات مختارة</p>;
 }
 
+/** Financial projection and links for a Kosha booking. */
+function KoshaFinancialSummary({ booking, finance }: { booking: KoshaBooking; finance?: KoshaBookingFinance | null }) {
+  const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+  const projected = (finance ?? booking.finance ?? details.financialSummary ?? {}) as KoshaBookingFinance;
+  const total = Number(projected.totalAmount ?? booking.totalAmount ?? 0);
+  const paid = Number(projected.paidAmount ?? booking.paidAmount ?? 0);
+  const approved = Number(projected.approvedCollectedAmount ?? booking.approvedCollectedAmount ?? 0);
+  const pending = Number(projected.pendingCollectionAmount ?? booking.pendingCollectionAmount ?? 0);
+  const refunded = Number(projected.refundedAmount ?? booking.refundedAmount ?? 0);
+  const discount = Number(projected.discount ?? details.pricing?.discountAmount ?? booking.discount ?? 0);
+  const additional = Number(projected.additionalCharges ?? booking.additionalCharges ?? 0);
+  const remaining = Number(projected.remainingAmount ?? booking.remainingAmount ?? Math.max(0, total + additional - discount - paid - approved + refunded));
+  const customerId = projected.customerId ?? booking.customerId ?? details.customerId ?? null;
+  const payments: KoshaBookingFinanceMovement[] = projected.payments ?? (details.financialPayments as KoshaBookingFinanceMovement[] | undefined) ?? [];
+  const collections: KoshaBookingFinanceMovement[] = projected.collections ?? (details.financialCollections as KoshaBookingFinanceMovement[] | undefined) ?? [];
+  const movements: KoshaBookingFinanceMovement[] = projected.cashboxMovements ?? (details.cashboxMovements as KoshaBookingFinanceMovement[] | undefined) ?? [];
+  const journals: Array<KoshaBookingFinanceMovement & { entryNo?: string | null }> = projected.journalEntries ?? (details.journalEntries as Array<KoshaBookingFinanceMovement & { entryNo?: string | null }> | undefined) ?? [];
+  const movementRows = [...payments, ...collections].slice(0, 8);
+  const status = projected.paymentStatus ?? booking.paymentStatus ?? "unpaid";
+
+  return (
+    <KoshaDetailSection title="الملخص المالي الموحد">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[["الإجمالي", total, "text-foreground"], ["المدفوع", paid, "text-status-success"], ["التحصيل المعتمد", approved, "text-status-success"], ["تحصيل قيد الانتظار", pending, "text-status-warning"], ["الاسترجاع", refunded, "text-status-danger"], ["الخصم", discount, "text-muted-foreground"], ["رسوم إضافية", additional, "text-muted-foreground"], ["المتبقي", remaining, remaining > 0 ? "text-status-warning" : "text-status-success"]].map(([label, value, tone]) => (
+          <div key={String(label)} className="rounded-lg border border-border/25 bg-background/45 p-2.5"><div className="text-[11px] text-muted-foreground">{label}</div><div className={`mt-1 text-sm font-bold ${tone}`}>{formatCurrency(Number(value))}</div></div>
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs"><span className="rounded-full border border-border/30 bg-background/60 px-2.5 py-1 text-muted-foreground">حالة الدفع: <strong className="text-foreground">{status}</strong></span>{projected.latestPaymentDate || booking.latestPaymentDate ? <span className="rounded-full border border-border/30 bg-background/60 px-2.5 py-1 text-muted-foreground">آخر دفعة: <strong className="text-foreground">{projected.latestPaymentDate ?? booking.latestPaymentDate}</strong></span> : null}</div>
+      <div className="mt-3 flex flex-wrap gap-2"><Link href={`/admin/finance/master-cash?sourceType=kosha_booking&sourceId=${booking.id}`}><Button size="sm" variant="outline">حركات الصندوق</Button></Link><Link href={`/admin/operations?entityType=kosha_booking&entityId=${booking.id}`}><Button size="sm" variant="outline">القيود والسجل المالي</Button></Link>{customerId ? <Link href={`/admin/customers?focus=${customerId}`}><Button size="sm" variant="outline">كشف حساب العميل</Button></Link> : null}</div>
+      {movementRows.length > 0 ? <div className="mt-4 overflow-x-auto rounded-lg border border-border/25"><div className="border-b border-border/25 bg-background/40 px-3 py-2 text-xs font-semibold text-primary">تاريخ الدفعات والتحصيل</div><table className="min-w-full text-xs"><thead className="text-muted-foreground"><tr><th className="px-3 py-2 text-right">التاريخ</th><th className="px-3 py-2 text-right">المبلغ</th><th className="px-3 py-2 text-right">المصدر</th><th className="px-3 py-2 text-right">الحالة</th><th className="px-3 py-2 text-right">الرصيد قبل/بعد</th><th className="px-3 py-2 text-right">رقم المعاملة</th></tr></thead><tbody>{movementRows.map((row, index) => <tr key={String(row.id ?? row.transactionNo ?? index)} className="border-t border-border/15"><td className="px-3 py-2">{row.date ?? "—"}</td><td className="px-3 py-2 font-semibold">{formatCurrency(Number(row.amount ?? 0))}</td><td className="px-3 py-2">{row.source ?? row.method ?? "—"}</td><td className="px-3 py-2">{row.status ?? "—"}</td><td className="px-3 py-2">{row.balanceBefore == null ? "—" : formatCurrency(Number(row.balanceBefore))} / {row.balanceAfter == null ? "—" : formatCurrency(Number(row.balanceAfter))}</td><td className="px-3 py-2 font-mono">{row.transactionNo ?? "—"}</td></tr>)}</tbody></table></div> : null}
+      {movements.length > 0 ? <div className="mt-3 overflow-x-auto rounded-lg border border-border/25"><div className="border-b border-border/25 bg-background/40 px-3 py-2 text-xs font-semibold text-primary">حركات الصندوق</div><table className="min-w-full text-xs"><tbody>{movements.slice(0, 6).map((row, index) => <tr key={String(row.id ?? row.transactionNo ?? index)} className="border-t border-border/15"><td className="px-3 py-2">{row.date ?? "—"}</td><td className="px-3 py-2 font-semibold">{formatCurrency(Number(row.amount ?? 0))}</td><td className="px-3 py-2">{row.status ?? "—"}</td><td className="px-3 py-2 font-mono">{row.transactionNo ?? "—"}</td></tr>)}</tbody></table></div> : null}
+      {journals.length > 0 ? <div className="mt-3 overflow-x-auto rounded-lg border border-border/25"><div className="border-b border-border/25 bg-background/40 px-3 py-2 text-xs font-semibold text-primary">القيود المحاسبية</div><table className="min-w-full text-xs"><tbody>{journals.slice(0, 6).map((row, index) => <tr key={String(row.id ?? row.entryNo ?? index)} className="border-t border-border/15"><td className="px-3 py-2">{row.date ?? "—"}</td><td className="px-3 py-2 font-semibold">{formatCurrency(Number(row.amount ?? 0))}</td><td className="px-3 py-2">{row.status ?? "—"}</td><td className="px-3 py-2 font-mono">{row.entryNo ?? row.transactionNo ?? "—"}</td></tr>)}</tbody></table></div> : null}
+    </KoshaDetailSection>
+  );
+}
+
 function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking; onClose: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [trackingStatus, setTrackingStatus] = useState(booking.trackingStatus ?? "booked");
+  const financeQuery = useQuery({
+    queryKey: ["admin", "kosha-booking-finance", booking.id],
+    queryFn: () => adminFetch<KoshaBookingFinanceResponse>(`/admin/kosha-bookings/${booking.id}/finance`),
+    retry: false,
+  });
   const updateTracking = useMutation({
     mutationFn: (next: string) => adminFetch(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم تحديث حالة التتبع" }); },
@@ -1411,6 +1498,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           </KoshaDetailSection>
         )}
 
+        <KoshaFinancialSummary booking={booking} finance={financeQuery.data?.finance ?? financeQuery.data} />
         <KoshaDetailSection title="المبالغ">
           {isKoshaPendingPricing(booking) ? (
             <div className="rounded-xl border border-status-warning/30 bg-status-warning/10 p-3 text-sm font-semibold text-status-warning">بانتظار تحديد السعر من الإدارة</div>

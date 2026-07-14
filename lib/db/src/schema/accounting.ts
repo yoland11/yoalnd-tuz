@@ -22,6 +22,7 @@ export const receiptVouchersTable = pgTable("receipt_vouchers", {
   customerId: integer("customer_id").references(() => customersTable.id),
   orderId: integer("order_id").references(() => ordersTable.id),
   bookingId: integer("booking_id").references(() => serviceOrdersTable.id),
+  koshaBookingId: integer("kosha_booking_id"),
   reference: text("reference"),
   method: varchar("method", { length: 20 }).notNull().default("cash"),
   notes: text("notes"),
