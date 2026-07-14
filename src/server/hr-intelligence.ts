@@ -22,6 +22,26 @@ const payrollInputSchema = z.object({
   notes: z.string().trim().max(2000).optional(),
 });
 
+/** Manual corrections are deliberately isolated from calculated attendance and advance data. */
+const payrollLineEditSchema = z.object({
+  baseSalary: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  overtimeAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  bonusAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  commissionAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  attendanceDeduction: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  absenceDeduction: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  lateDeduction: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  advanceDeduction: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  manualDeduction: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  otherEarnings: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  otherDeductions: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  paymentMethod: z.enum(["main_cash_box", "bank", "cash", "transfer"]).optional(),
+  paymentDate: z.string().date().optional().nullable(),
+});
+
+const reasonSchema = z.object({ reason: z.string().trim().min(3).max(1000) });
+
 export class PayrollConflictError extends Error {
   constructor(public readonly existing: any) {
     super("Payroll already exists for this period.");
@@ -61,9 +81,9 @@ export async function ensureHrTables() {
     create table if not exists hr_incentive_events (id serial primary key, staff_id integer not null references staff(id) on delete restrict, rule_id integer references hr_incentive_rules(id) on delete set null, period varchar(7) not null, kind varchar(20) not null, amount numeric(16,2) not null default 0, points integer not null default 0, title text not null default '', reason text, status varchar(20) not null default 'pending', payroll_line_id integer, created_by integer references staff(id) on delete set null, created_by_name text not null default 'system', created_at timestamp not null default now());
     create index if not exists hr_incentive_events_staff_period_idx on hr_incentive_events(staff_id, period);
     create table if not exists payroll_runs (id serial primary key, run_no varchar(40) not null unique, period varchar(7) not null unique, status varchar(20) not null default 'draft', notes text, total_gross numeric(16,2) not null default 0, total_deductions numeric(16,2) not null default 0, total_net numeric(16,2) not null default 0, created_by integer references staff(id) on delete set null, created_by_name text not null default '', approved_by integer references staff(id) on delete set null, approved_by_name text not null default '', approved_at timestamp, paid_at timestamp, created_at timestamp not null default now(), updated_at timestamp not null default now());
-    alter table payroll_runs add column if not exists period_start_date date, add column if not exists period_end_date date, add column if not exists payment_date date, add column if not exists department varchar(60), add column if not exists attendance_warning text;
+    alter table payroll_runs add column if not exists period_start_date date, add column if not exists period_end_date date, add column if not exists payment_date date, add column if not exists department varchar(60), add column if not exists attendance_warning text, add column if not exists deleted_at timestamp, add column if not exists deleted_by integer references staff(id) on delete set null, add column if not exists delete_reason text, add column if not exists cancelled_at timestamp, add column if not exists cancelled_by integer references staff(id) on delete set null, add column if not exists cancel_reason text, add column if not exists reopened_at timestamp, add column if not exists reopened_by integer references staff(id) on delete set null, add column if not exists reopen_reason text;
     create table if not exists payroll_lines (id serial primary key, payroll_run_id integer not null references payroll_runs(id) on delete restrict, staff_id integer not null references staff(id) on delete restrict, base_salary numeric(16,2) not null default 0, overtime_amount numeric(16,2) not null default 0, bonus_amount numeric(16,2) not null default 0, penalty_amount numeric(16,2) not null default 0, advance_deduction numeric(16,2) not null default 0, insurance_amount numeric(16,2) not null default 0, gross_salary numeric(16,2) not null default 0, net_salary numeric(16,2) not null default 0, financial_transaction_id integer, signature_name text, signed_at timestamp, created_at timestamp not null default now());
-    alter table payroll_lines add column if not exists salary_type varchar(20) not null default 'monthly', add column if not exists payment_method varchar(30) not null default 'cash', add column if not exists scheduled_working_days integer not null default 0, add column if not exists attendance_days integer not null default 0, add column if not exists absence_days integer not null default 0, add column if not exists paid_leave_days integer not null default 0, add column if not exists unpaid_leave_days integer not null default 0, add column if not exists late_arrivals integer not null default 0, add column if not exists total_late_minutes integer not null default 0, add column if not exists early_leave_count integer not null default 0, add column if not exists total_working_hours numeric(16,2) not null default 0, add column if not exists overtime_hours numeric(16,2) not null default 0, add column if not exists missing_check_in integer not null default 0, add column if not exists missing_check_out integer not null default 0, add column if not exists attendance_allowance numeric(16,2) not null default 0, add column if not exists transportation_allowance numeric(16,2) not null default 0, add column if not exists food_allowance numeric(16,2) not null default 0, add column if not exists phone_allowance numeric(16,2) not null default 0, add column if not exists housing_allowance numeric(16,2) not null default 0, add column if not exists other_fixed_allowances numeric(16,2) not null default 0, add column if not exists absence_deduction numeric(16,2) not null default 0, add column if not exists late_deduction numeric(16,2) not null default 0, add column if not exists early_leave_deduction numeric(16,2) not null default 0, add column if not exists unpaid_leave_deduction numeric(16,2) not null default 0, add column if not exists fixed_deduction numeric(16,2) not null default 0, add column if not exists amount_paid numeric(16,2) not null default 0, add column if not exists payment_status varchar(20) not null default 'unpaid', add column if not exists calculation_details jsonb not null default '{}'::jsonb;
+    alter table payroll_lines add column if not exists salary_type varchar(20) not null default 'monthly', add column if not exists payment_method varchar(30) not null default 'cash', add column if not exists scheduled_working_days integer not null default 0, add column if not exists attendance_days integer not null default 0, add column if not exists absence_days integer not null default 0, add column if not exists paid_leave_days integer not null default 0, add column if not exists unpaid_leave_days integer not null default 0, add column if not exists late_arrivals integer not null default 0, add column if not exists total_late_minutes integer not null default 0, add column if not exists early_leave_count integer not null default 0, add column if not exists total_working_hours numeric(16,2) not null default 0, add column if not exists overtime_hours numeric(16,2) not null default 0, add column if not exists missing_check_in integer not null default 0, add column if not exists missing_check_out integer not null default 0, add column if not exists attendance_allowance numeric(16,2) not null default 0, add column if not exists transportation_allowance numeric(16,2) not null default 0, add column if not exists food_allowance numeric(16,2) not null default 0, add column if not exists phone_allowance numeric(16,2) not null default 0, add column if not exists housing_allowance numeric(16,2) not null default 0, add column if not exists other_fixed_allowances numeric(16,2) not null default 0, add column if not exists absence_deduction numeric(16,2) not null default 0, add column if not exists late_deduction numeric(16,2) not null default 0, add column if not exists early_leave_deduction numeric(16,2) not null default 0, add column if not exists unpaid_leave_deduction numeric(16,2) not null default 0, add column if not exists fixed_deduction numeric(16,2) not null default 0, add column if not exists manual_earnings numeric(16,2) not null default 0, add column if not exists commission_amount numeric(16,2) not null default 0, add column if not exists attendance_deduction numeric(16,2) not null default 0, add column if not exists manual_deduction numeric(16,2) not null default 0, add column if not exists other_deductions numeric(16,2) not null default 0, add column if not exists line_notes text, add column if not exists amount_paid numeric(16,2) not null default 0, add column if not exists payment_status varchar(20) not null default 'unpaid', add column if not exists calculation_details jsonb not null default '{}'::jsonb;
     create index if not exists payroll_lines_run_staff_idx on payroll_lines(payroll_run_id,staff_id);
     create unique index if not exists payroll_lines_run_staff_unique_idx on payroll_lines(payroll_run_id,staff_id);
     create table if not exists employee_targets (id serial primary key, staff_id integer references staff(id) on delete cascade, department varchar(60), period varchar(7) not null, metric varchar(60) not null, target numeric(16,2) not null, completed numeric(16,2) not null default 0, reward_amount numeric(16,2) not null default 0, status varchar(20) not null default 'active', created_by integer references staff(id) on delete set null, created_at timestamp not null default now(), updated_at timestamp not null default now());
@@ -119,7 +139,7 @@ export async function hrDashboard(period = periodNow()) {
   await ensureHrTables();
   const [scores, payroll, events, targets, cash, attendance] = await Promise.all([
     computeEmployeeScores({ from: `${period}-01`, to: `${period}-31` }),
-    db.execute(sql`select * from payroll_runs order by created_at desc limit 12`),
+    db.execute(sql`select * from payroll_runs where deleted_at is null order by created_at desc limit 12`),
     db.execute(sql`select e.*, s.full_name, s.username from hr_incentive_events e join staff s on s.id=e.staff_id where e.period=${period} order by e.created_at desc limit 100`),
     db.execute(sql`select t.*, s.full_name, s.username from employee_targets t left join staff s on s.id=t.staff_id where t.period=${period} order by t.created_at desc`),
     db.execute(sql`select current_balance from master_cash_box where code='MASTER' limit 1`),
@@ -135,11 +155,11 @@ export async function payrollDashboard(period = periodNow()) {
   if (!validPeriod(period)) throw new Error("صيغة الشهر غير صحيحة");
   const [staff, runs, attendance, advances, events, departments] = await Promise.all([
     db.execute(sql`select count(*) filter(where is_active=true)::int as employees from staff`),
-    db.execute(sql`select coalesce(sum(total_net::numeric),0)::float as monthly_payroll, coalesce(sum(total_net::numeric) filter(where status='paid'),0)::float as paid_salaries, coalesce(sum(total_net::numeric) filter(where status not in ('paid','cancelled')),0)::float as pending_salaries, coalesce(sum(total_deductions::numeric),0)::float as deductions from payroll_runs where period=${period}`),
+    db.execute(sql`select coalesce(sum(total_net::numeric),0)::float as monthly_payroll, coalesce(sum(total_net::numeric) filter(where status='paid'),0)::float as paid_salaries, coalesce(sum(total_net::numeric) filter(where status not in ('paid','cancelled')),0)::float as pending_salaries, coalesce(sum(total_deductions::numeric),0)::float as deductions from payroll_runs where period=${period} and deleted_at is null`),
     db.execute(sql`select count(*) filter(where lower(status) in ('present','late'))::int as attendance, count(*) filter(where lower(status)='late')::int as late_employees, coalesce(sum(greatest(extract(epoch from (check_out_at-check_in_at))/3600.0 - 8,0)) filter(where check_out_at is not null),0)::float as overtime from attendance_records where check_in_at >= ${period + '-01'} and check_in_at < (${period + '-01'}::date + interval '1 month')`),
     db.execute(sql`select coalesce(sum(remaining_amount::numeric),0)::float as advances from employee_advances where status in ('approved','paid')`),
     db.execute(sql`select coalesce(sum(amount::numeric) filter(where kind in ('bonus','reward')),0)::float as bonuses from hr_incentive_events where period=${period} and status <> 'cancelled'`),
-    db.execute(sql`select s.department, count(*)::int as employees, coalesce(sum(l.net_salary::numeric),0)::float as net_salary from staff s left join payroll_lines l on l.staff_id=s.id left join payroll_runs r on r.id=l.payroll_run_id and r.period=${period} where s.is_active=true group by s.department order by s.department`),
+    db.execute(sql`select s.department, count(*)::int as employees, coalesce(sum(l.net_salary::numeric),0)::float as net_salary from staff s left join payroll_lines l on l.staff_id=s.id left join payroll_runs r on r.id=l.payroll_run_id and r.period=${period} and r.deleted_at is null where s.is_active=true group by s.department order by s.department`),
   ]);
   return { period, employees: Number(rows<any>(staff)[0]?.employees ?? 0), ...rows<any>(runs)[0], ...rows<any>(attendance)[0], ...rows<any>(advances)[0], ...rows<any>(events)[0], departments: rows<any>(departments).map((row) => ({ department: row.department || "general", employees: Number(row.employees), netSalary: num(row.net_salary) })) };
 }
@@ -225,28 +245,91 @@ export async function createPayrollRun(input: unknown, actor: HrActor) { return 
 export async function recalculatePayrollRun(id: number, actor: HrActor) {
   const run = await getPayrollRun(id);
   if (!run) throw new Error("دورة الرواتب غير موجودة");
-  if (!["draft", "calculated"].includes(run.status)) throw new Error("لا يمكن إعادة حساب دورة رواتب معتمدة أو مدفوعة");
+  if (!["draft", "calculated", "under_review"].includes(run.status)) throw new Error("لا يمكن إعادة حساب دورة رواتب معتمدة أو مدفوعة");
   return buildPayroll({ period: run.period, department: run.department || undefined, employeeIds: run.lines.map((line: any) => Number(line.staff_id)), periodStartDate: run.periodStartDate || undefined, periodEndDate: run.periodEndDate || undefined, paymentDate: run.paymentDate || undefined, notes: run.notes || undefined }, true, actor, id);
 }
 
-export async function deleteDraftPayrollRun(id: number) {
-  const run = await getPayrollRun(id);
+async function payrollFinancialBlock(run: any) {
+  await ensureEmployeeAdvanceTables();
+  const linked = rows<any>(await db.execute(sql`select l.id from payroll_lines l where l.payroll_run_id=${run.id} and (l.financial_transaction_id is not null or l.amount_paid > 0 or exists (select 1 from financial_transactions ft where ft.source_type='payroll_line' and ft.source_id=cast(l.id as text))) limit 1`));
+  if (linked.length) return "توجد دفعة أو قيد محاسبي مرتبط بهذا الراتب";
+  const advances = rows<any>(await db.execute(sql`select id from employee_advance_repayments where payroll_reference=${run.run_no} limit 1`));
+  return advances.length ? "توجد استقطاعات سلف مرتبطة بهذا الراتب" : null;
+}
+
+async function applyPayrollAdvanceDeductionOnce(line: any, run: any, actor: HrActor) {
+  if (num(line.advanceDeduction) <= 0) return;
+  await ensureEmployeeAdvanceTables();
+  const existing = rows<any>(await db.execute(sql`select id from employee_advance_repayments where employee_id=${line.staff_id} and payroll_reference=${run.run_no} and kind='payroll' limit 1`));
+  if (!existing.length) await applyPayrollAdvanceDeductions({ employeeId: line.staff_id, payrollReference: run.run_no, amount: line.advanceDeduction }, actor);
+}
+
+async function updatePayrollTotals(id: number) {
+  const totals = rows<any>(await db.execute(sql`select coalesce(sum(gross_salary),0)::float as gross,coalesce(sum(gross_salary-net_salary),0)::float as deductions,coalesce(sum(net_salary),0)::float as net from payroll_lines where payroll_run_id=${id}`))[0] ?? {};
+  await db.execute(sql`update payroll_runs set total_gross=${num(totals.gross)},total_deductions=${num(totals.deductions)},total_net=${num(totals.net)},updated_at=now() where id=${id}`);
+}
+
+export async function editPayrollLine(runId: number, lineId: number, input: unknown, actor: HrActor) {
+  await ensureHrTables(); const changes = payrollLineEditSchema.parse(input); const run = await getPayrollRun(runId);
+  if (!run || run.deleted_at) throw new Error("دورة الرواتب غير موجودة");
+  if (!["draft", "calculated", "under_review"].includes(run.status)) throw new Error("لا يمكن تعديل راتب معتمد أو مدفوع");
+  const current = rows<any>(await db.execute(sql`select * from payroll_lines where id=${lineId} and payroll_run_id=${runId} limit 1`))[0];
+  if (!current) throw new Error("سجل راتب الموظف غير موجود"); if (current.financial_transaction_id || num(current.amount_paid) > 0) throw new Error("توجد دفعة مرتبطة بهذا الراتب");
+  const value = (key: keyof z.infer<typeof payrollLineEditSchema>, field: string) => changes[key] === undefined ? num(current[field]) : num(changes[key]);
+  const baseSalary = value("baseSalary", "base_salary"), overtimeAmount = value("overtimeAmount", "overtime_amount"), bonusAmount = value("bonusAmount", "bonus_amount"), commissionAmount = value("commissionAmount", "commission_amount"), otherEarnings = value("otherEarnings", "manual_earnings");
+  const attendanceDeduction = value("attendanceDeduction", "attendance_deduction"), absenceDeduction = value("absenceDeduction", "absence_deduction"), lateDeduction = value("lateDeduction", "late_deduction"), advanceDeduction = value("advanceDeduction", "advance_deduction"), manualDeduction = value("manualDeduction", "manual_deduction"), otherDeductions = value("otherDeductions", "other_deductions");
+  const allowances = num(current.attendance_allowance) + num(current.transportation_allowance) + num(current.food_allowance) + num(current.phone_allowance) + num(current.housing_allowance) + num(current.other_fixed_allowances);
+  const grossSalary = num(baseSalary + allowances + overtimeAmount + bonusAmount + commissionAmount + otherEarnings);
+  const deductions = num(attendanceDeduction + absenceDeduction + lateDeduction + advanceDeduction + manualDeduction + otherDeductions + num(current.penalty_amount) + num(current.insurance_amount) + num(current.fixed_deduction) + num(current.early_leave_deduction) + num(current.unpaid_leave_deduction));
+  const netSalary = Math.max(0, num(grossSalary - deductions)); const details = { ...(current.calculation_details ?? {}), manualEdit: { actorId: actor.id, actorName: actor.name, at: new Date().toISOString(), totalDeductions: deductions } };
+  const saved = rows<any>(await db.execute(sql`update payroll_lines set base_salary=${baseSalary},overtime_amount=${overtimeAmount},bonus_amount=${bonusAmount},commission_amount=${commissionAmount},manual_earnings=${otherEarnings},attendance_deduction=${attendanceDeduction},absence_deduction=${absenceDeduction},late_deduction=${lateDeduction},advance_deduction=${advanceDeduction},manual_deduction=${manualDeduction},other_deductions=${otherDeductions},line_notes=${changes.notes === undefined ? current.line_notes : changes.notes || null},payment_method=${changes.paymentMethod ?? current.payment_method},gross_salary=${grossSalary},net_salary=${netSalary},calculation_details=${JSON.stringify(details)}::jsonb where id=${lineId} and payroll_run_id=${runId} and exists (select 1 from payroll_runs r where r.id=${runId} and r.status in ('draft','calculated','under_review') and r.deleted_at is null) returning id`));
+  if (!saved.length) throw new Error("لا يمكن تعديل الراتب بعد تغيّر حالته");
+  if (changes.paymentDate !== undefined) await db.execute(sql`update payroll_runs set payment_date=${changes.paymentDate || null},updated_at=now() where id=${runId}`);
+  await updatePayrollTotals(runId); const updated = await getPayrollRun(runId); return { run: updated, oldValues: current, newValues: updated?.lines.find((line: any) => Number(line.id) === lineId) };
+}
+
+export async function deleteDraftPayrollRun(id: number, actor: HrActor, input?: unknown) {
+  await ensureHrTables();
+  const currentRun = await getPayrollRun(id);
+  if (!currentRun) throw new Error("دورة الرواتب غير موجودة");
+  if (!["draft", "calculated", "cancelled"].includes(currentRun.status)) throw new Error("لا يمكن حذف راتب معتمد أو مدفوع");
+  const blocked = await payrollFinancialBlock(currentRun);
+  if (blocked) throw new Error(`${blocked}. استخدم إلغاء الراتب بدلاً من الحذف.`);
+  const reason = input && typeof input === "object" && "reason" in (input as any)
+    ? reasonSchema.parse(input).reason
+    : "حذف مسودة الرواتب";
+  const deleted = rows<any>(await db.execute(sql`update payroll_runs set deleted_at=now(),deleted_by=${actor.id},delete_reason=${reason},status='cancelled',cancelled_at=now(),cancelled_by=${actor.id},cancel_reason=${reason},updated_at=now() where id=${id} and status in ('draft','calculated','cancelled') and deleted_at is null returning id`));
+  if (!deleted.length) throw new Error("لا يمكن حذف الراتب بعد تغيّر حالته");
+  return { id, oldValues: currentRun };
+}
+
+export async function cancelPayrollRun(id: number, actor: HrActor, input: unknown) {
+  await ensureHrTables(); const data = reasonSchema.parse(input); const run = await getPayrollRun(id);
   if (!run) throw new Error("دورة الرواتب غير موجودة");
-  if (run.status !== "draft") throw new Error("يمكن حذف دورة الرواتب في حالة مسودة فقط");
-  await db.execute(sql`delete from payroll_lines where payroll_run_id=${id}`);
-  await db.execute(sql`delete from payroll_runs where id=${id} and status='draft'`);
-  return { id };
+  if (["paid", "partially_paid", "processing"].includes(run.status)) throw new Error("لا يمكن إلغاء راتب مدفوع أو قيد الدفع");
+  const blocked = await payrollFinancialBlock(run); if (blocked) throw new Error(blocked);
+  await db.execute(sql`update payroll_runs set status='cancelled',cancelled_at=now(),cancelled_by=${actor.id},cancel_reason=${data.reason},updated_at=now() where id=${id}`);
+  return getPayrollRun(id);
+}
+
+export async function reopenPayrollRun(id: number, actor: HrActor, input: unknown) {
+  await ensureHrTables(); const data = reasonSchema.parse(input); const run = await getPayrollRun(id);
+  if (!run) throw new Error("دورة الرواتب غير موجودة");
+  if (run.status !== "approved") throw new Error("يمكن إعادة فتح راتب معتمد فقط");
+  const blocked = await payrollFinancialBlock(run); if (blocked) throw new Error(`${blocked}. لا يمكن إعادة فتحه قبل عكس القيد المالي بأمان.`);
+  await db.execute(sql`update payroll_runs set status='calculated',reopened_at=now(),reopened_by=${actor.id},reopen_reason=${data.reason},approved_by=null,approved_by_name='',approved_at=null,updated_at=now() where id=${id}`);
+  return getPayrollRun(id);
 }
 
 export async function getPayrollRun(id: number) {
   await ensureHrTables();
   const run = rows<any>(await db.execute(sql`select * from payroll_runs where id=${id} limit 1`))[0];
   if (!run) return null;
-  const lines = rows<any>(await db.execute(sql`select l.*,s.full_name,s.username,s.department,s.job_title from payroll_lines l join staff s on s.id=l.staff_id where l.payroll_run_id=${id} order by s.full_name`)).map((line) => ({ ...line, employeeName: line.full_name || line.username, department: line.department, jobTitle: line.job_title, salaryType: line.salary_type, paymentMethod: line.payment_method, paymentStatus: line.payment_status, baseSalary: num(line.base_salary), overtimeAmount: num(line.overtime_amount), bonusAmount: num(line.bonus_amount), penaltyAmount: num(line.penalty_amount), advanceDeduction: num(line.advance_deduction), grossSalary: num(line.gross_salary), netSalary: num(line.net_salary), amountPaid: num(line.amount_paid), remainingSalary: Math.max(0, num(line.net_salary) - num(line.amount_paid)), scheduledWorkingDays: Number(line.scheduled_working_days ?? 0), attendanceDays: Number(line.attendance_days ?? 0), absenceDays: Number(line.absence_days ?? 0), totalWorkingHours: num(line.total_working_hours), overtimeHours: num(line.overtime_hours), attendanceAllowance: num(line.attendance_allowance), transportationAllowance: num(line.transportation_allowance), foodAllowance: num(line.food_allowance), phoneAllowance: num(line.phone_allowance), housingAllowance: num(line.housing_allowance), otherFixedAllowances: num(line.other_fixed_allowances), absenceDeduction: num(line.absence_deduction), fixedDeduction: num(line.fixed_deduction), calculationDetails: line.calculation_details ?? {} }));
+  const lines = rows<any>(await db.execute(sql`select l.*,s.full_name,s.username,s.department,s.job_title from payroll_lines l join staff s on s.id=l.staff_id where l.payroll_run_id=${id} order by s.full_name`)).map((line) => ({ ...line, employeeName: line.full_name || line.username, department: line.department, jobTitle: line.job_title, salaryType: line.salary_type, paymentMethod: line.payment_method, paymentStatus: line.payment_status, baseSalary: num(line.base_salary), overtimeAmount: num(line.overtime_amount), bonusAmount: num(line.bonus_amount), commissionAmount: num(line.commission_amount), otherEarnings: num(line.manual_earnings), penaltyAmount: num(line.penalty_amount), advanceDeduction: num(line.advance_deduction), grossSalary: num(line.gross_salary), netSalary: num(line.net_salary), totalDeductions: num(line.gross_salary) - num(line.net_salary), amountPaid: num(line.amount_paid), remainingSalary: Math.max(0, num(line.net_salary) - num(line.amount_paid)), scheduledWorkingDays: Number(line.scheduled_working_days ?? 0), attendanceDays: Number(line.attendance_days ?? 0), absenceDays: Number(line.absence_days ?? 0), totalWorkingHours: num(line.total_working_hours), overtimeHours: num(line.overtime_hours), attendanceAllowance: num(line.attendance_allowance), transportationAllowance: num(line.transportation_allowance), foodAllowance: num(line.food_allowance), phoneAllowance: num(line.phone_allowance), housingAllowance: num(line.housing_allowance), otherFixedAllowances: num(line.other_fixed_allowances), attendanceDeduction: num(line.attendance_deduction), absenceDeduction: num(line.absence_deduction), lateDeduction: num(line.late_deduction), manualDeduction: num(line.manual_deduction), otherDeductions: num(line.other_deductions), fixedDeduction: num(line.fixed_deduction), lineNotes: line.line_notes ?? null, calculationDetails: line.calculation_details ?? {} }));
   return { ...run, periodStartDate: run.period_start_date ? String(run.period_start_date) : null, periodEndDate: run.period_end_date ? String(run.period_end_date) : null, paymentDate: run.payment_date ? String(run.payment_date) : null, attendanceWarning: run.attendance_warning ?? null, totalGross: num(run.total_gross), totalDeductions: num(run.total_deductions), totalNet: num(run.total_net), lines };
 }
 
-export async function listPayrollRuns() { await ensureHrTables(); const result = await db.execute(sql`select * from payroll_runs order by period desc limit 36`); return Promise.all(rows<any>(result).map((run) => getPayrollRun(Number(run.id)))); }
+export async function listPayrollRuns() { await ensureHrTables(); const result = await db.execute(sql`select * from payroll_runs where deleted_at is null order by period desc limit 36`); return Promise.all(rows<any>(result).map((run) => getPayrollRun(Number(run.id)))); }
 
 export async function approvePayrollRun(id: number, actor: HrActor) {
   if (!['admin', 'manager', 'accountant'].includes(actor.role)) throw new Error("اعتماد الرواتب يتطلب صلاحية إدارية أو محاسبية");
@@ -267,10 +350,11 @@ async function payPayrollRunLegacy(id: number, actor: HrActor) {
   try {
   for (const line of run.lines) {
     if (line.netSalary <= 0) continue;
+    if (line.financial_transaction_id || num(line.amountPaid) > 0) { await applyPayrollAdvanceDeductionOnce(line, run, actor); continue; }
     const tx = await createFinancialTransaction({ transactionDate: `${run.period}-01`, direction: 'expense', amount: line.netSalary, department: 'hr', transactionType: 'payroll_salary', description: `راتب ${run.period}: ${line.employeeName}`, paymentMethod: 'cash', sourceType: 'payroll_line', sourceId: String(line.id), sourceEvent: 'salary_paid', idempotencyKey: `payroll:${id}:line:${line.id}`, approvalStatus: 'pending', responsibleUserId: line.staff_id, responsibleUserName: line.employeeName, notes: `دورة رواتب ${run.run_no}`, attachments: [] }, actor);
     const executed = await approveAndExecuteFinancialTransaction(tx.id, actor);
     await db.execute(sql`update payroll_lines set financial_transaction_id=${executed.id} where id=${line.id}`);
-    if (line.advanceDeduction > 0) await applyPayrollAdvanceDeductions({ employeeId: line.staff_id, payrollReference: run.run_no, amount: line.advanceDeduction }, actor);
+    await applyPayrollAdvanceDeductionOnce(line, run, actor);
   }
   await db.execute(sql`update hr_incentive_events set status='paid' where period=${run.period} and status='pending'`);
   await db.execute(sql`update payroll_runs set status='paid', approved_by=${actor.id},approved_by_name=${actor.name},approved_at=now(),paid_at=now(),updated_at=now() where id=${id}`);
@@ -292,10 +376,11 @@ export async function payPayrollRun(id: number, actor: HrActor) {
   try {
     for (const line of run.lines) {
       if (line.netSalary <= 0) continue;
+      if (line.financial_transaction_id || num(line.amountPaid) > 0) { await applyPayrollAdvanceDeductionOnce(line, run, actor); continue; }
       const tx = await createFinancialTransaction({ transactionDate: run.paymentDate || `${run.period}-01`, direction: 'expense', amount: line.netSalary, department: 'hr', transactionType: 'payroll_salary', description: `راتب ${run.period}: ${line.employeeName}`, paymentMethod: line.paymentMethod || 'cash', sourceType: 'payroll_line', sourceId: String(line.id), sourceEvent: 'salary_paid', idempotencyKey: `payroll:${id}:line:${line.id}`, approvalStatus: 'pending', responsibleUserId: line.staff_id, responsibleUserName: line.employeeName, notes: `دورة رواتب ${run.run_no}`, attachments: [] }, actor);
       const executed = await approveAndExecuteFinancialTransaction(tx.id, actor);
       await db.execute(sql`update payroll_lines set financial_transaction_id=${executed.id},amount_paid=net_salary,payment_status='paid' where id=${line.id}`);
-      if (line.advanceDeduction > 0) await applyPayrollAdvanceDeductions({ employeeId: line.staff_id, payrollReference: run.run_no, amount: line.advanceDeduction }, actor);
+      await applyPayrollAdvanceDeductionOnce(line, run, actor);
     }
     await db.execute(sql`update hr_incentive_events set status='paid' where period=${run.period} and status='pending'`);
     await db.execute(sql`update payroll_runs set status='paid',paid_at=now(),updated_at=now() where id=${id}`);

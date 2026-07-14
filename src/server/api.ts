@@ -209,6 +209,8 @@ import {
   createEvaluation,
   createManualIncentive,
   createPayrollRun,
+  editPayrollLine,
+  cancelPayrollRun,
   deleteDraftPayrollRun,
   PayrollConflictError,
   ensureHrTables,
@@ -221,6 +223,7 @@ import {
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
+  reopenPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
 import {
@@ -337,6 +340,15 @@ export const ALL_PERMISSIONS = [
   "photography",
   "graduation",
   "hr",
+  // Granular payroll permissions (kept separate from the HR module gate).
+  "payroll_view",
+  "payroll_edit",
+  "payroll_delete",
+  "payroll_recalculate",
+  "payroll_reopen",
+  "payroll_cancel",
+  "payroll_approve",
+  "payroll_pay",
   "executive",
   "production_view",
   "production_create",
@@ -12717,6 +12729,14 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "tasks",
     "photography",
     "graduation",
+    "payroll_view",
+    "payroll_edit",
+    "payroll_delete",
+    "payroll_recalculate",
+    "payroll_reopen",
+    "payroll_cancel",
+    "payroll_approve",
+    "payroll_pay",
   ],
   booking_staff: [
     "dashboard",
@@ -12736,6 +12756,10 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "invoices",
     "accounting",
     "tasks",
+    "payroll_view",
+    "payroll_recalculate",
+    "payroll_approve",
+    "payroll_pay",
   ],
   employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
@@ -19512,11 +19536,12 @@ async function resolveAssetProductId(raw: string): Promise<number> {
 async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "hr") return null;
   await ensureHrTables();
-  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive"]);
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_approve", "payroll_pay"]);
   if (isResponse(auth)) return auth;
   const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
   const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
   const adminOnly = () => auth.role === "admin" || auth.role === "manager" || auth.role === "accountant";
+  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) ? null : error(message, 403);
   try {
     if (method === "GET" && (!resource || resource === "dashboard")) return json(await hrDashboard(String(req.nextUrl.searchParams.get("period") || "" ) || undefined));
     if (method === "GET" && resource === "executive") {
@@ -19538,37 +19563,86 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
     }
     if (resource === "payroll" && method === "GET" && parts[3] === "dashboard") {
+      const denied = requirePayroll("payroll_view"); if (denied) return denied;
       return json(await payrollDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
     }
     if (resource === "payroll" && method === "POST" && !id && parts[3] === "preview") {
-      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const denied = requirePayroll("payroll_recalculate"); if (denied) return denied;
       return json(await previewPayrollRun(await body(req)));
     }
+    if (resource === "payroll" && method === "POST" && !id && parts[3] === "bulk") {
+      const payload = await body(req); const action = String(payload?.action || "");
+      const permissionByAction: Record<string, Permission> = { recalculate: "payroll_recalculate", approve: "payroll_approve", delete: "payroll_delete", cancel: "payroll_cancel", print: "payroll_view" };
+      const denied = requirePayroll(permissionByAction[action] || "payroll_view"); if (denied) return denied;
+      const ids: number[] = Array.isArray(payload?.ids) ? Array.from(new Set(payload.ids.map((value: unknown) => int(String(value))).filter((value: number | null): value is number => !!value))) : [];
+      if (!ids.length || !permissionByAction[action]) return error("الإجراء والسجلات المطلوبة غير صحيحة", 400);
+      const summary: { deleted: number[]; skipped: Array<{ id: number; reason: string }>; failed: Array<{ id: number; reason: string }>; results: any[] } = { deleted: [], skipped: [], failed: [], results: [] };
+      for (const payrollId of ids) {
+        try {
+          if (action === "recalculate") summary.results.push(await recalculatePayrollRun(payrollId, actor));
+          else if (action === "approve") summary.results.push(await approvePayrollRun(payrollId, actor));
+          else if (action === "delete") { const result = await deleteDraftPayrollRun(payrollId, actor, { reason: String(payload?.reason || "حذف جماعي لمسودة الرواتب") }); summary.deleted.push(payrollId); summary.results.push(result); }
+          else if (action === "cancel") summary.results.push(await cancelPayrollRun(payrollId, actor, { reason: String(payload?.reason || "إلغاء جماعي للرواتب") }));
+          else { const run = await getPayrollRun(payrollId); if (run) summary.results.push(run); else summary.skipped.push({ id: payrollId, reason: "سجل الراتب غير موجود" }); }
+        } catch (error: any) {
+          const reason = String(error?.message || "تعذر تنفيذ الإجراء");
+          if (action === "delete") summary.skipped.push({ id: payrollId, reason }); else summary.failed.push({ id: payrollId, reason });
+        }
+      }
+      void logAdminActivity(req, `payroll_bulk_${action}`, "payroll_run", undefined, { ids, summary, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(summary);
+    }
     if (resource === "payroll") {
-      if (method === "GET" && !id) return json(await listPayrollRuns());
-      if (method === "GET" && id) { const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
+      if (method === "GET" && !id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; return json(await listPayrollRuns()); }
+      if (method === "GET" && id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
       if (method === "POST" && !id) {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const denied = requirePayroll("payroll_edit"); if (denied) return denied;
         const payload = await body(req); const run = await createPayrollRun(payload, actor);
         void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
         return json(run, 201);
       }
       if (method === "POST" && id && parts[4] === "recalculate") {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
-        return json(await recalculatePayrollRun(id, actor));
+        const denied = requirePayroll("payroll_recalculate"); if (denied) return denied;
+        const run = await recalculatePayrollRun(id, actor);
+        void logAdminActivity(req, "payroll_recalculated", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_recalculated", title: "تمت إعادة حساب الراتب", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "PATCH" && id && parts[4] === "lines" && parts[5]) {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية التعديل"); if (denied) return denied;
+        const payload = await body(req); const lineId = int(parts[5])!; const result = await editPayrollLine(id, lineId, payload, actor);
+        const metadata = { oldValues: result.oldValues, newValues: result.newValues, oldValue: result.oldValues, newValue: result.newValues, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_edited", "payroll_line", lineId, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_edited", title: "تم تعديل راتب الموظف", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
+        return json(result.run);
+      }
+      if (method === "POST" && id && parts[4] === "cancel") {
+        const denied = requirePayroll("payroll_cancel", "لا تملك صلاحية الإلغاء"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const result = await cancelPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_cancelled", "payroll_run", id, { oldValues: oldRun, newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_cancelled", title: "تم إلغاء الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "reopen") {
+        const denied = requirePayroll("payroll_reopen", "لا تملك صلاحية إعادة الفتح"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const result = await reopenPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_reopened", "payroll_run", id, { oldValues: oldRun, newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_reopened", title: "تمت إعادة فتح الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(result);
       }
       if (method === "DELETE" && id) {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
-        await deleteDraftPayrollRun(id);
-        void logAdminActivity(req, "payroll_draft_deleted", "payroll_run", id);
-        return json({ id });
+        const denied = requirePayroll("payroll_delete"); if (denied) return denied;
+        const payload = await body(req); const deletion = await deleteDraftPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_deleted", "payroll_run", id, { oldValues: deletion.oldValues, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_deleted", title: "تم حذف مسودة الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(deletion);
       }
       if (method === "POST" && id && parts[4] === "approve") {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
-        return json(await approvePayrollRun(id, actor));
+        const denied = requirePayroll("payroll_approve"); if (denied) return denied;
+        const run = await approvePayrollRun(id, actor); void logAdminActivity(req, "payroll_approved", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(run);
       }
       if (method === "POST" && id && parts[4] === "pay") {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const denied = requirePayroll("payroll_pay"); if (denied) return denied;
         const run = await payPayrollRun(id, actor);
         void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
