@@ -12,7 +12,7 @@ const num = (value: unknown) => Number.isFinite(Number(value)) ? Math.round((Num
 const periodNow = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7);
 const validPeriod = (period: string) => /^\d{4}-\d{2}$/.test(period);
 const BONUS_TYPES = ["performance", "attendance", "perfect_attendance", "overtime", "sales_commission", "profit_commission", "kosha_completion", "photography_session", "editing", "delivery", "collection", "graduation_order", "production", "customer_satisfaction", "employee_of_month", "manual", "other"] as const;
-const BONUS_STATUSES = ["draft", "pending_approval", "approved", "rejected", "applied_to_payroll", "cancelled", "pending"] as const;
+const BONUS_STATUSES = ["draft", "pending_approval", "approved", "rejected", "applied_to_payroll", "paid", "cancelled", "pending"] as const;
 const bonusPayloadSchema = z.object({
   staffId: z.coerce.number().int().positive({ message: "الموظف مطلوب" }),
   period: z.string().regex(/^\d{4}-\d{2}$/, "فترة الرواتب يجب أن تكون بصيغة YYYY-MM"),
@@ -200,7 +200,7 @@ export async function validateBonusUpdate(id: number, input: any) {
   await ensureHrTables();
   const current = rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0];
   if (!current) throw new Error("Bonus not found");
-  const merged = { ...input, staffId: input?.staffId ?? current.staff_id, period: input?.period ?? current.period, bonusType: input?.bonusType ?? current.bonus_type ?? current.title ?? "manual", bonusSource: input?.bonusSource ?? current.bonus_source ?? "manual", calculationMethod: input?.calculationMethod ?? current.calculation_method ?? "fixed", amount: input?.amount ?? current.amount, quantity: input?.quantity ?? current.quantity, ratePerUnit: input?.ratePerUnit ?? current.rate_per_unit, percentage: input?.percentage ?? current.percentage, baseAmount: input?.baseAmount ?? current.base_amount };
+  const merged = { ...input, staffId: input?.staffId ?? current.staff_id, period: input?.period ?? current.period, bonusType: input?.bonusType ?? current.bonus_type ?? "manual", bonusSource: input?.bonusSource ?? current.bonus_source ?? "manual", calculationMethod: input?.calculationMethod ?? current.calculation_method ?? "fixed", amount: input?.amount ?? current.amount, quantity: input?.quantity ?? current.quantity, ratePerUnit: input?.ratePerUnit ?? current.rate_per_unit, percentage: input?.percentage ?? current.percentage, baseAmount: input?.baseAmount ?? current.base_amount };
   const parsed = bonusPayloadSchema.safeParse(merged);
   if (!parsed.success) { console.error("Bonus validation failed", { operation: "edit", bonusId: id, payload: input, issues: parsed.error.issues }); throw parsed.error; }
   const method = String(parsed.data.calculationMethod); const amount = method === "quantity_rate" ? num(parsed.data.quantity) * num(parsed.data.ratePerUnit) : method === "percentage" ? num(parsed.data.baseAmount) * num(parsed.data.percentage) / 100 : num(parsed.data.amount ?? parsed.data.finalAmount);
@@ -212,6 +212,7 @@ export async function validateBonus(id: number) {
   await ensureHrTables();
   const found = rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0];
   if (!found) throw new Error("Bonus not found");
+  if (!found.bonus_type) found.bonus_type = "manual";
   validateExistingBonus(found);
   return formatIncentive(found);
 }
@@ -242,6 +243,13 @@ export async function approveBonus(id: number, actor: HrActor) { await ensureHrT
 export async function rejectBonus(id: number, actor: HrActor, reason: string) { await ensureHrTables(); const saved = rows<any>(await db.execute(sql`update hr_incentive_events set status='rejected',reason=${reason} where id=${id} and status in ('draft','pending_approval','pending') returning *`)); if (!saved.length) throw new Error("Bonus cannot be rejected"); return formatIncentive(saved[0]); }
 export async function deleteBonus(id: number, actor: HrActor) { await ensureHrTables(); const saved = rows<any>(await db.execute(sql`update hr_incentive_events set status='cancelled' where id=${id} and status in ('draft','pending_approval','pending','rejected') returning id`)); if (!saved.length) throw new Error("Approved or applied bonuses cannot be deleted"); return { id, status: "cancelled" }; }
 export async function applyBonus(id: number, actor: HrActor) { await ensureHrTables(); const event = rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0]; if (!event) throw new Error("Bonus not found"); if (!["approved", "applied_to_payroll"].includes(String(event.status))) throw new Error("Approve the bonus before applying it to payroll"); const run = rows<any>(await db.execute(sql`select * from payroll_runs where period=${event.period} and deleted_at is null limit 1`))[0]; if (!run) throw new Error("Create the payroll run for this period first"); const line = rows<any>(await db.execute(sql`select * from payroll_lines where payroll_run_id=${run.id} and staff_id=${event.staff_id} limit 1`))[0]; if (!line) throw new Error("No payroll line exists for this employee in this period"); if (event.payroll_line_id) return formatIncentive(event); await db.execute(sql`update hr_incentive_events set status='applied_to_payroll',payroll_line_id=${line.id} where id=${id} and status='approved'`); if (["draft", "calculated", "under_review"].includes(String(run.status))) await recalculatePayrollRun(Number(run.id), actor); return formatIncentive(rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0]); }
+
+export async function recalculateBonusPeriod(period: string, actor: HrActor) {
+  await ensureHrTables();
+  const run = rows<any>(await db.execute(sql`select id,status from payroll_runs where period=${period} and deleted_at is null limit 1`))[0];
+  if (!run || !["draft", "calculated", "under_review"].includes(String(run.status))) return null;
+  return recalculatePayrollRun(Number(run.id), actor);
+}
 
 export async function listBonusRules() { await ensureHrTables(); const result = await db.execute(sql`select * from hr_incentive_rules order by is_active desc,updated_at desc,id desc`); return rows<any>(result).map((r) => ({ ...r, threshold: num(r.threshold), amount: num(r.amount), active: Number(r.is_active) === 1 })); }
 export async function saveBonusRule(input: any) { await ensureHrTables(); const code = String(input?.code || `rule_${Date.now()}`).trim().slice(0, 60); const name = String(input?.name || "قاعدة مكافأة").trim(); const metric = String(input?.metric || "performance").trim(); if (!name || !metric) throw new Error("بيانات قاعدة المكافأة غير مكتملة"); const result = await db.execute(sql`insert into hr_incentive_rules(code,name,kind,metric,operator,threshold,amount,department,is_active,metadata,updated_at) values(${code},${name},'bonus',${metric},${String(input?.operator || "gte")},${num(input?.threshold)},${num(input?.amount)},${String(input?.department || "") || null},${input?.isActive === false ? 0 : 1},${JSON.stringify(input?.metadata || {})}::jsonb,now()) on conflict(code) do update set name=excluded.name,metric=excluded.metric,operator=excluded.operator,threshold=excluded.threshold,amount=excluded.amount,department=excluded.department,is_active=excluded.is_active,metadata=excluded.metadata,updated_at=now() returning *`); return rows<any>(result)[0]; }

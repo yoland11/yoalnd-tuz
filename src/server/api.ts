@@ -214,6 +214,7 @@ import {
   rejectBonus,
   deleteBonus,
   applyBonus,
+  recalculateBonusPeriod,
   validateBonus,
   validateBonusUpdate,
   listBonusRules,
@@ -19791,9 +19792,13 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       if (method === "DELETE" && id) {
         if (!hasPermission(auth, "bonus_delete") && !adminOnly()) return error("لا تملك صلاحية حذف المكافأة", 403);
         console.error("Bonus request payload", { operation: "delete", id, payload: null });
-        await validateBonus(id);
+        const before = await validateBonus(id);
+        if (!["draft", "pending", "pending_approval", "rejected"].includes(String(before.status))) throw new Error("لا يمكن حذف مكافأة تمت إضافتها إلى الراتب.");
         const result = await deleteBonus(id, actor);
-        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        try { await recalculateBonusPeriod(String(before.period), actor); } catch (error) { console.error("Bonus payroll recalculation failed after delete", { id, error }); }
+        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { oldValues: before, newValues: result, reason: "حذف المكافأة", ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_deleted", title: "تم حذف المكافأة", body: "حذف المكافأة", actor: erpActorFromAdmin(auth), metadata: { before, result } });
+        try { await createNotification({ audienceType: "admin", type: "bonus_deleted", title: "تم حذف مكافأة", body: `${before.employeeName || "الموظف"} · ${before.amount}`, entityType: "hr_incentive", entityId: id, href: "/admin/hr" }); } catch { /* notification is non-blocking */ }
         return json(result);
       }
       if (method === "POST" && id && parts[4] === "approve") {
@@ -19808,9 +19813,15 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       if (method === "POST" && id && parts[4] === "reject") {
         if (!hasPermission(auth, "bonus_reject") && !adminOnly()) return error("لا تملك صلاحية رفض المكافأة", 403);
         const payload = await body(req); console.error("Bonus request payload", { operation: "reject", id, payload });
-        await validateBonus(id);
-        const result = await rejectBonus(id, actor, String(payload?.reason || "رفض المكافأة"));
-        void logAdminActivity(req, "bonus_rejected", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        const reason = String(payload?.reason || "").trim();
+        if (!reason) return error("سبب الرفض مطلوب", 400);
+        const before = await validateBonus(id);
+        if (!["draft", "pending", "pending_approval"].includes(String(before.status))) throw new Error("لا يمكن رفض مكافأة بهذه الحالة.");
+        const result = await rejectBonus(id, actor, reason);
+        try { await recalculateBonusPeriod(String(before.period), actor); } catch (error) { console.error("Bonus payroll recalculation failed after reject", { id, error }); }
+        void logAdminActivity(req, "bonus_rejected", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_rejected", title: "تم رفض المكافأة", body: reason, actor: erpActorFromAdmin(auth), metadata: { before, result, reason } });
+        try { await createNotification({ audienceType: "admin", type: "bonus_rejected", title: "تم رفض مكافأة", body: `${before.employeeName || "الموظف"}: ${reason}`, entityType: "hr_incentive", entityId: id, href: "/admin/hr" }); } catch { /* notification is non-blocking */ }
         return json(result);
       }
       if (method === "POST" && id && parts[4] === "apply") {
