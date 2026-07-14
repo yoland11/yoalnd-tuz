@@ -202,9 +202,11 @@ import {
 } from "@/server/employee-advances";
 import {
   addCareerEvent,
+  approvePayrollRun,
   createEvaluation,
   createManualIncentive,
   createPayrollRun,
+  PayrollConflictError,
   ensureHrTables,
   evaluateAutomaticIncentives,
   executiveDashboard,
@@ -212,6 +214,7 @@ import {
   hrDashboard,
   listPayrollRuns,
   payPayrollRun,
+  previewPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
 import {
@@ -5121,6 +5124,26 @@ function formatStaff(s: any) {
     department: s.department ?? "general",
     baseSalary: Number(s.baseSalary ?? 0),
     hiredAt: s.hiredAt ? String(s.hiredAt) : null,
+    jobTitle: s.jobTitle ?? null,
+    salaryType: s.salaryType ?? "monthly",
+    currency: s.currency ?? "IQD",
+    workingDaysPerWeek: Number(s.workingDaysPerWeek ?? 6),
+    dailyWorkingHours: Number(s.dailyWorkingHours ?? 8),
+    hourlyRate: Number(s.hourlyRate ?? 0),
+    overtimeRate: Number(s.overtimeRate ?? 0),
+    attendanceAllowance: Number(s.attendanceAllowance ?? 0),
+    transportationAllowance: Number(s.transportationAllowance ?? 0),
+    foodAllowance: Number(s.foodAllowance ?? 0),
+    phoneAllowance: Number(s.phoneAllowance ?? 0),
+    housingAllowance: Number(s.housingAllowance ?? 0),
+    otherFixedAllowances: Number(s.otherFixedAllowances ?? 0),
+    fixedDeduction: Number(s.fixedDeduction ?? 0),
+    salesCommissionPercentage: Number(s.salesCommissionPercentage ?? 0),
+    profitCommissionPercentage: Number(s.profitCommissionPercentage ?? 0),
+    paymentMethod: s.paymentMethod ?? "cash",
+    paymentReference: s.paymentReference ?? null,
+    salaryStatus: s.salaryStatus ?? "active",
+    salaryNotes: s.salaryNotes ?? null,
     isActive: s.isActive,
     lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
     createdAt: s.createdAt.toISOString(),
@@ -5543,6 +5566,26 @@ async function ensureStaffTableShape(): Promise<void> {
           add column if not exists "department" varchar(60) not null default 'general',
           add column if not exists "base_salary" numeric(16,2) not null default 0,
           add column if not exists "hired_at" date not null default current_date,
+          add column if not exists "job_title" varchar(100),
+          add column if not exists "salary_type" varchar(20) not null default 'monthly',
+          add column if not exists "currency" varchar(10) not null default 'IQD',
+          add column if not exists "working_days_per_week" numeric(4,1) not null default 6,
+          add column if not exists "daily_working_hours" numeric(5,2) not null default 8,
+          add column if not exists "hourly_rate" numeric(16,2) not null default 0,
+          add column if not exists "overtime_rate" numeric(16,2) not null default 0,
+          add column if not exists "attendance_allowance" numeric(16,2) not null default 0,
+          add column if not exists "transportation_allowance" numeric(16,2) not null default 0,
+          add column if not exists "food_allowance" numeric(16,2) not null default 0,
+          add column if not exists "phone_allowance" numeric(16,2) not null default 0,
+          add column if not exists "housing_allowance" numeric(16,2) not null default 0,
+          add column if not exists "other_fixed_allowances" numeric(16,2) not null default 0,
+          add column if not exists "fixed_deduction" numeric(16,2) not null default 0,
+          add column if not exists "sales_commission_percentage" numeric(6,2) not null default 0,
+          add column if not exists "profit_commission_percentage" numeric(6,2) not null default 0,
+          add column if not exists "payment_method" varchar(30) not null default 'cash',
+          add column if not exists "payment_reference" text,
+          add column if not exists "salary_status" varchar(20) not null default 'active',
+          add column if not exists "salary_notes" text,
           add column if not exists "is_active" boolean not null default true,
           add column if not exists "last_activity_at" timestamp,
           add column if not exists "created_at" timestamp not null default now()
@@ -19482,14 +19525,22 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         return json(event, 201);
       }
     }
+    if (resource === "payroll" && method === "POST" && !id && parts[3] === "preview") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      return json(await previewPayrollRun(await body(req)));
+    }
     if (resource === "payroll") {
       if (method === "GET" && !id) return json(await listPayrollRuns());
       if (method === "GET" && id) { const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
       if (method === "POST" && !id) {
         if (!adminOnly()) return error("ليس لديك صلاحية", 403);
-        const payload = await body(req); const run = await createPayrollRun(String(payload?.period || ""), actor, String(payload?.notes || ""));
+        const payload = await body(req); const run = await createPayrollRun(payload, actor);
         void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
         return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "approve") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        return json(await approvePayrollRun(id, actor));
       }
       if (method === "POST" && id && parts[4] === "pay") {
         if (!adminOnly()) return error("ليس لديك صلاحية", 403);
@@ -19513,6 +19564,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
     }
   } catch (err: any) {
     console.error("HR operation failed", { resource, id, message: err?.message });
+    if (err instanceof PayrollConflictError) return json({ error: "Payroll already exists for this period.", existing: err.existing }, 409);
+    if (err?.code === "SALARY_SETTINGS_INCOMPLETE") return json({ error: "Salary settings are incomplete for this employee.", employees: err.employees ?? [] }, 422);
+    if (err?.name === "ZodError") return json({ error: "بيانات إنشاء الرواتب غير صحيحة", details: err.issues?.map((issue: any) => ({ field: issue.path?.join("."), message: issue.message })) ?? [] }, 400);
     return error(String(err?.message || "تعذر إكمال عملية الموارد البشرية"), 400);
   }
   return error("المسار غير مدعوم", 404);
@@ -25118,6 +25172,26 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             department: String(payload?.department ?? "general").trim().slice(0, 60) || "general",
             baseSalary: String(Math.max(0, Number(payload?.baseSalary ?? 0) || 0)),
             hiredAt: normalizeDateOnly(payload?.hiredAt) ?? new Date().toISOString().slice(0, 10),
+            jobTitle: String(payload?.jobTitle ?? "").trim().slice(0, 100) || null,
+            salaryType: ["monthly", "weekly", "daily", "hourly"].includes(String(payload?.salaryType)) ? String(payload.salaryType) : "monthly",
+            currency: String(payload?.currency ?? "IQD").trim().slice(0, 10) || "IQD",
+            workingDaysPerWeek: String(Math.min(7, Math.max(1, Number(payload?.workingDaysPerWeek ?? 6) || 6))),
+            dailyWorkingHours: String(Math.min(24, Math.max(1, Number(payload?.dailyWorkingHours ?? 8) || 8))),
+            hourlyRate: String(Math.max(0, Number(payload?.hourlyRate ?? 0) || 0)),
+            overtimeRate: String(Math.max(0, Number(payload?.overtimeRate ?? 0) || 0)),
+            attendanceAllowance: String(Math.max(0, Number(payload?.attendanceAllowance ?? 0) || 0)),
+            transportationAllowance: String(Math.max(0, Number(payload?.transportationAllowance ?? 0) || 0)),
+            foodAllowance: String(Math.max(0, Number(payload?.foodAllowance ?? 0) || 0)),
+            phoneAllowance: String(Math.max(0, Number(payload?.phoneAllowance ?? 0) || 0)),
+            housingAllowance: String(Math.max(0, Number(payload?.housingAllowance ?? 0) || 0)),
+            otherFixedAllowances: String(Math.max(0, Number(payload?.otherFixedAllowances ?? 0) || 0)),
+            fixedDeduction: String(Math.max(0, Number(payload?.fixedDeduction ?? 0) || 0)),
+            salesCommissionPercentage: String(Math.min(100, Math.max(0, Number(payload?.salesCommissionPercentage ?? 0) || 0))),
+            profitCommissionPercentage: String(Math.min(100, Math.max(0, Number(payload?.profitCommissionPercentage ?? 0) || 0))),
+            paymentMethod: String(payload?.paymentMethod ?? "cash").trim().slice(0, 30) || "cash",
+            paymentReference: String(payload?.paymentReference ?? "").trim() || null,
+            salaryStatus: payload?.salaryStatus === "suspended" ? "suspended" : "active",
+            salaryNotes: String(payload?.salaryNotes ?? "").trim() || null,
             permissions: permissionsForRole(
               normalizedRole,
               explicitPermissions ?? payload?.permissions,
@@ -25167,6 +25241,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.baseSalary = String(Math.max(0, Number(b.baseSalary) || 0));
       if (b?.hiredAt !== undefined)
         update.hiredAt = normalizeDateOnly(b.hiredAt) ?? existing.hiredAt;
+      if (b?.jobTitle !== undefined) update.jobTitle = String(b.jobTitle ?? "").trim().slice(0, 100) || null;
+      if (b?.salaryType !== undefined && ["monthly", "weekly", "daily", "hourly"].includes(String(b.salaryType))) update.salaryType = String(b.salaryType);
+      if (b?.currency !== undefined) update.currency = String(b.currency ?? "IQD").trim().slice(0, 10) || "IQD";
+      for (const key of ["workingDaysPerWeek", "dailyWorkingHours", "hourlyRate", "overtimeRate", "attendanceAllowance", "transportationAllowance", "foodAllowance", "phoneAllowance", "housingAllowance", "otherFixedAllowances", "fixedDeduction", "salesCommissionPercentage", "profitCommissionPercentage"] as const) {
+        if (b?.[key] !== undefined) update[key] = String(Math.max(0, Number(b[key]) || 0));
+      }
+      if (b?.workingDaysPerWeek !== undefined) update.workingDaysPerWeek = String(Math.min(7, Math.max(1, Number(b.workingDaysPerWeek) || 6)));
+      if (b?.dailyWorkingHours !== undefined) update.dailyWorkingHours = String(Math.min(24, Math.max(1, Number(b.dailyWorkingHours) || 8)));
+      if (b?.salesCommissionPercentage !== undefined) update.salesCommissionPercentage = String(Math.min(100, Math.max(0, Number(b.salesCommissionPercentage) || 0)));
+      if (b?.profitCommissionPercentage !== undefined) update.profitCommissionPercentage = String(Math.min(100, Math.max(0, Number(b.profitCommissionPercentage) || 0)));
+      if (b?.paymentMethod !== undefined) update.paymentMethod = String(b.paymentMethod ?? "cash").trim().slice(0, 30) || "cash";
+      if (b?.paymentReference !== undefined) update.paymentReference = String(b.paymentReference ?? "").trim() || null;
+      if (b?.salaryStatus !== undefined) update.salaryStatus = b.salaryStatus === "suspended" ? "suspended" : "active";
+      if (b?.salaryNotes !== undefined) update.salaryNotes = String(b.salaryNotes ?? "").trim() || null;
       if (b?.isActive !== undefined) update.isActive = b.isActive === true;
       if (b?.username !== undefined) {
         const nextUsername = staffUsername(b.username);

@@ -20,6 +20,7 @@ type Staff = {
   department?: string;
   baseSalary?: number;
   hiredAt?: string | null;
+  jobTitle?: string | null; salaryType?: string; currency?: string; workingDaysPerWeek?: number; dailyWorkingHours?: number; hourlyRate?: number; overtimeRate?: number; attendanceAllowance?: number; transportationAllowance?: number; foodAllowance?: number; phoneAllowance?: number; housingAllowance?: number; otherFixedAllowances?: number; fixedDeduction?: number; salesCommissionPercentage?: number; profitCommissionPercentage?: number; paymentMethod?: string; paymentReference?: string | null; salaryStatus?: string; salaryNotes?: string | null;
   advanceSummary?: {
     totalAdvances: number;
     outstandingBalance: number;
@@ -53,6 +54,7 @@ type Editing = {
   hiredAt: string;
   permissions: string[];
   isActive: boolean;
+  jobTitle: string; salaryType: string; currency: string; workingDaysPerWeek: string; dailyWorkingHours: string; hourlyRate: string; overtimeRate: string; attendanceAllowance: string; transportationAllowance: string; foodAllowance: string; phoneAllowance: string; housingAllowance: string; otherFixedAllowances: string; fixedDeduction: string; salesCommissionPercentage: string; profitCommissionPercentage: string; paymentMethod: string; paymentReference: string; salaryStatus: string; salaryNotes: string;
 };
 
 const ROLE_PRESETS: Record<string, string[]> = {
@@ -107,6 +109,7 @@ const blank: Editing = {
   hiredAt: new Date().toISOString().slice(0, 10),
   permissions: ROLE_PRESETS.booking_staff,
   isActive: true,
+  jobTitle: "", salaryType: "monthly", currency: "IQD", workingDaysPerWeek: "6", dailyWorkingHours: "8", hourlyRate: "0", overtimeRate: "0", attendanceAllowance: "0", transportationAllowance: "0", foodAllowance: "0", phoneAllowance: "0", housingAllowance: "0", otherFixedAllowances: "0", fixedDeduction: "0", salesCommissionPercentage: "0", profitCommissionPercentage: "0", paymentMethod: "cash", paymentReference: "", salaryStatus: "active", salaryNotes: "",
 };
 
 function roleLabel(role: string): string {
@@ -137,6 +140,7 @@ export default function StaffPage() {
         department: e.department ?? "general",
         baseSalary: Number(e.baseSalary ?? 0),
         hiredAt: e.hiredAt || undefined,
+        jobTitle: e.jobTitle, salaryType: e.salaryType, currency: e.currency, workingDaysPerWeek: Number(e.workingDaysPerWeek), dailyWorkingHours: Number(e.dailyWorkingHours), hourlyRate: Number(e.hourlyRate), overtimeRate: Number(e.overtimeRate), attendanceAllowance: Number(e.attendanceAllowance), transportationAllowance: Number(e.transportationAllowance), foodAllowance: Number(e.foodAllowance), phoneAllowance: Number(e.phoneAllowance), housingAllowance: Number(e.housingAllowance), otherFixedAllowances: Number(e.otherFixedAllowances), fixedDeduction: Number(e.fixedDeduction), salesCommissionPercentage: Number(e.salesCommissionPercentage), profitCommissionPercentage: Number(e.profitCommissionPercentage), paymentMethod: e.paymentMethod, paymentReference: e.paymentReference, salaryStatus: e.salaryStatus, salaryNotes: e.salaryNotes,
         role: e.role,
         permissions: e.permissions ?? [],
         isActive: e.isActive,
@@ -297,6 +301,7 @@ export default function StaffPage() {
                       department: s.department ?? "general",
                       baseSalary: String(s.baseSalary ?? 0),
                       hiredAt: s.hiredAt ? String(s.hiredAt).slice(0, 10) : new Date().toISOString().slice(0, 10),
+                      jobTitle: s.jobTitle ?? "", salaryType: s.salaryType ?? "monthly", currency: s.currency ?? "IQD", workingDaysPerWeek: String(s.workingDaysPerWeek ?? 6), dailyWorkingHours: String(s.dailyWorkingHours ?? 8), hourlyRate: String(s.hourlyRate ?? 0), overtimeRate: String(s.overtimeRate ?? 0), attendanceAllowance: String(s.attendanceAllowance ?? 0), transportationAllowance: String(s.transportationAllowance ?? 0), foodAllowance: String(s.foodAllowance ?? 0), phoneAllowance: String(s.phoneAllowance ?? 0), housingAllowance: String(s.housingAllowance ?? 0), otherFixedAllowances: String(s.otherFixedAllowances ?? 0), fixedDeduction: String(s.fixedDeduction ?? 0), salesCommissionPercentage: String(s.salesCommissionPercentage ?? 0), profitCommissionPercentage: String(s.profitCommissionPercentage ?? 0), paymentMethod: s.paymentMethod ?? "cash", paymentReference: s.paymentReference ?? "", salaryStatus: s.salaryStatus ?? "active", salaryNotes: s.salaryNotes ?? "",
                       permissions: s.permissions,
                       isActive: s.isActive,
                     })
@@ -351,6 +356,12 @@ export default function StaffPage() {
               <Field label="الراتب الأساسي (IQD)" type="number" value={editing.baseSalary} onChange={(v) => setEditing((s) => ({ ...s!, baseSalary: v }))} />
             </div>
             <Field label="تاريخ التعيين" type="date" value={editing.hiredAt} onChange={(v) => setEditing((s) => ({ ...s!, hiredAt: v }))} />
+            <section className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+              <h4 className="font-semibold text-primary">Salary Settings · إعدادات الراتب</h4>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="المسمى الوظيفي" value={editing.jobTitle} onChange={(v) => setEditing((s) => ({ ...s!, jobTitle: v }))} /><Field label="العملة" value={editing.currency} onChange={(v) => setEditing((s) => ({ ...s!, currency: v }))} /><Field label="أيام العمل أسبوعياً" type="number" value={editing.workingDaysPerWeek} onChange={(v) => setEditing((s) => ({ ...s!, workingDaysPerWeek: v }))} /><Field label="ساعات العمل اليومية" type="number" value={editing.dailyWorkingHours} onChange={(v) => setEditing((s) => ({ ...s!, dailyWorkingHours: v }))} /><Field label="الأجر بالساعة" type="number" value={editing.hourlyRate} onChange={(v) => setEditing((s) => ({ ...s!, hourlyRate: v }))} /><Field label="سعر الساعة الإضافية" type="number" value={editing.overtimeRate} onChange={(v) => setEditing((s) => ({ ...s!, overtimeRate: v }))} /></div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div><label className="mb-1 block text-xs text-muted-foreground">نوع الراتب</label><select value={editing.salaryType} onChange={(e) => setEditing((s) => ({ ...s!, salaryType: e.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="monthly">شهري</option><option value="weekly">أسبوعي</option><option value="daily">يومي</option><option value="hourly">بالساعة</option></select></div><div><label className="mb-1 block text-xs text-muted-foreground">حالة الراتب</label><select value={editing.salaryStatus} onChange={(e) => setEditing((s) => ({ ...s!, salaryStatus: e.target.value }))} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="active">نشط</option><option value="suspended">معلّق</option></select></div></div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><Field label="بدل الحضور" type="number" value={editing.attendanceAllowance} onChange={(v) => setEditing((s) => ({ ...s!, attendanceAllowance: v }))} /><Field label="بدل النقل" type="number" value={editing.transportationAllowance} onChange={(v) => setEditing((s) => ({ ...s!, transportationAllowance: v }))} /><Field label="بدل الطعام" type="number" value={editing.foodAllowance} onChange={(v) => setEditing((s) => ({ ...s!, foodAllowance: v }))} /><Field label="بدل الهاتف" type="number" value={editing.phoneAllowance} onChange={(v) => setEditing((s) => ({ ...s!, phoneAllowance: v }))} /><Field label="بدل السكن" type="number" value={editing.housingAllowance} onChange={(v) => setEditing((s) => ({ ...s!, housingAllowance: v }))} /><Field label="بدلات ثابتة أخرى" type="number" value={editing.otherFixedAllowances} onChange={(v) => setEditing((s) => ({ ...s!, otherFixedAllowances: v }))} /><Field label="خصم ثابت" type="number" value={editing.fixedDeduction} onChange={(v) => setEditing((s) => ({ ...s!, fixedDeduction: v }))} /><Field label="عمولة المبيعات %" type="number" value={editing.salesCommissionPercentage} onChange={(v) => setEditing((s) => ({ ...s!, salesCommissionPercentage: v }))} /><Field label="عمولة الأرباح %" type="number" value={editing.profitCommissionPercentage} onChange={(v) => setEditing((s) => ({ ...s!, profitCommissionPercentage: v }))} /><Field label="طريقة الدفع المفضلة" value={editing.paymentMethod} onChange={(v) => setEditing((s) => ({ ...s!, paymentMethod: v }))} /><Field label="الحساب البنكي / المرجع" value={editing.paymentReference} onChange={(v) => setEditing((s) => ({ ...s!, paymentReference: v }))} /><Field label="ملاحظات الراتب" value={editing.salaryNotes} onChange={(v) => setEditing((s) => ({ ...s!, salaryNotes: v }))} /></div>
+            </section>
             {!editing.id && (
               <Field
                 label="اسم المستخدم"
