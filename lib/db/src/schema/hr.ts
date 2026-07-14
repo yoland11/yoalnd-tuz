@@ -1,5 +1,29 @@
-import { date, index, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, date, index, integer, jsonb, numeric, pgTable, serial, text, time, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
+
+/** One approved payroll configuration per employee. Legacy staff salary fields stay in place for compatibility. */
+export const employeeSalarySettingsTable = pgTable("employee_salary_settings", {
+  id: serial("id").primaryKey(),
+  staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "cascade" }),
+  employmentType: varchar("employment_type", { length: 30 }).notNull().default("full_time"),
+  firstPayrollDate: date("first_payroll_date"),
+  monthlyWorkingHours: numeric("monthly_working_hours", { precision: 8, scale: 2 }).notNull().default("0"),
+  shiftStart: time("shift_start"), shiftEnd: time("shift_end"), weeklyDaysOff: jsonb("weekly_days_off").$type<string[]>().notNull().default([]),
+  riskAllowance: numeric("risk_allowance", { precision: 16, scale: 2 }).notNull().default("0"),
+  weekendHourRate: numeric("weekend_hour_rate", { precision: 16, scale: 2 }).notNull().default("0"), holidayHourRate: numeric("holiday_hour_rate", { precision: 16, scale: 2 }).notNull().default("0"), maxMonthlyOvertime: numeric("max_monthly_overtime", { precision: 8, scale: 2 }).notNull().default("0"),
+  taxDeduction: numeric("tax_deduction", { precision: 16, scale: 2 }).notNull().default("0"), insuranceDeduction: numeric("insurance_deduction", { precision: 16, scale: 2 }).notNull().default("0"), retirementDeduction: numeric("retirement_deduction", { precision: 16, scale: 2 }).notNull().default("0"), lateDeduction: numeric("late_deduction", { precision: 16, scale: 2 }).notNull().default("0"), absenceDeduction: numeric("absence_deduction", { precision: 16, scale: 2 }).notNull().default("0"), otherDeduction: numeric("other_deduction", { precision: 16, scale: 2 }).notNull().default("0"),
+  monthlyBonus: numeric("monthly_bonus", { precision: 16, scale: 2 }).notNull().default("0"), performanceBonus: numeric("performance_bonus", { precision: 16, scale: 2 }).notNull().default("0"), commission: numeric("commission", { precision: 16, scale: 2 }).notNull().default("0"), annualBonus: numeric("annual_bonus", { precision: 16, scale: 2 }).notNull().default("0"), otherBonus: numeric("other_bonus", { precision: 16, scale: 2 }).notNull().default("0"),
+  bankName: text("bank_name"), accountNumber: text("account_number"), iban: varchar("iban", { length: 64 }),
+  generatePayrollAutomatically: boolean("generate_payroll_automatically").notNull().default(false), enableOvertime: boolean("enable_overtime").notNull().default(true), enableAttendanceIntegration: boolean("enable_attendance_integration").notNull().default(true), enableAdvanceDeduction: boolean("enable_advance_deduction").notNull().default(true), enableBonuses: boolean("enable_bonuses").notNull().default(true), enablePenalties: boolean("enable_penalties").notNull().default(true),
+  approvalStatus: varchar("approval_status", { length: 20 }).notNull().default("approved"), approvedBy: integer("approved_by").references(() => staffTable.id, { onDelete: "set null" }), approvedAt: timestamp("approved_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(), updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({ staffUnique: uniqueIndex("employee_salary_settings_staff_unique").on(table.staffId) }));
+
+export const employeeSalarySettingAuditsTable = pgTable("employee_salary_setting_audits", {
+  id: serial("id").primaryKey(), staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "restrict" }),
+  actorId: integer("actor_id").references(() => staffTable.id, { onDelete: "set null" }), actorName: text("actor_name").notNull().default(""),
+  action: varchar("action", { length: 40 }).notNull(), oldValue: jsonb("old_value").$type<Record<string, unknown>>().notNull().default({}), newValue: jsonb("new_value").$type<Record<string, unknown>>().notNull().default({}), ipAddress: varchar("ip_address", { length: 80 }), createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({ staffCreatedIdx: index("employee_salary_setting_audits_staff_created_idx").on(table.staffId, table.createdAt) }));
 
 export const hrIncentiveRulesTable = pgTable("hr_incentive_rules", {
   id: serial("id").primaryKey(),

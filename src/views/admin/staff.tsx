@@ -7,6 +7,7 @@ import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
 import { EmptyState } from "./_layout";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { SalarySettingsTab } from "./salary-settings-tab";
 
 type Staff = {
   id: number;
@@ -132,6 +133,7 @@ export default function StaffPage() {
     queryFn: () => adminFetch<Staff[]>("/admin/staff"),
   });
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [editorTab, setEditorTab] = useState<"profile" | "salary">("profile");
 
   const save = useMutation({
     mutationFn: (e: Editing) => {
@@ -206,7 +208,7 @@ export default function StaffPage() {
           الموظفون والصلاحيات
         </h1>
         <Button
-          onClick={() => setEditing({ ...blank })}
+          onClick={() => { setEditorTab("profile"); setEditing({ ...blank }); }}
           size="sm"
           className="gap-2"
         >
@@ -289,10 +291,14 @@ export default function StaffPage() {
                   <span>متبقي: {Number(s.advanceSummary?.outstandingBalance ?? 0).toLocaleString("ar-IQ")}</span>
                 </div>
               </div>
+              <div className="mb-3 rounded-lg border border-border/40 bg-muted/40 p-2 text-xs">
+                <div className="mb-1 flex items-center justify-between font-medium"><span>ملخص الراتب</span><span className={s.salaryStatus === "active" ? "text-status-success" : "text-status-warning"}>{s.salaryStatus === "active" ? "نشط" : "غير نشط"}</span></div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-muted-foreground"><span>الأساسي: {Number(s.baseSalary ?? 0).toLocaleString("ar-IQ")}</span><span>الدفع: {s.paymentMethod ?? "—"}</span><span>البدلات: {(Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0)).toLocaleString("ar-IQ")}</span><span>الخصم الثابت: {Number(s.fixedDeduction ?? 0).toLocaleString("ar-IQ")}</span><span className="col-span-2 font-medium text-foreground">الصافي التقديري: {Math.max(0, Number(s.baseSalary ?? 0) + Number(s.transportationAllowance ?? 0) + Number(s.foodAllowance ?? 0) + Number(s.housingAllowance ?? 0) + Number(s.phoneAllowance ?? 0) + Number(s.otherFixedAllowances ?? 0) - Number(s.fixedDeduction ?? 0)).toLocaleString("ar-IQ")} د.ع</span></div>
+              </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() =>
-                    setEditing({
+                  onClick={() => {
+                    setEditorTab("profile"); setEditing({
                       id: s.id,
                       username: s.username,
                       password: "",
@@ -304,8 +310,8 @@ export default function StaffPage() {
                       jobTitle: s.jobTitle ?? "", salaryType: s.salaryType ?? "monthly", currency: s.currency ?? "IQD", workingDaysPerWeek: String(s.workingDaysPerWeek ?? 6), dailyWorkingHours: String(s.dailyWorkingHours ?? 8), hourlyRate: String(s.hourlyRate ?? 0), overtimeRate: String(s.overtimeRate ?? 0), attendanceAllowance: String(s.attendanceAllowance ?? 0), transportationAllowance: String(s.transportationAllowance ?? 0), foodAllowance: String(s.foodAllowance ?? 0), phoneAllowance: String(s.phoneAllowance ?? 0), housingAllowance: String(s.housingAllowance ?? 0), otherFixedAllowances: String(s.otherFixedAllowances ?? 0), fixedDeduction: String(s.fixedDeduction ?? 0), salesCommissionPercentage: String(s.salesCommissionPercentage ?? 0), profitCommissionPercentage: String(s.profitCommissionPercentage ?? 0), paymentMethod: s.paymentMethod ?? "cash", paymentReference: s.paymentReference ?? "", salaryStatus: s.salaryStatus ?? "active", salaryNotes: s.salaryNotes ?? "",
                       permissions: s.permissions,
                       isActive: s.isActive,
-                    })
-                  }
+                    });
+                  }}
                   className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
                 >
                   <Edit2 className="w-3.5 h-3.5" /> تعديل
@@ -346,6 +352,8 @@ export default function StaffPage() {
                 <X className="w-5 h-5 text-muted-foreground" />
               </button>
             </div>
+            {editing.id && <div className="grid grid-cols-2 rounded-lg bg-muted p-1 text-sm"><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button><button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button></div>}
+            {editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
             <Field
               label="الاسم الكامل"
               value={editing.fullName}
@@ -449,6 +457,7 @@ export default function StaffPage() {
             <Button type="submit" disabled={save.isPending} className="w-full">
               {save.isPending ? "جاري الحفظ..." : "حفظ"}
             </Button>
+            </>}
           </form>
         </div>
       )}

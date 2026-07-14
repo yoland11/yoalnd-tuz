@@ -16,6 +16,9 @@ export const ALL_PERMISSIONS = [
   "delivery",
   "customers",
   "staff",
+  "salary_settings_view",
+  "salary_settings_edit",
+  "salary_settings_approve",
   "settings",
   "invoices",
   "whatsapp",
@@ -36,6 +39,9 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  salary_settings_view: "عرض إعدادات الراتب",
+  salary_settings_edit: "تعديل إعدادات الراتب",
+  salary_settings_approve: "اعتماد تغييرات الراتب",
   hr: "الموارد البشرية والرواتب",
   executive: "لوحة القيادة التنفيذية",
   dashboard: "مشاهدة لوحة التحكم",

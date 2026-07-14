@@ -52,6 +52,8 @@ import {
   customersTable,
   deliveryZonesTable,
   employeeAdvancesTable,
+  employeeSalarySettingsTable,
+  employeeSalarySettingAuditsTable,
   disasterRecoverySnapshotsTable,
   entityDocumentsTable,
   entityTimelineTable,
@@ -321,6 +323,9 @@ export const ALL_PERMISSIONS = [
   "delivery",
   "customers",
   "staff",
+  "salary_settings_view",
+  "salary_settings_edit",
+  "salary_settings_approve",
   "settings",
   "invoices",
   "whatsapp",
@@ -12701,6 +12706,9 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "delivery",
     "customers",
     "staff",
+    "salary_settings_view",
+    "salary_settings_edit",
+    "salary_settings_approve",
     "settings",
     "invoices",
     "whatsapp",
@@ -25142,6 +25150,50 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "staff");
     if (isResponse(auth)) return auth;
     await ensureStaffTableShape();
+    if (parts[2] && parts[3] === "salary-settings") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف الموظف غير صحيح", 400);
+      const employee = await db.query.staffTable.findFirst({ where: eq(staffTable.id, id) });
+      if (!employee) return error("الموظف غير موجود", 404);
+      await ensureHrTables();
+      if (method === "GET") {
+        if (!hasPermission(auth, "salary_settings_view") && !hasPermission(auth, "salary_settings_edit")) return error("ليس لديك صلاحية عرض إعدادات الراتب", 403);
+        const [settings, audits] = await Promise.all([
+          db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) }),
+          db.query.employeeSalarySettingAuditsTable.findMany({ where: eq(employeeSalarySettingAuditsTable.staffId, id), orderBy: (table, { desc }) => [desc(table.createdAt)], limit: 30 }),
+        ]);
+        return json({ settings: settings ?? null, audits });
+      }
+      if (method === "POST" && parts[4] === "approve") {
+        if (!hasPermission(auth, "salary_settings_approve")) return error("ليس لديك صلاحية اعتماد تغييرات الراتب", 403);
+        const current = await db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) });
+        if (!current) return error("لا توجد إعدادات راتب لاعتمادها", 404);
+        const [settings] = await db.update(employeeSalarySettingsTable).set({ approvalStatus: "approved", approvedBy: auth.id, approvedAt: new Date(), updatedAt: new Date() }).where(eq(employeeSalarySettingsTable.staffId, id)).returning();
+        await db.insert(employeeSalarySettingAuditsTable).values({ staffId: id, actorId: auth.id, actorName: auth.fullName || auth.username, action: "approved", oldValue: current as any, newValue: settings as any, ipAddress: ip(req) });
+        void logAdminActivity(req, "salary_settings_approved", "staff", id, { oldValue: current, newValue: settings });
+        return json({ settings });
+      }
+      if (method === "PATCH") {
+        if (!hasPermission(auth, "salary_settings_edit")) return error("ليس لديك صلاحية تعديل إعدادات الراتب", 403);
+        const b = await body(req);
+        const money = (v: unknown) => String(Math.max(0, Number(v) || 0));
+        const salaryType = ["monthly", "weekly", "daily", "hourly"].includes(String(b?.salaryType)) ? String(b.salaryType) : "";
+        const paymentMethod = ["main_cash_box", "bank", "cash", "transfer"].includes(String(b?.paymentMethod)) ? String(b.paymentMethod) : "";
+        const payrollStatus = ["active", "suspended", "terminated", "on_leave"].includes(String(b?.payrollStatus)) ? String(b.payrollStatus) : "";
+        const missing = [Number(b?.basicSalary) > 0 ? null : "الراتب الأساسي", salaryType ? null : "نوع الراتب", paymentMethod ? null : "طريقة الدفع", payrollStatus ? null : "حالة الرواتب"].filter(Boolean);
+        if (missing.length) return json({ error: `الحقول المطلوبة: ${missing.join("، ")}`, missing }, 400);
+        const previous = await db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) });
+        const flags = (name: string, fallback: boolean) => b?.[name] === undefined ? fallback : b[name] === true;
+        const setting = { staffId: id, employmentType: ["full_time", "part_time", "contract", "temporary"].includes(String(b.employmentType)) ? String(b.employmentType) : "full_time", firstPayrollDate: normalizeDateOnly(b.firstPayrollDate), monthlyWorkingHours: money(b.monthlyWorkingHours), shiftStart: /^\d{2}:\d{2}/.test(String(b.shiftStart ?? "")) ? String(b.shiftStart).slice(0, 5) : null, shiftEnd: /^\d{2}:\d{2}/.test(String(b.shiftEnd ?? "")) ? String(b.shiftEnd).slice(0, 5) : null, weeklyDaysOff: Array.isArray(b.weeklyDaysOff) ? b.weeklyDaysOff.map(String).filter((d: string) => ["sat", "sun", "mon", "tue", "wed", "thu", "fri"].includes(d)).slice(0, 7) : [], riskAllowance: money(b.riskAllowance), weekendHourRate: money(b.weekendHourRate), holidayHourRate: money(b.holidayHourRate), maxMonthlyOvertime: money(b.maxMonthlyOvertime), taxDeduction: money(b.taxDeduction), insuranceDeduction: money(b.insuranceDeduction), retirementDeduction: money(b.retirementDeduction), lateDeduction: money(b.lateDeduction), absenceDeduction: money(b.absenceDeduction), otherDeduction: money(b.otherDeduction), monthlyBonus: money(b.monthlyBonus), performanceBonus: money(b.performanceBonus), commission: money(b.commission), annualBonus: money(b.annualBonus), otherBonus: money(b.otherBonus), bankName: String(b.bankName ?? "").trim().slice(0, 160) || null, accountNumber: String(b.accountNumber ?? "").trim().slice(0, 100) || null, iban: String(b.iban ?? "").trim().slice(0, 64) || null, generatePayrollAutomatically: flags("generatePayrollAutomatically", false), enableOvertime: flags("enableOvertime", true), enableAttendanceIntegration: flags("enableAttendanceIntegration", true), enableAdvanceDeduction: flags("enableAdvanceDeduction", true), enableBonuses: flags("enableBonuses", true), enablePenalties: flags("enablePenalties", true), approvalStatus: hasPermission(auth, "salary_settings_approve") ? "approved" : "pending", approvedBy: hasPermission(auth, "salary_settings_approve") ? auth.id : null, approvedAt: hasPermission(auth, "salary_settings_approve") ? new Date() : null, updatedAt: new Date() };
+        await db.update(staffTable).set({ baseSalary: money(b.basicSalary), salaryType, department: String(b.department ?? employee.department ?? "general").trim().slice(0, 60) || "general", jobTitle: String(b.jobTitle ?? "").trim().slice(0, 100) || null, hiredAt: normalizeDateOnly(b.hiringDate) ?? employee.hiredAt, workingDaysPerWeek: String(Math.min(7, Math.max(1, Number(b.workingDaysPerWeek) || 6))), dailyWorkingHours: String(Math.min(24, Math.max(1, Number(b.workingHoursPerDay) || 8))), overtimeRate: money(b.overtimeHourRate), transportationAllowance: money(b.transportationAllowance), foodAllowance: money(b.foodAllowance), housingAllowance: money(b.housingAllowance), phoneAllowance: money(b.phoneAllowance), otherFixedAllowances: money(b.otherAllowance), fixedDeduction: money(b.fixedDeduction), paymentMethod, paymentReference: paymentMethod === "bank" ? String(b.accountNumber ?? "").trim() || null : null, salaryStatus: payrollStatus }).where(eq(staffTable.id, id));
+        const { staffId: _staffId, ...updatable } = setting;
+        const [settings] = await db.insert(employeeSalarySettingsTable).values(setting).onConflictDoUpdate({ target: employeeSalarySettingsTable.staffId, set: updatable }).returning();
+        await db.insert(employeeSalarySettingAuditsTable).values({ staffId: id, actorId: auth.id, actorName: auth.fullName || auth.username, action: previous ? "updated" : "created", oldValue: previous as any ?? {}, newValue: settings as any, ipAddress: ip(req) });
+        void logAdminActivity(req, "salary_settings_updated", "staff", id, { oldValue: previous ?? {}, newValue: settings });
+        return json({ settings });
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (method === "GET") {
       await ensureEmployeeAdvanceTables();
       const rows = await db.query.staffTable.findMany({
