@@ -207,7 +207,16 @@ import {
   addCareerEvent,
   approvePayrollRun,
   createEvaluation,
-  createManualIncentive,
+  createBonus,
+  listIncentives,
+  updateBonus,
+  approveBonus,
+  rejectBonus,
+  deleteBonus,
+  applyBonus,
+  listBonusRules,
+  saveBonusRule,
+  deleteBonusRule,
   createPayrollRun,
   editPayrollLine,
   cancelPayrollRun,
@@ -349,6 +358,14 @@ export const ALL_PERMISSIONS = [
   "payroll_cancel",
   "payroll_approve",
   "payroll_pay",
+  "bonus_view",
+  "bonus_create",
+  "bonus_edit",
+  "bonus_approve",
+  "bonus_reject",
+  "bonus_delete",
+  "bonus_apply",
+  "bonus_rules_manage",
   "executive",
   "production_view",
   "production_create",
@@ -12754,6 +12771,14 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_cancel",
     "payroll_approve",
     "payroll_pay",
+    "bonus_view",
+    "bonus_create",
+    "bonus_edit",
+    "bonus_approve",
+    "bonus_reject",
+    "bonus_delete",
+    "bonus_apply",
+    "bonus_rules_manage",
   ],
   booking_staff: [
     "dashboard",
@@ -12777,6 +12802,10 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_recalculate",
     "payroll_approve",
     "payroll_pay",
+    "bonus_view",
+    "bonus_create",
+    "bonus_approve",
+    "bonus_apply",
   ],
   employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
@@ -19724,7 +19753,7 @@ async function resolveAssetProductId(raw: string): Promise<number> {
 async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "hr") return null;
   await ensureHrTables();
-  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_approve", "payroll_pay"]);
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_approve", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_rules_manage"]);
   if (isResponse(auth)) return auth;
   const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
   const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
@@ -19736,7 +19765,49 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       if (!hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("ليس لديك صلاحية", 403);
       return json(await executiveDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
     }
+    if (resource === "incentive-rules") {
+      if (!hasPermission(auth, "bonus_rules_manage") && !adminOnly()) return error("لا تملك صلاحية إدارة قواعد المكافآت", 403);
+      if (method === "GET") return json(await listBonusRules());
+      if (method === "POST" || method === "PATCH") { const rule = await saveBonusRule(await body(req)); void logAdminActivity(req, "bonus_rule_saved", "hr_incentive_rule", rule.id, { newValues: rule, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(rule, method === "POST" ? 201 : 200); }
+      if (method === "DELETE" && id) return json(await deleteBonusRule(id));
+    }
     if (resource === "incentives") {
+      if (method === "GET") {
+        if (!hasPermission(auth, "bonus_view") && !hasPermission(auth, "payroll_view") && !adminOnly()) return error("ليس لديك صلاحية عرض المكافآت", 403);
+        return json(await listIncentives(Object.fromEntries(req.nextUrl.searchParams.entries())));
+      }
+      if (method === "PATCH" && id) {
+        if (!hasPermission(auth, "bonus_edit") && !adminOnly()) return error("لا تملك صلاحية تعديل المكافأة", 403);
+        const result = await updateBonus(id, await body(req), actor);
+        void logAdminActivity(req, "bonus_edited", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_edited", title: "تم تعديل المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result);
+      }
+      if (method === "DELETE" && id) {
+        if (!hasPermission(auth, "bonus_delete") && !adminOnly()) return error("لا تملك صلاحية حذف المكافأة", 403);
+        const result = await deleteBonus(id, actor);
+        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "approve") {
+        if (!hasPermission(auth, "bonus_approve") && !adminOnly()) return error("لا تملك صلاحية اعتماد المكافأة", 403);
+        const result = await approveBonus(id, actor);
+        void logAdminActivity(req, "bonus_approved", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_approved", title: "تم اعتماد المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "reject") {
+        if (!hasPermission(auth, "bonus_reject") && !adminOnly()) return error("لا تملك صلاحية رفض المكافأة", 403);
+        const result = await rejectBonus(id, actor, String((await body(req))?.reason || "رفض المكافأة"));
+        void logAdminActivity(req, "bonus_rejected", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "apply") {
+        if (!hasPermission(auth, "bonus_apply") && !adminOnly()) return error("لا تملك صلاحية تطبيق المكافأة على الرواتب", 403);
+        const result = await applyBonus(id, actor);
+        void logAdminActivity(req, "bonus_applied", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result);
+      }
       if (method === "POST" && parts[3] === "evaluate") {
         if (!adminOnly()) return error("ليس لديك صلاحية", 403);
         const result = await evaluateAutomaticIncentives(String((await body(req))?.period || "") || undefined);
@@ -19744,8 +19815,8 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         return json({ created: result });
       }
       if (method === "POST") {
-        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
-        const event = await createManualIncentive(await body(req), actor);
+        if (!hasPermission(auth, "bonus_create") && !adminOnly()) return error("ليس لديك صلاحية إنشاء المكافأة", 403);
+        const event = await createBonus(await body(req), actor);
         void logAdminActivity(req, "hr_incentive_created", "hr_incentive", event.id, { newValues: event as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(event, 201);
       }
