@@ -214,6 +214,8 @@ import {
   rejectBonus,
   deleteBonus,
   applyBonus,
+  validateBonus,
+  validateBonusUpdate,
   listBonusRules,
   saveBonusRule,
   deleteBonusRule,
@@ -19778,19 +19780,26 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
       if (method === "PATCH" && id) {
         if (!hasPermission(auth, "bonus_edit") && !adminOnly()) return error("لا تملك صلاحية تعديل المكافأة", 403);
-        const result = await updateBonus(id, await body(req), actor);
+        const payload = await body(req); console.error("Bonus request payload", { operation: "edit", id, payload });
+        await validateBonus(id);
+        await validateBonusUpdate(id, payload);
+        const result = await updateBonus(id, payload, actor);
         void logAdminActivity(req, "bonus_edited", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_edited", title: "تم تعديل المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
         return json(result);
       }
       if (method === "DELETE" && id) {
         if (!hasPermission(auth, "bonus_delete") && !adminOnly()) return error("لا تملك صلاحية حذف المكافأة", 403);
+        console.error("Bonus request payload", { operation: "delete", id, payload: null });
+        await validateBonus(id);
         const result = await deleteBonus(id, actor);
         void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(result);
       }
       if (method === "POST" && id && parts[4] === "approve") {
         if (!hasPermission(auth, "bonus_approve") && !adminOnly()) return error("لا تملك صلاحية اعتماد المكافأة", 403);
+        console.error("Bonus request payload", { operation: "approve", id, payload: null });
+        await validateBonus(id);
         const result = await approveBonus(id, actor);
         void logAdminActivity(req, "bonus_approved", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_approved", title: "تم اعتماد المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
@@ -19798,12 +19807,16 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
       if (method === "POST" && id && parts[4] === "reject") {
         if (!hasPermission(auth, "bonus_reject") && !adminOnly()) return error("لا تملك صلاحية رفض المكافأة", 403);
-        const result = await rejectBonus(id, actor, String((await body(req))?.reason || "رفض المكافأة"));
+        const payload = await body(req); console.error("Bonus request payload", { operation: "reject", id, payload });
+        await validateBonus(id);
+        const result = await rejectBonus(id, actor, String(payload?.reason || "رفض المكافأة"));
         void logAdminActivity(req, "bonus_rejected", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(result);
       }
       if (method === "POST" && id && parts[4] === "apply") {
         if (!hasPermission(auth, "bonus_apply") && !adminOnly()) return error("لا تملك صلاحية تطبيق المكافأة على الرواتب", 403);
+        console.error("Bonus request payload", { operation: "apply", id, payload: null });
+        await validateBonus(id);
         const result = await applyBonus(id, actor);
         void logAdminActivity(req, "bonus_applied", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(result);
@@ -19816,7 +19829,8 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
       if (method === "POST") {
         if (!hasPermission(auth, "bonus_create") && !adminOnly()) return error("ليس لديك صلاحية إنشاء المكافأة", 403);
-        const event = await createBonus(await body(req), actor);
+        const payload = await body(req); console.error("Bonus request payload", { operation: "create", payload });
+        const event = await createBonus(payload, actor);
         void logAdminActivity(req, "hr_incentive_created", "hr_incentive", event.id, { newValues: event as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(event, 201);
       }
@@ -19922,6 +19936,11 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
     }
   } catch (err: any) {
     console.error("HR operation failed", { resource, id, message: err?.message });
+    if (resource === "incentives" && (err?.name === "BonusValidationError" || err?.name === "ZodError")) {
+      const details = (err?.issues ?? []).map((issue: any) => ({ field: issue.path?.join(".") || "body", message: issue.message }));
+      console.error("Bonus validation response", { resource, id, details });
+      return json({ error: details[0]?.message || "بيانات المكافأة غير صحيحة", details }, 400);
+    }
     if (err instanceof PayrollConflictError) return json({ error: "Payroll already exists for this period.", existing: err.existing }, 409);
     if (err?.code === "SALARY_SETTINGS_INCOMPLETE") return json({ error: "Salary settings are incomplete for this employee.", employees: err.employees ?? [] }, 422);
     if (err?.name === "ZodError") return json({ error: "بيانات إنشاء الرواتب غير صحيحة", details: err.issues?.map((issue: any) => ({ field: issue.path?.join("."), message: issue.message })) ?? [] }, 400);

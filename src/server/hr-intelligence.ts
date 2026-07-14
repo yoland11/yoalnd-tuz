@@ -11,6 +11,21 @@ const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
 const num = (value: unknown) => Number.isFinite(Number(value)) ? Math.round((Number(value) + Number.EPSILON) * 100) / 100 : 0;
 const periodNow = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7);
 const validPeriod = (period: string) => /^\d{4}-\d{2}$/.test(period);
+const BONUS_TYPES = ["performance", "attendance", "perfect_attendance", "overtime", "sales_commission", "profit_commission", "kosha_completion", "photography_session", "editing", "delivery", "collection", "graduation_order", "production", "customer_satisfaction", "employee_of_month", "manual", "other"] as const;
+const BONUS_STATUSES = ["draft", "pending_approval", "approved", "rejected", "applied_to_payroll", "cancelled", "pending"] as const;
+const bonusPayloadSchema = z.object({
+  staffId: z.coerce.number().int().positive({ message: "الموظف مطلوب" }),
+  period: z.string().regex(/^\d{4}-\d{2}$/, "فترة الرواتب يجب أن تكون بصيغة YYYY-MM"),
+  bonusType: z.enum(BONUS_TYPES, { message: "نوع المكافأة غير صالح" }),
+  calculationMethod: z.enum(["fixed", "quantity_rate", "percentage"], { message: "طريقة الحساب غير صالحة" }),
+  quantity: z.coerce.number().min(0, "الكمية لا يمكن أن تكون سالبة").optional(),
+  ratePerUnit: z.coerce.number().min(0, "السعر للوحدة لا يمكن أن يكون سالباً").optional(),
+  percentage: z.coerce.number().min(0, "النسبة لا يمكن أن تكون سالبة").optional(),
+  baseAmount: z.coerce.number().min(0, "المبلغ الأساسي لا يمكن أن يكون سالباً").optional(),
+  amount: z.coerce.number().min(0, "المبلغ لا يمكن أن يكون سالباً").optional(),
+  finalAmount: z.coerce.number().min(0, "المبلغ النهائي لا يمكن أن يكون سالباً").optional(),
+  bonusSource: z.string().trim().min(1, "مصدر المكافأة مطلوب"),
+}).passthrough();
 
 const payrollInputSchema = z.object({
   period: z.string().regex(/^\d{4}-\d{2}$/),
@@ -178,11 +193,44 @@ export async function createManualIncentive(input: any, actor: HrActor) {
 }
 
 function formatIncentive(row: any) { return { ...row, amount: num(row.amount), quantity: num(row.quantity), ratePerUnit: num(row.rate_per_unit), percentage: num(row.percentage), baseAmount: num(row.base_amount), performanceScore: row.performance_score == null ? null : num(row.performance_score), customerRating: row.customer_rating == null ? null : num(row.customer_rating), employeeName: row.full_name || row.username || "", department: row.department || row.related_department || null, bonusType: row.bonus_type || row.title || "manual", bonusSource: row.bonus_source || "manual", calculationMethod: row.calculation_method || "fixed", calculationFormula: row.calculation_formula || String(row.amount || 0), createdByName: row.created_by_name || "system", approvedByName: row.approved_by_name || null, approvalDate: row.approval_date || null, sourceType: row.source_type || null, sourceId: row.source_id || null, payrollLineId: row.payroll_line_id || null }; }
+function validateExistingBonus(row: any) { const issues: any[] = []; if (!Number.isInteger(Number(row.staff_id)) || Number(row.staff_id) <= 0) issues.push({ path: ["staffId"], message: "الموظف مطلوب" }); if (!validPeriod(String(row.period || ""))) issues.push({ path: ["period"], message: "فترة الرواتب غير صالحة" }); if (!BONUS_TYPES.includes(String(row.bonus_type || row.title || "manual") as any)) issues.push({ path: ["bonusType"], message: "نوع المكافأة غير صالح" }); if (!(num(row.amount) > 0)) issues.push({ path: ["amount"], message: "يجب أن يكون مبلغ المكافأة أكبر من صفر" }); if (!BONUS_STATUSES.includes(String(row.status) as any)) issues.push({ path: ["status"], message: "حالة المكافأة غير صالحة" }); if (issues.length) { console.error("Bonus record validation failed", { bonusId: row.id, issues, record: row }); const error: any = new Error(issues[0].message); error.name = "BonusValidationError"; error.issues = issues; throw error; } }
+
+/** Validate a persisted bonus before every mutation. */
+export async function validateBonusUpdate(id: number, input: any) {
+  await ensureHrTables();
+  const current = rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0];
+  if (!current) throw new Error("Bonus not found");
+  const merged = { ...input, staffId: input?.staffId ?? current.staff_id, period: input?.period ?? current.period, bonusType: input?.bonusType ?? current.bonus_type ?? current.title ?? "manual", bonusSource: input?.bonusSource ?? current.bonus_source ?? "manual", calculationMethod: input?.calculationMethod ?? current.calculation_method ?? "fixed", amount: input?.amount ?? current.amount, quantity: input?.quantity ?? current.quantity, ratePerUnit: input?.ratePerUnit ?? current.rate_per_unit, percentage: input?.percentage ?? current.percentage, baseAmount: input?.baseAmount ?? current.base_amount };
+  const parsed = bonusPayloadSchema.safeParse(merged);
+  if (!parsed.success) { console.error("Bonus validation failed", { operation: "edit", bonusId: id, payload: input, issues: parsed.error.issues }); throw parsed.error; }
+  const method = String(parsed.data.calculationMethod); const amount = method === "quantity_rate" ? num(parsed.data.quantity) * num(parsed.data.ratePerUnit) : method === "percentage" ? num(parsed.data.baseAmount) * num(parsed.data.percentage) / 100 : num(parsed.data.amount ?? parsed.data.finalAmount);
+  if (!(amount > 0)) { const issue = { path: [method === "quantity_rate" ? "quantity" : method === "percentage" ? "baseAmount" : "amount"], message: "يجب أن يكون مبلغ المكافأة أكبر من صفر" }; console.error("Bonus validation failed", { operation: "edit", bonusId: id, payload: input, issues: [issue] }); const error: any = new Error(issue.message); error.name = "BonusValidationError"; error.issues = [issue]; throw error; }
+  return parsed.data;
+}
+
+export async function validateBonus(id: number) {
+  await ensureHrTables();
+  const found = rows<any>(await db.execute(sql`select * from hr_incentive_events where id=${id} limit 1`))[0];
+  if (!found) throw new Error("Bonus not found");
+  validateExistingBonus(found);
+  return formatIncentive(found);
+}
 
 export async function createBonus(input: any, actor: HrActor) {
-  await ensureHrTables(); const staffId = Number(input?.staffId); const period = String(input?.period || periodNow());
-  if (!Number.isInteger(staffId) || staffId <= 0 || !validPeriod(period)) throw new Error("Bonus data is invalid");
-  const method = ["fixed", "quantity_rate", "percentage"].includes(String(input?.calculationMethod)) ? String(input.calculationMethod) : "fixed"; const quantity = Math.max(0, num(input?.quantity ?? 1)); const rate = Math.max(0, num(input?.ratePerUnit)); const percentage = Math.max(0, num(input?.percentage)); const base = Math.max(0, num(input?.baseAmount)); const amount = method === "quantity_rate" ? num(quantity * rate) : method === "percentage" ? num(base * percentage / 100) : Math.max(0, num(input?.amount ?? input?.finalAmount)); const sourceType = String(input?.sourceType || "").trim() || null; const sourceId = String(input?.sourceId || "").trim() || null; const bonusType = String(input?.bonusType || input?.title || "manual").trim().slice(0, 60) || "manual";
+  await ensureHrTables();
+  let periodValue: unknown = input?.period ?? input?.payrollPeriodId ?? input?.payroll_period_id;
+  if (typeof periodValue === "number" || /^\d+$/.test(String(periodValue || ""))) {
+    const payrollPeriodId = Number(periodValue);
+    const run = rows<any>(await db.execute(sql`select period from payroll_runs where id=${payrollPeriodId} and deleted_at is null limit 1`))[0];
+    if (!run) { const issue = { path: ["payrollPeriodId"], message: "دورة الرواتب غير موجودة" }; console.error("Bonus validation failed", { payload: input, issues: [issue] }); const error: any = new Error(issue.message); error.name = "BonusValidationError"; error.issues = [issue]; throw error; }
+    periodValue = run.period;
+  }
+  const normalized = { ...input, staffId: input?.staffId ?? input?.employeeId, period: periodValue, bonusType: input?.bonusType ?? "manual", calculationMethod: input?.calculationMethod ?? "fixed", bonusSource: input?.bonusSource ?? input?.sourceType ?? "manual" };
+  const parsed = bonusPayloadSchema.safeParse(normalized);
+  if (!parsed.success) { console.error("Bonus validation failed", { payload: input, issues: parsed.error.issues }); throw parsed.error; }
+  const staffId = Number(parsed.data.staffId); const period = String(parsed.data.period); const method = String(parsed.data.calculationMethod); const quantity = Math.max(0, num(parsed.data.quantity ?? 1)); const rate = Math.max(0, num(parsed.data.ratePerUnit)); const percentage = Math.max(0, num(parsed.data.percentage)); const base = Math.max(0, num(parsed.data.baseAmount)); const amount = method === "quantity_rate" ? num(quantity * rate) : method === "percentage" ? num(base * percentage / 100) : Math.max(0, num(parsed.data.amount ?? parsed.data.finalAmount)); const sourceType = String(input?.sourceType || "").trim() || null; const sourceId = String(input?.sourceId || "").trim() || null; const bonusType = String(parsed.data.bonusType).trim();
+  const employee = rows<any>(await db.execute(sql`select id from staff where id=${staffId} and is_active=true limit 1`)); if (!employee.length) { const issue = { path: ["staffId"], message: "الموظف غير موجود أو غير نشط" }; console.error("Bonus validation failed", { payload: input, issues: [issue] }); const error: any = new Error(issue.message); error.name = "BonusValidationError"; error.issues = [issue]; throw error; }
+  if (!(amount > 0)) { const issue = { path: [method === "quantity_rate" ? "quantity" : method === "percentage" ? "baseAmount" : "amount"], message: "يجب أن يكون مبلغ المكافأة أكبر من صفر" }; console.error("Bonus validation failed", { payload: input, issues: [issue] }); const error: any = new Error(issue.message); error.name = "BonusValidationError"; error.issues = [issue]; throw error; }
   if (sourceType && sourceId) { const duplicate = await db.execute(sql`select id from hr_incentive_events where staff_id=${staffId} and source_type=${sourceType} and source_id=${sourceId} and period=${period} and bonus_type=${bonusType} limit 1`); if (rows(duplicate).length) throw new Error("A bonus already exists for this source and payroll period"); }
   const formula = method === "quantity_rate" ? `${quantity} × ${rate}` : method === "percentage" ? `${percentage}% × ${base}` : `${amount}`; const result = await db.execute(sql`insert into hr_incentive_events(staff_id,period,kind,amount,title,reason,status,created_by,created_by_name,bonus_type,bonus_source,source_type,source_id,calculation_method,quantity,rate_per_unit,percentage,base_amount,calculation_formula,related_department,notes,performance_score,customer_rating,attachment) values(${staffId},${period},'bonus',${amount},${String(input?.title || bonusType)},${String(input?.reason || "") || null},'draft',${actor.id},${actor.name},${bonusType},${String(input?.bonusSource || "manual")},${sourceType},${sourceId},${method},${quantity},${rate},${percentage},${base},${formula},${String(input?.relatedDepartment || "") || null},${String(input?.notes || "") || null},${input?.performanceScore == null ? null : num(input.performanceScore)},${input?.customerRating == null ? null : num(input.customerRating)},${String(input?.attachment || "") || null}) returning *`); return formatIncentive(rows(result)[0]);
 }
