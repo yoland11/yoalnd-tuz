@@ -222,6 +222,7 @@ import {
   deleteBonusRule,
   createPayrollRun,
   editPayrollLine,
+  deleteDraftPayrollLine,
   cancelPayrollRun,
   deleteDraftPayrollRun,
   PayrollConflictError,
@@ -19913,6 +19914,13 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const metadata = { oldValues: result.oldValues, newValues: result.newValues, oldValue: result.oldValues, newValue: result.newValues, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" };
         void logAdminActivity(req, "payroll_edited", "payroll_line", lineId, metadata);
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_edited", title: "تم تعديل راتب الموظف", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
+        return json(result.run);
+      }
+      if (method === "DELETE" && id && parts[4] === "lines" && parts[5]) {
+        const denied = requirePayroll("payroll_delete", "لا تملك صلاحية حذف سجل راتب الموظف"); if (denied) return denied;
+        const payload = await body(req); const lineId = int(parts[5])!; const result = await deleteDraftPayrollLine(id, lineId, payload, actor);
+        void logAdminActivity(req, "payroll_line_deleted", "payroll_line", lineId, { oldValues: result.oldValues, reason: result.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_line_deleted", title: "تم حذف سجل راتب الموظف من المسودة", body: result.reason, actor: erpActorFromAdmin(auth), metadata: { lineId, oldValues: result.oldValues } });
         return json(result.run);
       }
       if (method === "POST" && id && parts[4] === "cancel") {

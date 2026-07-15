@@ -385,6 +385,24 @@ export async function editPayrollLine(runId: number, lineId: number, input: unkn
   await updatePayrollTotals(runId); const updated = await getPayrollRun(runId); return { run: updated, oldValues: current, newValues: updated?.lines.find((line: any) => Number(line.id) === lineId) };
 }
 
+/** A payroll-line is only physically removable while it is an unposted draft.
+ * This keeps approved, paid, and financially linked payroll history immutable. */
+export async function deleteDraftPayrollLine(runId: number, lineId: number, input: unknown, actor: HrActor) {
+  await ensureHrTables();
+  const reason = reasonSchema.parse(input).reason;
+  const run = await getPayrollRun(runId);
+  if (!run) throw new Error("دورة الرواتب غير موجودة");
+  if (run.status !== "draft") throw new Error("لا يمكن حذف سجل موظف إلا من دورة رواتب مسودة");
+  const current = rows<any>(await db.execute(sql`select * from payroll_lines where id=${lineId} and payroll_run_id=${runId} limit 1`))[0];
+  if (!current) throw new Error("سجل راتب الموظف غير موجود");
+  if (current.financial_transaction_id || num(current.amount_paid) > 0) throw new Error("توجد حركة مالية مرتبطة بهذا السجل؛ لا يمكن حذفه");
+  const posted = rows<any>(await db.execute(sql`select id from financial_transactions where source_type='payroll_line' and source_id=${String(lineId)} limit 1`));
+  if (posted.length) throw new Error("توجد حركة محاسبية مرتبطة بهذا السجل؛ استخدم العكس بدلاً من الحذف");
+  await db.execute(sql`delete from payroll_lines where id=${lineId} and payroll_run_id=${runId}`);
+  await updatePayrollTotals(runId);
+  return { run: await getPayrollRun(runId), oldValues: current, reason };
+}
+
 export async function deleteDraftPayrollRun(id: number, actor: HrActor, input?: unknown) {
   await ensureHrTables();
   const currentRun = await getPayrollRun(id);
