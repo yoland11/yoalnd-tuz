@@ -88,6 +88,10 @@ export const financialTransactionListSchema = z.object({
 const ACCOUNT_SEEDS = [
   ["1300", "Employee advances", "asset", "hr"],
   ["5070", "Payroll and incentives", "expense", "hr"],
+  ["5071", "Bonus expense", "expense", "hr"],
+  ["5072", "Allowance expense", "expense", "hr"],
+  ["2100", "Salary payable", "liability", "hr"],
+  ["2200", "Payroll deductions payable", "liability", "hr"],
   ["1000", "الصندوق الرئيسي", "asset", null],
   ["4000", "إيرادات عامة", "revenue", "general"],
   ["4010", "إيرادات المتجر", "revenue", "store"],
@@ -335,6 +339,7 @@ function counterAccountCode(
     transactionType === "employee_advance_repayment"
   )
     return "1300";
+  if (transactionType === "payroll_settlement") return "2100";
   if (direction === "expense" && transactionType === "damage_loss")
     return "5090";
   const revenue: Record<string, string> = {

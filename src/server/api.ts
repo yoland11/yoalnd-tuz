@@ -211,6 +211,8 @@ import {
   listIncentives,
   updateBonus,
   approveBonus,
+  submitBonusForApproval,
+  reverseBonus,
   rejectBonus,
   deleteBonus,
   applyBonus,
@@ -236,6 +238,8 @@ import {
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
+  submitPayrollForApproval,
+  rejectPayrollRun,
   reopenPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
@@ -360,15 +364,19 @@ export const ALL_PERMISSIONS = [
   "payroll_recalculate",
   "payroll_reopen",
   "payroll_cancel",
+  "payroll_submit",
   "payroll_approve",
+  "payroll_reject",
   "payroll_pay",
   "bonus_view",
   "bonus_create",
   "bonus_edit",
+  "bonus_submit",
   "bonus_approve",
   "bonus_reject",
   "bonus_delete",
   "bonus_apply",
+  "bonus_reverse",
   "bonus_rules_manage",
   "executive",
   "production_view",
@@ -19757,7 +19765,7 @@ async function resolveAssetProductId(raw: string): Promise<number> {
 async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "hr") return null;
   await ensureHrTables();
-  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_approve", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_rules_manage"]);
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
   if (isResponse(auth)) return auth;
   const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
   const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
