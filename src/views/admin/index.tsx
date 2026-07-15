@@ -82,6 +82,7 @@ const FinanceReportsPage = lazy(() =>
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
 const HrPage = lazy(() => import("./hr"));
+const ExecutivePage = lazy(() => import("./executive"));
 const WorkspacePage = lazy(() => import("./workspace"));
 const InvitationStudioPage = lazy(() => import("./invitations"));
 const CustomerHubPage = lazy(() => import("./smart-customer-search"));
@@ -639,7 +640,7 @@ export default function Admin() {
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
           </Route>
           <Route path="/admin/executive">
-            {() => (<Guard me={me} perm="executive"><HrPage /></Guard>)}
+            {() => (<Guard me={me} perm="executive"><ExecutivePage /></Guard>)}
           </Route>
           <Route path="/admin/employee-advances">
             {() => (

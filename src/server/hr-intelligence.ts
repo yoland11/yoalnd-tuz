@@ -585,14 +585,21 @@ export async function addCareerEvent(input: any, actor: HrActor) {
 
 export async function executiveDashboard(period = periodNow()) {
   const hr = await hrDashboard(period);
-  const [revenue, orders, products, advances, production] = await Promise.all([
+  const [revenue, orders, products, advances, production, cashbox, collections, koshas, payroll, attendance, assets, lowStock] = await Promise.all([
     db.execute(sql`select coalesce(sum(amount::numeric) filter(where transaction_date::text like ${period + '%'}),0)::float as monthly, coalesce(sum(amount::numeric) filter(where transaction_date=current_date),0)::float as today from financial_transactions where approval_status='executed' and direction='revenue'`),
     db.execute(sql`select count(*) filter(where lower(status) not in ('completed','delivered','cancelled','canceled'))::int as pending from orders`),
     db.execute(sql`select name_ar, coalesce(sum(quantity),0)::float as qty from order_items oi join products p on p.id=oi.product_id group by name_ar order by qty desc limit 1`),
     db.execute(sql`select coalesce(sum(remaining_amount::numeric),0)::float as outstanding from employee_advances where status in ('paid','approved')`),
     db.execute(sql`select count(*) filter(where lower(status) not in ('completed','done'))::int as pending from tasks`),
+    db.execute(sql`select coalesce(current_balance::numeric,0)::float as balance from master_cash_box where code='MASTER' limit 1`),
+    db.execute(sql`select coalesce(sum(remaining_amount::numeric),0)::float as outstanding from orders where payment_status <> 'paid' and archived_at is null`),
+    db.execute(sql`select coalesce(sum(remaining_amount::numeric),0)::float as outstanding, count(*) filter(where status not in ('completed','cancelled','canceled'))::int as active from kosha_bookings where archived_at is null`),
+    db.execute(sql`select coalesce(sum(total_net::numeric) filter(where status <> 'paid' and deleted_at is null),0)::float as pending, coalesce(sum(total_net::numeric) filter(where status = 'paid' and deleted_at is null),0)::float as paid from payroll_runs where period=${period}`),
+    db.execute(sql`select count(*) filter(where lower(status) in ('present','late','out'))::int as present, count(*) filter(where lower(status) in ('absent','no_show'))::int as absent from attendance_records where check_in_at >= current_date and check_in_at < current_date + interval '1 day'`),
+    db.execute(sql`select count(*) filter(where status in ('maintenance','under_maintenance'))::int as maintenance from asset_profiles where deleted_at is null`),
+    db.execute(sql`select count(*) filter(where is_active=true and stock <= min_stock)::int as total from products where archived_at is null`),
   ]);
-  return { ...hr, revenue: rows<any>(revenue)[0] ?? { monthly: 0, today: 0 }, pendingOrders: Number(rows<any>(orders)[0]?.pending || 0), topProduct: rows<any>(products)[0] ?? null, outstandingAdvances: num(rows<any>(advances)[0]?.outstanding), productionPending: Number(rows<any>(production)[0]?.pending || 0), aiInsights: aiInsights(hr) };
+  return { ...hr, revenue: rows<any>(revenue)[0] ?? { monthly: 0, today: 0 }, pendingOrders: Number(rows<any>(orders)[0]?.pending || 0), topProduct: rows<any>(products)[0] ?? null, outstandingAdvances: num(rows<any>(advances)[0]?.outstanding), productionPending: Number(rows<any>(production)[0]?.pending || 0), cashboxBalance: num(rows<any>(cashbox)[0]?.balance), pendingCollections: num(rows<any>(collections)[0]?.outstanding), outstandingKoshaBalances: num(rows<any>(koshas)[0]?.outstanding), activeBookings: Number(rows<any>(koshas)[0]?.active || 0), payrollPending: num(rows<any>(payroll)[0]?.pending), payrollPaid: num(rows<any>(payroll)[0]?.paid), presentToday: Number(rows<any>(attendance)[0]?.present || 0), absentToday: Number(rows<any>(attendance)[0]?.absent || 0), lowStock: Number(rows<any>(lowStock)[0]?.total || 0), assetsUnderMaintenance: Number(rows<any>(assets)[0]?.maintenance || 0), aiInsights: aiInsights(hr) };
 }
 
 function aiInsights(hr: any) {

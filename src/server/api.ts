@@ -19914,7 +19914,7 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
     }
     if (resource === "payroll" && method === "POST" && !id && parts[3] === "bulk") {
       const payload = await body(req); const action = String(payload?.action || "");
-      const permissionByAction: Record<string, Permission> = { recalculate: "payroll_recalculate", approve: "payroll_approve", delete: "payroll_delete", cancel: "payroll_cancel", print: "payroll_view" };
+      const permissionByAction: Record<string, Permission> = { recalculate: "payroll_recalculate", submit: "payroll_submit", approve: "payroll_approve", reject: "payroll_reject", delete: "payroll_delete", cancel: "payroll_cancel", print: "payroll_view" };
       const denied = requirePayroll(permissionByAction[action] || "payroll_view"); if (denied) return denied;
       const ids: number[] = Array.isArray(payload?.ids) ? Array.from(new Set(payload.ids.map((value: unknown) => int(String(value))).filter((value: number | null): value is number => !!value))) : [];
       if (!ids.length || !permissionByAction[action]) return error("الإجراء والسجلات المطلوبة غير صحيحة", 400);
@@ -19922,7 +19922,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       for (const payrollId of ids) {
         try {
           if (action === "recalculate") summary.results.push(await recalculatePayrollRun(payrollId, actor));
+          else if (action === "submit") summary.results.push(await submitPayrollForApproval(payrollId, actor));
           else if (action === "approve") summary.results.push(await approvePayrollRun(payrollId, actor));
+          else if (action === "reject") summary.results.push(await rejectPayrollRun(payrollId, actor, { reason: String(payload?.reason || "رفض جماعي لدورة الرواتب") }));
           else if (action === "delete") { const result = await deleteDraftPayrollRun(payrollId, actor, { reason: String(payload?.reason || "حذف جماعي لمسودة الرواتب") }); summary.deleted.push(payrollId); summary.results.push(result); }
           else if (action === "cancel") summary.results.push(await cancelPayrollRun(payrollId, actor, { reason: String(payload?.reason || "إلغاء جماعي للرواتب") }));
           else { const run = await getPayrollRun(payrollId); if (run) summary.results.push(run); else summary.skipped.push({ id: payrollId, reason: "سجل الراتب غير موجود" }); }
@@ -19961,6 +19963,20 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const run = await recalculatePayrollRun(id, actor);
         void logAdminActivity(req, "payroll_recalculated", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_recalculated", title: "تمت إعادة حساب الراتب", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "submit") {
+        const denied = requirePayroll("payroll_submit", "لا تملك صلاحية إرسال دورة الرواتب للاعتماد"); if (denied) return denied;
+        const run = await submitPayrollForApproval(id, actor);
+        void logAdminActivity(req, "payroll_submitted", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_submitted", title: "تم إرسال دورة الرواتب لاعتماد المدير", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "reject") {
+        const denied = requirePayroll("payroll_reject", "لا تملك صلاحية رفض دورة الرواتب"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const run = await rejectPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_rejected", "payroll_run", id, { oldValues: oldRun, newValues: run as any, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_rejected", title: "تم رفض دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
         return json(run);
       }
       if (method === "PATCH" && id && parts[4] === "lines" && parts[5]) {
@@ -20030,8 +20046,8 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       console.error("Bonus validation response", { resource, id, details });
       return json({ error: details[0]?.message || "بيانات المكافأة غير صحيحة", details }, 400);
     }
-    if (err instanceof PayrollConflictError) return json({ error: "Payroll already exists for this period.", existing: err.existing }, 409);
-    if (err?.code === "SALARY_SETTINGS_INCOMPLETE") return json({ error: "Salary settings are incomplete for this employee.", employees: err.employees ?? [] }, 422);
+    if (err instanceof PayrollConflictError) return json({ error: "دورة الرواتب موجودة مسبقًا لهذه الفترة", existing: err.existing }, 409);
+    if (err?.code === "SALARY_SETTINGS_INCOMPLETE") return json({ error: "إعدادات الراتب غير مكتملة", employees: err.employees ?? [] }, 422);
     if (err?.name === "ZodError") return json({ error: "بيانات إنشاء الرواتب غير صحيحة", details: err.issues?.map((issue: any) => ({ field: issue.path?.join("."), message: issue.message })) ?? [] }, 400);
     return error(String(err?.message || "تعذر إكمال عملية الموارد البشرية"), 400);
   }
@@ -23961,6 +23977,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
+      const correctionReason = String(b?.reason ?? "").trim();
+      if (correctionReason.length < 3) return error("سبب تصحيح الحضور مطلوب", 400);
       const update: any = { updatedAt: new Date(), editedBy: auth.id };
       if (b?.staffId !== undefined) update.staffId = Number(b.staffId);
       if (b?.checkInAt !== undefined) update.checkInAt = safeDate(b.checkInAt);
@@ -23976,6 +23994,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!row) return error("السجل غير موجود", 404);
       void logAdminActivity(req, "attendance_updated", "attendance", id, {
         fields: Object.keys(update),
+        reason: correctionReason,
       });
       return json(formatAttendance(row));
     }
