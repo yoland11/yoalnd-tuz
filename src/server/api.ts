@@ -19791,13 +19791,15 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
       if (method === "DELETE" && id) {
         if (!hasPermission(auth, "bonus_delete") && !adminOnly()) return error("لا تملك صلاحية حذف المكافأة", 403);
-        console.error("Bonus request payload", { operation: "delete", id, payload: null });
+        const payload = await body(req); const reason = String(payload?.reason || "").trim();
+        if (reason.length < 3) return error("سبب الحذف مطلوب", 400);
+        console.error("Bonus request payload", { operation: "delete", id, payload });
         const before = await validateBonus(id);
         if (!["draft", "pending", "pending_approval", "rejected"].includes(String(before.status))) throw new Error("لا يمكن حذف مكافأة تمت إضافتها إلى الراتب.");
-        const result = await deleteBonus(id, actor);
+        const result = await deleteBonus(id, actor, reason);
         try { await recalculateBonusPeriod(String(before.period), actor); } catch (error) { console.error("Bonus payroll recalculation failed after delete", { id, error }); }
-        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { oldValues: before, newValues: result, reason: "حذف المكافأة", ip: ip(req), device: req.headers.get("user-agent") || "" });
-        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_deleted", title: "تم حذف المكافأة", body: "حذف المكافأة", actor: erpActorFromAdmin(auth), metadata: { before, result } });
+        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_deleted", title: "تم حذف المكافأة", body: reason, actor: erpActorFromAdmin(auth), metadata: { before, result } });
         try { await createNotification({ audienceType: "admin", type: "bonus_deleted", title: "تم حذف مكافأة", body: `${before.employeeName || "الموظف"} · ${before.amount}`, entityType: "hr_incentive", entityId: id, href: "/admin/hr" }); } catch { /* notification is non-blocking */ }
         return json(result);
       }
@@ -19877,7 +19879,20 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       return json(summary);
     }
     if (resource === "payroll") {
-      if (method === "GET" && !id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; return json(await listPayrollRuns()); }
+      if (method === "GET" && !id) {
+        const denied = requirePayroll("payroll_view"); if (denied) return denied;
+        const query = req.nextUrl.searchParams;
+        return json(await listPayrollRuns({
+          period: query.get("period") || undefined,
+          year: query.get("year") || undefined,
+          department: query.get("department") || undefined,
+          employee: query.get("employee") || undefined,
+          status: query.get("status") || undefined,
+          paymentStatus: query.get("paymentStatus") || undefined,
+          amountType: query.get("amountType") || undefined,
+          search: query.get("search") || undefined,
+        }));
+      }
       if (method === "GET" && id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
       if (method === "POST" && !id) {
         const denied = requirePayroll("payroll_edit"); if (denied) return denied;

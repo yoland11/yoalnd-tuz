@@ -635,6 +635,9 @@ export default function Admin() {
           <Route path="/admin/hr">
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
           </Route>
+          <Route path="/admin/payroll/:payrollId">
+            {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
           <Route path="/admin/executive">
             {() => (<Guard me={me} perm="executive"><HrPage /></Guard>)}
           </Route>
