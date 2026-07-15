@@ -508,6 +508,15 @@ const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 
 class RequestBodyTooLargeError extends Error {}
 
+class CheckoutError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 422 = 422,
+  ) {
+    super(message);
+  }
+}
+
 async function body(req: NextRequest): Promise<any> {
   if (req.method === "GET" || req.method === "HEAD") return {};
   const declaredSize = Number(req.headers.get("content-length") ?? 0);
@@ -11684,25 +11693,69 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const customerId = getCurrentCustomerId(req);
     const data = parsed.data;
     const cartItems = await normalizeCartRows(sessionId);
-    if (cartItems.length === 0) return error("السلة فارغة", 400);
+    if (cartItems.length === 0) return error("السلة فارغة", 422);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
-    if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
-    const safeCustomerName = textFallback(
-      data.customerName,
-      formatIraqiPhone(customerPhone),
-      "زبون",
-    );
-    let deliveryFee = 0;
-    if (data.deliveryZoneId) {
-      const zone = await db.query.deliveryZonesTable.findFirst({
-        where: eq(deliveryZonesTable.id, data.deliveryZoneId),
-      });
-      if (zone) deliveryFee = Number.parseFloat(zone.price);
+    if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 422);
+    const safeCustomerName = String(data.customerName ?? "").trim();
+    if (!safeCustomerName) return error("اسم العميل مطلوب", 422);
+    if (!String(data.address ?? "").trim())
+      return error("العنوان غير مكتمل", 422);
+    if (!data.deliveryZoneId)
+      return error("يرجى اختيار منطقة التوصيل", 422);
+
+    const zone = await db.query.deliveryZonesTable.findFirst({
+      where: eq(deliveryZonesTable.id, data.deliveryZoneId),
+    });
+    if (!zone) return error("منطقة التوصيل غير موجودة", 404);
+    if (!zone.isActive) return error("منطقة التوصيل غير متاحة حالياً", 409);
+    if (Array.isArray(zone.areas) && zone.areas.length > 0) {
+      if (!data.area || !zone.areas.includes(data.area))
+        return error("يرجى اختيار المنطقة أو الحي", 422);
     }
+
+    const paymentMethod = data.paymentMethod ?? "cod";
+    if (!["cod", "transfer", "paid"].includes(paymentMethod))
+      return error("طريقة الدفع غير صالحة", 422);
+
+    const productIds = [...new Set(cartItems.map((item) => item.productId))];
+    const products = await db.query.productsTable.findMany({
+      where: inArray(productsTable.id, productIds),
+    });
+    if (products.length !== productIds.length)
+      return error("المنتج غير موجود. حدّث السلة ثم حاول مرة أخرى", 404);
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    if (products.some((product) => product.isActive === false))
+      return error("أحد المنتجات لم يعد متاحاً", 409);
+
+    const stockRequirements = new Map<number, number>();
+    const productStockOwners = new Map<number, any>();
+    for (const item of cartItems) {
+      const resolved = await getStockOwnerProduct(item.productId);
+      const product = productMap.get(item.productId);
+      if (!product || !resolved)
+        return error("المنتج غير موجود. حدّث السلة ثم حاول مرة أخرى", 404);
+      productStockOwners.set(item.productId, resolved);
+      const stockProductId = Number(resolved.stockProduct.id);
+      stockRequirements.set(
+        stockProductId,
+        (stockRequirements.get(stockProductId) ?? 0) + item.quantity,
+      );
+    }
+    for (const [stockProductId, quantity] of stockRequirements) {
+      const stockProduct = [...productStockOwners.values()].find(
+        (resolved) => Number(resolved.stockProduct.id) === stockProductId,
+      )?.stockProduct;
+      if (!stockProduct || Number(stockProduct.stock ?? 0) < quantity)
+        return error("المخزون غير كافٍ لأحد المنتجات", 409);
+    }
+
+    const deliveryFee = money(zone.price);
     const subtotal = cartItems.reduce(
       (sum, i) => sum + Number.parseFloat(i.price) * i.quantity,
       0,
     );
+    if (!Number.isFinite(subtotal) || subtotal <= 0)
+      return error("إجمالي المنتجات غير صالح", 422);
     const couponPreview = data.couponCode
       ? await calculateCouponDiscount(data.couponCode, subtotal, deliveryFee)
       : null;
@@ -11737,110 +11790,177 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       subtotal + deliveryFee - couponDiscountAmount - loyaltyDiscountAmount,
       0,
     );
-    const paymentMethod =
-      data.paymentMethod &&
-      ["cod", "transfer", "paid"].includes(data.paymentMethod)
-        ? data.paymentMethod
-        : "cod";
+    if (!Number.isFinite(total) || total < 0)
+      return error("تعذر احتساب إجمالي الطلب", 422);
     const payment = paymentSummary(
       total,
       paymentMethod === "paid" ? total : 0,
       paymentMethod === "paid" ? "paid" : "unpaid",
       paymentMethod,
     );
-    // Every order must surface a customer on /admin/customers. Create-or-link by phone
-    // (the session id wins if the buyer was logged in; otherwise we resolve/create one).
-    const orderCustomer = customerPhone
-      ? await ensureCustomerForPhone(customerPhone, safeCustomerName)
-      : null;
-    const orderCustomerId = customerId ?? orderCustomer?.id ?? undefined;
-    const [order] = await db
-      .insert(ordersTable)
-      .values({
-        trackingCode: trackingCodeForPhone(customerPhone),
-        phoneLast4: phoneLast4(customerPhone),
-        customerId: orderCustomerId,
-        customerName: safeCustomerName,
-        customerPhone,
-        status: "pending",
-        total: total.toString(),
-        deliveryFee: deliveryFee.toString(),
-        couponCode,
-        couponDiscountAmount: String(couponDiscountAmount),
-        loyaltyPointsRedeemed,
-        loyaltyDiscountAmount: String(loyaltyDiscountAmount),
-        paymentMethod,
-        depositAmount: String(payment.deposit),
-        remainingAmount: String(payment.remaining),
-        paymentStatus: payment.status,
-        governorate: data.governorate ?? "",
-        area: data.area ?? null,
-        address: data.address ?? "",
-        notes: data.notes ?? null,
-        mapsUrl: data.mapsUrl ?? null,
-      })
-      .returning();
-    const orderQr = await ensureQrForEntity("order", order, req);
-    await Promise.all(
-      cartItems.map(async (item) => {
-        const product = await db.query.productsTable.findFirst({
-          where: eq(productsTable.id, item.productId),
-        });
-        await db.insert(orderItemsTable).values({
-          orderId: order.id,
-          productId: item.productId,
-          productName: product?.name ?? "",
-          productNameAr: product?.nameAr ?? "",
-          quantity: item.quantity,
-          price: item.price,
-          selectedColor: selectedColorName(
-            item.selectedColorData,
-            item.selectedColor,
-          ),
-          selectedColorData: selectedColorPayload(
-            item.selectedColorData,
-            item.selectedColor,
-          ),
-          customization: item.customization,
-          image: product
-            ? publicMediaValue("product", product, product.images?.[0], 0)
-            : null,
-        });
-        if (product) {
-          await adjustProductStock(product.id, -item.quantity, {
+    let order: typeof ordersTable.$inferSelect;
+    try {
+      order = await db.transaction(async (tx) => {
+        let orderCustomerId: number | null = null;
+        if (customerId) {
+          const customer = await tx.query.customersTable.findFirst({
+            where: eq(customersTable.id, customerId),
+          });
+          if (!customer) throw new CheckoutError("انتهت جلسة العميل. سجل الدخول مرة أخرى", 401);
+          orderCustomerId = customer.id;
+        } else {
+          const variants = iraqiPhoneVariants(customerPhone);
+          let customer = await tx.query.customersTable.findFirst({
+            where: inArray(customersTable.phone, variants),
+          });
+          if (!customer) {
+            await tx
+              .insert(customersTable)
+              .values({ phone: customerPhone, name: safeCustomerName, fullName: safeCustomerName })
+              .onConflictDoNothing();
+            customer = await tx.query.customersTable.findFirst({
+              where: eq(customersTable.phone, customerPhone),
+            });
+          }
+          if (!customer) throw new CheckoutError("فشل حفظ بيانات العميل", 422);
+          orderCustomerId = customer.id;
+        }
+
+        for (const [stockProductId, quantity] of stockRequirements) {
+          const updated = await tx.execute(sql`
+            UPDATE products
+            SET stock = stock - ${quantity}, updated_at = now()
+            WHERE id = ${stockProductId} AND stock >= ${quantity}
+            RETURNING id
+          `);
+          if ((updated.rows?.length ?? 0) !== 1)
+            throw new CheckoutError("المخزون غير كافٍ لأحد المنتجات", 409);
+        }
+
+        const [created] = await tx
+          .insert(ordersTable)
+          .values({
+            trackingCode: trackingCodeForPhone(customerPhone),
+            phoneLast4: phoneLast4(customerPhone),
+            customerId: orderCustomerId,
+            customerName: safeCustomerName,
+            customerPhone,
+            status: "pending",
+            total: String(total),
+            deliveryFee: String(deliveryFee),
+            couponCode,
+            couponDiscountAmount: String(couponDiscountAmount),
+            loyaltyPointsRedeemed,
+            loyaltyDiscountAmount: String(loyaltyDiscountAmount),
+            paymentMethod,
+            depositAmount: String(payment.deposit),
+            remainingAmount: String(payment.remaining),
+            paymentStatus: payment.status,
+            governorate: data.governorate ?? "",
+            area: data.area ?? null,
+            address: String(data.address ?? "").trim(),
+            notes: data.notes?.trim() || null,
+            mapsUrl: data.mapsUrl?.trim() || null,
+          })
+          .returning();
+        if (!created) throw new CheckoutError("فشل إنشاء الطلب", 422);
+
+        await tx.insert(orderItemsTable).values(
+          cartItems.map((item) => {
+            const product = productMap.get(item.productId)!;
+            return {
+              orderId: created.id,
+              productId: item.productId,
+              productName: product.name ?? product.nameAr ?? "",
+              productNameAr: product.nameAr ?? product.name ?? "",
+              quantity: item.quantity,
+              price: item.price,
+              selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+              selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
+              customization: item.customization,
+              image: publicMediaValue("product", product, product.images?.[0], 0),
+            };
+          }),
+        );
+        await tx.insert(stockMovementsTable).values(
+          cartItems.map((item) => ({
+            productId: item.productId,
+            stockSourceProductId: productStockOwners.get(item.productId)?.stockProduct.id ?? item.productId,
+            quantityChange: String(-item.quantity),
             reason: "order_stock_deducted",
             relatedType: "order",
-            relatedId: order.id,
+            relatedId: created.id,
+            createdByName: "المتجر الإلكتروني",
+          } as any)),
+        );
+        if (couponPreview?.ok && couponDiscountAmount > 0) {
+          const couponUpdate = await tx
+            .update(couponsTable)
+            .set({ usedCount: sql`${couponsTable.usedCount} + 1`, updatedAt: new Date() } as any)
+            .where(and(eq(couponsTable.id, couponPreview.coupon.id), or(isNull(couponsTable.usageLimit), sql`${couponsTable.usedCount} < ${couponsTable.usageLimit}`)))
+            .returning({ id: couponsTable.id });
+          if (!couponUpdate.length) throw new CheckoutError("تم استهلاك حد استخدام الكوبون", 409);
+          await tx.insert(couponUsagesTable).values({
+            couponId: couponPreview.coupon.id,
+            customerPhone,
+            orderId: created.id,
+            discountAmount: String(couponDiscountAmount),
           });
         }
-      }),
-    );
-    if (couponPreview?.ok) {
-      await recordCouponUsage(couponPreview.coupon, {
+        if (orderCustomerId && loyaltyPointsRedeemed > 0 && loyaltyDiscountAmount > 0) {
+          const [rewardCustomer] = await tx
+            .update(customersTable)
+            .set({ rewardPoints: sql`greatest(${customersTable.rewardPoints} - ${loyaltyPointsRedeemed}, 0)`, updatedAt: new Date() })
+            .where(and(
+              eq(customersTable.id, orderCustomerId),
+              gte(customersTable.rewardPoints, loyaltyPointsRedeemed),
+            ))
+            .returning();
+          if (!rewardCustomer) throw new CheckoutError("رصيد نقاط العميل غير كافٍ", 409);
+          await tx.insert(customerRewardHistoryTable).values({
+            customerId: orderCustomerId,
+            orderId: created.id,
+            points: -loyaltyPointsRedeemed,
+            reason: "points_redeemed",
+            note: `صرف نقاط للطلب ${created.trackingCode}`,
+          });
+          await tx.insert(loyaltyPointsTable).values({
+            customerId: orderCustomerId,
+            orderId: created.id,
+            points: -loyaltyPointsRedeemed,
+            reason: "points_redeemed",
+            note: `صرف نقاط للطلب ${created.trackingCode}`,
+          });
+        }
+        await tx.insert(orderStatusHistoryTable).values({ orderId: created.id, status: "pending", notes: "تم إنشاء الطلب" });
+        await tx.insert(entityTimelineTable).values({
+          entityType: "order", entityId: created.id, type: "created", title: "تم إنشاء الطلب",
+          body: `طلب متجر جديد برمز ${created.trackingCode}`,
+          actorName: "المتجر الإلكتروني", metadata: { source: "checkout", sessionId },
+        });
+        await tx.delete(cartItemsTable).where(eq(cartItemsTable.sessionId, sessionId));
+        return created;
+      });
+    } catch (err: any) {
+      console.error("Store checkout transaction failed", {
+        sessionId,
+        customerId,
         customerPhone,
-        orderId: order.id,
-        discountAmount: couponDiscountAmount,
+        code: err?.code,
+        message: err instanceof Error ? err.message : "unknown",
+        stack: err instanceof Error ? err.stack : undefined,
       });
+      if (err instanceof CheckoutError) return error(err.message, err.status);
+      if (err?.code === "23503") return error("تعذر حفظ الطلب بسبب منتج أو عميل غير موجود", 409);
+      if (err?.code === "23505") return error("تعذر إنشاء الطلب المكرر. حدّث الصفحة ثم حاول مرة أخرى", 409);
+      if (err?.code === "23514") return error("البيانات المالية للطلب غير صالحة", 422);
+      return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
     }
-    if (customerId && loyaltyPointsRedeemed > 0 && loyaltyDiscountAmount > 0) {
-      await addCustomerReward(customerId, -loyaltyPointsRedeemed, {
-        orderId: order.id,
-        reason: "points_redeemed",
-        note: `صرف نقاط للطلب ${order.trackingCode}`,
-      });
-    }
-    void notifyLowStockForProductIds(
-      cartItems.map((item) => Number(item.productId)),
-    );
-    await db.insert(orderStatusHistoryTable).values({
-      orderId: order.id,
-      status: "pending",
-      notes: "تم إنشاء الطلب",
-    });
-    await db
-      .delete(cartItemsTable)
-      .where(eq(cartItemsTable.sessionId, sessionId));
     const formatted = await formatOrder(order);
+    void ensureQrForEntity("order", order, req).catch((err) =>
+      console.error("order QR generation failed", { orderId: order.id, message: err?.message }),
+    );
+    void notifyLowStockForProductIds(cartItems.map((item) => Number(item.productId)));
     void fireOrderEvent("placed", {
       name: order.customerName,
       phone: order.customerPhone,
@@ -11877,7 +11997,19 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
       });
     }
-    await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    // Financial posting is idempotent and deliberately happens after the atomic
+    // checkout commit. It never exposes a financial-integration failure as a false
+    // "order was not created" response to the customer.
+    try {
+      await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    } catch (err: any) {
+      console.error("order financial sync failed", {
+        orderId: order.id,
+        trackingCode: order.trackingCode,
+        message: err?.message,
+        stack: err?.stack,
+      });
+    }
     void notifyTelegramOrder({
       kind: "store",
       id: order.id,
@@ -11895,7 +12027,6 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         .filter(Boolean)
         .join(" - "),
       notes: order.notes,
-      qrDataUrl: orderQr.dataUrl,
       items: (formatted.items ?? []).map((item: any) => ({
         productName: String(
           item.productNameAr ?? item.productName ?? `#${item.productId}`,
@@ -37431,8 +37562,19 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     console.error("API route failed", {
       method: req.method,
       path: req.nextUrl.pathname,
+      code: (err as any)?.code,
       error: err instanceof Error ? err.message : "unknown",
+      stack: err instanceof Error ? err.stack : undefined,
     });
+    if (req.method === "POST" && req.nextUrl.pathname === "/api/orders") {
+      const code = (err as any)?.code;
+      if (code === "23503")
+        return error("تعذر حفظ الطلب بسبب منتج أو عميل غير موجود", 409);
+      if (code === "23505")
+        return error("تعذر إنشاء الطلب المكرر. حدّث الصفحة ثم حاول مرة أخرى", 409);
+      if (code === "23514") return error("البيانات المالية للطلب غير صالحة", 422);
+      return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
+    }
     return error(
       "تعذر إكمال العملية. حاول مرة أخرى، وإذا استمرت المشكلة راجع سجل الخادم.",
       500,
