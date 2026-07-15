@@ -19,7 +19,7 @@ import { formatMoney } from "@/lib/money";
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
   stock: string; barcode?: string; images?: string[];
-  categoryId?: number | null; subcategoryId?: number | null;
+  categoryId?: number | null; subcategoryId?: number | null; subcategoryIds?: number[];
   category?: string | null; subcategory?: string | null;
   categoryName?: string; subcategoryName?: string;
 };
@@ -434,7 +434,7 @@ export default function POSPage() {
   const categoryMatches = useCallback((product: Product, category: Category | null) => {
     if (!category) return true;
     if (category.parentId) {
-      return product.subcategoryId === category.id || Boolean(category.slug && product.subcategory === category.slug);
+      return product.subcategoryId === category.id || product.subcategoryIds?.includes(category.id) || Boolean(category.slug && product.subcategory === category.slug);
     }
     return product.categoryId === category.id || Boolean(category.slug && product.category === category.slug);
   }, []);

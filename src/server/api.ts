@@ -3185,6 +3185,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
       Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     categoryId: p.categoryId ?? p.category_id ?? null,
     subcategoryId: p.subcategoryId ?? p.subcategory_id ?? null,
+    subcategoryIds: Array.isArray(p.subcategoryIds ?? p.subcategory_ids) ? (p.subcategoryIds ?? p.subcategory_ids).map(Number).filter(Number.isInteger) : [],
     categoryName: p.categoryName ?? p.category_name ?? null,
     subcategoryName: p.subcategoryName ?? p.subcategory_name ?? null,
     category: p.category ?? null,
@@ -5960,6 +5961,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
       alter table "products" add column if not exists "archived_at" timestamp;
       alter table "products" add column if not exists "is_asset" boolean not null default false;
+      alter table "products" add column if not exists "subcategory_ids" jsonb not null default '[]'::jsonb;
       do $$
       begin
         alter table "products"
@@ -8782,8 +8784,10 @@ async function ensureVariantTables(): Promise<void> {
         "cost" numeric(12,2),
         "stock" integer not null default 0,
         "min_stock" integer not null default 0,
+        "max_stock" integer not null default 0,
         "warehouse_id" integer,
         "is_active" boolean not null default true,
+        "notes" text,
         "sort_order" integer not null default 0,
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
@@ -8791,6 +8795,7 @@ async function ensureVariantTables(): Promise<void> {
       create index if not exists "product_variants_product_idx" on "product_variants" ("product_id");
       create index if not exists "product_variants_barcode_idx" on "product_variants" ("barcode");
       create index if not exists "product_variants_sku_idx" on "product_variants" ("sku");
+      alter table "product_variants" add column if not exists "max_stock" integer not null default 0, add column if not exists "notes" text;
       create table if not exists "stock_reservations" (
         "id" serial primary key,
         "product_id" integer not null,
@@ -8839,10 +8844,12 @@ function formatVariant(row: any, reserved = 0) {
     cost: row.cost != null ? Number(row.cost) : null,
     stock,
     minStock,
+    maxStock: Number(row.max_stock ?? row.maxStock ?? 0),
     reserved: Math.round(reserved * 1000) / 1000,
     available,
     warehouseId: row.warehouse_id ?? row.warehouseId ?? null,
     isActive: row.is_active ?? row.isActive ?? true,
+    notes: row.notes ?? null,
     sortOrder: Number(row.sort_order ?? row.sortOrder ?? 0),
     lowStock: stock > 0 && available <= minStock,
     outOfStock: available <= 0,
@@ -8855,6 +8862,13 @@ async function loadVariantRows(productId: number): Promise<any[]> {
     sql`select * from product_variants where product_id = ${productId} order by sort_order asc, id asc`,
   );
   return res.rows ?? res ?? [];
+}
+
+// Product-level dashboard stock mirrors the sum of active color variants while
+// preserving the existing single product/inventory identity.
+async function syncProductStockFromVariants(productId: number): Promise<void> {
+  await ensureVariantTables();
+  await db.execute(sql`update products set stock = coalesce((select sum(stock) from product_variants where product_id=${productId} and is_active=true),0)::int, updated_at=now() where id=${productId}`);
 }
 
 // Reserved quantity per variant AND product-level (variant_id null) for one product.
@@ -9599,22 +9613,28 @@ async function handleProductVariants(
   // POST /products/:id/variants → create a variant
   if (method === "POST" && !parts[3]) {
     const b = await body(req);
+    const requestedVariantBarcode = normalizeProductBarcode(b?.barcode);
+    if (requestedVariantBarcode) {
+      const duplicate: any = await db.execute(sql`select id from product_variants where barcode=${requestedVariantBarcode} limit 1`);
+      if ((duplicate.rows ?? duplicate ?? []).length) return error("باركود اللون مستخدم مسبقاً", 409);
+    }
     const image = b?.image ? await persistMediaValue(b.image, "variants") : null;
     const [row]: any = (
       await db.execute(sql`
       insert into product_variants
-        (product_id, color, color_hex, size, sku, image, price, cost, stock, min_stock, warehouse_id, sort_order)
+        (product_id, color, color_hex, size, sku, image, price, cost, stock, min_stock, max_stock, warehouse_id, is_active, notes, sort_order)
       values
         (${productId}, ${b?.color ?? null}, ${b?.colorHex ?? null}, ${b?.size ?? null}, ${b?.sku ?? null},
          ${image}, ${b?.price != null && b.price !== "" ? Number(b.price) : null},
          ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
-         ${Math.max(0, Math.floor(Number(b?.stock) || 0))}, ${Math.max(0, Math.floor(Number(b?.minStock) || 0))},
-         ${b?.warehouseId ? Number(b.warehouseId) : null}, ${Math.floor(Number(b?.sortOrder) || 0)})
+         ${Math.max(0, Math.floor(Number(b?.stock) || 0))}, ${Math.max(0, Math.floor(Number(b?.minStock) || 0))}, ${Math.max(0, Math.floor(Number(b?.maxStock) || 0))},
+         ${b?.warehouseId ? Number(b.warehouseId) : null}, ${b?.isActive !== false}, ${nullableText(b?.notes)}, ${Math.floor(Number(b?.sortOrder) || 0)})
       returning *
     `)
     ).rows ?? [];
     const newId = Number(row.id);
-    const barcode = normalizeProductBarcode(b?.barcode) || `AJN-V${String(newId).padStart(6, "0")}`;
+    await syncProductStockFromVariants(productId);
+    const barcode = requestedVariantBarcode || `AJN-V${String(newId).padStart(6, "0")}`;
     const qrToken = (typeof b?.qrToken === "string" && b.qrToken.trim()) || randomUUID().replace(/-/g, "").slice(0, 24);
     const [updated]: any = (
       await db.execute(sql`
@@ -9637,6 +9657,11 @@ async function handleProductVariants(
   // PATCH /products/:id/variants/:variantId → update a variant
   if (method === "PATCH" && variantId) {
     const b = await body(req);
+    const requestedVariantBarcode = normalizeProductBarcode(b?.barcode);
+    if (requestedVariantBarcode) {
+      const duplicate: any = await db.execute(sql`select id from product_variants where barcode=${requestedVariantBarcode} and id<>${variantId} limit 1`);
+      if ((duplicate.rows ?? duplicate ?? []).length) return error("باركود اللون مستخدم مسبقاً", 409);
+    }
     const image = b?.image && !String(b.image).startsWith("http") && !String(b.image).startsWith("/")
       ? await persistMediaValue(b.image, "variants")
       : (b?.image ?? null);
@@ -9647,19 +9672,23 @@ async function handleProductVariants(
         color_hex = ${b?.colorHex ?? null},
         size = ${b?.size ?? null},
         sku = ${b?.sku ?? null},
-        barcode = coalesce(${normalizeProductBarcode(b?.barcode) ?? null}, barcode),
+        barcode = coalesce(${requestedVariantBarcode ?? null}, barcode),
         image = coalesce(${image}, image),
         price = ${b?.price != null && b.price !== "" ? Number(b.price) : null},
         cost = ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
         stock = ${Math.max(0, Math.floor(Number(b?.stock ?? 0)))},
         min_stock = ${Math.max(0, Math.floor(Number(b?.minStock ?? 0)))},
+        max_stock = ${Math.max(0, Math.floor(Number(b?.maxStock ?? 0)))},
         warehouse_id = ${b?.warehouseId ? Number(b.warehouseId) : null},
+        is_active = coalesce(${typeof b?.isActive === "boolean" ? b.isActive : null}, is_active),
+        notes = coalesce(${nullableText(b?.notes)}, notes),
         updated_at = now()
       where id = ${variantId} and product_id = ${productId}
       returning *
     `)
     ).rows ?? [];
     if (!row) return error("المتغيّر غير موجود", 404);
+    await syncProductStockFromVariants(productId);
     const reserved = await loadReservedForProduct(productId);
     return json(formatVariant(row, reserved.byVariant.get(variantId) ?? 0));
   }
@@ -9668,6 +9697,7 @@ async function handleProductVariants(
   if (method === "DELETE" && variantId) {
     await db.execute(sql`delete from stock_reservations where variant_id = ${variantId}`);
     await db.execute(sql`delete from product_variants where id = ${variantId} and product_id = ${productId}`);
+    await syncProductStockFromVariants(productId);
     return json({ ok: true });
   }
 
@@ -9786,6 +9816,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         id: productsTable.id,
         categoryId: productsTable.categoryId,
         subcategoryId: productsTable.subcategoryId,
+        subcategoryIds: productsTable.subcategoryIds,
         category: productsTable.category,
         subcategory: productsTable.subcategory,
       })
@@ -9812,6 +9843,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         if (category.parentId) {
           return (
             product.subcategoryId === category.id ||
+            (Array.isArray(product.subcategoryIds) && product.subcategoryIds.map(Number).includes(category.id)) ||
             product.subcategory === category.slug
           );
         }
@@ -9874,7 +9906,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         eq(productsTable.isActive, true),
         categoryId ? eq(productsTable.categoryId, categoryId) : undefined,
         subcategoryId
-          ? eq(productsTable.subcategoryId, subcategoryId)
+          ? or(eq(productsTable.subcategoryId, subcategoryId), sql`${productsTable.subcategoryIds} @> ${JSON.stringify([subcategoryId])}::jsonb`)
           : undefined,
         category
           ? or(
@@ -9886,6 +9918,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           ? or(
               eq(productsTable.subcategory, subcategory),
               sql`${productsTable.subcategoryId} in (select id from categories where slug = ${subcategory})`,
+              sql`${productsTable.subcategoryIds} @> (select jsonb_agg(id) from categories where slug = ${subcategory})`,
             )
           : undefined,
         search ? ilike(productsTable.nameAr, `%${search}%`) : undefined,
@@ -9977,6 +10010,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         barcode: requestedBarcode || null,
         categoryId: productCategories.categoryId,
         subcategoryId: productCategories.subcategoryId,
+        subcategoryIds: productCategories.subcategoryIds,
         category: productCategories.category,
         images: storedImages,
         videos: storedVideos,
@@ -10082,6 +10116,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "barcode",
       "categoryId",
       "subcategoryId",
+      "subcategoryIds",
     ]) {
       if (data[k] !== undefined) {
         if ((k === "name" || k === "nameAr") && !String(data[k] ?? "").trim())
@@ -10093,6 +10128,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           update[k] = barcode || null;
         } else if (k === "categoryId" || k === "subcategoryId") {
           update[k] = numberId(data[k]);
+        } else if (k === "subcategoryIds") {
+          update[k] = Array.isArray(data[k]) ? [...new Set(data[k].map(numberId).filter(Boolean))] : [];
         } else {
           update[k] =
             k === "colors"
@@ -10161,11 +10198,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       data.category !== undefined ||
       data.subcategory !== undefined ||
       data.categoryId !== undefined ||
-      data.subcategoryId !== undefined
+      data.subcategoryId !== undefined ||
+      data.subcategoryIds !== undefined
     ) {
       const productCategories = await resolveProductCategories(data);
       update.categoryId = productCategories.categoryId;
       update.subcategoryId = productCategories.subcategoryId;
+      update.subcategoryIds = productCategories.subcategoryIds;
       update.category = productCategories.category;
       update.subcategory = productCategories.subcategory;
     }
@@ -10899,6 +10938,7 @@ async function handleMedia(req: NextRequest, parts: string[]) {
 async function resolveProductCategories(data: any) {
   const requestedCategoryId = numberId(data?.categoryId);
   const requestedSubcategoryId = numberId(data?.subcategoryId);
+  const requestedSubcategoryIds = [...new Set((Array.isArray(data?.subcategoryIds) ? data.subcategoryIds : [requestedSubcategoryId]).map(numberId).filter(Boolean))] as number[];
   const categorySlug = nullableText(data?.category);
   const subcategorySlug = nullableText(data?.subcategory);
 
@@ -10911,15 +10951,13 @@ async function resolveProductCategories(data: any) {
           where: eq(categoriesTable.slug, categorySlug),
         })
       : null;
-  const subcategory = requestedSubcategoryId
-    ? await db.query.categoriesTable.findFirst({
-        where: eq(categoriesTable.id, requestedSubcategoryId),
-      })
+  const selectedSubcategories = requestedSubcategoryIds.length
+    ? await db.query.categoriesTable.findMany({ where: inArray(categoriesTable.id, requestedSubcategoryIds) })
     : subcategorySlug
-      ? await db.query.categoriesTable.findFirst({
-          where: eq(categoriesTable.slug, subcategorySlug),
-        })
-      : null;
+      ? await db.query.categoriesTable.findMany({ where: eq(categoriesTable.slug, subcategorySlug) })
+      : [];
+  const subcategories = selectedSubcategories.filter((item) => Boolean(item.parentId));
+  const subcategory = subcategories[0] ?? null;
   const parentFromSubcategory = subcategory?.parentId
     ? await db.query.categoriesTable.findFirst({
         where: eq(categoriesTable.id, subcategory.parentId),
@@ -10930,6 +10968,7 @@ async function resolveProductCategories(data: any) {
   return {
     categoryId: finalCategory?.id ?? null,
     subcategoryId: finalSubcategory?.id ?? null,
+    subcategoryIds: subcategories.map((item) => item.id),
     category: finalCategory?.slug ?? categorySlug,
     subcategory: finalSubcategory?.slug ?? subcategorySlug,
   };
