@@ -128,6 +128,8 @@ import {
   warehousesTable,
   warehouseStockTable,
   taskCommentsTable,
+  taskChecklistItemsTable,
+  taskItemAttachmentsTable,
   tasksTable,
   enterpriseBranchesTable,
   branchEntityAssignmentsTable,
@@ -355,6 +357,11 @@ export const ALL_PERMISSIONS = [
   "accounting",
   "backup",
   "tasks",
+  "task_create",
+  "task_edit",
+  "task_delete",
+  "task_assign",
+  "task_approve",
   "koshas",
   "photography",
   "graduation",
@@ -1073,7 +1080,17 @@ function formatTask(
     description: row.description ?? "",
     status: row.status,
     priority: row.priority,
+    taskNo: row.taskNo ?? row.task_no ?? null,
+    department: row.department ?? null,
+    taskType: row.taskType ?? row.task_type ?? "other",
+    startAt: row.startAt?.toISOString?.() ?? row.start_at?.toISOString?.() ?? null,
     dueAt: row.dueAt?.toISOString?.() ?? row.due_at?.toISOString?.() ?? null,
+    estimatedMinutes: Number(row.estimatedMinutes ?? row.estimated_minutes ?? 0) || null,
+    submittedAt: row.submittedAt?.toISOString?.() ?? row.submitted_at?.toISOString?.() ?? null,
+    completedAt: row.completedAt?.toISOString?.() ?? row.completed_at?.toISOString?.() ?? null,
+    approvedBy: row.approvedBy ?? row.approved_by ?? null,
+    approvedAt: row.approvedAt?.toISOString?.() ?? row.approved_at?.toISOString?.() ?? null,
+    rejectionReason: row.rejectionReason ?? row.rejection_reason ?? null,
     assignedStaffIds: assigned,
     assignedStaff: assigned
       .map((id: number) => staffById.get(id))
@@ -1087,6 +1104,7 @@ function formatTask(
     notes: row.notes ?? "",
     attachments: Array.isArray(row.attachments) ? row.attachments : [],
     createdBy: row.createdBy ?? row.created_by ?? null,
+    manager: staffById.get(row.createdBy ?? row.created_by ?? 0) ?? null,
     archivedAt:
       row.archivedAt?.toISOString?.() ??
       row.archived_at?.toISOString?.() ??
@@ -7046,6 +7064,38 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "file_name" text,
         "created_at" timestamp not null default now()
       );
+      alter table "tasks" add column if not exists "task_no" varchar(50);
+      alter table "tasks" add column if not exists "department" varchar(100);
+      alter table "tasks" add column if not exists "task_type" varchar(50);
+      alter table "tasks" add column if not exists "start_at" timestamp;
+      alter table "tasks" add column if not exists "estimated_minutes" integer;
+      alter table "tasks" add column if not exists "submitted_at" timestamp;
+      alter table "tasks" add column if not exists "completed_at" timestamp;
+      alter table "tasks" add column if not exists "approved_by" integer references "staff" ("id");
+      alter table "tasks" add column if not exists "approved_at" timestamp;
+      alter table "tasks" add column if not exists "rejection_reason" text;
+      create unique index if not exists "tasks_task_no_unique" on "tasks" ("task_no") where "task_no" is not null;
+      create table if not exists "task_checklist_items" (
+        "id" serial primary key,
+        "task_id" integer not null references "tasks" ("id"),
+        "title" text not null,
+        "required_quantity" numeric(14,2) not null default 1,
+        "completed_quantity" numeric(14,2) not null default 0,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "task_checklist_items_task_id_idx" on "task_checklist_items" ("task_id", "sort_order");
+      create table if not exists "task_item_attachments" (
+        "id" serial primary key,
+        "task_item_id" integer not null references "task_checklist_items" ("id"),
+        "staff_id" integer references "staff" ("id"),
+        "file_url" text not null,
+        "file_name" text,
+        "media_type" varchar(40) not null default 'file',
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "task_item_attachments_item_id_idx" on "task_item_attachments" ("task_item_id");
       create table if not exists "message_threads" (
         "id" serial primary key,
         "customer_id" integer references "customers" ("id"),
@@ -8871,6 +8921,28 @@ async function loadVariantRows(productId: number): Promise<any[]> {
     sql`select * from product_variants where product_id = ${productId} order by sort_order asc, id asc`,
   );
   return res.rows ?? res ?? [];
+}
+
+function taskType(value: unknown): string {
+  const type = String(value ?? "other");
+  return ["photography", "printing", "flower_bouquet", "henna_distribution", "koshas", "warehouse", "delivery", "editing", "design", "sales", "maintenance", "other"].includes(type) ? type : "other";
+}
+
+function taskChecklistInput(value: unknown) {
+  if (!Array.isArray(value)) return [] as Array<{ title: string; requiredQuantity: number }>;
+  return value.slice(0, 100).flatMap((item) => {
+    const title = String((item as any)?.title ?? "").trim().slice(0, 500);
+    const requiredQuantity = Number((item as any)?.requiredQuantity ?? (item as any)?.required_quantity ?? 1);
+    return title && Number.isFinite(requiredQuantity) && requiredQuantity > 0
+      ? [{ title, requiredQuantity: Math.min(requiredQuantity, 1_000_000) }]
+      : [];
+  });
+}
+
+function taskItemProgress(items: Array<{ requiredQuantity: number; completedQuantity: number }>) {
+  const required = items.reduce((sum, item) => sum + Math.max(0, Number(item.requiredQuantity) || 0), 0);
+  const completed = items.reduce((sum, item) => sum + Math.max(0, Number(item.completedQuantity) || 0), 0);
+  return { required, completed, percent: required ? Math.min(100, Math.round((completed / required) * 100)) : 0 };
 }
 
 // Product-level dashboard stock mirrors the sum of active color variants while
@@ -23547,7 +23619,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "tasks");
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
-    const canManageAll = auth.role === "admin" || hasPermission(auth, "staff");
+    const canManageAll = auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "staff");
+    const canCreateTasks = canManageAll || hasPermission(auth, "task_create");
+    const canEditTasks = canManageAll || hasPermission(auth, "task_edit") || hasPermission(auth, "task_assign");
+    const canDeleteTasks = canManageAll || hasPermission(auth, "task_delete");
+    const canApproveTasks = canManageAll || hasPermission(auth, "task_approve");
 
     if (method === "GET" && !parts[2]) {
       const params = req.nextUrl.searchParams;
@@ -23557,6 +23633,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const staffId = Number.parseInt(params.get("staffId") ?? "", 10);
       const date = params.get("date");
       const q = params.get("q")?.trim();
+      const department = params.get("department")?.trim();
       if (status) filters.push(eq(tasksTable.status, taskStatus(status)));
       if (priority)
         filters.push(eq(tasksTable.priority, taskPriority(priority)));
@@ -23575,6 +23652,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (q)
         filters.push(
           or(
+            ilike(tasksTable.taskNo, `%${q}%`),
             ilike(tasksTable.title, `%${q}%`),
             ilike(tasksTable.description, `%${q}%`),
             ilike(tasksTable.notes, `%${q}%`),
@@ -23593,34 +23671,65 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
       ]);
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      const taskIds = rows.map((row) => row.id);
+      const checklistRows = taskIds.length ? await db.query.taskChecklistItemsTable.findMany({ where: inArray(taskChecklistItemsTable.taskId, taskIds), orderBy: [asc(taskChecklistItemsTable.sortOrder), asc(taskChecklistItemsTable.id)] }) : [];
+      const itemsByTask = new Map<number, any[]>();
+      for (const item of checklistRows) {
+        const list = itemsByTask.get(item.taskId) ?? [];
+        list.push({ id: item.id, title: item.title, requiredQuantity: Number(item.requiredQuantity), completedQuantity: Number(item.completedQuantity), sortOrder: item.sortOrder });
+        itemsByTask.set(item.taskId, list);
+      }
       const progressByRelated = await taskProgressForRelated(rows);
+      const formatted = rows.map((row) => {
+        const key = row.relatedType && row.relatedId ? `${row.relatedType}:${row.relatedId}` : "";
+        const checklistItems = itemsByTask.get(row.id) ?? [];
+        return { ...formatTask(row, staffById, progressByRelated.get(key) ?? null), checklistItems, progress: taskItemProgress(checklistItems) };
+      });
+      const now = new Date();
+      const todayKey = now.toISOString().slice(0, 10);
+      const completed = formatted.filter((task) => task.status === "completed");
+      const employeeCounts = new Map<number, number>();
+      completed.forEach((task) => task.assignedStaffIds.forEach((id: number) => employeeCounts.set(id, (employeeCounts.get(id) ?? 0) + 1)));
+      const bestEmployeeId = [...employeeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const departmentRows = [...new Set(formatted.map((task) => task.department || "غير محدد"))].map((name) => ({ department: name, total: formatted.filter((task) => (task.department || "غير محدد") === name).length, completed: completed.filter((task) => (task.department || "غير محدد") === name).length }));
       return json({
-        data: rows.map((row) => {
-          const key =
-            row.relatedType && row.relatedId
-              ? `${row.relatedType}:${row.relatedId}`
-              : "";
-          return formatTask(row, staffById, progressByRelated.get(key) ?? null);
-        }),
+        data: formatted,
         staff: staffRows.map(formatStaff),
+        canManageAll,
+        summary: {
+          today: formatted.filter((task) => task.dueAt?.slice(0, 10) === todayKey).length,
+          completed: completed.length,
+          pendingApproval: formatted.filter((task) => task.status === "review").length,
+          overdue: formatted.filter((task) => task.dueAt && task.dueAt < now.toISOString() && ["new", "in_progress"].includes(task.status)).length,
+          averageCompletionMinutes: completed.length ? Math.round(completed.reduce((sum, task) => sum + (task.completedAt && task.createdAt ? Math.max(0, new Date(task.completedAt).getTime() - new Date(task.createdAt).getTime()) / 60_000 : 0), 0) / completed.length) : 0,
+          bestEmployee: bestEmployeeId ? formatStaff(staffById.get(bestEmployeeId)) : null,
+          departments: departmentRows,
+        },
       });
     }
 
     if (method === "POST" && !parts[2]) {
-      if (!canManageAll && !hasPermission(auth, "tasks"))
+      if (!canCreateTasks)
         return error("ليس لديك صلاحية إنشاء المهام", 403);
       const b = await body(req);
-      const title = textFallback(b?.title, "مهمة جديدة");
+      const title = String(b?.title ?? "").trim().slice(0, 500);
       const assignedStaffIds = idList(b?.assignedStaffIds ?? b?.staffIds);
+      if (!title) return error("عنوان المهمة مطلوب", 422);
+      if (!assignedStaffIds.length) return error("اختر موظفاً واحداً على الأقل", 422);
       const dueAt = safeDate(b?.dueAt);
+      const checklistItems = taskChecklistInput(b?.checklistItems ?? b?.items);
       const [row] = await db
         .insert(tasksTable)
         .values({
           title,
           description: nullableText(b?.description),
-          status: taskStatus(b?.status),
+          status: "new",
           priority: taskPriority(b?.priority),
+          department: nullableText(b?.department)?.slice(0, 100) ?? null,
+          taskType: taskType(b?.taskType),
+          startAt: safeDate(b?.startAt) ?? new Date(),
           dueAt,
+          estimatedMinutes: Number.isFinite(Number(b?.estimatedMinutes)) && Number(b.estimatedMinutes) > 0 ? Math.min(Math.round(Number(b.estimatedMinutes)), 100_000) : null,
           assignedStaffIds,
           relatedType:
             typeof b?.relatedType === "string"
@@ -23636,11 +23745,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           createdBy: auth.id,
         })
         .returning();
+      const taskNo = `TSK-${String(row.id).padStart(6, "0")}`;
+      const [saved] = await db.update(tasksTable).set({ taskNo }).where(eq(tasksTable.id, row.id)).returning();
+      if (checklistItems.length) await db.insert(taskChecklistItemsTable).values(checklistItems.map((item, index) => ({ taskId: row.id, title: item.title, requiredQuantity: String(item.requiredQuantity), completedQuantity: "0", sortOrder: index })));
       await Promise.all(
         (assignedStaffIds.length ? assignedStaffIds : [null]).map((staffId) =>
           createNotification({
             type: "task_assigned",
-            title: "مهمة جديدة",
+            title: "تم إسناد مهمة جديدة",
             body: title,
             staffId,
             entityType: "task",
@@ -23652,8 +23764,105 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       void logAdminActivity(req, "task_created", "task", row.id, {
         assignedStaffIds,
         title,
+        taskNo,
+        checklistItems: checklistItems.length,
       });
-      return json(formatTask(row), 201);
+      void addEntityTimeline({ entityType: "task", entityId: row.id, type: "task_created", title: "تم إنشاء مهمة", body: title, actor: erpActorFromAdmin(auth), metadata: { taskNo, assignedStaffIds, checklistItems: checklistItems.length } });
+      return json(formatTask(saved), 201);
+    }
+
+    if (method === "GET" && parts[2] && !parts[3]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف المهمة غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!canManageAll && !(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية على هذه المهمة", 403);
+      const [staffRows, items, comments] = await Promise.all([
+        db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
+        db.query.taskChecklistItemsTable.findMany({ where: eq(taskChecklistItemsTable.taskId, id!), orderBy: [asc(taskChecklistItemsTable.sortOrder), asc(taskChecklistItemsTable.id)] }),
+        db.query.taskCommentsTable.findMany({ where: eq(taskCommentsTable.taskId, id!), orderBy: (c, { desc }) => [desc(c.createdAt)] }),
+      ]);
+      const attachments = items.length ? await db.query.taskItemAttachmentsTable.findMany({ where: inArray(taskItemAttachmentsTable.taskItemId, items.map((item) => item.id)), orderBy: (a, { desc }) => [desc(a.createdAt)] }) : [];
+      const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      const checklistItems = items.map((item) => ({ id: item.id, title: item.title, requiredQuantity: Number(item.requiredQuantity), completedQuantity: Number(item.completedQuantity), sortOrder: item.sortOrder, attachments: attachments.filter((attachment) => attachment.taskItemId === item.id).map((attachment) => ({ id: attachment.id, url: attachment.fileUrl, name: attachment.fileName, mediaType: attachment.mediaType, createdAt: attachment.createdAt.toISOString(), staff: staffById.get(attachment.staffId ?? 0) ?? null })) }));
+      const timeline = await db.query.entityTimelineTable.findMany({ where: and(eq(entityTimelineTable.entityType, "task"), eq(entityTimelineTable.entityId, id!)), orderBy: (t, { desc }) => [desc(t.createdAt)], limit: 100 });
+      return json({ ...formatTask(task, staffById), checklistItems, progress: taskItemProgress(checklistItems), comments: comments.map((comment) => ({ id: comment.id, body: comment.body, createdAt: comment.createdAt.toISOString(), staff: staffById.get(comment.staffId ?? 0) ?? null })), timeline: timeline.map((entry) => ({ id: entry.id, type: entry.type, title: entry.title, body: entry.body, createdAt: entry.createdAt.toISOString(), actorName: entry.actorName, metadata: entry.metadata })) });
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "progress") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف المهمة غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("يمكن للموظف المعيّن فقط تحديث التقدم", 403);
+      if (["review", "completed", "cancelled"].includes(task.status)) return error("لا يمكن تعديل مهمة مرسلة أو معتمدة", 409);
+      const b = await body(req);
+      const updates = Array.isArray(b?.items) ? b.items : [];
+      const items = await db.query.taskChecklistItemsTable.findMany({ where: eq(taskChecklistItemsTable.taskId, id!) });
+      const byId = new Map(items.map((item) => [item.id, item]));
+      for (const update of updates) {
+        const item = byId.get(Number(update?.id));
+        const completedQuantity = Number(update?.completedQuantity);
+        if (!item || !Number.isFinite(completedQuantity) || completedQuantity < 0 || completedQuantity > Number(item.requiredQuantity)) return error("كمية الإنجاز غير صالحة", 422);
+        await db.update(taskChecklistItemsTable).set({ completedQuantity: String(completedQuantity), updatedAt: new Date() }).where(eq(taskChecklistItemsTable.id, item.id));
+      }
+      const [updated] = await db.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      void logAdminActivity(req, "task_progress_updated", "task", id, { oldStatus: task.status, newStatus: "in_progress", items: updates });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_progress_updated", title: "تم تحديث تقدم المهمة", actor: erpActorFromAdmin(auth), metadata: { items: updates } });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "submit") {
+      const id = int(parts[2]);
+      const task = id ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية إرسال هذه المهمة", 403);
+      if (["completed", "cancelled"].includes(task.status)) return error("لا يمكن إرسال مهمة مكتملة أو ملغاة", 409);
+      const [updated] = await db.update(tasksTable).set({ status: "review", submittedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      await createNotification({ type: "task_submitted", title: "مهمة بانتظار المراجعة", body: updated.title, entityType: "task", entityId: id!, href: "/admin/tasks" });
+      void logAdminActivity(req, "task_submitted", "task", id!, { oldStatus: task.status, newStatus: "review" });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: "task_submitted", title: "تم إرسال المهمة للمراجعة", actor: erpActorFromAdmin(auth) });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "review") {
+      const id = int(parts[2]);
+      if (!canApproveTasks) return error("لا تملك صلاحية اعتماد المهام", 403);
+      const task = id ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      const b = await body(req);
+      const action = String(b?.action ?? "");
+      const reason = String(b?.reason ?? "").trim().slice(0, 1000);
+      if (!["approve", "reject", "return"].includes(action)) return error("إجراء المراجعة غير صالح", 422);
+      if (action !== "approve" && reason.length < 3) return error("سبب الرفض أو الإرجاع مطلوب", 422);
+      if (task.status !== "review") return error("المهمة ليست بانتظار الاعتماد", 409);
+      const nextStatus = action === "approve" ? "completed" : "in_progress";
+      const [updated] = await db.update(tasksTable).set({ status: nextStatus, completedAt: action === "approve" ? new Date() : null, approvedBy: action === "approve" ? auth.id : null, approvedAt: action === "approve" ? new Date() : null, rejectionReason: action === "approve" ? null : reason, updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      await Promise.all((task.assignedStaffIds ?? []).map((staffId) => createNotification({ type: action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", title: action === "approve" ? "تم اعتماد المهمة" : action === "reject" ? "تم رفض المهمة" : "أُعيدت المهمة للتصحيح", body: action === "approve" ? updated.title : `${updated.title} — ${reason}`, staffId, entityType: "task", entityId: id, href: "/admin/tasks" })));
+      void logAdminActivity(req, action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", "task", id!, { oldStatus: task.status, newStatus: nextStatus, reason: reason || null });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", title: action === "approve" ? "تم اعتماد المهمة" : action === "reject" ? "تم رفض المهمة" : "أعيدت المهمة للتصحيح", body: reason || null, actor: erpActorFromAdmin(auth) });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "items" && parts[4] && parts[5] === "attachments") {
+      const taskId = int(parts[2]);
+      const itemId = int(parts[4]);
+      const task = taskId ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, taskId!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية رفع مرفق لهذه المهمة", 403);
+      if (["review", "completed", "cancelled"].includes(task.status)) return error("لا يمكن إضافة مرفقات إلى مهمة محمية", 409);
+      const item = itemId ? await db.query.taskChecklistItemsTable.findFirst({ where: and(eq(taskChecklistItemsTable.id, itemId!), eq(taskChecklistItemsTable.taskId, taskId!)) }) : null;
+      if (!item) return error("بند قائمة التنفيذ غير موجود", 404);
+      const b = await body(req);
+      const url = String(b?.url ?? b?.fileUrl ?? "").trim();
+      const name = String(b?.name ?? b?.fileName ?? "مرفق").trim().slice(0, 300);
+      const mediaType = String(b?.mediaType ?? b?.type ?? "file").trim().slice(0, 40);
+      if (!url || url.length > 12_000_000 || !(/^(data:(image|video|application\/pdf)|https?:\/)/i.test(url))) return error("نوع المرفق غير مدعوم", 422);
+      const [attachment] = await db.insert(taskItemAttachmentsTable).values({ taskItemId: itemId!, staffId: auth.id, fileUrl: url, fileName: name, mediaType }).returning();
+      await db.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, taskId!));
+      void logAdminActivity(req, "task_attachment_uploaded", "task", taskId!, { itemId, fileName: name, mediaType });
+      void addEntityTimeline({ entityType: "task", entityId: taskId!, type: "task_attachment_uploaded", title: "تم رفع مرفق", body: name, actor: erpActorFromAdmin(auth), metadata: { itemId, mediaType } });
+      return json({ id: attachment.id, url: attachment.fileUrl, name: attachment.fileName, mediaType: attachment.mediaType, createdAt: attachment.createdAt.toISOString() }, 201);
     }
 
     if (method === "POST" && parts[2] && parts[3] === "comments") {
@@ -23678,6 +23887,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .update(tasksTable)
         .set({ updatedAt: new Date() })
         .where(eq(tasksTable.id, id));
+      void logAdminActivity(req, "task_note_added", "task", id, { commentId: row.id });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_note_added", title: "تمت إضافة ملاحظة", body: comment, actor: erpActorFromAdmin(auth) });
       return json(
         { id: row.id, body: row.body, createdAt: row.createdAt.toISOString() },
         201,
@@ -23694,6 +23905,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!canManageAll && !(existing.assignedStaffIds ?? []).includes(auth.id))
         return error("ليس لديك صلاحية على هذه المهمة", 403);
       if (method === "DELETE") {
+        if (!canDeleteTasks) return error("لا تملك صلاحية حذف المهمة", 403);
         const [row] = await db
           .update(tasksTable)
           .set({ archivedAt: new Date(), updatedAt: new Date() })
@@ -23703,14 +23915,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return json(formatTask(row));
       }
       const b = await body(req);
+      if (!canEditTasks) return error("استخدم حفظ التقدم أو إرسال المراجعة لتحديث المهمة", 403);
       const update: any = { updatedAt: new Date() };
       if (b?.title !== undefined)
         update.title = textFallback(b.title, existing.title, "مهمة");
       if (b?.description !== undefined)
         update.description = nullableText(b.description);
-      if (b?.status !== undefined) update.status = taskStatus(b.status);
+      if (b?.status !== undefined) {
+        const nextStatus = taskStatus(b.status);
+        if (["review", "completed"].includes(nextStatus)) return error("استخدم إرسال المهمة أو اعتمادها ضمن مسار المراجعة", 409);
+        update.status = nextStatus;
+      }
       if (b?.priority !== undefined) update.priority = taskPriority(b.priority);
+      if (b?.department !== undefined) update.department = nullableText(b.department)?.slice(0, 100) ?? null;
+      if (b?.taskType !== undefined) update.taskType = taskType(b.taskType);
+      if (b?.startAt !== undefined) update.startAt = safeDate(b.startAt);
       if (b?.dueAt !== undefined) update.dueAt = safeDate(b.dueAt);
+      if (b?.estimatedMinutes !== undefined) update.estimatedMinutes = Number.isFinite(Number(b.estimatedMinutes)) && Number(b.estimatedMinutes) > 0 ? Math.min(Math.round(Number(b.estimatedMinutes)), 100_000) : null;
       if (b?.assignedStaffIds !== undefined || b?.staffIds !== undefined)
         update.assignedStaffIds = idList(b.assignedStaffIds ?? b.staffIds);
       if (b?.relatedType !== undefined)
@@ -23730,6 +23951,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .set(update)
         .where(eq(tasksTable.id, id))
         .returning();
+      if ((row.assignedStaffIds ?? []).length) await Promise.all((row.assignedStaffIds ?? []).map((staffId) => createNotification({ type: "task_updated", title: "تم تحديث مهمة", body: row.title, staffId, entityType: "task", entityId: row.id, href: "/admin/tasks" })));
       if (row.relatedType && row.relatedId) {
         void addEntityTimeline({
           entityType: row.relatedType,
@@ -23747,8 +23969,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
       }
       void logAdminActivity(req, "task_updated", "task", id, {
-        fields: Object.keys(update),
+        oldValues: { status: existing.status, priority: existing.priority, assignedStaffIds: existing.assignedStaffIds },
+        newValues: Object.fromEntries(Object.entries(update).filter(([key]) => key !== "updatedAt")),
       });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_updated", title: "تم تعديل المهمة", actor: erpActorFromAdmin(auth), metadata: { fields: Object.keys(update) } });
       return json(formatTask(row));
     }
   }

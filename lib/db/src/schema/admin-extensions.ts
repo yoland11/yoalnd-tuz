@@ -4,11 +4,21 @@ import { customersTable } from "./customers";
 
 export const tasksTable = pgTable("tasks", {
   id: serial("id").primaryKey(),
+  taskNo: varchar("task_no", { length: 50 }),
   title: text("title").notNull(),
   description: text("description"),
   status: varchar("status", { length: 30 }).notNull().default("new"),
   priority: varchar("priority", { length: 20 }).notNull().default("medium"),
+  department: varchar("department", { length: 100 }),
+  taskType: varchar("task_type", { length: 50 }),
+  startAt: timestamp("start_at"),
   dueAt: timestamp("due_at"),
+  estimatedMinutes: integer("estimated_minutes"),
+  submittedAt: timestamp("submitted_at"),
+  completedAt: timestamp("completed_at"),
+  approvedBy: integer("approved_by").references(() => staffTable.id),
+  approvedAt: timestamp("approved_at"),
+  rejectionReason: text("rejection_reason"),
   assignedStaffIds: jsonb("assigned_staff_ids").$type<number[]>().notNull().default([]),
   relatedType: varchar("related_type", { length: 30 }),
   relatedId: integer("related_id"),
@@ -36,6 +46,27 @@ export const taskAttachmentsTable = pgTable("task_attachments", {
   taskId: integer("task_id").notNull().references(() => tasksTable.id),
   fileUrl: text("file_url").notNull(),
   fileName: text("file_name"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const taskChecklistItemsTable = pgTable("task_checklist_items", {
+  id: serial("id").primaryKey(),
+  taskId: integer("task_id").notNull().references(() => tasksTable.id),
+  title: text("title").notNull(),
+  requiredQuantity: numeric("required_quantity", { precision: 14, scale: 2 }).notNull().default("1"),
+  completedQuantity: numeric("completed_quantity", { precision: 14, scale: 2 }).notNull().default("0"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const taskItemAttachmentsTable = pgTable("task_item_attachments", {
+  id: serial("id").primaryKey(),
+  taskItemId: integer("task_item_id").notNull().references(() => taskChecklistItemsTable.id),
+  staffId: integer("staff_id").references(() => staffTable.id),
+  fileUrl: text("file_url").notNull(),
+  fileName: text("file_name"),
+  mediaType: varchar("media_type", { length: 40 }).notNull().default("file"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
