@@ -8,6 +8,7 @@ import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, S
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, fileToDataUrl, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -452,6 +453,17 @@ export default function ProductsPage() {
                     );
                   })}
                 </tbody>
+                <TableTotalsFooter
+                  rows={filtered}
+                  allRows={filtered}
+                  labelColSpan={1}
+                  cells={[
+                    { key: "sellingValue", label: "قيمة البيع", value: (product) => Number(product.price ?? 0) * stockQuantity(product), format: formatCurrency },
+                    { key: "stock", label: "إجمالي المخزون", value: stockQuantity },
+                    { key: "stockStatus", label: "", },
+                    { key: "action", label: "", },
+                  ]}
+                />
               </table>
             </div>
           </div>
@@ -569,6 +581,19 @@ export default function ProductsPage() {
                   );
                 })}
               </tbody>
+              <TableTotalsFooter
+                rows={filtered}
+                allRows={filtered}
+                labelColSpan={1}
+                cells={[
+                  { key: "sellingValue", label: "قيمة البيع", value: (product) => Number(product.price ?? 0) * stockQuantity(product), format: formatCurrency },
+                  { key: "stock", label: "إجمالي المخزون", value: stockQuantity },
+                  { key: "stockStatus", label: "", },
+                  { key: "category", label: "", },
+                  { key: "visibility", label: "", },
+                  { key: "actions", label: "", },
+                ]}
+              />
             </table>
           </div>
         </div>

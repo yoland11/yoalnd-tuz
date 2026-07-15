@@ -5,6 +5,7 @@ import {
   ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip, Pencil, Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
@@ -673,6 +674,11 @@ function PurchaseListView({
                   ))
               }
             </tbody>
+            {invoices.length > 0 && <TableTotalsFooter rows={invoices} labelColSpan={3} cells={[
+              { key: "total", label: "إجمالي المشتريات", value: (invoice) => Number(invoice.total ?? 0), format: formatCurrency },
+              { key: "payment", label: "المدفوع والمتبقي", value: () => 0, format: (_, rows) => <span className="text-xs"><span className="text-status-success">مدفوع {formatCurrency(rows.reduce((sum, invoice) => sum + Number(invoice.paidAmount ?? 0), 0))}</span><span className="mx-1 text-muted-foreground">/</span><span className="text-status-warning">متبقي {formatCurrency(rows.reduce((sum, invoice) => sum + Number(invoice.remainingAmount ?? 0), 0))}</span></span> },
+              { key: "status", label: "" }, { key: "actions", label: "" },
+            ]} />}
           </table>
         </div>
         {totalPages > 1 && (

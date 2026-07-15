@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { adminFetch, apiErrorMessage, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -149,6 +150,10 @@ function ReceiptsTab() {
               <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive" title="حذف"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المقبوض", value: (voucher) => Number(voucher.amount ?? 0), format: formatCurrency },
+            { key: "payer", label: "" }, { key: "method", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -247,6 +252,10 @@ function PaymentsTab() {
               <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المصروف", value: (voucher) => Number(voucher.amount ?? 0), format: formatCurrency },
+            { key: "payee", label: "" }, { key: "method", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -340,6 +349,10 @@ function ExpensesTab() {
               <button onClick={() => { if (confirm("حذف المصروف؟")) del.mutate(e.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المصاريف", value: (expense) => Number(expense.amount ?? 0), format: formatCurrency },
+            { key: "notes", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -673,6 +686,11 @@ function StatementTab() {
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
               rowHrefs={data.entries.map((entry) => entry.href ?? null)}
+              footer={<TableTotalsFooter rows={data.entries} allRows={data.entries} labelColSpan={4} cells={[
+                { key: "debit", label: "إجمالي المدين", value: (entry) => Number(entry.debit ?? 0), format: formatCurrency },
+                { key: "credit", label: "إجمالي الدائن", value: (entry) => Number(entry.credit ?? 0), format: formatCurrency },
+                { key: "balance", label: "الرصيد", value: (entry) => Number(entry.debit ?? 0) - Number(entry.credit ?? 0), format: formatCurrency },
+              ]} />}
             />
           }
         </div>
@@ -909,7 +927,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   );
 }
 
-function DataTable({ columns, rows, rowHrefs }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null> }) {
+function DataTable({ columns, rows, rowHrefs, footer }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null>; footer?: React.ReactNode }) {
   return (
     <div className="bg-card rounded-xl border border-border/30 overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
@@ -944,6 +962,7 @@ function DataTable({ columns, rows, rowHrefs }: { columns: string[]; rows: React
             );
           })}
         </tbody>
+        {footer}
       </table>
     </div>
   );

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, FileDown, MapPin, MessageCircle, NotebookPen, Pencil, Plus, Receipt, Search, ShoppingBag, Sparkles, Trash2, Trophy, Wallet, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
@@ -204,6 +205,12 @@ export default function CustomersPage() {
                 </tr>
               ))}
             </tbody>
+            <TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+              { key: "orders", label: "إجمالي الطلبات", value: (customer) => Number(customer.orderCount ?? 0) },
+              { key: "sales", label: "إجمالي المبيعات", value: (customer) => Number(customer.totalSpent ?? 0), format: formatCurrency },
+              { key: "points", label: "إجمالي النقاط", value: (customer) => Number(customer.rewardPoints ?? 0) },
+              { key: "actions", label: "" },
+            ]} />
           </table>
         </div>
       )}
