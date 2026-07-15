@@ -34,6 +34,7 @@ import {
   XCircle,
   Upload,
   UserRound,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -97,6 +98,9 @@ type Warehouse = { id: number; name: string; isActive: number };
 
 type AssetRow = {
   productId: number;
+  depreciationRecordId?: number | null;
+  depreciationRecordDate?: string | null;
+  hasDepreciationRecord?: boolean;
   name: string;
   purchasePrice: number;
   expectedLifeUses: number;
@@ -619,6 +623,7 @@ export function AssetsPage() {
   const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
   const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
   const [filter, setFilter] = useState<"all" | "maintenance">("all");
+  const [removeTarget, setRemoveTarget] = useState<AssetRow | null>(null);
   const filtered = filter === "maintenance" ? rows.filter((r) => r.maintenanceDue) : rows;
   const depreciationRows = [...rows]
     .filter((row) => row.purchasePrice > 0)
@@ -649,6 +654,16 @@ export function AssetsPage() {
         description: apiErrorMessage(error),
         variant: "destructive",
       }),
+  });
+  const removeDepreciation = useMutation({
+    mutationFn: ({ recordId, reason }: { recordId: number; reason: string }) => adminFetch(`/admin/assets/depreciation/${recordId}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] });
+      toast({ title: "تمت إزالة سجل الإهلاك", description: "تمت استعادة قيمة الأصل دون تغيير المخزون أو المنتج." });
+      setRemoveTarget(null);
+    },
+    onError: (error) => toast({ title: "تعذّرت إزالة سجل الإهلاك", description: apiErrorMessage(error), variant: "destructive" }),
   });
   return (
     <div className="space-y-4" dir="rtl">
@@ -780,6 +795,16 @@ export function AssetsPage() {
                             )}
                             {row.depreciationPaused ? "استئناف" : "إيقاف"}
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!row.hasDepreciationRecord || !row.depreciationRecordId || removeDepreciation.isPending}
+                            title={row.hasDepreciationRecord ? "إزالة سجل الإهلاك فقط" : "لا يوجد سجل إهلاك نشط لهذا الأصل"}
+                            onClick={() => setRemoveTarget(row)}
+                            className="gap-1 text-destructive hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" /> إزالة الإهلاك
+                          </Button>
                         </div>
                     </td>
                   </tr>
@@ -796,8 +821,15 @@ export function AssetsPage() {
           onClose={() => { setEditing(null); setAdding(false); }}
         />
       )}
+      <RemoveDepreciationDialog asset={removeTarget} busy={removeDepreciation.isPending} onClose={() => setRemoveTarget(null)} onConfirm={(reason) => removeTarget?.depreciationRecordId && removeDepreciation.mutate({ recordId: removeTarget.depreciationRecordId, reason })} />
     </div>
   );
+}
+
+function RemoveDepreciationDialog({ asset, busy, onClose, onConfirm }: { asset: AssetRow | null; busy: boolean; onClose: () => void; onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  const depreciation = Math.max(0, (asset?.purchasePrice ?? 0) - (asset?.currentValue ?? 0));
+  return <div className={`fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 ${asset ? "" : "hidden"}`} dir="rtl" role="dialog" aria-modal="true"><div className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-xl"><div className="mb-4"><h2 className="text-lg font-bold text-foreground">هل تريد إزالة سجل الإهلاك؟</h2><p className="mt-1 text-sm text-muted-foreground">سيُزال سجل الإهلاك فقط. لن يُحذف الأصل أو المنتج أو أي كمية مخزون.</p></div><dl className="grid grid-cols-2 gap-2 rounded-xl bg-muted/50 p-3 text-sm"><dt>الأصل</dt><dd className="font-medium">{asset?.name}</dd><dt>رمز الأصل</dt><dd>AJN-A{String(asset?.productId ?? "").padStart(5, "0")}</dd><dt>القيمة الحالية</dt><dd>{formatCurrency(asset?.currentValue ?? 0)}</dd><dt>مبلغ الإهلاك</dt><dd>{formatCurrency(depreciation)}</dd><dt>القيمة بعد الإزالة</dt><dd>{formatCurrency(asset?.purchasePrice ?? 0)}</dd><dt>تاريخ السجل</dt><dd>{asset?.depreciationRecordDate ? new Date(asset.depreciationRecordDate).toLocaleDateString("ar-IQ") : "—"}</dd></dl><label className="mt-3 block text-sm"><span className="mb-1 block">سبب الإزالة <b className="text-destructive">*</b></span><textarea value={reason} onChange={(event) => setReason(event.target.value)} className="min-h-20 w-full rounded-lg border border-border/40 bg-background p-2" placeholder="اكتب سبب إزالة سجل الإهلاك" /></label><div className="mt-4 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>إلغاء</Button><Button variant="destructive" disabled={busy || reason.trim().length < 3} onClick={() => onConfirm(reason.trim())}><Trash2 className="ms-1 h-4 w-4" /> إزالة الإهلاك</Button></div></div></div>;
 }
 
 function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null; assets: AssetRow[]; onClose: () => void }) {

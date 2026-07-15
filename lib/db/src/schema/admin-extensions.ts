@@ -141,6 +141,11 @@ export const assetProfilesTable = pgTable("asset_profiles", {
   serialNumber: varchar("serial_number", { length: 120 }),
   status: varchar("status", { length: 30 }).notNull().default("active"),
   notes: text("notes"),
+  // A removed depreciation profile never removes the asset/product itself.
+  deletedAt: timestamp("deleted_at"),
+  deletedBy: integer("deleted_by").references(() => staffTable.id),
+  deletedReason: text("deleted_reason"),
+  valueBeforeRemoval: text("value_before_removal"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

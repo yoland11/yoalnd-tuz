@@ -26,6 +26,7 @@ import {
   gte,
   ilike,
   inArray,
+  isNull,
   like,
   lt,
   lte,
@@ -340,6 +341,7 @@ export const ALL_PERMISSIONS = [
   "bookings",
   "services",
   "products",
+  "asset_depreciation_remove",
   "gallery",
   "delivery",
   "customers",
@@ -7242,6 +7244,7 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "created_at" timestamp not null default now()
       );
       alter table "asset_profiles" add column if not exists "serial_number" varchar(120);
+      alter table "asset_profiles" add column if not exists "deleted_at" timestamp, add column if not exists "deleted_by" integer references "staff"("id") on delete set null, add column if not exists "deleted_reason" text, add column if not exists "value_before_removal" text;
       create table if not exists "disaster_recovery_snapshots" (
         "id" serial primary key,
         "snapshot_no" varchar(50) not null unique,
@@ -12761,6 +12764,7 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "bookings",
     "services",
     "products",
+    "asset_depreciation_remove",
     "gallery",
     "delivery",
     "customers",
@@ -15938,18 +15942,20 @@ async function enterpriseCommandCenter() {
         'todayProfit', (select coalesce(total_sales::numeric - total_expenses::numeric,0) from daily_cash_reports, ctx where report_date = ctx.today limit 1),
         'criticalAlerts', (select count(*) from notifications where audience_type = 'admin' and archived_at is null and read_at is null and type ~* '(critical|overdue|low_stock|maintenance|payment)'),
         'openTasks', (select count(*) from tasks where archived_at is null and status not in ('completed','cancelled')),
-        'assetsRegistered', (select count(*) from asset_profiles),
+        'assetsRegistered', (select count(*) from asset_profiles where deleted_at is null),
         'assetsMaintenance', (
           select count(*) from asset_profiles
-          where status = 'maintenance'
+          where deleted_at is null and (status = 'maintenance'
             or (usage_count > 0 and usage_count % greatest(1, maintenance_every_uses) = 0)
+          )
         ),
-        'assetsLostOrLocked', (select count(*) from asset_profiles where status in ('lost','locked')),
+        'assetsLostOrLocked', (select count(*) from asset_profiles where deleted_at is null and status in ('lost','locked')),
         'assetsReplacementRecommended', (
           select count(*) from asset_profiles p
           left join asset_passports ap on ap.product_id = p.product_id
-          where p.usage_count::numeric / greatest(1, p.expected_life_uses) >= 0.85
+          where p.deleted_at is null and (p.usage_count::numeric / greatest(1, p.expected_life_uses) >= 0.85
              or (p.purchase_price::numeric > 0 and coalesce(ap.maintenance_cost, 0)::numeric >= p.purchase_price::numeric * 0.4)
+          )
         ),
         'branches', (select count(*) from enterprise_branches where is_active = true)
       ),
@@ -17028,7 +17034,8 @@ async function handleEnterpriseAdmin(
             limit: 10000,
           }),
         ]);
-      const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+      const profileMap = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+      const removedProfileMap = new Map(profiles.filter((row) => row.deletedAt).map((row) => [row.productId, row]));
       const passportMap = new Map(passports.map((row) => [row.productId, row]));
       const staffMap = new Map(staff.map((row) => [row.id, row]));
       const custodyMap = new Map<number, typeof custody>();
@@ -17048,14 +17055,15 @@ async function handleEnterpriseAdmin(
       const data = assetProducts.map((product) => {
         const passport = passportMap.get(product.id);
         const profile = profileMap.get(product.id);
+        const removedProfile = removedProfileMap.get(product.id);
         const metadata = assetMetadataObject(passport?.metadata);
         const events = timelineMap.get(product.id) ?? [];
         const purchasePrice = enterpriseNumber(
-          profile?.purchasePrice ?? product.costPrice,
+          profile?.purchasePrice ?? removedProfile?.purchasePrice ?? product.costPrice,
         );
         const currentValue = Math.max(
           0,
-          enterpriseNumber(profile?.currentValue ?? purchasePrice),
+          enterpriseNumber(profile ? profile.currentValue : purchasePrice),
         );
         const revenue = enterpriseNumber(passport?.revenueTotal);
         const maintenance = enterpriseNumber(passport?.maintenanceCost);
@@ -22450,6 +22458,32 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json({ ok: true, productId, status: nextStatus });
     }
 
+    if (parts[2] === "depreciation" && method === "DELETE") {
+      const removalAuth = await requirePermission(req, "asset_depreciation_remove");
+      if (isResponse(removalAuth)) return removalAuth;
+      const profileId = optionalPositiveId(parts[3]);
+      if (!profileId) return error("معرّف سجل الإهلاك مطلوب", 400);
+      const payload = await body(req);
+      const reason = String(payload?.reason ?? "").trim();
+      if (reason.length < 3) return error("سبب إزالة الإهلاك مطلوب", 400);
+      const profile = await db.query.assetProfilesTable.findFirst({
+        where: and(eq(assetProfilesTable.id, profileId), isNull(assetProfilesTable.deletedAt)),
+      });
+      if (!profile) return error("سجل الإهلاك غير موجود أو تمت إزالته مسبقاً", 404);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, profile.productId) });
+      if (!product) return error("الأصل المرتبط بسجل الإهلاك غير موجود", 404);
+      const purchaseValue = Math.max(0, Number(profile.purchasePrice ?? product.costPrice ?? 0));
+      const oldCurrentValue = Math.max(0, Number(profile.currentValue ?? 0));
+      const depreciationAmount = Math.max(0, purchaseValue - oldCurrentValue);
+      // Soft delete only the depreciation profile. Products, stock, bookings and financial history are untouched.
+      await db.update(assetProfilesTable).set({ deletedAt: new Date(), deletedBy: removalAuth.id, deletedReason: reason, valueBeforeRemoval: String(oldCurrentValue), updatedAt: new Date() }).where(eq(assetProfilesTable.id, profileId));
+      const metadata = { assetId: profile.productId, depreciationRecordId: profileId, oldDepreciationValue: depreciationAmount, oldCurrentValue, newAssetValue: purchaseValue, reason };
+      await addEntityTimeline({ entityType: "asset", entityId: profile.productId, type: "depreciation_removed", title: "Depreciation record removed", body: `تمت إزالة سجل الإهلاك وإعادة قيمة الأصل إلى ${formatCurrency(purchaseValue)}. السبب: ${reason}`, actor: erpActorFromAdmin(removalAuth), metadata });
+      await logAdminActivity(req, "asset_depreciation_removed", "asset_depreciation", profileId, { ...metadata, name: product.nameAr || product.name, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      return json({ ok: true, assetId: profile.productId, depreciationRecordId: profileId, restoredAssetValue: purchaseValue, totalDepreciationRemoved: depreciationAmount });
+    }
+
     if (parts[2] === "depreciation" && method === "POST") {
       const payload = await body(req);
       const productId = optionalPositiveId(payload?.productId);
@@ -22981,6 +23015,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         serialNumber,
         status,
         notes,
+        deletedAt: null,
+        deletedBy: null,
+        deletedReason: null,
+        valueBeforeRemoval: null,
         updatedAt: new Date(),
       };
       if (existing) {
@@ -23057,25 +23095,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       db.query.assetProfilesTable.findMany({ limit: 500 }),
       db.query.assetPassportsTable.findMany({ limit: 500 }),
     ]);
-    const profileByProduct = new Map(
-      profiles.map((row) => [row.productId, row]),
-    );
+    const profileByProduct = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+    const removedProfileByProduct = new Map(profiles.filter((row) => row.deletedAt).map((row) => [row.productId, row]));
     const passportByProduct = new Map(
       passports.map((row) => [row.productId, row]),
     );
     return json({
       data: products.map((product) => {
         const profile = profileByProduct.get(product.id);
+        const removedProfile = removedProfileByProduct.get(product.id);
         const passport = passportByProduct.get(product.id);
         const purchasePrice = Number(
-          profile?.purchasePrice ?? product.costPrice ?? 0,
+          profile?.purchasePrice ?? removedProfile?.purchasePrice ?? product.costPrice ?? 0,
         );
         const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
         const usageCount = Number(profile?.usageCount ?? 0);
         const currentValue = Math.max(
           0,
           Number(
-            profile?.currentValue ??
+            profile ? profile.currentValue :
               purchasePrice -
                 (purchasePrice * Math.min(usageCount, expectedLifeUses)) /
                   expectedLifeUses,
@@ -23084,6 +23122,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const serialNumber = profile?.serialNumber ?? null;
         return {
           productId: product.id,
+          depreciationRecordId: profile?.id ?? null,
+          depreciationRecordDate: profile?.updatedAt?.toISOString?.() ?? null,
+          hasDepreciationRecord: Boolean(profile),
           name: product.nameAr || product.name,
           purchasePrice,
           expectedLifeUses,
