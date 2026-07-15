@@ -63,6 +63,7 @@ const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
 const EmployeeAdvancesPage = lazy(() => import("./employee-advances"));
+const PayrollHistoryPage = lazy(() => import("./payroll-history"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
 const TasksPage = lazy(() => import("./tasks"));
 const AttendancePage = lazy(() => import("./attendance"));
@@ -635,6 +636,9 @@ export default function Admin() {
           </Route>
           <Route path="/admin/hr">
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
+          <Route path="/admin/payroll-history">
+            {() => (<Guard me={me} perm="hr"><PayrollHistoryPage /></Guard>)}
           </Route>
           <Route path="/admin/payroll/:payrollId">
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}

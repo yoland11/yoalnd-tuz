@@ -20021,6 +20021,17 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         void logAdminActivity(req, "bonus_applied", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(result);
       }
+      if (method === "POST" && id && parts[4] === "cancel") {
+        if (!hasPermission(auth, "bonus_reverse") && !adminOnly()) return error("لا تملك صلاحية إلغاء اعتماد المكافأة", 403);
+        const payload = await body(req);
+        const reason = String(payload?.reason || "").trim();
+        if (reason.length < 3) return error("سبب الإلغاء مطلوب", 400);
+        const before = await validateBonus(id);
+        const result = await reverseBonus(id, actor, { reason });
+        void logAdminActivity(req, "bonus_approval_cancelled", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_approval_cancelled", title: "تم إلغاء اعتماد المكافأة", body: reason, actor: erpActorFromAdmin(auth) });
+        return json(result);
+      }
       if (method === "POST" && parts[3] === "evaluate") {
         if (!adminOnly()) return error("ليس لديك صلاحية", 403);
         const result = await evaluateAutomaticIncentives(String((await body(req))?.period || "") || undefined);
