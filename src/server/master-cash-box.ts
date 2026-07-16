@@ -86,6 +86,7 @@ export const financialTransactionListSchema = z.object({
 });
 
 const ACCOUNT_SEEDS = [
+  ["1200", "ذمم العملاء", "asset", null],
   ["1300", "Employee advances", "asset", "hr"],
   ["5070", "Payroll and incentives", "expense", "hr"],
   ["5071", "Bonus expense", "expense", "hr"],
@@ -334,6 +335,9 @@ function counterAccountCode(
   department: string,
   transactionType: string,
 ) {
+  // A receipt settles a customer receivable; it is not a second sale/revenue.
+  // The charge remains in its originating booking/invoice journal.
+  if (transactionType === "receipt_voucher") return "1200";
   if (
     transactionType === "employee_advance" ||
     transactionType === "employee_advance_repayment"
@@ -617,6 +621,87 @@ export function canApproveFinancialTransactions(actor: FinancialActor) {
   return actor.role === "admin" || actor.role === "manager";
 }
 
+/** Posts the receipt plan inside the same transaction as cashbox and journal. */
+async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount: number) {
+  const result = await tx.execute(sql`
+    SELECT id, customer_id, source_type, source_id, amount::numeric AS amount
+    FROM receipt_voucher_allocations
+    WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL
+    ORDER BY id FOR UPDATE
+  `);
+  const allocations = (result.rows ?? []) as Array<{ id: number; customer_id: number; source_type: string; source_id: number | null; amount: string }>;
+  if (!allocations.length)
+    throw new Error("لا توجد توزيعات لسند القبض. اربط السند بمعاملة أو احفظه كرصيد للعميل.");
+  const allocated = money(allocations.reduce((sum, row) => sum + money(row.amount), 0));
+  if (Math.abs(allocated - amount) >= 0.01)
+    throw new Error("إجمالي توزيعات سند القبض لا يساوي المبلغ المستلم.");
+
+  for (const allocation of allocations) {
+    const value = money(allocation.amount);
+    if (allocation.source_type === "customer_credit") continue;
+    if (!allocation.source_id) throw new Error("مرجع التوزيع غير صحيح.");
+    let updated: any;
+    if (allocation.source_type === "kosha_booking") {
+      updated = await tx.execute(sql`
+        UPDATE kosha_bookings
+        SET paid_amount = paid_amount::numeric + ${value},
+            remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+            payment_status = CASE
+              WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid'
+              WHEN paid_amount::numeric + ${value} > 0 THEN 'partial'
+              ELSE 'unpaid' END,
+            updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value}
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "sales_invoice") {
+      updated = await tx.execute(sql`
+        UPDATE sales_invoices SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else if (allocation.source_type === "order") {
+      updated = await tx.execute(sql`
+        UPDATE orders SET deposit_amount = deposit_amount::numeric + ${value},
+          remaining_amount = greatest(total::numeric - deposit_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total::numeric - deposit_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else if (allocation.source_type === "service_order") {
+      updated = await tx.execute(sql`
+        UPDATE service_orders SET deposit_amount = deposit_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - deposit_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - deposit_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END
+        WHERE id = ${allocation.source_id} AND remaining_amount::numeric >= ${value}
+          AND EXISTS (SELECT 1 FROM customers c WHERE c.id = ${allocation.customer_id}
+            AND regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(service_orders.phone, ''), '[^0-9]', '', 'g'))
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "graduation_order") {
+      updated = await tx.execute(sql`
+        UPDATE graduation_orders SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else {
+      throw new Error("نوع توزيع سند القبض غير مدعوم.");
+    }
+    if (!(updated.rows ?? []).length)
+      throw new Error("لا يمكن توزيع المبلغ لأن الرصيد المتبقي تغيّر أو أن السجل لا يتبع للعميل.");
+  }
+  await tx.execute(sql`UPDATE receipt_voucher_allocations SET posted_at = now() WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL`);
+  return allocations;
+}
+
 export async function approveAndExecuteFinancialTransaction(
   id: number,
   actor: FinancialActor,
@@ -781,6 +866,7 @@ export async function approveAndExecuteFinancialTransaction(
       .where(eq(masterCashBoxTable.id, Number(cashRaw.id)));
 
     const sourceId = Number(transaction.sourceId);
+    let receiptAllocations: any[] = [];
     if (Number.isInteger(sourceId) && sourceId > 0) {
       if (transaction.sourceType === "expense") {
         await tx.execute(
@@ -790,6 +876,7 @@ export async function approveAndExecuteFinancialTransaction(
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+        receiptAllocations = await postReceiptVoucherAllocations(tx, sourceId, amount);
       } else if (transaction.sourceType === "payment_voucher") {
         await tx.execute(
           sql`UPDATE payment_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
@@ -816,6 +903,15 @@ export async function approveAndExecuteFinancialTransaction(
         newValues: { balance: after, debit: amount, credit: amount },
         reason: note?.trim() || null,
       },
+      ...(receiptAllocations.length ? [{
+        transactionId: id,
+        action: "receipt_allocations_posted",
+        actorId: actor.id,
+        actorName: actor.name,
+        oldValues: {},
+        newValues: { voucherId: sourceId, allocations: receiptAllocations.map((row) => ({ sourceType: row.source_type, sourceId: row.source_id, amount: money(row.amount) })) },
+        reason: null,
+      }] : []),
     ]);
     return saved;
   });

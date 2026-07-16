@@ -100,6 +100,7 @@ import {
   productsTable,
   rentalOrdersTable,
   receiptVouchersTable,
+  receiptVoucherAllocationsTable,
   reviewsTable,
   serviceOrdersTable,
   serviceOrderStatusHistoryTable,
@@ -15097,7 +15098,7 @@ async function handleAdminKoshas(
           where: eq(koshaPaymentRequestsTable.bookingId, id),
           orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
         });
-        const txRows = await db.query.financialTransactionsTable.findMany({
+        const directTransactions = await db.query.financialTransactionsTable.findMany({
           where: or(
             and(
               eq(financialTransactionsTable.sourceType, "kosha_booking"),
@@ -15107,6 +15108,34 @@ async function handleAdminKoshas(
           ),
           orderBy: [desc(financialTransactionsTable.createdAt)],
         });
+        // Receipt vouchers are the cashbox source, while this allocation is the
+        // booking link. Include them in payment history without relying on a
+        // booking number or customer name embedded in a reference field.
+        const receiptTransactionsResult = await db.execute(sql`
+          SELECT ft.* FROM receipt_voucher_allocations a
+          JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
+          JOIN financial_transactions ft ON ft.id = rv.financial_transaction_id
+          WHERE a.source_type = 'kosha_booking' AND a.source_id = ${id}
+          ORDER BY ft.created_at DESC
+        `);
+        const receiptTransactions = ((receiptTransactionsResult.rows ?? []) as any[]).map((row) => ({
+          ...row,
+          transactionNo: row.transaction_no,
+          transactionDate: row.transaction_date,
+          approvalStatus: row.approval_status,
+          paymentMethod: row.payment_method,
+          sourceType: row.source_type,
+          sourceId: row.source_id,
+          requestedByName: row.requested_by_name,
+          approvedByName: row.approved_by_name,
+          balanceBefore: row.balance_before,
+          balanceAfter: row.balance_after,
+          sourceEvent: row.source_event,
+          transactionType: row.transaction_type,
+          createdAt: row.created_at,
+        }));
+        const txRows = [...directTransactions, ...receiptTransactions.filter((row) => !directTransactions.some((transaction) => transaction.id === row.id))]
+          .sort((left: any, right: any) => String(right.createdAt ?? right.created_at ?? "").localeCompare(String(left.createdAt ?? left.created_at ?? ""))) as any[];
         const journalRows = txRows.length
           ? await db.query.financialLedgerEntriesTable.findMany({
               where: inArray(financialLedgerEntriesTable.transactionId, txRows.map((t) => t.id)),
@@ -31284,6 +31313,18 @@ async function ensureAccountingVoucherTables() {
           ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer,
           ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
 
+        CREATE TABLE IF NOT EXISTS "receipt_voucher_allocations" (
+          "id" serial PRIMARY KEY,
+          "receipt_voucher_id" integer NOT NULL REFERENCES "receipt_vouchers" ("id") ON DELETE CASCADE,
+          "customer_id" integer NOT NULL REFERENCES "customers" ("id"),
+          "source_type" varchar(40) NOT NULL,
+          "source_id" integer,
+          "amount" numeric(14,2) NOT NULL CHECK ("amount" > 0),
+          "posted_at" timestamp,
+          "created_at" timestamp NOT NULL DEFAULT now(),
+          CHECK (("source_type" = 'customer_credit' AND "source_id" IS NULL) OR ("source_type" <> 'customer_credit' AND "source_id" IS NOT NULL))
+        );
+
         ALTER TABLE "payment_vouchers"
           ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
           ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
@@ -31311,6 +31352,10 @@ async function ensureAccountingVoucherTables() {
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_approval_status_idx" ON "receipt_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_financial_transaction_id_idx" ON "receipt_vouchers" ("financial_transaction_id");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_kosha_booking_idx" ON "receipt_vouchers" ("kosha_booking_id");
+        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id", "source_type", "source_id") WHERE "source_id" IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_credit_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id") WHERE "source_type" = 'customer_credit';
+        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_customer_idx" ON "receipt_voucher_allocations" ("customer_id", "posted_at");
+        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_idx" ON "receipt_voucher_allocations" ("source_type", "source_id", "posted_at");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_approval_status_idx" ON "payment_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_financial_transaction_id_idx" ON "payment_vouchers" ("financial_transaction_id");
       `),
@@ -31884,6 +31929,10 @@ async function handleCollections(
   let createdFinancial: any = null;
 
   try {
+    if (data.sourceType === "kosha_booking" && before.customerId) {
+      await db.update(koshaBookingsTable).set({ customerId: before.customerId, updatedAt: new Date() })
+        .where(and(eq(koshaBookingsTable.id, data.sourceId), isNull(koshaBookingsTable.customerId)));
+    }
     if (data.sourceType === "order") {
       await db.update(ordersTable).set({
         depositAmount: String(paid),
@@ -31911,19 +31960,9 @@ async function handleCollections(
         updatedAt: new Date(),
       }).where(eq(salesInvoicesTable.id, data.sourceId));
     } else {
-      await db.update(koshaBookingsTable).set({
-        paidAmount: String(paid),
-        remainingAmount: String(remaining),
-        paymentStatus,
-        bookingDetails: {
-          ...((before.source.bookingDetails ?? {}) as Record<string, unknown>),
-          pricing: {
-            ...(((before.source.bookingDetails as any)?.pricing ?? {}) as Record<string, unknown>),
-            paymentMethod: sourceMethod,
-          },
-        },
-        updatedAt: new Date(),
-      }).where(eq(koshaBookingsTable.id, data.sourceId));
+      // Kosha collection is posted by the receipt-voucher allocation when the
+      // financial request is executed.  Do not mutate the booking while the
+      // receipt is still awaiting approval.
     }
 
     const [voucher] = await db.insert(receiptVouchersTable).values({
@@ -31949,6 +31988,15 @@ async function handleCollections(
     const [savedVoucher] = await db.update(receiptVouchersTable).set({
       voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
     }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
+    if (data.sourceType === "kosha_booking" && before.customerId) {
+      await db.insert(receiptVoucherAllocationsTable).values({
+        receiptVoucherId: savedVoucher.id,
+        customerId: before.customerId,
+        sourceType: "kosha_booking",
+        sourceId: data.sourceId,
+        amount: String(amount),
+      });
+    }
 
     const updated = await collectionSourceSummary(data.sourceType, data.sourceId);
     let financialTransaction: any = null;
@@ -31958,7 +32006,24 @@ async function handleCollections(
       else if (data.sourceType === "service_order")
         financialTransaction = await syncServiceOrderFinancialPayment(updated.source, financialActor(currentUser));
       else if (data.sourceType === "kosha_booking")
-        financialTransaction = await syncKoshaFinancialPayment(updated.source, financialActor(currentUser));
+        financialTransaction = await createSourceFinancialRequest({
+          transactionDate: savedVoucher.date,
+          direction: "revenue",
+          amount,
+          department: "koshas",
+          transactionType: "receipt_voucher",
+          description: `سند قبض لحجز كوشة ${before.reference}`,
+          paymentMethod: sourceMethod,
+          sourceType: "receipt_voucher",
+          sourceId: savedVoucher.id,
+          sourceEvent: "payment",
+          idempotencyKey: `receipt_voucher:${savedVoucher.id}:payment`,
+          customerId: before.customerId,
+          customerName: before.customerName,
+          customerPhone: before.customerPhone,
+          notes: data.notes,
+          attachments: [],
+        }, financialActor(currentUser));
       else
         financialTransaction = await syncSourcePaymentTarget({
           sourceType: "sales_invoice",
@@ -35629,6 +35694,12 @@ const receiptVoucherMutationSchema = z.object({
     .preprocess(optionalPositiveId, z.number().int().positive().nullable())
     .optional()
     .default(null),
+  allocations: z.array(z.object({
+    sourceType: z.enum(["kosha_booking", "sales_invoice", "order", "service_order", "graduation_order"]),
+    sourceId: z.coerce.number().int().positive(),
+    amount: voucherAmountSchema,
+  })).max(100).optional().default([]),
+  saveRemainderAsCredit: z.boolean().optional().default(false),
   reference: z.string().trim().optional().default(""),
   method: voucherMethodSchema.default("cash"),
   department: financeDepartmentSchema.default("general"),
@@ -35922,6 +35993,79 @@ async function handleAccounting(
       );
     }
     if (method === "GET") {
+      if (parts[2] === "reconciliation") {
+        if (!(auth.role === "admin" || auth.role === "manager")) return error("مراجعة الربط متاحة للمدير فقط.", 403);
+        const review = await db.execute(sql`
+          SELECT rv.id, rv.voucher_no, rv.date::text AS date, rv.payer_name, rv.amount::float AS amount,
+            rv.customer_id, rv.kosha_booking_id, rv.financial_transaction_id, rv.approval_status,
+            c.name AS customer_name,
+            kb.id AS possible_booking_id, kb.tracking_code AS possible_booking_no,
+            CASE WHEN rv.customer_id IS NULL THEN 'missing_customer'
+              WHEN NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a WHERE a.receipt_voucher_id = rv.id) THEN 'unallocated'
+              WHEN rv.financial_transaction_id IS NULL THEN 'missing_financial_link'
+              ELSE 'linked' END AS status
+          FROM receipt_vouchers rv
+          LEFT JOIN customers c ON c.id = rv.customer_id
+          LEFT JOIN LATERAL (
+            SELECT b.id, b.tracking_code FROM kosha_bookings b
+            WHERE (rv.customer_id IS NOT NULL AND b.customer_id = rv.customer_id)
+              AND b.remaining_amount::numeric > 0 AND b.archived_at IS NULL
+            ORDER BY b.created_at DESC LIMIT 1
+          ) kb ON true
+          WHERE rv.approval_status <> 'cancelled'
+          ORDER BY CASE WHEN rv.customer_id IS NULL THEN 0 WHEN NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a WHERE a.receipt_voucher_id = rv.id) THEN 1 ELSE 2 END, rv.date DESC
+          LIMIT 1000
+        `);
+        return json((review.rows ?? []).map((row: any) => ({
+          voucherId: row.id, voucherNo: row.voucher_no, customer: row.customer_name ?? row.payer_name,
+          customerId: row.customer_id ?? null,
+          amount: money(row.amount), possibleBooking: row.possible_booking_id ? { id: row.possible_booking_id, number: row.possible_booking_no } : null,
+          currentLink: row.kosha_booking_id ? `kosha:${row.kosha_booking_id}` : row.customer_id ? `customer:${row.customer_id}` : "غير مرتبط",
+          suggestedLink: row.possible_booking_id ? `kosha:${row.possible_booking_id}` : null, status: row.status,
+        })));
+      }
+      if (parts[2] === "open-records") {
+        const customerId = int(req.nextUrl.searchParams.get("customerId") ?? undefined);
+        if (!customerId) return error("العميل مطلوب", 400);
+        const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+        if (!customer) return error("العميل غير موجود", 404);
+        const rows = await db.execute(sql`
+          SELECT * FROM (
+            SELECT 'kosha_booking'::text AS source_type, id AS source_id, coalesce(tracking_code, 'KB-' || id) AS reference,
+              created_at::date::text AS date, total_amount::float AS total, paid_amount::float AS paid, remaining_amount::float AS remaining,
+              due_date::text AS due_date, payment_status AS status
+            FROM kosha_bookings WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'sales_invoice', id, invoice_no, date::text, total::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM sales_invoices WHERE customer_id = ${customerId} AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'order', id, tracking_code, created_at::date::text, total::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at::date::text, total_amount::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM service_orders WHERE phone = ${customer.phone} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'graduation_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM graduation_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+          ) records ORDER BY date DESC, source_id DESC
+        `);
+        const records = (rows.rows ?? []) as any[];
+        const credit = await db.execute(sql`
+          SELECT coalesce(sum(amount::numeric), 0)::float AS total
+          FROM receipt_voucher_allocations WHERE customer_id = ${customerId}
+            AND source_type = 'customer_credit' AND posted_at IS NOT NULL
+        `);
+        const totalOutstanding = money(records.reduce((sum, row) => sum + money(row.remaining), 0));
+        return json({
+          records,
+          summary: {
+            totalOutstanding,
+            totalKoshaOutstanding: money(records.filter((r) => r.source_type === "kosha_booking").reduce((s, r) => s + money(r.remaining), 0)),
+            totalStoreOutstanding: money(records.filter((r) => ["sales_invoice", "order"].includes(r.source_type)).reduce((s, r) => s + money(r.remaining), 0)),
+            availableCustomerCredit: money((credit.rows?.[0] as any)?.total),
+          },
+        });
+      }
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
       const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
@@ -35980,6 +36124,37 @@ async function handleAccounting(
       );
     }
     if (method === "POST") {
+      if (parts[2] === "reconciliation") {
+        if (!(auth.role === "admin" || auth.role === "manager")) return error("ربط السندات القديمة متاح للمدير فقط.", 403);
+        const payload = z.object({ voucherId: z.coerce.number().int().positive(), customerId: z.coerce.number().int().positive(), koshaBookingId: z.coerce.number().int().positive() }).safeParse(await body(req));
+        if (!payload.success) return validationError("receipt-vouchers.reconciliation", payload);
+        try {
+          const linked = await db.transaction(async (tx) => {
+            const voucherRows = await tx.execute(sql`SELECT * FROM receipt_vouchers WHERE id = ${payload.data.voucherId} FOR UPDATE`);
+            const voucher = (voucherRows.rows?.[0] ?? null) as any;
+            if (!voucher) throw new Error("سند القبض غير موجود.");
+            const bookingRows = await tx.execute(sql`SELECT * FROM kosha_bookings WHERE id = ${payload.data.koshaBookingId} AND customer_id = ${payload.data.customerId} FOR UPDATE`);
+            const booking = (bookingRows.rows?.[0] ?? null) as any;
+            if (!booking) throw new Error("حجز الكوشة لا يتبع للعميل المحدد.");
+            const existing = await tx.execute(sql`SELECT id FROM receipt_voucher_allocations WHERE receipt_voucher_id = ${voucher.id} FOR UPDATE`);
+            if ((existing.rows ?? []).length) throw new Error("هذا السند مرتبط بالفعل ولا يمكن ربطه مرتين.");
+            const amount = money(voucher.amount);
+            if (amount > money(booking.remaining_amount)) throw new Error("مبلغ السند أكبر من المتبقي في الحجز. راجع التوزيع يدوياً.");
+            const posted = voucher.approval_status === "executed" ? new Date() : null;
+            await tx.execute(sql`INSERT INTO receipt_voucher_allocations(receipt_voucher_id, customer_id, source_type, source_id, amount, posted_at) VALUES (${voucher.id}, ${payload.data.customerId}, 'kosha_booking', ${booking.id}, ${amount}, ${posted})`);
+            await tx.execute(sql`UPDATE receipt_vouchers SET customer_id = ${payload.data.customerId}, kosha_booking_id = ${booking.id} WHERE id = ${voucher.id}`);
+            if (posted) await tx.execute(sql`
+              UPDATE kosha_bookings SET paid_amount = paid_amount::numeric + ${amount},
+                remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${amount}, 0),
+                payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${amount} <= 0 THEN 'paid' ELSE 'partial' END,
+                updated_at = now() WHERE id = ${booking.id} AND remaining_amount::numeric >= ${amount}
+            `);
+            return { voucherNo: voucher.voucher_no, posted: !!posted };
+          });
+          void logAdminActivity(req, "receipt_voucher_reconciled", "receipt_voucher", payload.data.voucherId, { customerId: payload.data.customerId, koshaBookingId: payload.data.koshaBookingId });
+          return json({ ok: true, ...linked });
+        } catch (err: any) { return error(err?.message || "تعذر ربط السند القديم.", 409); }
+      }
       const parsed = receiptVoucherMutationSchema.safeParse(await body(req));
       if (!parsed.success)
         return validationError("receipt-vouchers.create", parsed);
@@ -35996,19 +36171,59 @@ async function handleAccounting(
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
         customer = await findCustomerByPhone(normalizedPhone);
       }
+      if (!customer)
+        return error("اختيار العميل إلزامي لسند القبض لضمان ربط الذمة والحجوزات بصورة صحيحة.", 400);
+      const allocatedAmount = money(
+        b.allocations.reduce((sum, allocation) => sum + money(allocation.amount), 0),
+      );
+      if (allocatedAmount > money(b.amount))
+        return error("إجمالي التوزيع أكبر من المبلغ المستلم. وزّع المتبقي على سجل آخر أو احفظه كرصيد للعميل.", 400);
+      if (allocatedAmount < money(b.amount) && !b.saveRemainderAsCredit)
+        return error("يوجد مبلغ غير موزع. اختر سجلاً آخر أو احفظ المتبقي كرصيد للعميل.", 400);
+      if (!b.allocations.length && !b.saveRemainderAsCredit)
+        return error("اختر سجلاً لتطبيق سند القبض عليه أو احفظه كرصيد للعميل.", 400);
+      for (const allocation of b.allocations) {
+        if (allocation.sourceType === "kosha_booking") {
+          const booking = await db.query.koshaBookingsTable.findFirst({
+            where: and(eq(koshaBookingsTable.id, allocation.sourceId), eq(koshaBookingsTable.customerId, customer.id)),
+          });
+          if (!booking) return error("حجز الكوشة المحدد لا يتبع للعميل المختار.", 400);
+          if (money(allocation.amount) > money(booking.remainingAmount))
+            return error(`مبلغ حجز الكوشة أكبر من المتبقي (${formatCurrency(booking.remainingAmount)}).`, 400);
+        } else if (allocation.sourceType === "sales_invoice") {
+          const row = await db.query.salesInvoicesTable.findFirst({ where: and(eq(salesInvoicesTable.id, allocation.sourceId), eq(salesInvoicesTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الفاتورة المحددة لا تتبع للعميل أو أن مبلغها أكبر من المتبقي.", 400);
+        } else if (allocation.sourceType === "order") {
+          const row = await db.query.ordersTable.findFirst({ where: and(eq(ordersTable.id, allocation.sourceId), eq(ordersTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الطلب المحدد لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        } else if (allocation.sourceType === "graduation_order") {
+          const row = await db.query.graduationOrdersTable.findFirst({ where: and(eq(graduationOrdersTable.id, allocation.sourceId), eq(graduationOrdersTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("طلب التخرج لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        } else {
+          const row = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, allocation.sourceId) });
+          if (!row || normalizeIraqiPhone(row.phone) !== normalizeIraqiPhone(customer.phone) || money(allocation.amount) > money(row.remainingAmount))
+            return error("طلب الخدمة لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        }
+      }
+      const allocationRows = [
+        ...b.allocations,
+        ...(allocatedAmount < money(b.amount)
+          ? [{ sourceType: "customer_credit" as const, sourceId: null, amount: money(money(b.amount) - allocatedAmount) }]
+          : []),
+      ];
       const a = actor(auth);
       try {
         await ensureMasterCashBoxTables();
-        const [row] = await db
-          .insert(receiptVouchersTable)
-          .values({
+        const updated = await db.transaction(async (tx) => {
+          const [row] = await tx.insert(receiptVouchersTable).values({
             voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
-            payerName: textFallback(b.payerName, customer?.name, "زبون"),
-            customerId: customer?.id ?? null,
+            payerName: textFallback(b.payerName, customer.name, "زبون"),
+            customerId: customer.id,
             orderId: b.orderId ?? null,
             bookingId: b.bookingId ?? null,
+            koshaBookingId: b.allocations.length === 1 && b.allocations[0].sourceType === "kosha_booking" ? b.allocations[0].sourceId : null,
             reference: nullableText(b.reference),
             method: b.method,
             notes: nullableText(b.notes),
@@ -36016,11 +36231,20 @@ async function handleAccounting(
             createdByName: a.name,
           })
           .returning();
-        const [updated] = await db
+          const [updated] = await tx
           .update(receiptVouchersTable)
           .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
           .where(eq(receiptVouchersTable.id, row.id))
           .returning();
+          await tx.insert(receiptVoucherAllocationsTable).values(allocationRows.map((allocation) => ({
+            receiptVoucherId: updated.id,
+            customerId: customer.id,
+            sourceType: allocation.sourceType,
+            sourceId: allocation.sourceId,
+            amount: String(allocation.amount),
+          })));
+          return updated;
+        });
         const financialTransaction = await createSourceFinancialRequest(
           {
             transactionDate: updated.date,
@@ -36701,7 +36925,7 @@ async function handleAccounting(
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
       const phoneVariants = iraqiPhoneVariants(phone);
-      const [orders, bookings, koshaBookings, receipts, salesInvoices] = await Promise.all([
+      const [orders, bookings, koshaBookings, receipts, salesInvoices, receiptAllocations] = await Promise.all([
         db
           .select({
             id: ordersTable.id,
@@ -36753,6 +36977,7 @@ async function handleAccounting(
         customer
           ? db
               .select({
+                id: receiptVouchersTable.id,
                 voucherNo: receiptVouchersTable.voucherNo,
                 date: receiptVouchersTable.date,
                 amount: receiptVouchersTable.amount,
@@ -36790,6 +37015,17 @@ async function handleAccounting(
             ),
           )
           .orderBy(desc(salesInvoicesTable.createdAt)),
+        customer
+          ? db.execute(sql`
+              SELECT a.source_type, a.source_id, a.amount::float AS amount, a.posted_at,
+                rv.id AS voucher_id, rv.voucher_no, rv.date::text AS date, rv.method,
+                rv.financial_transaction_id
+              FROM receipt_voucher_allocations a
+              JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
+              WHERE a.customer_id = ${customer.id} AND a.posted_at IS NOT NULL
+              ORDER BY rv.date, a.id
+            `)
+          : Promise.resolve({ rows: [] } as any),
       ]);
       type Entry = {
         date: string;
@@ -36801,6 +37037,11 @@ async function handleAccounting(
         href: string | null;
       };
       const entries: Entry[] = [];
+      const postedAllocations = ((receiptAllocations as any)?.rows ?? []) as any[];
+      const allocatedReceiptIds = new Set(postedAllocations.map((row) => Number(row.voucher_id)));
+      const koshaAllocated = new Map<number, number>();
+      for (const allocation of postedAllocations) if (allocation.source_type === "kosha_booking" && allocation.source_id != null)
+        koshaAllocated.set(Number(allocation.source_id), money((koshaAllocated.get(Number(allocation.source_id)) ?? 0) + money(allocation.amount)));
       for (const o of orders) {
         entries.push({
           date: o.createdAt.toISOString(),
@@ -36830,7 +37071,7 @@ async function handleAccounting(
           ref: b.trackingCode ?? `KB-${b.id}`,
           description: "حجز كوشة",
           debit: Number.parseFloat(b.totalAmount ?? "0"),
-          credit: Number.parseFloat(b.paidAmount ?? "0"),
+          credit: Math.max(0, Number.parseFloat(b.paidAmount ?? "0") - (koshaAllocated.get(b.id) ?? 0)),
           href: `/admin/kosha-bookings?booking=${b.id}`,
         });
       }
@@ -36862,6 +37103,7 @@ async function handleAccounting(
           });
       }
       for (const r of receipts) {
+        if (allocatedReceiptIds.has(r.id)) continue;
         if (r.orderId || r.bookingId || r.koshaBookingId) continue;
         // Kosha receipts are linked by their KB-* reference until legacy
         // receipt_vouchers gains a dedicated kosha_booking_id column. The
@@ -36876,6 +37118,18 @@ async function handleAccounting(
           debit: 0,
           credit: Number.parseFloat(r.amount),
           href: null,
+        });
+      }
+      for (const allocation of postedAllocations) {
+        const sourceLabel = allocation.source_type === "kosha_booking" ? "حجز كوشة" : allocation.source_type === "sales_invoice" ? "فاتورة" : allocation.source_type === "customer_credit" ? "رصيد العميل" : "توزيع دفعة";
+        entries.push({
+          date: new Date(allocation.date).toISOString(),
+          kind: "receipt",
+          ref: allocation.voucher_no,
+          description: `سند قبض وتوزيع على ${sourceLabel}`,
+          debit: 0,
+          credit: Number(allocation.amount),
+          href: `/admin/accounting?tab=receipts`,
         });
       }
       entries.sort((a, b) => a.date.localeCompare(b.date));

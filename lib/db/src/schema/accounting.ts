@@ -33,6 +33,22 @@ export const receiptVouchersTable = pgTable("receipt_vouchers", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+/**
+ * The allocation is the source of truth for where a receipt was applied.  A
+ * voucher can be split across several documents; the voucher header must not
+ * be used as the allocation ledger.
+ */
+export const receiptVoucherAllocationsTable = pgTable("receipt_voucher_allocations", {
+  id: serial("id").primaryKey(),
+  receiptVoucherId: integer("receipt_voucher_id").notNull().references(() => receiptVouchersTable.id, { onDelete: "cascade" }),
+  customerId: integer("customer_id").notNull().references(() => customersTable.id),
+  sourceType: varchar("source_type", { length: 40 }).notNull(),
+  sourceId: integer("source_id"),
+  amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  postedAt: timestamp("posted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const paymentVouchersTable = pgTable("payment_vouchers", {
   id: serial("id").primaryKey(),
   voucherNo: varchar("voucher_no", { length: 30 }).notNull().unique(),
@@ -72,6 +88,7 @@ export const expensesTable = pgTable("expenses", {
 });
 
 export type ReceiptVoucher = typeof receiptVouchersTable.$inferSelect;
+export type ReceiptVoucherAllocation = typeof receiptVoucherAllocationsTable.$inferSelect;
 export type PaymentVoucher = typeof paymentVouchersTable.$inferSelect;
 export type Expense = typeof expensesTable.$inferSelect;
 export type ExpenseCategory = typeof expenseCategoriesTable.$inferSelect;
