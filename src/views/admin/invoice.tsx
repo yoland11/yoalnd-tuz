@@ -1,37 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { useRoute, useSearch } from "wouter";
-import { Printer, ArrowRight, Download, QrCode } from "lucide-react";
+import { ArrowRight, Download, Printer } from "lucide-react";
 import { adminFetch, fetchAdminMe, hasPerm } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { SelectedColorLabel } from "@/components/product-colors";
 import { downloadElementPdf } from "@/lib/pdf";
-import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
-import { formatCurrency, formatMoney } from "@/lib/money";
+import { luxuryDuplicateInvoiceCss } from "./print-helpers";
+import { formatCurrency } from "@/lib/money";
 
 type InvoiceData = any;
 
-const PAYMENT_LABELS_AR: Record<string, string> = {
-  cod: "عند الاستلام",
-  transfer: "حوالة",
-  paid: "مدفوع",
-};
-const PAYMENT_STATUS_AR: Record<string, string> = {
-  unpaid: "غير مدفوع",
-  partial: "جزئي",
-  paid: "مدفوع",
-};
+const paymentLabels: Record<string, string> = { cash: "نقد", cod: "نقد", transfer: "تحويل بنكي", paid: "مدفوع", card: "بطاقة", pos: "Qi Card" };
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
-  const search = useSearch();
-  const type = new URLSearchParams(search).get("type") === "booking" ? "booking" : "order";
-  const id = params?.id ? parseInt(params.id) : 0;
+  const type = new URLSearchParams(useSearch()).get("type") === "booking" ? "booking" : "order";
+  const id = params?.id ? Number(params.id) : 0;
   const [data, setData] = useState<InvoiceData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [thermalSize, setThermalSize] = useState<"58mm" | "80mm">("80mm");
   const sheetRef = useRef<HTMLDivElement>(null);
   const { data: settings } = usePublicSettings();
 
@@ -40,262 +28,54 @@ export default function Invoice() {
     (async () => {
       const me = await fetchAdminMe();
       if (!alive) return;
-      if (!me || !hasPerm(me, "invoices")) {
-        window.location.href = "/admin/login";
-        return;
-      }
+      if (!me || !hasPerm(me, "invoices")) { window.location.href = "/admin/login"; return; }
       if (!id) { setLoading(false); return; }
-      try {
-        const res = await adminFetch(`/admin/invoices/${id}?type=${type}`);
-        if (alive) setData(res);
-      } catch (e: any) {
-        if (alive) setError(e?.message ?? String(e));
-      } finally {
-        if (alive) setLoading(false);
-      }
+      try { const result = await adminFetch(`/admin/invoices/${id}?type=${type}`); if (alive) setData(result); }
+      catch (cause: any) { if (alive) setError(cause?.message ?? String(cause)); }
+      finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
   }, [id, type]);
 
-  useEffect(() => {
-    if (!data) { document.title = "فاتورة"; return; }
-    const prefix = data.kind === "booking" ? "فاتورة حجز" : "فاتورة";
-    document.title = `${prefix} ${data.trackingCode ?? ""}`.trim();
-  }, [data]);
+  useEffect(() => { if (data) document.title = `فاتورة ${data.trackingCode ?? data.id}`; }, [data]);
 
   async function downloadPdf() {
     if (!sheetRef.current || !data) return;
     setDownloading(true);
-    try {
-      const el = sheetRef.current;
-      // Thermal-width PDF (80mm) with height tracking the content — no A4 whitespace.
-      const heightMm = Math.max(120, Math.round((el.offsetHeight * 25.4) / 96) + 6);
-      const filename = `${data.kind === "booking" ? "booking" : "invoice"}-${data.trackingCode ?? data.id}.pdf`;
-      await downloadElementPdf(el, filename, { format: [80, heightMm], margin: 2 });
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "تعذر تحميل PDF، جرّب الطباعة أو إعادة المحاولة.");
-    } finally {
-      setDownloading(false);
-    }
+    try { await downloadElementPdf(sheetRef.current, `ajn-invoice-${data.trackingCode ?? data.id}.pdf`, { format: "a4", margin: 0 }); }
+    catch (cause) { alert(cause instanceof Error ? cause.message : "تعذر إنشاء ملف PDF."); }
+    finally { setDownloading(false); }
   }
 
-  function invoiceAmount() {
-    if (!data) return 0;
-    return data.kind === "booking" ? Number(data.price ?? 0) : Number(data.total ?? 0);
-  }
-
-  function printQrOnly() {
-    if (!data) return;
-    try {
-      openQrPrintWindow({
-        qrDataUrl: data.qr?.dataUrl,
-        customerName: data.customerName,
-        amount: invoiceAmount(),
-        title: data.kind === "booking" ? "QR الحجز" : "QR الطلب",
-        paperSize: "80mm",
-      });
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "تعذر طباعة QR");
-    }
-  }
-
-  function downloadQrImage() {
-    if (!data) return;
-    try {
-      downloadDataUrl(data.qr?.dataUrl, `qr-${data.trackingCode ?? data.id}.png`);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "تعذر تحميل QR");
-    }
-  }
-
-  if (loading) {
-    return <div className="min-h-dvh flex items-center justify-center text-muted-foreground" dir="rtl">جاري التحميل...</div>;
-  }
-  if (error || !data) {
-    return <div className="min-h-dvh flex items-center justify-center text-muted-foreground" dir="rtl">{type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود"}</div>;
-  }
+  if (loading) return <div className="flex min-h-dvh items-center justify-center text-muted-foreground" dir="rtl">جارٍ تحميل الفاتورة...</div>;
+  if (error || !data) return <div className="flex min-h-dvh items-center justify-center text-muted-foreground" dir="rtl">{type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود"}</div>;
 
   const isBooking = data.kind === "booking";
-  const subtotal = (data.items ?? []).reduce((s: number, i: any) => s + i.price * i.quantity, 0);
+  const rawItems = isBooking ? [{ id: "booking", productNameAr: data.serviceName ?? "باقة المناسبة", description: data.eventLocation ?? "خدمة مناسبات", quantity: 1, price: Number(data.price ?? 0) }] : data.items ?? [];
+  const items = rawItems.slice(0, 4);
+  const total = Number(isBooking ? data.price : data.total) || 0;
+  const subtotal = isBooking ? total : rawItems.reduce((sum: number, item: any) => sum + Number(item.price ?? 0) * Number(item.quantity ?? 0), 0);
+  const paid = Number(isBooking ? data.deposit : data.depositAmount) || Math.max(0, total - (Number(data.remainingAmount ?? data.balance) || total));
+  const remaining = Number(isBooking ? data.balance : data.remainingAmount) || Math.max(0, total - paid);
+  const delivery = isBooking ? 0 : Number(data.deliveryFee) || 0;
+  const discount = Math.max(0, subtotal + delivery - total);
 
-  return (
-    <div className="inv-thermal-wrap" dir="rtl">
-      {/* Toolbar (hidden on print/PDF) */}
-      <div className="print:hidden bg-neutral-900 text-white p-3 flex items-center justify-between sticky top-0 z-10">
-        <a href="/admin/dashboard" className="inline-flex items-center gap-2 text-sm text-neutral-300 hover:text-white">
-          <ArrowRight className="w-4 h-4" /> العودة للوحة
-        </a>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex overflow-hidden rounded-lg border border-white/20" aria-label="حجم الطابعة الحرارية">
-            {(["58mm", "80mm"] as const).map((size) => (
-              <button key={size} onClick={() => setThermalSize(size)} className={`px-3 py-2 text-xs font-medium ${thermalSize === size ? "bg-status-warning text-black" : "bg-neutral-900 text-neutral-200"}`}>{size}</button>
-            ))}
-          </div>
-          <button onClick={printQrOnly} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
-            <QrCode className="w-4 h-4" /> طباعة QR
-          </button>
-          <button onClick={downloadQrImage} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors">
-            <Download className="w-4 h-4" /> تحميل QR
-          </button>
-          <button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-neutral-100 transition-colors disabled:opacity-60">
-            <Download className="w-4 h-4" /> {downloading ? "جاري التحميل..." : "تحميل PDF"}
-          </button>
-          <button onClick={() => window.print()} className="inline-flex items-center gap-2 bg-status-warning text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-status-warning transition-colors">
-            <Printer className="w-4 h-4" /> طباعة
-          </button>
-        </div>
-      </div>
+  const copy = <LuxuryInvoiceCopy data={data} isBooking={isBooking} items={items} extraItems={Math.max(0, rawItems.length - items.length)} total={total} subtotal={subtotal} paid={paid} remaining={remaining} delivery={delivery} discount={discount} logo={logoSrc(settings)} company={settings?.site_name ?? "مجموعة علي جان نهاد"} />;
+  return <div className="min-h-dvh bg-background" dir="rtl">
+    <div className="print:hidden sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border/30 bg-card/95 px-4 py-3 backdrop-blur"><a href="/admin/dashboard" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowRight className="h-4 w-4" /> العودة</a><div className="flex gap-2"><button onClick={downloadPdf} disabled={downloading} className="inline-flex items-center gap-2 rounded-lg border border-border/50 px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-60"><Download className="h-4 w-4" /> {downloading ? "جارٍ إنشاء PDF" : "PDF A4"}</button><button onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"><Printer className="h-4 w-4" /> طباعة نسختين</button></div></div>
+    {data.financiallyReversed && <div className="print:hidden border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm font-semibold text-destructive">تم عكس الأثر المالي لهذه الفاتورة.</div>}
+    <div ref={sheetRef} className="luxury-invoice-page">{copy}<div className="luxury-cut"><span className="scissors">✂</span></div>{copy}</div><style>{luxuryDuplicateInvoiceCss()}</style>
+  </div>;
+}
 
-      {data.financiallyReversed && (
-        <div className="print:hidden border-y border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm font-semibold text-destructive">
-          تم عكس الأثر المالي لهذا {isBooking ? "الحجز" : "الطلب"} — لا يُحتسب ضمن الإيرادات الصافية
-        </div>
-      )}
-
-      {/* ===== Thermal receipt sheet (80mm) ===== */}
-      <div ref={sheetRef} className="inv-sheet">
-        <div className="ih-head">
-          <img src={logoSrc(settings)} alt="" className="ih-logo" decoding="async" />
-          <div className="ih-co">{settings?.site_name ?? "مجموعة علي جان"}</div>
-          <div className="ih-sub">{settings?.address || "طوزخورماتو — العراق"}</div>
-        </div>
-
-        <hr className="ih-rule" />
-        <div className="ih-kv"><span>{isBooking ? "رقم الحجز" : "رقم الفاتورة"}</span><span className="v big num">{data.trackingCode ?? "—"}</span></div>
-        <div className="ih-kv"><span>التاريخ</span><span className="v num">{new Date(data.createdAt).toLocaleDateString("ar-IQ", { year: "numeric", month: "long", day: "numeric" })}</span></div>
-        <div className="ih-kv"><span>نوع المستند</span><span className="v">{isBooking ? "فاتورة حجز خدمة" : "فاتورة طلب من المتجر"}</span></div>
-
-        <hr className="ih-rule" />
-        <div className="ih-kv"><span>الزبون</span><span className="v">{data.customerName || "—"}</span></div>
-        {data.customerPhone && <div className="ih-kv"><span>الهاتف</span><span className="v num">{formatIraqiPhone(data.customerPhone)}</span></div>}
-        {isBooking ? (
-          <>
-            <div className="ih-kv"><span>الخدمة</span><span className="v">{data.serviceName ?? "—"}</span></div>
-            <div className="ih-kv"><span>تاريخ المناسبة</span><span className="v">{data.eventDate ?? "—"}</span></div>
-            {data.eventLocation && <div className="ih-kv"><span>الموقع</span><span className="v">{data.eventLocation}</span></div>}
-          </>
-        ) : (
-          <>
-            <div className="ih-kv"><span>عنوان التوصيل</span><span className="v">{data.governorate ?? "—"}{data.area ? ` — ${data.area}` : ""}</span></div>
-            {data.address && <div className="ih-kv"><span>العنوان</span><span className="v">{data.address}</span></div>}
-            <div className="ih-kv"><span>طريقة الدفع</span><span className="v">{PAYMENT_LABELS_AR[data.paymentMethod ?? "cod"] ?? "—"}</span></div>
-          </>
-        )}
-
-        {!isBooking && (
-          <>
-            <hr className="ih-rule" />
-            <table className="ih-items">
-              <thead><tr><th className="nm">المنتج</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead>
-              <tbody>
-                {data.items?.map((item: any) => (
-                  <tr key={item.id}>
-                    <td className="nm">
-                      {item.productNameAr || item.productName}
-                      <SelectedColorLabel color={item.selectedColorData} fallback={item.selectedColor} className="mr-1 inline-flex" />
-                    </td>
-                    <td className="c num">{item.quantity}</td>
-                    <td className="c num">{formatMoney(item.price)}</td>
-                    <td className="l num">{formatMoney(item.price * item.quantity)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-
-        <hr className="ih-rule" />
-        {isBooking ? (
-          <>
-            <div className="ih-row"><span>السعر المتفق عليه</span><span className="num">{data.price > 0 ? formatCurrency(data.price) : "—"}</span></div>
-            <div className="ih-row"><span>العربون المدفوع</span><span className="num">{data.deposit > 0 ? formatCurrency(data.deposit) : "—"}</span></div>
-            <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
-            <div className="ih-grand"><span>الإجمالي</span><span className="num">{formatCurrency(data.price)}</span></div>
-            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{formatCurrency(data.balance)}</span></div>
-          </>
-        ) : (
-          <>
-            <div className="ih-row"><span>المجموع</span><span className="num">{formatCurrency(subtotal)}</span></div>
-            <div className="ih-row"><span>رسوم التوصيل</span><span className="num">{formatCurrency(data.deliveryFee)}</span></div>
-            {Number(data.depositAmount) > 0 && <div className="ih-row"><span>العربون</span><span className="num">{formatCurrency(data.depositAmount)}</span></div>}
-            <div className="ih-row"><span>حالة الدفع</span><span>{PAYMENT_STATUS_AR[data.paymentStatus ?? "unpaid"] ?? "غير مدفوع"}</span></div>
-            <div className="ih-grand"><span>الإجمالي</span><span className="num">{formatCurrency(data.total)}</span></div>
-            <div className="ih-pay rm"><span>المتبقي</span><span className="num">{formatCurrency(data.remainingAmount ?? data.total)}</span></div>
-          </>
-        )}
-
-        {data.notes && (
-          <>
-            <hr className="ih-rule dashed" />
-            <div className="ih-notes"><span>ملاحظات: </span>{data.notes}</div>
-          </>
-        )}
-
-        {data.qr?.dataUrl && (
-          <div className="ih-qr">
-            <img src={data.qr.dataUrl} alt="QR" width={160} height={160} decoding="async" />
-            <div className="cap">امسح الرمز لمتابعة {isBooking ? "الحجز" : "الطلب"}</div>
-          </div>
-        )}
-
-        <hr className="ih-rule" />
-        <div className="ih-thanks">شكراً لاختياركم مجموعة علي جان</div>
-      </div>
-
-      <style>{`
-        .inv-thermal-wrap { min-height: 100vh; background: #5b5e63; }
-        .inv-sheet {
-          width: ${thermalSize === "58mm" ? "219px" : "302px"};
-          margin: 0 auto;
-          background: #fff;
-          color: #000;
-          font-family: Cairo, Tajawal, Tahoma, Arial, sans-serif;
-          font-weight: 600;
-          font-size: ${thermalSize === "58mm" ? "11px" : "13px"};
-          line-height: 1.3;
-          padding: 14px 16px;
-        }
-        .inv-sheet * { color: #000 !important; }
-        .inv-sheet .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
-        .ih-head { text-align: center; margin-bottom: 4px; }
-        .ih-logo { height: 46px; width: auto; max-width: 68%; object-fit: contain; display: block; margin: 0 auto 4px; filter: grayscale(1) contrast(1.45); }
-        .ih-co { font-size: 1.55em; font-weight: 900; line-height: 1.12; }
-        .ih-sub { font-size: 0.9em; font-weight: 600; }
-        .ih-rule { border: 0; border-top: 1.5px solid #000; margin: 5px 0; }
-        .ih-rule.dashed { border-top: 1.5px dashed #000; }
-        .ih-kv { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; font-weight: 700; }
-        .ih-kv .v { font-weight: 800; text-align: left; }
-        .ih-kv .v.big { font-size: 1.12em; }
-        .ih-items { width: 100%; border-collapse: collapse; margin: 3px 0; }
-        .ih-items th { font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 3px; text-align: center; }
-        .ih-items th.nm, .ih-items td.nm { text-align: right; }
-        .ih-items td { padding: 3px; border-bottom: 1px solid #000; font-weight: 700; vertical-align: top; }
-        .ih-items td.nm { font-weight: 800; }
-        .ih-items td.c { text-align: center; }
-        .ih-items td.l { text-align: left; }
-        .ih-row { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; margin: 2px 0; }
-        .ih-grand { display: flex; justify-content: space-between; align-items: center; border: 2.5px solid #000; padding: 4px 6px; margin: 5px 0; font-size: 1.32em; font-weight: 900; }
-        .ih-pay { display: flex; justify-content: space-between; font-weight: 800; font-size: 1.08em; margin: 2px 0; }
-        .ih-pay.rm { font-size: 1.18em; border: 1.5px solid #000; padding: 2px 5px; margin-top: 3px; }
-        .ih-qr { text-align: center; margin-top: 8px; break-inside: avoid; page-break-inside: avoid; }
-        .ih-qr img { width: ${thermalSize === "58mm" ? "132px" : "160px"}; height: ${thermalSize === "58mm" ? "132px" : "160px"}; image-rendering: pixelated; object-fit: contain; display: block; margin: 0 auto 3px; }
-        .ih-qr .cap { font-weight: 700; font-size: 0.88em; }
-        .ih-thanks { text-align: center; font-weight: 800; font-size: 1.05em; margin-top: 6px; }
-        .ih-notes { margin-top: 4px; font-weight: 700; }
-
-        @media print {
-          @page { size: ${thermalSize} auto; margin: 0; }
-          html, body { background: #fff !important; }
-          .inv-thermal-wrap { background: #fff !important; min-height: 0 !important; }
-          .inv-sheet {
-            width: 100% !important;
-            margin: 0 !important;
-            padding: 2.5mm 3mm !important;
-            box-shadow: none !important;
-          }
-          .inv-sheet * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        }
-      `}</style>
-    </div>
-  );
+function LuxuryInvoiceCopy({ data, isBooking, items, extraItems, total, subtotal, paid, remaining, delivery, discount, logo, company }: { data: any; isBooking: boolean; items: any[]; extraItems: number; total: number; subtotal: number; paid: number; remaining: number; delivery: number; discount: number; logo: string; company: string }) {
+  const date = data.createdAt ? new Date(data.createdAt) : new Date();
+  const eventDate = isBooking ? data.eventDate : "—";
+  const address = isBooking ? data.eventLocation : [data.governorate, data.area, data.address].filter(Boolean).join("، ");
+  return <article className="luxury-invoice-copy">
+    <header className="li-header"><div className="li-meta"><div className="li-kv"><b>رقم الفاتورة</b><span>{data.trackingCode ?? `INV-${data.id}`}</span></div><div className="li-kv"><b>التاريخ</b><span>{date.toLocaleDateString("ar-IQ")}</span></div><div className="li-kv"><b>الوقت</b><span>{date.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}</span></div><img className="li-qr" src={data.qr?.dataUrl} alt="QR" /></div><div className="li-brand"><img src={logo} className="li-logo" alt="AJN" /><div className="li-brand-name">AJN GROUP</div><div className="li-brand-ar">{company}</div><div className="li-subtitle">FOR EVENTS</div><div className="li-title">فاتورة <span dir="ltr">/ INVOICE</span></div></div><div className="li-customer"><div className="li-kv"><b>العميل</b><span>{data.customerName || "—"}</span></div><div className="li-kv"><b>الهاتف</b><span dir="ltr">{data.customerPhone ? formatIraqiPhone(data.customerPhone) : "—"}</span></div><div className="li-kv"><b>العنوان</b><span>{address || "—"}</span></div><div className="li-kv"><b>تاريخ المناسبة</b><span>{eventDate || "—"}</span></div><div className="li-kv"><b>قاعة المناسبة</b><span>{isBooking ? data.eventLocation || "—" : "—"}</span></div><div className="li-kv"><b>مندوب المبيعات</b><span>{data.salesRepresentative || "AJN"}</span></div></div></header>
+    <section className="li-section"><div className="li-section-title">تفاصيل المنتجات والخدمات</div><table className="li-table"><colgroup><col style={{ width: "5%" }} /><col style={{ width: "22%" }} /><col style={{ width: "25%" }} /><col style={{ width: "8%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "15%" }} /></colgroup><thead><tr><th>#</th><th>المنتج</th><th>الوصف</th><th>الكمية</th><th>السعر</th><th>الخصم</th><th>الإجمالي</th></tr></thead><tbody>{items.map((item, index) => <tr key={item.id ?? index}><td>{index + 1}</td><td>{item.productNameAr ?? item.productName ?? item.name ?? "خدمة"}</td><td>{item.description ?? (isBooking ? "خدمة مناسبات" : "منتج AJN" )}</td><td className="num">{item.quantity ?? 1}</td><td className="num">{formatCurrency(item.price ?? 0)}</td><td className="num">{formatCurrency(0)}</td><td className="num">{formatCurrency(Number(item.price ?? 0) * Number(item.quantity ?? 1))}</td></tr>)}{extraItems > 0 && <tr><td colSpan={7}>+ {extraItems} عناصر إضافية مدرجة في الطلب</td></tr>}</tbody></table></section>
+    <section className="li-bottom"><div><div className="li-section-title">طرق الدفع</div><div className="li-payments">{["نقد", "بنك", "Zain Cash", "Qi Card", "MasterCard"].map((method) => <span className="li-chip" key={method}>{method}</span>)}</div><div className="li-notes"><b>ملاحظات:</b> {data.notes || `طريقة الدفع: ${paymentLabels[data.paymentMethod] ?? "حسب الاتفاق"}`}</div><div className="li-sign"><div><b>التوقيع الرقمي</b><div className="li-sign-line">AJN</div></div><div className="li-stamp">AJN<br />OFFICIAL</div></div></div><div className="li-summary"><div className="li-summary-row"><span>المجموع الفرعي</span><b>{formatCurrency(subtotal)}</b></div><div className="li-summary-row"><span>الخصم</span><b>{formatCurrency(discount)}</b></div><div className="li-summary-row"><span>التوصيل</span><b>{formatCurrency(delivery)}</b></div><div className="li-summary-row"><span>المدفوع</span><b>{formatCurrency(paid)}</b></div><div className="li-summary-row"><span>المتبقي</span><b>{formatCurrency(remaining)}</b></div><div className="li-total-card"><span>GRAND TOTAL · الإجمالي</span><b>{formatCurrency(total)}</b></div></div></section>
+    <footer className="li-footer"><span>Instagram · Facebook · TikTok</span><span>WhatsApp · {data.customerPhone || "AJN"}</span><span>www.ajn-group.com · info@ajn-group.com</span></footer>
+  </article>;
 }
