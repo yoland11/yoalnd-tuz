@@ -61,6 +61,7 @@ export const financialTransactionsTable = pgTable("financial_transactions", {
   amount: numeric("amount", { precision: 16, scale: 2 }).notNull(),
   department: varchar("department", { length: 40 }).notNull().default("general"),
   transactionType: varchar("transaction_type", { length: 60 }).notNull(),
+  referenceNo: varchar("reference_no", { length: 120 }),
   description: text("description").notNull().default(""),
   paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
   sourceType: varchar("source_type", { length: 60 }),

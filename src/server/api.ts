@@ -356,6 +356,14 @@ export const ALL_PERMISSIONS = [
   "invoices",
   "whatsapp",
   "accounting",
+  // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
+  // existing roles while new roles can be scoped to individual actions.
+  "voucher_view",
+  "voucher_create",
+  "voucher_edit",
+  "voucher_delete",
+  "voucher_approve",
+  "voucher_reverse",
   "backup",
   "tasks",
   "task_create",
@@ -13019,6 +13027,12 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "invoices",
     "whatsapp",
     "accounting",
+    "voucher_view",
+    "voucher_create",
+    "voucher_edit",
+    "voucher_delete",
+    "voucher_approve",
+    "voucher_reverse",
     "tasks",
     "photography",
     "graduation",
@@ -13056,6 +13070,10 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "customers",
     "invoices",
     "accounting",
+    "voucher_view",
+    "voucher_create",
+    "voucher_edit",
+    "voucher_delete",
     "tasks",
     "payroll_view",
     "payroll_recalculate",
@@ -31396,7 +31414,16 @@ function canEditOrderFinancials(user: AdminUser): boolean {
 }
 
 function financialActor(user: AdminUser): FinancialActor {
-  return { ...actor(user), role: user.role };
+  return { ...actor(user), role: user.role, permissions: user.permissions };
+}
+
+function hasVoucherPermission(user: AdminUser, permission: Permission) {
+  return (
+    user.role === "admin" ||
+    user.role === "manager" ||
+    user.permissions.includes("accounting") ||
+    user.permissions.includes(permission)
+  );
 }
 
 const SYSTEM_FINANCIAL_ACTOR: FinancialActor = {
@@ -35369,6 +35396,8 @@ async function handleMasterCash(
   // Any authenticated employee can submit a financial request. Ledger access
   // remains restricted to accounting users and managers.
   if (method === "POST" && resource === "transactions" && !id) {
+    if (!hasVoucherPermission(currentUser, "voucher_create"))
+      return error("لا تملك صلاحية إنشاء السندات المالية", 403);
     const parsed = financialTransactionInputSchema.safeParse(await body(req));
     if (!parsed.success)
       return validationError("master-cash.transaction.create", parsed);
@@ -35399,9 +35428,10 @@ async function handleMasterCash(
     }
   }
 
-  const auth = await requirePermission(req, "accounting");
-  if (isResponse(auth)) return auth;
-  const financeUser = financialActor(auth);
+  if (!hasVoucherPermission(currentUser, "voucher_view"))
+    return error("لا تملك صلاحية عرض السندات المالية", 403);
+  const auth = currentUser;
+  const financeUser = financialActor(currentUser);
 
   try {
     await ensureMasterCashBoxTables();
@@ -35424,6 +35454,8 @@ async function handleMasterCash(
       }
 
       if ((method === "PATCH" || method === "PUT") && !action) {
+        if (!hasVoucherPermission(auth, "voucher_edit"))
+          return error("لا تملك صلاحية تعديل السندات المالية", 403);
         const parsed = financialTransactionPatchSchema.safeParse(
           await body(req),
         );
@@ -35445,6 +35477,8 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "submit") {
+        if (!hasVoucherPermission(auth, "voucher_edit"))
+          return error("لا تملك صلاحية إرسال السندات المالية", 403);
         const row = await submitFinancialTransaction(id, financeUser);
         void logAdminActivity(
           req,
@@ -35456,7 +35490,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "approve") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_approve") || !canApproveFinancialTransactions(financeUser))
           return error("اعتماد المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await approveAndExecuteFinancialTransaction(
@@ -35497,7 +35531,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "reject") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_approve") || !canApproveFinancialTransactions(financeUser))
           return error("رفض المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await rejectFinancialTransaction(
@@ -35522,7 +35556,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "reverse") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_reverse") || !canApproveFinancialTransactions(financeUser))
           return error("عكس الحركة المالية متاح للمدير فقط", 403);
         const payload = await body(req);
         try {
@@ -35568,6 +35602,19 @@ async function handleMasterCash(
         } catch (err: any) {
           return error(err?.message || "تعذر عكس الحركة المالية", 400);
         }
+      }
+
+      if (method === "POST" && action === "cancel") {
+        if (!hasVoucherPermission(auth, "voucher_delete"))
+          return error("لا تملك صلاحية إلغاء السندات المالية", 403);
+        const payload = await body(req);
+        const reason = String(payload?.reason ?? "").trim();
+        if (reason.length < 3)
+          return error("سبب الإلغاء مطلوب (3 أحرف على الأقل)", 400);
+        const row = await cancelFinancialTransactionRequest(id, financeUser, reason);
+        if (!row) return error("المعاملة غير موجودة", 404);
+        void logAdminActivity(req, "financial_transaction_cancelled", "financial_transaction", id, { reason });
+        return json(row);
       }
     }
 

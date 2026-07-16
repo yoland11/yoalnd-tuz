@@ -24,6 +24,12 @@ export const ALL_PERMISSIONS = [
   "invoices",
   "whatsapp",
   "accounting",
+  "voucher_view",
+  "voucher_create",
+  "voucher_edit",
+  "voucher_delete",
+  "voucher_approve",
+  "voucher_reverse",
   "backup",
   "tasks",
   "task_create",
@@ -64,6 +70,12 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  voucher_view: "عرض السندات المالية",
+  voucher_create: "إنشاء السندات المالية",
+  voucher_edit: "تعديل السندات المالية",
+  voucher_delete: "إلغاء السندات غير المرحلة",
+  voucher_approve: "اعتماد السندات المالية",
+  voucher_reverse: "عكس السندات المرحلة",
   salary_settings_view: "عرض إعدادات الراتب",
   salary_settings_edit: "تعديل إعدادات الراتب",
   salary_settings_approve: "اعتماد تغييرات الراتب",

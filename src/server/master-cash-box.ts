@@ -14,6 +14,7 @@ export type FinancialActor = {
   id: number | null;
   name: string;
   role: string;
+  permissions?: string[];
 };
 
 const dateSchema = z
@@ -36,6 +37,7 @@ export const financialTransactionInputSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, "رمز القسم غير صحيح")
     .default("general"),
   transactionType: z.string().trim().min(1, "نوع المعاملة مطلوب").max(60),
+  referenceNo: z.string().trim().max(120).optional().nullable(),
   description: z.string().trim().max(500).optional().default(""),
   paymentMethod: z
     .enum(["cash", "transfer", "card", "pos", "other"])
@@ -78,6 +80,7 @@ export const financialTransactionListSchema = z.object({
     .optional(),
   direction: z.enum(["revenue", "expense"]).optional(),
   department: z.string().trim().max(40).optional(),
+  voucherType: z.string().trim().max(60).optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
   // Approval feeds request a large single page so the displayed rows match
@@ -158,6 +161,7 @@ export async function ensureMasterCashBoxTables() {
         "amount" numeric(16,2) NOT NULL,
         "department" varchar(40) NOT NULL DEFAULT 'general',
         "transaction_type" varchar(60) NOT NULL,
+        "reference_no" varchar(120),
         "description" text NOT NULL DEFAULT '',
         "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
         "source_type" varchar(60),
@@ -274,6 +278,8 @@ export async function ensureMasterCashBoxTables() {
         // Reversal / adjustment linkage columns (additive, idempotent).
         await db.execute(sql`
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_transaction_id" integer;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reference_no" varchar(120);
+        CREATE INDEX IF NOT EXISTS "financial_transactions_reference_no_idx" ON "financial_transactions" ("reference_no");
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_txn_id" integer;
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_reason" text;
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by" integer;
@@ -409,6 +415,7 @@ export async function createFinancialTransaction(
       amount: String(money(data.amount)),
       department: data.department,
       transactionType: data.transactionType,
+      referenceNo: data.referenceNo,
       description: data.description,
       paymentMethod: data.paymentMethod === "card" ? "pos" : data.paymentMethod,
       sourceType: data.sourceType,
@@ -618,7 +625,12 @@ export async function cancelFinancialTransactionRequest(
 }
 
 export function canApproveFinancialTransactions(actor: FinancialActor) {
-  return actor.role === "admin" || actor.role === "manager";
+  return (
+    actor.role === "admin" ||
+    actor.role === "manager" ||
+    Boolean(actor.permissions?.includes("voucher_approve")) ||
+    Boolean(actor.permissions?.includes("voucher_reverse"))
+  );
 }
 
 /** Posts the receipt plan inside the same transaction as cashbox and journal. */
@@ -1271,6 +1283,10 @@ export async function listFinancialTransactions(input: unknown) {
     conditions.push(
       eq(financialTransactionsTable.department, filters.department),
     );
+  if (filters.voucherType)
+    conditions.push(
+      eq(financialTransactionsTable.transactionType, filters.voucherType),
+    );
   if (filters.search) {
     const value = `%${filters.search}%`;
     conditions.push(
@@ -1278,6 +1294,7 @@ export async function listFinancialTransactions(input: unknown) {
         ilike(financialTransactionsTable.transactionNo, value),
         ilike(financialTransactionsTable.description, value),
         ilike(financialTransactionsTable.customerName, value),
+        ilike(financialTransactionsTable.referenceNo, value),
         ilike(financialTransactionsTable.sourceId, value),
       ),
     );
