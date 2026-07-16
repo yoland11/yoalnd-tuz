@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { AlertTriangle, Banknote, CalendarDays, CircleDollarSign, ClipboardCheck, RefreshCw, Users, WalletCards } from "lucide-react";
+import { AlertTriangle, Banknote, BrainCircuit, CalendarDays, CircleDollarSign, ClipboardCheck, RefreshCw, Users, WalletCards } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
@@ -12,6 +12,7 @@ type ExecutiveData = {
 };
 
 const cards = (data: ExecutiveData) => [
+  ["عقل الفعاليات", "تحليل مباشر", "/admin/executive/ai-event-brain", BrainCircuit],
   ["إيراد اليوم", formatCurrency(data.revenue?.today ?? 0), "/admin/reports/daily", CircleDollarSign],
   ["إيراد الشهر", formatCurrency(data.revenue?.monthly ?? 0), "/admin/reports", CircleDollarSign],
   ["رصيد الصندوق الرئيسي", formatCurrency(data.cashboxBalance), "/admin/finance/master-cash", WalletCards],

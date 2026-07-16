@@ -44,6 +44,7 @@ import {
   UserCheck,
   Bell,
   Bot,
+  BrainCircuit,
   CircleDollarSign,
   Menu,
   PackageCheck,
@@ -361,6 +362,13 @@ export const NAV: NavItem[] = [
     label: "لوحة القيادة التنفيذية",
     icon: Monitor,
     perm: "executive",
+  },
+  {
+    href: "/admin/executive/ai-event-brain",
+    label: "عقل الفعاليات",
+    icon: BrainCircuit,
+    perm: "ai_dashboard_view",
+    anyPerm: ["executive", "ai_dashboard_view"],
   },
   {
     href: "/admin/finance/request",
@@ -741,6 +749,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/crews"),
       navItem("/admin/executive"),
+      navItem("/admin/executive/ai-event-brain"),
       navItem("/admin/activity-log"),
       navItem("/admin/tasks"),
       navItem("/admin/approvals"),

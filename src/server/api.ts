@@ -256,6 +256,13 @@ import {
   LEVEL_LABEL,
 } from "@/server/employee-performance";
 import {
+  addEventBrainFeedback,
+  getEventBrainDashboard,
+  getEventBrainSettings,
+  saveEventBrainSettings,
+  smartEventBrainSearch,
+} from "@/server/event-brain";
+import {
   getTelegramSettings,
   notifyTelegramDailyReport,
   notifyTelegramInvoice,
@@ -397,6 +404,10 @@ export const ALL_PERMISSIONS = [
   "bonus_reverse",
   "bonus_rules_manage",
   "executive",
+  "ai_dashboard_view",
+  "ai_recommendations_view",
+  "ai_alerts_view",
+  "ai_settings_manage",
   "production_view",
   "production_create",
   "production_edit",
@@ -13027,6 +13038,10 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "invoices",
     "whatsapp",
     "accounting",
+    "ai_dashboard_view",
+    "ai_recommendations_view",
+    "ai_alerts_view",
+    "ai_settings_manage",
     "voucher_view",
     "voucher_create",
     "voucher_edit",
@@ -20481,9 +20496,67 @@ async function handleEmployeeAdvancesAdmin(
   return error("المسار غير مدعوم", 404);
 }
 
+async function handleEventBrain(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "event-brain") return null;
+  const auth = await getAdminUser(req);
+  if (!auth) return error("غير مخول", 401);
+  const canView = hasPermission(auth, "ai_dashboard_view") || hasPermission(auth, "executive") || auth.role === "admin" || auth.role === "manager";
+  if (!canView) return error("لا تملك صلاحية عرض عقل الفعاليات", 403);
+  const resource = parts[2] ?? "dashboard";
+  const method = req.method;
+  const actor = { id: auth.id, name: auth.fullName || auth.username };
+  try {
+    if (method === "GET" && resource === "dashboard") return json(await getEventBrainDashboard());
+    if (method === "GET" && resource === "settings") return json(await getEventBrainSettings());
+    if (method === "GET" && resource === "search") {
+      const result = await smartEventBrainSearch(String(req.nextUrl.searchParams.get("q") ?? ""));
+      return json(result);
+    }
+    if (method === "POST" && resource === "refresh") {
+      if (!hasPermission(auth, "ai_settings_manage") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية تحديث التحليل", 403);
+      const dashboard = await getEventBrainDashboard();
+      void logAdminActivity(req, "ai_event_brain_generated", "ai_event_brain", undefined, { alerts: dashboard.alerts.length, recommendations: dashboard.recommendations.length, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(dashboard);
+    }
+    if (method === "PUT" && resource === "settings") {
+      if (!hasPermission(auth, "ai_settings_manage") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية إدارة إعدادات العقل", 403);
+      const settings = await saveEventBrainSettings((await body(req)) ?? {}, actor);
+      void logAdminActivity(req, "ai_event_brain_settings_updated", "ai_event_brain_settings", 1, { newValues: settings, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(settings);
+    }
+    if (method === "POST" && resource === "feedback") {
+      if (!hasPermission(auth, "ai_recommendations_view") && !hasPermission(auth, "ai_alerts_view") && !hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية متابعة التوصيات", 403);
+      const payload = await body(req);
+      const insightId = String(payload?.insightId ?? "").trim();
+      const action = String(payload?.action ?? "");
+      if (!insightId || !["accepted", "ignored"].includes(action)) return error("بيانات التوصية غير صحيحة", 400);
+      const feedback = await addEventBrainFeedback({ insightId, action: action as "accepted" | "ignored", note: typeof payload?.note === "string" ? payload.note.slice(0, 1000) : undefined }, actor);
+      void logAdminActivity(req, action === "accepted" ? "ai_recommendation_accepted" : "ai_recommendation_ignored", "ai_event_brain", feedback.id, { insightId, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(feedback, 201);
+    }
+    if (method === "POST" && resource === "notify") {
+      if (!hasPermission(auth, "ai_alerts_view") && !hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية إرسال التنبيه", 403);
+      const payload = await body(req);
+      const title = String(payload?.title ?? "").trim();
+      const message = String(payload?.body ?? "").trim();
+      if (!title || !message) return error("عنوان ومحتوى التنبيه مطلوبان", 400);
+      const notification = await createNotificationOnce({ audienceType: "admin", type: `ai_${String(payload?.category ?? "alert").slice(0, 40)}`, title, body: message, entityType: payload?.entityType ? String(payload.entityType).slice(0, 40) : "ai_event_brain", entityId: Number.isInteger(payload?.entityId) ? payload.entityId : null, href: typeof payload?.href === "string" ? payload.href.slice(0, 500) : "/admin/executive/ai-event-brain" });
+      void logAdminActivity(req, "ai_alert_notification_sent", "notification", notification.id, { title, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(notification, 201);
+    }
+  } catch (err: any) {
+    console.error("event brain operation failed", { resource, method, userId: auth.id, message: err?.message });
+    return error(String(err?.message || "تعذر إكمال تحليل عقل الفعاليات"), 400);
+  }
+  return error("مسار عقل الفعاليات غير مدعوم", 404);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const eventBrain = await handleEventBrain(req, parts, section);
+  if (eventBrain) return eventBrain;
 
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;

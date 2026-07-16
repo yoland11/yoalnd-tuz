@@ -84,6 +84,7 @@ const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
 const HrPage = lazy(() => import("./hr"));
 const ExecutivePage = lazy(() => import("./executive"));
+const EventBrainPage = lazy(() => import("./event-brain"));
 const WorkspacePage = lazy(() => import("./workspace"));
 const InvitationStudioPage = lazy(() => import("./invitations"));
 const CustomerHubPage = lazy(() => import("./smart-customer-search"));
@@ -645,6 +646,9 @@ export default function Admin() {
           </Route>
           <Route path="/admin/executive">
             {() => (<Guard me={me} perm="executive"><ExecutivePage /></Guard>)}
+          </Route>
+          <Route path="/admin/executive/ai-event-brain">
+            {() => (<Guard me={me} anyPerm={["executive", "ai_dashboard_view"]}><EventBrainPage me={me} /></Guard>)}
           </Route>
           <Route path="/admin/employee-advances">
             {() => (

@@ -61,6 +61,10 @@ export const ALL_PERMISSIONS = [
   "bonus_apply",
   "bonus_reverse",
   "executive",
+  "ai_dashboard_view",
+  "ai_recommendations_view",
+  "ai_alerts_view",
+  "ai_settings_manage",
   "production_view",
   "production_create",
   "production_edit",
@@ -70,6 +74,10 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  ai_dashboard_view: "عرض لوحة عقل الفعاليات",
+  ai_recommendations_view: "عرض توصيات عقل الفعاليات",
+  ai_alerts_view: "عرض تنبيهات عقل الفعاليات",
+  ai_settings_manage: "إدارة إعدادات عقل الفعاليات",
   voucher_view: "عرض السندات المالية",
   voucher_create: "إنشاء السندات المالية",
   voucher_edit: "تعديل السندات المالية",
