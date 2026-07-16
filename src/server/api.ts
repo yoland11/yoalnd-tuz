@@ -182,6 +182,20 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import {
+  BOOKING_SERVICES,
+  SERVICE_STATUSES,
+  cancelBooking,
+  createBooking,
+  ensureBookingCenterTables,
+  getBooking,
+  getBookingCenterDashboard,
+  listBookings,
+  receiveBookingPayment,
+  removeBookingService,
+  setBookingService,
+  updateBooking,
+} from "@/server/booking-center";
+import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
   getEmployeeProfile,
@@ -19418,6 +19432,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
 
+  const bookingCenter = await handleBookingCenter(req, parts, section);
+  if (bookingCenter) return bookingCenter;
+
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
 
@@ -33738,6 +33755,119 @@ async function handleTelegram(
   }
 
   return error("مسار Telegram غير مدعوم", 404);
+}
+
+/**
+ * Booking Center — unified bookings.
+ *
+ * Mounted at /admin/booking-center. Payments deliberately do not require the
+ * `accounting` permission to *submit*: any booking user can request a receipt,
+ * but only a manager can approve it through the master cash box, which is where
+ * the money actually moves.
+ */
+async function handleBookingCenter(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "booking-center") return null;
+  const method = req.method;
+  const resource = parts[2];
+  const id = parts[3] ? int(parts[3]) : null;
+  const action = parts[4];
+
+  const auth = await requireAnyPermission(req, ["bookings", "koshas", "orders"]);
+  if (isResponse(auth)) return auth;
+  const user = financialActor(auth);
+
+  try {
+    await ensureBookingCenterTables();
+
+    if (method === "GET" && resource === "dashboard") {
+      return json(await getBookingCenterDashboard());
+    }
+
+    if (method === "GET" && resource === "services-catalog") {
+      return json({ services: BOOKING_SERVICES, statuses: SERVICE_STATUSES });
+    }
+
+    if (resource === "bookings" && !id) {
+      if (method === "GET") {
+        const url = new URL(req.url);
+        return json(
+          await listBookings(Object.fromEntries(url.searchParams.entries())),
+        );
+      }
+      if (method === "POST") {
+        const row = await createBooking(await body(req), user);
+        void logAdminActivity(req, "booking_created", "booking", Number(row?.id), {
+          bookingNo: row?.bookingNo,
+        });
+        return json(row, 201);
+      }
+    }
+
+    if (resource === "bookings" && id) {
+      if (method === "GET" && !action) {
+        const row = await getBooking(id);
+        return row ? json(row) : error("الحجز غير موجود", 404);
+      }
+
+      if (method === "PATCH" && !action) {
+        const row = await updateBooking(id, await body(req), user);
+        void logAdminActivity(req, "booking_updated", "booking", id, {});
+        return json(row);
+      }
+
+      if (method === "POST" && action === "services") {
+        return json(await setBookingService(id, await body(req), user));
+      }
+
+      if (method === "DELETE" && action === "services") {
+        const key = parts[5];
+        if (!key) return error("الخدمة غير محددة", 400);
+        return json(await removeBookingService(id, key, user));
+      }
+
+      if (method === "POST" && action === "payments") {
+        const result = await receiveBookingPayment(id, await body(req), user);
+        void logAdminActivity(req, "booking_payment_requested", "booking", id, {
+          voucherNo: result.voucherNo,
+          status: result.financialTransaction.approvalStatus,
+        });
+        void notifyTelegramPayment({
+          event: "paymentReceived",
+          reference: result.voucherNo,
+          customerName: String(result.booking?.customerName ?? ""),
+          amount: String(result.financialTransaction.amount),
+          paymentMethod: result.financialTransaction.paymentMethod,
+          createdByName: user.name,
+          status: result.financialTransaction.approvalStatus,
+          entityPath: `/admin/booking-center/${id}`,
+        });
+        return json(result, 201);
+      }
+
+      if (method === "POST" && action === "cancel") {
+        const payload = await body(req);
+        const row = await cancelBooking(id, String(payload?.reason ?? ""), user);
+        void logAdminActivity(req, "booking_cancelled", "booking", id, {
+          reason: payload?.reason,
+        });
+        return json(row);
+      }
+    }
+
+    return error("مسار مركز الحجوزات غير مدعوم", 404);
+  } catch (err: any) {
+    console.error("booking center request failed", {
+      message: err?.message,
+      resource,
+      id,
+      userId: auth.id,
+    });
+    return error(err?.message || "تعذر تنفيذ الطلب", 400);
+  }
 }
 
 async function handleMasterCash(

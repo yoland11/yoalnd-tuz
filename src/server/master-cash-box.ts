@@ -9,6 +9,7 @@ import {
   financialTransactionsTable,
   masterCashBoxTable,
 } from "@workspace/db";
+import { syncUnifiedBooking } from "@/server/booking-financials";
 
 export type FinancialActor = {
   id: number | null;
@@ -771,10 +772,12 @@ export async function approveAndExecuteFinancialTransaction(
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+        await syncUnifiedBooking(tx, "receipt_vouchers", sourceId);
       } else if (transaction.sourceType === "payment_voucher") {
         await tx.execute(
           sql`UPDATE payment_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+        await syncUnifiedBooking(tx, "payment_vouchers", sourceId);
       }
     }
 
@@ -841,10 +844,14 @@ export async function rejectFinancialTransaction(
       await db.execute(
         sql`UPDATE receipt_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
+      // Clears the booking's pending-receipt figure; paid/remaining are
+      // untouched because a rejected voucher never moved money.
+      await syncUnifiedBooking(db, "receipt_vouchers", sourceId);
     } else if (existing.sourceType === "payment_voucher") {
       await db.execute(
         sql`UPDATE payment_vouchers SET approval_status = 'rejected' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
       );
+      await syncUnifiedBooking(db, "payment_vouchers", sourceId);
     }
   }
   await addAudit(
@@ -1087,6 +1094,33 @@ export async function reverseFinancialTransaction(
           FROM (SELECT COALESCE(SUM(amount::numeric), 0) AS paid FROM photography_payment_requests WHERE order_id = ${sid} AND status = 'approved') sub
           WHERE o.id = ${sid}`);
         sourceFlagged = { type: "photography_order", id: sid };
+      } else if (
+        original.sourceType === "receipt_voucher" ||
+        original.sourceType === "payment_voucher"
+      ) {
+        // Only vouchers belonging to a unified booking are demoted here. Legacy
+        // vouchers keep their previous reversal behaviour untouched, while a
+        // booking's derived paid/refunded totals must stop counting money the
+        // ledger has just given back.
+        const table =
+          original.sourceType === "receipt_voucher"
+            ? "receipt_vouchers"
+            : "payment_vouchers";
+        const linked = await tx.execute(
+          original.sourceType === "receipt_voucher"
+            ? sql`SELECT booking_ref_id FROM receipt_vouchers WHERE id = ${sid}`
+            : sql`SELECT booking_ref_id FROM payment_vouchers WHERE id = ${sid}`,
+        );
+        const bookingRef = Number((linked.rows ?? [])[0]?.booking_ref_id ?? 0);
+        if (Number.isInteger(bookingRef) && bookingRef > 0) {
+          await tx.execute(
+            original.sourceType === "receipt_voucher"
+              ? sql`UPDATE receipt_vouchers SET approval_status = 'reversed' WHERE id = ${sid}`
+              : sql`UPDATE payment_vouchers SET approval_status = 'reversed' WHERE id = ${sid}`,
+          );
+          await syncUnifiedBooking(tx, table, sid);
+          sourceFlagged = { type: table, id: sid };
+        }
       }
     }
 

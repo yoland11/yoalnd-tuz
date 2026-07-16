@@ -27,6 +27,8 @@ const AdminKoshaBookingsPage = lazy(() =>
   })),
 );
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
+const BookingCenterPage = lazy(() => import("./booking-center"));
+const BookingWorkspacePage = lazy(() => import("./booking-workspace"));
 const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
@@ -343,6 +345,22 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <AdminKoshaBookingsPage />
+              </Guard>
+            )}
+          </Route>
+          {/* Booking Center — unified bookings. Ordered before the :id route so
+              the literal /new path is not captured as a booking id. */}
+          <Route path="/admin/booking-center">
+            {() => (
+              <Guard me={me} perm="bookings">
+                <BookingCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/booking-center/:id">
+            {() => (
+              <Guard me={me} perm="bookings">
+                <BookingWorkspacePage />
               </Guard>
             )}
           </Route>

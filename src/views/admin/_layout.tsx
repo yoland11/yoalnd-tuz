@@ -4,6 +4,7 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
   Package,
+  Gem,
   ShoppingBag,
   Image as ImageIcon,
   Truck,
@@ -183,6 +184,12 @@ export const NAV: NavItem[] = [
     label: "إعدادات التخرج",
     icon: Settings,
     perm: "graduation",
+  },
+  {
+    href: "/admin/booking-center",
+    label: "مركز الحجوزات",
+    icon: Gem,
+    perm: "bookings",
   },
   {
     href: "/admin/orders",

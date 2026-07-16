@@ -34,3 +34,4 @@ export * from "./master-cash-box";
 export * from "./enterprise";
 export * from "./desktop";
 export * from "./graduation";
+export * from "./bookings";
