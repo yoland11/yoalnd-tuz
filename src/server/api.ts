@@ -15112,7 +15112,7 @@ async function handleAdminKoshas(
         // booking link. Include them in payment history without relying on a
         // booking number or customer name embedded in a reference field.
         const receiptTransactionsResult = await db.execute(sql`
-          SELECT ft.* FROM receipt_voucher_allocations a
+          SELECT ft.*, rv.voucher_no AS receipt_voucher_no FROM receipt_voucher_allocations a
           JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
           JOIN financial_transactions ft ON ft.id = rv.financial_transaction_id
           WHERE a.source_type = 'kosha_booking' AND a.source_id = ${id}
@@ -15121,6 +15121,7 @@ async function handleAdminKoshas(
         const receiptTransactions = ((receiptTransactionsResult.rows ?? []) as any[]).map((row) => ({
           ...row,
           transactionNo: row.transaction_no,
+          receiptVoucherNo: row.receipt_voucher_no,
           transactionDate: row.transaction_date,
           approvalStatus: row.approval_status,
           paymentMethod: row.payment_method,
@@ -15152,6 +15153,7 @@ async function handleAdminKoshas(
         const movement = (row: any) => ({
           id: row.id,
           transactionNo: row.transactionNo,
+          receiptVoucherNo: row.receiptVoucherNo ?? null,
           amount: money(row.amount),
           date: row.transactionDate,
           status: row.approvalStatus,
@@ -35998,17 +36000,30 @@ async function handleAccounting(
         const review = await db.execute(sql`
           SELECT rv.id, rv.voucher_no, rv.date::text AS date, rv.payer_name, rv.amount::float AS amount,
             rv.customer_id, rv.kosha_booking_id, rv.financial_transaction_id, rv.approval_status,
-            c.name AS customer_name,
+            c.name AS customer_name, ft.customer_phone AS financial_customer_phone,
+            coalesce(rv.customer_id, c_by_phone.id) AS resolved_customer_id,
             kb.id AS possible_booking_id, kb.tracking_code AS possible_booking_no,
             CASE WHEN rv.customer_id IS NULL THEN 'missing_customer'
               WHEN NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a WHERE a.receipt_voucher_id = rv.id) THEN 'unallocated'
-              WHEN rv.financial_transaction_id IS NULL THEN 'missing_financial_link'
+              WHEN ft.id IS NULL THEN 'missing_financial_link'
               ELSE 'linked' END AS status
           FROM receipt_vouchers rv
           LEFT JOIN customers c ON c.id = rv.customer_id
           LEFT JOIN LATERAL (
+            SELECT t.* FROM financial_transactions t
+            WHERE t.id = rv.financial_transaction_id
+              OR (t.source_type = 'receipt_voucher' AND t.source_id = rv.id::text)
+            ORDER BY CASE WHEN t.id = rv.financial_transaction_id THEN 0 ELSE 1 END, t.id DESC LIMIT 1
+          ) ft ON true
+          LEFT JOIN LATERAL (
+            SELECT customer.id FROM customers customer
+            WHERE regexp_replace(coalesce(customer.phone, ''), '[^0-9]', '', 'g') <> ''
+              AND regexp_replace(coalesce(customer.phone, ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(ft.customer_phone, ''), '[^0-9]', '', 'g')
+            LIMIT 1
+          ) c_by_phone ON true
+          LEFT JOIN LATERAL (
             SELECT b.id, b.tracking_code FROM kosha_bookings b
-            WHERE (rv.customer_id IS NOT NULL AND b.customer_id = rv.customer_id)
+            WHERE b.customer_id = coalesce(rv.customer_id, c_by_phone.id)
               AND b.remaining_amount::numeric > 0 AND b.archived_at IS NULL
             ORDER BY b.created_at DESC LIMIT 1
           ) kb ON true
@@ -36018,7 +36033,7 @@ async function handleAccounting(
         `);
         return json((review.rows ?? []).map((row: any) => ({
           voucherId: row.id, voucherNo: row.voucher_no, customer: row.customer_name ?? row.payer_name,
-          customerId: row.customer_id ?? null,
+          customerId: row.resolved_customer_id ?? null,
           amount: money(row.amount), possibleBooking: row.possible_booking_id ? { id: row.possible_booking_id, number: row.possible_booking_no } : null,
           currentLink: row.kosha_booking_id ? `kosha:${row.kosha_booking_id}` : row.customer_id ? `customer:${row.customer_id}` : "غير مرتبط",
           suggestedLink: row.possible_booking_id ? `kosha:${row.possible_booking_id}` : null, status: row.status,
@@ -36133,14 +36148,15 @@ async function handleAccounting(
             const voucherRows = await tx.execute(sql`SELECT * FROM receipt_vouchers WHERE id = ${payload.data.voucherId} FOR UPDATE`);
             const voucher = (voucherRows.rows?.[0] ?? null) as any;
             if (!voucher) throw new Error("سند القبض غير موجود.");
-            const bookingRows = await tx.execute(sql`SELECT * FROM kosha_bookings WHERE id = ${payload.data.koshaBookingId} AND customer_id = ${payload.data.customerId} FOR UPDATE`);
+            const bookingRows = await tx.execute(sql`SELECT * FROM kosha_bookings WHERE id = ${payload.data.koshaBookingId} FOR UPDATE`);
             const booking = (bookingRows.rows?.[0] ?? null) as any;
-            if (!booking) throw new Error("حجز الكوشة لا يتبع للعميل المحدد.");
+            if (!booking || (booking.customer_id != null && Number(booking.customer_id) !== payload.data.customerId)) throw new Error("حجز الكوشة لا يتبع للعميل المحدد.");
             const existing = await tx.execute(sql`SELECT id FROM receipt_voucher_allocations WHERE receipt_voucher_id = ${voucher.id} FOR UPDATE`);
             if ((existing.rows ?? []).length) throw new Error("هذا السند مرتبط بالفعل ولا يمكن ربطه مرتين.");
             const amount = money(voucher.amount);
             if (amount > money(booking.remaining_amount)) throw new Error("مبلغ السند أكبر من المتبقي في الحجز. راجع التوزيع يدوياً.");
             const posted = voucher.approval_status === "executed" ? new Date() : null;
+            if (booking.customer_id == null) await tx.execute(sql`UPDATE kosha_bookings SET customer_id = ${payload.data.customerId}, updated_at = now() WHERE id = ${booking.id}`);
             await tx.execute(sql`INSERT INTO receipt_voucher_allocations(receipt_voucher_id, customer_id, source_type, source_id, amount, posted_at) VALUES (${voucher.id}, ${payload.data.customerId}, 'kosha_booking', ${booking.id}, ${amount}, ${posted})`);
             await tx.execute(sql`UPDATE receipt_vouchers SET customer_id = ${payload.data.customerId}, kosha_booking_id = ${booking.id} WHERE id = ${voucher.id}`);
             if (posted) await tx.execute(sql`
@@ -36185,9 +36201,12 @@ async function handleAccounting(
       for (const allocation of b.allocations) {
         if (allocation.sourceType === "kosha_booking") {
           const booking = await db.query.koshaBookingsTable.findFirst({
-            where: and(eq(koshaBookingsTable.id, allocation.sourceId), eq(koshaBookingsTable.customerId, customer.id)),
+            where: eq(koshaBookingsTable.id, allocation.sourceId),
           });
-          if (!booking) return error("حجز الكوشة المحدد لا يتبع للعميل المختار.", 400);
+          if (!booking || (booking.customerId != null && booking.customerId !== customer.id) || (booking.customerId == null && normalizeIraqiPhone(booking.phone) !== normalizeIraqiPhone(customer.phone)))
+            return error("حجز الكوشة المحدد لا يتبع للعميل المختار.", 400);
+          if (booking.customerId == null)
+            await db.update(koshaBookingsTable).set({ customerId: customer.id, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, booking.id));
           if (money(allocation.amount) > money(booking.remainingAmount))
             return error(`مبلغ حجز الكوشة أكبر من المتبقي (${formatCurrency(booking.remainingAmount)}).`, 400);
         } else if (allocation.sourceType === "sales_invoice") {
