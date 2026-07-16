@@ -27,7 +27,10 @@ const AdminKoshaBookingsPage = lazy(() =>
   })),
 );
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
-const BookingCenterPage = lazy(() => import("./booking-center"));
+const BookingOverviewPage = lazy(() => import("./booking-center"));
+const BookingsListPage = lazy(() => import("./booking-list"));
+const BookingNewPage = lazy(() => import("./booking-new"));
+const BookingServicesCatalogPage = lazy(() => import("./booking-services-catalog"));
 const BookingWorkspacePage = lazy(() => import("./booking-workspace"));
 const ProductsPage = lazy(() => import("./products"));
 const CategoriesPage = lazy(() => import("./categories"));
@@ -348,19 +351,52 @@ export default function Admin() {
               </Guard>
             )}
           </Route>
-          {/* Booking Center — unified bookings. Ordered before the :id route so
-              the literal /new path is not captured as a booking id. */}
+          {/* Booking Center. /bookings/new is declared before /bookings/:id so
+              wouter does not capture the literal "new" as a booking id. */}
           <Route path="/admin/booking-center">
             {() => (
-              <Guard me={me} perm="bookings">
-                <BookingCenterPage />
+              <Guard
+                me={me}
+                anyPerm={["booking_center:view", "bookings", "accounting"]}
+              >
+                <BookingOverviewPage />
               </Guard>
             )}
           </Route>
-          <Route path="/admin/booking-center/:id">
+          <Route path="/admin/booking-center/services-catalog">
             {() => (
-              <Guard me={me} perm="bookings">
+              <Guard
+                me={me}
+                anyPerm={["booking_center:view", "bookings", "accounting"]}
+              >
+                <BookingServicesCatalogPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/booking-center/bookings/new">
+            {() => (
+              <Guard me={me} anyPerm={["booking_center:create", "bookings"]}>
+                <BookingNewPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/booking-center/bookings/:id">
+            {() => (
+              <Guard
+                me={me}
+                anyPerm={["booking_center:view", "bookings", "accounting"]}
+              >
                 <BookingWorkspacePage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/booking-center/bookings">
+            {() => (
+              <Guard
+                me={me}
+                anyPerm={["booking_center:view", "bookings", "accounting"]}
+              >
+                <BookingsListPage />
               </Guard>
             )}
           </Route>

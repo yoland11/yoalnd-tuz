@@ -310,6 +310,11 @@ export const ALL_PERMISSIONS = [
   "production_edit",
   "production_delete",
   "production_approve",
+  "booking_center:view",
+  "booking_center:create",
+  "booking_center:update",
+  "booking_center:payments",
+  "booking_center:cancel",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -33765,6 +33770,35 @@ async function handleTelegram(
  * but only a manager can approve it through the master cash box, which is where
  * the money actually moves.
  */
+type BookingAction = "view" | "create" | "update" | "payments" | "cancel";
+
+/**
+ * Booking Center permissions.
+ *
+ * Granular `booking_center:*` permissions are additive: the pre-existing coarse
+ * `bookings` permission still grants everything, so staff who already had it do
+ * not silently lose access when the granular set is introduced. Accountants get
+ * view + payments by role, matching how they are treated elsewhere.
+ */
+function canBooking(user: AdminUser, action: BookingAction): boolean {
+  if (user.role === "admin") return true;
+  if (user.permissions.includes(`booking_center:${action}`)) return true;
+  if (user.permissions.includes("bookings")) return true;
+  if (
+    (action === "view" || action === "payments") &&
+    (user.role === "accountant" || user.permissions.includes("accounting"))
+  )
+    return true;
+  return false;
+}
+
+async function requireBooking(req: NextRequest, action: BookingAction) {
+  const user = await getAdminUser(req);
+  if (!user) return error("غير مخول", 401);
+  if (!canBooking(user, action)) return error("ليس لديك صلاحية", 403);
+  return user;
+}
+
 async function handleBookingCenter(
   req: NextRequest,
   parts: string[],
@@ -33776,9 +33810,13 @@ async function handleBookingCenter(
   const id = parts[3] ? int(parts[3]) : null;
   const action = parts[4];
 
-  const auth = await requireAnyPermission(req, ["bookings", "koshas", "orders"]);
+  // Every route needs at least view; write routes re-check their own action
+  // below so a viewer cannot create, pay, or cancel.
+  const auth = await requireBooking(req, "view");
   if (isResponse(auth)) return auth;
   const user = financialActor(auth);
+  const deny = (a: BookingAction) =>
+    canBooking(auth, a) ? null : error("ليس لديك صلاحية", 403);
 
   try {
     await ensureBookingCenterTables();
@@ -33799,7 +33837,23 @@ async function handleBookingCenter(
         );
       }
       if (method === "POST") {
-        const row = await createBooking(await body(req), user);
+        const blocked = deny("create");
+        if (blocked) return blocked;
+        const payload = (await body(req)) ?? {};
+        // Resolve the booking onto a real customer row. Every downstream
+        // integration (statement, vouchers, reports) keys off customer_id, so a
+        // booking must never be matched by name alone. Resolved here rather than
+        // in booking-center.ts because ensureCustomerForPhone lives in this
+        // module and importing it there would be circular.
+        let customerId = payload.customerId ?? null;
+        if (!customerId && String(payload.customerPhone ?? "").trim()) {
+          const customer = await ensureCustomerForPhone(
+            String(payload.customerPhone),
+            String(payload.customerName ?? ""),
+          );
+          if (customer) customerId = customer.id;
+        }
+        const row = await createBooking({ ...payload, customerId }, user);
         void logAdminActivity(req, "booking_created", "booking", Number(row?.id), {
           bookingNo: row?.bookingNo,
         });
@@ -33814,22 +33868,30 @@ async function handleBookingCenter(
       }
 
       if (method === "PATCH" && !action) {
+        const blocked = deny("update");
+        if (blocked) return blocked;
         const row = await updateBooking(id, await body(req), user);
         void logAdminActivity(req, "booking_updated", "booking", id, {});
         return json(row);
       }
 
       if (method === "POST" && action === "services") {
+        const blocked = deny("update");
+        if (blocked) return blocked;
         return json(await setBookingService(id, await body(req), user));
       }
 
       if (method === "DELETE" && action === "services") {
+        const blocked = deny("update");
+        if (blocked) return blocked;
         const key = parts[5];
         if (!key) return error("الخدمة غير محددة", 400);
         return json(await removeBookingService(id, key, user));
       }
 
       if (method === "POST" && action === "payments") {
+        const blocked = deny("payments");
+        if (blocked) return blocked;
         const result = await receiveBookingPayment(id, await body(req), user);
         void logAdminActivity(req, "booking_payment_requested", "booking", id, {
           voucherNo: result.voucherNo,
@@ -33849,6 +33911,8 @@ async function handleBookingCenter(
       }
 
       if (method === "POST" && action === "cancel") {
+        const blocked = deny("cancel");
+        if (blocked) return blocked;
         const payload = await body(req);
         const row = await cancelBooking(id, String(payload?.reason ?? ""), user);
         void logAdminActivity(req, "booking_cancelled", "booking", id, {

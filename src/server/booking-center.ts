@@ -604,11 +604,16 @@ export async function getBookingCenterDashboard() {
   await ensureBookingCenterTables();
   const today = todayBaghdad();
 
-  const [totals, perService] = await Promise.all([
+  const [totals, perService, latestBookings, latestPayments] = await Promise.all([
     db.execute(sql`
       SELECT
         COUNT(*) FILTER (WHERE event_date = ${today})::int AS today_bookings,
         COUNT(*) FILTER (WHERE event_date > ${today} AND status <> 'cancelled')::int AS upcoming_events,
+        COUNT(*) FILTER (WHERE status = 'in_progress')::int AS in_progress,
+        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+        COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+        COALESCE(SUM(grand_total::numeric) FILTER (WHERE status <> 'cancelled'), 0) AS total_amount,
+        COALESCE(SUM(paid_amount::numeric) FILTER (WHERE status <> 'cancelled'), 0) AS paid_amount,
         COUNT(*) FILTER (WHERE remaining_amount::numeric > 0.004 AND status <> 'cancelled')::int AS pending_payments,
         COALESCE(SUM(remaining_amount::numeric) FILTER (WHERE status <> 'cancelled'), 0) AS outstanding_amount,
         COUNT(*)::int AS total_bookings,
@@ -643,6 +648,28 @@ export async function getBookingCenterDashboard() {
       JOIN bookings b ON b.id = s.booking_id
       GROUP BY s.service_key
     `),
+    db.execute(sql`
+      SELECT id, booking_no AS "bookingNo", customer_name AS "customerName",
+             customer_phone AS "customerPhone", event_date AS "eventDate",
+             status, grand_total AS "grandTotal", paid_amount AS "paidAmount",
+             remaining_amount AS "remainingAmount", payment_status AS "paymentStatus"
+      FROM bookings
+      ORDER BY id DESC
+      LIMIT 5
+    `),
+    // Latest payments across all bookings — executed vouchers only, so the
+    // Overview never shows money that has not cleared the cash box.
+    db.execute(sql`
+      SELECT rv.id, rv.voucher_no AS "voucherNo", rv.date, rv.amount, rv.method,
+             rv.approval_status AS "approvalStatus",
+             b.id AS "bookingId", b.booking_no AS "bookingNo",
+             b.customer_name AS "customerName"
+      FROM receipt_vouchers rv
+      JOIN bookings b ON b.id = rv.booking_ref_id
+      WHERE rv.booking_ref_id IS NOT NULL
+      ORDER BY rv.id DESC
+      LIMIT 5
+    `),
   ]);
 
   const statsByKey = new Map(
@@ -654,6 +681,8 @@ export async function getBookingCenterDashboard() {
 
   return {
     cards: (totals.rows ?? [])[0] ?? {},
+    latestBookings: (latestBookings.rows ?? []) as Record<string, unknown>[],
+    latestPayments: (latestPayments.rows ?? []) as Record<string, unknown>[],
     services: BOOKING_SERVICES.map((service) => {
       const stat = statsByKey.get(service.key);
       return {

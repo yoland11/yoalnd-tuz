@@ -30,6 +30,13 @@ export const ALL_PERMISSIONS = [
   "production_edit",
   "production_delete",
   "production_approve",
+  // Booking Center — granular. The legacy coarse "bookings" permission still
+  // grants all of these server-side so existing staff keep their access.
+  "booking_center:view",
+  "booking_center:create",
+  "booking_center:update",
+  "booking_center:payments",
+  "booking_center:cancel",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -57,6 +64,11 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   production_edit: "تعديل أوامر الإنتاج",
   production_delete: "حذف أوامر الإنتاج",
   production_approve: "اعتماد أوامر الإنتاج",
+  "booking_center:view": "مركز الحجوزات — عرض",
+  "booking_center:create": "مركز الحجوزات — إنشاء حجز",
+  "booking_center:update": "مركز الحجوزات — تعديل حجز",
+  "booking_center:payments": "مركز الحجوزات — استلام الدفعات",
+  "booking_center:cancel": "مركز الحجوزات — إلغاء حجز",
 };
 
 export type AdminMe = {

@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Package,
   Gem,
+  Plus,
   ShoppingBag,
   Image as ImageIcon,
   Truck,
@@ -185,11 +186,36 @@ export const NAV: NavItem[] = [
     icon: Settings,
     perm: "graduation",
   },
+  // Booking Center. anyPerm keeps the section visible to staff who hold either
+  // the granular booking_center:view or the pre-existing coarse "bookings"
+  // permission, and to accountants (who get view + payments by role).
   {
     href: "/admin/booking-center",
-    label: "مركز الحجوزات",
+    label: "نظرة عامة",
     icon: Gem,
-    perm: "bookings",
+    perm: null,
+    anyPerm: ["booking_center:view", "bookings", "accounting"],
+  },
+  {
+    href: "/admin/booking-center/bookings",
+    label: "كل الحجوزات",
+    icon: CalendarDays,
+    perm: null,
+    anyPerm: ["booking_center:view", "bookings", "accounting"],
+  },
+  {
+    href: "/admin/booking-center/bookings/new",
+    label: "حجز جديد",
+    icon: Plus,
+    perm: null,
+    anyPerm: ["booking_center:create", "bookings"],
+  },
+  {
+    href: "/admin/booking-center/services-catalog",
+    label: "كتالوج الخدمات",
+    icon: Sparkles,
+    perm: null,
+    anyPerm: ["booking_center:view", "bookings", "accounting"],
   },
   {
     href: "/admin/orders",
@@ -621,6 +647,17 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/graduation/delivery"),
       navItem("/admin/graduation/reports"),
       navItem("/admin/graduation/settings"),
+    ],
+  },
+  {
+    id: "booking-center",
+    label: "الحجوزات",
+    icon: Gem,
+    items: [
+      navItem("/admin/booking-center"),
+      navItem("/admin/booking-center/bookings"),
+      navItem("/admin/booking-center/bookings/new"),
+      navItem("/admin/booking-center/services-catalog"),
     ],
   },
   {
