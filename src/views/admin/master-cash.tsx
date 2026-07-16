@@ -21,6 +21,8 @@ import {
   Wallet,
   X,
   RotateCcw,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import {
   Bar,
@@ -35,6 +37,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { downloadElementPdf } from "@/lib/pdf";
 import { useToast } from "@/hooks/use-toast";
@@ -70,12 +73,16 @@ type FinancialTransaction = {
   amount: string;
   department: string;
   transactionType: string;
+  referenceNo?: string | null;
   description: string;
   paymentMethod: string;
   sourceType: string | null;
   sourceId: string | null;
+  customerId?: number | null;
   customerName?: string | null;
   customerPhone?: string | null;
+  dueDate?: string | null;
+  attachments?: string[];
   approvalStatus: "draft" | "pending" | "approved" | "rejected" | "executed";
   requestedByName: string;
   approvedByName: string;
@@ -122,6 +129,17 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "مرفوضة",
   executed: "منفذة",
 };
+
+const VOUCHER_TYPES = [
+  { value: "receipt_voucher", label: "سند قبض", direction: "revenue" },
+  { value: "payment_voucher", label: "سند صرف", direction: "expense" },
+  { value: "transfer_voucher", label: "سند تحويل", direction: "expense" },
+  { value: "journal_voucher", label: "سند قيد", direction: "expense" },
+  { value: "adjustment_voucher", label: "سند تسوية", direction: "expense" },
+  { value: "opening_balance_voucher", label: "سند رصيد افتتاحي", direction: "revenue" },
+  { value: "closing_voucher", label: "سند إقفال", direction: "expense" },
+] as const;
+const voucherTypeLabel = (value: string) => VOUCHER_TYPES.find((item) => item.value === value)?.label ?? value;
 
 // Human label for the transaction's origin (shown in the "نوع المصدر" column).
 const SOURCE_TYPE_LABELS: Record<string, string> = {
@@ -261,7 +279,8 @@ function TransactionForm({ onSaved, compact = false }: { onSaved: () => void; co
     direction: "expense",
     amount: "",
     department: "general",
-    transactionType: "general_expense",
+    transactionType: "payment_voucher",
+    referenceNo: "",
     description: "",
     paymentMethod: "cash",
     approvalStatus: "pending",
@@ -275,7 +294,7 @@ function TransactionForm({ onSaved, compact = false }: { onSaved: () => void; co
       body: JSON.stringify({ ...form, approvalStatus: status, amount: Number(form.amount), dueDate: form.dueDate || null }),
     }),
     onSuccess: (_data, status) => {
-      setForm((current) => ({ ...current, amount: "", description: "", customerName: "", dueDate: "", notes: "" }));
+      setForm((current) => ({ ...current, amount: "", referenceNo: "", description: "", customerName: "", dueDate: "", notes: "" }));
       toast({ title: status === "draft" ? "تم حفظ المسودة" : "تم إرسال الطلب المالي للموافقة" });
       onSaved();
     },
@@ -285,10 +304,11 @@ function TransactionForm({ onSaved, compact = false }: { onSaved: () => void; co
   return (
     <form onSubmit={(event) => { event.preventDefault(); save.mutate("pending"); }} className={compact ? "space-y-3" : "grid gap-3 md:grid-cols-2 xl:grid-cols-4"}>
       <label className="space-y-1 text-xs text-muted-foreground">التاريخ<input type="date" value={form.transactionDate} onChange={(event) => setForm({ ...form, transactionDate: event.target.value })} className={inputClass} /></label>
-      <label className="space-y-1 text-xs text-muted-foreground">نوع الحركة<select value={form.direction} onChange={(event) => setForm({ ...form, direction: event.target.value, transactionType: event.target.value === "revenue" ? "manual_revenue" : "general_expense" })} className={inputClass}><option value="revenue">إيراد</option><option value="expense">مصروف</option></select></label>
+      <label className="space-y-1 text-xs text-muted-foreground">نوع السند<select value={form.transactionType} onChange={(event) => { const selected = VOUCHER_TYPES.find((item) => item.value === event.target.value); setForm({ ...form, transactionType: event.target.value, direction: selected?.direction ?? form.direction }); }} className={inputClass}>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <label className="space-y-1 text-xs text-muted-foreground">اتجاه الحركة<select value={form.direction} onChange={(event) => setForm({ ...form, direction: event.target.value })} className={inputClass}><option value="revenue">إيراد / مدين الصندوق</option><option value="expense">مصروف / دائن الصندوق</option></select></label>
       <label className="space-y-1 text-xs text-muted-foreground">المبلغ<input inputMode="decimal" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value.replace(/[^0-9.]/g, "") })} placeholder="0" className={inputClass} /></label>
       <label className="space-y-1 text-xs text-muted-foreground">القسم<select value={form.department} onChange={(event) => setForm({ ...form, department: event.target.value })} className={inputClass}>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-      <label className="space-y-1 text-xs text-muted-foreground">نوع المعاملة<input value={form.transactionType} onChange={(event) => setForm({ ...form, transactionType: event.target.value.replace(/[^a-zA-Z0-9_-]/g, "") })} className={inputClass} /></label>
+      <label className="space-y-1 text-xs text-muted-foreground">رقم المرجع<input value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} className={inputClass} placeholder="رقم فاتورة أو تحويل أو مستند" /></label>
       <label className="space-y-1 text-xs text-muted-foreground">طريقة الدفع<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })} className={inputClass}><option value="cash">نقد</option><option value="transfer">تحويل</option><option value="pos">بطاقة / POS</option><option value="other">أخرى</option></select></label>
       <label className="space-y-1 text-xs text-muted-foreground">الزبون / المستفيد<input value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} className={inputClass} /></label>
       <label className="space-y-1 text-xs text-muted-foreground">تاريخ الاستحقاق<input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} className={inputClass} /></label>
@@ -321,8 +341,10 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   const [showForm, setShowForm] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", search: "" });
+  const [filters, setFilters] = useState({ from: addDays(todayBaghdad(), -30), to: todayBaghdad(), status: "", direction: "", department: "", voucherType: "", search: "" });
   const isManager = me.role === "admin" || me.role === "manager";
+  const canEditVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_edit");
+  const canDeleteVoucher = isManager || me.permissions.includes("accounting") || me.permissions.includes("voucher_delete");
 
   const dashboard = useQuery({
     queryKey: ["admin", "master-cash", "dashboard"],
@@ -337,6 +359,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.direction ? { direction: filters.direction } : {}),
     ...(filters.department ? { department: filters.department } : {}),
+    ...(filters.voucherType ? { voucherType: filters.voucherType } : {}),
     ...(filters.search ? { search: filters.search } : {}),
   }).toString();
   const transactions = useQuery({
@@ -349,7 +372,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
   // window, no pagination truncation. Guarantees rows displayed === badge count.
   const pendingApprovals = useQuery({
     queryKey: ["admin", "master-cash", "pending-approvals"],
-    queryFn: () => adminFetch<TransactionList>("/admin/master-cash/transactions?status=pending&limit=500"),
+    queryFn: () => adminFetch<TransactionList>("/admin/master-cash/transactions?status=pending&limit=5000"),
     refetchInterval: 15_000,
   });
   const detail = useQuery({
@@ -381,6 +404,16 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
     mutationFn: ({ id, reason }: { id: number; reason: string }) => adminFetch(`/admin/master-cash/transactions/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }),
     onSuccess: () => { invalidate(); queryClient.invalidateQueries({ queryKey: ["admin", "master-cash", "transaction"] }); toast({ title: "تم عكس الحركة المالية" }); },
     onError: (error: Error) => toast({ title: "تعذر عكس الحركة", description: error.message, variant: "destructive" }),
+  });
+  const updateVoucher = useMutation({
+    mutationFn: ({ id, values }: { id: number; values: Record<string, unknown> }) => adminFetch(`/admin/master-cash/transactions/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
+    onSuccess: () => { invalidate(); queryClient.invalidateQueries({ queryKey: ["admin", "master-cash", "transaction"] }); toast({ title: "تم تعديل السند وتسجيل التغيير في سجل التدقيق" }); },
+    onError: (error: Error) => toast({ title: "تعذر تعديل السند", description: error.message, variant: "destructive" }),
+  });
+  const cancelVoucher = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) => adminFetch(`/admin/master-cash/transactions/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { invalidate(); queryClient.invalidateQueries({ queryKey: ["admin", "master-cash", "transaction"] }); toast({ title: "تم إلغاء السند غير المرحل" }); },
+    onError: (error: Error) => toast({ title: "تعذر إلغاء السند", description: error.message, variant: "destructive" }),
   });
 
   const rows = transactions.data?.data ?? [];
@@ -447,7 +480,7 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         </TabsContent>
 
         <TabsContent value="ledger" className="space-y-3">
-          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم الحركة أو الوصف أو الزبون" className={`${inputClass} pr-9`} /></label></div>
+          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border/30 bg-card p-3 print:hidden"><Filter className="mb-2 h-4 w-4 text-muted-foreground" /><input type="date" value={filters.from} onChange={(event) => { setFilters({ ...filters, from: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><input type="date" value={filters.to} onChange={(event) => { setFilters({ ...filters, to: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`} /><select value={filters.status} onChange={(event) => { setFilters({ ...filters, status: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الحالات</option>{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={filters.voucherType} onChange={(event) => { setFilters({ ...filters, voucherType: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل السندات</option>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={filters.department} onChange={(event) => { setFilters({ ...filters, department: event.target.value }); setPage(1); }} className={`${inputClass} w-auto`}><option value="">كل الأقسام</option>{DEPARTMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><label className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-muted-foreground" /><input value={filters.search} onChange={(event) => { setFilters({ ...filters, search: event.target.value }); setPage(1); }} placeholder="رقم السند أو المرجع أو العميل" className={`${inputClass} pr-9`} /></label></div>
           <TransactionTable rows={rows} loading={transactions.isLoading} isManager={isManager} onOpen={setSelectedId} onApprove={(id) => approve.mutate(id)} onReject={(id) => { const reason = window.prompt("سبب رفض المعاملة"); if (reason) reject.mutate({ id, reason }); }} busy={approve.isPending || reject.isPending} />
           {(transactions.data?.total ?? 0) > 20 && <div className="flex items-center justify-between print:hidden"><Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>السابق</Button><span className="text-xs text-muted-foreground">صفحة {page.toLocaleString("ar-IQ")} من {Math.ceil((transactions.data?.total ?? 0) / 20).toLocaleString("ar-IQ")}</span><Button variant="outline" size="sm" disabled={page * 20 >= (transactions.data?.total ?? 0)} onClick={() => setPage((value) => value + 1)}>التالي</Button></div>}
         </TabsContent>
@@ -469,13 +502,13 @@ export default function MasterCashBoxPage({ me }: { me: AdminMe }) {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88dvh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل الحركة المالية</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} busy={reverse.isPending} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
+      <Dialog open={selectedId !== null} onOpenChange={(open) => !open && setSelectedId(null)}><DialogContent className="max-h-[88dvh] max-w-3xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle>تفاصيل السند المالي</DialogTitle></DialogHeader>{detail.isLoading || !detail.data ? <Skeleton className="h-72 rounded-xl" /> : <TransactionDetailView data={detail.data} isManager={isManager} canEdit={canEditVoucher} canDelete={canDeleteVoucher} busy={reverse.isPending || updateVoucher.isPending || cancelVoucher.isPending} onUpdate={(values) => updateVoucher.mutate({ id: detail.data!.id, values })} onCancel={(reason) => cancelVoucher.mutate({ id: detail.data!.id, reason })} onReverse={(reason) => reverse.mutate({ id: detail.data!.id, reason })} />}</DialogContent></Dialog>
     </div>
   );
 }
 
 function TransactionTable({ rows, loading, isManager, onOpen, onApprove, onReject, busy, emptyMessage = "لا توجد حركات ضمن الفلاتر" }: { rows: FinancialTransaction[]; loading: boolean; isManager: boolean; onOpen: (id: number) => void; onApprove: (id: number) => void; onReject: (id: number) => void; busy: boolean; emptyMessage?: string }) {
-  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}>{row.direction === "revenue" ? "إيراد" : "مصروف"}</td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>)}</tbody></table>}</div>;
+  return <div className="overflow-x-auto rounded-xl border border-border/30 bg-card">{loading ? <div className="p-5"><Skeleton className="h-56 rounded-xl" /></div> : rows.length === 0 ? <EmptyState message={emptyMessage} /> : <table className="w-full min-w-[920px] text-sm"><thead><tr className="border-b border-border/30 text-xs text-muted-foreground">{["رقم الحركة", "التاريخ", "القسم", "البيان", "الاتجاه", "المبلغ", "الحالة", "بواسطة", "إجراء"].map((label) => <th key={label} className="px-3 py-3 text-center font-medium">{label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="border-b border-border/15 transition-colors hover:bg-primary/[0.025]"><td className="px-3 py-3 text-center font-mono text-xs text-primary"><button onClick={() => onOpen(row.id)} className="hover:underline">{row.transactionNo}</button></td><td className="px-3 py-3 text-center text-muted-foreground">{row.transactionDate}</td><td className="px-3 py-3 text-center">{departmentLabel(row.department)}</td><td className="max-w-56 px-3 py-3"><p className="truncate text-foreground" title={row.description}>{row.description || row.transactionType}</p><p className="text-xs text-muted-foreground">{row.transactionType}</p></td><td className={`px-3 py-3 text-center font-medium ${row.direction === "revenue" ? "text-status-success" : "text-destructive"}`}>{row.direction === "revenue" ? "إيراد" : "مصروف"}</td><td className="px-3 py-3 text-center font-bold text-foreground">{formatCurrency(row.amount)}</td><td className="px-3 py-3 text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] ${STATUS_CLASSES[row.approvalStatus] ?? "bg-muted text-muted-foreground"}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="px-3 py-3 text-center text-xs text-muted-foreground">{row.requestedByName || "النظام"}</td><td className="px-3 py-3"><div className="flex justify-center gap-1"><Button size="sm" variant="outline" onClick={() => onOpen(row.id)}><History className="h-3.5 w-3.5" /></Button>{isManager && row.approvalStatus === "pending" && <><Button size="sm" disabled={busy} onClick={() => onApprove(row.id)} className="gap-1"><Check className="h-3.5 w-3.5" /> اعتماد</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onReject(row.id)} className="text-destructive hover:text-destructive"><X className="h-3.5 w-3.5" /></Button></>}</div></td></tr>)}</tbody><TableTotalsFooter rows={rows} labelColSpan={4} cells={[{ key: "direction", label: "إيرادات ومصروفات", value: () => 0, format: (_, entries) => <span className="text-xs"><span className="text-status-success">إيراد {formatCurrency(entries.filter((entry) => entry.direction === "revenue").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span><span className="mx-2 text-muted-foreground">/</span><span className="text-destructive">مصروف {formatCurrency(entries.filter((entry) => entry.direction === "expense").reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span></span> }, { key: "amount", label: "صافي الحركات", value: (entry) => entry.direction === "revenue" ? Number(entry.amount || 0) : -Number(entry.amount || 0), format: formatCurrency }, { key: "status", label: "" }, { key: "requestedBy", label: "" }, { key: "actions", label: "" }]} /></table>}</div>;
 }
 
 /**
@@ -568,11 +601,22 @@ function ApprovalsPanel({
   );
 }
 
-function TransactionDetailView({ data, isManager, busy, onReverse }: { data: TransactionDetail; isManager: boolean; busy: boolean; onReverse: (reason: string) => void }) {
+function VoucherEditor({ data, busy, onClose, onSave }: { data: TransactionDetail; busy: boolean; onClose: () => void; onSave: (values: Record<string, unknown>) => void }) {
+  const [form, setForm] = useState({ transactionDate: data.transactionDate, direction: data.direction, amount: data.amount, department: data.department, transactionType: data.transactionType, paymentMethod: data.paymentMethod, referenceNo: data.referenceNo ?? "", customerName: data.customerName ?? "", customerPhone: data.customerPhone ?? "", dueDate: data.dueDate ?? "", description: data.description ?? "", notes: data.notes ?? "", attachments: (data.attachments ?? []).join("\n"), reason: "" });
+  return <form onSubmit={(event) => { event.preventDefault(); if (form.reason.trim().length < 3) return; onSave({ ...form, amount: Number(form.amount), dueDate: form.dueDate || null, attachments: form.attachments.split("\n").map((value) => value.trim()).filter(Boolean) }); }} className="grid gap-3 rounded-xl border border-primary/25 bg-primary/[0.03] p-4 md:grid-cols-2"><p className="md:col-span-2 text-sm font-semibold text-foreground">تعديل سند غير مرحل — لا تتغير الأرصدة قبل الاعتماد</p><label className="space-y-1 text-xs text-muted-foreground">التاريخ<input type="date" value={form.transactionDate} onChange={(event) => setForm({ ...form, transactionDate: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">المبلغ<input inputMode="decimal" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value.replace(/[^0-9.]/g, "") })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">نوع السند<select value={form.transactionType} onChange={(event) => setForm({ ...form, transactionType: event.target.value })} className={inputClass}>{VOUCHER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="space-y-1 text-xs text-muted-foreground">طريقة الدفع<select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })} className={inputClass}><option value="cash">نقد</option><option value="transfer">تحويل</option><option value="pos">POS</option><option value="other">أخرى</option></select></label><label className="space-y-1 text-xs text-muted-foreground">العميل / الطرف<input value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">الهاتف<input value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">رقم المرجع<input value={form.referenceNo} onChange={(event) => setForm({ ...form, referenceNo: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">تاريخ الاستحقاق<input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">الوصف<input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} className={inputClass} /></label><label className="space-y-1 text-xs text-muted-foreground">المرفقات (رابط في كل سطر)<textarea value={form.attachments} onChange={(event) => setForm({ ...form, attachments: event.target.value })} className={textareaClass} /></label><label className="space-y-1 text-xs text-muted-foreground">ملاحظات<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} className={textareaClass} /></label><label className="space-y-1 text-xs text-muted-foreground md:col-span-2">سبب التعديل *<input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} className={inputClass} /></label><div className="flex gap-2 md:col-span-2"><Button type="submit" disabled={busy || !form.amount || form.reason.trim().length < 3} className="gap-1.5"><Pencil className="h-4 w-4" /> حفظ التعديل</Button><Button type="button" variant="outline" onClick={onClose} disabled={busy}>إلغاء</Button></div></form>;
+}
+
+function TransactionDetailView({ data, isManager, canEdit, canDelete, busy, onUpdate, onCancel, onReverse }: { data: TransactionDetail; isManager: boolean; canEdit: boolean; canDelete: boolean; busy: boolean; onUpdate: (values: Record<string, unknown>) => void; onCancel: (reason: string) => void; onReverse: (reason: string) => void }) {
+  const [editing, setEditing] = useState(false);
   const isReversed = !!data.reversedAt;
   const isReversalEntry = data.transactionType.endsWith("_reversal") || !!data.reversedTransactionId;
   const canReverse = isManager && data.approvalStatus === "executed" && !isReversed && !isReversalEntry;
+  const canCancel = canDelete && ["draft", "pending", "rejected"].includes(data.approvalStatus);
   return <div className="space-y-4">
+    {(canEdit || canCancel) && <div className="flex flex-wrap gap-2 rounded-lg border border-border/30 bg-background/55 p-3"><>{canEdit && ["draft", "rejected"].includes(data.approvalStatus) && <Button type="button" size="sm" variant="outline" onClick={() => setEditing((value) => !value)} disabled={busy} className="gap-1.5"><Pencil className="h-3.5 w-3.5" /> تعديل السند</Button>}{canCancel && <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const reason = window.prompt("سبب إلغاء السند (3 أحرف على الأقل):"); if (reason && reason.trim().length >= 3) onCancel(reason.trim()); }} className="gap-1.5 text-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /> إلغاء السند</Button>}</></div>}
+    {editing && <VoucherEditor data={data} busy={busy} onClose={() => setEditing(false)} onSave={(values) => { onUpdate(values); setEditing(false); }} />}
+    <div className="flex flex-wrap gap-2 text-xs"><a href="/admin/finance/master-cash" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> حركة الصندوق</a>{data.customerId && <a href={`/admin/customers?focus=${data.customerId}`} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> فتح العميل</a>}{data.sourceId && <a href={sourceHref(data.sourceType, data.sourceId)} className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> فتح المصدر</a>}{data.entries.length > 0 && <a href="#journal-entry" className="inline-flex items-center gap-1 rounded-lg border border-border/40 px-2.5 py-1.5 text-primary hover:border-primary/50"><ExternalLink className="h-3.5 w-3.5" /> القيد المحاسبي</a>}</div>
+    <div className="grid gap-2 rounded-lg border border-border/30 bg-background/40 p-3 text-sm sm:grid-cols-2"><p><span className="text-muted-foreground">نوع السند: </span><b>{voucherTypeLabel(data.transactionType)}</b></p><p><span className="text-muted-foreground">رقم المرجع: </span>{data.referenceNo || "—"}</p><p><span className="text-muted-foreground">طريقة الدفع: </span>{data.paymentMethod}</p><p><span className="text-muted-foreground">الطرف: </span>{data.customerName || "—"}</p><p><span className="text-muted-foreground">المصدر: </span>{sourceTypeLabel(data.sourceType)}{data.sourceId ? ` #${data.sourceId}` : ""}</p><p><span className="text-muted-foreground">المرفقات: </span>{data.attachments?.length ?? 0}</p></div>
     {isReversed && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">تم عكس هذه الحركة{data.reversedByName ? ` بواسطة ${data.reversedByName}` : ""}{data.reversalReason ? ` · السبب: ${data.reversalReason}` : ""}.</div>}
     {isReversalEntry && <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 p-3 text-sm text-status-warning">هذه حركة عكسية (تصحيح){data.reversedTransactionId ? ` للحركة رقم ${data.reversedTransactionId}` : ""}.</div>}
     {canReverse && <button type="button" disabled={busy} onClick={() => { const reason = window.prompt("سبب عكس الحركة (إلزامي، 3 أحرف فأكثر):"); if (reason === null) return; if (reason.trim().length < 3) { window.alert("يجب إدخال سبب لا يقل عن 3 أحرف"); return; } onReverse(reason.trim()); }} className="inline-flex items-center gap-2 rounded-lg border border-destructive/40 px-4 py-2 text-sm font-semibold text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-60"><RotateCcw className="h-4 w-4" /> عكس الحركة (إلغاء أثرها)</button>}

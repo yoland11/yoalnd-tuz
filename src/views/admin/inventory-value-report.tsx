@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Download, FileSpreadsheet, Package, Printer, RefreshCw, Search, WalletCards, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, formatCurrency } from "./_lib";
@@ -250,6 +251,19 @@ export default function InventoryValueReportPage() {
                   </tr>
                 ))}
               </tbody>
+              <TableTotalsFooter
+                rows={rows}
+                allRows={rows}
+                labelColSpan={2}
+                cells={[
+                  { key: "stock", label: "إجمالي الكمية", value: (row) => row.stock },
+                  { key: "wholesalePrice", label: "", },
+                  { key: "salePrice", label: "", },
+                  { key: "wholesaleValue", label: "إجمالي قيمة الجملة", value: (row) => row.wholesaleValue, format: formatCurrency },
+                  { key: "saleValue", label: "إجمالي قيمة البيع", value: (row) => row.saleValue, format: formatCurrency },
+                  { key: "expectedProfit", label: "إجمالي الربح المتوقع", value: (row) => row.expectedProfit, format: formatCurrency },
+                ]}
+              />
             </table>
           </div>
         )}
@@ -313,6 +327,17 @@ export default function InventoryValueReportPage() {
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={2} style={pdfCellStyle(true)}>الإجمالي</td>
+              <td style={pdfCellStyle(true)}>{totals.totalQuantity.toLocaleString("ar-IQ")}</td>
+              <td style={pdfCellStyle(true)}>—</td>
+              <td style={pdfCellStyle(true)}>—</td>
+              <td style={pdfCellStyle(true)}>{formatCurrency(totals.totalWholesaleValue)}</td>
+              <td style={pdfCellStyle(true)}>{formatCurrency(totals.totalSaleValue)}</td>
+              <td style={pdfCellStyle(true)}>{formatCurrency(totals.expectedProfit)}</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
@@ -421,6 +446,7 @@ function downloadBlob(content: string, filename: string, type: string) {
 }
 
 function buildExcelHtml(rows: InventoryValueRow[]) {
+  const totals = calculateInventoryTotals(rows);
   return `
     <html dir="rtl">
       <head><meta charset="utf-8" /></head>
@@ -452,6 +478,17 @@ function buildExcelHtml(rows: InventoryValueRow[]) {
               </tr>
             `).join("")}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2">الإجمالي</td>
+              <td>${totals.totalQuantity}</td>
+              <td>—</td>
+              <td>—</td>
+              <td>${totals.totalWholesaleValue}</td>
+              <td>${totals.totalSaleValue}</td>
+              <td>${totals.expectedProfit}</td>
+            </tr>
+          </tfoot>
         </table>
       </body>
     </html>
@@ -538,6 +575,17 @@ function buildPrintHtml(input: {
               </tr>
             `).join("")}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2">الإجمالي</td>
+              <td>${escapeHtml(input.totals.totalQuantity.toLocaleString("ar-IQ"))}</td>
+              <td>—</td>
+              <td>—</td>
+              <td>${escapeHtml(formatCurrency(input.totals.totalWholesaleValue))}</td>
+              <td>${escapeHtml(formatCurrency(input.totals.totalSaleValue))}</td>
+              <td>${escapeHtml(formatCurrency(input.totals.expectedProfit))}</td>
+            </tr>
+          </tfoot>
         </table>
       </body>
     </html>`;
@@ -550,4 +598,14 @@ function escapeHtml(value: unknown) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function calculateInventoryTotals(rows: InventoryValueRow[]): InventoryValueTotals {
+  return rows.reduce<InventoryValueTotals>((result, row) => ({
+    productCount: result.productCount + 1,
+    totalQuantity: result.totalQuantity + Number(row.stock || 0),
+    totalWholesaleValue: result.totalWholesaleValue + Number(row.wholesaleValue || 0),
+    totalSaleValue: result.totalSaleValue + Number(row.saleValue || 0),
+    expectedProfit: result.expectedProfit + Number(row.expectedProfit || 0),
+  }), { ...EMPTY_TOTALS });
 }

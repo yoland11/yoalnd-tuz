@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Printer, Trash2, FileText, TrendingUp, Receipt, Wallet, Search, Download, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { adminFetch, apiErrorMessage, formatCurrency, formatMoney } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -43,6 +44,10 @@ type ReceiptVoucher = {
   customerPhone?: string | null;
   createdByName: string; createdAt: string;
 };
+type ReceiptAllocation = { sourceType: "kosha_booking" | "sales_invoice" | "order" | "service_order" | "graduation_order"; sourceId: number; amount: string };
+type ReceiptOpenRecord = { source_type: ReceiptAllocation["sourceType"]; source_id: number; reference: string; date: string; total: number; paid: number; remaining: number; due_date: string | null; status: string };
+type ReceiptOpenRecordsResponse = { records: ReceiptOpenRecord[]; summary: { totalOutstanding: number; totalKoshaOutstanding: number; totalStoreOutstanding: number; availableCustomerCredit: number } };
+type ReceiptReconciliationRow = { voucherId: number; voucherNo: string; customer: string; customerId: number | null; amount: number; possibleBooking: { id: number; number: string } | null; currentLink: string; suggestedLink: string | null; status: string };
 type PaymentVoucher = {
   id: number; voucherNo: string; date: string; amount: string; payeeName: string;
   customerId: number | null; customerPhone?: string | null;
@@ -99,8 +104,9 @@ function ReceiptsTab() {
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
     date: string; amount: string; payerName: string; customerPhone: string; reference: string;
-    customerId: number | null; method: string; notes: string;
+    customerId: number | null; method: string; notes: string; allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
   }>(null);
+  const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
 
@@ -121,14 +127,20 @@ function ReceiptsTab() {
     mutationFn: (id: number) => adminFetch(`/admin/receipt-vouchers/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "receipt-vouchers"] }),
   });
+  const reconciliation = useQuery({ queryKey: ["admin", "receipt-vouchers-reconciliation"], queryFn: () => adminFetch<ReceiptReconciliationRow[]>("/admin/receipt-vouchers/reconciliation"), enabled: reconciliationOpen });
+  const linkOldReceipt = useMutation({
+    mutationFn: (row: ReceiptReconciliationRow) => adminFetch("/admin/receipt-vouchers/reconciliation", { method: "POST", body: JSON.stringify({ voucherId: row.voucherId, customerId: row.customerId, koshaBookingId: row.possibleBooking?.id }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "receipt-vouchers-reconciliation"] }); qc.invalidateQueries({ queryKey: ["admin", "receipt-vouchers"] }); toast({ title: "تم ربط السند" }); },
+    onError: (error) => toast({ title: "تعذر ربط السند", description: apiErrorMessage(error, "تعذر ربط السند"), variant: "destructive" }),
+  });
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">إجمالي السندات: {data?.length ?? 0}</p>
-        <Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", customerId: null, reference: "", method: "cash", notes: "" })}>
+        <div className="flex gap-2"><Button variant="outline" onClick={() => setReconciliationOpen(true)}>مراجعة السندات القديمة</Button><Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", customerId: null, reference: "", method: "cash", notes: "", allocations: [], saveRemainderAsCredit: true })}>
           <Plus className="w-4 h-4 ml-1" />سند قبض جديد
-        </Button>
+        </Button></div>
       </div>
       <VoucherListSearch value={search} onChange={setSearch} />
 
@@ -149,6 +161,10 @@ function ReceiptsTab() {
               <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive" title="حذف"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المقبوض", value: (voucher) => Number(voucher.amount ?? 0), format: formatCurrency },
+            { key: "payer", label: "" }, { key: "method", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -157,9 +173,10 @@ function ReceiptsTab() {
           <div className="grid grid-cols-2 gap-3">
             <VoucherCustomerPicker
               selectedId={editing.customerId}
-              onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payerName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone) })}
-              onClear={() => setEditing({ ...editing, customerId: null })}
+              onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payerName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone), allocations: [] })}
+              onClear={() => setEditing({ ...editing, customerId: null, allocations: [] })}
             />
+            <ReceiptAllocationPanel customerId={editing.customerId} receivedAmount={editing.amount} allocations={editing.allocations} saveRemainderAsCredit={editing.saveRemainderAsCredit} onChange={(next) => setEditing({ ...editing, ...next })} />
             <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="الواصل من"><input value={editing.payerName} onChange={e => setEditing({ ...editing, payerName: e.target.value })} className={inputCls} /></Field>
@@ -174,13 +191,15 @@ function ReceiptsTab() {
           </div>
           <div className="flex justify-end gap-2 pt-3">
             <Button variant="outline" onClick={() => setEditing(null)}>إلغاء</Button>
-            <Button disabled={create.isPending || !editing.amount}
+            <Button disabled={create.isPending || !editing.amount || !editing.customerId}
               onClick={() => create.mutate({
                 date: editing.date,
                 amount: editing.amount,
                 payerName: editing.payerName,
                 customerId: editing.customerId,
                 customerPhone: editing.customerPhone ? normalizeIraqiPhone(editing.customerPhone) ?? editing.customerPhone : undefined,
+                allocations: editing.allocations.map((allocation) => ({ ...allocation, amount: Number(allocation.amount || 0) })),
+                saveRemainderAsCredit: editing.saveRemainderAsCredit,
                 reference: editing.reference || undefined,
                 method: editing.method,
                 notes: editing.notes || undefined,
@@ -188,6 +207,7 @@ function ReceiptsTab() {
           </div>
         </Modal>
       )}
+      {reconciliationOpen && <Modal title="مراجعة وربط سندات القبض القديمة" onClose={() => setReconciliationOpen(false)}><div className="space-y-3"><p className="text-xs text-muted-foreground">لا ينشئ الربط حركة صندوق أو قيداً جديداً.</p><div className="max-h-[60vh] overflow-auto rounded-lg border border-border/30"><table className="w-full min-w-[700px] text-xs"><thead><tr className="border-b text-right text-muted-foreground"><th className="p-2">السند</th><th className="p-2">العميل</th><th className="p-2">المبلغ</th><th className="p-2">الربط الحالي</th><th className="p-2">المقترح</th><th className="p-2"></th></tr></thead><tbody>{reconciliation.isLoading ? <tr><td className="p-3" colSpan={6}>جارٍ التحميل…</td></tr> : reconciliation.data?.map((row) => <tr key={row.voucherId} className="border-b border-border/20"><td className="p-2 font-mono">{row.voucherNo}</td><td className="p-2">{row.customer}</td><td className="p-2">{formatCurrency(row.amount)}</td><td className="p-2">{row.currentLink}</td><td className="p-2">{row.possibleBooking?.number ?? "—"}</td><td className="p-2">{row.customerId && row.possibleBooking && row.status !== "linked" ? <Button size="sm" disabled={linkOldReceipt.isPending} onClick={() => linkOldReceipt.mutate(row)}>ربط</Button> : null}</td></tr>)}</tbody></table></div></div></Modal>}
     </div>
   );
 }
@@ -247,6 +267,10 @@ function PaymentsTab() {
               <button onClick={() => { if (confirm("حذف السند؟")) del.mutate(r.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المصروف", value: (voucher) => Number(voucher.amount ?? 0), format: formatCurrency },
+            { key: "payee", label: "" }, { key: "method", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -340,6 +364,10 @@ function ExpensesTab() {
               <button onClick={() => { if (confirm("حذف المصروف؟")) del.mutate(e.id); }} className="p-1.5 hover:bg-background/50 rounded text-destructive"><Trash2 className="w-4 h-4" /></button>
             </div>,
           ])}
+          footer={<TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+            { key: "amount", label: "إجمالي المصاريف", value: (expense) => Number(expense.amount ?? 0), format: formatCurrency },
+            { key: "notes", label: "" }, { key: "employee", label: "" }, { key: "actions", label: "" },
+          ]} />}
         />
       )}
 
@@ -485,6 +513,35 @@ function VoucherListSearch({ value, onChange }: { value: string; onChange: (valu
       />
     </div>
   );
+}
+
+function ReceiptAllocationPanel({ customerId, receivedAmount, allocations, saveRemainderAsCredit, onChange }: {
+  customerId: number | null; receivedAmount: string; allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
+  onChange: (next: { allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean }) => void;
+}) {
+  const records = useQuery({
+    queryKey: ["admin", "receipt-voucher-open-records", customerId],
+    queryFn: () => adminFetch<ReceiptOpenRecordsResponse>(`/admin/receipt-vouchers/open-records?customerId=${customerId}`),
+    enabled: !!customerId,
+  });
+  const received = Number(receivedAmount || 0) || 0;
+  const allocated = allocations.reduce((sum, allocation) => sum + (Number(allocation.amount || 0) || 0), 0);
+  const remainder = Math.max(0, received - allocated);
+  const update = (source: ReceiptOpenRecord, amount: string) => {
+    const value = Math.max(0, Math.min(Number(amount || 0) || 0, source.remaining));
+    const rest = allocations.filter((allocation) => !(allocation.sourceType === source.source_type && allocation.sourceId === source.source_id));
+    onChange({ allocations: value > 0 ? [...rest, { sourceType: source.source_type, sourceId: source.source_id, amount: String(value) }] : rest, saveRemainderAsCredit });
+  };
+  const label: Record<ReceiptAllocation["sourceType"], string> = { kosha_booking: "حجز كوشة", sales_invoice: "فاتورة", order: "طلب متجر", service_order: "طلب خدمة", graduation_order: "طلب تخرج" };
+  if (!customerId) return null;
+  return <div className="col-span-2 space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-semibold">تطبيق سند القبض</div><div className="text-xs text-muted-foreground">وزّع المبلغ على سجل واحد أو عدة سجلات. لا يتم ترحيل التوزيع قبل الاعتماد.</div></div></div>
+    {records.data && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><MiniAccountStat label="إجمالي الذمم" value={formatCurrency(records.data.summary.totalOutstanding)} /><MiniAccountStat label="ذمم الكوشات" value={formatCurrency(records.data.summary.totalKoshaOutstanding)} /><MiniAccountStat label="ذمم المتجر" value={formatCurrency(records.data.summary.totalStoreOutstanding)} /><MiniAccountStat label="رصيد العميل" value={formatCurrency(records.data.summary.availableCustomerCredit)} /></div>}
+    {records.isLoading ? <div className="text-xs text-muted-foreground">جارٍ تحميل السجلات غير المسددة…</div> : records.data?.records.length ? <div className="max-h-64 overflow-auto rounded-lg border border-border/30 bg-card"><table className="w-full min-w-[720px] text-xs"><thead><tr className="border-b text-right text-muted-foreground"><th className="p-2">المصدر</th><th className="p-2">الرقم</th><th className="p-2">الإجمالي</th><th className="p-2">المدفوع</th><th className="p-2">المتبقي</th><th className="p-2">التوزيع</th></tr></thead><tbody>{records.data.records.map((record) => { const allocation = allocations.find((item) => item.sourceType === record.source_type && item.sourceId === record.source_id); return <tr key={`${record.source_type}-${record.source_id}`} className="border-b border-border/20"><td className="p-2">{label[record.source_type]}</td><td className="p-2 font-medium">{record.reference}</td><td className="p-2">{formatCurrency(record.total)}</td><td className="p-2">{formatCurrency(record.paid)}</td><td className="p-2 font-bold">{formatCurrency(record.remaining)}</td><td className="p-2"><input type="number" min="0" max={record.remaining} value={allocation?.amount ?? ""} onChange={(event) => update(record, event.target.value)} className="w-28 rounded border border-border/40 bg-background px-2 py-1" /></td></tr>; })}</tbody></table></div> : <div className="text-xs text-muted-foreground">لا توجد ذمم مفتوحة لهذا العميل.</div>}
+    <label className="flex items-center gap-2 text-xs font-medium"><input type="checkbox" checked={saveRemainderAsCredit} onChange={(event) => onChange({ allocations, saveRemainderAsCredit: event.target.checked })} />حفظ المتبقي ({formatCurrency(remainder)}) كرصيد غير مخصص للعميل</label>
+    {allocated > received && <div className="text-xs text-destructive">التوزيع أكبر من المبلغ المستلم.</div>}
+    {allocations.length === 1 && records.data?.records.find((record) => record.source_type === allocations[0].sourceType && record.source_id === allocations[0].sourceId) && <div className="text-xs text-muted-foreground">بعد التوزيع: {formatCurrency(Math.max(0, (records.data.records.find((record) => record.source_type === allocations[0].sourceType && record.source_id === allocations[0].sourceId)?.remaining ?? 0) - Number(allocations[0].amount || 0)))}</div>}
+  </div>;
 }
 
 function VoucherCustomerPicker({
@@ -673,6 +730,11 @@ function StatementTab() {
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
               rowHrefs={data.entries.map((entry) => entry.href ?? null)}
+              footer={<TableTotalsFooter rows={data.entries} allRows={data.entries} labelColSpan={4} cells={[
+                { key: "debit", label: "إجمالي المدين", value: (entry) => Number(entry.debit ?? 0), format: formatCurrency },
+                { key: "credit", label: "إجمالي الدائن", value: (entry) => Number(entry.credit ?? 0), format: formatCurrency },
+                { key: "balance", label: "الرصيد", value: (entry) => Number(entry.debit ?? 0) - Number(entry.credit ?? 0), format: formatCurrency },
+              ]} />}
             />
           }
         </div>
@@ -909,7 +971,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   );
 }
 
-function DataTable({ columns, rows, rowHrefs }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null> }) {
+function DataTable({ columns, rows, rowHrefs, footer }: { columns: string[]; rows: React.ReactNode[][]; rowHrefs?: Array<string | null>; footer?: React.ReactNode }) {
   return (
     <div className="bg-card rounded-xl border border-border/30 overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
@@ -944,6 +1006,7 @@ function DataTable({ columns, rows, rowHrefs }: { columns: string[]; rows: React
             );
           })}
         </tbody>
+        {footer}
       </table>
     </div>
   );

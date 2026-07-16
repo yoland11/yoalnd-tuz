@@ -106,15 +106,30 @@ export default function Checkout() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const customerPhone = normalizeIraqiPhone(form.customerPhone);
-    if (!customerPhone) {
-      alert(t("أدخل رقم عراقي صحيح مثل 07700000000"));
+    const validationMessage = !form.customerName.trim()
+      ? "اسم العميل مطلوب."
+      : !customerPhone
+        ? "أدخل رقم هاتف عراقي صحيح مثل 07700000000."
+        : !form.deliveryZoneId
+          ? "يرجى اختيار منطقة التوصيل."
+          : !!selectedZone?.areas?.length && !form.area
+            ? "يرجى اختيار المنطقة أو الحي."
+            : !form.address.trim()
+              ? "العنوان غير مكتمل."
+              : null;
+    if (validationMessage) {
+      toast({
+        title: "تحقق من بيانات الطلب",
+        description: validationMessage!,
+        variant: "destructive",
+      });
       return;
     }
     createOrder.mutate(
       {
         data: {
           customerName: form.customerName,
-          customerPhone,
+          customerPhone: customerPhone!,
           governorate: form.governorate,
           area: form.area || undefined,
           address: form.address,
@@ -131,7 +146,11 @@ export default function Checkout() {
           queryClient.invalidateQueries({ queryKey: getGetCartQueryKey() });
           setCompletedOrder({ trackingCode: order.trackingCode, total: Number(order.total) });
         },
-        onError: (err: any) => toast({ title: t("تعذر إنشاء الطلب"), description: err?.message, variant: "destructive" }),
+        onError: (err: any) => toast({
+          title: "فشل إنشاء الطلب",
+          description: err?.message || "فشل حفظ البيانات. حاول مرة أخرى.",
+          variant: "destructive",
+        }),
       }
     );
   }

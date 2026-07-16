@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, FileDown, MapPin, MessageCircle, NotebookPen, Pencil, Plus, Receipt, Search, ShoppingBag, Sparkles, Trash2, Trophy, Wallet, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
@@ -60,6 +61,12 @@ export default function CustomersPage() {
   const [noteBody, setNoteBody] = useState("");
   const [notePriority, setNotePriority] = useState("normal");
   const [editing, setEditing] = useState<null | { id: number | null; name: string; phone: string; fullName: string; email: string; address: string; city: string }>(null);
+
+  // Deep links from booking finance summaries open the matching customer.
+  useEffect(() => {
+    const focus = Number(new URLSearchParams(window.location.search).get("focus"));
+    if (Number.isInteger(focus) && focus > 0) setSelectedId(focus);
+  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "customers", search],
@@ -198,6 +205,12 @@ export default function CustomersPage() {
                 </tr>
               ))}
             </tbody>
+            <TableTotalsFooter rows={data} allRows={data} labelColSpan={2} cells={[
+              { key: "orders", label: "إجمالي الطلبات", value: (customer) => Number(customer.orderCount ?? 0) },
+              { key: "sales", label: "إجمالي المبيعات", value: (customer) => Number(customer.totalSpent ?? 0), format: formatCurrency },
+              { key: "points", label: "إجمالي النقاط", value: (customer) => Number(customer.rewardPoints ?? 0) },
+              { key: "actions", label: "" },
+            ]} />
           </table>
         </div>
       )}

@@ -15,6 +15,7 @@ export type FinancialActor = {
   id: number | null;
   name: string;
   role: string;
+  permissions?: string[];
 };
 
 const dateSchema = z
@@ -37,6 +38,7 @@ export const financialTransactionInputSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, "رمز القسم غير صحيح")
     .default("general"),
   transactionType: z.string().trim().min(1, "نوع المعاملة مطلوب").max(60),
+  referenceNo: z.string().trim().max(120).optional().nullable(),
   description: z.string().trim().max(500).optional().default(""),
   paymentMethod: z
     .enum(["cash", "transfer", "card", "pos", "other"])
@@ -79,14 +81,22 @@ export const financialTransactionListSchema = z.object({
     .optional(),
   direction: z.enum(["revenue", "expense"]).optional(),
   department: z.string().trim().max(40).optional(),
+  voucherType: z.string().trim().max(60).optional(),
   search: z.string().trim().max(120).optional().default(""),
   page: z.coerce.number().int().min(1).optional().default(1),
-  // Cap raised to 500 so the Approvals feed can pull every pending row in one
-  // page (keeping the displayed rows exactly equal to the dashboard count).
-  limit: z.coerce.number().int().min(5).max(500).optional().default(20),
+  // Approval feeds request a large single page so the displayed rows match
+  // the dashboard badge even when older pending rows accumulate.
+  limit: z.coerce.number().int().min(5).max(5000).optional().default(20),
 });
 
 const ACCOUNT_SEEDS = [
+  ["1200", "ذمم العملاء", "asset", null],
+  ["1300", "Employee advances", "asset", "hr"],
+  ["5070", "Payroll and incentives", "expense", "hr"],
+  ["5071", "Bonus expense", "expense", "hr"],
+  ["5072", "Allowance expense", "expense", "hr"],
+  ["2100", "Salary payable", "liability", "hr"],
+  ["2200", "Payroll deductions payable", "liability", "hr"],
   ["1000", "الصندوق الرئيسي", "asset", null],
   ["4000", "إيرادات عامة", "revenue", "general"],
   ["4010", "إيرادات المتجر", "revenue", "store"],
@@ -152,6 +162,7 @@ export async function ensureMasterCashBoxTables() {
         "amount" numeric(16,2) NOT NULL,
         "department" varchar(40) NOT NULL DEFAULT 'general',
         "transaction_type" varchar(60) NOT NULL,
+        "reference_no" varchar(120),
         "description" text NOT NULL DEFAULT '',
         "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
         "source_type" varchar(60),
@@ -268,6 +279,8 @@ export async function ensureMasterCashBoxTables() {
         // Reversal / adjustment linkage columns (additive, idempotent).
         await db.execute(sql`
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_transaction_id" integer;
+        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reference_no" varchar(120);
+        CREATE INDEX IF NOT EXISTS "financial_transactions_reference_no_idx" ON "financial_transactions" ("reference_no");
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_txn_id" integer;
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_reason" text;
         ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by" integer;
@@ -329,6 +342,15 @@ function counterAccountCode(
   department: string,
   transactionType: string,
 ) {
+  // A receipt settles a customer receivable; it is not a second sale/revenue.
+  // The charge remains in its originating booking/invoice journal.
+  if (transactionType === "receipt_voucher") return "1200";
+  if (
+    transactionType === "employee_advance" ||
+    transactionType === "employee_advance_repayment"
+  )
+    return "1300";
+  if (transactionType === "payroll_settlement") return "2100";
   if (direction === "expense" && transactionType === "damage_loss")
     return "5090";
   const revenue: Record<string, string> = {
@@ -346,6 +368,7 @@ function counterAccountCode(
     audio: "5040",
     gifts: "5050",
     graduation: "5060",
+    hr: "5070",
   };
   return direction === "revenue"
     ? (revenue[department] ?? "4000")
@@ -393,6 +416,7 @@ export async function createFinancialTransaction(
       amount: String(money(data.amount)),
       department: data.department,
       transactionType: data.transactionType,
+      referenceNo: data.referenceNo,
       description: data.description,
       paymentMethod: data.paymentMethod === "card" ? "pos" : data.paymentMethod,
       sourceType: data.sourceType,
@@ -602,7 +626,111 @@ export async function cancelFinancialTransactionRequest(
 }
 
 export function canApproveFinancialTransactions(actor: FinancialActor) {
-  return actor.role === "admin" || actor.role === "manager";
+  return (
+    actor.role === "admin" ||
+    actor.role === "manager" ||
+    Boolean(actor.permissions?.includes("voucher_approve")) ||
+    Boolean(actor.permissions?.includes("voucher_reverse"))
+  );
+}
+
+/** Posts the receipt plan inside the same transaction as cashbox and journal. */
+async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount: number) {
+  const result = await tx.execute(sql`
+    SELECT id, customer_id, source_type, source_id, amount::numeric AS amount
+    FROM receipt_voucher_allocations
+    WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL
+    ORDER BY id FOR UPDATE
+  `);
+  const allocations = (result.rows ?? []) as Array<{ id: number; customer_id: number; source_type: string; source_id: number | null; amount: string }>;
+  if (!allocations.length)
+    throw new Error("لا توجد توزيعات لسند القبض. اربط السند بمعاملة أو احفظه كرصيد للعميل.");
+  const allocated = money(allocations.reduce((sum, row) => sum + money(row.amount), 0));
+  if (Math.abs(allocated - amount) >= 0.01)
+    throw new Error("إجمالي توزيعات سند القبض لا يساوي المبلغ المستلم.");
+
+  for (const allocation of allocations) {
+    const value = money(allocation.amount);
+    if (allocation.source_type === "customer_credit") continue;
+    if (!allocation.source_id) throw new Error("مرجع التوزيع غير صحيح.");
+    let updated: any;
+    if (allocation.source_type === "kosha_booking") {
+      updated = await tx.execute(sql`
+        UPDATE kosha_bookings
+        SET paid_amount = paid_amount::numeric + ${value},
+            remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+            payment_status = CASE
+              WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid'
+              WHEN paid_amount::numeric + ${value} > 0 THEN 'partial'
+              ELSE 'unpaid' END,
+            updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value}
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "sales_invoice") {
+      updated = await tx.execute(sql`
+        UPDATE sales_invoices SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else if (allocation.source_type === "order") {
+      updated = await tx.execute(sql`
+        UPDATE orders SET deposit_amount = deposit_amount::numeric + ${value},
+          remaining_amount = greatest(total::numeric - deposit_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total::numeric - deposit_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else if (allocation.source_type === "service_order") {
+      updated = await tx.execute(sql`
+        UPDATE service_orders SET deposit_amount = deposit_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - deposit_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - deposit_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END
+        WHERE id = ${allocation.source_id} AND remaining_amount::numeric >= ${value}
+          AND EXISTS (SELECT 1 FROM customers c WHERE c.id = ${allocation.customer_id}
+            AND regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(service_orders.phone, ''), '[^0-9]', '', 'g'))
+        RETURNING id
+      `);
+    } else if (allocation.source_type === "booking") {
+      // Unified Booking Center. Unlike the other targets this does NOT
+      // increment paid_amount: a booking's paid/remaining are derived by
+      // summing executed vouchers in recalcBookingFinancialsWith(), which
+      // syncUnifiedBooking() runs immediately after this pass. Incrementing
+      // here as well would be redundant work that the recompute overwrites.
+      //
+      // The row is still selected FOR UPDATE with the same
+      // remaining_amount >= value guard the other targets use, so a booking
+      // cannot be over-allocated and cannot change under us mid-transaction.
+      updated = await tx.execute(sql`
+        SELECT id FROM bookings
+        WHERE id = ${allocation.source_id}
+          AND customer_id = ${allocation.customer_id}
+          AND status <> 'cancelled'
+          AND remaining_amount::numeric >= ${value}
+        FOR UPDATE
+      `);
+    } else if (allocation.source_type === "graduation_order") {
+      updated = await tx.execute(sql`
+        UPDATE graduation_orders SET paid_amount = paid_amount::numeric + ${value},
+          remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${value}, 0),
+          payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
+          updated_at = now()
+        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
+          AND remaining_amount::numeric >= ${value} RETURNING id
+      `);
+    } else {
+      throw new Error("نوع توزيع سند القبض غير مدعوم.");
+    }
+    if (!(updated.rows ?? []).length)
+      throw new Error("لا يمكن توزيع المبلغ لأن الرصيد المتبقي تغيّر أو أن السجل لا يتبع للعميل.");
+  }
+  await tx.execute(sql`UPDATE receipt_voucher_allocations SET posted_at = now() WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL`);
+  return allocations;
 }
 
 export async function approveAndExecuteFinancialTransaction(
@@ -731,11 +859,17 @@ export async function approveAndExecuteFinancialTransaction(
       .onConflictDoNothing();
 
     const isReversal = transaction.transactionType.endsWith("_reversal");
+    // An employee advance and its repayment move value between cash and a
+    // receivable asset. They must not inflate operating revenue/expenses.
+    const isBalanceSheetTransfer = [
+      "employee_advance",
+      "employee_advance_repayment",
+    ].includes(transaction.transactionType);
     const nextRevenue = money(
       Math.max(
         0,
         money(cashRaw.total_revenue) +
-          (transaction.direction === "revenue" && !isReversal ? amount : 0) -
+          (transaction.direction === "revenue" && !isReversal && !isBalanceSheetTransfer ? amount : 0) -
           (transaction.direction === "expense" && isReversal ? amount : 0),
       ),
     );
@@ -743,7 +877,7 @@ export async function approveAndExecuteFinancialTransaction(
       Math.max(
         0,
         money(cashRaw.total_expenses) +
-          (transaction.direction === "expense" && !isReversal ? amount : 0) -
+          (transaction.direction === "expense" && !isReversal && !isBalanceSheetTransfer ? amount : 0) -
           (transaction.direction === "revenue" && isReversal ? amount : 0),
       ),
     );
@@ -763,6 +897,7 @@ export async function approveAndExecuteFinancialTransaction(
       .where(eq(masterCashBoxTable.id, Number(cashRaw.id)));
 
     const sourceId = Number(transaction.sourceId);
+    let receiptAllocations: any[] = [];
     if (Number.isInteger(sourceId) && sourceId > 0) {
       if (transaction.sourceType === "expense") {
         await tx.execute(
@@ -772,6 +907,9 @@ export async function approveAndExecuteFinancialTransaction(
         await tx.execute(
           sql`UPDATE receipt_vouchers SET approval_status = 'executed' WHERE id = ${sourceId} AND financial_transaction_id = ${id}`,
         );
+        receiptAllocations = await postReceiptVoucherAllocations(tx, sourceId, amount);
+        // Runs after allocation so the booking's derived totals are recomputed
+        // from whatever the allocation pass has just posted.
         await syncUnifiedBooking(tx, "receipt_vouchers", sourceId);
       } else if (transaction.sourceType === "payment_voucher") {
         await tx.execute(
@@ -800,6 +938,15 @@ export async function approveAndExecuteFinancialTransaction(
         newValues: { balance: after, debit: amount, credit: amount },
         reason: note?.trim() || null,
       },
+      ...(receiptAllocations.length ? [{
+        transactionId: id,
+        action: "receipt_allocations_posted",
+        actorId: actor.id,
+        actorName: actor.name,
+        oldValues: {},
+        newValues: { voucherId: sourceId, allocations: receiptAllocations.map((row) => ({ sourceType: row.source_type, sourceId: row.source_id, amount: money(row.amount) })) },
+        reason: null,
+      }] : []),
     ]);
     return saved;
   });
@@ -1190,6 +1337,10 @@ export async function listFinancialTransactions(input: unknown) {
     conditions.push(
       eq(financialTransactionsTable.department, filters.department),
     );
+  if (filters.voucherType)
+    conditions.push(
+      eq(financialTransactionsTable.transactionType, filters.voucherType),
+    );
   if (filters.search) {
     const value = `%${filters.search}%`;
     conditions.push(
@@ -1197,6 +1348,7 @@ export async function listFinancialTransactions(input: unknown) {
         ilike(financialTransactionsTable.transactionNo, value),
         ilike(financialTransactionsTable.description, value),
         ilike(financialTransactionsTable.customerName, value),
+        ilike(financialTransactionsTable.referenceNo, value),
         ilike(financialTransactionsTable.sourceId, value),
       ),
     );

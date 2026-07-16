@@ -26,6 +26,7 @@ import {
   gte,
   ilike,
   inArray,
+  isNull,
   like,
   lt,
   lte,
@@ -51,6 +52,9 @@ import {
   customerRewardHistoryTable,
   customersTable,
   deliveryZonesTable,
+  employeeAdvancesTable,
+  employeeSalarySettingsTable,
+  employeeSalarySettingAuditsTable,
   disasterRecoverySnapshotsTable,
   entityDocumentsTable,
   entityTimelineTable,
@@ -96,6 +100,7 @@ import {
   productsTable,
   rentalOrdersTable,
   receiptVouchersTable,
+  receiptVoucherAllocationsTable,
   reviewsTable,
   serviceOrdersTable,
   serviceOrderStatusHistoryTable,
@@ -124,6 +129,8 @@ import {
   warehousesTable,
   warehouseStockTable,
   taskCommentsTable,
+  taskChecklistItemsTable,
+  taskItemAttachmentsTable,
   tasksTable,
   enterpriseBranchesTable,
   branchEntityAssignmentsTable,
@@ -196,6 +203,65 @@ import {
   updateBooking,
 } from "@/server/booking-center";
 import {
+  advanceFilterSchema,
+  applyPayrollAdvanceDeductions,
+  approveEmployeeAdvance,
+  cancelEmployeeAdvance,
+  createEmployeeAdvance,
+  ensureEmployeeAdvanceTables,
+  getAdvanceSettings,
+  getEmployeeAdvance,
+  getEmployeeAdvanceDashboard,
+  getEmployeeAdvanceReport,
+  getEmployeeAdvanceSummary,
+  listEmployeeAdvances,
+  recordEmployeeAdvanceRepayment,
+  rejectEmployeeAdvance,
+  saveAdvanceSettings,
+  updateEmployeeAdvance,
+  employeeAdvanceErrorMessage,
+} from "@/server/employee-advances";
+import {
+  addCareerEvent,
+  approvePayrollRun,
+  createEvaluation,
+  createBonus,
+  listIncentives,
+  updateBonus,
+  approveBonus,
+  submitBonusForApproval,
+  reverseBonus,
+  rejectBonus,
+  deleteBonus,
+  applyBonus,
+  recalculateBonusPeriod,
+  validateBonus,
+  validateBonusUpdate,
+  listBonusRules,
+  saveBonusRule,
+  deleteBonusRule,
+  createPayrollRun,
+  editPayrollLine,
+  deleteDraftPayrollLine,
+  cancelPayrollRun,
+  deleteDraftPayrollRun,
+  PayrollConflictError,
+  ensureHrTables,
+  evaluateAutomaticIncentives,
+  executiveDashboard,
+  getPayrollRun,
+  hrDashboard,
+  listPayrollRuns,
+  payPayrollRun,
+  payrollDashboard,
+  previewPayrollRun,
+  recalculatePayrollRun,
+  submitPayrollForApproval,
+  rejectPayrollRun,
+  reopenPayrollRun,
+  upsertTarget,
+} from "@/server/hr-intelligence";
+import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
   getEmployeeProfile,
@@ -203,6 +269,13 @@ import {
   getPerformanceTrends,
   LEVEL_LABEL,
 } from "@/server/employee-performance";
+import {
+  addEventBrainFeedback,
+  getEventBrainDashboard,
+  getEventBrainSettings,
+  saveEventBrainSettings,
+  smartEventBrainSearch,
+} from "@/server/event-brain";
 import {
   getTelegramSettings,
   notifyTelegramDailyReport,
@@ -292,19 +365,63 @@ export const ALL_PERMISSIONS = [
   "bookings",
   "services",
   "products",
+  "asset_depreciation_remove",
   "gallery",
   "delivery",
   "customers",
   "staff",
+  "salary_settings_view",
+  "salary_settings_edit",
+  "salary_settings_approve",
   "settings",
   "invoices",
   "whatsapp",
   "accounting",
+  // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
+  // existing roles while new roles can be scoped to individual actions.
+  "voucher_view",
+  "voucher_create",
+  "voucher_edit",
+  "voucher_delete",
+  "voucher_approve",
+  "voucher_reverse",
   "backup",
   "tasks",
+  "task_create",
+  "task_edit",
+  "task_delete",
+  "task_assign",
+  "task_approve",
   "koshas",
   "photography",
   "graduation",
+  "hr",
+  // Granular payroll permissions (kept separate from the HR module gate).
+  "payroll_view",
+  "payroll_edit",
+  "payroll_delete",
+  "payroll_recalculate",
+  "payroll_reopen",
+  "payroll_cancel",
+  "payroll_submit",
+  "payroll_approve",
+  "payroll_reject",
+  "payroll_pay",
+  "bonus_view",
+  "bonus_create",
+  "bonus_edit",
+  "bonus_submit",
+  "bonus_approve",
+  "bonus_reject",
+  "bonus_delete",
+  "bonus_apply",
+  "bonus_reverse",
+  "bonus_rules_manage",
+  "executive",
+  "ai_dashboard_view",
+  "ai_recommendations_view",
+  "ai_alerts_view",
+  "ai_settings_manage",
   "production_view",
   "production_create",
   "production_edit",
@@ -432,9 +549,28 @@ function validationError(
   );
 }
 
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+
+class RequestBodyTooLargeError extends Error {}
+
+class CheckoutError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 422 = 422,
+  ) {
+    super(message);
+  }
+}
+
 async function body(req: NextRequest): Promise<any> {
   if (req.method === "GET" || req.method === "HEAD") return {};
+  const declaredSize = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_REQUEST_BODY_BYTES)
+    throw new RequestBodyTooLargeError("request body exceeds limit");
   const raw = await req.text();
+  if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BODY_BYTES)
+    throw new RequestBodyTooLargeError("request body exceeds limit");
   if (!raw.trim()) return {};
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("application/x-www-form-urlencoded")) {
@@ -457,6 +593,10 @@ function int(value: string | undefined): number | null {
 }
 
 function ip(req: NextRequest): string {
+  // Forwarded headers are client-controlled unless the deployment explicitly
+  // declares its reverse proxy as trusted.
+  if (process.env.TRUST_PROXY !== "true" && !process.env.VERCEL)
+    return "untrusted-proxy";
   return (
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
@@ -499,11 +639,9 @@ function generateOtp(): string {
 }
 
 function generateTrackingCode(prefix = "AJN"): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = prefix;
-  for (let i = 0; i < 7; i++)
-    code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
+  // Tracking links are public capabilities. Use an unguessable token, never a
+  // phone-derived value or Math.random(), so a link cannot enumerate customers.
+  return `${prefix}-${randomBytes(16).toString("hex").toUpperCase()}`;
 }
 
 function phoneLast4(value: string | null | undefined): string {
@@ -512,9 +650,12 @@ function phoneLast4(value: string | null | undefined): string {
   return digits.length >= 4 ? digits.slice(-4) : "";
 }
 
-function trackingCodeForPhone(phone: string): string {
-  const last4 = phoneLast4(phone);
-  return last4 ? `AJN-${last4}` : generateTrackingCode();
+function trackingCodeForPhone(_phone: string): string {
+  return generateTrackingCode();
+}
+
+function isSecureTrackingCode(value: string): boolean {
+  return /^AJN-[A-F0-9]{32}$/.test(value);
 }
 
 function normalizeTrackingCode(value: string): string {
@@ -612,14 +753,13 @@ function paymentSummary(
 }
 
 function sessionSecret(): string {
-  return (
+  const secret =
     process.env.AUTH_SECRET ||
     process.env.SESSION_SECRET ||
-    process.env.NEXTAUTH_SECRET ||
-    process.env.ADMIN_PASSWORD ||
-    process.env.DATABASE_URL ||
-    "ajn-dev-secret"
-  );
+    process.env.NEXTAUTH_SECRET;
+  if (!secret || secret.length < 32)
+    throw new Error("AUTH_SECRET أو SESSION_SECRET قوي (32 حرفاً على الأقل) مطلوب");
+  return secret;
 }
 
 function otpSecret(): string {
@@ -674,7 +814,15 @@ function verifyCustomerToken(token: string): number | null {
     return null;
   }
   const customerId = Number.parseInt(idText, 10);
-  return Number.isFinite(customerId) ? customerId : null;
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  if (
+    !Number.isFinite(customerId) ||
+    !Number.isFinite(issuedAtMs) ||
+    issuedAtMs > Date.now() + 60_000 ||
+    Date.now() - issuedAtMs > SESSION_TTL_MS
+  )
+    return null;
+  return customerId;
 }
 
 function bearer(req: NextRequest): string | null {
@@ -773,9 +921,7 @@ async function seedAdminUser(): Promise<void> {
     const username = process.env.ADMIN_USERNAME?.trim() || "alijan";
     const password = process.env.ADMIN_PASSWORD?.trim();
     const fullName = process.env.ADMIN_FULL_NAME?.trim() || "المدير الرئيسي";
-    const fallbackPassword =
-      process.env.NODE_ENV === "production" ? null : "123123";
-    const initialPassword = password || fallbackPassword;
+    const initialPassword = password || null;
 
     const legacy = await db.query.staffTable.findFirst({
       where: eq(staffTable.username, "admin"),
@@ -818,7 +964,7 @@ async function seedAdminUser(): Promise<void> {
 
     if (!initialPassword) {
       console.error(
-        "ADMIN_PASSWORD is required to seed the first admin in production.",
+        "ADMIN_PASSWORD is required to seed the first admin.",
       );
       return;
     }
@@ -973,7 +1119,17 @@ function formatTask(
     description: row.description ?? "",
     status: row.status,
     priority: row.priority,
+    taskNo: row.taskNo ?? row.task_no ?? null,
+    department: row.department ?? null,
+    taskType: row.taskType ?? row.task_type ?? "other",
+    startAt: row.startAt?.toISOString?.() ?? row.start_at?.toISOString?.() ?? null,
     dueAt: row.dueAt?.toISOString?.() ?? row.due_at?.toISOString?.() ?? null,
+    estimatedMinutes: Number(row.estimatedMinutes ?? row.estimated_minutes ?? 0) || null,
+    submittedAt: row.submittedAt?.toISOString?.() ?? row.submitted_at?.toISOString?.() ?? null,
+    completedAt: row.completedAt?.toISOString?.() ?? row.completed_at?.toISOString?.() ?? null,
+    approvedBy: row.approvedBy ?? row.approved_by ?? null,
+    approvedAt: row.approvedAt?.toISOString?.() ?? row.approved_at?.toISOString?.() ?? null,
+    rejectionReason: row.rejectionReason ?? row.rejection_reason ?? null,
     assignedStaffIds: assigned,
     assignedStaff: assigned
       .map((id: number) => staffById.get(id))
@@ -987,6 +1143,7 @@ function formatTask(
     notes: row.notes ?? "",
     attachments: Array.isArray(row.attachments) ? row.attachments : [],
     createdBy: row.createdBy ?? row.created_by ?? null,
+    manager: staffById.get(row.createdBy ?? row.created_by ?? 0) ?? null,
     archivedAt:
       row.archivedAt?.toISOString?.() ??
       row.archived_at?.toISOString?.() ??
@@ -2727,6 +2884,7 @@ function parseDataUrl(value: string): { mime: string; bytes: Buffer } | null {
     const bytes = match[2]
       ? Buffer.from(payload, "base64")
       : Buffer.from(decodeURIComponent(payload), "utf8");
+    if (bytes.byteLength > MAX_MEDIA_BYTES) return null;
     return { mime, bytes };
   } catch {
     return null;
@@ -3093,6 +3251,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
       Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     categoryId: p.categoryId ?? p.category_id ?? null,
     subcategoryId: p.subcategoryId ?? p.subcategory_id ?? null,
+    subcategoryIds: Array.isArray(p.subcategoryIds ?? p.subcategory_ids) ? (p.subcategoryIds ?? p.subcategory_ids).map(Number).filter(Number.isInteger) : [],
     categoryName: p.categoryName ?? p.category_name ?? null,
     subcategoryName: p.subcategoryName ?? p.subcategory_name ?? null,
     category: p.category ?? null,
@@ -4045,6 +4204,7 @@ async function formatKoshaBooking(row: any) {
       row.packagePrice == null && row.package_price == null
         ? null
         : Number(row.packagePrice ?? row.package_price),
+    customerId: row.customerId ?? row.customer_id ?? null,
     customerName: row.customerName,
     phone: formatIraqiPhone(row.phone) ?? row.phone,
     brideName: row.brideName ?? row.bride_name ?? "",
@@ -5081,6 +5241,29 @@ function formatStaff(s: any) {
     fullName: s.fullName,
     role: s.role,
     permissions: s.permissions ?? [],
+    department: s.department ?? "general",
+    baseSalary: Number(s.baseSalary ?? 0),
+    hiredAt: s.hiredAt ? String(s.hiredAt) : null,
+    jobTitle: s.jobTitle ?? null,
+    salaryType: s.salaryType ?? "monthly",
+    currency: s.currency ?? "IQD",
+    workingDaysPerWeek: Number(s.workingDaysPerWeek ?? 6),
+    dailyWorkingHours: Number(s.dailyWorkingHours ?? 8),
+    hourlyRate: Number(s.hourlyRate ?? 0),
+    overtimeRate: Number(s.overtimeRate ?? 0),
+    attendanceAllowance: Number(s.attendanceAllowance ?? 0),
+    transportationAllowance: Number(s.transportationAllowance ?? 0),
+    foodAllowance: Number(s.foodAllowance ?? 0),
+    phoneAllowance: Number(s.phoneAllowance ?? 0),
+    housingAllowance: Number(s.housingAllowance ?? 0),
+    otherFixedAllowances: Number(s.otherFixedAllowances ?? 0),
+    fixedDeduction: Number(s.fixedDeduction ?? 0),
+    salesCommissionPercentage: Number(s.salesCommissionPercentage ?? 0),
+    profitCommissionPercentage: Number(s.profitCommissionPercentage ?? 0),
+    paymentMethod: s.paymentMethod ?? "cash",
+    paymentReference: s.paymentReference ?? null,
+    salaryStatus: s.salaryStatus ?? "active",
+    salaryNotes: s.salaryNotes ?? null,
     isActive: s.isActive,
     lastActivityAt: s.lastActivityAt?.toISOString?.() ?? null,
     createdAt: s.createdAt.toISOString(),
@@ -5500,6 +5683,29 @@ async function ensureStaffTableShape(): Promise<void> {
           add column if not exists "password_hash" text,
           add column if not exists "full_name" text not null default '',
           add column if not exists "role" varchar(30) not null default 'employee',
+          add column if not exists "department" varchar(60) not null default 'general',
+          add column if not exists "base_salary" numeric(16,2) not null default 0,
+          add column if not exists "hired_at" date not null default current_date,
+          add column if not exists "job_title" varchar(100),
+          add column if not exists "salary_type" varchar(20) not null default 'monthly',
+          add column if not exists "currency" varchar(10) not null default 'IQD',
+          add column if not exists "working_days_per_week" numeric(4,1) not null default 6,
+          add column if not exists "daily_working_hours" numeric(5,2) not null default 8,
+          add column if not exists "hourly_rate" numeric(16,2) not null default 0,
+          add column if not exists "overtime_rate" numeric(16,2) not null default 0,
+          add column if not exists "attendance_allowance" numeric(16,2) not null default 0,
+          add column if not exists "transportation_allowance" numeric(16,2) not null default 0,
+          add column if not exists "food_allowance" numeric(16,2) not null default 0,
+          add column if not exists "phone_allowance" numeric(16,2) not null default 0,
+          add column if not exists "housing_allowance" numeric(16,2) not null default 0,
+          add column if not exists "other_fixed_allowances" numeric(16,2) not null default 0,
+          add column if not exists "fixed_deduction" numeric(16,2) not null default 0,
+          add column if not exists "sales_commission_percentage" numeric(6,2) not null default 0,
+          add column if not exists "profit_commission_percentage" numeric(6,2) not null default 0,
+          add column if not exists "payment_method" varchar(30) not null default 'cash',
+          add column if not exists "payment_reference" text,
+          add column if not exists "salary_status" varchar(20) not null default 'active',
+          add column if not exists "salary_notes" text,
           add column if not exists "is_active" boolean not null default true,
           add column if not exists "last_activity_at" timestamp,
           add column if not exists "created_at" timestamp not null default now()
@@ -5821,6 +6027,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
       alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
       alter table "products" add column if not exists "archived_at" timestamp;
       alter table "products" add column if not exists "is_asset" boolean not null default false;
+      alter table "products" add column if not exists "subcategory_ids" jsonb not null default '[]'::jsonb;
       do $$
       begin
         alter table "products"
@@ -6057,6 +6264,7 @@ async function ensureKoshaTables(): Promise<void> {
       );
 
       alter table "kosha_bookings"
+        add column if not exists "customer_id" integer references "customers" ("id") on delete set null,
         add column if not exists "bride_name" text,
         add column if not exists "groom_name" text,
         add column if not exists "event_type" varchar(40),
@@ -6084,6 +6292,15 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "archived_at" timestamp,
         add column if not exists "tracking_code" varchar(40),
         add column if not exists "tracking_status" varchar(40) not null default 'booked';
+      -- Backfill the canonical customer relation for legacy bookings that only
+      -- stored a phone number. This is deterministic and leaves unmatched rows
+      -- untouched for manual reconciliation.
+      update "kosha_bookings" b
+      set "customer_id" = c.id
+      from "customers" c
+      where b."customer_id" is null
+        and regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g') <> ''
+        and regexp_replace(coalesce(c."phone", ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g');
       update "kosha_bookings" set "tracking_code" = 'AJN-KOSHA-' || lpad("id"::text, 4, '0') where "tracking_code" is null;
       create unique index if not exists "kosha_bookings_tracking_code_idx" on "kosha_bookings" ("tracking_code");
 
@@ -6181,6 +6398,7 @@ async function ensureKoshaTables(): Promise<void> {
       create index if not exists "kosha_packages_active_sort_idx" on "kosha_packages" ("is_active", "sort_order", "id");
       create index if not exists "kosha_package_components_package_idx" on "kosha_package_components" ("package_id", "sort_order", "id");
       create index if not exists "kosha_bookings_package_idx" on "kosha_bookings" ("package_id", "created_at");
+      create index if not exists "kosha_bookings_customer_id_idx" on "kosha_bookings" ("customer_id");
 
       insert into "kosha_addons" ("name", "sort_order")
       values
@@ -6351,9 +6569,13 @@ async function ensureKoshaStaffTables(): Promise<void> {
         "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
         "reviewed_by_name" text,
         "reviewed_at" timestamp,
+        "financial_transaction_id" integer,
         "created_at" timestamp not null default now()
       );
+      alter table "kosha_payment_requests"
+        add column if not exists "financial_transaction_id" integer;
       create index if not exists "kosha_payment_requests_status_idx" on "kosha_payment_requests" ("status");
+      create index if not exists "kosha_payment_requests_financial_idx" on "kosha_payment_requests" ("financial_transaction_id");
 
       create table if not exists "kosha_staff_notifications" (
         "id" serial primary key,
@@ -6881,6 +7103,38 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "file_name" text,
         "created_at" timestamp not null default now()
       );
+      alter table "tasks" add column if not exists "task_no" varchar(50);
+      alter table "tasks" add column if not exists "department" varchar(100);
+      alter table "tasks" add column if not exists "task_type" varchar(50);
+      alter table "tasks" add column if not exists "start_at" timestamp;
+      alter table "tasks" add column if not exists "estimated_minutes" integer;
+      alter table "tasks" add column if not exists "submitted_at" timestamp;
+      alter table "tasks" add column if not exists "completed_at" timestamp;
+      alter table "tasks" add column if not exists "approved_by" integer references "staff" ("id");
+      alter table "tasks" add column if not exists "approved_at" timestamp;
+      alter table "tasks" add column if not exists "rejection_reason" text;
+      create unique index if not exists "tasks_task_no_unique" on "tasks" ("task_no") where "task_no" is not null;
+      create table if not exists "task_checklist_items" (
+        "id" serial primary key,
+        "task_id" integer not null references "tasks" ("id"),
+        "title" text not null,
+        "required_quantity" numeric(14,2) not null default 1,
+        "completed_quantity" numeric(14,2) not null default 0,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "task_checklist_items_task_id_idx" on "task_checklist_items" ("task_id", "sort_order");
+      create table if not exists "task_item_attachments" (
+        "id" serial primary key,
+        "task_item_id" integer not null references "task_checklist_items" ("id"),
+        "staff_id" integer references "staff" ("id"),
+        "file_url" text not null,
+        "file_name" text,
+        "media_type" varchar(40) not null default 'file',
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "task_item_attachments_item_id_idx" on "task_item_attachments" ("task_item_id");
       create table if not exists "message_threads" (
         "id" serial primary key,
         "customer_id" integer references "customers" ("id"),
@@ -7090,6 +7344,7 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "created_at" timestamp not null default now()
       );
       alter table "asset_profiles" add column if not exists "serial_number" varchar(120);
+      alter table "asset_profiles" add column if not exists "deleted_at" timestamp, add column if not exists "deleted_by" integer references "staff"("id") on delete set null, add column if not exists "deleted_reason" text, add column if not exists "value_before_removal" text;
       create table if not exists "disaster_recovery_snapshots" (
         "id" serial primary key,
         "snapshot_no" varchar(50) not null unique,
@@ -8627,8 +8882,10 @@ async function ensureVariantTables(): Promise<void> {
         "cost" numeric(12,2),
         "stock" integer not null default 0,
         "min_stock" integer not null default 0,
+        "max_stock" integer not null default 0,
         "warehouse_id" integer,
         "is_active" boolean not null default true,
+        "notes" text,
         "sort_order" integer not null default 0,
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
@@ -8636,6 +8893,7 @@ async function ensureVariantTables(): Promise<void> {
       create index if not exists "product_variants_product_idx" on "product_variants" ("product_id");
       create index if not exists "product_variants_barcode_idx" on "product_variants" ("barcode");
       create index if not exists "product_variants_sku_idx" on "product_variants" ("sku");
+      alter table "product_variants" add column if not exists "max_stock" integer not null default 0, add column if not exists "notes" text;
       create table if not exists "stock_reservations" (
         "id" serial primary key,
         "product_id" integer not null,
@@ -8684,10 +8942,12 @@ function formatVariant(row: any, reserved = 0) {
     cost: row.cost != null ? Number(row.cost) : null,
     stock,
     minStock,
+    maxStock: Number(row.max_stock ?? row.maxStock ?? 0),
     reserved: Math.round(reserved * 1000) / 1000,
     available,
     warehouseId: row.warehouse_id ?? row.warehouseId ?? null,
     isActive: row.is_active ?? row.isActive ?? true,
+    notes: row.notes ?? null,
     sortOrder: Number(row.sort_order ?? row.sortOrder ?? 0),
     lowStock: stock > 0 && available <= minStock,
     outOfStock: available <= 0,
@@ -8700,6 +8960,35 @@ async function loadVariantRows(productId: number): Promise<any[]> {
     sql`select * from product_variants where product_id = ${productId} order by sort_order asc, id asc`,
   );
   return res.rows ?? res ?? [];
+}
+
+function taskType(value: unknown): string {
+  const type = String(value ?? "other");
+  return ["photography", "printing", "flower_bouquet", "henna_distribution", "koshas", "warehouse", "delivery", "editing", "design", "sales", "maintenance", "other"].includes(type) ? type : "other";
+}
+
+function taskChecklistInput(value: unknown) {
+  if (!Array.isArray(value)) return [] as Array<{ title: string; requiredQuantity: number }>;
+  return value.slice(0, 100).flatMap((item) => {
+    const title = String((item as any)?.title ?? "").trim().slice(0, 500);
+    const requiredQuantity = Number((item as any)?.requiredQuantity ?? (item as any)?.required_quantity ?? 1);
+    return title && Number.isFinite(requiredQuantity) && requiredQuantity > 0
+      ? [{ title, requiredQuantity: Math.min(requiredQuantity, 1_000_000) }]
+      : [];
+  });
+}
+
+function taskItemProgress(items: Array<{ requiredQuantity: number; completedQuantity: number }>) {
+  const required = items.reduce((sum, item) => sum + Math.max(0, Number(item.requiredQuantity) || 0), 0);
+  const completed = items.reduce((sum, item) => sum + Math.max(0, Number(item.completedQuantity) || 0), 0);
+  return { required, completed, percent: required ? Math.min(100, Math.round((completed / required) * 100)) : 0 };
+}
+
+// Product-level dashboard stock mirrors the sum of active color variants while
+// preserving the existing single product/inventory identity.
+async function syncProductStockFromVariants(productId: number): Promise<void> {
+  await ensureVariantTables();
+  await db.execute(sql`update products set stock = coalesce((select sum(stock) from product_variants where product_id=${productId} and is_active=true),0)::int, updated_at=now() where id=${productId}`);
 }
 
 // Reserved quantity per variant AND product-level (variant_id null) for one product.
@@ -9444,22 +9733,28 @@ async function handleProductVariants(
   // POST /products/:id/variants → create a variant
   if (method === "POST" && !parts[3]) {
     const b = await body(req);
+    const requestedVariantBarcode = normalizeProductBarcode(b?.barcode);
+    if (requestedVariantBarcode) {
+      const duplicate: any = await db.execute(sql`select id from product_variants where barcode=${requestedVariantBarcode} limit 1`);
+      if ((duplicate.rows ?? duplicate ?? []).length) return error("باركود اللون مستخدم مسبقاً", 409);
+    }
     const image = b?.image ? await persistMediaValue(b.image, "variants") : null;
     const [row]: any = (
       await db.execute(sql`
       insert into product_variants
-        (product_id, color, color_hex, size, sku, image, price, cost, stock, min_stock, warehouse_id, sort_order)
+        (product_id, color, color_hex, size, sku, image, price, cost, stock, min_stock, max_stock, warehouse_id, is_active, notes, sort_order)
       values
         (${productId}, ${b?.color ?? null}, ${b?.colorHex ?? null}, ${b?.size ?? null}, ${b?.sku ?? null},
          ${image}, ${b?.price != null && b.price !== "" ? Number(b.price) : null},
          ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
-         ${Math.max(0, Math.floor(Number(b?.stock) || 0))}, ${Math.max(0, Math.floor(Number(b?.minStock) || 0))},
-         ${b?.warehouseId ? Number(b.warehouseId) : null}, ${Math.floor(Number(b?.sortOrder) || 0)})
+         ${Math.max(0, Math.floor(Number(b?.stock) || 0))}, ${Math.max(0, Math.floor(Number(b?.minStock) || 0))}, ${Math.max(0, Math.floor(Number(b?.maxStock) || 0))},
+         ${b?.warehouseId ? Number(b.warehouseId) : null}, ${b?.isActive !== false}, ${nullableText(b?.notes)}, ${Math.floor(Number(b?.sortOrder) || 0)})
       returning *
     `)
     ).rows ?? [];
     const newId = Number(row.id);
-    const barcode = normalizeProductBarcode(b?.barcode) || `AJN-V${String(newId).padStart(6, "0")}`;
+    await syncProductStockFromVariants(productId);
+    const barcode = requestedVariantBarcode || `AJN-V${String(newId).padStart(6, "0")}`;
     const qrToken = (typeof b?.qrToken === "string" && b.qrToken.trim()) || randomUUID().replace(/-/g, "").slice(0, 24);
     const [updated]: any = (
       await db.execute(sql`
@@ -9482,6 +9777,11 @@ async function handleProductVariants(
   // PATCH /products/:id/variants/:variantId → update a variant
   if (method === "PATCH" && variantId) {
     const b = await body(req);
+    const requestedVariantBarcode = normalizeProductBarcode(b?.barcode);
+    if (requestedVariantBarcode) {
+      const duplicate: any = await db.execute(sql`select id from product_variants where barcode=${requestedVariantBarcode} and id<>${variantId} limit 1`);
+      if ((duplicate.rows ?? duplicate ?? []).length) return error("باركود اللون مستخدم مسبقاً", 409);
+    }
     const image = b?.image && !String(b.image).startsWith("http") && !String(b.image).startsWith("/")
       ? await persistMediaValue(b.image, "variants")
       : (b?.image ?? null);
@@ -9492,19 +9792,23 @@ async function handleProductVariants(
         color_hex = ${b?.colorHex ?? null},
         size = ${b?.size ?? null},
         sku = ${b?.sku ?? null},
-        barcode = coalesce(${normalizeProductBarcode(b?.barcode) ?? null}, barcode),
+        barcode = coalesce(${requestedVariantBarcode ?? null}, barcode),
         image = coalesce(${image}, image),
         price = ${b?.price != null && b.price !== "" ? Number(b.price) : null},
         cost = ${b?.cost != null && b.cost !== "" ? Number(b.cost) : null},
         stock = ${Math.max(0, Math.floor(Number(b?.stock ?? 0)))},
         min_stock = ${Math.max(0, Math.floor(Number(b?.minStock ?? 0)))},
+        max_stock = ${Math.max(0, Math.floor(Number(b?.maxStock ?? 0)))},
         warehouse_id = ${b?.warehouseId ? Number(b.warehouseId) : null},
+        is_active = coalesce(${typeof b?.isActive === "boolean" ? b.isActive : null}, is_active),
+        notes = coalesce(${nullableText(b?.notes)}, notes),
         updated_at = now()
       where id = ${variantId} and product_id = ${productId}
       returning *
     `)
     ).rows ?? [];
     if (!row) return error("المتغيّر غير موجود", 404);
+    await syncProductStockFromVariants(productId);
     const reserved = await loadReservedForProduct(productId);
     return json(formatVariant(row, reserved.byVariant.get(variantId) ?? 0));
   }
@@ -9513,6 +9817,7 @@ async function handleProductVariants(
   if (method === "DELETE" && variantId) {
     await db.execute(sql`delete from stock_reservations where variant_id = ${variantId}`);
     await db.execute(sql`delete from product_variants where id = ${variantId} and product_id = ${productId}`);
+    await syncProductStockFromVariants(productId);
     return json({ ok: true });
   }
 
@@ -9631,6 +9936,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         id: productsTable.id,
         categoryId: productsTable.categoryId,
         subcategoryId: productsTable.subcategoryId,
+        subcategoryIds: productsTable.subcategoryIds,
         category: productsTable.category,
         subcategory: productsTable.subcategory,
       })
@@ -9657,6 +9963,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         if (category.parentId) {
           return (
             product.subcategoryId === category.id ||
+            (Array.isArray(product.subcategoryIds) && product.subcategoryIds.map(Number).includes(category.id)) ||
             product.subcategory === category.slug
           );
         }
@@ -9719,7 +10026,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         eq(productsTable.isActive, true),
         categoryId ? eq(productsTable.categoryId, categoryId) : undefined,
         subcategoryId
-          ? eq(productsTable.subcategoryId, subcategoryId)
+          ? or(eq(productsTable.subcategoryId, subcategoryId), sql`${productsTable.subcategoryIds} @> ${JSON.stringify([subcategoryId])}::jsonb`)
           : undefined,
         category
           ? or(
@@ -9731,6 +10038,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           ? or(
               eq(productsTable.subcategory, subcategory),
               sql`${productsTable.subcategoryId} in (select id from categories where slug = ${subcategory})`,
+              sql`${productsTable.subcategoryIds} @> (select jsonb_agg(id) from categories where slug = ${subcategory})`,
             )
           : undefined,
         search ? ilike(productsTable.nameAr, `%${search}%`) : undefined,
@@ -9822,6 +10130,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         barcode: requestedBarcode || null,
         categoryId: productCategories.categoryId,
         subcategoryId: productCategories.subcategoryId,
+        subcategoryIds: productCategories.subcategoryIds,
         category: productCategories.category,
         images: storedImages,
         videos: storedVideos,
@@ -9927,6 +10236,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "barcode",
       "categoryId",
       "subcategoryId",
+      "subcategoryIds",
     ]) {
       if (data[k] !== undefined) {
         if ((k === "name" || k === "nameAr") && !String(data[k] ?? "").trim())
@@ -9938,6 +10248,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           update[k] = barcode || null;
         } else if (k === "categoryId" || k === "subcategoryId") {
           update[k] = numberId(data[k]);
+        } else if (k === "subcategoryIds") {
+          update[k] = Array.isArray(data[k]) ? [...new Set(data[k].map(numberId).filter(Boolean))] : [];
         } else {
           update[k] =
             k === "colors"
@@ -10006,11 +10318,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       data.category !== undefined ||
       data.subcategory !== undefined ||
       data.categoryId !== undefined ||
-      data.subcategoryId !== undefined
+      data.subcategoryId !== undefined ||
+      data.subcategoryIds !== undefined
     ) {
       const productCategories = await resolveProductCategories(data);
       update.categoryId = productCategories.categoryId;
       update.subcategoryId = productCategories.subcategoryId;
+      update.subcategoryIds = productCategories.subcategoryIds;
       update.category = productCategories.category;
       update.subcategory = productCategories.subcategory;
     }
@@ -10135,21 +10449,19 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
   if (method === "GET" && parts[1] === "track" && parts[2]) {
     await ensureAdminExtensionsTables();
     const ref = decodeURIComponent(parts[2]).trim();
-    let booking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.trackingCode, ref),
+    if (!/^[a-f0-9]{32,80}$/i.test(ref))
+      return error("رمز التتبع غير صالح", 404);
+    const qr = await db.query.qrTokensTable.findFirst({
+      where: and(
+        eq(qrTokensTable.entityType, "kosha_booking"),
+        eq(qrTokensTable.token, ref),
+      ),
     });
-    if (!booking) {
-      const qr = await db.query.qrTokensTable.findFirst({
-        where: and(
-          eq(qrTokensTable.entityType, "kosha_booking"),
-          eq(qrTokensTable.token, ref),
-        ),
-      });
-      if (qr)
-        booking = await db.query.koshaBookingsTable.findFirst({
+    const booking = qr
+      ? await db.query.koshaBookingsTable.findFirst({
           where: eq(koshaBookingsTable.id, qr.entityId),
-        });
-    }
+        })
+      : null;
     if (!booking) return error("لم يتم العثور على الحجز", 404);
     const formatted = await formatKoshaBooking(booking);
     const currentIndex = Math.max(
@@ -10340,11 +10652,12 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
       ? packageDetails.price
       : koshaPrice + optionsTotal;
     // Surface the booking's customer on /admin/customers — create-or-link by phone.
-    await ensureCustomerForPhone(phone, customerName);
+    const customer = await ensureCustomerForPhone(phone, customerName);
     const [booking] = await db
       .insert(koshaBookingsTable)
       .values({
         koshaId: kosha.id,
+        customerId: customer?.id ?? null,
         packageId: packageDetails?.id ?? null,
         packageName: packageDetails?.name ?? null,
         packagePrice: packageDetails ? String(packageDetails.price) : null,
@@ -10745,6 +11058,7 @@ async function handleMedia(req: NextRequest, parts: string[]) {
 async function resolveProductCategories(data: any) {
   const requestedCategoryId = numberId(data?.categoryId);
   const requestedSubcategoryId = numberId(data?.subcategoryId);
+  const requestedSubcategoryIds = [...new Set((Array.isArray(data?.subcategoryIds) ? data.subcategoryIds : [requestedSubcategoryId]).map(numberId).filter(Boolean))] as number[];
   const categorySlug = nullableText(data?.category);
   const subcategorySlug = nullableText(data?.subcategory);
 
@@ -10757,15 +11071,13 @@ async function resolveProductCategories(data: any) {
           where: eq(categoriesTable.slug, categorySlug),
         })
       : null;
-  const subcategory = requestedSubcategoryId
-    ? await db.query.categoriesTable.findFirst({
-        where: eq(categoriesTable.id, requestedSubcategoryId),
-      })
+  const selectedSubcategories = requestedSubcategoryIds.length
+    ? await db.query.categoriesTable.findMany({ where: inArray(categoriesTable.id, requestedSubcategoryIds) })
     : subcategorySlug
-      ? await db.query.categoriesTable.findFirst({
-          where: eq(categoriesTable.slug, subcategorySlug),
-        })
-      : null;
+      ? await db.query.categoriesTable.findMany({ where: eq(categoriesTable.slug, subcategorySlug) })
+      : [];
+  const subcategories = selectedSubcategories.filter((item) => Boolean(item.parentId));
+  const subcategory = subcategories[0] ?? null;
   const parentFromSubcategory = subcategory?.parentId
     ? await db.query.categoriesTable.findFirst({
         where: eq(categoriesTable.id, subcategory.parentId),
@@ -10776,6 +11088,7 @@ async function resolveProductCategories(data: any) {
   return {
     categoryId: finalCategory?.id ?? null,
     subcategoryId: finalSubcategory?.id ?? null,
+    subcategoryIds: subcategories.map((item) => item.id),
     category: finalCategory?.slug ?? categorySlug,
     subcategory: finalSubcategory?.slug ?? subcategorySlug,
   };
@@ -11133,10 +11446,8 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
     parts[2] &&
     parts[3] === "respond"
   ) {
-    const reqIp = ip(req);
-    if (rollingRateLimited(respondHits, reqIp, 10, 60_000)) {
-      return error("محاولات كثيرة، حاول لاحقاً", 429);
-    }
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("سجل الدخول لتأكيد الحجز أو طلب تأجيله", 401);
     const parsed = RespondToBookingBody.safeParse(await body(req));
     if (!parsed.success)
       return validationError("service-orders.respond", parsed);
@@ -11152,6 +11463,11 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         : eq(serviceOrdersTable.trackingCode, trackingCode),
     });
     if (!so) return error("لم يتم العثور على الحجز", 404);
+    const customer = await db.query.customersTable.findFirst({
+      where: eq(customersTable.id, customerId),
+    });
+    if (!customer || !phoneBelongsToLookup(so.phone, customer.phone))
+      return error("لا تملك صلاحية تعديل هذا الحجز", 403);
     if (action === "reschedule" && !requestedDate)
       return error("يلزم تحديد موعد جديد", 400);
 
@@ -11396,33 +11712,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 
   if (method === "GET" && parts[1] === "track" && parts[2]) {
     const code = normalizeTrackingCode(parts[2]);
-    const last4 = trackingCodeLast4(code);
-    if (last4) {
-      const productOrders = await db.query.ordersTable.findMany({
-        where: or(
-          eq(ordersTable.trackingCode, code),
-          eq(ordersTable.phoneLast4, last4),
-          like(ordersTable.customerPhone, `%${last4}`),
-        ),
-        orderBy: [desc(ordersTable.createdAt)],
-        limit: 20,
-      });
-      const serviceOrders = await db.query.serviceOrdersTable.findMany({
-        where: or(
-          eq(serviceOrdersTable.trackingCode, code),
-          eq(serviceOrdersTable.phoneLast4, last4),
-          like(serviceOrdersTable.phone, `%${last4}`),
-        ),
-        orderBy: [desc(serviceOrdersTable.createdAt)],
-        limit: 20,
-      });
-      const results = [
-        ...(await Promise.all(productOrders.map(buildTracking))),
-        ...(await Promise.all(serviceOrders.map(buildServiceTracking))),
-      ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      if (results.length === 1) return json(results[0]);
-      if (results.length > 1) return json(results);
-    }
+    if (!isSecureTrackingCode(code))
+      return error("رمز التتبع غير صالح. سجل الدخول للوصول إلى طلباتك.", 404);
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.trackingCode, code),
     });
@@ -11435,24 +11726,26 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "track-by-phone" && parts[2]) {
+    const customerId = getCurrentCustomerId(req);
+    if (!customerId) return error("سجل الدخول للوصول إلى طلباتك", 401);
+    const customer = await db.query.customersTable.findFirst({
+      where: eq(customersTable.id, customerId),
+    });
     const last4 = parts[2].replace(/\D/g, "");
-    if (!/^\d{4}$/.test(last4)) return error("يلزم آخر 4 أرقام بالضبط", 400);
-    const reqIp = ip(req);
-    if (rollingRateLimited(phoneLookupHits, reqIp, 10, 60_000)) {
-      return error("محاولات كثيرة، حاول لاحقاً", 429);
-    }
+    if (!customer || !/^\d{4}$/.test(last4) || phoneLast4(customer.phone) !== last4)
+      return error("لا تملك صلاحية الوصول إلى هذه الطلبات", 403);
     const productOrders = await db.query.ordersTable.findMany({
       where: or(
-        eq(ordersTable.phoneLast4, last4),
-        like(ordersTable.customerPhone, `%${last4}`),
+        eq(ordersTable.customerId, customerId),
+        eq(ordersTable.customerPhone, customer.phone),
       ),
       orderBy: [desc(ordersTable.createdAt)],
       limit: 20,
     });
     const serviceOrders = await db.query.serviceOrdersTable.findMany({
       where: or(
-        eq(serviceOrdersTable.phoneLast4, last4),
-        like(serviceOrdersTable.phone, `%${last4}`),
+        eq(serviceOrdersTable.phone, customer.phone),
+        inArray(serviceOrdersTable.phone, iraqiPhoneVariants(customer.phone)),
       ),
       orderBy: [desc(serviceOrdersTable.createdAt)],
       limit: 20,
@@ -11460,9 +11753,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const results = [
       ...(await Promise.all(productOrders.map(buildTracking))),
       ...(await Promise.all(serviceOrders.map(buildServiceTracking))),
-    ]
-      .map(stripPii)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return json(results);
   }
 
@@ -11513,25 +11804,69 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     const customerId = getCurrentCustomerId(req);
     const data = parsed.data;
     const cartItems = await normalizeCartRows(sessionId);
-    if (cartItems.length === 0) return error("السلة فارغة", 400);
+    if (cartItems.length === 0) return error("السلة فارغة", 422);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
-    if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
-    const safeCustomerName = textFallback(
-      data.customerName,
-      formatIraqiPhone(customerPhone),
-      "زبون",
-    );
-    let deliveryFee = 0;
-    if (data.deliveryZoneId) {
-      const zone = await db.query.deliveryZonesTable.findFirst({
-        where: eq(deliveryZonesTable.id, data.deliveryZoneId),
-      });
-      if (zone) deliveryFee = Number.parseFloat(zone.price);
+    if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 422);
+    const safeCustomerName = String(data.customerName ?? "").trim();
+    if (!safeCustomerName) return error("اسم العميل مطلوب", 422);
+    if (!String(data.address ?? "").trim())
+      return error("العنوان غير مكتمل", 422);
+    if (!data.deliveryZoneId)
+      return error("يرجى اختيار منطقة التوصيل", 422);
+
+    const zone = await db.query.deliveryZonesTable.findFirst({
+      where: eq(deliveryZonesTable.id, data.deliveryZoneId),
+    });
+    if (!zone) return error("منطقة التوصيل غير موجودة", 404);
+    if (!zone.isActive) return error("منطقة التوصيل غير متاحة حالياً", 409);
+    if (Array.isArray(zone.areas) && zone.areas.length > 0) {
+      if (!data.area || !zone.areas.includes(data.area))
+        return error("يرجى اختيار المنطقة أو الحي", 422);
     }
+
+    const paymentMethod = data.paymentMethod ?? "cod";
+    if (!["cod", "transfer", "paid"].includes(paymentMethod))
+      return error("طريقة الدفع غير صالحة", 422);
+
+    const productIds = [...new Set(cartItems.map((item) => item.productId))];
+    const products = await db.query.productsTable.findMany({
+      where: inArray(productsTable.id, productIds),
+    });
+    if (products.length !== productIds.length)
+      return error("المنتج غير موجود. حدّث السلة ثم حاول مرة أخرى", 404);
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    if (products.some((product) => product.isActive === false))
+      return error("أحد المنتجات لم يعد متاحاً", 409);
+
+    const stockRequirements = new Map<number, number>();
+    const productStockOwners = new Map<number, any>();
+    for (const item of cartItems) {
+      const resolved = await getStockOwnerProduct(item.productId);
+      const product = productMap.get(item.productId);
+      if (!product || !resolved)
+        return error("المنتج غير موجود. حدّث السلة ثم حاول مرة أخرى", 404);
+      productStockOwners.set(item.productId, resolved);
+      const stockProductId = Number(resolved.stockProduct.id);
+      stockRequirements.set(
+        stockProductId,
+        (stockRequirements.get(stockProductId) ?? 0) + item.quantity,
+      );
+    }
+    for (const [stockProductId, quantity] of stockRequirements) {
+      const stockProduct = [...productStockOwners.values()].find(
+        (resolved) => Number(resolved.stockProduct.id) === stockProductId,
+      )?.stockProduct;
+      if (!stockProduct || Number(stockProduct.stock ?? 0) < quantity)
+        return error("المخزون غير كافٍ لأحد المنتجات", 409);
+    }
+
+    const deliveryFee = money(zone.price);
     const subtotal = cartItems.reduce(
       (sum, i) => sum + Number.parseFloat(i.price) * i.quantity,
       0,
     );
+    if (!Number.isFinite(subtotal) || subtotal <= 0)
+      return error("إجمالي المنتجات غير صالح", 422);
     const couponPreview = data.couponCode
       ? await calculateCouponDiscount(data.couponCode, subtotal, deliveryFee)
       : null;
@@ -11566,110 +11901,177 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       subtotal + deliveryFee - couponDiscountAmount - loyaltyDiscountAmount,
       0,
     );
-    const paymentMethod =
-      data.paymentMethod &&
-      ["cod", "transfer", "paid"].includes(data.paymentMethod)
-        ? data.paymentMethod
-        : "cod";
+    if (!Number.isFinite(total) || total < 0)
+      return error("تعذر احتساب إجمالي الطلب", 422);
     const payment = paymentSummary(
       total,
       paymentMethod === "paid" ? total : 0,
       paymentMethod === "paid" ? "paid" : "unpaid",
       paymentMethod,
     );
-    // Every order must surface a customer on /admin/customers. Create-or-link by phone
-    // (the session id wins if the buyer was logged in; otherwise we resolve/create one).
-    const orderCustomer = customerPhone
-      ? await ensureCustomerForPhone(customerPhone, safeCustomerName)
-      : null;
-    const orderCustomerId = customerId ?? orderCustomer?.id ?? undefined;
-    const [order] = await db
-      .insert(ordersTable)
-      .values({
-        trackingCode: trackingCodeForPhone(customerPhone),
-        phoneLast4: phoneLast4(customerPhone),
-        customerId: orderCustomerId,
-        customerName: safeCustomerName,
-        customerPhone,
-        status: "pending",
-        total: total.toString(),
-        deliveryFee: deliveryFee.toString(),
-        couponCode,
-        couponDiscountAmount: String(couponDiscountAmount),
-        loyaltyPointsRedeemed,
-        loyaltyDiscountAmount: String(loyaltyDiscountAmount),
-        paymentMethod,
-        depositAmount: String(payment.deposit),
-        remainingAmount: String(payment.remaining),
-        paymentStatus: payment.status,
-        governorate: data.governorate ?? "",
-        area: data.area ?? null,
-        address: data.address ?? "",
-        notes: data.notes ?? null,
-        mapsUrl: data.mapsUrl ?? null,
-      })
-      .returning();
-    const orderQr = await ensureQrForEntity("order", order, req);
-    await Promise.all(
-      cartItems.map(async (item) => {
-        const product = await db.query.productsTable.findFirst({
-          where: eq(productsTable.id, item.productId),
-        });
-        await db.insert(orderItemsTable).values({
-          orderId: order.id,
-          productId: item.productId,
-          productName: product?.name ?? "",
-          productNameAr: product?.nameAr ?? "",
-          quantity: item.quantity,
-          price: item.price,
-          selectedColor: selectedColorName(
-            item.selectedColorData,
-            item.selectedColor,
-          ),
-          selectedColorData: selectedColorPayload(
-            item.selectedColorData,
-            item.selectedColor,
-          ),
-          customization: item.customization,
-          image: product
-            ? publicMediaValue("product", product, product.images?.[0], 0)
-            : null,
-        });
-        if (product) {
-          await adjustProductStock(product.id, -item.quantity, {
+    let order: typeof ordersTable.$inferSelect;
+    try {
+      order = await db.transaction(async (tx) => {
+        let orderCustomerId: number | null = null;
+        if (customerId) {
+          const customer = await tx.query.customersTable.findFirst({
+            where: eq(customersTable.id, customerId),
+          });
+          if (!customer) throw new CheckoutError("انتهت جلسة العميل. سجل الدخول مرة أخرى", 401);
+          orderCustomerId = customer.id;
+        } else {
+          const variants = iraqiPhoneVariants(customerPhone);
+          let customer = await tx.query.customersTable.findFirst({
+            where: inArray(customersTable.phone, variants),
+          });
+          if (!customer) {
+            await tx
+              .insert(customersTable)
+              .values({ phone: customerPhone, name: safeCustomerName, fullName: safeCustomerName })
+              .onConflictDoNothing();
+            customer = await tx.query.customersTable.findFirst({
+              where: eq(customersTable.phone, customerPhone),
+            });
+          }
+          if (!customer) throw new CheckoutError("فشل حفظ بيانات العميل", 422);
+          orderCustomerId = customer.id;
+        }
+
+        for (const [stockProductId, quantity] of stockRequirements) {
+          const updated = await tx.execute(sql`
+            UPDATE products
+            SET stock = stock - ${quantity}, updated_at = now()
+            WHERE id = ${stockProductId} AND stock >= ${quantity}
+            RETURNING id
+          `);
+          if ((updated.rows?.length ?? 0) !== 1)
+            throw new CheckoutError("المخزون غير كافٍ لأحد المنتجات", 409);
+        }
+
+        const [created] = await tx
+          .insert(ordersTable)
+          .values({
+            trackingCode: trackingCodeForPhone(customerPhone),
+            phoneLast4: phoneLast4(customerPhone),
+            customerId: orderCustomerId,
+            customerName: safeCustomerName,
+            customerPhone,
+            status: "pending",
+            total: String(total),
+            deliveryFee: String(deliveryFee),
+            couponCode,
+            couponDiscountAmount: String(couponDiscountAmount),
+            loyaltyPointsRedeemed,
+            loyaltyDiscountAmount: String(loyaltyDiscountAmount),
+            paymentMethod,
+            depositAmount: String(payment.deposit),
+            remainingAmount: String(payment.remaining),
+            paymentStatus: payment.status,
+            governorate: data.governorate ?? "",
+            area: data.area ?? null,
+            address: String(data.address ?? "").trim(),
+            notes: data.notes?.trim() || null,
+            mapsUrl: data.mapsUrl?.trim() || null,
+          })
+          .returning();
+        if (!created) throw new CheckoutError("فشل إنشاء الطلب", 422);
+
+        await tx.insert(orderItemsTable).values(
+          cartItems.map((item) => {
+            const product = productMap.get(item.productId)!;
+            return {
+              orderId: created.id,
+              productId: item.productId,
+              productName: product.name ?? product.nameAr ?? "",
+              productNameAr: product.nameAr ?? product.name ?? "",
+              quantity: item.quantity,
+              price: item.price,
+              selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
+              selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
+              customization: item.customization,
+              image: publicMediaValue("product", product, product.images?.[0], 0),
+            };
+          }),
+        );
+        await tx.insert(stockMovementsTable).values(
+          cartItems.map((item) => ({
+            productId: item.productId,
+            stockSourceProductId: productStockOwners.get(item.productId)?.stockProduct.id ?? item.productId,
+            quantityChange: String(-item.quantity),
             reason: "order_stock_deducted",
             relatedType: "order",
-            relatedId: order.id,
+            relatedId: created.id,
+            createdByName: "المتجر الإلكتروني",
+          } as any)),
+        );
+        if (couponPreview?.ok && couponDiscountAmount > 0) {
+          const couponUpdate = await tx
+            .update(couponsTable)
+            .set({ usedCount: sql`${couponsTable.usedCount} + 1`, updatedAt: new Date() } as any)
+            .where(and(eq(couponsTable.id, couponPreview.coupon.id), or(isNull(couponsTable.usageLimit), sql`${couponsTable.usedCount} < ${couponsTable.usageLimit}`)))
+            .returning({ id: couponsTable.id });
+          if (!couponUpdate.length) throw new CheckoutError("تم استهلاك حد استخدام الكوبون", 409);
+          await tx.insert(couponUsagesTable).values({
+            couponId: couponPreview.coupon.id,
+            customerPhone,
+            orderId: created.id,
+            discountAmount: String(couponDiscountAmount),
           });
         }
-      }),
-    );
-    if (couponPreview?.ok) {
-      await recordCouponUsage(couponPreview.coupon, {
+        if (orderCustomerId && loyaltyPointsRedeemed > 0 && loyaltyDiscountAmount > 0) {
+          const [rewardCustomer] = await tx
+            .update(customersTable)
+            .set({ rewardPoints: sql`greatest(${customersTable.rewardPoints} - ${loyaltyPointsRedeemed}, 0)`, updatedAt: new Date() })
+            .where(and(
+              eq(customersTable.id, orderCustomerId),
+              gte(customersTable.rewardPoints, loyaltyPointsRedeemed),
+            ))
+            .returning();
+          if (!rewardCustomer) throw new CheckoutError("رصيد نقاط العميل غير كافٍ", 409);
+          await tx.insert(customerRewardHistoryTable).values({
+            customerId: orderCustomerId,
+            orderId: created.id,
+            points: -loyaltyPointsRedeemed,
+            reason: "points_redeemed",
+            note: `صرف نقاط للطلب ${created.trackingCode}`,
+          });
+          await tx.insert(loyaltyPointsTable).values({
+            customerId: orderCustomerId,
+            orderId: created.id,
+            points: -loyaltyPointsRedeemed,
+            reason: "points_redeemed",
+            note: `صرف نقاط للطلب ${created.trackingCode}`,
+          });
+        }
+        await tx.insert(orderStatusHistoryTable).values({ orderId: created.id, status: "pending", notes: "تم إنشاء الطلب" });
+        await tx.insert(entityTimelineTable).values({
+          entityType: "order", entityId: created.id, type: "created", title: "تم إنشاء الطلب",
+          body: `طلب متجر جديد برمز ${created.trackingCode}`,
+          actorName: "المتجر الإلكتروني", metadata: { source: "checkout", sessionId },
+        });
+        await tx.delete(cartItemsTable).where(eq(cartItemsTable.sessionId, sessionId));
+        return created;
+      });
+    } catch (err: any) {
+      console.error("Store checkout transaction failed", {
+        sessionId,
+        customerId,
         customerPhone,
-        orderId: order.id,
-        discountAmount: couponDiscountAmount,
+        code: err?.code,
+        message: err instanceof Error ? err.message : "unknown",
+        stack: err instanceof Error ? err.stack : undefined,
       });
+      if (err instanceof CheckoutError) return error(err.message, err.status);
+      if (err?.code === "23503") return error("تعذر حفظ الطلب بسبب منتج أو عميل غير موجود", 409);
+      if (err?.code === "23505") return error("تعذر إنشاء الطلب المكرر. حدّث الصفحة ثم حاول مرة أخرى", 409);
+      if (err?.code === "23514") return error("البيانات المالية للطلب غير صالحة", 422);
+      return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
     }
-    if (customerId && loyaltyPointsRedeemed > 0 && loyaltyDiscountAmount > 0) {
-      await addCustomerReward(customerId, -loyaltyPointsRedeemed, {
-        orderId: order.id,
-        reason: "points_redeemed",
-        note: `صرف نقاط للطلب ${order.trackingCode}`,
-      });
-    }
-    void notifyLowStockForProductIds(
-      cartItems.map((item) => Number(item.productId)),
-    );
-    await db.insert(orderStatusHistoryTable).values({
-      orderId: order.id,
-      status: "pending",
-      notes: "تم إنشاء الطلب",
-    });
-    await db
-      .delete(cartItemsTable)
-      .where(eq(cartItemsTable.sessionId, sessionId));
     const formatted = await formatOrder(order);
+    void ensureQrForEntity("order", order, req).catch((err) =>
+      console.error("order QR generation failed", { orderId: order.id, message: err?.message }),
+    );
+    void notifyLowStockForProductIds(cartItems.map((item) => Number(item.productId)));
     void fireOrderEvent("placed", {
       name: order.customerName,
       phone: order.customerPhone,
@@ -11706,7 +12108,19 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         href: `/track?code=${encodeURIComponent(order.trackingCode)}`,
       });
     }
-    await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    // Financial posting is idempotent and deliberately happens after the atomic
+    // checkout commit. It never exposes a financial-integration failure as a false
+    // "order was not created" response to the customer.
+    try {
+      await syncOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    } catch (err: any) {
+      console.error("order financial sync failed", {
+        orderId: order.id,
+        trackingCode: order.trackingCode,
+        message: err?.message,
+        stack: err?.stack,
+      });
+    }
     void notifyTelegramOrder({
       kind: "store",
       id: order.id,
@@ -11724,7 +12138,6 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         .filter(Boolean)
         .join(" - "),
       notes: order.notes,
-      qrDataUrl: orderQr.dataUrl,
       items: (formatted.items ?? []).map((item: any) => ({
         productName: String(
           item.productNameAr ?? item.productName ?? `#${item.productId}`,
@@ -11826,13 +12239,15 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
   if (req.method !== "GET" || parts[1] !== "by-phone") return null;
 
+  const customerId = getCurrentCustomerId(req);
+  if (!customerId) return error("سجل الدخول للوصول إلى طلباتك", 401);
+  const customer = await db.query.customersTable.findFirst({
+    where: eq(customersTable.id, customerId),
+  });
   const rawPhone = req.nextUrl.searchParams.get("phone") ?? "";
   const normalizedPhone = normalizeIraqiPhone(rawPhone);
-  if (!normalizedPhone)
-    return error("أدخل رقم هاتف عراقي صحيح مثل 0770xxxxxxx", 400);
-  if (rollingRateLimited(phoneLookupHits, ip(req), 10, 60_000)) {
-    return error("محاولات كثيرة، حاول لاحقاً", 429);
-  }
+  if (!customer || !normalizedPhone || !phoneBelongsToLookup(customer.phone, normalizedPhone))
+    return error("لا تملك صلاحية الوصول إلى هذه الطلبات", 403);
 
   await Promise.all([
     ensureTrackingColumns(),
@@ -12630,17 +13045,47 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "bookings",
     "services",
     "products",
+    "asset_depreciation_remove",
     "gallery",
     "delivery",
     "customers",
     "staff",
+    "salary_settings_view",
+    "salary_settings_edit",
+    "salary_settings_approve",
     "settings",
     "invoices",
     "whatsapp",
     "accounting",
+    "ai_dashboard_view",
+    "ai_recommendations_view",
+    "ai_alerts_view",
+    "ai_settings_manage",
+    "voucher_view",
+    "voucher_create",
+    "voucher_edit",
+    "voucher_delete",
+    "voucher_approve",
+    "voucher_reverse",
     "tasks",
     "photography",
     "graduation",
+    "payroll_view",
+    "payroll_edit",
+    "payroll_delete",
+    "payroll_recalculate",
+    "payroll_reopen",
+    "payroll_cancel",
+    "payroll_approve",
+    "payroll_pay",
+    "bonus_view",
+    "bonus_create",
+    "bonus_edit",
+    "bonus_approve",
+    "bonus_reject",
+    "bonus_delete",
+    "bonus_apply",
+    "bonus_rules_manage",
   ],
   booking_staff: [
     "dashboard",
@@ -12659,7 +13104,19 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "customers",
     "invoices",
     "accounting",
+    "voucher_view",
+    "voucher_create",
+    "voucher_edit",
+    "voucher_delete",
     "tasks",
+    "payroll_view",
+    "payroll_recalculate",
+    "payroll_approve",
+    "payroll_pay",
+    "bonus_view",
+    "bonus_create",
+    "bonus_approve",
+    "bonus_apply",
   ],
   employee: ["dashboard", "tasks"],
   staff: ["dashboard", "tasks"],
@@ -14582,9 +15039,100 @@ async function handleAdminKoshas(
         orderBy: (b, { desc }) => [desc(b.createdAt)],
         limit: 150,
       });
-      return json(
-        await Promise.all(rows.map((row) => formatKoshaBooking(row))),
-      );
+      const formatted = await Promise.all(rows.map((row) => formatKoshaBooking(row)));
+      const latestPayments = rows.length
+        ? await db.query.financialTransactionsTable.findMany({
+            where: and(
+              eq(financialTransactionsTable.sourceType, "kosha_booking"),
+              inArray(financialTransactionsTable.sourceId, rows.map((row) => String(row.id))),
+              eq(financialTransactionsTable.sourceEvent, "payment"),
+              eq(financialTransactionsTable.approvalStatus, "executed"),
+            ),
+            orderBy: [desc(financialTransactionsTable.createdAt)],
+          })
+        : [];
+      const latestByBooking = new Map<number, string>();
+      for (const payment of latestPayments) {
+        const bookingId = Number(payment.sourceId);
+        if (!latestByBooking.has(bookingId)) latestByBooking.set(bookingId, payment.transactionDate);
+      }
+      return json(formatted.map((item) => ({
+        ...item,
+        latestPaymentDate: latestByBooking.get(item.id) ?? null,
+      })));
+    }
+
+    // Read-only unified financial projection for a booking.  This deliberately
+    // derives the totals from the existing booking, collection requests and
+    // posted financial movements; it never rewrites historical transactions.
+    if (parts[2] === "reconciliation" && method === "GET") {
+      const bookings = await db.query.koshaBookingsTable.findMany({
+        where: sql`${koshaBookingsTable.archivedAt} is null`,
+        orderBy: (b, { desc }) => [desc(b.id)],
+        limit: 2000,
+      });
+      const ids = bookings.map((b) => b.id);
+      const [requests, transactions] = ids.length
+        ? await Promise.all([
+            db.query.koshaPaymentRequestsTable.findMany({
+              where: inArray(koshaPaymentRequestsTable.bookingId, ids),
+            }),
+            db.query.financialTransactionsTable.findMany({
+              where: and(
+                eq(financialTransactionsTable.sourceType, "kosha_booking"),
+                inArray(financialTransactionsTable.sourceId, ids.map(String)),
+              ),
+            }),
+          ])
+        : [[], []];
+      const approvedByBooking = new Map<number, number>();
+      for (const row of requests as any[]) {
+        if (row.status === "approved")
+          approvedByBooking.set(row.bookingId, money(approvedByBooking.get(row.bookingId) ?? 0) + money(row.amount));
+      }
+      const txByBooking = new Map<number, any[]>();
+      for (const row of transactions as any[]) {
+        const id = Number(row.sourceId);
+        const list = txByBooking.get(id) ?? [];
+        list.push(row);
+        txByBooking.set(id, list);
+      }
+      const report = bookings.map((booking) => {
+        const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+        const pricing = (details.pricing ?? {}) as Record<string, any>;
+        const approved = money(approvedByBooking.get(booking.id) ?? 0);
+        const txs = txByBooking.get(booking.id) ?? [];
+        const executed = txs.filter((t) => t.approvalStatus === "executed");
+        const expected = money(booking.paidAmount);
+        const posted = money(executed.reduce((sum, t) => sum + (t.direction === "revenue" ? money(t.amount) : -money(t.amount)), 0));
+        return {
+          bookingId: booking.id,
+          bookingNo: booking.trackingCode ?? `KB-${booking.id}`,
+          customerName: booking.customerName,
+          totalAmount: money(booking.totalAmount),
+          paidAmount: expected,
+          approvedCollectedAmount: approved,
+          remainingAmount: money(booking.remainingAmount),
+          status: booking.paymentStatus,
+          missingCashbox: expected > 0 && posted <= 0,
+          mismatched: Math.abs(posted - expected) >= 0.01,
+          duplicate: executed.length > 1 && new Set(executed.map((t) => t.idempotencyKey)).size < executed.length,
+          postedAmount: posted,
+          transactionCount: txs.length,
+          discount: money(pricing.discountAmount),
+          additionalCharges: money(pricing.additionalCharges ?? pricing.additionalAmount),
+        };
+      });
+      return json({
+        generatedAt: new Date().toISOString(),
+        fixed: [],
+        missing: report.filter((r) => r.missingCashbox),
+        duplicate: report.filter((r) => r.duplicate),
+        mismatched: report.filter((r) => r.mismatched),
+        skipped: [],
+        needsManualReview: report.filter((r) => r.missingCashbox || r.mismatched || r.duplicate),
+        rows: report,
+      });
     }
 
     if (parts[2]) {
@@ -14594,6 +15142,116 @@ async function handleAdminKoshas(
         where: eq(koshaBookingsTable.id, id),
       });
       if (!existing) return error("الحجز غير موجود", 404);
+
+      if (parts[3] === "finance" && method === "GET") {
+        const details = (existing.bookingDetails ?? {}) as Record<string, any>;
+        const pricing = (details.pricing ?? {}) as Record<string, any>;
+        const requests = await db.query.koshaPaymentRequestsTable.findMany({
+          where: eq(koshaPaymentRequestsTable.bookingId, id),
+          orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
+        });
+        const directTransactions = await db.query.financialTransactionsTable.findMany({
+          where: or(
+            and(
+              eq(financialTransactionsTable.sourceType, "kosha_booking"),
+              eq(financialTransactionsTable.sourceId, String(id)),
+            ),
+            inArray(financialTransactionsTable.id, requests.map((r) => r.financialTransactionId).filter((v): v is number => Number.isInteger(v))),
+          ),
+          orderBy: [desc(financialTransactionsTable.createdAt)],
+        });
+        // Receipt vouchers are the cashbox source, while this allocation is the
+        // booking link. Include them in payment history without relying on a
+        // booking number or customer name embedded in a reference field.
+        const receiptTransactionsResult = await db.execute(sql`
+          SELECT ft.*, rv.voucher_no AS receipt_voucher_no FROM receipt_voucher_allocations a
+          JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
+          JOIN financial_transactions ft ON ft.id = rv.financial_transaction_id
+          WHERE a.source_type = 'kosha_booking' AND a.source_id = ${id}
+          ORDER BY ft.created_at DESC
+        `);
+        const receiptTransactions = ((receiptTransactionsResult.rows ?? []) as any[]).map((row) => ({
+          ...row,
+          transactionNo: row.transaction_no,
+          receiptVoucherNo: row.receipt_voucher_no,
+          transactionDate: row.transaction_date,
+          approvalStatus: row.approval_status,
+          paymentMethod: row.payment_method,
+          sourceType: row.source_type,
+          sourceId: row.source_id,
+          requestedByName: row.requested_by_name,
+          approvedByName: row.approved_by_name,
+          balanceBefore: row.balance_before,
+          balanceAfter: row.balance_after,
+          sourceEvent: row.source_event,
+          transactionType: row.transaction_type,
+          createdAt: row.created_at,
+        }));
+        const txRows = [...directTransactions, ...receiptTransactions.filter((row) => !directTransactions.some((transaction) => transaction.id === row.id))]
+          .sort((left: any, right: any) => String(right.createdAt ?? right.created_at ?? "").localeCompare(String(left.createdAt ?? left.created_at ?? ""))) as any[];
+        const journalRows = txRows.length
+          ? await db.query.financialLedgerEntriesTable.findMany({
+              where: inArray(financialLedgerEntriesTable.transactionId, txRows.map((t) => t.id)),
+            })
+          : [];
+        const customerId = (existing as any).customerId ?? (await findCustomerByPhone(existing.phone))?.id ?? null;
+        const approvedCollectedAmount = money(requests.filter((r) => r.status === "approved").reduce((sum, r) => sum + money(r.amount), 0));
+        const pendingCollectionAmount = money(requests.filter((r) => r.status === "pending").reduce((sum, r) => sum + money(r.amount), 0));
+        const refundedAmount = money(txRows.filter((t) => t.sourceEvent === "refund" || t.transactionType.includes("refund")).reduce((sum, t) => sum + money(t.amount), 0));
+        const discount = money(pricing.discountAmount);
+        const additionalCharges = money(pricing.additionalCharges ?? pricing.additionalAmount);
+        const directPaid = money(Math.max(0, money(existing.paidAmount) - approvedCollectedAmount));
+        const remainingAmount = money(Math.max(0, money(existing.totalAmount) + additionalCharges - discount - directPaid - approvedCollectedAmount + refundedAmount));
+        const movement = (row: any) => ({
+          id: row.id,
+          transactionNo: row.transactionNo,
+          receiptVoucherNo: row.receiptVoucherNo ?? null,
+          amount: money(row.amount),
+          date: row.transactionDate,
+          status: row.approvalStatus,
+          method: row.paymentMethod,
+          source: row.sourceType,
+          collector: row.requestedByName || null,
+          approvedBy: row.approvedByName || null,
+          balanceBefore: row.balanceBefore == null ? null : money(row.balanceBefore),
+          balanceAfter: row.balanceAfter == null ? null : money(row.balanceAfter),
+        });
+        return json({
+          bookingId: id,
+          bookingNo: existing.trackingCode ?? `KB-${id}`,
+          customerId,
+          totalAmount: money(existing.totalAmount),
+          paidAmount: directPaid,
+          approvedCollectedAmount,
+          pendingCollectionAmount,
+          refundedAmount,
+          discount,
+          additionalCharges,
+          remainingAmount,
+          paymentStatus: existing.paymentStatus,
+          latestPaymentDate: txRows[0]?.transactionDate ?? null,
+          payments: txRows.map(movement),
+          collections: requests.map((r: any) => ({
+            id: r.id,
+            amount: money(r.amount),
+            status: r.status,
+            source: "kosha_staff_collection",
+            collector: r.staffName,
+            approvedBy: r.reviewedByName,
+            date: r.createdAt?.toISOString?.() ?? String(r.createdAt),
+            financialTransactionId: r.financialTransactionId ?? null,
+          })),
+          cashboxMovements: txRows.map(movement),
+          journalEntries: journalRows.map((entry: any) => ({
+            id: entry.id,
+            transactionId: entry.transactionId,
+            entryNo: txRows.find((t) => t.id === entry.transactionId)?.transactionNo ?? null,
+            amount: money(entry.amount),
+            status: "posted",
+            source: entry.entrySide,
+          })),
+        });
+      }
 
       // Booking ↔ Reserved products/variants. Reserves (holds) stock without deducting until
       // the booking is confirmed/checked out. Stored in stock_reservations (source=kosha_booking).
@@ -15609,18 +16267,20 @@ async function enterpriseCommandCenter() {
         'todayProfit', (select coalesce(total_sales::numeric - total_expenses::numeric,0) from daily_cash_reports, ctx where report_date = ctx.today limit 1),
         'criticalAlerts', (select count(*) from notifications where audience_type = 'admin' and archived_at is null and read_at is null and type ~* '(critical|overdue|low_stock|maintenance|payment)'),
         'openTasks', (select count(*) from tasks where archived_at is null and status not in ('completed','cancelled')),
-        'assetsRegistered', (select count(*) from asset_profiles),
+        'assetsRegistered', (select count(*) from asset_profiles where deleted_at is null),
         'assetsMaintenance', (
           select count(*) from asset_profiles
-          where status = 'maintenance'
+          where deleted_at is null and (status = 'maintenance'
             or (usage_count > 0 and usage_count % greatest(1, maintenance_every_uses) = 0)
+          )
         ),
-        'assetsLostOrLocked', (select count(*) from asset_profiles where status in ('lost','locked')),
+        'assetsLostOrLocked', (select count(*) from asset_profiles where deleted_at is null and status in ('lost','locked')),
         'assetsReplacementRecommended', (
           select count(*) from asset_profiles p
           left join asset_passports ap on ap.product_id = p.product_id
-          where p.usage_count::numeric / greatest(1, p.expected_life_uses) >= 0.85
+          where p.deleted_at is null and (p.usage_count::numeric / greatest(1, p.expected_life_uses) >= 0.85
              or (p.purchase_price::numeric > 0 and coalesce(ap.maintenance_cost, 0)::numeric >= p.purchase_price::numeric * 0.4)
+          )
         ),
         'branches', (select count(*) from enterprise_branches where is_active = true)
       ),
@@ -16699,7 +17359,8 @@ async function handleEnterpriseAdmin(
             limit: 10000,
           }),
         ]);
-      const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+      const profileMap = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+      const removedProfileMap = new Map(profiles.filter((row) => row.deletedAt).map((row) => [row.productId, row]));
       const passportMap = new Map(passports.map((row) => [row.productId, row]));
       const staffMap = new Map(staff.map((row) => [row.id, row]));
       const custodyMap = new Map<number, typeof custody>();
@@ -16719,14 +17380,15 @@ async function handleEnterpriseAdmin(
       const data = assetProducts.map((product) => {
         const passport = passportMap.get(product.id);
         const profile = profileMap.get(product.id);
+        const removedProfile = removedProfileMap.get(product.id);
         const metadata = assetMetadataObject(passport?.metadata);
         const events = timelineMap.get(product.id) ?? [];
         const purchasePrice = enterpriseNumber(
-          profile?.purchasePrice ?? product.costPrice,
+          profile?.purchasePrice ?? removedProfile?.purchasePrice ?? product.costPrice,
         );
         const currentValue = Math.max(
           0,
-          enterpriseNumber(profile?.currentValue ?? purchasePrice),
+          enterpriseNumber(profile ? profile.currentValue : purchasePrice),
         );
         const revenue = enterpriseNumber(passport?.revenueTotal);
         const maintenance = enterpriseNumber(passport?.maintenanceCost);
@@ -19433,6 +20095,481 @@ async function resolveAssetProductId(raw: string): Promise<number> {
   return found?.id ?? 0;
 }
 
+async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "hr") return null;
+  await ensureHrTables();
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
+  if (isResponse(auth)) return auth;
+  const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
+  const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
+  const adminOnly = () => auth.role === "admin" || auth.role === "manager" || auth.role === "accountant";
+  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) ? null : error(message, 403);
+  try {
+    if (method === "GET" && (!resource || resource === "dashboard")) return json(await hrDashboard(String(req.nextUrl.searchParams.get("period") || "" ) || undefined));
+    if (method === "GET" && resource === "executive") {
+      if (!hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("ليس لديك صلاحية", 403);
+      return json(await executiveDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
+    }
+    if (resource === "incentive-rules") {
+      if (!hasPermission(auth, "bonus_rules_manage") && !adminOnly()) return error("لا تملك صلاحية إدارة قواعد المكافآت", 403);
+      if (method === "GET") return json(await listBonusRules());
+      if (method === "POST" || method === "PATCH") { const rule = await saveBonusRule(await body(req)); void logAdminActivity(req, "bonus_rule_saved", "hr_incentive_rule", rule.id, { newValues: rule, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(rule, method === "POST" ? 201 : 200); }
+      if (method === "DELETE" && id) return json(await deleteBonusRule(id));
+    }
+    if (resource === "incentives") {
+      if (method === "GET") {
+        if (!hasPermission(auth, "bonus_view") && !hasPermission(auth, "payroll_view") && !adminOnly()) return error("ليس لديك صلاحية عرض المكافآت", 403);
+        return json(await listIncentives(Object.fromEntries(req.nextUrl.searchParams.entries())));
+      }
+      if (method === "PATCH" && id) {
+        if (!hasPermission(auth, "bonus_edit") && !adminOnly()) return error("لا تملك صلاحية تعديل المكافأة", 403);
+        const payload = await body(req); console.error("Bonus request payload", { operation: "edit", id, payload });
+        await validateBonus(id);
+        await validateBonusUpdate(id, payload);
+        const result = await updateBonus(id, payload, actor);
+        void logAdminActivity(req, "bonus_edited", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_edited", title: "تم تعديل المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result);
+      }
+      if (method === "DELETE" && id) {
+        if (!hasPermission(auth, "bonus_delete") && !adminOnly()) return error("لا تملك صلاحية حذف المكافأة", 403);
+        const payload = await body(req); const reason = String(payload?.reason || "").trim();
+        if (reason.length < 3) return error("سبب الحذف مطلوب", 400);
+        console.error("Bonus request payload", { operation: "delete", id, payload });
+        const before = await validateBonus(id);
+        if (!["draft", "pending", "pending_approval", "rejected"].includes(String(before.status))) throw new Error("لا يمكن حذف مكافأة تمت إضافتها إلى الراتب.");
+        const result = await deleteBonus(id, actor, reason);
+        try { await recalculateBonusPeriod(String(before.period), actor); } catch (error) { console.error("Bonus payroll recalculation failed after delete", { id, error }); }
+        void logAdminActivity(req, "bonus_deleted", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_deleted", title: "تم حذف المكافأة", body: reason, actor: erpActorFromAdmin(auth), metadata: { before, result } });
+        try { await createNotification({ audienceType: "admin", type: "bonus_deleted", title: "تم حذف مكافأة", body: `${before.employeeName || "الموظف"} · ${before.amount}`, entityType: "hr_incentive", entityId: id, href: "/admin/hr" }); } catch { /* notification is non-blocking */ }
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "approve") {
+        if (!hasPermission(auth, "bonus_approve") && !adminOnly()) return error("لا تملك صلاحية اعتماد المكافأة", 403);
+        console.error("Bonus request payload", { operation: "approve", id, payload: null });
+        await validateBonus(id);
+        const result = await approveBonus(id, actor);
+        void logAdminActivity(req, "bonus_approved", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_approved", title: "تم اعتماد المكافأة", actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "reject") {
+        if (!hasPermission(auth, "bonus_reject") && !adminOnly()) return error("لا تملك صلاحية رفض المكافأة", 403);
+        const payload = await body(req); console.error("Bonus request payload", { operation: "reject", id, payload });
+        const reason = String(payload?.reason || "").trim();
+        if (!reason) return error("سبب الرفض مطلوب", 400);
+        const before = await validateBonus(id);
+        if (!["draft", "pending", "pending_approval"].includes(String(before.status))) throw new Error("لا يمكن رفض مكافأة بهذه الحالة.");
+        const result = await rejectBonus(id, actor, reason);
+        try { await recalculateBonusPeriod(String(before.period), actor); } catch (error) { console.error("Bonus payroll recalculation failed after reject", { id, error }); }
+        void logAdminActivity(req, "bonus_rejected", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_rejected", title: "تم رفض المكافأة", body: reason, actor: erpActorFromAdmin(auth), metadata: { before, result, reason } });
+        try { await createNotification({ audienceType: "admin", type: "bonus_rejected", title: "تم رفض مكافأة", body: `${before.employeeName || "الموظف"}: ${reason}`, entityType: "hr_incentive", entityId: id, href: "/admin/hr" }); } catch { /* notification is non-blocking */ }
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "apply") {
+        if (!hasPermission(auth, "bonus_apply") && !adminOnly()) return error("لا تملك صلاحية تطبيق المكافأة على الرواتب", 403);
+        console.error("Bonus request payload", { operation: "apply", id, payload: null });
+        await validateBonus(id);
+        const result = await applyBonus(id, actor);
+        void logAdminActivity(req, "bonus_applied", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "cancel") {
+        if (!hasPermission(auth, "bonus_reverse") && !adminOnly()) return error("لا تملك صلاحية إلغاء اعتماد المكافأة", 403);
+        const payload = await body(req);
+        const reason = String(payload?.reason || "").trim();
+        if (reason.length < 3) return error("سبب الإلغاء مطلوب", 400);
+        const before = await validateBonus(id);
+        const result = await reverseBonus(id, actor, { reason });
+        void logAdminActivity(req, "bonus_approval_cancelled", "hr_incentive", id, { oldValues: before, newValues: result, reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "hr_incentive", entityId: id, type: "bonus_approval_cancelled", title: "تم إلغاء اعتماد المكافأة", body: reason, actor: erpActorFromAdmin(auth) });
+        return json(result);
+      }
+      if (method === "POST" && parts[3] === "evaluate") {
+        if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+        const result = await evaluateAutomaticIncentives(String((await body(req))?.period || "") || undefined);
+        void logAdminActivity(req, "hr_incentives_evaluated", "hr_incentive", undefined, { count: result.length });
+        return json({ created: result });
+      }
+      if (method === "POST") {
+        if (!hasPermission(auth, "bonus_create") && !adminOnly()) return error("ليس لديك صلاحية إنشاء المكافأة", 403);
+        const payload = await body(req); console.error("Bonus request payload", { operation: "create", payload });
+        const event = await createBonus(payload, actor);
+        void logAdminActivity(req, "hr_incentive_created", "hr_incentive", event.id, { newValues: event as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(event, 201);
+      }
+    }
+    if (resource === "payroll" && method === "GET" && parts[3] === "dashboard") {
+      const denied = requirePayroll("payroll_view"); if (denied) return denied;
+      return json(await payrollDashboard(String(req.nextUrl.searchParams.get("period") || "") || undefined));
+    }
+    if (resource === "payroll" && method === "POST" && !id && parts[3] === "preview") {
+      const denied = requirePayroll("payroll_recalculate"); if (denied) return denied;
+      return json(await previewPayrollRun(await body(req)));
+    }
+    if (resource === "payroll" && method === "POST" && !id && parts[3] === "bulk") {
+      const payload = await body(req); const action = String(payload?.action || "");
+      const permissionByAction: Record<string, Permission> = { recalculate: "payroll_recalculate", submit: "payroll_submit", approve: "payroll_approve", reject: "payroll_reject", delete: "payroll_delete", cancel: "payroll_cancel", print: "payroll_view" };
+      const denied = requirePayroll(permissionByAction[action] || "payroll_view"); if (denied) return denied;
+      const ids: number[] = Array.isArray(payload?.ids) ? Array.from(new Set(payload.ids.map((value: unknown) => int(String(value))).filter((value: number | null): value is number => !!value))) : [];
+      if (!ids.length || !permissionByAction[action]) return error("الإجراء والسجلات المطلوبة غير صحيحة", 400);
+      const summary: { deleted: number[]; skipped: Array<{ id: number; reason: string }>; failed: Array<{ id: number; reason: string }>; results: any[] } = { deleted: [], skipped: [], failed: [], results: [] };
+      for (const payrollId of ids) {
+        try {
+          if (action === "recalculate") summary.results.push(await recalculatePayrollRun(payrollId, actor));
+          else if (action === "submit") summary.results.push(await submitPayrollForApproval(payrollId, actor));
+          else if (action === "approve") summary.results.push(await approvePayrollRun(payrollId, actor));
+          else if (action === "reject") summary.results.push(await rejectPayrollRun(payrollId, actor, { reason: String(payload?.reason || "رفض جماعي لدورة الرواتب") }));
+          else if (action === "delete") { const result = await deleteDraftPayrollRun(payrollId, actor, { reason: String(payload?.reason || "حذف جماعي لمسودة الرواتب") }); summary.deleted.push(payrollId); summary.results.push(result); }
+          else if (action === "cancel") summary.results.push(await cancelPayrollRun(payrollId, actor, { reason: String(payload?.reason || "إلغاء جماعي للرواتب") }));
+          else { const run = await getPayrollRun(payrollId); if (run) summary.results.push(run); else summary.skipped.push({ id: payrollId, reason: "سجل الراتب غير موجود" }); }
+        } catch (error: any) {
+          const reason = String(error?.message || "تعذر تنفيذ الإجراء");
+          if (action === "delete") summary.skipped.push({ id: payrollId, reason }); else summary.failed.push({ id: payrollId, reason });
+        }
+      }
+      void logAdminActivity(req, `payroll_bulk_${action}`, "payroll_run", undefined, { ids, summary, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(summary);
+    }
+    if (resource === "payroll") {
+      if (method === "GET" && !id) {
+        const denied = requirePayroll("payroll_view"); if (denied) return denied;
+        const query = req.nextUrl.searchParams;
+        return json(await listPayrollRuns({
+          period: query.get("period") || undefined,
+          year: query.get("year") || undefined,
+          department: query.get("department") || undefined,
+          employee: query.get("employee") || undefined,
+          status: query.get("status") || undefined,
+          paymentStatus: query.get("paymentStatus") || undefined,
+          amountType: query.get("amountType") || undefined,
+          search: query.get("search") || undefined,
+        }));
+      }
+      if (method === "GET" && id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
+      if (method === "POST" && !id) {
+        const denied = requirePayroll("payroll_edit"); if (denied) return denied;
+        const payload = await body(req); const run = await createPayrollRun(payload, actor);
+        void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
+        return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "recalculate") {
+        const denied = requirePayroll("payroll_recalculate"); if (denied) return denied;
+        const run = await recalculatePayrollRun(id, actor);
+        void logAdminActivity(req, "payroll_recalculated", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_recalculated", title: "تمت إعادة حساب الراتب", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "submit") {
+        const denied = requirePayroll("payroll_submit", "لا تملك صلاحية إرسال دورة الرواتب للاعتماد"); if (denied) return denied;
+        const run = await submitPayrollForApproval(id, actor);
+        void logAdminActivity(req, "payroll_submitted", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_submitted", title: "تم إرسال دورة الرواتب لاعتماد المدير", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "reject") {
+        const denied = requirePayroll("payroll_reject", "لا تملك صلاحية رفض دورة الرواتب"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const run = await rejectPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_rejected", "payroll_run", id, { oldValues: oldRun, newValues: run as any, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_rejected", title: "تم رفض دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "PATCH" && id && parts[4] === "lines" && parts[5]) {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية التعديل"); if (denied) return denied;
+        const payload = await body(req); const lineId = int(parts[5])!; const result = await editPayrollLine(id, lineId, payload, actor);
+        const metadata = { oldValues: result.oldValues, newValues: result.newValues, oldValue: result.oldValues, newValue: result.newValues, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_edited", "payroll_line", lineId, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_edited", title: "تم تعديل راتب الموظف", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
+        return json(result.run);
+      }
+      if (method === "DELETE" && id && parts[4] === "lines" && parts[5]) {
+        const denied = requirePayroll("payroll_delete", "لا تملك صلاحية حذف سجل راتب الموظف"); if (denied) return denied;
+        const payload = await body(req); const lineId = int(parts[5])!; const result = await deleteDraftPayrollLine(id, lineId, payload, actor);
+        void logAdminActivity(req, "payroll_line_deleted", "payroll_line", lineId, { oldValues: result.oldValues, reason: result.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_line_deleted", title: "تم حذف سجل راتب الموظف من المسودة", body: result.reason, actor: erpActorFromAdmin(auth), metadata: { lineId, oldValues: result.oldValues } });
+        return json(result.run);
+      }
+      if (method === "POST" && id && parts[4] === "cancel") {
+        const denied = requirePayroll("payroll_cancel", "لا تملك صلاحية الإلغاء"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const result = await cancelPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_cancelled", "payroll_run", id, { oldValues: oldRun, newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_cancelled", title: "تم إلغاء الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "reopen") {
+        const denied = requirePayroll("payroll_reopen", "لا تملك صلاحية إعادة الفتح"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const result = await reopenPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_reopened", "payroll_run", id, { oldValues: oldRun, newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_reopened", title: "تمت إعادة فتح الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(result);
+      }
+      if (method === "DELETE" && id) {
+        const denied = requirePayroll("payroll_delete"); if (denied) return denied;
+        const payload = await body(req); const deletion = await deleteDraftPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_deleted", "payroll_run", id, { oldValues: deletion.oldValues, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_deleted", title: "تم حذف مسودة الراتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
+        return json(deletion);
+      }
+      if (method === "POST" && id && parts[4] === "approve") {
+        const denied = requirePayroll("payroll_approve"); if (denied) return denied;
+        const run = await approvePayrollRun(id, actor); void logAdminActivity(req, "payroll_approved", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "pay") {
+        const denied = requirePayroll("payroll_pay"); if (denied) return denied;
+        const run = await payPayrollRun(id, actor);
+        void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
+        return json(run);
+      }
+    }
+    if (resource === "targets" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const target = await upsertTarget(await body(req), actor); void logAdminActivity(req, "hr_target_created", "employee_target", target.id, { newValues: target as any }); return json(target, 201);
+    }
+    if (resource === "evaluations" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const evaluation = await createEvaluation(await body(req), actor); void logAdminActivity(req, "employee_evaluated", "employee_evaluation", evaluation.id, { newValues: evaluation as any }); return json(evaluation, 201);
+    }
+    if (resource === "career" && method === "POST") {
+      if (!adminOnly()) return error("ليس لديك صلاحية", 403);
+      const event = await addCareerEvent(await body(req), actor); void logAdminActivity(req, "employee_career_updated", "employee_career", event.id, { newValues: event as any }); return json(event, 201);
+    }
+  } catch (err: any) {
+    console.error("HR operation failed", { resource, id, message: err?.message });
+    if (resource === "incentives" && (err?.name === "BonusValidationError" || err?.name === "ZodError")) {
+      const details = (err?.issues ?? []).map((issue: any) => ({ field: issue.path?.join(".") || "body", message: issue.message }));
+      console.error("Bonus validation response", { resource, id, details });
+      return json({ error: details[0]?.message || "بيانات المكافأة غير صحيحة", details }, 400);
+    }
+    if (err instanceof PayrollConflictError) return json({ error: "دورة الرواتب موجودة مسبقًا لهذه الفترة", existing: err.existing }, 409);
+    if (err?.code === "SALARY_SETTINGS_INCOMPLETE") return json({ error: "إعدادات الراتب غير مكتملة", employees: err.employees ?? [] }, 422);
+    if (err?.name === "ZodError") return json({ error: "بيانات إنشاء الرواتب غير صحيحة", details: err.issues?.map((issue: any) => ({ field: issue.path?.join("."), message: issue.message })) ?? [] }, 400);
+    return error(String(err?.message || "تعذر إكمال عملية الموارد البشرية"), 400);
+  }
+  return error("المسار غير مدعوم", 404);
+}
+
+async function handleEmployeeAdvancesAdmin(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "employee-advances") return null;
+  await ensureEmployeeAdvanceTables();
+  const method = req.method;
+  const resource = parts[2];
+  const id = resource ? int(resource) : null;
+  const action = parts[3];
+  const currentUser = await getAdminUser(req);
+  if (!currentUser) return error("غير مخول", 401);
+  const actor = {
+    id: currentUser.id,
+    name: currentUser.fullName || currentUser.username,
+    role: currentUser.role,
+  };
+  const managerAccess = async () => {
+    const auth = await requireAnyPermission(req, ["staff", "accounting"]);
+    return isResponse(auth) ? null : auth;
+  };
+  const notify = (type: string, title: string, message: string, advance: any) => {
+    runAfter(`employee-advance:${type}`, async () => {
+      try {
+        await createNotification({
+          audienceType: "admin",
+          staffId: advance.employeeId,
+          type,
+          title,
+          body: message,
+          entityType: "employee_advance",
+          entityId: advance.id,
+          href: "/admin/employee-advances",
+          metadata: { advanceNo: advance.advanceNo, employeeId: advance.employeeId },
+        });
+      } catch {
+        /* Internal notifications are best-effort. */
+      }
+      try {
+        await sendTelegramMessage(`💰 <b>${title}</b>\n${message}`);
+      } catch {
+        /* Telegram must never prevent saving an advance. */
+      }
+    });
+  };
+
+  try {
+    if (method === "GET" && resource === "dashboard") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      return json(await getEmployeeAdvanceDashboard(query(req)));
+    }
+    if (method === "GET" && resource === "settings") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      return json(await getAdvanceSettings());
+    }
+    if ((method === "PUT" || method === "PATCH") && resource === "settings") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      const saved = await saveAdvanceSettings(await body(req), actor);
+      void logAdminActivity(req, "employee_advance_settings_updated", "employee_advance_settings", saved.id, { newValues: saved as any });
+      return json(saved);
+    }
+    if (method === "GET" && resource === "report") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const report = await getEmployeeAdvanceReport(query(req));
+      const format = req.nextUrl.searchParams.get("format");
+      if (format === "csv" || format === "excel") {
+        const headings = ["Advance No", "Employee", "Department", "Date", "Type", "Amount", "Repaid", "Outstanding", "Status", "Notes"];
+        const csv = [headings, ...report.map((row) => [row.number, row.employee, row.department, row.date, row.type, row.amount, row.repaid, row.outstanding, row.status, row.notes])]
+          .map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(","))
+          .join("\n");
+        return text(`\uFEFF${csv}`, 200, {
+          "content-type": format === "excel" ? "application/vnd.ms-excel; charset=utf-8" : "text/csv; charset=utf-8",
+          "content-disposition": `attachment; filename="employee-advances-${new Date().toISOString().slice(0, 10)}.${format === "excel" ? "xls" : "csv"}"`,
+        });
+      }
+      return json({ rows: report, generatedAt: new Date().toISOString() });
+    }
+    if (method === "GET" && resource === "employee" && parts[3]) {
+      const employeeId = int(parts[3]);
+      if (!employeeId) return error("معرف الموظف غير صالح", 400);
+      if (employeeId !== currentUser.id && !(await managerAccess())) return error("ليس لديك صلاحية", 403);
+      return json(await getEmployeeAdvanceSummary(employeeId));
+    }
+    if (method === "POST" && resource === "payroll-deductions") {
+      const auth = await requirePermission(req, "accounting");
+      if (isResponse(auth)) return auth;
+      const payload = await body(req);
+      const employeeId = Number(payload?.employeeId);
+      const payrollReference = String(payload?.payrollReference ?? "").trim();
+      if (!Number.isInteger(employeeId) || employeeId <= 0 || !payrollReference) return error("الموظف ومرجع الراتب مطلوبان", 400);
+      const deductions = await applyPayrollAdvanceDeductions({ employeeId, payrollReference, amount: payload?.amount === undefined ? undefined : Number(payload.amount) }, actor);
+      void logAdminActivity(req, "employee_advance_payroll_deduction", "employee_advance", employeeId, { payrollReference, count: deductions.length });
+      return json({ deductions, total: deductions.reduce((sum: number, item: any) => sum + Number(item.repayment.amount), 0) });
+    }
+    if (method === "GET" && !resource) {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      return json(await listEmployeeAdvances(query(req)));
+    }
+    if (method === "POST" && !resource) {
+      const payload = await body(req);
+      const targetId = Number(payload?.employeeId);
+      if (targetId !== currentUser.id && !(await managerAccess())) return error("إنشاء طلب لموظف آخر يتطلب صلاحية الموظفين أو الحسابات", 403);
+      const advance = await createEmployeeAdvance(payload, actor);
+      void logAdminActivity(req, "employee_advance_created", "employee_advance", advance.id, { newValues: advance as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_requested", "طلب سلفة جديد", `الطلب ${advance.advanceNo} بانتظار الاعتماد.`, advance);
+      return json(advance, 201);
+    }
+    if (method === "GET" && id) {
+      const advance = await getEmployeeAdvance(id);
+      if (!advance) return error("السلفة غير موجودة", 404);
+      if (advance.employeeId !== currentUser.id && !(await managerAccess())) return error("ليس لديك صلاحية", 403);
+      return json(advance);
+    }
+    if ((method === "PATCH" || method === "PUT") && id && !action) {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await updateEmployeeAdvance(id, await body(req), actor);
+      void logAdminActivity(req, "employee_advance_updated", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "approve") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const payload = await body(req);
+      const result = await approveEmployeeAdvance(id, actor, String(payload?.note ?? ""));
+      void logAdminActivity(req, "employee_advance_approved", "employee_advance", id, { newValues: result.advance as any, financialTransactionId: result.transaction?.id, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_approved", "تم اعتماد وصرف السلفة", `تم صرف ${result.advance.advanceNo} وربطها بحركة الصندوق.`, result.advance);
+      return json(result);
+    }
+    if (method === "POST" && id && action === "reject") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await rejectEmployeeAdvance(id, actor, String((await body(req))?.reason ?? ""));
+      void logAdminActivity(req, "employee_advance_rejected", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_rejected", "تم رفض طلب السلفة", `تم رفض ${result.saved.advanceNo}: ${result.saved.rejectionReason}`, result.saved);
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "cancel") {
+      const result = await cancelEmployeeAdvance(id, actor, String((await body(req))?.reason ?? ""));
+      void logAdminActivity(req, "employee_advance_cancelled", "employee_advance", id, { oldValues: result.before as any, newValues: result.saved as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(result.saved);
+    }
+    if (method === "POST" && id && action === "repay") {
+      const auth = await managerAccess();
+      if (!auth) return error("ليس لديك صلاحية", 403);
+      const result = await recordEmployeeAdvanceRepayment(id, await body(req), actor);
+      void logAdminActivity(req, "employee_advance_repayment", "employee_advance", id, { oldValues: result.before as any, newValues: result.advance as any, repayment: result.repayment as any, financialTransactionId: result.transaction?.id, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      notify("employee_advance_repayment", "تسديد سلفة", `تم تسجيل تسديد للسلفة ${result.advance.advanceNo}. المتبقي: ${result.advance.remainingAmount}`, result.advance);
+      return json(result);
+    }
+  } catch (err: any) {
+    console.error("employee advance operation failed", { method, resource, id, action, userId: currentUser.id, code: err?.code ?? null, constraint: err?.constraint ?? null, detail: err?.detail ?? null, message: err?.message, stack: err?.stack });
+    const message = err?.code ? employeeAdvanceErrorMessage(err) : String(err?.message || "تعذر إكمال عملية السلفة");
+    return error(message, /غير موجود/.test(message) ? 404 : /صلاحية|مخول|جلسة/.test(message) ? 403 : 400);
+  }
+  return error("المسار غير مدعوم", 404);
+}
+
+async function handleEventBrain(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "event-brain") return null;
+  const auth = await getAdminUser(req);
+  if (!auth) return error("غير مخول", 401);
+  const canView = hasPermission(auth, "ai_dashboard_view") || hasPermission(auth, "executive") || auth.role === "admin" || auth.role === "manager";
+  if (!canView) return error("لا تملك صلاحية عرض عقل الفعاليات", 403);
+  const resource = parts[2] ?? "dashboard";
+  const method = req.method;
+  const actor = { id: auth.id, name: auth.fullName || auth.username };
+  try {
+    if (method === "GET" && resource === "dashboard") return json(await getEventBrainDashboard());
+    if (method === "GET" && resource === "settings") return json(await getEventBrainSettings());
+    if (method === "GET" && resource === "search") {
+      const result = await smartEventBrainSearch(String(req.nextUrl.searchParams.get("q") ?? ""));
+      return json(result);
+    }
+    if (method === "POST" && resource === "refresh") {
+      if (!hasPermission(auth, "ai_settings_manage") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية تحديث التحليل", 403);
+      const dashboard = await getEventBrainDashboard();
+      void logAdminActivity(req, "ai_event_brain_generated", "ai_event_brain", undefined, { alerts: dashboard.alerts.length, recommendations: dashboard.recommendations.length, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(dashboard);
+    }
+    if (method === "PUT" && resource === "settings") {
+      if (!hasPermission(auth, "ai_settings_manage") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية إدارة إعدادات العقل", 403);
+      const settings = await saveEventBrainSettings((await body(req)) ?? {}, actor);
+      void logAdminActivity(req, "ai_event_brain_settings_updated", "ai_event_brain_settings", 1, { newValues: settings, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(settings);
+    }
+    if (method === "POST" && resource === "feedback") {
+      if (!hasPermission(auth, "ai_recommendations_view") && !hasPermission(auth, "ai_alerts_view") && !hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية متابعة التوصيات", 403);
+      const payload = await body(req);
+      const insightId = String(payload?.insightId ?? "").trim();
+      const action = String(payload?.action ?? "");
+      if (!insightId || !["accepted", "ignored"].includes(action)) return error("بيانات التوصية غير صحيحة", 400);
+      const feedback = await addEventBrainFeedback({ insightId, action: action as "accepted" | "ignored", note: typeof payload?.note === "string" ? payload.note.slice(0, 1000) : undefined }, actor);
+      void logAdminActivity(req, action === "accepted" ? "ai_recommendation_accepted" : "ai_recommendation_ignored", "ai_event_brain", feedback.id, { insightId, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(feedback, 201);
+    }
+    if (method === "POST" && resource === "notify") {
+      if (!hasPermission(auth, "ai_alerts_view") && !hasPermission(auth, "executive") && auth.role !== "admin" && auth.role !== "manager") return error("لا تملك صلاحية إرسال التنبيه", 403);
+      const payload = await body(req);
+      const title = String(payload?.title ?? "").trim();
+      const message = String(payload?.body ?? "").trim();
+      if (!title || !message) return error("عنوان ومحتوى التنبيه مطلوبان", 400);
+      const notification = await createNotificationOnce({ audienceType: "admin", type: `ai_${String(payload?.category ?? "alert").slice(0, 40)}`, title, body: message, entityType: payload?.entityType ? String(payload.entityType).slice(0, 40) : "ai_event_brain", entityId: Number.isInteger(payload?.entityId) ? payload.entityId : null, href: typeof payload?.href === "string" ? payload.href.slice(0, 500) : "/admin/executive/ai-event-brain" });
+      void logAdminActivity(req, "ai_alert_notification_sent", "notification", notification.id, { title, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      return json(notification, 201);
+    }
+  } catch (err: any) {
+    console.error("event brain operation failed", { resource, method, userId: auth.id, message: err?.message });
+    return error(String(err?.message || "تعذر إكمال تحليل عقل الفعاليات"), 400);
+  }
+  return error("مسار عقل الفعاليات غير مدعوم", 404);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
@@ -19440,8 +20577,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const bookingCenter = await handleBookingCenter(req, parts, section);
   if (bookingCenter) return bookingCenter;
 
+  const eventBrain = await handleEventBrain(req, parts, section);
+  if (eventBrain) return eventBrain;
+
   const masterCash = await handleMasterCash(req, parts, section);
   if (masterCash) return masterCash;
+
+  const hr = await handleHrAdmin(req, parts, section);
+  if (hr) return hr;
+
+  const employeeAdvances = await handleEmployeeAdvancesAdmin(req, parts, section);
+  if (employeeAdvances) return employeeAdvances;
 
   const collection = await handleCollections(req, parts, section);
   if (collection) return collection;
@@ -21725,6 +22871,32 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json({ ok: true, productId, status: nextStatus });
     }
 
+    if (parts[2] === "depreciation" && method === "DELETE") {
+      const removalAuth = await requirePermission(req, "asset_depreciation_remove");
+      if (isResponse(removalAuth)) return removalAuth;
+      const profileId = optionalPositiveId(parts[3]);
+      if (!profileId) return error("معرّف سجل الإهلاك مطلوب", 400);
+      const payload = await body(req);
+      const reason = String(payload?.reason ?? "").trim();
+      if (reason.length < 3) return error("سبب إزالة الإهلاك مطلوب", 400);
+      const profile = await db.query.assetProfilesTable.findFirst({
+        where: and(eq(assetProfilesTable.id, profileId), isNull(assetProfilesTable.deletedAt)),
+      });
+      if (!profile) return error("سجل الإهلاك غير موجود أو تمت إزالته مسبقاً", 404);
+      const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, profile.productId) });
+      if (!product) return error("الأصل المرتبط بسجل الإهلاك غير موجود", 404);
+      const purchaseValue = Math.max(0, Number(profile.purchasePrice ?? product.costPrice ?? 0));
+      const oldCurrentValue = Math.max(0, Number(profile.currentValue ?? 0));
+      const depreciationAmount = Math.max(0, purchaseValue - oldCurrentValue);
+      // Soft delete only the depreciation profile. Products, stock, bookings and financial history are untouched.
+      await db.update(assetProfilesTable).set({ deletedAt: new Date(), deletedBy: removalAuth.id, deletedReason: reason, valueBeforeRemoval: String(oldCurrentValue), updatedAt: new Date() }).where(eq(assetProfilesTable.id, profileId));
+      const metadata = { assetId: profile.productId, depreciationRecordId: profileId, oldDepreciationValue: depreciationAmount, oldCurrentValue, newAssetValue: purchaseValue, reason };
+      await addEntityTimeline({ entityType: "asset", entityId: profile.productId, type: "depreciation_removed", title: "Depreciation record removed", body: `تمت إزالة سجل الإهلاك وإعادة قيمة الأصل إلى ${formatCurrency(purchaseValue)}. السبب: ${reason}`, actor: erpActorFromAdmin(removalAuth), metadata });
+      await logAdminActivity(req, "asset_depreciation_removed", "asset_depreciation", profileId, { ...metadata, name: product.nameAr || product.name, ip: ip(req), device: req.headers.get("user-agent") || "" });
+      revalidateTag(ENTERPRISE_COMMAND_CENTER_TAG, { expire: 0 });
+      return json({ ok: true, assetId: profile.productId, depreciationRecordId: profileId, restoredAssetValue: purchaseValue, totalDepreciationRemoved: depreciationAmount });
+    }
+
     if (parts[2] === "depreciation" && method === "POST") {
       const payload = await body(req);
       const productId = optionalPositiveId(payload?.productId);
@@ -22256,6 +23428,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         serialNumber,
         status,
         notes,
+        deletedAt: null,
+        deletedBy: null,
+        deletedReason: null,
+        valueBeforeRemoval: null,
         updatedAt: new Date(),
       };
       if (existing) {
@@ -22332,25 +23508,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       db.query.assetProfilesTable.findMany({ limit: 500 }),
       db.query.assetPassportsTable.findMany({ limit: 500 }),
     ]);
-    const profileByProduct = new Map(
-      profiles.map((row) => [row.productId, row]),
-    );
+    const profileByProduct = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+    const removedProfileByProduct = new Map(profiles.filter((row) => row.deletedAt).map((row) => [row.productId, row]));
     const passportByProduct = new Map(
       passports.map((row) => [row.productId, row]),
     );
     return json({
       data: products.map((product) => {
         const profile = profileByProduct.get(product.id);
+        const removedProfile = removedProfileByProduct.get(product.id);
         const passport = passportByProduct.get(product.id);
         const purchasePrice = Number(
-          profile?.purchasePrice ?? product.costPrice ?? 0,
+          profile?.purchasePrice ?? removedProfile?.purchasePrice ?? product.costPrice ?? 0,
         );
         const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
         const usageCount = Number(profile?.usageCount ?? 0);
         const currentValue = Math.max(
           0,
           Number(
-            profile?.currentValue ??
+            profile ? profile.currentValue :
               purchasePrice -
                 (purchasePrice * Math.min(usageCount, expectedLifeUses)) /
                   expectedLifeUses,
@@ -22359,6 +23535,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const serialNumber = profile?.serialNumber ?? null;
         return {
           productId: product.id,
+          depreciationRecordId: profile?.id ?? null,
+          depreciationRecordDate: profile?.updatedAt?.toISOString?.() ?? null,
+          hasDepreciationRecord: Boolean(profile),
           name: product.nameAr || product.name,
           purchasePrice,
           expectedLifeUses,
@@ -22584,7 +23763,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "tasks");
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
-    const canManageAll = auth.role === "admin" || hasPermission(auth, "staff");
+    const canManageAll = auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "staff");
+    const canCreateTasks = canManageAll || hasPermission(auth, "task_create");
+    const canEditTasks = canManageAll || hasPermission(auth, "task_edit") || hasPermission(auth, "task_assign");
+    const canDeleteTasks = canManageAll || hasPermission(auth, "task_delete");
+    const canApproveTasks = canManageAll || hasPermission(auth, "task_approve");
 
     if (method === "GET" && !parts[2]) {
       const params = req.nextUrl.searchParams;
@@ -22594,6 +23777,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const staffId = Number.parseInt(params.get("staffId") ?? "", 10);
       const date = params.get("date");
       const q = params.get("q")?.trim();
+      const department = params.get("department")?.trim();
       if (status) filters.push(eq(tasksTable.status, taskStatus(status)));
       if (priority)
         filters.push(eq(tasksTable.priority, taskPriority(priority)));
@@ -22612,6 +23796,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (q)
         filters.push(
           or(
+            ilike(tasksTable.taskNo, `%${q}%`),
             ilike(tasksTable.title, `%${q}%`),
             ilike(tasksTable.description, `%${q}%`),
             ilike(tasksTable.notes, `%${q}%`),
@@ -22630,34 +23815,65 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
       ]);
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      const taskIds = rows.map((row) => row.id);
+      const checklistRows = taskIds.length ? await db.query.taskChecklistItemsTable.findMany({ where: inArray(taskChecklistItemsTable.taskId, taskIds), orderBy: [asc(taskChecklistItemsTable.sortOrder), asc(taskChecklistItemsTable.id)] }) : [];
+      const itemsByTask = new Map<number, any[]>();
+      for (const item of checklistRows) {
+        const list = itemsByTask.get(item.taskId) ?? [];
+        list.push({ id: item.id, title: item.title, requiredQuantity: Number(item.requiredQuantity), completedQuantity: Number(item.completedQuantity), sortOrder: item.sortOrder });
+        itemsByTask.set(item.taskId, list);
+      }
       const progressByRelated = await taskProgressForRelated(rows);
+      const formatted = rows.map((row) => {
+        const key = row.relatedType && row.relatedId ? `${row.relatedType}:${row.relatedId}` : "";
+        const checklistItems = itemsByTask.get(row.id) ?? [];
+        return { ...formatTask(row, staffById, progressByRelated.get(key) ?? null), checklistItems, progress: taskItemProgress(checklistItems) };
+      });
+      const now = new Date();
+      const todayKey = now.toISOString().slice(0, 10);
+      const completed = formatted.filter((task) => task.status === "completed");
+      const employeeCounts = new Map<number, number>();
+      completed.forEach((task) => task.assignedStaffIds.forEach((id: number) => employeeCounts.set(id, (employeeCounts.get(id) ?? 0) + 1)));
+      const bestEmployeeId = [...employeeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      const departmentRows = [...new Set(formatted.map((task) => task.department || "غير محدد"))].map((name) => ({ department: name, total: formatted.filter((task) => (task.department || "غير محدد") === name).length, completed: completed.filter((task) => (task.department || "غير محدد") === name).length }));
       return json({
-        data: rows.map((row) => {
-          const key =
-            row.relatedType && row.relatedId
-              ? `${row.relatedType}:${row.relatedId}`
-              : "";
-          return formatTask(row, staffById, progressByRelated.get(key) ?? null);
-        }),
+        data: formatted,
         staff: staffRows.map(formatStaff),
+        canManageAll,
+        summary: {
+          today: formatted.filter((task) => task.dueAt?.slice(0, 10) === todayKey).length,
+          completed: completed.length,
+          pendingApproval: formatted.filter((task) => task.status === "review").length,
+          overdue: formatted.filter((task) => task.dueAt && task.dueAt < now.toISOString() && ["new", "in_progress"].includes(task.status)).length,
+          averageCompletionMinutes: completed.length ? Math.round(completed.reduce((sum, task) => sum + (task.completedAt && task.createdAt ? Math.max(0, new Date(task.completedAt).getTime() - new Date(task.createdAt).getTime()) / 60_000 : 0), 0) / completed.length) : 0,
+          bestEmployee: bestEmployeeId ? formatStaff(staffById.get(bestEmployeeId)) : null,
+          departments: departmentRows,
+        },
       });
     }
 
     if (method === "POST" && !parts[2]) {
-      if (!canManageAll && !hasPermission(auth, "tasks"))
+      if (!canCreateTasks)
         return error("ليس لديك صلاحية إنشاء المهام", 403);
       const b = await body(req);
-      const title = textFallback(b?.title, "مهمة جديدة");
+      const title = String(b?.title ?? "").trim().slice(0, 500);
       const assignedStaffIds = idList(b?.assignedStaffIds ?? b?.staffIds);
+      if (!title) return error("عنوان المهمة مطلوب", 422);
+      if (!assignedStaffIds.length) return error("اختر موظفاً واحداً على الأقل", 422);
       const dueAt = safeDate(b?.dueAt);
+      const checklistItems = taskChecklistInput(b?.checklistItems ?? b?.items);
       const [row] = await db
         .insert(tasksTable)
         .values({
           title,
           description: nullableText(b?.description),
-          status: taskStatus(b?.status),
+          status: "new",
           priority: taskPriority(b?.priority),
+          department: nullableText(b?.department)?.slice(0, 100) ?? null,
+          taskType: taskType(b?.taskType),
+          startAt: safeDate(b?.startAt) ?? new Date(),
           dueAt,
+          estimatedMinutes: Number.isFinite(Number(b?.estimatedMinutes)) && Number(b.estimatedMinutes) > 0 ? Math.min(Math.round(Number(b.estimatedMinutes)), 100_000) : null,
           assignedStaffIds,
           relatedType:
             typeof b?.relatedType === "string"
@@ -22673,11 +23889,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           createdBy: auth.id,
         })
         .returning();
+      const taskNo = `TSK-${String(row.id).padStart(6, "0")}`;
+      const [saved] = await db.update(tasksTable).set({ taskNo }).where(eq(tasksTable.id, row.id)).returning();
+      if (checklistItems.length) await db.insert(taskChecklistItemsTable).values(checklistItems.map((item, index) => ({ taskId: row.id, title: item.title, requiredQuantity: String(item.requiredQuantity), completedQuantity: "0", sortOrder: index })));
       await Promise.all(
         (assignedStaffIds.length ? assignedStaffIds : [null]).map((staffId) =>
           createNotification({
             type: "task_assigned",
-            title: "مهمة جديدة",
+            title: "تم إسناد مهمة جديدة",
             body: title,
             staffId,
             entityType: "task",
@@ -22689,8 +23908,105 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       void logAdminActivity(req, "task_created", "task", row.id, {
         assignedStaffIds,
         title,
+        taskNo,
+        checklistItems: checklistItems.length,
       });
-      return json(formatTask(row), 201);
+      void addEntityTimeline({ entityType: "task", entityId: row.id, type: "task_created", title: "تم إنشاء مهمة", body: title, actor: erpActorFromAdmin(auth), metadata: { taskNo, assignedStaffIds, checklistItems: checklistItems.length } });
+      return json(formatTask(saved), 201);
+    }
+
+    if (method === "GET" && parts[2] && !parts[3]) {
+      const id = int(parts[2]);
+      if (!id) return error("معرف المهمة غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!canManageAll && !(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية على هذه المهمة", 403);
+      const [staffRows, items, comments] = await Promise.all([
+        db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
+        db.query.taskChecklistItemsTable.findMany({ where: eq(taskChecklistItemsTable.taskId, id!), orderBy: [asc(taskChecklistItemsTable.sortOrder), asc(taskChecklistItemsTable.id)] }),
+        db.query.taskCommentsTable.findMany({ where: eq(taskCommentsTable.taskId, id!), orderBy: (c, { desc }) => [desc(c.createdAt)] }),
+      ]);
+      const attachments = items.length ? await db.query.taskItemAttachmentsTable.findMany({ where: inArray(taskItemAttachmentsTable.taskItemId, items.map((item) => item.id)), orderBy: (a, { desc }) => [desc(a.createdAt)] }) : [];
+      const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      const checklistItems = items.map((item) => ({ id: item.id, title: item.title, requiredQuantity: Number(item.requiredQuantity), completedQuantity: Number(item.completedQuantity), sortOrder: item.sortOrder, attachments: attachments.filter((attachment) => attachment.taskItemId === item.id).map((attachment) => ({ id: attachment.id, url: attachment.fileUrl, name: attachment.fileName, mediaType: attachment.mediaType, createdAt: attachment.createdAt.toISOString(), staff: staffById.get(attachment.staffId ?? 0) ?? null })) }));
+      const timeline = await db.query.entityTimelineTable.findMany({ where: and(eq(entityTimelineTable.entityType, "task"), eq(entityTimelineTable.entityId, id!)), orderBy: (t, { desc }) => [desc(t.createdAt)], limit: 100 });
+      return json({ ...formatTask(task, staffById), checklistItems, progress: taskItemProgress(checklistItems), comments: comments.map((comment) => ({ id: comment.id, body: comment.body, createdAt: comment.createdAt.toISOString(), staff: staffById.get(comment.staffId ?? 0) ?? null })), timeline: timeline.map((entry) => ({ id: entry.id, type: entry.type, title: entry.title, body: entry.body, createdAt: entry.createdAt.toISOString(), actorName: entry.actorName, metadata: entry.metadata })) });
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "progress") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف المهمة غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("يمكن للموظف المعيّن فقط تحديث التقدم", 403);
+      if (["review", "completed", "cancelled"].includes(task.status)) return error("لا يمكن تعديل مهمة مرسلة أو معتمدة", 409);
+      const b = await body(req);
+      const updates = Array.isArray(b?.items) ? b.items : [];
+      const items = await db.query.taskChecklistItemsTable.findMany({ where: eq(taskChecklistItemsTable.taskId, id!) });
+      const byId = new Map(items.map((item) => [item.id, item]));
+      for (const update of updates) {
+        const item = byId.get(Number(update?.id));
+        const completedQuantity = Number(update?.completedQuantity);
+        if (!item || !Number.isFinite(completedQuantity) || completedQuantity < 0 || completedQuantity > Number(item.requiredQuantity)) return error("كمية الإنجاز غير صالحة", 422);
+        await db.update(taskChecklistItemsTable).set({ completedQuantity: String(completedQuantity), updatedAt: new Date() }).where(eq(taskChecklistItemsTable.id, item.id));
+      }
+      const [updated] = await db.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      void logAdminActivity(req, "task_progress_updated", "task", id, { oldStatus: task.status, newStatus: "in_progress", items: updates });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_progress_updated", title: "تم تحديث تقدم المهمة", actor: erpActorFromAdmin(auth), metadata: { items: updates } });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "submit") {
+      const id = int(parts[2]);
+      const task = id ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية إرسال هذه المهمة", 403);
+      if (["completed", "cancelled"].includes(task.status)) return error("لا يمكن إرسال مهمة مكتملة أو ملغاة", 409);
+      const [updated] = await db.update(tasksTable).set({ status: "review", submittedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      await createNotification({ type: "task_submitted", title: "مهمة بانتظار المراجعة", body: updated.title, entityType: "task", entityId: id!, href: "/admin/tasks" });
+      void logAdminActivity(req, "task_submitted", "task", id!, { oldStatus: task.status, newStatus: "review" });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: "task_submitted", title: "تم إرسال المهمة للمراجعة", actor: erpActorFromAdmin(auth) });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "review") {
+      const id = int(parts[2]);
+      if (!canApproveTasks) return error("لا تملك صلاحية اعتماد المهام", 403);
+      const task = id ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, id!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      const b = await body(req);
+      const action = String(b?.action ?? "");
+      const reason = String(b?.reason ?? "").trim().slice(0, 1000);
+      if (!["approve", "reject", "return"].includes(action)) return error("إجراء المراجعة غير صالح", 422);
+      if (action !== "approve" && reason.length < 3) return error("سبب الرفض أو الإرجاع مطلوب", 422);
+      if (task.status !== "review") return error("المهمة ليست بانتظار الاعتماد", 409);
+      const nextStatus = action === "approve" ? "completed" : "in_progress";
+      const [updated] = await db.update(tasksTable).set({ status: nextStatus, completedAt: action === "approve" ? new Date() : null, approvedBy: action === "approve" ? auth.id : null, approvedAt: action === "approve" ? new Date() : null, rejectionReason: action === "approve" ? null : reason, updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+      await Promise.all((task.assignedStaffIds ?? []).map((staffId) => createNotification({ type: action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", title: action === "approve" ? "تم اعتماد المهمة" : action === "reject" ? "تم رفض المهمة" : "أُعيدت المهمة للتصحيح", body: action === "approve" ? updated.title : `${updated.title} — ${reason}`, staffId, entityType: "task", entityId: id, href: "/admin/tasks" })));
+      void logAdminActivity(req, action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", "task", id!, { oldStatus: task.status, newStatus: nextStatus, reason: reason || null });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: action === "approve" ? "task_approved" : action === "reject" ? "task_rejected" : "task_returned", title: action === "approve" ? "تم اعتماد المهمة" : action === "reject" ? "تم رفض المهمة" : "أعيدت المهمة للتصحيح", body: reason || null, actor: erpActorFromAdmin(auth) });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "items" && parts[4] && parts[5] === "attachments") {
+      const taskId = int(parts[2]);
+      const itemId = int(parts[4]);
+      const task = taskId ? await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, taskId!), sql`${tasksTable.archivedAt} is null`) }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id)) return error("ليس لديك صلاحية رفع مرفق لهذه المهمة", 403);
+      if (["review", "completed", "cancelled"].includes(task.status)) return error("لا يمكن إضافة مرفقات إلى مهمة محمية", 409);
+      const item = itemId ? await db.query.taskChecklistItemsTable.findFirst({ where: and(eq(taskChecklistItemsTable.id, itemId!), eq(taskChecklistItemsTable.taskId, taskId!)) }) : null;
+      if (!item) return error("بند قائمة التنفيذ غير موجود", 404);
+      const b = await body(req);
+      const url = String(b?.url ?? b?.fileUrl ?? "").trim();
+      const name = String(b?.name ?? b?.fileName ?? "مرفق").trim().slice(0, 300);
+      const mediaType = String(b?.mediaType ?? b?.type ?? "file").trim().slice(0, 40);
+      if (!url || url.length > 12_000_000 || !(/^(data:(image|video|application\/pdf)|https?:\/)/i.test(url))) return error("نوع المرفق غير مدعوم", 422);
+      const [attachment] = await db.insert(taskItemAttachmentsTable).values({ taskItemId: itemId!, staffId: auth.id, fileUrl: url, fileName: name, mediaType }).returning();
+      await db.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, taskId!));
+      void logAdminActivity(req, "task_attachment_uploaded", "task", taskId!, { itemId, fileName: name, mediaType });
+      void addEntityTimeline({ entityType: "task", entityId: taskId!, type: "task_attachment_uploaded", title: "تم رفع مرفق", body: name, actor: erpActorFromAdmin(auth), metadata: { itemId, mediaType } });
+      return json({ id: attachment.id, url: attachment.fileUrl, name: attachment.fileName, mediaType: attachment.mediaType, createdAt: attachment.createdAt.toISOString() }, 201);
     }
 
     if (method === "POST" && parts[2] && parts[3] === "comments") {
@@ -22715,6 +24031,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .update(tasksTable)
         .set({ updatedAt: new Date() })
         .where(eq(tasksTable.id, id));
+      void logAdminActivity(req, "task_note_added", "task", id, { commentId: row.id });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_note_added", title: "تمت إضافة ملاحظة", body: comment, actor: erpActorFromAdmin(auth) });
       return json(
         { id: row.id, body: row.body, createdAt: row.createdAt.toISOString() },
         201,
@@ -22731,6 +24049,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!canManageAll && !(existing.assignedStaffIds ?? []).includes(auth.id))
         return error("ليس لديك صلاحية على هذه المهمة", 403);
       if (method === "DELETE") {
+        if (!canDeleteTasks) return error("لا تملك صلاحية حذف المهمة", 403);
         const [row] = await db
           .update(tasksTable)
           .set({ archivedAt: new Date(), updatedAt: new Date() })
@@ -22740,14 +24059,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return json(formatTask(row));
       }
       const b = await body(req);
+      if (!canEditTasks) return error("استخدم حفظ التقدم أو إرسال المراجعة لتحديث المهمة", 403);
       const update: any = { updatedAt: new Date() };
       if (b?.title !== undefined)
         update.title = textFallback(b.title, existing.title, "مهمة");
       if (b?.description !== undefined)
         update.description = nullableText(b.description);
-      if (b?.status !== undefined) update.status = taskStatus(b.status);
+      if (b?.status !== undefined) {
+        const nextStatus = taskStatus(b.status);
+        if (["review", "completed"].includes(nextStatus)) return error("استخدم إرسال المهمة أو اعتمادها ضمن مسار المراجعة", 409);
+        update.status = nextStatus;
+      }
       if (b?.priority !== undefined) update.priority = taskPriority(b.priority);
+      if (b?.department !== undefined) update.department = nullableText(b.department)?.slice(0, 100) ?? null;
+      if (b?.taskType !== undefined) update.taskType = taskType(b.taskType);
+      if (b?.startAt !== undefined) update.startAt = safeDate(b.startAt);
       if (b?.dueAt !== undefined) update.dueAt = safeDate(b.dueAt);
+      if (b?.estimatedMinutes !== undefined) update.estimatedMinutes = Number.isFinite(Number(b.estimatedMinutes)) && Number(b.estimatedMinutes) > 0 ? Math.min(Math.round(Number(b.estimatedMinutes)), 100_000) : null;
       if (b?.assignedStaffIds !== undefined || b?.staffIds !== undefined)
         update.assignedStaffIds = idList(b.assignedStaffIds ?? b.staffIds);
       if (b?.relatedType !== undefined)
@@ -22767,6 +24095,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .set(update)
         .where(eq(tasksTable.id, id))
         .returning();
+      if ((row.assignedStaffIds ?? []).length) await Promise.all((row.assignedStaffIds ?? []).map((staffId) => createNotification({ type: "task_updated", title: "تم تحديث مهمة", body: row.title, staffId, entityType: "task", entityId: row.id, href: "/admin/tasks" })));
       if (row.relatedType && row.relatedId) {
         void addEntityTimeline({
           entityType: row.relatedType,
@@ -22784,8 +24113,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
       }
       void logAdminActivity(req, "task_updated", "task", id, {
-        fields: Object.keys(update),
+        oldValues: { status: existing.status, priority: existing.priority, assignedStaffIds: existing.assignedStaffIds },
+        newValues: Object.fromEntries(Object.entries(update).filter(([key]) => key !== "updatedAt")),
       });
+      void addEntityTimeline({ entityType: "task", entityId: id, type: "task_updated", title: "تم تعديل المهمة", actor: erpActorFromAdmin(auth), metadata: { fields: Object.keys(update) } });
       return json(formatTask(row));
     }
   }
@@ -23156,6 +24487,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
       const b = await body(req);
+      const correctionReason = String(b?.reason ?? "").trim();
+      if (correctionReason.length < 3) return error("سبب تصحيح الحضور مطلوب", 400);
       const update: any = { updatedAt: new Date(), editedBy: auth.id };
       if (b?.staffId !== undefined) update.staffId = Number(b.staffId);
       if (b?.checkInAt !== undefined) update.checkInAt = safeDate(b.checkInAt);
@@ -23171,6 +24504,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!row) return error("السجل غير موجود", 404);
       void logAdminActivity(req, "attendance_updated", "attendance", id, {
         fields: Object.keys(update),
+        reason: correctionReason,
       });
       return json(formatAttendance(row));
     }
@@ -24821,11 +26155,66 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "staff");
     if (isResponse(auth)) return auth;
     await ensureStaffTableShape();
+    if (parts[2] && parts[3] === "salary-settings") {
+      const id = int(parts[2]);
+      if (!id) return error("معرف الموظف غير صحيح", 400);
+      const employee = await db.query.staffTable.findFirst({ where: eq(staffTable.id, id) });
+      if (!employee) return error("الموظف غير موجود", 404);
+      await ensureHrTables();
+      if (method === "GET") {
+        if (!hasPermission(auth, "salary_settings_view") && !hasPermission(auth, "salary_settings_edit")) return error("ليس لديك صلاحية عرض إعدادات الراتب", 403);
+        const [settings, audits] = await Promise.all([
+          db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) }),
+          db.query.employeeSalarySettingAuditsTable.findMany({ where: eq(employeeSalarySettingAuditsTable.staffId, id), orderBy: (table, { desc }) => [desc(table.createdAt)], limit: 30 }),
+        ]);
+        return json({ settings: settings ?? null, audits });
+      }
+      if (method === "POST" && parts[4] === "approve") {
+        if (!hasPermission(auth, "salary_settings_approve")) return error("ليس لديك صلاحية اعتماد تغييرات الراتب", 403);
+        const current = await db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) });
+        if (!current) return error("لا توجد إعدادات راتب لاعتمادها", 404);
+        const [settings] = await db.update(employeeSalarySettingsTable).set({ approvalStatus: "approved", approvedBy: auth.id, approvedAt: new Date(), updatedAt: new Date() }).where(eq(employeeSalarySettingsTable.staffId, id)).returning();
+        await db.insert(employeeSalarySettingAuditsTable).values({ staffId: id, actorId: auth.id, actorName: auth.fullName || auth.username, action: "approved", oldValue: current as any, newValue: settings as any, ipAddress: ip(req) });
+        void logAdminActivity(req, "salary_settings_approved", "staff", id, { oldValue: current, newValue: settings });
+        return json({ settings });
+      }
+      if (method === "PATCH") {
+        if (!hasPermission(auth, "salary_settings_edit")) return error("ليس لديك صلاحية تعديل إعدادات الراتب", 403);
+        const b = await body(req);
+        const money = (v: unknown) => String(Math.max(0, Number(v) || 0));
+        const salaryType = ["monthly", "weekly", "daily", "hourly"].includes(String(b?.salaryType)) ? String(b.salaryType) : "";
+        const paymentMethod = ["main_cash_box", "bank", "cash", "transfer"].includes(String(b?.paymentMethod)) ? String(b.paymentMethod) : "";
+        const payrollStatus = ["active", "suspended", "terminated", "on_leave"].includes(String(b?.payrollStatus)) ? String(b.payrollStatus) : "";
+        const missing = [Number(b?.basicSalary) > 0 ? null : "الراتب الأساسي", salaryType ? null : "نوع الراتب", paymentMethod ? null : "طريقة الدفع", payrollStatus ? null : "حالة الرواتب"].filter(Boolean);
+        if (missing.length) return json({ error: `الحقول المطلوبة: ${missing.join("، ")}`, missing }, 400);
+        const previous = await db.query.employeeSalarySettingsTable.findFirst({ where: eq(employeeSalarySettingsTable.staffId, id) });
+        const flags = (name: string, fallback: boolean) => b?.[name] === undefined ? fallback : b[name] === true;
+        const setting = { staffId: id, employmentType: ["full_time", "part_time", "contract", "temporary"].includes(String(b.employmentType)) ? String(b.employmentType) : "full_time", firstPayrollDate: normalizeDateOnly(b.firstPayrollDate), monthlyWorkingHours: money(b.monthlyWorkingHours), shiftStart: /^\d{2}:\d{2}/.test(String(b.shiftStart ?? "")) ? String(b.shiftStart).slice(0, 5) : null, shiftEnd: /^\d{2}:\d{2}/.test(String(b.shiftEnd ?? "")) ? String(b.shiftEnd).slice(0, 5) : null, weeklyDaysOff: Array.isArray(b.weeklyDaysOff) ? b.weeklyDaysOff.map(String).filter((d: string) => ["sat", "sun", "mon", "tue", "wed", "thu", "fri"].includes(d)).slice(0, 7) : [], riskAllowance: money(b.riskAllowance), weekendHourRate: money(b.weekendHourRate), holidayHourRate: money(b.holidayHourRate), maxMonthlyOvertime: money(b.maxMonthlyOvertime), taxDeduction: money(b.taxDeduction), insuranceDeduction: money(b.insuranceDeduction), retirementDeduction: money(b.retirementDeduction), lateDeduction: money(b.lateDeduction), absenceDeduction: money(b.absenceDeduction), otherDeduction: money(b.otherDeduction), monthlyBonus: money(b.monthlyBonus), performanceBonus: money(b.performanceBonus), commission: money(b.commission), annualBonus: money(b.annualBonus), otherBonus: money(b.otherBonus), bankName: String(b.bankName ?? "").trim().slice(0, 160) || null, accountNumber: String(b.accountNumber ?? "").trim().slice(0, 100) || null, iban: String(b.iban ?? "").trim().slice(0, 64) || null, generatePayrollAutomatically: flags("generatePayrollAutomatically", false), enableOvertime: flags("enableOvertime", true), enableAttendanceIntegration: flags("enableAttendanceIntegration", true), enableAdvanceDeduction: flags("enableAdvanceDeduction", true), enableBonuses: flags("enableBonuses", true), enablePenalties: flags("enablePenalties", true), approvalStatus: hasPermission(auth, "salary_settings_approve") ? "approved" : "pending", approvedBy: hasPermission(auth, "salary_settings_approve") ? auth.id : null, approvedAt: hasPermission(auth, "salary_settings_approve") ? new Date() : null, updatedAt: new Date() };
+        await db.update(staffTable).set({ baseSalary: money(b.basicSalary), salaryType, department: String(b.department ?? employee.department ?? "general").trim().slice(0, 60) || "general", jobTitle: String(b.jobTitle ?? "").trim().slice(0, 100) || null, hiredAt: normalizeDateOnly(b.hiringDate) ?? employee.hiredAt, workingDaysPerWeek: String(Math.min(7, Math.max(1, Number(b.workingDaysPerWeek) || 6))), dailyWorkingHours: String(Math.min(24, Math.max(1, Number(b.workingHoursPerDay) || 8))), overtimeRate: money(b.overtimeHourRate), transportationAllowance: money(b.transportationAllowance), foodAllowance: money(b.foodAllowance), housingAllowance: money(b.housingAllowance), phoneAllowance: money(b.phoneAllowance), otherFixedAllowances: money(b.otherAllowance), fixedDeduction: money(b.fixedDeduction), paymentMethod, paymentReference: paymentMethod === "bank" ? String(b.accountNumber ?? "").trim() || null : null, salaryStatus: payrollStatus }).where(eq(staffTable.id, id));
+        const { staffId: _staffId, ...updatable } = setting;
+        const [settings] = await db.insert(employeeSalarySettingsTable).values(setting).onConflictDoUpdate({ target: employeeSalarySettingsTable.staffId, set: updatable }).returning();
+        await db.insert(employeeSalarySettingAuditsTable).values({ staffId: id, actorId: auth.id, actorName: auth.fullName || auth.username, action: previous ? "updated" : "created", oldValue: previous as any ?? {}, newValue: settings as any, ipAddress: ip(req) });
+        void logAdminActivity(req, "salary_settings_updated", "staff", id, { oldValue: previous ?? {}, newValue: settings });
+        return json({ settings });
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (method === "GET") {
+      await ensureEmployeeAdvanceTables();
       const rows = await db.query.staffTable.findMany({
         orderBy: (s, { asc }) => [asc(s.id)],
       });
-      return json(rows.map(formatStaff));
+      const advances = await db.query.employeeAdvancesTable.findMany();
+      const summaries = new Map<number, { totalAdvances: number; outstandingBalance: number; paidAmount: number; lastAdvanceDate: string | null }>();
+      for (const advance of advances) {
+        const current = summaries.get(advance.employeeId) ?? { totalAdvances: 0, outstandingBalance: 0, paidAmount: 0, lastAdvanceDate: null };
+        if (["approved", "paid", "completed"].includes(advance.status)) current.totalAdvances += Number(advance.amount ?? 0);
+        current.outstandingBalance += Number(advance.remainingAmount ?? 0);
+        current.paidAmount += Number(advance.repaidAmount ?? 0);
+        if (!current.lastAdvanceDate || String(advance.requestDate) > current.lastAdvanceDate) current.lastAdvanceDate = String(advance.requestDate);
+        summaries.set(advance.employeeId, current);
+      }
+      return json(rows.map((row) => ({ ...formatStaff(row), advanceSummary: summaries.get(row.id) ?? { totalAdvances: 0, outstandingBalance: 0, paidAmount: 0, lastAdvanceDate: null } })));
     }
     if (method === "POST") {
       const payload = await body(req);
@@ -24853,6 +26242,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             passwordHash: hashPassword(cleanPassword),
             fullName: String(payload?.fullName ?? ""),
             role: normalizedRole,
+            department: String(payload?.department ?? "general").trim().slice(0, 60) || "general",
+            baseSalary: String(Math.max(0, Number(payload?.baseSalary ?? 0) || 0)),
+            hiredAt: normalizeDateOnly(payload?.hiredAt) ?? new Date().toISOString().slice(0, 10),
+            jobTitle: String(payload?.jobTitle ?? "").trim().slice(0, 100) || null,
+            salaryType: ["monthly", "weekly", "daily", "hourly"].includes(String(payload?.salaryType)) ? String(payload.salaryType) : "monthly",
+            currency: String(payload?.currency ?? "IQD").trim().slice(0, 10) || "IQD",
+            workingDaysPerWeek: String(Math.min(7, Math.max(1, Number(payload?.workingDaysPerWeek ?? 6) || 6))),
+            dailyWorkingHours: String(Math.min(24, Math.max(1, Number(payload?.dailyWorkingHours ?? 8) || 8))),
+            hourlyRate: String(Math.max(0, Number(payload?.hourlyRate ?? 0) || 0)),
+            overtimeRate: String(Math.max(0, Number(payload?.overtimeRate ?? 0) || 0)),
+            attendanceAllowance: String(Math.max(0, Number(payload?.attendanceAllowance ?? 0) || 0)),
+            transportationAllowance: String(Math.max(0, Number(payload?.transportationAllowance ?? 0) || 0)),
+            foodAllowance: String(Math.max(0, Number(payload?.foodAllowance ?? 0) || 0)),
+            phoneAllowance: String(Math.max(0, Number(payload?.phoneAllowance ?? 0) || 0)),
+            housingAllowance: String(Math.max(0, Number(payload?.housingAllowance ?? 0) || 0)),
+            otherFixedAllowances: String(Math.max(0, Number(payload?.otherFixedAllowances ?? 0) || 0)),
+            fixedDeduction: String(Math.max(0, Number(payload?.fixedDeduction ?? 0) || 0)),
+            salesCommissionPercentage: String(Math.min(100, Math.max(0, Number(payload?.salesCommissionPercentage ?? 0) || 0))),
+            profitCommissionPercentage: String(Math.min(100, Math.max(0, Number(payload?.profitCommissionPercentage ?? 0) || 0))),
+            paymentMethod: String(payload?.paymentMethod ?? "cash").trim().slice(0, 30) || "cash",
+            paymentReference: String(payload?.paymentReference ?? "").trim() || null,
+            salaryStatus: payload?.salaryStatus === "suspended" ? "suspended" : "active",
+            salaryNotes: String(payload?.salaryNotes ?? "").trim() || null,
             permissions: permissionsForRole(
               normalizedRole,
               explicitPermissions ?? payload?.permissions,
@@ -24896,6 +26308,26 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const b = await body(req);
       const update: any = {};
       if (b?.fullName !== undefined) update.fullName = String(b.fullName ?? "");
+      if (b?.department !== undefined)
+        update.department = String(b.department ?? "general").trim().slice(0, 60) || "general";
+      if (b?.baseSalary !== undefined)
+        update.baseSalary = String(Math.max(0, Number(b.baseSalary) || 0));
+      if (b?.hiredAt !== undefined)
+        update.hiredAt = normalizeDateOnly(b.hiredAt) ?? existing.hiredAt;
+      if (b?.jobTitle !== undefined) update.jobTitle = String(b.jobTitle ?? "").trim().slice(0, 100) || null;
+      if (b?.salaryType !== undefined && ["monthly", "weekly", "daily", "hourly"].includes(String(b.salaryType))) update.salaryType = String(b.salaryType);
+      if (b?.currency !== undefined) update.currency = String(b.currency ?? "IQD").trim().slice(0, 10) || "IQD";
+      for (const key of ["workingDaysPerWeek", "dailyWorkingHours", "hourlyRate", "overtimeRate", "attendanceAllowance", "transportationAllowance", "foodAllowance", "phoneAllowance", "housingAllowance", "otherFixedAllowances", "fixedDeduction", "salesCommissionPercentage", "profitCommissionPercentage"] as const) {
+        if (b?.[key] !== undefined) update[key] = String(Math.max(0, Number(b[key]) || 0));
+      }
+      if (b?.workingDaysPerWeek !== undefined) update.workingDaysPerWeek = String(Math.min(7, Math.max(1, Number(b.workingDaysPerWeek) || 6)));
+      if (b?.dailyWorkingHours !== undefined) update.dailyWorkingHours = String(Math.min(24, Math.max(1, Number(b.dailyWorkingHours) || 8)));
+      if (b?.salesCommissionPercentage !== undefined) update.salesCommissionPercentage = String(Math.min(100, Math.max(0, Number(b.salesCommissionPercentage) || 0)));
+      if (b?.profitCommissionPercentage !== undefined) update.profitCommissionPercentage = String(Math.min(100, Math.max(0, Number(b.profitCommissionPercentage) || 0)));
+      if (b?.paymentMethod !== undefined) update.paymentMethod = String(b.paymentMethod ?? "cash").trim().slice(0, 30) || "cash";
+      if (b?.paymentReference !== undefined) update.paymentReference = String(b.paymentReference ?? "").trim() || null;
+      if (b?.salaryStatus !== undefined) update.salaryStatus = b.salaryStatus === "suspended" ? "suspended" : "active";
+      if (b?.salaryNotes !== undefined) update.salaryNotes = String(b.salaryNotes ?? "").trim() || null;
       if (b?.isActive !== undefined) update.isActive = b.isActive === true;
       if (b?.username !== undefined) {
         const nextUsername = staffUsername(b.username);
@@ -25222,6 +26654,88 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       return json(result);
     }
+    // Customer reports — most active / highest sales / highest remaining / newest / inactive.
+    if (method === "GET" && parts[2] === "reports") {
+      const aggRes: any = await db.execute(sql`
+        select c.id, c.name, c.phone, c.city, c.created_at,
+          coalesce(si.cnt,0) + coalesce(o.cnt,0) + coalesce(kb.cnt,0) as invoices,
+          coalesce(si.total,0) + coalesce(o.total,0) + coalesce(kb.total,0) as total,
+          coalesce(si.remaining,0) + coalesce(o.remaining,0) + coalesce(kb.remaining,0) as remaining,
+          greatest(coalesce(si.last, c.created_at), coalesce(o.last, c.created_at), coalesce(kb.last, c.created_at)) as last_activity
+        from customers c
+        left join (select customer_id, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from sales_invoices where status <> 'cancelled' group by customer_id) si on si.customer_id = c.id
+        left join (select customer_phone, count(*)::int cnt, coalesce(sum(total::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from orders where archived_at is null and status <> 'cancelled' group by customer_phone) o on o.customer_phone = c.phone
+        left join (select customer_id, count(*)::int cnt, coalesce(sum(total_amount::numeric),0)::float total, coalesce(sum(remaining_amount::numeric),0)::float remaining, max(created_at) last from kosha_bookings where archived_at is null and status <> 'cancelled' and customer_id is not null group by customer_id) kb on kb.customer_id = c.id
+        where c.status <> 'deleted'
+        limit 5000`);
+      const rows = (aggRes.rows ?? []).map((r: any) => ({
+        id: Number(r.id), name: r.name || "زبون", phone: r.phone, city: r.city ?? null,
+        code: `CUS-${String(r.id).padStart(6, "0")}`,
+        invoices: Number(r.invoices ?? 0), total: Number(r.total ?? 0), remaining: Number(r.remaining ?? 0),
+        createdAt: r.created_at, lastActivity: r.last_activity,
+      }));
+      const now = Date.now();
+      const withActivity = rows.filter((r: any) => r.invoices > 0);
+      const top = (arr: any[], key: string, n = 10) => [...arr].sort((a, b) => b[key] - a[key]).slice(0, n);
+      const inactive = rows.filter((r: any) => now - new Date(r.lastActivity).getTime() > 90 * 86400000)
+        .sort((a: any, b: any) => new Date(a.lastActivity).getTime() - new Date(b.lastActivity).getTime()).slice(0, 15);
+      return json({
+        mostActive: top(withActivity, "invoices"),
+        highestSales: top(withActivity, "total"),
+        highestRemaining: top(rows.filter((r: any) => r.remaining > 0), "remaining"),
+        newest: [...rows].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 10),
+        inactive,
+        totalCustomers: rows.length,
+      });
+    }
+
+    // Smart Customer Search — enriched results (code/city/invoice count/remaining/last).
+    if (method === "GET" && parts[2] === "smart-search") {
+      const q = (req.nextUrl.searchParams.get("q") ?? "").trim();
+      if (q.length < 1) return json({ results: [] });
+      const digits = normalizePhoneDigits(q);
+      const codeMatch = q.match(/CUS-?0*(\d+)/i);
+      const codeId = codeMatch ? Number(codeMatch[1]) : (/^\d{1,6}$/.test(q) ? Number(q) : 0);
+      const matches = await db.query.customersTable.findMany({
+        where: and(
+          ne(customersTable.status, "deleted"),
+          or(
+            ilike(customersTable.name, `%${q}%`),
+            ilike(customersTable.fullName, `%${q}%`),
+            digits ? like(customersTable.phone, `%${digits}%`) : (sql`false` as any),
+            codeId ? eq(customersTable.id, codeId) : (sql`false` as any),
+          ),
+        ),
+        orderBy: (c, { desc }) => [desc(c.id)],
+        limit: 15,
+      });
+      if (!matches.length) return json({ results: [] });
+      const ids = matches.map((m) => m.id);
+      const phones = [...new Set(matches.map((m) => m.phone))];
+      const [invAgg, ordAgg, koshaAgg]: any = await Promise.all([
+        db.execute(sql`select customer_id, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from sales_invoices where status <> 'cancelled' and customer_id in (${sql.join(ids.map((i) => sql`${i}`), sql`, `)}) group by customer_id`),
+        db.execute(sql`select customer_phone, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total::numeric),0)::float as total, max(created_at) as last from orders where archived_at is null and status <> 'cancelled' and customer_phone in (${sql.join(phones.map((p) => sql`${p}`), sql`, `)}) group by customer_phone`),
+        db.execute(sql`select customer_id, count(*)::int as cnt, coalesce(sum(remaining_amount::numeric),0)::float as remaining, coalesce(sum(total_amount::numeric),0)::float as total, max(created_at) as last from kosha_bookings where archived_at is null and status <> 'cancelled' and customer_id in (${sql.join(ids.map((i) => sql`${i}`), sql`, `)}) group by customer_id`),
+      ]);
+      const invBy = new Map((invAgg.rows ?? []).map((r: any) => [Number(r.customer_id), r]));
+      const ordBy = new Map((ordAgg.rows ?? []).map((r: any) => [String(r.customer_phone), r]));
+      const koshaBy = new Map((koshaAgg.rows ?? []).map((r: any) => [Number(r.customer_id), r]));
+      const results = matches.map((m) => {
+        const inv: any = invBy.get(m.id) ?? {}; const ord: any = ordBy.get(m.phone) ?? {}; const kosha: any = koshaBy.get(m.id) ?? {};
+        const lastA = inv.last ? new Date(inv.last).getTime() : 0; const lastB = ord.last ? new Date(ord.last).getTime() : 0; const lastC = kosha.last ? new Date(kosha.last).getTime() : 0;
+        const last = Math.max(lastA, lastB, lastC);
+        return {
+          id: m.id, name: m.name || m.fullName || "زبون", phone: m.phone,
+          code: `CUS-${String(m.id).padStart(6, "0")}`, city: m.city ?? null,
+          invoiceCount: Number(inv.cnt ?? 0) + Number(ord.cnt ?? 0) + Number(kosha.cnt ?? 0),
+          remaining: Number(inv.remaining ?? 0) + Number(ord.remaining ?? 0) + Number(kosha.remaining ?? 0),
+          totalSpent: Number(inv.total ?? 0) + Number(ord.total ?? 0) + Number(kosha.total ?? 0),
+          lastInvoice: last ? new Date(last).toISOString().slice(0, 10) : null,
+        };
+      });
+      return json({ results });
+    }
+
     if (method === "GET" && parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف غير صحيح", 400);
@@ -25240,6 +26754,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         whatsappLogs,
         messageThreads,
         invoices,
+        koshaBookings,
         customerPayments,
       ] = await Promise.all([
         db.query.ordersTable.findMany({
@@ -25300,6 +26815,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orderBy: [desc(salesInvoicesTable.createdAt)],
           limit: 20,
         }),
+        db.query.koshaBookingsTable.findMany({
+          where: and(
+            sql`${koshaBookingsTable.archivedAt} is null`,
+            or(
+              eq(koshaBookingsTable.customerId, id),
+              inArray(koshaBookingsTable.phone, phoneVariants),
+            ),
+          ),
+          orderBy: [desc(koshaBookingsTable.createdAt)],
+          limit: 50,
+        }),
         db.query.financialTransactionsTable.findMany({
           where: and(
             or(
@@ -25325,13 +26851,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         (sum, row) => sum + money(row.total),
         0,
       );
+      const koshaTotal = koshaBookings.reduce(
+        (sum, row) => sum + money(row.totalAmount),
+        0,
+      );
       const remainingTotal =
         orders.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
         serviceOrders.reduce(
           (sum, row) => sum + money(row.remainingAmount),
           0,
         ) +
-        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0);
+        invoices.reduce((sum, row) => sum + money(row.remainingAmount), 0) +
+        koshaBookings.reduce((sum, row) => sum + money(row.remainingAmount), 0);
       const unpaidCount =
         orders.filter(
           (row) =>
@@ -25344,8 +26875,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         invoices.filter(
           (row) =>
             row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
+        ).length +
+        koshaBookings.filter(
+          (row) =>
+            row.paymentStatus !== "paid" && money(row.remainingAmount) > 0,
         ).length;
-      const totalCharges = productTotal + serviceTotal + invoiceTotal;
+      const totalCharges = productTotal + serviceTotal + invoiceTotal + koshaTotal;
       const totalPaid = Math.max(totalCharges - remainingTotal, 0);
       return json({
         id: customer.id,
@@ -25371,6 +26906,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           productOrders: orders.length,
           serviceOrders: serviceOrders.length,
           invoices: invoices.length,
+          koshaBookings: koshaBookings.length,
           totalSpent: totalCharges,
           totalCharges,
           totalPaid,
@@ -25417,6 +26953,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           remainingAmount: Number.parseFloat(invoice.remainingAmount ?? "0"),
           paymentStatus: invoice.paymentStatus,
           createdAt: invoice.createdAt.toISOString(),
+        })),
+        koshaBookings: koshaBookings.map((booking) => ({
+          id: booking.id,
+          trackingCode: booking.trackingCode,
+          total: money(booking.totalAmount),
+          paidAmount: money(booking.paidAmount),
+          remainingAmount: money(booking.remainingAmount),
+          paymentStatus: booking.paymentStatus,
+          status: booking.status,
+          eventDate: booking.eventDate ?? null,
+          createdAt: booking.createdAt.toISOString(),
         })),
         payments: customerPayments.map((payment) => ({
           id: payment.id,
@@ -27383,6 +28930,11 @@ async function ensurePurchasesTables() {
         notes TEXT, balance TEXT NOT NULL DEFAULT '0', is_active INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_code VARCHAR(40), ADD COLUMN IF NOT EXISTS company TEXT, ADD COLUMN IF NOT EXISTS contact_person TEXT, ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(30), ADD COLUMN IF NOT EXISTS category VARCHAR(60), ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(80), ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
+      CREATE UNIQUE INDEX IF NOT EXISTS suppliers_code_unique_idx ON suppliers(supplier_code) WHERE supplier_code IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS supplier_products (id SERIAL PRIMARY KEY, supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, last_purchase_price NUMERIC(16,2) NOT NULL DEFAULT 0, supplier_sku VARCHAR(100), supplier_barcode VARCHAR(100), is_default BOOLEAN NOT NULL DEFAULT false, is_preferred BOOLEAN NOT NULL DEFAULT false, created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW());
+      CREATE UNIQUE INDEX IF NOT EXISTS supplier_products_supplier_product_idx ON supplier_products(supplier_id, product_id);
+      CREATE INDEX IF NOT EXISTS supplier_products_product_idx ON supplier_products(product_id);
       CREATE TABLE IF NOT EXISTS purchase_invoices (
         id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
         supplier_name TEXT NOT NULL DEFAULT '', supplier_id INTEGER REFERENCES suppliers(id),
@@ -27503,6 +29055,37 @@ async function handleSalesInvoices(
   await ensureStockTrackingTables();
   const method = req.method;
   const id = parts[2] ? int(parts[2]) : null;
+  const resultRows = (result: any) => result?.rows ?? result ?? [];
+
+  if (method === "GET" && parts[2] === "dashboard") {
+    const [summary, top] = await Promise.all([
+      db.execute(sql`select count(*)::int as total, count(*) filter(where status='active' and is_active=1)::int as active, coalesce(sum(balance::numeric),0)::float as outstanding, coalesce((select sum(total::numeric) from purchase_invoices where date >= date_trunc('month',current_date) and status='active'),0)::float as monthly_purchases from suppliers`),
+      db.execute(sql`select s.id,s.name,s.supplier_code,coalesce(sum(p.total::numeric),0)::float as purchases,coalesce(sum(p.remaining_amount::numeric),0)::float as outstanding from suppliers s left join purchase_invoices p on p.supplier_id=s.id and p.status='active' group by s.id order by purchases desc limit 8`),
+    ]);
+    return json({ ...(resultRows(summary)[0] ?? {}), topSuppliers: resultRows(top) });
+  }
+
+  if (method === "GET" && id && parts[3] === "profile") {
+    const supplier = await db.query.suppliersTable.findFirst({ where: eq(suppliersTable.id, id) }); if (!supplier) return error("المورد غير موجود", 404);
+    const [invoices, products, transactions] = await Promise.all([
+      db.execute(sql`select * from purchase_invoices where supplier_id=${id} order by date desc limit 30`),
+      db.execute(sql`select sp.*,p.name_ar,p.name from supplier_products sp left join products p on p.id=sp.product_id where sp.supplier_id=${id} order by sp.is_preferred desc,sp.updated_at desc`),
+      db.execute(sql`select id,transaction_no,transaction_date,amount,payment_method,approval_status,description from financial_transactions where source_type='purchase_invoice' and source_id in (select id::text from purchase_invoices where supplier_id=${id}) order by transaction_date desc limit 30`),
+    ]);
+    return json({ supplier, invoices: resultRows(invoices), products: resultRows(products), payments: resultRows(transactions), outstandingBalance: Number(supplier.balance ?? 0) });
+  }
+
+  if (method === "POST" && id && parts[3] === "products") {
+    const b = await body(req); const productId = Number(b?.productId); if (!Number.isInteger(productId) || productId <= 0) return error("المنتج مطلوب", 400);
+    await db.execute(sql`insert into supplier_products(supplier_id,product_id,last_purchase_price,supplier_sku,supplier_barcode,is_default,is_preferred,updated_at) values(${id},${productId},${Math.max(0,Number(b?.lastPurchasePrice)||0)},${nullableText(b?.supplierSku)},${nullableText(b?.supplierBarcode)},${b?.isDefault===true},${b?.isPreferred===true},now()) on conflict(supplier_id,product_id) do update set last_purchase_price=excluded.last_purchase_price,supplier_sku=excluded.supplier_sku,supplier_barcode=excluded.supplier_barcode,is_default=excluded.is_default,is_preferred=excluded.is_preferred,updated_at=now()`);
+    return json({ supplierId: id, productId });
+  }
+
+  if (method === "GET" && parts[2] === "search") {
+    const q = `%${String(req.nextUrl.searchParams.get("q") ?? "").trim()}%`;
+    const result = await db.execute(sql`select * from suppliers where is_active=1 and status='active' and (name ilike ${q} or coalesce(phone,'') ilike ${q} or coalesce(supplier_code,'') ilike ${q} or coalesce(company,'') ilike ${q}) order by name limit 30`);
+    return json(resultRows(result));
+  }
 
   if (method === "GET" && !id) {
     const from = req.nextUrl.searchParams.get("from") ?? undefined;
@@ -28229,6 +29812,13 @@ async function handlePurchaseInvoices(
       }
     }
 
+    if (inv.supplierId) {
+      for (const item of processedItems) if (item.productId) {
+        await db.execute(sql`insert into supplier_products(supplier_id,product_id,last_purchase_price,supplier_barcode,is_default,is_preferred,updated_at) values(${inv.supplierId},${item.productId},${item.costPrice},${item.barcode || null},false,false,now()) on conflict(supplier_id,product_id) do update set last_purchase_price=excluded.last_purchase_price,supplier_barcode=coalesce(excluded.supplier_barcode,supplier_products.supplier_barcode),updated_at=now()`);
+      }
+      await db.execute(sql`update suppliers set balance=(select coalesce(sum(remaining_amount::numeric),0) from purchase_invoices where supplier_id=${inv.supplierId} and status='active')::text,updated_at=now() where id=${inv.supplierId}`);
+    }
+
     const final = await db.query.purchaseInvoicesTable.findFirst({
       where: eq(purchaseInvoicesTable.id, inv.id),
     });
@@ -28539,6 +30129,8 @@ async function handleSuppliers(
       .insert(suppliersTable)
       .values({
         name: supplierName,
+        supplierCode: `SUP-${Date.now().toString(36).toUpperCase()}`,
+        company: nullableText(b?.company), contactPerson: nullableText(b?.contactPerson), whatsapp: nullableText(b?.whatsapp), category: nullableText(b?.category), paymentTerms: nullableText(b?.paymentTerms), creditLimit: String(Math.max(0, Number(b?.creditLimit) || 0)), openingBalance: String(Number(b?.openingBalance) || 0), balance: String(Number(b?.openingBalance) || 0), status: ["active", "inactive", "blocked"].includes(String(b?.status)) ? b.status : "active",
         phone: nullableText(b?.phone),
         email: nullableText(b?.email),
         address: nullableText(b?.address),
@@ -28560,6 +30152,9 @@ async function handleSuppliers(
     if (b.email !== undefined) update.email = nullableText(b.email);
     if (b.address !== undefined) update.address = nullableText(b.address);
     if (b.notes !== undefined) update.notes = nullableText(b.notes);
+    for (const key of ["company", "contactPerson", "whatsapp", "category", "paymentTerms"] as const) if (b[key] !== undefined) update[key] = nullableText(b[key]);
+    for (const key of ["creditLimit", "openingBalance"] as const) if (b[key] !== undefined) update[key] = String(Number(b[key]) || 0);
+    if (b.status !== undefined && ["active", "inactive", "blocked"].includes(String(b.status))) { update.status = b.status; update.isActive = b.status === "active" ? 1 : 0; }
     update.updatedAt = new Date();
     const [row] = await db
       .update(suppliersTable)
@@ -29831,6 +31426,7 @@ async function ensureAccountingVoucherTables() {
           ADD COLUMN IF NOT EXISTS "customer_id" integer,
           ADD COLUMN IF NOT EXISTS "order_id" integer,
           ADD COLUMN IF NOT EXISTS "booking_id" integer,
+          ADD COLUMN IF NOT EXISTS "kosha_booking_id" integer,
           ADD COLUMN IF NOT EXISTS "reference" text,
           ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
           ADD COLUMN IF NOT EXISTS "notes" text,
@@ -29839,6 +31435,18 @@ async function ensureAccountingVoucherTables() {
           ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed',
           ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer,
           ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
+
+        CREATE TABLE IF NOT EXISTS "receipt_voucher_allocations" (
+          "id" serial PRIMARY KEY,
+          "receipt_voucher_id" integer NOT NULL REFERENCES "receipt_vouchers" ("id") ON DELETE CASCADE,
+          "customer_id" integer NOT NULL REFERENCES "customers" ("id"),
+          "source_type" varchar(40) NOT NULL,
+          "source_id" integer,
+          "amount" numeric(14,2) NOT NULL CHECK ("amount" > 0),
+          "posted_at" timestamp,
+          "created_at" timestamp NOT NULL DEFAULT now(),
+          CHECK (("source_type" = 'customer_credit' AND "source_id" IS NULL) OR ("source_type" <> 'customer_credit' AND "source_id" IS NOT NULL))
+        );
 
         ALTER TABLE "payment_vouchers"
           ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
@@ -29866,6 +31474,11 @@ async function ensureAccountingVoucherTables() {
         CREATE INDEX IF NOT EXISTS "payment_vouchers_created_by_idx" ON "payment_vouchers" ("created_by");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_approval_status_idx" ON "receipt_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "receipt_vouchers_financial_transaction_id_idx" ON "receipt_vouchers" ("financial_transaction_id");
+        CREATE INDEX IF NOT EXISTS "receipt_vouchers_kosha_booking_idx" ON "receipt_vouchers" ("kosha_booking_id");
+        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id", "source_type", "source_id") WHERE "source_id" IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_credit_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id") WHERE "source_type" = 'customer_credit';
+        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_customer_idx" ON "receipt_voucher_allocations" ("customer_id", "posted_at");
+        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_idx" ON "receipt_voucher_allocations" ("source_type", "source_id", "posted_at");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_approval_status_idx" ON "payment_vouchers" ("approval_status");
         CREATE INDEX IF NOT EXISTS "payment_vouchers_financial_transaction_id_idx" ON "payment_vouchers" ("financial_transaction_id");
       `),
@@ -29904,7 +31517,16 @@ function canEditOrderFinancials(user: AdminUser): boolean {
 }
 
 function financialActor(user: AdminUser): FinancialActor {
-  return { ...actor(user), role: user.role };
+  return { ...actor(user), role: user.role, permissions: user.permissions };
+}
+
+function hasVoucherPermission(user: AdminUser, permission: Permission) {
+  return (
+    user.role === "admin" ||
+    user.role === "manager" ||
+    user.permissions.includes("accounting") ||
+    user.permissions.includes(permission)
+  );
 }
 
 const SYSTEM_FINANCIAL_ACTOR: FinancialActor = {
@@ -30007,6 +31629,11 @@ async function syncKoshaFinancialPayment(
   const targetPaid =
     order.status === "cancelled" ? 0 : Number(order.paidAmount);
   const paymentMethod = (order.bookingDetails as any)?.pricing?.paymentMethod;
+  // Kosha bookings predate the unified customer relation and only carry a
+  // phone number. Resolve the canonical customer id while posting the
+  // financial movement so cashbox transactions and statements are grouped by
+  // customer_id (with the phone fallback retained for legacy rows).
+  const customer = await findCustomerByPhone(order.phone);
   return syncSourcePaymentTarget(
     {
       sourceType: "kosha_booking",
@@ -30024,6 +31651,7 @@ async function syncKoshaFinancialPayment(
           : paymentMethod === "pos" || paymentMethod === "card"
             ? "pos"
             : "cash",
+      customerId: (order as any).customerId ?? customer?.id ?? null,
       customerName: order.customerName,
       customerPhone: order.phone,
       dueDate: order.dueDate,
@@ -30295,6 +31923,7 @@ async function collectionSourceSummary(
     });
     if (source) {
       reference = source.trackingCode ?? `KB-${source.id}`;
+      customerId = (source as any).customerId ?? null;
       customerName = source.customerName;
       customerPhone = source.phone;
       total = money(source.totalAmount);
@@ -30428,8 +32057,14 @@ async function handleCollections(
   const paymentStatus = remaining <= 0 ? "paid" : "partial";
   const a = actor(currentUser);
   const sourceMethod = data.paymentMethod === "transfer" ? "transfer" : data.paymentMethod === "card" || data.paymentMethod === "pos" ? "pos" : "cash";
+  let createdVoucherId: number | null = null;
+  let createdFinancial: any = null;
 
   try {
+    if (data.sourceType === "kosha_booking" && before.customerId) {
+      await db.update(koshaBookingsTable).set({ customerId: before.customerId, updatedAt: new Date() })
+        .where(and(eq(koshaBookingsTable.id, data.sourceId), isNull(koshaBookingsTable.customerId)));
+    }
     if (data.sourceType === "order") {
       await db.update(ordersTable).set({
         depositAmount: String(paid),
@@ -30457,19 +32092,9 @@ async function handleCollections(
         updatedAt: new Date(),
       }).where(eq(salesInvoicesTable.id, data.sourceId));
     } else {
-      await db.update(koshaBookingsTable).set({
-        paidAmount: String(paid),
-        remainingAmount: String(remaining),
-        paymentStatus,
-        bookingDetails: {
-          ...((before.source.bookingDetails ?? {}) as Record<string, unknown>),
-          pricing: {
-            ...(((before.source.bookingDetails as any)?.pricing ?? {}) as Record<string, unknown>),
-            paymentMethod: sourceMethod,
-          },
-        },
-        updatedAt: new Date(),
-      }).where(eq(koshaBookingsTable.id, data.sourceId));
+      // Kosha collection is posted by the receipt-voucher allocation when the
+      // financial request is executed.  Do not mutate the booking while the
+      // receipt is still awaiting approval.
     }
 
     const [voucher] = await db.insert(receiptVouchersTable).values({
@@ -30480,6 +32105,7 @@ async function handleCollections(
       customerId: before.customerId,
       orderId: data.sourceType === "order" ? data.sourceId : null,
       bookingId: data.sourceType === "service_order" ? data.sourceId : null,
+      koshaBookingId: data.sourceType === "kosha_booking" ? data.sourceId : null,
       reference: nullableText(
         data.receiptNo
           ? `${before.reference} | ${data.receiptNo}`
@@ -30490,9 +32116,19 @@ async function handleCollections(
       createdBy: a.id,
       createdByName: a.name,
     }).returning();
+    createdVoucherId = voucher.id;
     const [savedVoucher] = await db.update(receiptVouchersTable).set({
       voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
     }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
+    if (data.sourceType === "kosha_booking" && before.customerId) {
+      await db.insert(receiptVoucherAllocationsTable).values({
+        receiptVoucherId: savedVoucher.id,
+        customerId: before.customerId,
+        sourceType: "kosha_booking",
+        sourceId: data.sourceId,
+        amount: String(amount),
+      });
+    }
 
     const updated = await collectionSourceSummary(data.sourceType, data.sourceId);
     let financialTransaction: any = null;
@@ -30502,7 +32138,24 @@ async function handleCollections(
       else if (data.sourceType === "service_order")
         financialTransaction = await syncServiceOrderFinancialPayment(updated.source, financialActor(currentUser));
       else if (data.sourceType === "kosha_booking")
-        financialTransaction = await syncKoshaFinancialPayment(updated.source, financialActor(currentUser));
+        financialTransaction = await createSourceFinancialRequest({
+          transactionDate: savedVoucher.date,
+          direction: "revenue",
+          amount,
+          department: "koshas",
+          transactionType: "receipt_voucher",
+          description: `سند قبض لحجز كوشة ${before.reference}`,
+          paymentMethod: sourceMethod,
+          sourceType: "receipt_voucher",
+          sourceId: savedVoucher.id,
+          sourceEvent: "payment",
+          idempotencyKey: `receipt_voucher:${savedVoucher.id}:payment`,
+          customerId: before.customerId,
+          customerName: before.customerName,
+          customerPhone: before.customerPhone,
+          notes: data.notes,
+          attachments: [],
+        }, financialActor(currentUser));
       else
         financialTransaction = await syncSourcePaymentTarget({
           sourceType: "sales_invoice",
@@ -30520,7 +32173,20 @@ async function handleCollections(
           customerPhone: updated.customerPhone,
           notes: data.notes,
         }, financialActor(currentUser));
+      createdFinancial = financialTransaction;
     }
+    createdFinancial = financialTransaction;
+    if (
+      financialTransaction?.approvalStatus === "pending" &&
+      canApproveFinancialTransactions(financialActor(currentUser))
+      ) {
+        financialTransaction = await approveAndExecuteFinancialTransaction(
+        financialTransaction.id,
+        financialActor(currentUser),
+          "ØªØ­ØµÙŠÙ„ Ù…Ø¨Ø§Ø´Ø± Ù…Ù† Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©",
+        );
+        createdFinancial = financialTransaction;
+      }
     if (financialTransaction) {
       await db.update(receiptVouchersTable).set({
         approvalStatus: financialTransaction.approvalStatus,
@@ -30594,6 +32260,25 @@ async function handleCollections(
       summary: await collectionSourceSummary(data.sourceType, data.sourceId),
     }, 201);
   } catch (err: any) {
+    // A booking balance must never be left ahead of its cashbox/journal post.
+    // Restore the pre-payment projection and cancel any unexecuted request;
+    // posted financial history is retained for audit and must be reversed, not
+    // deleted.
+    if (data.sourceType === "kosha_booking" && before.source && createdFinancial?.approvalStatus !== "executed") {
+      await db.update(koshaBookingsTable).set({
+        paidAmount: before.source.paidAmount,
+        remainingAmount: before.source.remainingAmount,
+        paymentStatus: before.source.paymentStatus,
+        bookingDetails: before.source.bookingDetails,
+        updatedAt: new Date(),
+      }).where(eq(koshaBookingsTable.id, data.sourceId));
+    }
+    if (createdFinancial?.id && createdFinancial.approvalStatus !== "executed") {
+      await cancelFinancialTransactionRequest(createdFinancial.id, financialActor(currentUser), "فشل نشر دفعة حجز الكوشة");
+    }
+    if (createdVoucherId && createdFinancial?.approvalStatus !== "executed") {
+      await db.delete(receiptVouchersTable).where(eq(receiptVouchersTable.id, createdVoucherId));
+    }
     console.error("payment collection failed", {
       sourceType: data.sourceType,
       sourceId: data.sourceId,
@@ -32973,6 +34658,8 @@ async function handleStaffPortal(
       id &&
       (action === "approve" || action === "reject")
     ) {
+      if (action === "approve" && !canApproveFinancialTransactions(financialActor(auth)))
+        return error("اعتماد التحصيل متاح للمدير فقط", 403);
       const reqRow = await db.query.koshaPaymentRequestsTable.findFirst({
         where: eq(koshaPaymentRequestsTable.id, id),
       });
@@ -33021,17 +34708,10 @@ async function handleStaffPortal(
         Number(booking.remainingAmount) - amount,
       );
       const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
-      const [updated] = await db
-        .update(koshaBookingsTable)
-        .set({
-          paidAmount: String(newPaid),
-          remainingAmount: String(newRemaining),
-          paymentStatus,
-          updatedAt: new Date(),
-        })
-        .where(eq(koshaBookingsTable.id, booking.id))
-        .returning();
-      await db
+      // Claim the request atomically before touching the booking. This closes
+      // the double-click/concurrent approval race and prevents duplicate
+      // financial postings for the same collection request.
+      const [claimedRequest] = await db
         .update(koshaPaymentRequestsTable)
         .set({
           status: "approved",
@@ -33039,15 +34719,55 @@ async function handleStaffPortal(
           reviewedByName: auth.fullName || auth.username,
           reviewedAt: new Date(),
         })
-        .where(eq(koshaPaymentRequestsTable.id, id));
+        .where(and(eq(koshaPaymentRequestsTable.id, id), eq(koshaPaymentRequestsTable.status, "pending")))
+        .returning();
+      if (!claimedRequest) return error("ØªÙ…Øª Ù…Ø¹Ø§Ù„Ø¬Ø© Ù‡Ø°Ø§ Ø§Ù„Ø·Ù„Ø¨ Ù…Ø³Ø¨Ù‚Ù‹Ø§", 409);
+
+      let updated: typeof booking | undefined;
       try {
-        await syncKoshaFinancialPayment(updated, financialActor(auth));
-      } catch (err) {
-        console.error("kosha payment finance sync failed", {
-          bookingId: booking.id,
-          error: err instanceof Error ? err.message : "unknown",
-        });
+        [updated] = await db
+          .update(koshaBookingsTable)
+          .set({
+            paidAmount: String(newPaid),
+            remainingAmount: String(newRemaining),
+            paymentStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(koshaBookingsTable.id, booking.id))
+          .returning();
+      } catch (bookingError) {
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        throw bookingError;
       }
+      if (!updated) {
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        return error("ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø­Ø¬Ø²", 409);
+      }
+      let financial: Awaited<ReturnType<typeof syncKoshaFinancialPayment>> = null;
+      try {
+        financial = await syncKoshaFinancialPayment(updated, financialActor(auth));
+        if (financial?.approvalStatus === "pending" && canApproveFinancialTransactions(financialActor(auth))) {
+          financial = await approveAndExecuteFinancialTransaction(financial.id, financialActor(auth), "Ù…ÙˆØ§ÙÙ‚Ø© ØªØ­ØµÙŠÙ„ ÙƒÙˆØ´Ø©");
+        }
+      } catch (financeError) {
+        // Do not leave a booking marked paid when the unified posting failed.
+        // Any newly-created pending request is cancelled (never deleted) so
+        // the retry remains auditable and cannot be executed accidentally.
+        if (financial?.approvalStatus && financial.approvalStatus !== "executed") {
+          await cancelFinancialTransactionRequest(financial.id, financialActor(auth), "ÙØ´Ù„ Ù†Ø´Ø± ØªØ­ØµÙŠÙ„ Ø§Ù„ÙƒÙˆØ´Ø©");
+        }
+        await db.update(koshaBookingsTable).set({
+          paidAmount: booking.paidAmount,
+          remainingAmount: booking.remainingAmount,
+          paymentStatus: booking.paymentStatus,
+          updatedAt: new Date(),
+        }).where(eq(koshaBookingsTable.id, booking.id));
+        await db.update(koshaPaymentRequestsTable).set({ status: "pending", reviewedByStaffId: null, reviewedByName: null, reviewedAt: null }).where(eq(koshaPaymentRequestsTable.id, id));
+        throw financeError;
+      }
+      await db.update(koshaPaymentRequestsTable)
+        .set({ financialTransactionId: financial?.id ?? null })
+        .where(eq(koshaPaymentRequestsTable.id, reqRow.id));
       await addKoshaEvent({
         bookingId: booking.id,
         staff: auth,
@@ -33069,6 +34789,7 @@ async function handleStaffPortal(
         status: "approved",
         paidAmount: newPaid,
         remainingAmount: newRemaining,
+        financialTransactionId: financial?.id ?? null,
       });
     }
     return error("المسار غير موجود", 404);
@@ -33819,6 +35540,12 @@ async function handleBookingCenter(
     canBooking(auth, a) ? null : error("ليس لديك صلاحية", 403);
 
   try {
+    // Order matters. ensureAccountingVoucherTables() owns receipt_vouchers and
+    // receipt_voucher_allocations; ensureBookingCenterTables() then ALTERs
+    // receipt_vouchers to add booking_ref_id. That ALTER is "IF EXISTS", so
+    // running it first on a deployment where nobody has opened the accounting
+    // pages yet would silently do nothing and leave booking payments broken.
+    await ensureAccountingVoucherTables();
     await ensureBookingCenterTables();
 
     if (method === "GET" && resource === "dashboard") {
@@ -33950,6 +35677,8 @@ async function handleMasterCash(
   // Any authenticated employee can submit a financial request. Ledger access
   // remains restricted to accounting users and managers.
   if (method === "POST" && resource === "transactions" && !id) {
+    if (!hasVoucherPermission(currentUser, "voucher_create"))
+      return error("لا تملك صلاحية إنشاء السندات المالية", 403);
     const parsed = financialTransactionInputSchema.safeParse(await body(req));
     if (!parsed.success)
       return validationError("master-cash.transaction.create", parsed);
@@ -33980,9 +35709,10 @@ async function handleMasterCash(
     }
   }
 
-  const auth = await requirePermission(req, "accounting");
-  if (isResponse(auth)) return auth;
-  const financeUser = financialActor(auth);
+  if (!hasVoucherPermission(currentUser, "voucher_view"))
+    return error("لا تملك صلاحية عرض السندات المالية", 403);
+  const auth = currentUser;
+  const financeUser = financialActor(currentUser);
 
   try {
     await ensureMasterCashBoxTables();
@@ -34005,6 +35735,8 @@ async function handleMasterCash(
       }
 
       if ((method === "PATCH" || method === "PUT") && !action) {
+        if (!hasVoucherPermission(auth, "voucher_edit"))
+          return error("لا تملك صلاحية تعديل السندات المالية", 403);
         const parsed = financialTransactionPatchSchema.safeParse(
           await body(req),
         );
@@ -34026,6 +35758,8 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "submit") {
+        if (!hasVoucherPermission(auth, "voucher_edit"))
+          return error("لا تملك صلاحية إرسال السندات المالية", 403);
         const row = await submitFinancialTransaction(id, financeUser);
         void logAdminActivity(
           req,
@@ -34037,7 +35771,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "approve") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_approve") || !canApproveFinancialTransactions(financeUser))
           return error("اعتماد المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await approveAndExecuteFinancialTransaction(
@@ -34078,7 +35812,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "reject") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_approve") || !canApproveFinancialTransactions(financeUser))
           return error("رفض المعاملات متاح للمدير فقط", 403);
         const payload = await body(req);
         const row = await rejectFinancialTransaction(
@@ -34103,7 +35837,7 @@ async function handleMasterCash(
       }
 
       if (method === "POST" && action === "reverse") {
-        if (!canApproveFinancialTransactions(financeUser))
+        if (!hasVoucherPermission(auth, "voucher_reverse") || !canApproveFinancialTransactions(financeUser))
           return error("عكس الحركة المالية متاح للمدير فقط", 403);
         const payload = await body(req);
         try {
@@ -34149,6 +35883,19 @@ async function handleMasterCash(
         } catch (err: any) {
           return error(err?.message || "تعذر عكس الحركة المالية", 400);
         }
+      }
+
+      if (method === "POST" && action === "cancel") {
+        if (!hasVoucherPermission(auth, "voucher_delete"))
+          return error("لا تملك صلاحية إلغاء السندات المالية", 403);
+        const payload = await body(req);
+        const reason = String(payload?.reason ?? "").trim();
+        if (reason.length < 3)
+          return error("سبب الإلغاء مطلوب (3 أحرف على الأقل)", 400);
+        const row = await cancelFinancialTransactionRequest(id, financeUser, reason);
+        if (!row) return error("المعاملة غير موجودة", 404);
+        void logAdminActivity(req, "financial_transaction_cancelled", "financial_transaction", id, { reason });
+        return json(row);
       }
     }
 
@@ -34277,6 +36024,12 @@ const receiptVoucherMutationSchema = z.object({
     .preprocess(optionalPositiveId, z.number().int().positive().nullable())
     .optional()
     .default(null),
+  allocations: z.array(z.object({
+    sourceType: z.enum(["kosha_booking", "sales_invoice", "order", "service_order", "graduation_order"]),
+    sourceId: z.coerce.number().int().positive(),
+    amount: voucherAmountSchema,
+  })).max(100).optional().default([]),
+  saveRemainderAsCredit: z.boolean().optional().default(false),
   reference: z.string().trim().optional().default(""),
   method: voucherMethodSchema.default("cash"),
   department: financeDepartmentSchema.default("general"),
@@ -34570,6 +36323,92 @@ async function handleAccounting(
       );
     }
     if (method === "GET") {
+      if (parts[2] === "reconciliation") {
+        if (!(auth.role === "admin" || auth.role === "manager")) return error("مراجعة الربط متاحة للمدير فقط.", 403);
+        const review = await db.execute(sql`
+          SELECT rv.id, rv.voucher_no, rv.date::text AS date, rv.payer_name, rv.amount::float AS amount,
+            rv.customer_id, rv.kosha_booking_id, rv.financial_transaction_id, rv.approval_status,
+            c.name AS customer_name, ft.customer_phone AS financial_customer_phone,
+            coalesce(rv.customer_id, c_by_phone.id) AS resolved_customer_id,
+            kb.id AS possible_booking_id, kb.tracking_code AS possible_booking_no,
+            CASE WHEN rv.customer_id IS NULL THEN 'missing_customer'
+              WHEN NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a WHERE a.receipt_voucher_id = rv.id) THEN 'unallocated'
+              WHEN ft.id IS NULL THEN 'missing_financial_link'
+              ELSE 'linked' END AS status
+          FROM receipt_vouchers rv
+          LEFT JOIN customers c ON c.id = rv.customer_id
+          LEFT JOIN LATERAL (
+            SELECT t.* FROM financial_transactions t
+            WHERE t.id = rv.financial_transaction_id
+              OR (t.source_type = 'receipt_voucher' AND t.source_id = rv.id::text)
+            ORDER BY CASE WHEN t.id = rv.financial_transaction_id THEN 0 ELSE 1 END, t.id DESC LIMIT 1
+          ) ft ON true
+          LEFT JOIN LATERAL (
+            SELECT customer.id FROM customers customer
+            WHERE regexp_replace(coalesce(customer.phone, ''), '[^0-9]', '', 'g') <> ''
+              AND regexp_replace(coalesce(customer.phone, ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(ft.customer_phone, ''), '[^0-9]', '', 'g')
+            LIMIT 1
+          ) c_by_phone ON true
+          LEFT JOIN LATERAL (
+            SELECT b.id, b.tracking_code FROM kosha_bookings b
+            WHERE b.customer_id = coalesce(rv.customer_id, c_by_phone.id)
+              AND b.remaining_amount::numeric > 0 AND b.archived_at IS NULL
+            ORDER BY b.created_at DESC LIMIT 1
+          ) kb ON true
+          WHERE rv.approval_status <> 'cancelled'
+          ORDER BY CASE WHEN rv.customer_id IS NULL THEN 0 WHEN NOT EXISTS (SELECT 1 FROM receipt_voucher_allocations a WHERE a.receipt_voucher_id = rv.id) THEN 1 ELSE 2 END, rv.date DESC
+          LIMIT 1000
+        `);
+        return json((review.rows ?? []).map((row: any) => ({
+          voucherId: row.id, voucherNo: row.voucher_no, customer: row.customer_name ?? row.payer_name,
+          customerId: row.resolved_customer_id ?? null,
+          amount: money(row.amount), possibleBooking: row.possible_booking_id ? { id: row.possible_booking_id, number: row.possible_booking_no } : null,
+          currentLink: row.kosha_booking_id ? `kosha:${row.kosha_booking_id}` : row.customer_id ? `customer:${row.customer_id}` : "غير مرتبط",
+          suggestedLink: row.possible_booking_id ? `kosha:${row.possible_booking_id}` : null, status: row.status,
+        })));
+      }
+      if (parts[2] === "open-records") {
+        const customerId = int(req.nextUrl.searchParams.get("customerId") ?? undefined);
+        if (!customerId) return error("العميل مطلوب", 400);
+        const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+        if (!customer) return error("العميل غير موجود", 404);
+        const rows = await db.execute(sql`
+          SELECT * FROM (
+            SELECT 'kosha_booking'::text AS source_type, id AS source_id, coalesce(tracking_code, 'KB-' || id) AS reference,
+              created_at::date::text AS date, total_amount::float AS total, paid_amount::float AS paid, remaining_amount::float AS remaining,
+              due_date::text AS due_date, payment_status AS status
+            FROM kosha_bookings WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'sales_invoice', id, invoice_no, date::text, total::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM sales_invoices WHERE customer_id = ${customerId} AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'order', id, tracking_code, created_at::date::text, total::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at::date::text, total_amount::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM service_orders WHERE phone = ${customer.phone} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            UNION ALL
+            SELECT 'graduation_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
+            FROM graduation_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+          ) records ORDER BY date DESC, source_id DESC
+        `);
+        const records = (rows.rows ?? []) as any[];
+        const credit = await db.execute(sql`
+          SELECT coalesce(sum(amount::numeric), 0)::float AS total
+          FROM receipt_voucher_allocations WHERE customer_id = ${customerId}
+            AND source_type = 'customer_credit' AND posted_at IS NOT NULL
+        `);
+        const totalOutstanding = money(records.reduce((sum, row) => sum + money(row.remaining), 0));
+        return json({
+          records,
+          summary: {
+            totalOutstanding,
+            totalKoshaOutstanding: money(records.filter((r) => r.source_type === "kosha_booking").reduce((s, r) => s + money(r.remaining), 0)),
+            totalStoreOutstanding: money(records.filter((r) => ["sales_invoice", "order"].includes(r.source_type)).reduce((s, r) => s + money(r.remaining), 0)),
+            availableCustomerCredit: money((credit.rows?.[0] as any)?.total),
+          },
+        });
+      }
       const from = req.nextUrl.searchParams.get("from") ?? undefined;
       const to = req.nextUrl.searchParams.get("to") ?? undefined;
       const search = (req.nextUrl.searchParams.get("search") ?? "").trim();
@@ -34628,6 +36467,38 @@ async function handleAccounting(
       );
     }
     if (method === "POST") {
+      if (parts[2] === "reconciliation") {
+        if (!(auth.role === "admin" || auth.role === "manager")) return error("ربط السندات القديمة متاح للمدير فقط.", 403);
+        const payload = z.object({ voucherId: z.coerce.number().int().positive(), customerId: z.coerce.number().int().positive(), koshaBookingId: z.coerce.number().int().positive() }).safeParse(await body(req));
+        if (!payload.success) return validationError("receipt-vouchers.reconciliation", payload);
+        try {
+          const linked = await db.transaction(async (tx) => {
+            const voucherRows = await tx.execute(sql`SELECT * FROM receipt_vouchers WHERE id = ${payload.data.voucherId} FOR UPDATE`);
+            const voucher = (voucherRows.rows?.[0] ?? null) as any;
+            if (!voucher) throw new Error("سند القبض غير موجود.");
+            const bookingRows = await tx.execute(sql`SELECT * FROM kosha_bookings WHERE id = ${payload.data.koshaBookingId} FOR UPDATE`);
+            const booking = (bookingRows.rows?.[0] ?? null) as any;
+            if (!booking || (booking.customer_id != null && Number(booking.customer_id) !== payload.data.customerId)) throw new Error("حجز الكوشة لا يتبع للعميل المحدد.");
+            const existing = await tx.execute(sql`SELECT id FROM receipt_voucher_allocations WHERE receipt_voucher_id = ${voucher.id} FOR UPDATE`);
+            if ((existing.rows ?? []).length) throw new Error("هذا السند مرتبط بالفعل ولا يمكن ربطه مرتين.");
+            const amount = money(voucher.amount);
+            if (amount > money(booking.remaining_amount)) throw new Error("مبلغ السند أكبر من المتبقي في الحجز. راجع التوزيع يدوياً.");
+            const posted = voucher.approval_status === "executed" ? new Date() : null;
+            if (booking.customer_id == null) await tx.execute(sql`UPDATE kosha_bookings SET customer_id = ${payload.data.customerId}, updated_at = now() WHERE id = ${booking.id}`);
+            await tx.execute(sql`INSERT INTO receipt_voucher_allocations(receipt_voucher_id, customer_id, source_type, source_id, amount, posted_at) VALUES (${voucher.id}, ${payload.data.customerId}, 'kosha_booking', ${booking.id}, ${amount}, ${posted})`);
+            await tx.execute(sql`UPDATE receipt_vouchers SET customer_id = ${payload.data.customerId}, kosha_booking_id = ${booking.id} WHERE id = ${voucher.id}`);
+            if (posted) await tx.execute(sql`
+              UPDATE kosha_bookings SET paid_amount = paid_amount::numeric + ${amount},
+                remaining_amount = greatest(total_amount::numeric - paid_amount::numeric - ${amount}, 0),
+                payment_status = CASE WHEN total_amount::numeric - paid_amount::numeric - ${amount} <= 0 THEN 'paid' ELSE 'partial' END,
+                updated_at = now() WHERE id = ${booking.id} AND remaining_amount::numeric >= ${amount}
+            `);
+            return { voucherNo: voucher.voucher_no, posted: !!posted };
+          });
+          void logAdminActivity(req, "receipt_voucher_reconciled", "receipt_voucher", payload.data.voucherId, { customerId: payload.data.customerId, koshaBookingId: payload.data.koshaBookingId });
+          return json({ ok: true, ...linked });
+        } catch (err: any) { return error(err?.message || "تعذر ربط السند القديم.", 409); }
+      }
       const parsed = receiptVoucherMutationSchema.safeParse(await body(req));
       if (!parsed.success)
         return validationError("receipt-vouchers.create", parsed);
@@ -34644,19 +36515,62 @@ async function handleAccounting(
         if (!normalizedPhone) return error("رقم الهاتف العراقي غير صحيح", 400);
         customer = await findCustomerByPhone(normalizedPhone);
       }
+      if (!customer)
+        return error("اختيار العميل إلزامي لسند القبض لضمان ربط الذمة والحجوزات بصورة صحيحة.", 400);
+      const allocatedAmount = money(
+        b.allocations.reduce((sum, allocation) => sum + money(allocation.amount), 0),
+      );
+      if (allocatedAmount > money(b.amount))
+        return error("إجمالي التوزيع أكبر من المبلغ المستلم. وزّع المتبقي على سجل آخر أو احفظه كرصيد للعميل.", 400);
+      if (allocatedAmount < money(b.amount) && !b.saveRemainderAsCredit)
+        return error("يوجد مبلغ غير موزع. اختر سجلاً آخر أو احفظ المتبقي كرصيد للعميل.", 400);
+      if (!b.allocations.length && !b.saveRemainderAsCredit)
+        return error("اختر سجلاً لتطبيق سند القبض عليه أو احفظه كرصيد للعميل.", 400);
+      for (const allocation of b.allocations) {
+        if (allocation.sourceType === "kosha_booking") {
+          const booking = await db.query.koshaBookingsTable.findFirst({
+            where: eq(koshaBookingsTable.id, allocation.sourceId),
+          });
+          if (!booking || (booking.customerId != null && booking.customerId !== customer.id) || (booking.customerId == null && normalizeIraqiPhone(booking.phone) !== normalizeIraqiPhone(customer.phone)))
+            return error("حجز الكوشة المحدد لا يتبع للعميل المختار.", 400);
+          if (booking.customerId == null)
+            await db.update(koshaBookingsTable).set({ customerId: customer.id, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, booking.id));
+          if (money(allocation.amount) > money(booking.remainingAmount))
+            return error(`مبلغ حجز الكوشة أكبر من المتبقي (${formatCurrency(booking.remainingAmount)}).`, 400);
+        } else if (allocation.sourceType === "sales_invoice") {
+          const row = await db.query.salesInvoicesTable.findFirst({ where: and(eq(salesInvoicesTable.id, allocation.sourceId), eq(salesInvoicesTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الفاتورة المحددة لا تتبع للعميل أو أن مبلغها أكبر من المتبقي.", 400);
+        } else if (allocation.sourceType === "order") {
+          const row = await db.query.ordersTable.findFirst({ where: and(eq(ordersTable.id, allocation.sourceId), eq(ordersTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الطلب المحدد لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        } else if (allocation.sourceType === "graduation_order") {
+          const row = await db.query.graduationOrdersTable.findFirst({ where: and(eq(graduationOrdersTable.id, allocation.sourceId), eq(graduationOrdersTable.customerId, customer.id)) });
+          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("طلب التخرج لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        } else {
+          const row = await db.query.serviceOrdersTable.findFirst({ where: eq(serviceOrdersTable.id, allocation.sourceId) });
+          if (!row || normalizeIraqiPhone(row.phone) !== normalizeIraqiPhone(customer.phone) || money(allocation.amount) > money(row.remainingAmount))
+            return error("طلب الخدمة لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);
+        }
+      }
+      const allocationRows = [
+        ...b.allocations,
+        ...(allocatedAmount < money(b.amount)
+          ? [{ sourceType: "customer_credit" as const, sourceId: null, amount: money(money(b.amount) - allocatedAmount) }]
+          : []),
+      ];
       const a = actor(auth);
       try {
         await ensureMasterCashBoxTables();
-        const [row] = await db
-          .insert(receiptVouchersTable)
-          .values({
+        const updated = await db.transaction(async (tx) => {
+          const [row] = await tx.insert(receiptVouchersTable).values({
             voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
-            payerName: textFallback(b.payerName, customer?.name, "زبون"),
-            customerId: customer?.id ?? null,
+            payerName: textFallback(b.payerName, customer.name, "زبون"),
+            customerId: customer.id,
             orderId: b.orderId ?? null,
             bookingId: b.bookingId ?? null,
+            koshaBookingId: b.allocations.length === 1 && b.allocations[0].sourceType === "kosha_booking" ? b.allocations[0].sourceId : null,
             reference: nullableText(b.reference),
             method: b.method,
             notes: nullableText(b.notes),
@@ -34664,11 +36578,20 @@ async function handleAccounting(
             createdByName: a.name,
           })
           .returning();
-        const [updated] = await db
+          const [updated] = await tx
           .update(receiptVouchersTable)
           .set({ voucherNo: fmtVoucherNo("REC", row.id, row.createdAt) })
           .where(eq(receiptVouchersTable.id, row.id))
           .returning();
+          await tx.insert(receiptVoucherAllocationsTable).values(allocationRows.map((allocation) => ({
+            receiptVoucherId: updated.id,
+            customerId: customer.id,
+            sourceType: allocation.sourceType,
+            sourceId: allocation.sourceId,
+            amount: String(allocation.amount),
+          })));
+          return updated;
+        });
         const financialTransaction = await createSourceFinancialRequest(
           {
             transactionDate: updated.date,
@@ -35299,7 +37222,7 @@ async function handleAccounting(
             total_amount::numeric, deposit_amount::numeric, remaining_amount::numeric
           FROM service_orders WHERE archived_at IS NULL AND status <> 'cancelled'
           UNION ALL
-          SELECT NULL, customer_name, phone, coalesce(tracking_code, 'KB-' || id),
+          SELECT customer_id, customer_name, phone, coalesce(tracking_code, 'KB-' || id),
             'حجز كوشة', created_at::date, due_date,
             total_amount::numeric, paid_amount::numeric, remaining_amount::numeric
           FROM kosha_bookings WHERE archived_at IS NULL AND status <> 'cancelled'
@@ -35349,7 +37272,7 @@ async function handleAccounting(
       const phone = customer?.phone ?? phoneParam ?? null;
       if (!phone) return error("اختر زبون أو رقم هاتف", 400);
       const phoneVariants = iraqiPhoneVariants(phone);
-      const [orders, bookings, receipts, salesInvoices] = await Promise.all([
+      const [orders, bookings, koshaBookings, receipts, salesInvoices, receiptAllocations] = await Promise.all([
         db
           .select({
             id: ordersTable.id,
@@ -35372,15 +37295,43 @@ async function handleAccounting(
           .from(serviceOrdersTable)
           .where(inArray(serviceOrdersTable.phone, phoneVariants))
           .orderBy(desc(serviceOrdersTable.createdAt)),
+        db
+          .select({
+            id: koshaBookingsTable.id,
+            trackingCode: koshaBookingsTable.trackingCode,
+            totalAmount: koshaBookingsTable.totalAmount,
+            paidAmount: koshaBookingsTable.paidAmount,
+            remainingAmount: koshaBookingsTable.remainingAmount,
+            customerId: koshaBookingsTable.customerId,
+            customerName: koshaBookingsTable.customerName,
+            phone: koshaBookingsTable.phone,
+            createdAt: koshaBookingsTable.createdAt,
+            status: koshaBookingsTable.status,
+          })
+          .from(koshaBookingsTable)
+          .where(
+            and(
+              sql`${koshaBookingsTable.archivedAt} is null`,
+              customer
+                ? or(
+                    inArray(koshaBookingsTable.phone, phoneVariants),
+                    eq(koshaBookingsTable.customerId, customer.id),
+                  )
+                : inArray(koshaBookingsTable.phone, phoneVariants),
+            ),
+          )
+          .orderBy(desc(koshaBookingsTable.createdAt)),
         customer
           ? db
               .select({
+                id: receiptVouchersTable.id,
                 voucherNo: receiptVouchersTable.voucherNo,
                 date: receiptVouchersTable.date,
                 amount: receiptVouchersTable.amount,
                 payerName: receiptVouchersTable.payerName,
                 orderId: receiptVouchersTable.orderId,
                 bookingId: receiptVouchersTable.bookingId,
+                koshaBookingId: receiptVouchersTable.koshaBookingId,
                 reference: receiptVouchersTable.reference,
                 method: receiptVouchersTable.method,
               })
@@ -35411,6 +37362,17 @@ async function handleAccounting(
             ),
           )
           .orderBy(desc(salesInvoicesTable.createdAt)),
+        customer
+          ? db.execute(sql`
+              SELECT a.source_type, a.source_id, a.amount::float AS amount, a.posted_at,
+                rv.id AS voucher_id, rv.voucher_no, rv.date::text AS date, rv.method,
+                rv.financial_transaction_id
+              FROM receipt_voucher_allocations a
+              JOIN receipt_vouchers rv ON rv.id = a.receipt_voucher_id
+              WHERE a.customer_id = ${customer.id} AND a.posted_at IS NOT NULL
+              ORDER BY rv.date, a.id
+            `)
+          : Promise.resolve({ rows: [] } as any),
       ]);
       type Entry = {
         date: string;
@@ -35422,6 +37384,11 @@ async function handleAccounting(
         href: string | null;
       };
       const entries: Entry[] = [];
+      const postedAllocations = ((receiptAllocations as any)?.rows ?? []) as any[];
+      const allocatedReceiptIds = new Set(postedAllocations.map((row) => Number(row.voucher_id)));
+      const koshaAllocated = new Map<number, number>();
+      for (const allocation of postedAllocations) if (allocation.source_type === "kosha_booking" && allocation.source_id != null)
+        koshaAllocated.set(Number(allocation.source_id), money((koshaAllocated.get(Number(allocation.source_id)) ?? 0) + money(allocation.amount)));
       for (const o of orders) {
         entries.push({
           date: o.createdAt.toISOString(),
@@ -35442,6 +37409,17 @@ async function handleAccounting(
           debit: Number.parseFloat(b.totalAmount ?? "0"),
           credit: Number.parseFloat(b.depositAmount ?? "0"),
           href: `/admin/invoice/${b.id}?type=booking`,
+        });
+      }
+      for (const b of koshaBookings) {
+        entries.push({
+          date: b.createdAt.toISOString(),
+          kind: "booking",
+          ref: b.trackingCode ?? `KB-${b.id}`,
+          description: "حجز كوشة",
+          debit: Number.parseFloat(b.totalAmount ?? "0"),
+          credit: Math.max(0, Number.parseFloat(b.paidAmount ?? "0") - (koshaAllocated.get(b.id) ?? 0)),
+          href: `/admin/kosha-bookings?booking=${b.id}`,
         });
       }
       // Sales invoices — the charge (debit) and any amount paid against it (credit).
@@ -35472,8 +37450,13 @@ async function handleAccounting(
           });
       }
       for (const r of receipts) {
-        if (r.orderId || r.bookingId) continue;
-        if (salesInvoices.some((invoice) => String(r.reference ?? "").startsWith(invoice.invoiceNo))) continue;
+        if (allocatedReceiptIds.has(r.id)) continue;
+        if (r.orderId || r.bookingId || r.koshaBookingId) continue;
+        // Kosha receipts are linked by their KB-* reference until legacy
+        // receipt_vouchers gains a dedicated kosha_booking_id column. The
+        // booking row already carries the paid amount, so do not double count.
+        if (/^(KB-|AJN-KOSHA-)/i.test(String(r.reference ?? "").trim())) continue;
+        if (salesInvoices.some((invoice: any) => String(r.reference ?? "").startsWith(invoice.invoiceNo))) continue;
         entries.push({
           date: new Date(r.date).toISOString(),
           kind: "receipt",
@@ -35482,6 +37465,18 @@ async function handleAccounting(
           debit: 0,
           credit: Number.parseFloat(r.amount),
           href: null,
+        });
+      }
+      for (const allocation of postedAllocations) {
+        const sourceLabel = allocation.source_type === "kosha_booking" ? "حجز كوشة" : allocation.source_type === "sales_invoice" ? "فاتورة" : allocation.source_type === "customer_credit" ? "رصيد العميل" : "توزيع دفعة";
+        entries.push({
+          date: new Date(allocation.date).toISOString(),
+          kind: "receipt",
+          ref: allocation.voucher_no,
+          description: `سند قبض وتوزيع على ${sourceLabel}`,
+          debit: 0,
+          credit: Number(allocation.amount),
+          href: `/admin/accounting?tab=receipts`,
         });
       }
       entries.sort((a, b) => a.date.localeCompare(b.date));
@@ -35783,6 +37778,26 @@ function storagePathFromPublicUrl(url: string) {
   }
 }
 
+function safeBackupMediaUrl(raw: string): string | null {
+  if (!STORAGE_URL) return null;
+  try {
+    const url = new URL(raw);
+    const storage = new URL(STORAGE_URL);
+    const publicPrefix = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      url.origin !== storage.origin ||
+      !url.pathname.startsWith(publicPrefix)
+    )
+      return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function buildBackupMediaArchive(urls: string[]) {
   const maxBytes = Number(process.env.AJN_BACKUP_MEDIA_MAX_BYTES ?? 25_000_000);
   const maxFileBytes = Number(
@@ -35791,9 +37806,10 @@ async function buildBackupMediaArchive(urls: string[]) {
   const files: BackupPayload["mediaFiles"] = [];
   const skipped: BackupPayload["mediaSkipped"] = [];
   let totalBytes = 0;
-  for (const url of urls) {
-    if (!/^https?:\/\//i.test(url)) {
-      skipped.push({ url, reason: "not_remote_url" });
+  for (const rawUrl of urls) {
+    const url = safeBackupMediaUrl(rawUrl);
+    if (!url) {
+      skipped.push({ url: rawUrl, reason: "untrusted_media_origin" });
       continue;
     }
     try {
@@ -36200,10 +38216,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       req.method === "GET"
     ) {
       const secret = process.env.CRON_SECRET;
-      if (secret) {
-        const auth = req.headers.get("authorization") ?? "";
-        if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      }
+      if (!secret) return error("خدمة Cron غير مهيأة", 503);
+      const auth = req.headers.get("authorization") ?? "";
+      if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
       const summary = await runSmartNotificationsSweep();
       return json({ ok: true, summary });
     }
@@ -36378,11 +38393,24 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof RequestBodyTooLargeError)
+      return error("حجم الطلب يتجاوز الحد المسموح", 413);
     console.error("API route failed", {
       method: req.method,
       path: req.nextUrl.pathname,
+      code: (err as any)?.code,
       error: err instanceof Error ? err.message : "unknown",
+      stack: err instanceof Error ? err.stack : undefined,
     });
+    if (req.method === "POST" && req.nextUrl.pathname === "/api/orders") {
+      const code = (err as any)?.code;
+      if (code === "23503")
+        return error("تعذر حفظ الطلب بسبب منتج أو عميل غير موجود", 409);
+      if (code === "23505")
+        return error("تعذر إنشاء الطلب المكرر. حدّث الصفحة ثم حاول مرة أخرى", 409);
+      if (code === "23514") return error("البيانات المالية للطلب غير صالحة", 422);
+      return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
+    }
     return error(
       "تعذر إكمال العملية. حاول مرة أخرى، وإذا استمرت المشكلة راجع سجل الخادم.",
       500,

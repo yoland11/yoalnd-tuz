@@ -8,6 +8,7 @@ import { ArrowRight, Eye, Plus, Edit2, Trash2, X, Search, Upload, Boxes, Save, S
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, fileToDataUrl, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -32,7 +33,7 @@ type ProductForm = {
   isRental?: boolean; pricePerDay?: string; isAsset?: boolean;
   sharedStockProductId?: number | null;
   sharedStockLinkedProductIds?: number[];
-  categoryId?: number | null; subcategoryId?: number | null;
+  categoryId?: number | null; subcategoryId?: number | null; subcategoryIds?: number[];
   category?: string; subcategory?: string;
   images: string[]; videos: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
@@ -137,6 +138,7 @@ export default function ProductsPage() {
   const [stockDrafts, setStockDrafts] = useState<Record<number, string>>({});
 
   const productRows = products ?? [];
+  const allSubcategories = categories?.filter((category) => category.parentId) ?? [];
   const stockStats = useMemo(() => {
     return productRows.reduce(
       (acc, product: any) => {
@@ -173,6 +175,7 @@ export default function ProductsPage() {
           p.barcode, // product code
           p.category,
           p.subcategory,
+          ...(Array.isArray(p.subcategoryIds) ? p.subcategoryIds.map((id: number) => allSubcategories.find((c) => c.id === id)?.nameAr) : []),
           p.description,
           p.descriptionAr,
           p.sharedStockProductName,
@@ -180,7 +183,7 @@ export default function ProductsPage() {
       );
     }
     return rows;
-  }, [productRows, search, catFilter, stockFilter, visFilter]);
+  }, [productRows, search, catFilter, stockFilter, visFilter, allSubcategories]);
 
   const parentCats = categories?.filter(c => !c.parentId) ?? [];
   const subCats = categories?.filter(c => c.parentId) ?? [];
@@ -244,6 +247,7 @@ export default function ProductsPage() {
       barcode: form.barcode?.trim() ?? "",
       categoryId: form.categoryId ?? null,
       subcategoryId: form.subcategoryId ?? null,
+      subcategoryIds: form.subcategoryIds ?? (form.subcategoryId ? [form.subcategoryId] : []),
       category: form.category ?? "",
       subcategory: form.subcategory ?? "",
       images: form.images ?? [],
@@ -449,6 +453,17 @@ export default function ProductsPage() {
                     );
                   })}
                 </tbody>
+                <TableTotalsFooter
+                  rows={filtered}
+                  allRows={filtered}
+                  labelColSpan={1}
+                  cells={[
+                    { key: "sellingValue", label: "قيمة البيع", value: (product) => Number(product.price ?? 0) * stockQuantity(product), format: formatCurrency },
+                    { key: "stock", label: "إجمالي المخزون", value: stockQuantity },
+                    { key: "stockStatus", label: "", },
+                    { key: "action", label: "", },
+                  ]}
+                />
               </table>
             </div>
           </div>
@@ -547,7 +562,7 @@ export default function ProductsPage() {
                             isRental: !!(p as any).isRental, pricePerDay: (p as any).pricePerDay ? String((p as any).pricePerDay) : "0", isAsset: !!(p as any).isAsset,
                             sharedStockProductId: (p as any).sharedStockProductId ?? null,
                             sharedStockLinkedProductIds: Array.isArray((p as any).sharedStockLinkedProducts) ? (p as any).sharedStockLinkedProducts.map((item: any) => Number(item.id)).filter(Boolean) : [],
-                            categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null,
+                            categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null, subcategoryIds: Array.isArray((p as any).subcategoryIds) ? (p as any).subcategoryIds : ((p as any).subcategoryId ? [(p as any).subcategoryId] : []),
                             category: p.category ?? "", subcategory: p.subcategory ?? "",
                             images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
                             isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
@@ -566,6 +581,19 @@ export default function ProductsPage() {
                   );
                 })}
               </tbody>
+              <TableTotalsFooter
+                rows={filtered}
+                allRows={filtered}
+                labelColSpan={1}
+                cells={[
+                  { key: "sellingValue", label: "قيمة البيع", value: (product) => Number(product.price ?? 0) * stockQuantity(product), format: formatCurrency },
+                  { key: "stock", label: "إجمالي المخزون", value: stockQuantity },
+                  { key: "stockStatus", label: "", },
+                  { key: "category", label: "", },
+                  { key: "visibility", label: "", },
+                  { key: "actions", label: "", },
+                ]}
+              />
             </table>
           </div>
         </div>
@@ -583,6 +611,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   products: any[];
 }) {
   const [busy, setBusy] = useState(false);
+  const [subcategorySearch, setSubcategorySearch] = useState("");
   const [activeTab, setActiveTab] = useState<"details" | "rentals" | "recipe" | "variants">("details");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<string | null>(null);
@@ -611,12 +640,9 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
   const selectedParent = form.categoryId
     ? parentCats.find(p => p.id === form.categoryId)
     : parentCats.find(p => p.slug === form.category);
-  const selectedSubcategory = form.subcategoryId
-    ? subCats.find(s => s.id === form.subcategoryId)
-    : subCats.find(s => s.slug === form.subcategory);
-  const filteredSubs = subCats.filter(s => {
-    return selectedParent ? s.parentId === selectedParent.id : true;
-  });
+  const selectedSubcategoryIds = form.subcategoryIds ?? (form.subcategoryId ? [form.subcategoryId] : []);
+  const selectedSubcategories = subCats.filter((s) => selectedSubcategoryIds.includes(s.id));
+  const filteredSubs = subCats.filter((s) => !subcategorySearch.trim() || `${s.nameAr} ${s.name} ${parentCats.find((p) => p.id === s.parentId)?.nameAr ?? ""}`.toLowerCase().includes(subcategorySearch.trim().toLowerCase()));
   const linkedStockProduct = products.find((product: any) => product.id === form.sharedStockProductId);
   const linkableProducts = products.filter((product: any) => product.id !== form.id);
   const selectedLinkedIds = new Set((form.sharedStockLinkedProductIds ?? []).filter((id) => id !== form.id));
@@ -1119,6 +1145,7 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
                   categoryId: next?.id ?? null,
                   category: next?.slug ?? "",
                   subcategoryId: null,
+                  subcategoryIds: [],
                   subcategory: "",
                 });
               }}
@@ -1127,25 +1154,14 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
               {parentCats.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
             </select>
           </div>
-          <div>
-            <label className="block text-xs text-muted-foreground mb-1">القسم الفرعي</label>
-            <select
-              value={selectedSubcategory ? String(selectedSubcategory.id) : ""}
-              onChange={e => {
-                const next = subCats.find(c => c.id === Number(e.target.value));
-                const parent = next?.parentId ? parentCats.find(c => c.id === next.parentId) : selectedParent;
-                onChange({
-                  ...form,
-                  categoryId: parent?.id ?? form.categoryId ?? null,
-                  category: parent?.slug ?? form.category ?? "",
-                  subcategoryId: next?.id ?? null,
-                  subcategory: next?.slug ?? "",
-                });
-              }}
-              className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-              <option value="">—</option>
-              {filteredSubs.map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
-            </select>
+          <div className="sm:col-span-2">
+            <label className="block text-xs text-muted-foreground mb-1">الأقسام الفرعية</label>
+            <div className="rounded-lg border border-border/40 bg-background p-2">
+              <input value={subcategorySearch} onChange={(e) => setSubcategorySearch(e.target.value)} placeholder="ابحث وأضف أقساماً فرعية…" className="w-full border-0 bg-transparent px-1 py-1 text-sm outline-none" />
+              {selectedSubcategories.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{selectedSubcategories.map((item) => <button key={item.id} type="button" onClick={() => { const ids = selectedSubcategoryIds.filter((id) => id !== item.id); const primary = subCats.find((s) => s.id === ids[0]); onChange({ ...form, subcategoryIds: ids, subcategoryId: primary?.id ?? null, subcategory: primary?.slug ?? "" }); }} className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20">{item.nameAr} <X className="h-3 w-3" /></button>)}</div>}
+              {subcategorySearch.trim() && <div className="mt-2 max-h-36 overflow-auto border-t border-border/20 pt-2">{filteredSubs.filter((item) => !selectedSubcategoryIds.includes(item.id)).map((item) => <button key={item.id} type="button" onClick={() => { const ids = [...selectedSubcategoryIds, item.id]; const parent = parentCats.find((p) => p.id === item.parentId); onChange({ ...form, categoryId: form.categoryId ?? parent?.id ?? null, category: form.category || parent?.slug || "", subcategoryIds: ids, subcategoryId: ids[0] ?? null, subcategory: subCats.find((s) => s.id === ids[0])?.slug ?? "" }); setSubcategorySearch(""); }} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-right text-sm hover:bg-muted"><span>{item.nameAr}</span><span className="text-xs text-muted-foreground">{parentCats.find((p) => p.id === item.parentId)?.nameAr}</span></button>) || <p className="px-2 py-1 text-xs text-muted-foreground">لا توجد أقسام إضافية.</p>}</div>}
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">المنتج يبقى بسجل ومخزون وباركود واحد، ويظهر في كل قسم مختار.</p>
           </div>
         </div>
 
@@ -1759,7 +1775,7 @@ type Variant = {
   id: number; color: string | null; colorHex: string | null; size: string | null;
   sku: string | null; barcode: string | null; qrToken: string | null; image: string | null;
   price: number | null; cost: number | null; stock: number; minStock: number;
-  reserved: number; available: number; warehouseId: number | null; lowStock: boolean; outOfStock: boolean;
+  reserved: number; available: number; warehouseId: number | null; lowStock: boolean; outOfStock: boolean; maxStock: number; isActive: boolean; notes: string | null;
 };
 type VariantSummary = {
   hasVariants: boolean; totalStock: number; reserved: number; available: number;
@@ -1768,9 +1784,9 @@ type VariantSummary = {
 };
 type VariantForm = {
   id?: number; color: string; colorHex: string; size: string; sku: string; barcode: string;
-  price: string; cost: string; stock: string; minStock: string; warehouseId: string; image: string;
+  price: string; cost: string; stock: string; minStock: string; maxStock: string; warehouseId: string; image: string; isActive: boolean; notes: string;
 };
-const blankVariant: VariantForm = { color: "", colorHex: "", size: "", sku: "", barcode: "", price: "", cost: "", stock: "0", minStock: "0", warehouseId: "", image: "" };
+const blankVariant: VariantForm = { color: "", colorHex: "", size: "", sku: "", barcode: "", price: "", cost: "", stock: "0", minStock: "0", maxStock: "0", warehouseId: "", image: "", isActive: true, notes: "" };
 
 function VariantQr({ token }: { token: string | null }) {
   const [src, setSrc] = useState<string>("");
@@ -1806,6 +1822,7 @@ function VariantsTab({ productId }: { productId: number }) {
         price: form.price === "" ? null : Number(form.price),
         cost: form.cost === "" ? null : Number(form.cost),
         stock: Number(form.stock) || 0, minStock: Number(form.minStock) || 0,
+        maxStock: Number(form.maxStock) || 0, isActive: form.isActive, notes: form.notes.trim() || null,
         warehouseId: form.warehouseId ? Number(form.warehouseId) : null,
       };
       if (form.image && form.image.startsWith("data:")) payload.image = form.image;
@@ -1888,9 +1905,10 @@ function VariantsTab({ productId }: { productId: number }) {
                 </div>
                 <VariantQr token={v.qrToken} />
                 <div className="flex flex-col gap-1 shrink-0">
-                  <button type="button" onClick={() => setEditing({ id: v.id, color: v.color ?? "", colorHex: v.colorHex ?? "", size: v.size ?? "", sku: v.sku ?? "", barcode: v.barcode ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", stock: String(v.stock), minStock: String(v.minStock), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "" })}
+                  <button type="button" onClick={() => setEditing({ id: v.id, color: v.color ?? "", colorHex: v.colorHex ?? "", size: v.size ?? "", sku: v.sku ?? "", barcode: v.barcode ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", stock: String(v.stock), minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", isActive: v.isActive !== false, notes: v.notes ?? "" })}
                     className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Edit2 className="w-3.5 h-3.5" /></button>
                   <button type="button" onClick={() => remove(v)} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-status-danger hover:bg-status-danger/10"><Trash2 className="w-3.5 h-3.5" /></button>
+                  <button type="button" title="نسخ اللون" onClick={() => setEditing({ ...blankVariant, color: `${v.color ?? "لون"} نسخة`, colorHex: v.colorHex ?? "", size: v.size ?? "", price: v.price != null ? String(v.price) : "", cost: v.cost != null ? String(v.cost) : "", minStock: String(v.minStock), maxStock: String(v.maxStock ?? 0), warehouseId: v.warehouseId ? String(v.warehouseId) : "", image: v.image ?? "", notes: v.notes ?? "" })} className="rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"><Copy className="w-3.5 h-3.5" /></button>
                 </div>
               </div>
             </div>
@@ -1954,7 +1972,10 @@ function VariantEditor({ form, warehouses, busy, onChange, onClose, onSave }: {
           <Inp label="تكلفة الشراء (اختياري)" value={form.cost} onChange={(v) => onChange({ ...form, cost: v })} type="number" />
           <Inp label="الكمية" value={form.stock} onChange={(v) => onChange({ ...form, stock: v })} type="number" />
           <Inp label="الحد الأدنى" value={form.minStock} onChange={(v) => onChange({ ...form, minStock: v })} type="number" />
+          <Inp label="الحد الأعلى" value={form.maxStock} onChange={(v) => onChange({ ...form, maxStock: v })} type="number" />
+          <label className="flex items-center gap-2 self-end rounded-lg border border-border/40 px-3 py-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => onChange({ ...form, isActive: e.target.checked })} /> متاح للبيع</label>
         </div>
+        <div><label className="block text-xs text-muted-foreground mb-1">ملاحظات اللون</label><textarea value={form.notes} onChange={(e) => onChange({ ...form, notes: e.target.value })} className="min-h-16 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></div>
         <div>
           <label className="block text-xs text-muted-foreground mb-1">صورة المتغيّر</label>
           <div className="flex items-center gap-2">

@@ -7,6 +7,7 @@ import {
   bookingsTable,
   customersTable,
   db,
+  receiptVoucherAllocationsTable,
   receiptVouchersTable,
 } from "@workspace/db";
 import {
@@ -771,6 +772,13 @@ export async function receiveBookingPayment(
   });
   if (!booking) throw new Error("الحجز غير موجود");
   if (booking.status === "cancelled") throw new Error("لا يمكن استلام دفعة على حجز ملغى");
+  // The cash box posts every receipt voucher through
+  // receipt_voucher_allocations, which requires a customer. This also enforces
+  // the rule that booking money is always tied to a customer_id, never a name.
+  if (!booking.customerId)
+    throw new Error(
+      "الحجز غير مرتبط بحساب زبون — أضف رقم هاتف الزبون أولاً ليُربط الحجز بحسابه",
+    );
 
   const customer = booking.customerId
     ? await db.query.customersTable.findFirst({
@@ -807,6 +815,17 @@ export async function receiveBookingPayment(
             booking_service_key = ${data.serviceKey ?? null}
         WHERE id = ${row.id}`,
   );
+
+  // The cash box refuses to execute a receipt voucher that has no allocation
+  // rows, so the booking's allocation is written here as part of raising the
+  // voucher. Amounts must sum exactly to the voucher amount.
+  await db.insert(receiptVoucherAllocationsTable).values({
+    receiptVoucherId: row.id,
+    customerId: booking.customerId,
+    sourceType: "booking",
+    sourceId: bookingId,
+    amount: String(money(data.amount)),
+  });
 
   const department = data.serviceKey ? serviceMeta(data.serviceKey).department : "general";
 

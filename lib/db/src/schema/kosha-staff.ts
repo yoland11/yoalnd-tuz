@@ -86,6 +86,8 @@ export const koshaPaymentRequestsTable = pgTable("kosha_payment_requests", {
   reviewedByStaffId: integer("reviewed_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   reviewedByName: text("reviewed_by_name"),
   reviewedAt: timestamp("reviewed_at"),
+  // Idempotent link to the single financial movement posted for this request.
+  financialTransactionId: integer("financial_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

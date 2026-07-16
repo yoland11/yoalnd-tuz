@@ -35,6 +35,9 @@ export const productsTable = pgTable("products", {
 
   categoryId: integer("category_id").references(() => categoriesTable.id),
   subcategoryId: integer("subcategory_id").references(() => categoriesTable.id),
+  // A product may appear in several store subcategories while retaining one ID,
+  // barcode and shared inventory source.
+  subcategoryIds: jsonb("subcategory_ids").$type<number[]>().notNull().default([]),
 
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),

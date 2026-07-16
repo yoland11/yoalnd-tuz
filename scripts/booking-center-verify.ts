@@ -5,7 +5,12 @@
  * production: it refuses to start unless TEST_DATABASE_URL is set and is
  * different from DATABASE_URL.
  *
- * Run from the repo root so tsx picks up the root tsconfig's "@/*" path alias:
+ * Prerequisite — materialise the base schema on the scratch DB first, since
+ * receipt_vouchers / receipt_voucher_allocations are owned by api.ts ensures
+ * that this script does not import:
+ *   DATABASE_URL=$TEST_DATABASE_URL pnpm --filter @workspace/db run push
+ *
+ * Then run from the repo root so tsx picks up the root tsconfig "@/*" alias:
  *   pnpm exec tsx scripts/booking-center-verify.ts
  *
  * Lives outside scripts/src on purpose: that workspace pins rootDir to its own
@@ -103,10 +108,21 @@ async function main() {
   const startBalance = await cashBalance();
   console.log(`  cashbox opening balance: ${startBalance}`);
 
+  // A real customer row is required: the cash box posts every receipt voucher
+  // through receipt_voucher_allocations, whose customer_id is NOT NULL.
+  const customerResult = await db.execute(sql`
+    INSERT INTO customers (phone, name) VALUES ('07700000000', 'زبون الاختبار')
+    ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id
+  `);
+  const customerId = Number((customerResult.rows ?? [])[0]?.id);
+  check("test customer provisioned", Number.isInteger(customerId) && customerId > 0, customerId);
+
   // ── 1–2. Create unified booking with multiple services ───────────────────
   console.log("\n▸ 1–2. Create unified booking with multiple services");
   const booking: any = await createBooking(
     {
+      customerId,
       customerName: "زبون الاختبار",
       customerPhone: "07700000000",
       eventDate: "2026-09-01",
@@ -145,6 +161,18 @@ async function main() {
   const afterRequest: any = payment1.booking;
   check("voucher created", Boolean(payment1.voucherNo), payment1.voucherNo);
   check("transaction is pending", payment1.financialTransaction.approvalStatus === "pending");
+
+  // The cash box refuses to execute a receipt voucher with no allocations, so
+  // the booking payment must have written one summing to the voucher amount.
+  const alloc = await db.execute(sql`
+    SELECT source_type, source_id, amount::numeric AS amount, posted_at
+    FROM receipt_voucher_allocations WHERE receipt_voucher_id = ${payment1.voucherId}
+  `);
+  const allocRows = (alloc.rows ?? []) as any[];
+  check("allocation row written", allocRows.length === 1, allocRows);
+  check("allocation targets the booking", allocRows[0]?.source_type === "booking" && Number(allocRows[0]?.source_id) === bookingId, allocRows[0]);
+  check("allocation equals voucher amount", money(allocRows[0]?.amount) === 400000, allocRows[0]?.amount);
+  check("allocation not posted before approval", allocRows[0]?.posted_at == null, allocRows[0]?.posted_at);
   check("paid still 0 before approval", money(afterRequest.paidAmount) === 0, afterRequest.paidAmount);
   check("remaining unchanged before approval", money(afterRequest.remainingAmount) === 1000000, afterRequest.remainingAmount);
   check("pending receipt = 400,000", money(afterRequest.pendingReceiptAmount) === 400000, afterRequest.pendingReceiptAmount);
@@ -167,6 +195,19 @@ async function main() {
   check("pending receipt back to 0", money(afterApproval.pendingReceiptAmount) === 0, afterApproval.pendingReceiptAmount);
   check("payment appears in booking history", afterApproval.payments.length === 1, afterApproval.payments.length);
   check("voucher linked to a journal transaction", Boolean(afterApproval.payments[0]?.financialTransactionId));
+
+  const allocAfter = await db.execute(sql`
+    SELECT posted_at FROM receipt_voucher_allocations WHERE receipt_voucher_id = ${payment1.voucherId}
+  `);
+  check("allocation marked posted after approval", (allocAfter.rows ?? [])[0]?.posted_at != null);
+
+  // Customer statement reads receipt_vouchers by customer_id — proves the
+  // payment is reachable from the customer account, not matched by name.
+  const statement = await db.execute(sql`
+    SELECT COUNT(*)::int AS n FROM receipt_vouchers
+    WHERE customer_id = ${customerId} AND approval_status = 'executed'
+  `);
+  check("payment visible on the customer account", Number((statement.rows ?? [])[0]?.n) >= 1);
 
   // ── 13. Prevent duplicate approval ───────────────────────────────────────
   console.log("\n▸ 13. Duplicate approval must not double-count");

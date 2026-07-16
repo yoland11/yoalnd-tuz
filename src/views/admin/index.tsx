@@ -15,6 +15,7 @@ import AdminLogin from "./login";
 const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
+const InvoicePage = lazy(() => import("./invoice"));
 const CalendarPage = lazy(() => import("./calendar"));
 const QrOrdersPage = lazy(() => import("./qr-orders"));
 const ArchivePage = lazy(() => import("./archive"));
@@ -47,6 +48,7 @@ const ReservedStockPage = lazy(() => import("./reserved-stock"));
 const POSPage = lazy(() => import("./pos"));
 const SalesPage = lazy(() => import("./sales"));
 const PurchasesPage = lazy(() => import("./purchases"));
+const SuppliersPage = lazy(() => import("./suppliers"));
 const ReportsPage = lazy(() => import("./reports"));
 const DailyFinancialReportPage = lazy(() => import("./daily-report"));
 const DailyCashReportsPage = lazy(() =>
@@ -66,6 +68,8 @@ const CustomersPage = lazy(() => import("./customers"));
 const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
+const EmployeeAdvancesPage = lazy(() => import("./employee-advances"));
+const PayrollHistoryPage = lazy(() => import("./payroll-history"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
 const TasksPage = lazy(() => import("./tasks"));
 const AttendancePage = lazy(() => import("./attendance"));
@@ -84,8 +88,12 @@ const FinanceReportsPage = lazy(() =>
 );
 const MasterCashBoxPage = lazy(() => import("./master-cash"));
 const EmployeePerformancePage = lazy(() => import("./employee-performance"));
+const HrPage = lazy(() => import("./hr"));
+const ExecutivePage = lazy(() => import("./executive"));
+const EventBrainPage = lazy(() => import("./event-brain"));
 const WorkspacePage = lazy(() => import("./workspace"));
 const InvitationStudioPage = lazy(() => import("./invitations"));
+const CustomerHubPage = lazy(() => import("./smart-customer-search"));
 const FinancialRequestPage = lazy(() =>
   import("./master-cash").then((module) => ({
     default: module.FinancialRequestPage,
@@ -278,6 +286,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <OrdersPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/invoice/:id">
+            {() => (
+              <Guard me={me} perm="invoices">
+                <InvoicePage />
               </Guard>
             )}
           </Route>
@@ -575,6 +590,13 @@ export default function Admin() {
               </Guard>
             )}
           </Route>
+          <Route path="/admin/customer-hub">
+            {() => (
+              <Guard me={me} perm="customers">
+                <CustomerHubPage />
+              </Guard>
+            )}
+          </Route>
           <Route path="/admin/finance/request">
             {() => (
               <Guard me={me} perm="tasks">
@@ -669,6 +691,31 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="staff">
                 <StaffPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/suppliers">
+            {() => (<Guard me={me} perm="accounting"><SuppliersPage /></Guard>)}
+          </Route>
+          <Route path="/admin/hr">
+            {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
+          <Route path="/admin/payroll-history">
+            {() => (<Guard me={me} perm="hr"><PayrollHistoryPage /></Guard>)}
+          </Route>
+          <Route path="/admin/payroll/:payrollId">
+            {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
+          <Route path="/admin/executive">
+            {() => (<Guard me={me} perm="executive"><ExecutivePage /></Guard>)}
+          </Route>
+          <Route path="/admin/executive/ai-event-brain">
+            {() => (<Guard me={me} anyPerm={["executive", "ai_dashboard_view"]}><EventBrainPage me={me} /></Guard>)}
+          </Route>
+          <Route path="/admin/employee-advances">
+            {() => (
+              <Guard me={me} perm="accounting">
+                <EmployeeAdvancesPage />
               </Guard>
             )}
           </Route>

@@ -192,6 +192,33 @@ export function sheetReportCss(size: "a4" | "a5" = "a4") {
   `;
 }
 
+/** A4 portrait sheet containing two identical compact luxury invoices for cutting. */
+export function luxuryDuplicateInvoiceCss() {
+  return `
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap');
+    @page { size: A4 portrait; margin: 0; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    html, body { margin:0; padding:0; background:#fffdf9; direction:rtl; font-family:Cairo,Tahoma,Arial,sans-serif; color:#7a3e52; }
+    .luxury-invoice-page { width:210mm; min-height:297mm; padding:5mm 7mm; background:linear-gradient(135deg,#fffdf9 0%,#fff7f0 52%,#fffdf9 100%); }
+    .luxury-invoice-copy { position:relative; height:140mm; overflow:hidden; padding:5mm; border:0.45mm solid #d8a94d; border-radius:5mm 5mm 2.5mm 2.5mm; background:linear-gradient(145deg,rgba(255,253,249,.98),rgba(255,239,239,.86)); }
+    .luxury-invoice-copy:before,.luxury-invoice-copy:after { content:""; position:absolute; width:31mm; height:31mm; pointer-events:none; opacity:.62; background:radial-gradient(circle at 24% 26%,#f9bdc6 0 10%,transparent 11%),radial-gradient(circle at 42% 17%,#eab166 0 5%,transparent 6%),radial-gradient(circle at 58% 30%,#f5d9a4 0 4%,transparent 5%),radial-gradient(circle at 75% 17%,#e1b951 0 3%,transparent 4%); }
+    .luxury-invoice-copy:before { top:-3mm; right:-3mm; transform:rotate(15deg); } .luxury-invoice-copy:after { bottom:-4mm; left:-3mm; transform:rotate(195deg); }
+    .luxury-cut { height:7mm; display:flex; align-items:center; gap:3mm; color:#d897a7; font-size:10px; letter-spacing:.16em; }
+    .luxury-cut:before,.luxury-cut:after { content:""; flex:1; border-top:.25mm dashed #d897a7; }.luxury-cut .scissors { color:#c69a3d; font-size:17px; line-height:1; }
+    .li-header { position:relative; z-index:1; display:grid; grid-template-columns:31mm 1fr 41mm; gap:3mm; align-items:start; }
+    .li-meta,.li-customer { border:.2mm solid #efc7cc; border-radius:3mm; padding:2.2mm 2.8mm; background:rgba(255,255,255,.6); font-size:8px; line-height:1.45; }.li-meta b,.li-customer b { color:#b64969; }.li-kv { display:flex; justify-content:space-between; gap:2mm; }.li-kv + .li-kv { margin-top:1mm; }
+    .li-brand { text-align:center; padding-top:1mm; }.li-logo { width:17mm; height:10mm; object-fit:contain; display:block; margin:0 auto .5mm; }.li-brand-name { font:700 13px "Playfair Display",Cairo,serif; letter-spacing:.07em; color:#bb8540; }.li-brand-ar { font-size:10px; font-weight:800; color:#c65370; }.li-title { margin-top:1mm; font:700 17px "Playfair Display",Cairo,serif; color:#c7506e; letter-spacing:.08em; }.li-subtitle { color:#c49643; font-size:7px; font-weight:700; letter-spacing:.22em; }
+    .li-qr { width:18mm; height:18mm; object-fit:contain; image-rendering:pixelated; display:block; margin:2mm auto 0; }
+    .li-section { position:relative; z-index:1; margin-top:2.2mm; }.li-section-title { display:flex; align-items:center; gap:2mm; color:#bf506e; font-size:8px; font-weight:800; }.li-section-title:after { content:""; height:.2mm; flex:1; background:linear-gradient(90deg,#e8c675,transparent); }
+    .li-table { width:100%; margin-top:1.5mm; border-collapse:separate; border-spacing:0; overflow:hidden; border:.2mm solid #efc4c8; border-radius:2mm; font-size:7px; table-layout:fixed; background:rgba(255,255,255,.45); }.li-table th { padding:1.2mm 1mm; color:#ad3e5a; background:linear-gradient(90deg,#fde1e4,#fff0ee); font-weight:800; text-align:center; }.li-table td { padding:1.05mm 1mm; border-top:.15mm solid #f3d8d3; vertical-align:top; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.li-table td:nth-child(2),.li-table td:nth-child(3) { text-align:right; }.li-table .num { font-variant-numeric:tabular-nums; }
+    .li-bottom { position:relative; z-index:1; display:grid; grid-template-columns:1.1fr .9fr; gap:3mm; margin-top:2mm; }.li-payments { display:flex; flex-wrap:wrap; gap:1.2mm; margin-top:1.5mm; }.li-chip { border:.18mm solid #e8c68b; border-radius:10mm; padding:1mm 2mm; font-size:6.5px; color:#976e33; background:rgba(255,255,255,.55); }.li-notes { margin-top:2.5mm; font-size:7px; color:#975f6c; line-height:1.5; }.li-sign { display:flex; align-items:end; justify-content:space-between; gap:2mm; margin-top:2.8mm; font-size:6.5px; }.li-sign-line { width:33mm; border-bottom:.2mm solid #c79b45; text-align:center; padding-bottom:.8mm; font-family:"Playfair Display",serif; font-size:11px; color:#b85c73; }
+    .li-summary { padding:2mm 2.4mm; border-radius:2.5mm; background:rgba(255,255,255,.5); }.li-summary-row { display:flex; justify-content:space-between; gap:3mm; padding:.55mm 0; border-bottom:.12mm solid #f2dfd4; font-size:7px; }.li-total-card { margin-top:1.5mm; padding:2mm; border:.35mm solid #d7a849; border-radius:2.5mm; text-align:center; background:linear-gradient(135deg,#fde4e7,#fff1e5); box-shadow:inset 0 0 0 .35mm rgba(255,255,255,.7); }.li-total-card span { display:block; color:#b4506a; font-size:7px; font-weight:800; letter-spacing:.13em; }.li-total-card b { display:block; margin-top:.6mm; color:#c34b67; font:700 16px "Playfair Display",Cairo,serif; }
+    .li-footer { position:absolute; z-index:1; right:5mm; left:5mm; bottom:3.3mm; display:flex; justify-content:space-between; align-items:center; padding-top:1.5mm; border-top:.15mm solid #e8cd9a; color:#a67840; font-size:6.2px; direction:ltr; }.li-stamp { width:13mm; height:13mm; border:.3mm solid #d29b4a; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#bf5871; font:700 7px "Playfair Display",serif; transform:rotate(-10deg); }
+    @media screen { .luxury-invoice-page { margin:20px auto; box-shadow:0 20px 50px rgba(133,91,79,.16); } }
+    @media print { html,body { width:210mm; height:297mm; background:#fffdf9; }.luxury-invoice-page { margin:0; box-shadow:none; } }
+  `;
+}
+
 export function printWhenImagesReadyScript(closeAfterPrint = true) {
   return `
     <script>

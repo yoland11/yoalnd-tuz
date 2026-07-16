@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Clock3, LogIn, LogOut, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch } from "./_lib";
 import { EmptyState } from "./_layout";
@@ -149,6 +150,10 @@ export default function AttendancePage() {
                   </tr>
                 ))}
               </tbody>
+              <TableTotalsFooter rows={data.data} allRows={data.data} labelColSpan={3} cells={[
+                { key: "status", label: "الحضور", value: () => 0, format: (_, rows) => <span className="text-xs">حاضر {rows.filter((row) => row.status === "present").length.toLocaleString("ar-IQ")} / غائب {rows.filter((row) => row.status === "absent").length.toLocaleString("ar-IQ")}</span> },
+                { key: "hours", label: "إجمالي الساعات", value: (row) => Number(row.hours ?? 0), format: (value) => value.toLocaleString("ar-IQ", { maximumFractionDigits: 1 }) },
+              ]} />
             </table>
           </div>
         </div>
