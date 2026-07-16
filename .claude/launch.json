@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "ajn-dev",
-      "runtimeExecutable": "./node_modules/.bin/next",
-      "runtimeArgs": ["dev", "--hostname", "0.0.0.0", "--port", "8080"],
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["./node_modules/next/dist/bin/next", "dev", "--hostname", "0.0.0.0", "--port", "8080"],
       "port": 8080
     }
   ]

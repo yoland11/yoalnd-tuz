@@ -9,6 +9,16 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 
+// Persisted payment-status filter for the purchase invoices list.
+const PURCHASE_STATUS_FILTER_KEY = "ajn-purchase-payment-filter";
+const PURCHASE_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "كل فواتير الشراء" },
+  { value: "paid", label: "المدفوعة" },
+  { value: "unpaid", label: "غير المدفوعة" },
+  { value: "partial", label: "المدفوعة جزئياً" },
+  { value: "due", label: "المستحقة / غير المسددة" },
+];
+
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
@@ -61,6 +71,16 @@ export default function PurchasesPage() {
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
+  // Payment-status filter, persisted across navigation / page reloads.
+  const [listStatus, setListStatusState] = useState<string>(() => {
+    if (typeof window === "undefined") return "all";
+    return window.localStorage.getItem(PURCHASE_STATUS_FILTER_KEY) || "all";
+  });
+  const setListStatus = (value: string) => {
+    setListStatusState(value);
+    try { window.localStorage.setItem(PURCHASE_STATUS_FILTER_KEY, value); } catch { /* ignore */ }
+    setListPage(1);
+  };
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
@@ -80,9 +100,9 @@ export default function PurchasesPage() {
   });
 
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo],
+    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo, listStatus],
     queryFn: () => adminFetch<{ data: PurchaseInvoice[]; total: number }>(
-      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
+      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${listStatus && listStatus !== "all" ? `&paymentStatus=${listStatus}` : ""}`
     ),
     enabled: listMode,
   });
@@ -263,6 +283,7 @@ export default function PurchasesPage() {
       page={listPage} onPage={setListPage}
       from={listFrom} to={listTo}
       onFrom={setListFrom} onTo={setListTo}
+      status={listStatus} onStatus={setListStatus}
       onBack={() => setListMode(false)}
       onEdit={editInvoice} onPrint={printInvoice} onDelete={deleteInvoice}
     />;
@@ -587,10 +608,11 @@ export default function PurchasesPage() {
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, onBack, onEdit, onPrint, onDelete,
+  invoices, total, page, onPage, from, to, onFrom, onTo, status, onStatus, onBack, onEdit, onPrint, onDelete,
 }: {
   invoices: PurchaseInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
+  status: string; onStatus: (v: string) => void;
   onBack: () => void; onEdit: (inv: PurchaseInvoice) => void; onPrint: (inv: PurchaseInvoice) => void; onDelete: (inv: PurchaseInvoice) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
@@ -615,6 +637,15 @@ function PurchaseListView({
           <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
           <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">حالة الدفع</label>
+          <select value={status} onChange={e => onStatus(e.target.value)}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring min-w-[160px]">
+            {PURCHASE_STATUS_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
         </div>
       </div>
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">

@@ -27995,11 +27995,19 @@ async function handlePurchaseInvoices(
   if (method === "GET" && !id) {
     const from = req.nextUrl.searchParams.get("from") ?? undefined;
     const to = req.nextUrl.searchParams.get("to") ?? undefined;
+    // Optional payment-status filter (additive, backward-compatible — absent/"all" = no filter).
+    // Values stored in the DB: paid | partial | unpaid. "due" = any not fully paid.
+    const paymentStatus = req.nextUrl.searchParams.get("paymentStatus") ?? undefined;
     const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
     const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
     const conds: any[] = [sql`${purchaseInvoicesTable.status} != 'deleted'`];
     if (from) conds.push(gte(purchaseInvoicesTable.date, from));
     if (to) conds.push(lte(purchaseInvoicesTable.date, to));
+    if (paymentStatus === "paid" || paymentStatus === "partial" || paymentStatus === "unpaid") {
+      conds.push(eq(purchaseInvoicesTable.paymentStatus, paymentStatus));
+    } else if (paymentStatus === "due") {
+      conds.push(sql`${purchaseInvoicesTable.paymentStatus} <> 'paid'`);
+    }
     const rows = await db
       .select()
       .from(purchaseInvoicesTable)
