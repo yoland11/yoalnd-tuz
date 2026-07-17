@@ -28693,12 +28693,124 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "invoices" && method === "GET" && parts[2]) {
-    const auth = await requirePermission(req, "invoices");
+    const requestedType = req.nextUrl.searchParams.get("type");
+    const type = requestedType === "kosha" ? "kosha" : requestedType === "booking" ? "booking" : "order";
+    const auth = await requirePermission(req, type === "kosha" ? "orders" : "invoices");
     if (isResponse(auth)) return auth;
     const id = int(parts[2]);
     if (!id) return error("معرف غير صحيح", 400);
-    const type =
-      req.nextUrl.searchParams.get("type") === "booking" ? "booking" : "order";
+    if (type === "kosha") {
+      await ensureKoshaTables();
+      const booking = await db.query.koshaBookingsTable.findFirst({
+        where: eq(koshaBookingsTable.id, id),
+      });
+      if (!booking) return error("حجز الكوشة غير موجود", 404);
+      const formatted = await formatKoshaBooking(booking);
+      const details = (formatted.bookingDetails ?? {}) as Record<string, any>;
+      const pricing = (details.pricing ?? {}) as Record<string, any>;
+      const customer = formatted.customerId
+        ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, formatted.customerId) })
+        : await findCustomerByPhone(formatted.phone);
+      const creator = await db.query.adminActivityLogsTable.findFirst({
+        where: and(eq(adminActivityLogsTable.entityType, "kosha_booking"), eq(adminActivityLogsTable.entityId, booking.id)),
+        orderBy: [asc(adminActivityLogsTable.createdAt)],
+      });
+      const components = [
+        {
+          id: `kosha-${booking.id}`,
+          productNameAr: formatted.koshaName || formatted.packageName || "حجز كوشة",
+          category: "الكوشة",
+          description: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.koshaPrice ?? 0),
+        },
+        {
+          id: `welcome-${booking.id}`,
+          productNameAr: "بورد الترحيب",
+          category: "تنسيق المناسبة",
+          description: formatted.welcomeBoards.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.welcomeBoardPrice ?? 0),
+        },
+        {
+          id: `accessories-${booking.id}`,
+          productNameAr: "الإكسسوارات",
+          category: "إكسسوارات",
+          description: formatted.selectedAccessories.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.accessoriesPrice ?? 0),
+        },
+        {
+          id: `addons-${booking.id}`,
+          productNameAr: "الخدمات الإضافية",
+          category: "خدمات إضافية",
+          description: formatted.selectedAddons.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.addonsPrice ?? 0),
+        },
+      ].filter((item) => item.price > 0 || item.description);
+      const qr = await ensureQrForEntity("kosha_booking", booking, req);
+      return json({
+        kind: "kosha",
+        sourceType: "kosha_booking",
+        id: booking.id,
+        trackingCode: formatted.trackingCode ?? `KB-${booking.id}`,
+        customerId: formatted.customerId ?? customer?.id ?? null,
+        customerName: formatted.customerName,
+        customerPhone: formatted.phone,
+        customerEmail: customer?.email ?? null,
+        customerAddress: customer?.address ?? null,
+        customerCity: customer?.city ?? formatted.area ?? formatted.cityArea ?? null,
+        serviceName: formatted.koshaName || formatted.packageName || "حجز كوشة",
+        serviceType: formatted.eventType || "مناسبات",
+        serviceDescription: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+        eventDate: formatted.eventDate,
+        eventTime: formatted.eventTime,
+        eventLocation: formatted.hallLocation || [formatted.province, formatted.area, formatted.mahalla, formatted.nearestPoint].filter(Boolean).join(" - "),
+        notes: formatted.notes,
+        status: formatted.status,
+        price: Number(formatted.totalAmount ?? 0),
+        deposit: Number(formatted.paidAmount ?? 0),
+        balance: Number(formatted.remainingAmount ?? 0),
+        paymentStatus: formatted.paymentStatus ?? "unpaid",
+        paymentMethod: details.paymentMethod ?? pricing.paymentMethod ?? null,
+        dueDate: formatted.dueDate ?? null,
+        createdByName: creator?.userName || formatted.primaryEmployeeName || null,
+        customFields: {
+          ...details,
+          brideName: formatted.brideName,
+          groomName: formatted.groomName,
+          alternativePhone: formatted.alternatePhone,
+          province: formatted.province,
+          city: formatted.area || formatted.cityArea,
+          address: [formatted.province, formatted.area, formatted.mahalla, formatted.nearestPoint, formatted.addressNotes].filter(Boolean).join(" - "),
+          hallName: formatted.hallLocation,
+          eventType: formatted.eventType,
+          eventTime: formatted.eventTime,
+          color: formatted.themeColor,
+          bookingNumber: formatted.trackingCode ?? `KB-${booking.id}`,
+          salesRepresentative: formatted.primaryEmployeeName,
+          deliveryNotes: formatted.addressNotes,
+          discount: Number(pricing.discountAmount ?? 0),
+          additionalCharges: Number(pricing.additionalCharges ?? pricing.additionalAmount ?? 0),
+        },
+        items: components.length ? components : [{
+          id: booking.id,
+          productNameAr: formatted.koshaName || formatted.packageName || "حجز كوشة",
+          category: formatted.eventType || "مناسبات",
+          description: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(formatted.totalAmount ?? 0),
+        }],
+        qr,
+        createdAt: formatted.createdAt,
+      });
+    }
     if (type === "booking") {
       const booking = await db.query.serviceOrdersTable.findFirst({
         where: eq(serviceOrdersTable.id, id),

@@ -1060,8 +1060,13 @@ export function AdminKoshaBookingsPage() {
       toast({ title: "الحجز بانتظار التسعير", description: "أدخل السعر أولاً قبل طباعة الفاتورة النهائية.", variant: "destructive" });
       return;
     }
+    if (format === "a4") {
+      const preview = window.open(`/admin/invoice/${item.id}?type=kosha&print=1`, "_blank", "width=1080,height=1160");
+      if (!preview) toast({ title: "تعذر فتح معاينة الطباعة", description: "يرجى السماح بالنوافذ المنبثقة لطباعة فاتورة الكوشة.", variant: "destructive" });
+      return;
+    }
     // Open synchronously (avoids popup blocking) then fill once the QR is fetched.
-    const win = window.open("", "_blank", format === "thermal" ? "width=420,height=720" : "width=860,height=1040");
+    const win = window.open("", "_blank", "width=420,height=720");
     if (!win) return;
     win.document.write('<!doctype html><meta charset="utf-8"><div dir="rtl" style="font-family:sans-serif;padding:24px">جاري تحضير الفاتورة…</div>');
     let full: KoshaBooking & { qr?: { dataUrl?: string } } = item;
@@ -1109,45 +1114,6 @@ export function AdminKoshaBookingsPage() {
           ${qrBlock}
           <div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
         </div>
-        ${printWhenImagesReadyScript()}
-      </body></html>`;
-    } else {
-      const rows = lineItems.map((it) => `<tr><td>${it.name}</td><td class="ltr">${formatMoney(it.price)}</td></tr>`).join("");
-      const qrBlock = qrDataUrl ? `<div class="qr"><img src="${qrDataUrl}" alt="QR"><div class="cap">${qrCaption}</div></div>` : "";
-      html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>${trackingCode}</title>
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
-          @page { size: A4; margin: 14mm; }
-          * { box-sizing: border-box; }
-          body { direction: rtl; font-family: Cairo, Tahoma, Arial, sans-serif; color:#111; font-size:12px; margin:0; }
-          .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #C9A84C; padding-bottom:12px; margin-bottom:16px; }
-          .company { font-size:22px; font-weight:800; } .sub { font-size:12px; color:#555; margin-top:2px; }
-          .doc { text-align:left; } .doc .title { font-size:20px; font-weight:800; } .doc .meta { font-size:12px; color:#555; }
-          .parties { display:flex; justify-content:space-between; gap:20px; margin-bottom:16px; font-size:13px; line-height:1.9; }
-          table { width:100%; border-collapse:collapse; margin-bottom:16px; font-size:13px; }
-          th { background:#f3f3f3; border:1px solid #ccc; padding:9px 10px; text-align:right; font-weight:700; }
-          td { border:1px solid #ddd; padding:9px 10px; } td.ltr { direction:ltr; text-align:left; }
-          .totals { width:300px; margin-right:auto; font-size:13px; }
-          .totals .row { display:flex; justify-content:space-between; padding:6px 2px; }
-          .totals .grand { display:flex; justify-content:space-between; border:2px solid #111; padding:9px 10px; font-size:17px; font-weight:800; margin-top:4px; }
-          .foot { display:flex; justify-content:space-between; align-items:center; border-top:1px solid #ddd; margin-top:22px; padding-top:14px; }
-          .qr { text-align:center; } .qr img { width:120px; height:120px; image-rendering:pixelated; } .qr .cap { font-size:12px; font-weight:700; margin-top:4px; }
-        </style></head><body>
-        <div class="head">
-          <div><div class="company">مجموعة علي جان نهاد</div><div class="sub">فاتورة حجز كوشة</div></div>
-          <div class="doc"><div class="title">فاتورة</div><div class="meta">${trackingCode}</div><div class="meta">${dateLine}</div></div>
-        </div>
-        <div class="parties">
-          <div><strong>الزبون:</strong> ${full.customerName}<br><strong>الهاتف:</strong> <span style="direction:ltr">${full.phone || "—"}</span></div>
-          <div><strong>الموعد:</strong> ${dateLine}<br><strong>الحالة:</strong> ${STATUS_LABELS[full.status] ?? full.status}${(full.primaryEmployeeName || full.assistantEmployeeName) ? `<br><strong>الطاقم:</strong> ${[full.primaryEmployeeName, full.assistantEmployeeName].filter(Boolean).join(" · ")}` : ""}</div>
-        </div>
-        <table><thead><tr><th>البند</th><th style="text-align:left">السعر (د.ع)</th></tr></thead><tbody>${rows}</tbody></table>
-        <div class="totals">
-          <div class="row"><span>الإجمالي</span><strong>${formatCurrency(total)}</strong></div>
-          <div class="row"><span>الواصل</span><strong>${formatCurrency(paid)}</strong></div>
-          <div class="grand"><span>المتبقي</span><span>${formatCurrency(remaining)}</span></div>
-        </div>
-        <div class="foot">${qrBlock}<div style="font-size:12px;color:#555">شكراً لاختياركم مجموعة علي جان نهاد</div></div>
         ${printWhenImagesReadyScript()}
       </body></html>`;
     }

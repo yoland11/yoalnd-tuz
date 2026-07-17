@@ -30,7 +30,11 @@ const paymentKey = (value: unknown) => ({ cod: "cash", cash: "cash", paid: "cash
 
 export default function Invoice() {
   const [, params] = useRoute("/admin/invoice/:id");
-  const type = new URLSearchParams(useSearch()).get("type") === "booking" ? "booking" : "order";
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const requestedType = searchParams.get("type");
+  const type = requestedType === "kosha" ? "kosha" : requestedType === "booking" ? "booking" : "order";
+  const autoPrint = searchParams.get("print") === "1";
   const id = params?.id ? Number(params.id) : 0;
   const [data, setData] = useState<InvoiceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,6 +42,7 @@ export default function Invoice() {
   const [downloading, setDownloading] = useState(false);
   const [websiteQr, setWebsiteQr] = useState("");
   const sheetRef = useRef<HTMLDivElement>(null);
+  const autoPrintStarted = useRef(false);
   const { data: settings } = usePublicSettings();
 
   useEffect(() => {
@@ -45,7 +50,7 @@ export default function Invoice() {
     (async () => {
       const me = await fetchAdminMe();
       if (!alive) return;
-      if (!me || !hasPerm(me, "invoices")) { window.location.href = "/admin/login"; return; }
+      if (!me || !hasPerm(me, type === "kosha" ? "orders" : "invoices")) { window.location.href = "/admin/login"; return; }
       if (!id) { setLoading(false); return; }
       try { const result = await adminFetch(`/admin/invoices/${id}?type=${type}`); if (alive) setData(result as InvoiceData); }
       catch (cause) { if (alive) setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -65,6 +70,13 @@ export default function Invoice() {
 
   const model = useMemo(() => data ? invoiceModel(data) : null, [data]);
 
+  useEffect(() => {
+    if (!autoPrint || !data || !model || !sheetRef.current || autoPrintStarted.current) return;
+    autoPrintStarted.current = true;
+    const timer = window.setTimeout(() => void printDocumentWhenImagesReady(sheetRef.current || document), 120);
+    return () => window.clearTimeout(timer);
+  }, [autoPrint, data, model]);
+
   async function downloadPdf() {
     if (!sheetRef.current || !data) return;
     setDownloading(true);
@@ -74,7 +86,7 @@ export default function Invoice() {
   }
 
   if (loading) return <div className="flex min-h-dvh items-center justify-center gap-2 text-muted-foreground" dir="rtl"><Loader2 className="h-5 w-5 animate-spin" />جارٍ تحميل الفاتورة…</div>;
-  if (error || !data || !model) return <div className="flex min-h-dvh items-center justify-center text-muted-foreground" dir="rtl">{error || (type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود")}</div>;
+  if (error || !data || !model) return <div className="flex min-h-dvh items-center justify-center text-muted-foreground" dir="rtl">{error || (type === "kosha" ? "حجز الكوشة غير موجود" : type === "booking" ? "الحجز غير موجود" : "الطلب غير موجود")}</div>;
 
   return <div className="min-h-dvh bg-background" dir="rtl">
     <div className="print:hidden sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border/40 bg-card/95 px-4 py-3 backdrop-blur">
@@ -89,9 +101,13 @@ export default function Invoice() {
 }
 
 function invoiceModel(data: InvoiceData) {
-  const booking = data.kind === "booking";
+  const booking = data.kind === "booking" || data.kind === "kosha";
   const cf = booking && data.customFields && typeof data.customFields === "object" ? data.customFields : {};
-  const raw = booking ? [{ id: data.id, productNameAr: data.serviceName, category: data.serviceType, description: data.serviceDescription || data.eventLocation, selectedColor: cf.color, quantity: 1, price: n(data.price), discount: n(cf.serviceDiscount) }] : Array.isArray(data.items) ? data.items : [];
+  const raw = booking
+    ? Array.isArray(data.items) && data.items.length
+      ? data.items
+      : [{ id: data.id, productNameAr: data.serviceName, category: data.serviceType, description: data.serviceDescription || data.eventLocation, selectedColor: cf.color, quantity: 1, price: n(data.price), discount: n(cf.serviceDiscount) }]
+    : Array.isArray(data.items) ? data.items : [];
   const items: InvoiceItem[] = raw.map((item: any, index: number) => {
     const quantity = Math.max(1, n(item.quantity) || 1), unitPrice = n(item.price), discount = n(item.discountAmount ?? item.discount);
     return { id: item.id ?? index, name: text(item.productNameAr, item.productName, item.name, "خدمة مناسبات"), category: text(item.category, booking ? data.serviceType : data.serviceType, "فعاليات"), description: text(item.description, item.customization, booking ? data.serviceDescription : ""), color: text(item.selectedColor, item.color), quantity, unitPrice, discount, subtotal: Math.max(0, unitPrice * quantity - discount) };
