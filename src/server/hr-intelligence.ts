@@ -3,8 +3,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { computeEmployeeScores, type EmployeeScore } from "@/server/employee-performance";
-import { applyPayrollAdvanceDeductions, ensureEmployeeAdvanceTables, getEmployeeAdvanceSummary } from "@/server/employee-advances";
-import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, type FinancialActor } from "@/server/master-cash-box";
+import { applyPayrollAdvanceDeductions, ensureEmployeeAdvanceTables, getEmployeeAdvanceSummary, reversePayrollAdvanceDeductions } from "@/server/employee-advances";
+import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, reverseFinancialTransaction, type FinancialActor } from "@/server/master-cash-box";
 
 export type HrActor = FinancialActor;
 const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
@@ -56,6 +56,23 @@ const payrollLineEditSchema = z.object({
 });
 
 const reasonSchema = z.object({ reason: z.string().trim().min(3).max(1000) });
+
+const manualSalarySchema = z.object({
+  employeeId: z.coerce.number().int().positive(),
+  period: z.string().regex(/^\d{4}-\d{2}$/),
+  periodStartDate: z.string().date(),
+  periodEndDate: z.string().date(),
+  paymentDate: z.string().date().optional().nullable(),
+  baseSalary: z.coerce.number().min(0).max(1_000_000_000),
+  allowances: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  bonusAmount: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  overtimeAmount: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  manualAddition: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  manualDeduction: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  advanceDeduction: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  paymentMethod: z.enum(["main_cash_box", "bank", "cash", "transfer"]).default("cash"),
+  notes: z.string().trim().max(2000).optional().nullable(),
+});
 
 export class PayrollConflictError extends Error {
   constructor(public readonly existing: any) {
@@ -388,17 +405,20 @@ export async function editPayrollLine(runId: number, lineId: number, input: unkn
 export async function deleteDraftPayrollLine(runId: number, lineId: number, input: unknown, actor: HrActor) {
   await ensureHrTables();
   const reason = reasonSchema.parse(input).reason;
-  const run = await getPayrollRun(runId);
-  if (!run) throw new Error("دورة الرواتب غير موجودة");
-  if (run.status !== "draft") throw new Error("لا يمكن حذف سجل موظف إلا من دورة رواتب مسودة");
-  const current = rows<any>(await db.execute(sql`select * from payroll_lines where id=${lineId} and payroll_run_id=${runId} limit 1`))[0];
-  if (!current) throw new Error("سجل راتب الموظف غير موجود");
-  if (current.financial_transaction_id || num(current.amount_paid) > 0) throw new Error("توجد حركة مالية مرتبطة بهذا السجل؛ لا يمكن حذفه");
-  const posted = rows<any>(await db.execute(sql`select id from financial_transactions where source_type='payroll_line' and source_id=${String(lineId)} limit 1`));
-  if (posted.length) throw new Error("توجد حركة محاسبية مرتبطة بهذا السجل؛ استخدم العكس بدلاً من الحذف");
-  await db.execute(sql`delete from payroll_lines where id=${lineId} and payroll_run_id=${runId}`);
-  await updatePayrollTotals(runId);
-  return { run: await getPayrollRun(runId), oldValues: current, reason };
+  const oldValues = await db.transaction(async (tx) => {
+    const run = rows<any>(await tx.execute(sql`select * from payroll_runs where id=${runId} and deleted_at is null for update`))[0];
+    if (!run) throw new Error("دورة الرواتب غير موجودة");
+    if (!["draft", "calculated", "under_review", "pending_manager_approval", "rejected"].includes(String(run.status))) throw new Error("لا يمكن حذف راتب معتمد أو مصروف؛ استخدم الإلغاء أو العكس");
+    const current = rows<any>(await tx.execute(sql`select * from payroll_lines where id=${lineId} and payroll_run_id=${runId} for update`))[0];
+    if (!current) throw new Error("سجل راتب الموظف غير موجود");
+    if (current.financial_transaction_id || num(current.amount_paid) > 0) throw new Error("توجد حركة مالية مرتبطة بهذا السجل؛ لا يمكن حذفه");
+    const posted = rows<any>(await tx.execute(sql`select id from financial_transactions where source_type='payroll_line' and source_id=${String(lineId)} limit 1`));
+    if (posted.length) throw new Error("توجد حركة محاسبية مرتبطة بهذا السجل؛ استخدم العكس بدلاً من الحذف");
+    await tx.execute(sql`delete from payroll_lines where id=${lineId} and payroll_run_id=${runId}`);
+    await tx.execute(sql`update payroll_runs set total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${runId}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${runId}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${runId}),updated_at=now() where id=${runId}`);
+    return current;
+  });
+  return { run: await getPayrollRun(runId), oldValues, reason };
 }
 
 export async function deleteDraftPayrollRun(id: number, actor: HrActor, input?: unknown) {
@@ -472,10 +492,36 @@ export async function listPayrollRuns(filters: { period?: string; year?: string;
   return Promise.all(rows<any>(result).map((run) => getPayrollRun(Number(run.id))));
 }
 
+/** Additive compatibility entry point for the dedicated salaries module.
+ * It deliberately reuses payroll_runs/payroll_lines and never posts cash or accounting. */
+export async function createManualSalaryRecord(input: unknown, actor: HrActor) {
+  await ensureHrTables();
+  const data = manualSalarySchema.parse(input);
+  if (data.periodStartDate > data.periodEndDate) throw new Error("تاريخ بداية فترة الراتب يجب أن يسبق تاريخ النهاية");
+  const gross = num(data.baseSalary + data.allowances + data.bonusAmount + data.overtimeAmount + data.manualAddition);
+  const net = Math.max(0, num(gross - data.manualDeduction - data.advanceDeduction));
+  const runId = await db.transaction(async (tx) => {
+    const staff = rows<any>(await tx.execute(sql`select id,full_name,username,department from staff where id=${data.employeeId} and is_active=true limit 1`))[0];
+    if (!staff) throw new Error("الموظف غير موجود أو غير نشط");
+    let run = rows<any>(await tx.execute(sql`select * from payroll_runs where period=${data.period} and deleted_at is null for update`))[0];
+    if (!run) {
+      const runNo = `PAY-${data.period.replace("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
+      run = rows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,status,notes,period_start_date,period_end_date,payment_date,department,created_by,created_by_name) values(${runNo},${data.period},'draft',${data.notes || null},${data.periodStartDate},${data.periodEndDate},${data.paymentDate || null},${staff.department || null},${actor.id},${actor.name}) returning *`))[0];
+    }
+    if (!["draft", "calculated", "under_review", "rejected"].includes(String(run.status))) throw new Error("لا يمكن إضافة راتب يدوي إلى دورة معتمدة أو مصروفة");
+    const existing = rows<any>(await tx.execute(sql`select id from payroll_lines where payroll_run_id=${run.id} and staff_id=${data.employeeId} limit 1`))[0];
+    if (existing) throw new Error("يوجد راتب مسجل لهذا الموظف في الشهر المحدد");
+    await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,payment_method,other_fixed_allowances,bonus_amount,overtime_amount,manual_earnings,manual_deduction,advance_deduction,gross_salary,net_salary,payment_status,line_notes,calculation_details) values(${run.id},${data.employeeId},${data.baseSalary},${data.paymentMethod},${data.allowances},${data.bonusAmount},${data.overtimeAmount},${data.manualAddition},${data.manualDeduction},${data.advanceDeduction},${gross},${net},'unpaid',${data.notes || null},${JSON.stringify({ origin: "manual", createdBy: actor.id, createdByName: actor.name, createdAt: new Date().toISOString() })}::jsonb)`);
+    await tx.execute(sql`update payroll_runs set period_start_date=coalesce(period_start_date,${data.periodStartDate}),period_end_date=coalesce(period_end_date,${data.periodEndDate}),payment_date=coalesce(payment_date,${data.paymentDate || null}),status=case when status='rejected' then 'draft' else status end,total_gross=(select coalesce(sum(gross_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_deductions=(select coalesce(sum(gross_salary-net_salary),0) from payroll_lines where payroll_run_id=${run.id}),total_net=(select coalesce(sum(net_salary),0) from payroll_lines where payroll_run_id=${run.id}),updated_at=now() where id=${run.id}`);
+    return Number(run.id);
+  });
+  return getPayrollRun(runId);
+}
+
 export async function submitPayrollForApproval(id: number, actor: HrActor) {
   await ensureHrTables();
-  const saved = rows<any>(await db.execute(sql`update payroll_runs set status='pending_manager_approval',updated_at=now() where id=${id} and status='calculated' and deleted_at is null returning *`));
-  if (!saved.length) throw new Error("يمكن إرسال دورة الرواتب المحسوبة فقط لاعتماد المدير");
+  const saved = rows<any>(await db.execute(sql`update payroll_runs set status='pending_manager_approval',updated_at=now() where id=${id} and status in ('draft','calculated') and deleted_at is null returning *`));
+  if (!saved.length) throw new Error("يمكن إرسال الراتب المسودة أو المحسوب فقط لاعتماد المدير");
   return getPayrollRun(id);
 }
 
@@ -517,8 +563,8 @@ export async function approvePayrollRun(id: number, actor: HrActor) {
   if (run.status === "paid") return run;
   if (run.status !== "pending_manager_approval") throw new Error("يجب إرسال دورة الرواتب لاعتماد المدير أولاً");
   await db.execute(sql`update payroll_runs set status='approved',approved_by=${actor.id},approved_by_name=${actor.name},approved_at=now(),updated_at=now() where id=${id}`);
-  // Approval is the authorized payment event: it alone touches the cashbox.
-  return payPayrollRun(id, actor);
+  // Approval and payment are intentionally separate. Only payPayrollRun may touch cash.
+  return getPayrollRun(id);
 }
 
 async function payPayrollRunLegacy(id: number, actor: HrActor) {
@@ -568,6 +614,22 @@ export async function payPayrollRun(id: number, actor: HrActor) {
     await db.execute(sql`update payroll_runs set status='approved',updated_at=now() where id=${id} and status='processing'`);
     throw err;
   }
+}
+
+export async function reversePayrollRunPayment(id: number, actor: HrActor, input: unknown) {
+  if (!["admin", "manager"].includes(actor.role)) throw new Error("عكس صرف الراتب متاح للمدير فقط");
+  const data = reasonSchema.parse(input);
+  const run = await getPayrollRun(id);
+  if (!run) throw new Error("دورة الرواتب غير موجودة");
+  if (run.status === "reversed") return run;
+  if (run.status !== "paid") throw new Error("يمكن عكس دورة رواتب مصروفة فقط");
+  const transactionIds = [...new Set<number>(run.lines.map((line: any) => Number(line.financial_transaction_id)).filter((value: number) => value > 0))];
+  if (!transactionIds.length) throw new Error("الراتب القديم غير مربوط بحركة صندوق؛ استخدم مطابقة الرواتب القديمة أولاً");
+  for (const transactionId of transactionIds) await reverseFinancialTransaction(transactionId, actor, data.reason);
+  await reversePayrollAdvanceDeductions(run.run_no, actor, data.reason);
+  await db.execute(sql`update payroll_lines set amount_paid=0,payment_status='reversed' where payroll_run_id=${id}`);
+  await db.execute(sql`update payroll_runs set status='reversed',updated_at=now() where id=${id}`);
+  return getPayrollRun(id);
 }
 
 export async function upsertTarget(input: any, actor: HrActor) {

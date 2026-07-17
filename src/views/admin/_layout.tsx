@@ -346,6 +346,13 @@ export const NAV: NavItem[] = [
     perm: "hr",
   },
   {
+    href: "/admin/employee-salaries",
+    label: "رواتب الموظفين",
+    icon: WalletCards,
+    perm: "employee_salaries_view",
+    anyPerm: ["employee_salaries_view", "payroll_view", "hr"],
+  },
+  {
     href: "/admin/hr?focus=bonuses",
     label: "المكافآت",
     icon: Trophy,
@@ -734,6 +741,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/hr"),
       navItem("/admin/staff"),
       navItem("/admin/attendance"),
+      navItem("/admin/employee-salaries"),
       navItem("/admin/hr?tab=payroll"),
       navItem("/admin/hr?focus=bonuses"),
       navItem("/admin/hr?focus=deductions"),

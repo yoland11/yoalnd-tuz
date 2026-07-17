@@ -444,6 +444,27 @@ export async function applyPayrollAdvanceDeductions(input: { employeeId: number;
   return deductions;
 }
 
+/** Restore payroll deductions once while preserving the original repayment row. */
+export async function reversePayrollAdvanceDeductions(payrollReference: string, actor: AdvanceActor, reason: string) {
+  await ensureEmployeeAdvanceTables();
+  if (!canManage(actor)) throw new Error("عكس خصم السلفة متاح للمدير أو المحاسب فقط");
+  const cleanReason = String(reason || "").trim();
+  if (cleanReason.length < 3) throw new Error("سبب عكس خصم السلفة مطلوب");
+  return db.transaction(async (tx) => {
+    const repayments = (await tx.execute(sql`select * from employee_advance_repayments where payroll_reference=${payrollReference} and kind='payroll' for update`)).rows as any[];
+    for (const repayment of repayments) {
+      const advance = ((await tx.execute(sql`select * from employee_advances where id=${Number(repayment.advance_id)} for update`)).rows as any[])[0];
+      if (!advance) throw new Error("تعذر العثور على السلفة المرتبطة بخصم الراتب");
+      const restored = asNumber(repayment.amount);
+      const nextRepaid = Math.max(0, asNumber(advance.repaid_amount) - restored);
+      const nextRemaining = Math.min(asNumber(advance.amount), asNumber(advance.remaining_amount) + restored);
+      await tx.execute(sql`update employee_advances set repaid_amount=${nextRepaid},remaining_amount=${nextRemaining},status=case when ${nextRemaining} > 0 then 'paid' else 'completed' end,last_deduction_at=null,updated_at=now() where id=${Number(advance.id)}`);
+      await tx.execute(sql`update employee_advance_repayments set kind='reversed_payroll',notes=concat_ws(E'\n',notes,${`عكس خصم الراتب بواسطة ${actor.name}: ${cleanReason}`}) where id=${Number(repayment.id)} and kind='payroll'`);
+    }
+    return { restored: repayments.length, payrollReference };
+  });
+}
+
 export async function getEmployeeAdvanceSummary(employeeId: number) {
   const advances = await listEmployeeAdvances({ employeeId });
   const totalAdvances = advances.filter((a) => ["paid", "completed", "approved"].includes(a.status)).reduce((sum, a) => sum + a.amount, 0);

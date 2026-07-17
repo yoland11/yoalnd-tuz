@@ -993,14 +993,19 @@ export async function reverseFinancialTransaction(
   id: number,
   actor: FinancialActor,
   reason: string,
+  withinTransaction?: (
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    result: { original: typeof financialTransactionsTable.$inferSelect; reverse: typeof financialTransactionsTable.$inferSelect },
+  ) => Promise<void>,
+  existingTransaction?: Parameters<Parameters<typeof db.transaction>[0]>[0],
 ) {
-  await ensureMasterCashBoxTables();
+  if (!existingTransaction) await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
     throw new Error("عكس الحركة المالية متاح للمدير فقط");
   const cleanReason = String(reason ?? "").trim();
   if (cleanReason.length < 3) throw new Error("سبب العكس مطلوب");
 
-  return await db.transaction(async (tx) => {
+  const reverseInsideTransaction = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     const [original] = await tx
       .select()
       .from(financialTransactionsTable)
@@ -1255,8 +1260,12 @@ export async function reverseFinancialTransaction(
     }
     await tx.insert(financialAuditLogsTable).values(auditRows);
 
+    if (withinTransaction) await withinTransaction(tx, { original, reverse });
     return { original, reverse };
-  });
+  };
+  return existingTransaction
+    ? reverseInsideTransaction(existingTransaction)
+    : db.transaction(reverseInsideTransaction);
 }
 
 export async function listFinancialTransactions(input: unknown) {

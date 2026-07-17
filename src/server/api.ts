@@ -227,6 +227,7 @@ import {
   saveBonusRule,
   deleteBonusRule,
   createPayrollRun,
+  createManualSalaryRecord,
   editPayrollLine,
   deleteDraftPayrollLine,
   cancelPayrollRun,
@@ -242,11 +243,21 @@ import {
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
+  reversePayrollRunPayment,
   submitPayrollForApproval,
   rejectPayrollRun,
   reopenPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
+import {
+  addEmployeeSalaryAdjustment,
+  addEmployeeSalaryAttachment,
+  correctPaidEmployeeSalary,
+  getEmployeeSalaryManagementDetail,
+  linkHistoricalSalaryPayment,
+  payEmployeeSalary,
+  reverseEmployeeSalaryPayment,
+} from "@/server/employee-salaries";
 import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
@@ -393,6 +404,22 @@ export const ALL_PERMISSIONS = [
   "payroll_approve",
   "payroll_reject",
   "payroll_pay",
+  "employee_salaries_view",
+  "employee_salaries_create",
+  "employee_salaries_edit",
+  "employee_salaries_delete_draft",
+  "employee_salaries_view_historical",
+  "employee_salaries_repair_historical",
+  "employee_salaries_add_amount",
+  "employee_salaries_reduce_amount",
+  "employee_salaries_approve",
+  "employee_salaries_pay",
+  "employee_salaries_reverse",
+  "employee_salaries_cancel",
+  "employee_salaries_print",
+  "employee_salaries_export",
+  "employee_salaries_view_accounting",
+  "employee_salaries_view_cashbox",
   "bonus_view",
   "bonus_create",
   "bonus_edit",
@@ -13059,6 +13086,22 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_cancel",
     "payroll_approve",
     "payroll_pay",
+    "employee_salaries_view",
+    "employee_salaries_create",
+    "employee_salaries_edit",
+    "employee_salaries_delete_draft",
+    "employee_salaries_view_historical",
+    "employee_salaries_repair_historical",
+    "employee_salaries_add_amount",
+    "employee_salaries_reduce_amount",
+    "employee_salaries_approve",
+    "employee_salaries_pay",
+    "employee_salaries_reverse",
+    "employee_salaries_cancel",
+    "employee_salaries_print",
+    "employee_salaries_export",
+    "employee_salaries_view_accounting",
+    "employee_salaries_view_cashbox",
     "bonus_view",
     "bonus_create",
     "bonus_edit",
@@ -13094,6 +13137,19 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_recalculate",
     "payroll_approve",
     "payroll_pay",
+    "employee_salaries_view",
+    "employee_salaries_create",
+    "employee_salaries_edit",
+    "employee_salaries_delete_draft",
+    "employee_salaries_view_historical",
+    "employee_salaries_add_amount",
+    "employee_salaries_reduce_amount",
+    "employee_salaries_approve",
+    "employee_salaries_pay",
+    "employee_salaries_print",
+    "employee_salaries_export",
+    "employee_salaries_view_accounting",
+    "employee_salaries_view_cashbox",
     "bonus_view",
     "bonus_create",
     "bonus_approve",
@@ -20079,12 +20135,21 @@ async function resolveAssetProductId(raw: string): Promise<number> {
 async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "hr") return null;
   await ensureHrTables();
-  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "employee_salaries_view", "employee_salaries_create", "employee_salaries_edit", "employee_salaries_delete_draft", "employee_salaries_view_historical", "employee_salaries_repair_historical", "employee_salaries_add_amount", "employee_salaries_reduce_amount", "employee_salaries_approve", "employee_salaries_pay", "employee_salaries_reverse", "employee_salaries_cancel", "employee_salaries_print", "employee_salaries_export", "employee_salaries_view_accounting", "employee_salaries_view_cashbox", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
   if (isResponse(auth)) return auth;
   const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
   const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
   const adminOnly = () => auth.role === "admin" || auth.role === "manager" || auth.role === "accountant";
-  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) ? null : error(message, 403);
+  const salaryPermissionAliases: Partial<Record<Permission, Permission[]>> = {
+    payroll_view: ["employee_salaries_view"],
+    payroll_edit: ["employee_salaries_create", "employee_salaries_edit", "employee_salaries_add_amount", "employee_salaries_reduce_amount"],
+    payroll_delete: ["employee_salaries_delete_draft"],
+    payroll_submit: ["employee_salaries_approve"],
+    payroll_approve: ["employee_salaries_approve"],
+    payroll_pay: ["employee_salaries_pay"],
+    payroll_cancel: ["employee_salaries_cancel"],
+  };
+  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) || (salaryPermissionAliases[permission] || []).some((candidate) => hasPermission(auth, candidate)) ? null : error(message, 403);
   try {
     if (method === "GET" && (!resource || resource === "dashboard")) return json(await hrDashboard(String(req.nextUrl.searchParams.get("period") || "" ) || undefined));
     if (method === "GET" && resource === "executive") {
@@ -20232,8 +20297,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       if (method === "GET" && id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
       if (method === "POST" && !id) {
         const denied = requirePayroll("payroll_edit"); if (denied) return denied;
-        const payload = await body(req); const run = await createPayrollRun(payload, actor);
-        void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
+        const payload = await body(req); const run = payload?.manual === true ? await createManualSalaryRecord(payload, actor) : await createPayrollRun(payload, actor);
+        void logAdminActivity(req, payload?.manual === true ? "employee_salary_created" : "payroll_created", "payroll_run", run?.id, { period: payload?.period, employeeId: payload?.employeeId, newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        if (payload?.manual === true && run?.lines?.length) void addEntityTimeline({ entityType: "payroll_run", entityId: run.id, type: "employee_salary_created", title: "تم إنشاء راتب موظف يدويًا", body: payload?.notes || null, actor: erpActorFromAdmin(auth), metadata: { employeeId: payload.employeeId, period: payload.period } });
         return json(run, 201);
       }
       if (method === "POST" && id && parts[4] === "recalculate") {
@@ -20264,6 +20330,39 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         void logAdminActivity(req, "payroll_edited", "payroll_line", lineId, metadata);
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_edited", title: "تم تعديل راتب الموظف", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
         return json(result.run);
+      }
+      if (method === "GET" && id && parts[4] === "lines" && parts[5] && parts[6] === "management") {
+        const denied = requirePayroll("payroll_view"); if (denied) return denied;
+        const detail = await getEmployeeSalaryManagementDetail(id, int(parts[5])!); return detail ? json(detail) : error("سجل الراتب غير موجود", 404);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "pay") {
+        const denied = requirePayroll("employee_salaries_pay", "لا تملك صلاحية صرف راتب الموظف"); if (denied) return denied;
+        const lineId = int(parts[5])!; const payload = await body(req); const result = await payEmployeeSalary(id, lineId, payload, actor);
+        void logAdminActivity(req, "employee_salary_paid", "payroll_line", lineId, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_line", entityId: lineId, type: "employee_salary_paid", title: "تم صرف دفعة راتب", body: payload?.notes || null, actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "adjustments") {
+        const payload = await body(req); const permission = payload?.direction === "deduction" ? "employee_salaries_reduce_amount" : "employee_salaries_add_amount"; const denied = requirePayroll(permission, "لا تملك صلاحية تعديل مبلغ الراتب"); if (denied) return denied;
+        const lineId = int(parts[5])!; const result = await addEmployeeSalaryAdjustment(id, lineId, payload, actor);
+        void logAdminActivity(req, payload?.direction === "deduction" ? "employee_salary_amount_reduced" : "employee_salary_amount_added", "payroll_line", lineId, { oldValues: result.before, newValues: result.after, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "attachments") {
+        const denied = requirePayroll("employee_salaries_edit"); if (denied) return denied; const lineId = int(parts[5])!;
+        const saved = await addEmployeeSalaryAttachment(id, lineId, await body(req), actor); void logAdminActivity(req, "employee_salary_attachment_added", "payroll_line", lineId, { attachmentId: saved.id, name: saved.name }); return json(saved, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "reconcile") {
+        const denied = requirePayroll("employee_salaries_repair_historical", "لا تملك صلاحية إصلاح روابط الرواتب القديمة"); if (denied) return denied; const lineId = int(parts[5])!; const payload = await body(req);
+        const result = await linkHistoricalSalaryPayment(id, lineId, payload, actor); void logAdminActivity(req, "historical_salary_linked", "payroll_line", lineId, { newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "correct") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية تصحيح راتب مصروف"); if (denied) return denied; const lineId = int(parts[5])!; const payload = await body(req);
+        const result = await correctPaidEmployeeSalary(id, lineId, payload, actor); void logAdminActivity(req, "paid_salary_corrected", "payroll_line", lineId, { oldValues: result.before, newValues: result.after, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "payments" && parts[7] && parts[8] === "reverse") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية عكس دفعة راتب"); if (denied) return denied; const lineId = int(parts[5])!, paymentId = int(parts[7])!; const payload = await body(req);
+        const result = await reverseEmployeeSalaryPayment(id, lineId, paymentId, payload, actor); void logAdminActivity(req, "employee_salary_payment_reversed", "payroll_line", lineId, { newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
       }
       if (method === "DELETE" && id && parts[4] === "lines" && parts[5]) {
         const denied = requirePayroll("payroll_delete", "لا تملك صلاحية حذف سجل راتب الموظف"); if (denied) return denied;
@@ -20302,6 +20401,14 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const run = await payPayrollRun(id, actor);
         void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "reverse") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية عكس راتب مصروف"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const run = await reversePayrollRunPayment(id, actor, payload);
+        const metadata = { oldValues: oldRun, newValues: run, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "employee_salary_reversed", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "employee_salary_reversed", title: "تم عكس صرف دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
         return json(run);
       }
     }
@@ -28600,6 +28707,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, booking.serviceId),
       });
+      const [customer, creator] = await Promise.all([
+        db.query.customersTable.findFirst({ where: inArray(customersTable.phone, iraqiPhoneVariants(booking.phone)) }),
+        db.query.adminActivityLogsTable.findFirst({
+          where: and(eq(adminActivityLogsTable.entityType, "service_order"), eq(adminActivityLogsTable.entityId, booking.id)),
+          orderBy: [asc(adminActivityLogsTable.createdAt)],
+        }),
+      ]);
       const cf = (booking.customFields ?? {}) as Record<string, any>;
       const num = (v: any) => {
         const n = typeof v === "string" ? Number.parseFloat(v) : Number(v);
@@ -28626,8 +28740,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         trackingCode: booking.trackingCode,
         customerName: booking.customerName,
         customerPhone: booking.phone,
+        customerId: customer?.id ?? null,
+        customerEmail: customer?.email ?? null,
+        customerAddress: customer?.address ?? null,
+        customerCity: customer?.city ?? null,
         serviceId: booking.serviceId,
         serviceName: service?.nameAr ?? service?.name ?? "—",
+        serviceDescription: service?.descriptionAr ?? service?.description ?? null,
         serviceType: service?.type ?? null,
         eventDate: booking.eventDate ?? null,
         eventLocation: booking.eventLocation ?? null,
@@ -28639,6 +28758,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         paymentStatus: booking.paymentStatus ?? "unpaid",
         financiallyReversed: !!(booking as any).financiallyReversed,
         customFields: cf,
+        dueDate: booking.dueDate ?? null,
+        createdByName: creator?.userName || null,
         qr,
         createdAt: booking.createdAt.toISOString(),
       });
@@ -28650,6 +28771,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const items = await db.query.orderItemsTable.findMany({
       where: eq(orderItemsTable.orderId, order.id),
     });
+    const productIds = [...new Set(items.map((item) => Number(item.productId)).filter((value) => Number.isInteger(value) && value > 0))];
+    const [customer, products, creator] = await Promise.all([
+      order.customerId ? db.query.customersTable.findFirst({ where: eq(customersTable.id, order.customerId) }) : Promise.resolve(null),
+      productIds.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) }) : Promise.resolve([]),
+      db.query.adminActivityLogsTable.findFirst({
+        where: and(eq(adminActivityLogsTable.entityType, "order"), eq(adminActivityLogsTable.entityId, order.id)),
+        orderBy: [asc(adminActivityLogsTable.createdAt)],
+      }),
+    ]);
+    const productById = new Map(products.map((product) => [Number(product.id), product]));
     const qr = await ensureQrForEntity("order", order, req);
     return json({
       kind: "order",
@@ -28657,18 +28788,28 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       trackingCode: order.trackingCode,
       customerName: order.customerName,
       customerPhone: order.customerPhone,
+      customerId: order.customerId ?? customer?.id ?? null,
+      customerEmail: customer?.email ?? null,
+      customerAddress: customer?.address ?? null,
+      customerCity: customer?.city ?? null,
       governorate: order.governorate ?? null,
       area: order.area ?? null,
       address: order.address ?? null,
       paymentMethod: order.paymentMethod ?? "cod",
+      serviceType: order.serviceType ?? null,
       depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
       remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
       paymentStatus: order.paymentStatus ?? "unpaid",
       financiallyReversed: !!(order as any).financiallyReversed,
       notes: order.notes ?? null,
+      dueDate: order.dueDate ?? null,
+      couponCode: order.couponCode ?? null,
+      couponDiscountAmount: Number.parseFloat(order.couponDiscountAmount ?? "0"),
+      loyaltyDiscountAmount: Number.parseFloat(order.loyaltyDiscountAmount ?? "0"),
       deliveryFee: Number.parseFloat(order.deliveryFee),
       total: Number.parseFloat(order.total),
       status: order.status,
+      createdByName: creator?.userName || null,
       qr,
       createdAt: order.createdAt.toISOString(),
       items: items.map((i) => ({
@@ -28677,6 +28818,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         productNameAr: i.productNameAr,
         quantity: i.quantity,
         price: Number.parseFloat(i.price),
+        category: productById.get(Number(i.productId))?.category ?? order.serviceType ?? null,
+        description: productById.get(Number(i.productId))?.descriptionAr ?? productById.get(Number(i.productId))?.description ?? i.customization ?? null,
+        customization: i.customization ?? null,
         selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
         selectedColorData: selectedColorPayload(
           i.selectedColorData,

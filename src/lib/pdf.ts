@@ -115,6 +115,10 @@ export type PdfExportOptions = {
   format?: string | number[];
   /** page margin in mm (number or [top,right,bottom,left]). Default 8. */
   margin?: number | number[];
+  /** html2canvas sampling scale. Use 3.125 for roughly 300 DPI from CSS's 96 DPI baseline. */
+  scale?: number;
+  /** html2pdf page-break modes. Use ["css", "legacy"] for tables that may continue to another page. */
+  pagebreakMode?: string[];
 };
 
 export async function downloadElementPdf(
@@ -140,7 +144,7 @@ export async function downloadElementPdf(
         filename,
         image: { type: "jpeg", quality: 0.96 },
         html2canvas: {
-          scale: Math.min(2, window.devicePixelRatio || 1.5),
+          scale: options?.scale ?? Math.min(2, window.devicePixelRatio || 1.5),
           useCORS: true,
           allowTaint: true,
           backgroundColor: "#ffffff",
@@ -148,7 +152,7 @@ export async function downloadElementPdf(
           onclone: preparePdfClone,
         },
         jsPDF: { unit: "mm", format: options?.format ?? "a4", orientation: "portrait" },
-        pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+        pagebreak: { mode: options?.pagebreakMode ?? ["avoid-all", "css", "legacy"] },
       })
       .from(snapshot)
       .save();

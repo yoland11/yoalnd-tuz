@@ -64,6 +64,7 @@ const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
 const EmployeeAdvancesPage = lazy(() => import("./employee-advances"));
+const EmployeeSalariesPage = lazy(() => import("./employee-salaries"));
 const PayrollHistoryPage = lazy(() => import("./payroll-history"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
 const TasksPage = lazy(() => import("./tasks"));
@@ -645,6 +646,9 @@ export default function Admin() {
           </Route>
           <Route path="/admin/hr">
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
+          <Route path="/admin/employee-salaries">
+            {() => (<Guard me={me} anyPerm={["employee_salaries_view", "payroll_view", "hr"]}><EmployeeSalariesPage /></Guard>)}
           </Route>
           <Route path="/admin/payroll-history">
             {() => (<Guard me={me} perm="hr"><PayrollHistoryPage /></Guard>)}
