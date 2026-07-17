@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 
 const money = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
+function localizedNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+  const normalized = String(value ?? "").trim()
+    .replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)))
+    .replace(/٫/g, ".")
+    .replace(/[٬,\s]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function salaryTotal(input) {
   const gross = money(input.base + input.allowances + input.bonus + input.overtime + input.addition);
   const deductions = money(input.deduction + input.advance);
@@ -59,4 +70,8 @@ const linked = { ...reconciliation, linked: true };
 assert.equal(linked.existingCashTransactions, 1);
 assert.equal(linked.existingJournalEntries, 1);
 
-console.log("Employee salary logic: 14 assertions passed (calculation, partial/full payment, overpayment, idempotency, advances, legacy reconciliation)." );
+assert.equal(localizedNumber("500,000"), 500_000);
+assert.equal(localizedNumber("٥٠٠٬٠٠٠"), 500_000);
+assert.equal(localizedNumber("١٢٣٫٥"), 123.5);
+
+console.log("Employee salary logic: 17 assertions passed (calculation, localized amounts, partial/full payment, overpayment, idempotency, advances, legacy reconciliation)." );

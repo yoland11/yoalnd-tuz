@@ -15,6 +15,7 @@ import AdminLogin from "./login";
 const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
+const BookingCenterPage = lazy(() => import("./booking-center"));
 const InvoicePage = lazy(() => import("./invoice"));
 const CalendarPage = lazy(() => import("./calendar"));
 const QrOrdersPage = lazy(() => import("./qr-orders"));
@@ -282,6 +283,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <OrdersPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/bookings/:source/:id">
+            {() => (
+              <Guard me={me} perm="orders">
+                <BookingCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/bookings">
+            {() => (
+              <Guard me={me} perm="orders">
+                <BookingCenterPage />
               </Guard>
             )}
           </Route>

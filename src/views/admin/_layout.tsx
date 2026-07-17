@@ -186,9 +186,9 @@ export const NAV: NavItem[] = [
     perm: "graduation",
   },
   {
-    href: "/admin/orders",
-    label: "الطلبات والحجوزات",
-    icon: ShoppingBag,
+    href: "/admin/bookings",
+    label: "مركز الحجوزات",
+    icon: CalendarDays,
     perm: "orders",
   },
   {
@@ -684,7 +684,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "إدارة المتجر",
     icon: ShoppingBag,
     items: [
-      navItem("/admin/orders"),
+      navItem("/admin/bookings"),
       navItem("/admin/calendar"),
       navItem("/admin/qr-orders"),
       navItem("/admin/archive"),

@@ -127,7 +127,17 @@ type SalaryManagement = {
 const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
 const compact = new Intl.NumberFormat("ar-IQ", { notation: "compact", maximumFractionDigits: 1 });
 const periodLabel = (value: string) => value ? new Date(`${value}-01T00:00:00Z`).toLocaleDateString("ar-IQ", { month: "long", year: "numeric", timeZone: "UTC" }) : "—";
-const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const n = (value: unknown) => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)))
+    .replace(/٫/g, ".")
+    .replace(/[٬,\s]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 const esc = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
 function downloadBlob(blob: Blob, filename: string) { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); }
 
