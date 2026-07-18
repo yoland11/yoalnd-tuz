@@ -536,6 +536,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets",
+    label: "الأصول",
+    icon: Package,
+    perm: "products",
+  },
+  {
     href: "/admin/assets/new",
     label: "إضافة أصل جديد",
     icon: PackageCheck,

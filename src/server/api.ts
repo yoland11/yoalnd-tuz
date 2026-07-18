@@ -36919,6 +36919,103 @@ async function loadKoshaBookingDetail(bookingId: number) {
   };
 }
 
+function routedServiceExecutionFields(order: typeof serviceOrdersTable.$inferSelect) {
+  return { ...((order.customFields ?? {}) as Record<string, any>) };
+}
+
+async function formatRoutedKoshaServiceBookingForCrew(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = routedServiceExecutionFields(order);
+  const executionStage = fields.executionStage ?? "preparing";
+  return {
+    ...(await formatRoutedKoshaServiceBooking(order, service)),
+    executionStage,
+    assignedStaffId: fields.assignedStaffId ?? null,
+    bucket: crewBucket({ eventDate: order.eventDate, executionStage }, baghdadToday()),
+  };
+}
+
+async function loadRoutedKoshaServiceBookingDetail(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = routedServiceExecutionFields(order);
+  return {
+    booking: await formatRoutedKoshaServiceBookingForCrew(order, service),
+    setup: await koshaBookingSetup({
+      ...fields,
+      koshaId: fields.koshaId ?? null,
+      packageId: fields.packageId ?? null,
+      selectedAddons: fields.selectedAddons ?? [],
+      welcomeBoards: fields.welcomeBoards ?? [],
+      selectedAccessories: fields.selectedAccessories ?? [],
+    }),
+    timeline: Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : [],
+    media: Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : [],
+    delivery: fields.koshaPortalDelivery ?? null,
+    paymentRequests: [],
+  };
+}
+
+async function saveRoutedKoshaServiceExecution(
+  order: typeof serviceOrdersTable.$inferSelect,
+  fields: Record<string, any>,
+) {
+  const [updated] = await db
+    .update(serviceOrdersTable)
+    .set({ customFields: fields })
+    .where(eq(serviceOrdersTable.id, order.id))
+    .returning();
+  return updated;
+}
+
+async function persistRoutedKoshaServiceMedia(
+  orderId: number,
+  media: Array<{ url?: string; kind?: string }>,
+  purpose: string,
+  stage: string | null,
+) {
+  const saved: Array<Record<string, any>> = [];
+  for (const item of media) {
+    const raw = String(item?.url ?? "").trim();
+    if (!raw) continue;
+    const url = raw.startsWith("data:")
+      ? await persistDataUrlToStorage(raw, `service-orders/kosha-portal/${orderId}`)
+      : raw;
+    saved.push({
+      id: `service-${orderId}-${Date.now()}-${saved.length}`,
+      url,
+      kind: item?.kind === "video" || raw.startsWith("data:video") ? "video" : "image",
+      purpose,
+      stage,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return saved;
+}
+
+async function loadRoutedKoshaServiceOrders() {
+  const rows = await db.query.serviceOrdersTable.findMany({
+    where: and(
+      sql`${serviceOrdersTable.archivedAt} is null`,
+      sql`${serviceOrdersTable.status} <> 'cancelled'`,
+    ),
+    orderBy: [desc(serviceOrdersTable.createdAt)],
+    limit: 500,
+  });
+  const services = rows.length
+    ? await db.query.servicesTable.findMany({
+        where: inArray(servicesTable.id, [...new Set(rows.map((row) => row.serviceId))]),
+      })
+    : [];
+  const servicesById = new Map(services.map((service) => [service.id, service]));
+  return rows
+    .filter((row) => isKoshaOrSoundBooking(row, servicesById.get(row.serviceId)))
+    .map((order) => ({ order, service: servicesById.get(order.serviceId) }));
+}
+
 
 let depreciationCategoryTablesPromise: Promise<void> | null = null;
 async function ensureDepreciationCategoryTables() {
@@ -37328,7 +37425,14 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
-    const active = rows.filter(
+    const routedOrders = await loadRoutedKoshaServiceOrders();
+    const crewRows = [
+      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
+      ...(await Promise.all(routedOrders.map(({ order, service }) =>
+        formatRoutedKoshaServiceBookingForCrew(order, service),
+      ))),
+    ];
+    const active = crewRows.filter(
       (r: any) => String(r.status ?? "") !== "cancelled",
     );
     const counts: Record<CrewBucket, number> = {
@@ -37346,16 +37450,7 @@ async function handleStaffPortal(
       if (b === "today") todayList.push(r);
       if (b === "tomorrow") tomorrowList.push(r);
     }
-    return json({
-      today,
-      counts,
-      todayBookings: await Promise.all(
-        todayList.map(formatKoshaBookingForCrew),
-      ),
-      tomorrowBookings: await Promise.all(
-        tomorrowList.map(formatKoshaBookingForCrew),
-      ),
-    });
+    return json({ today, counts, todayBookings: todayList, tomorrowBookings: tomorrowList });
   }
 
   // ── Bookings list ──
@@ -37370,12 +37465,18 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
-    rows = rows.filter((r: any) => String(r.status ?? "") !== "cancelled");
+    const routedOrders = await loadRoutedKoshaServiceOrders();
+    let crewRows = [
+      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
+      ...(await Promise.all(routedOrders.map(({ order, service }) =>
+        formatRoutedKoshaServiceBookingForCrew(order, service),
+      ))),
+    ].filter((r: any) => String(r.status ?? "") !== "cancelled");
     if (bucket && bucket !== "all")
-      rows = rows.filter((r: any) => crewBucket(r, today) === bucket);
+      crewRows = crewRows.filter((r: any) => r.bucket === bucket);
     if (search) {
       const q = search.toLowerCase();
-      rows = rows.filter(
+      crewRows = crewRows.filter(
         (r: any) =>
           String(r.customerName ?? "")
             .toLowerCase()
@@ -37389,13 +37490,20 @@ async function handleStaffPortal(
             .includes(q),
       );
     }
-    return json(await Promise.all(rows.map(formatKoshaBookingForCrew)));
+    return json(crewRows);
   }
 
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
     const detail = await loadKoshaBookingDetail(id);
-    return detail ? json(detail) : error("الحجز غير موجود", 404);
+    if (detail) return json(detail);
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
+      where: eq(koshaBookingsTable.id, id),
+    });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    return routed
+      ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
+      : error("الحجز غير موجود", 404);
   }
 
   // ── Change execution stage ──
@@ -37411,11 +37519,11 @@ async function handleStaffPortal(
       return error("مرحلة غير صحيحة", 400);
     if (toStage === "delivered")
       return error("استخدم نموذج التسليم لإكمال هذه المرحلة", 400);
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
-    if (!booking) return error("الحجز غير موجود", 404);
-    const fromStage = (booking as any).executionStage ?? "preparing";
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (!nativeBooking && !routed) return error("الحجز غير موجود", 404);
     const media: Array<{ url?: string; kind?: string }> = Array.isArray(
       data?.media,
     )
@@ -37428,6 +37536,38 @@ async function handleStaffPortal(
         400,
       );
     }
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const fromStage = fields.executionStage ?? "preparing";
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        "execution",
+        toStage,
+      );
+      fields.executionStage = toStage;
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+      ];
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "stage",
+          staffName: auth.fullName || auth.username,
+          fromStage,
+          toStage,
+          note: data?.note ?? null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const updated = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking!;
+    const fromStage = (booking as any).executionStage ?? "preparing";
     const event = await addKoshaEvent({
       bookingId: id,
       staff: auth,
@@ -37466,9 +37606,39 @@ async function handleStaffPortal(
       ? data.media
       : [];
     if (media.length === 0) return error("لا توجد ملفات للرفع", 400);
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        String(data?.purpose ?? "execution"),
+        fields.executionStage ?? "preparing",
+      );
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+      ];
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "media",
+          staffName: auth.fullName || auth.username,
+          fromStage: null,
+          toStage: null,
+          note: data?.note ?? null,
+          meta: { count: savedMedia.length },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const updated = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking;
     if (!booking) return error("الحجز غير موجود", 404);
     const event = await addKoshaEvent({
       bookingId: id,
@@ -37511,9 +37681,70 @@ async function handleStaffPortal(
     if (!note || media.length === 0) {
       return error("التسليم يتطلب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
     }
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        hasLoss || hasBreakage ? "breakage" : "delivery",
+        "delivered",
+      );
+      const signature = String(data?.signature ?? "").trim();
+      const signatures = signature ? await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        [{ url: signature, kind: "image" }],
+        "signature",
+        "delivered",
+      ) : [];
+      const total = money(routed.order.totalAmount) + compensation;
+      const remaining = money(routed.order.remainingAmount) + compensation;
+      const fromStage = fields.executionStage ?? "preparing";
+      fields.executionStage = "delivered";
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+        ...signatures,
+      ];
+      fields.koshaPortalDelivery = {
+        id: `service-${routed.order.id}-delivery`,
+        hasLoss,
+        hasBreakage,
+        note: note || null,
+        compensationAmount: compensation,
+        signatureUrl: signatures[0]?.url ?? null,
+        createdAt: new Date().toISOString(),
+      };
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "delivery",
+          staffName: auth.fullName || auth.username,
+          fromStage,
+          toStage: "delivered",
+          note,
+          meta: { hasLoss, hasBreakage, compensation },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const [updated] = await db
+        .update(serviceOrdersTable)
+        .set({
+          customFields: fields,
+          totalAmount: String(total),
+          remainingAmount: String(remaining),
+          paymentStatus: remaining <= 0 ? "paid" : Number(routed.order.depositAmount) > 0 ? "partial" : "unpaid",
+          status: "delivered",
+        })
+        .where(eq(serviceOrdersTable.id, routed.order.id))
+        .returning();
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking;
     if (!booking) return error("الحجز غير موجود", 404);
 
     const event = await addKoshaEvent({
