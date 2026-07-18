@@ -309,6 +309,15 @@ import {
   type ProductColor,
 } from "@/lib/colors";
 import {
+  computeCashboxDrift,
+  listRecycleBin,
+  purgeRecycleItem,
+  recycleBinSummary,
+  recycleEntity,
+  restoreRecycleItem,
+  runSystemHealth,
+} from "@/server/integration-health";
+import {
   addDays,
   DELIVERY_ACCOUNTING_MODES,
   DELIVERY_ACCOUNTING_MODE_LABELS,
@@ -497,6 +506,13 @@ export const ALL_PERMISSIONS = [
   "delivery_cancel",
   "delivery_return",
   "delivery_accounting_manage",
+  // Cross-module oversight. Detect-and-report health/reconciliation and the
+  // unified recycle bin. Repairs and purges are separately gated.
+  "system_health",
+  "reconciliation_repair",
+  "recycle_bin_view",
+  "recycle_bin_restore",
+  "recycle_bin_purge",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -20721,6 +20737,158 @@ async function handleEventBrain(req: NextRequest, parts: string[], section: stri
   return error("مسار عقل الفعاليات غير مدعوم", 404);
 }
 
+// ─── Cross-module oversight (health / reconciliation / recycle bin) ─────────
+
+/**
+ * Health Monitor, Reconciliation Center and the unified Recycle Bin.
+ *
+ * Reads are detect-and-report only. Reconciliation exposes a read-only Dry Run;
+ * applying a repair additionally requires a manager role and a written reason,
+ * and is always audit-logged. Nothing here runs automatically on page load.
+ */
+async function handleIntegrationOversight(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  const method = req.method;
+
+  if (section === "system-health") {
+    const auth = await requireAnyPermission(req, ["system_health", "executive"]);
+    if (isResponse(auth)) return auth;
+    if (method !== "GET") return error("طريقة غير مدعومة", 405);
+    return json(await runSystemHealth());
+  }
+
+  if (section === "reconciliation") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["system_health", "executive"]);
+      if (isResponse(auth)) return auth;
+      return json({ cashbox: await computeCashboxDrift() });
+    }
+
+    // Dry Run — read-only preview of what a repair WOULD change. Never writes.
+    if (method === "POST" && parts[2] === "dry-run") {
+      const auth = await requireAnyPermission(req, [
+        "system_health", "executive", "reconciliation_repair",
+      ]);
+      if (isResponse(auth)) return auth;
+      const target = String((await body(req))?.target ?? "");
+      if (target === "cashbox") {
+        const d = await computeCashboxDrift();
+        const affected = Math.abs(d.drift) >= 0.01 ? 1 : 0;
+        return json({
+          target,
+          generatedAt: new Date().toISOString(),
+          affectedCount: affected,
+          changes: affected
+            ? [{
+                record: "الصندوق الرئيسي",
+                field: "current_balance",
+                before: d.stored,
+                after: d.expected,
+                delta: Math.round((d.expected - d.stored) * 100) / 100,
+              }]
+            : [],
+          detail: affected
+            ? `سيُعاد احتساب رصيد الصندوق من ${d.stored} إلى ${d.expected}.`
+            : "لا يوجد فرق — لن تتغير أي قيمة.",
+        });
+      }
+      return error("المعاينة متاحة حالياً للصندوق الرئيسي فقط", 400);
+    }
+
+    if (method === "POST" && parts[2] === "repair") {
+      const auth = await requireAnyPermission(req, ["reconciliation_repair"]);
+      if (isResponse(auth)) return auth;
+      // Repairs touch financial truth — restrict to manager/admin on top of the
+      // granular permission.
+      if (auth.role !== "admin" && auth.role !== "manager")
+        return error("تنفيذ التسوية متاح للمدير فقط", 403);
+      const b = await body(req);
+      const target = String(b?.target ?? "");
+      const reason = String(b?.reason ?? "").trim();
+      if (reason.length < 3) return error("يجب إدخال سبب التسوية (٣ أحرف على الأقل)", 400);
+      const fActor = financialActor(auth);
+      try {
+        if (target === "cashbox") {
+          const before = await computeCashboxDrift();
+          const box = await recalculateMasterCashBox(fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "master_cash_box", undefined, {
+            target,
+            reason,
+            oldValues: { currentBalance: before.stored },
+            newValues: { currentBalance: box?.currentBalance },
+          });
+          return json({ ok: true, target, currentBalance: box?.currentBalance });
+        }
+        if (target === "payroll") {
+          const id = int(b?.id);
+          if (!id) return error("معرف دورة الرواتب مطلوب", 400);
+          await recalculatePayrollRun(id, fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "payroll_run", id, { target, reason });
+          return json({ ok: true, target, id });
+        }
+        if (target === "bonus") {
+          const period = String(b?.period ?? "");
+          if (!period) return error("فترة المكافآت مطلوبة", 400);
+          await recalculateBonusPeriod(period, fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "bonus_period", undefined, {
+            target, reason, period,
+          });
+          return json({ ok: true, target, period });
+        }
+        return error("هدف تسوية غير معروف", 400);
+      } catch (err) {
+        return error(err instanceof Error ? err.message : "تعذر تنفيذ التسوية", 500);
+      }
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  if (section === "recycle-bin") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["recycle_bin_view"]);
+      if (isResponse(auth)) return auth;
+      const type = parts[2];
+      if (!type) return json({ summary: await recycleBinSummary() });
+      if (!recycleEntity(type)) return error("نوع غير معروف", 400);
+      return json({ type, items: await listRecycleBin(type) });
+    }
+    if (method === "POST" && parts[3] === "restore") {
+      const auth = await requireAnyPermission(req, ["recycle_bin_restore"]);
+      if (isResponse(auth)) return auth;
+      const type = parts[2];
+      const id = int((await body(req))?.id);
+      if (!type || !recycleEntity(type) || !id) return error("طلب غير صحيح", 400);
+      const ok = await restoreRecycleItem(type, id);
+      if (!ok) return error("تعذر الاستعادة — العنصر غير موجود أو غير محذوف", 404);
+      void logAdminActivity(req, "recycle_bin_restored", type, id, {});
+      return json({ ok: true, type, id });
+    }
+    if (method === "POST" && parts[3] === "purge") {
+      // Permanent delete is admin-role only, on top of the granular permission.
+      const auth = await requirePermission(req, "recycle_bin_purge");
+      if (isResponse(auth)) return auth;
+      if (auth.role !== "admin") return error("الحذف النهائي متاح للمدير فقط", 403);
+      const b = await body(req);
+      const type = parts[2];
+      const id = int(b?.id);
+      const reason = String(b?.reason ?? "").trim();
+      if (!type || !recycleEntity(type) || !id) return error("طلب غير صحيح", 400);
+      if (reason.length < 3) return error("يجب إدخال سبب الحذف النهائي", 400);
+      const result = await purgeRecycleItem(type, id);
+      if (!result.ok)
+        return error(result.message ?? "تعذر الحذف النهائي", result.blocked ? 409 : 400);
+      void logAdminActivity(req, "recycle_bin_purged", type, id, { reason });
+      return json({ ok: true, type, id });
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  return null;
+}
+
 // ─── Delivery — COD settlement + returns ─────────────────────────────────────
 
 /**
@@ -21272,6 +21440,9 @@ async function handleProvinceDelivery(
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const integrationOversight = await handleIntegrationOversight(req, parts, section);
+  if (integrationOversight) return integrationOversight;
 
   const provinceDelivery = await handleProvinceDelivery(req, parts, section);
   if (provinceDelivery) return provinceDelivery;

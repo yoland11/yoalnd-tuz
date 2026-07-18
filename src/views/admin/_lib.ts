@@ -100,6 +100,12 @@ export const ALL_PERMISSIONS = [
   "delivery_cancel",
   "delivery_return",
   "delivery_accounting_manage",
+  // Cross-module oversight — health monitor, reconciliation center, recycle bin.
+  "system_health",
+  "reconciliation_repair",
+  "recycle_bin_view",
+  "recycle_bin_restore",
+  "recycle_bin_purge",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -174,6 +180,11 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   delivery_cancel: "إلغاء طلب التوصيل",
   delivery_return: "تحديد التوصيل كمرتجع",
   delivery_accounting_manage: "إدارة محاسبة التوصيل",
+  system_health: "مراقبة صحة النظام والتسويات",
+  reconciliation_repair: "تنفيذ التسويات التصحيحية",
+  recycle_bin_view: "عرض سلة المحذوفات",
+  recycle_bin_restore: "استعادة السجلات المحذوفة",
+  recycle_bin_purge: "الحذف النهائي",
   customers: "إدارة العملاء",
   staff: "إدارة الموظفين",
   settings: "إدارة الإعدادات",
