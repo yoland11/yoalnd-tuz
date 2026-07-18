@@ -4437,6 +4437,33 @@ const KOSHA_ROUTING_WORD_RE = new RegExp(
   "u",
 );
 
+/**
+ * Broad SQL pre-filter for kosha/sound candidates.
+ *
+ * The precise decision still belongs to isKoshaOrSoundBooking(); this only stops
+ * unrelated service orders from consuming the row cap. Without it the cap is
+ * applied BEFORE classification, so a sound booking that falls outside the
+ * newest N service orders silently disappears from the Kosha portal while still
+ * showing in the Booking Centre (which caps higher and does not filter).
+ *
+ * Being a superset is intentional: a false positive here is discarded by the
+ * exact predicate, but a false negative would hide a real booking.
+ */
+const KOSHA_ROUTING_SQL_PATTERN =
+  "(kosha|sound|audio|speaker|mixer|microphone|mic|dj|amplifier|subwoofer|rcf|w17|كوش|صوت|سماع|سبيكر|مكسر|ميكسر|ميكرفون|مايك|دي جي|مضخم)";
+
+function koshaRoutingCandidateSql() {
+  return sql`(
+    ${serviceOrdersTable.customFields}::text ~* ${KOSHA_ROUTING_SQL_PATTERN}
+    or ${serviceOrdersTable.serviceId} in (
+      select ${servicesTable.id} from ${servicesTable}
+      where coalesce(${servicesTable.type}, '') || ' '
+         || coalesce(${servicesTable.name}, '') || ' '
+         || coalesce(${servicesTable.nameAr}, '') ~* ${KOSHA_ROUTING_SQL_PATTERN}
+    )
+  )`;
+}
+
 function isKoshaOrSoundBooking(
   order: { customFields?: unknown },
   service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
@@ -15771,6 +15798,9 @@ async function handleAdminKoshas(
       const serviceRows = await db.query.serviceOrdersTable.findMany({
         where: and(
           sql`${serviceOrdersTable.archivedAt} is null`,
+          // Narrow to routing candidates BEFORE the row cap, so a sound booking
+          // outside the newest N service orders is no longer dropped.
+          koshaRoutingCandidateSql(),
           status ? eq(serviceOrdersTable.status, status) : undefined,
           search
             ? or(
@@ -15781,7 +15811,7 @@ async function handleAdminKoshas(
             : undefined,
         ),
         orderBy: (b, { desc }) => [desc(b.createdAt)],
-        limit: 150,
+        limit: 500,
       });
       const services = serviceRows.length
         ? await db.query.servicesTable.findMany({
@@ -22969,9 +22999,177 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
   return error("مسار عمليات الحجز غير موجود", 404);
 }
 
+function centralBookingDepartments(value: unknown) {
+  const normalized = String(value ?? "").toLowerCase();
+  if (/kosha|كوش/.test(normalized)) return ["kosha"];
+  if (/sound|audio|speaker|صوت/.test(normalized)) return ["sound"];
+  if (/photo|camera|تصوير/.test(normalized)) return ["photography"];
+  if (/flower|ورد/.test(normalized)) return ["flowers"];
+  if (/gift|هدية|توزيع/.test(normalized)) return ["gifts"];
+  if (/graduation|تخرج/.test(normalized)) return ["graduation"];
+  if (/rental|إيجار/.test(normalized)) return ["rental"];
+  return ["decorations"];
+}
+
+async function handleCentralBookingCenter(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "booking-center" || req.method !== "GET") return null;
+  const auth = await requirePermission(req, "orders");
+  if (isResponse(auth)) return auth;
+
+  const [serviceOrders, services, koshas, storeOrders, graduationOrders, photographyOrders, rentals] =
+    await Promise.all([
+      db.query.serviceOrdersTable.findMany({
+        where: sql`${serviceOrdersTable.archivedAt} is null`,
+        orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.servicesTable.findMany(),
+      db.query.koshaBookingsTable.findMany({
+        where: sql`${koshaBookingsTable.archivedAt} is null`,
+        orderBy: [desc(koshaBookingsTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.ordersTable.findMany({
+        where: sql`${ordersTable.archivedAt} is null`,
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.graduationOrdersTable.findMany({
+        orderBy: [desc(graduationOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.photographyOrdersTable.findMany({
+        orderBy: [desc(photographyOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.rentalOrdersTable.findMany({
+        orderBy: [desc(rentalOrdersTable.createdAt)],
+        limit: 500,
+      }),
+    ]);
+  const serviceMap = new Map(services.map((service) => [service.id, service]));
+  const linkedStoreOrderIds = new Set(
+    serviceOrders
+      .map((order) => Number((order.customFields as any)?.storeOrderId))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  );
+  const storeTrackingCodes = new Set(storeOrders.map((order) => String(order.trackingCode)));
+  const rows = [
+    ...serviceOrders.map((order) => {
+      const fields = (order.customFields ?? {}) as Record<string, any>;
+      const selected = Array.isArray(fields.bookingCenterServices)
+        ? fields.bookingCenterServices.map((item: any) => String(item?.type ?? ""))
+        : [];
+      const service = serviceMap.get(order.serviceId);
+      return {
+        source: "service",
+        id: order.id,
+        number: order.trackingCode ?? `SRV-${order.id}`,
+        customerId: fields.customerId ?? null,
+        customerName: order.customerName,
+        phone: order.phone,
+        bookingSource: fields.bookingSource === "store" ? "المتجر" : "الخدمات",
+        departments: selected.length ? selected : centralBookingDepartments(service?.type ?? service?.nameAr),
+        eventDate: order.eventDate ?? "",
+        eventTime: fields.eventTime ?? "",
+        hall: order.eventLocation ?? "",
+        mapUrl: fields.mapUrl ?? "",
+        status: order.status,
+        total: Number(order.totalAmount ?? 0),
+        paid: Number(order.depositAmount ?? 0),
+        remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid",
+        notes: order.notes ?? "",
+        createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/bookings/service/${order.id}`,
+      };
+    }),
+    ...koshas.map((booking) => ({
+      source: "kosha",
+      id: booking.id,
+      number: booking.trackingCode ?? `KB-${booking.id}`,
+      customerId: booking.customerId ?? null,
+      customerName: booking.customerName,
+      phone: booking.phone,
+      bookingSource: "الكوشات",
+      departments: ["kosha"],
+      eventDate: booking.eventDate ?? "",
+      eventTime: booking.eventTime ?? "",
+      hall: booking.hallLocation ?? "",
+      mapUrl: (booking.bookingDetails as any)?.mapUrl ?? "",
+      status: booking.status,
+      total: Number(booking.totalAmount ?? 0),
+      paid: Number(booking.paidAmount ?? 0),
+      remaining: Number(booking.remainingAmount ?? 0),
+      paymentStatus: booking.paymentStatus ?? "unpaid",
+      notes: booking.notes ?? "",
+      createdAt: booking.createdAt.toISOString(),
+      detailHref: `/admin/bookings/kosha/${booking.id}`,
+    })),
+    ...storeOrders
+      .filter((order) => !linkedStoreOrderIds.has(order.id))
+      .map((order) => ({
+        source: "store",
+        id: order.id,
+        number: order.trackingCode,
+        customerId: order.customerId ?? null,
+        customerName: order.customerName,
+        phone: order.customerPhone,
+        bookingSource: "المتجر",
+        departments: centralBookingDepartments(order.serviceType),
+        eventDate: "",
+        eventTime: "",
+        hall: [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+        mapUrl: order.mapsUrl ?? "",
+        status: order.status,
+        total: Number(order.total ?? 0),
+        paid: Number(order.depositAmount ?? 0),
+        remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid",
+        notes: order.notes ?? "",
+        createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/orders?order=${order.id}`,
+      })),
+    ...graduationOrders.map((order) => ({
+      source: "graduation", id: order.id, number: order.orderNo, customerId: order.customerId ?? null,
+      customerName: order.customerName, phone: order.phone, bookingSource: "التخرج", departments: ["graduation"],
+      eventDate: "", eventTime: "", hall: "", mapUrl: "", status: order.status,
+      total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+      paymentStatus: order.paymentStatus ?? "unpaid", notes: "", createdAt: order.createdAt.toISOString(),
+      detailHref: `/admin/graduation/orders?order=${order.id}`,
+    })),
+    ...photographyOrders.map((order) => ({
+      source: "photography", id: order.id, number: order.orderNo, customerId: null,
+      customerName: order.customerName, phone: order.phone, bookingSource: "التصوير", departments: ["photography"],
+      eventDate: "", eventTime: "", hall: "", mapUrl: "", status: order.status,
+      total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+      paymentStatus: order.paymentStatus ?? "unpaid", notes: order.notes ?? "", createdAt: order.createdAt.toISOString(),
+      detailHref: "/staff/photography",
+    })),
+    ...rentals
+      .filter((order) => !storeTrackingCodes.has(String(order.orderNo)))
+      .map((order) => ({
+        source: "rental", id: order.id, number: order.orderNo, customerId: order.customerId ?? null,
+        customerName: order.customerName, phone: order.phone, bookingSource: "الإيجار", departments: ["rental"],
+        eventDate: String(order.startDate ?? ""), eventTime: "", hall: "", mapUrl: "", status: order.status,
+        total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid", notes: order.notes ?? "", createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/orders?order=${order.id}`,
+      })),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return json(rows);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const centralBookingCenter = await handleCentralBookingCenter(req, parts, section);
+  if (centralBookingCenter) return centralBookingCenter;
 
   const bookingOperations = await handleBookingOperations(req, parts, section);
   if (bookingOperations) return bookingOperations;
@@ -37459,6 +37657,8 @@ async function loadRoutedKoshaServiceOrders() {
     where: and(
       sql`${serviceOrdersTable.archivedAt} is null`,
       sql`${serviceOrdersTable.status} <> 'cancelled'`,
+      // Candidates only, so the cap is spent on bookings that can actually route.
+      koshaRoutingCandidateSql(),
     ),
     orderBy: [desc(serviceOrdersTable.createdAt)],
     limit: 500,
