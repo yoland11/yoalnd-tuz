@@ -16,7 +16,8 @@
     "desktop:dev": "pnpm --dir desktop run dev",
     "desktop:build": "pnpm --dir desktop run build",
     "desktop:dist": "pnpm --dir desktop run dist",
-    "audit": "pnpm audit --audit-level moderate"
+    "audit": "pnpm audit --audit-level moderate",
+    "verify:sound-routing": "node scripts/verify-sound-routing.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
