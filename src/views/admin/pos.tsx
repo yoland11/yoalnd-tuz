@@ -245,6 +245,41 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
 
 // ─── Print Receipt Helper ─────────────────────────────────────────────────────
 
+/**
+ * Delivery details block for the A4 sheet. Rendered only for a province
+ * delivery, appended after the totals so the existing layout is untouched.
+ */
+function deliveryBlockHtml(delivery: any, esc: (v: unknown) => string): string {
+  if (!delivery || delivery.method !== "province") return "";
+  const row = (label: string, value: unknown) =>
+    value ? `<tr><td style="width:32%">${esc(label)}</td><td>${esc(value)}</td></tr>` : "";
+  const flags = [
+    delivery.isFragile ? "قابل للكسر" : "",
+    delivery.needsRefrigeration ? "يحتاج تبريد" : "",
+  ].filter(Boolean).join(" · ");
+  return `
+  <hr class="divider" />
+  <div class="meta" style="font-weight:700;margin-bottom:4px">تفاصيل التوصيل</div>
+  <table>
+    ${row("رقم التوصيل", delivery.order?.deliveryNo)}
+    ${row("المحافظة", delivery.provinceName)}
+    ${row("القضاء / المدينة", delivery.city)}
+    ${row("الناحية", delivery.district)}
+    ${row("الحي / المنطقة", delivery.area)}
+    ${row("العنوان التفصيلي", delivery.fullAddress)}
+    ${row("أقرب نقطة دالة", delivery.landmark)}
+    ${row("اسم المستلم", delivery.receiverName)}
+    ${row("هاتف المستلم", delivery.receiverPhone)}
+    ${row("هاتف بديل", delivery.receiverAltPhone)}
+    ${row("شركة التوصيل", delivery.deliveryCompany)}
+    ${row("نوع التوصيل", delivery.deliveryTypeLabel)}
+    ${row("أجور التوصيل", formatCurrency(delivery.deliveryFee ?? 0))}
+    ${delivery.codEnabled ? row("مبلغ التحصيل عند الاستلام", formatCurrency(delivery.codAmount ?? 0)) : ""}
+    ${row("تاريخ الوصول المتوقع", delivery.expectedArrivalDate)}
+    ${flags ? row("ملاحظات الشحنة", flags) : ""}
+  </table>`;
+}
+
 function openPrintWindow(
   cart: CartItem[],
   form: ReturnType<typeof newForm>,
@@ -252,7 +287,7 @@ function openPrintWindow(
   invoiceNo: string,
   size: PrintSize,
   settings: any,
-  options: { showLogo?: boolean; qrDataUrl?: string } = {},
+  options: { showLogo?: boolean; qrDataUrl?: string; delivery?: any } = {},
 ) {
   const logo = options.showLogo === false ? "" : logoSrc(settings);
   const companyName = settings?.site_name ?? "مجموعة علي جان";
@@ -362,6 +397,7 @@ function openPrintWindow(
     <tr><td>المدفوع</td><td>${formatCurrency(totals.paid)}</td></tr>
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${formatCurrency(totals.remaining)}</td></tr>` : ""}
   </table>
+  ${deliveryBlockHtml(options.delivery, esc)}
   ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${esc(form.notes)}</div>` : ""}
   ${options.qrDataUrl ? `<div class="qr"><img class="qr-code" src="${options.qrDataUrl}" alt="QR" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
   <div class="footer">شكراً لتعاملكم معنا</div>
@@ -663,7 +699,7 @@ export default function POSPage() {
         }
         const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
         for (let index = 0; index < copies; index++) {
-          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl });
+          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl, delivery: savedDelivery });
         }
       }
       // Print the A6 delivery label for a province delivery order.

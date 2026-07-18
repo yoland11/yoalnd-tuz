@@ -426,6 +426,7 @@ export const NAV: NavItem[] = [
     perm: "gallery",
   },
   { href: "/admin/delivery", label: "التوصيل", icon: Truck, perm: "delivery" },
+  { href: "/admin/delivery-orders", label: "طلبات التوصيل", icon: Truck, perm: "delivery" },
   {
     href: "/admin/customers",
     label: "العملاء",

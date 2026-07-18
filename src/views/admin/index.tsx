@@ -60,6 +60,7 @@ const DailyCashReconciliationPage = lazy(() =>
 const CouponsPage = lazy(() => import("./coupons"));
 const GalleryPage = lazy(() => import("./gallery"));
 const DeliveryPage = lazy(() => import("./delivery"));
+const DeliveryOrdersPage = lazy(() => import("./delivery-orders"));
 const CustomersPage = lazy(() => import("./customers"));
 const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
@@ -625,6 +626,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="delivery">
                 <DeliveryPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/delivery-orders">
+            {() => (
+              <Guard me={me} perm="delivery">
+                <DeliveryOrdersPage />
               </Guard>
             )}
           </Route>
