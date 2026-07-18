@@ -41,6 +41,31 @@ export const EXPIRING_DOCUMENT_TYPES: readonly string[] = [
 /** Warning thresholds, in days before expiry. */
 export const EXPIRY_THRESHOLDS = [90, 30, 7, 1] as const;
 
+/** Arabic labels, shared by notifications and the admin views. */
+export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  national_id: "البطاقة الوطنية",
+  civil_id: "هوية الأحوال المدنية",
+  residence_card: "بطاقة السكن",
+  passport: "جواز السفر",
+  driving_license: "إجازة السوق",
+  ration_card: "البطاقة التموينية",
+  employee_id: "هوية موظف",
+  student_id: "هوية طالب",
+  birth_certificate: "شهادة الميلاد",
+  marriage_certificate: "عقد الزواج",
+  university_certificate: "الشهادة الجامعية",
+  certificate: "شهادة",
+  invoice: "فاتورة",
+  receipt: "وصل",
+  contract: "عقد",
+  rental_agreement: "عقد إيجار",
+  insurance: "تأمين",
+  employee_file: "ملف موظف",
+  supplier_file: "ملف مورّد",
+  vehicle_registration: "سنوية مركبة",
+  custom: "مستمسك مخصص",
+};
+
 /** Actions recorded in the audit log. Image bytes never accompany these. */
 export const SCANNER_ACTIONS = [
   "document_captured", "document_uploaded", "scan_enhanced", "corners_adjusted",

@@ -52,12 +52,15 @@ function Field({
  */
 export default function DocumentSave({
   scans,
+  pages = [],
   documentType,
   documentTypeLabel,
   prefill,
   onSaved,
 }: {
   scans: Partial<Record<Side, SaveSource>>;
+  /** Extra pages for multi-page documents, in display order. */
+  pages?: Array<SaveSource & { widthPx?: number; heightPx?: number }>;
   documentType: string;
   documentTypeLabel: string;
   /** Owner carried over from a deep link (e.g. opened from a customer page). */
@@ -106,6 +109,14 @@ export default function DocumentSave({
             .split(",")
             .map((t) => t.trim())
             .filter(Boolean),
+          pages: pages.map((p) => ({
+            side: "page" as const,
+            image: p.dataUrl,
+            widthPx: p.widthPx ?? null,
+            heightPx: p.heightPx ?? null,
+            widthMm: p.widthMm ?? null,
+            heightMm: p.heightMm ?? null,
+          })),
         }),
       }),
     onSuccess: (res) => {
@@ -200,7 +211,7 @@ export default function DocumentSave({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           className="gap-2"
-          disabled={save.isPending || (!scans.front && !scans.back)}
+          disabled={save.isPending || (!scans.front && !scans.back && pages.length === 0)}
           onClick={() => {
             if (!window.confirm(`سيتم حفظ صور «${documentTypeLabel}» على الخادم بمسار محمي. متابعة؟`)) return;
             save.mutate();

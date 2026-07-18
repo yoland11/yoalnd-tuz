@@ -321,7 +321,9 @@ import {
   auditActionSchema,
   decodeDataUrl,
   deleteScannedDocument,
+  DOCUMENT_TYPE_LABELS,
   ensureScannerTables,
+  EXPIRY_THRESHOLDS,
   getDocumentPageBytes,
   getScannedDocumentByQr,
   getScannedDocumentImage,
@@ -2953,6 +2955,37 @@ async function runSmartNotificationsSweep() {
       });
     }
   }
+
+  // ── Expiring documents ──
+  // One alert per document per threshold; createSmartAlert dedupes on
+  // (type, entityType, entityId). The body deliberately carries no document
+  // number and no personal name — identity data must not leak into
+  // notifications or their Telegram side channel.
+  try {
+    const expiring = await listExpiringDocuments(90);
+    for (const doc of expiring) {
+      const days = doc.daysLeft;
+      if (days === null) continue;
+      const threshold = days < 0 ? "expired" : EXPIRY_THRESHOLDS.find((t) => days <= t);
+      if (!threshold) continue;
+      const typeLabel = DOCUMENT_TYPE_LABELS[doc.documentType] ?? doc.documentType;
+      await add({
+        type: `document_expiry_${threshold}`,
+        title: days < 0 ? `📄 مستمسك منتهي الصلاحية` : `📄 مستمسك يقترب من الانتهاء`,
+        body:
+          days < 0
+            ? `${typeLabel} انتهت صلاحيته منذ ${Math.abs(days)} يوم`
+            : `${typeLabel} تنتهي صلاحيته خلال ${days} يوم`,
+        entityType: "scanned_document",
+        entityId: doc.id,
+        href: "/admin/document-library?expiry=expiring",
+        metadata: { documentType: doc.documentType, daysLeft: days, threshold },
+      });
+    }
+  } catch (err) {
+    console.warn("document expiry sweep failed", err);
+  }
+
   return summary;
 }
 
@@ -21605,6 +21638,19 @@ async function handleDocumentScanner(
       changeSummary: parsed.data.changeSummary ?? null,
     });
     return json(await getScannedDocumentMeta(id));
+  }
+
+  // QR image for a document. The code encodes an admin deep link, so scanning
+  // still lands on a permission-gated screen — it is not a public share link.
+  if (method === "GET" && id && parts[3] === "qr") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    if (!meta.qrToken) return error("لا يوجد رمز QR لهذا المستمسك", 404);
+    const target = `${baseUrlFromReq(req)}/admin/document-library?qr=${meta.qrToken}`;
+    const dataUrl = await QRCode.toDataURL(target, { margin: 1, width: 320 });
+    return json({ token: meta.qrToken, targetUrl: target, dataUrl });
   }
 
   // Protected page delivery — object storage or inline, always behind auth.

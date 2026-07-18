@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  AlertTriangle, Camera, CheckCircle2, Crop, ImageUp, Loader2, RefreshCw,
-  RotateCcw, RotateCw, ScanLine, Trash2, Upload, X,
+  AlertTriangle, Camera, CheckCircle2, ChevronLeft, ChevronRight, Crop,
+  ImageUp, Loader2, RefreshCw, RotateCcw, RotateCw, ScanLine, Trash2, Upload, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -108,8 +108,11 @@ export default function DocumentScannerPage() {
   const [busy, setBusy] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
 
-  // Completed sides.
+  // Completed sides (ID cards) and, for multi-page documents, extra pages.
+  // Kept separate so the A4 layout keeps its front/back contract untouched.
   const [scans, setScans] = useState<Partial<Record<Side, ScannedSide>>>({});
+  const [extraPages, setExtraPages] = useState<ScannedSide[]>([]);
+  const [captureAsPage, setCaptureAsPage] = useState(false);
 
   const typeDef = useMemo(
     () => DOCUMENT_TYPES.find((t) => t.value === docType) ?? DOCUMENT_TYPES[0],
@@ -175,6 +178,15 @@ export default function DocumentScannerPage() {
 
   // ── Apply (warp + enhance) ────────────────────────────────────────────────
 
+  const resetSide = useCallback(() => {
+    setSourceCanvas(null);
+    setCorners(null);
+    setQuality(null);
+    setDetectFailed(false);
+    setStage("capture");
+    setAdj(presetFor(mode));
+  }, [mode]);
+
   const applyScan = useCallback(async () => {
     if (!sourceCanvas || !corners) return;
     setBusy(true);
@@ -185,34 +197,70 @@ export default function DocumentScannerPage() {
       let flat = warpPerspective(sourceCanvas, corners, outW, outH);
       if (adj.rotation !== 0) flat = rotateCanvas(flat, adj.rotation);
       const finished = enhance(flat, mode, adj);
+      const produced: ScannedSide = {
+        side,
+        dataUrl: canvasToDataUrl(finished, 0.95),
+        widthPx: finished.width,
+        heightPx: finished.height,
+        widthMm: targetMm.w,
+        heightMm: targetMm.h,
+      };
 
-      setScans((prev) => ({
-        ...prev,
-        [side]: {
-          side,
-          dataUrl: canvasToDataUrl(finished, 0.95),
-          widthPx: finished.width,
-          heightPx: finished.height,
-          widthMm: targetMm.w,
-          heightMm: targetMm.h,
-        },
-      }));
+      if (captureAsPage) {
+        setExtraPages((prev) => [...prev, produced]);
+        // Go straight back to capture so a multi-page document flows quickly.
+        resetSide();
+        return;
+      }
+      setScans((prev) => ({ ...prev, [side]: produced }));
       setStage("done");
     } catch (err: any) {
       toast({ title: "تعذر تصحيح المنظور", description: err?.message, variant: "destructive" });
     } finally {
       setBusy(false);
     }
-  }, [sourceCanvas, corners, targetMm, adj, mode, side, toast]);
+  }, [sourceCanvas, corners, targetMm, adj, mode, side, captureAsPage, resetSide, toast]);
 
-  const resetSide = useCallback(() => {
-    setSourceCanvas(null);
-    setCorners(null);
-    setQuality(null);
-    setDetectFailed(false);
-    setStage("capture");
-    setAdj(presetFor(mode));
-  }, [mode]);
+  // ── Multi-page operations ─────────────────────────────────────────────────
+  function movePage(index: number, direction: -1 | 1) {
+    setExtraPages((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function removePage(index: number) {
+    setExtraPages((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** Rotates a stored page by re-rendering it through the canvas helper. */
+  async function rotatePage(index: number, degrees: 90 | -90) {
+    const page = extraPages[index];
+    if (!page) return;
+    try {
+      const img = await loadImage(page.dataUrl);
+      const rotated = rotateCanvas(canvasFrom(img), degrees);
+      setExtraPages((prev) =>
+        prev.map((p, i) =>
+          i === index
+            ? {
+                ...p,
+                dataUrl: canvasToDataUrl(rotated, 0.95),
+                widthPx: rotated.width,
+                heightPx: rotated.height,
+                widthMm: p.heightMm,
+                heightMm: p.widthMm,
+              }
+            : p,
+        ),
+      );
+    } catch {
+      toast({ title: "تعذر تدوير الصفحة", variant: "destructive" });
+    }
+  }
 
   function startSide(next: Side) {
     setSide(next);
@@ -336,6 +384,19 @@ export default function DocumentScannerPage() {
           القياس المستهدف: {targetMm.w} × {targetMm.h} ملم — يُنتَج بدقة 300 نقطة/بوصة
           ({pixelsForMm(targetMm.w)} × {pixelsForMm(targetMm.h)} بكسل).
         </p>
+
+        {/* Multi-page mode: each scan is appended as a page instead of replacing a side. */}
+        <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={captureAsPage}
+            onChange={(e) => setCaptureAsPage(e.target.checked)}
+            className="accent-primary"
+          />
+          <span className="text-foreground">
+            مستمسك متعدد الصفحات — أضف كل مسح كصفحة جديدة
+          </span>
+        </label>
       </section>
 
       {/* ── Stage: capture ── */}
@@ -495,6 +556,68 @@ export default function DocumentScannerPage() {
         </section>
       )}
 
+      {/* ── Multi-page manager ── */}
+      {extraPages.length > 0 && (
+        <section className="bg-card rounded-xl border border-border/30 p-3 sm:p-4 space-y-3">
+          <h2 className="font-semibold text-foreground text-sm">
+            صفحات المستمسك ({extraPages.length})
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {extraPages.map((page, index) => (
+              <div key={index} className="rounded-lg border border-border/20 bg-background/40 p-2 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-foreground">صفحة {index + 1}</span>
+                  <button
+                    type="button"
+                    onClick={() => removePage(index)}
+                    className="text-muted-foreground hover:text-status-danger"
+                    aria-label="حذف الصفحة"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <img src={page.dataUrl} alt="" className="w-full rounded bg-white" />
+                <div className="flex items-center justify-center gap-1">
+                  <button
+                    type="button" aria-label="تحريك لليمين"
+                    disabled={index === 0}
+                    onClick={() => movePage(index, -1)}
+                    className="p-1 rounded text-muted-foreground hover:text-primary disabled:opacity-30"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button" aria-label="تدوير يسار"
+                    onClick={() => void rotatePage(index, -90)}
+                    className="p-1 rounded text-muted-foreground hover:text-primary"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button" aria-label="تدوير يمين"
+                    onClick={() => void rotatePage(index, 90)}
+                    className="p-1 rounded text-muted-foreground hover:text-primary"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button" aria-label="تحريك لليسار"
+                    disabled={index === extraPages.length - 1}
+                    onClick={() => movePage(index, 1)}
+                    className="p-1 rounded text-muted-foreground hover:text-primary disabled:opacity-30"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            الترتيب أعلاه هو ترتيب الصفحات عند الحفظ.
+          </p>
+        </section>
+      )}
+
       {/* ── A4 layout designer + print/export ── */}
       {(scans.front || scans.back) && (
         <DocumentLayout
@@ -508,9 +631,10 @@ export default function DocumentScannerPage() {
       )}
 
       {/* ── Optional protected save + entity linking ── */}
-      {(scans.front || scans.back) && canSave && (
+      {(scans.front || scans.back || extraPages.length > 0) && canSave && (
         <DocumentSave
           scans={scans}
+          pages={extraPages}
           documentType={docType}
           documentTypeLabel={typeDef.label}
           prefill={prefill}
