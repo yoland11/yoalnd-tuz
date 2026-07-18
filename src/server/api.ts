@@ -322,11 +322,19 @@ import {
   decodeDataUrl,
   deleteScannedDocument,
   ensureScannerTables,
+  getDocumentPageBytes,
+  getScannedDocumentByQr,
   getScannedDocumentImage,
   getScannedDocumentMeta,
+  listDocumentPages,
+  listDocumentVersions,
+  listExpiringDocuments,
   listScannedDocuments,
   saveDocumentSchema,
   saveScannedDocument,
+  scannerDashboardStats,
+  updateDocumentSchema,
+  updateScannedDocument,
 } from "@/server/document-scanner";
 import {
   addDays,
@@ -9002,6 +9010,24 @@ function parseStoreItemMetadata(value: unknown): Record<string, unknown> {
 }
 
 async function getSoundStoreProducts(products: any[]) {
+  // The Store category itself is the source of truth. Product titles are never
+  // used to decide whether an order is a Sound booking.
+  const soundStoreCategory = await db.query.categoriesTable.findFirst({
+    where: eq(categoriesTable.nameAr, "صوتيات"),
+  });
+  if (soundStoreCategory) {
+    const soundCategoryId = soundStoreCategory.id;
+    return products.filter(
+      (product) =>
+        Number(product.categoryId) === soundCategoryId ||
+        Number(product.subcategoryId) === soundCategoryId ||
+        (Array.isArray(product.subcategoryIds) &&
+          product.subcategoryIds.some(
+            (categoryId: unknown) => Number(categoryId) === soundCategoryId,
+          )),
+    );
+  }
+
   const categoryIds = [
     ...new Set(
       products
@@ -21512,9 +21538,37 @@ async function handleDocumentScanner(
         ownerType: params.get("ownerType"),
         ownerId: params.get("ownerId") ? Number(params.get("ownerId")) : null,
         documentType: params.get("documentType"),
+        search: params.get("search"),
+        expiry: params.get("expiry"),
         limit: params.get("limit") ? Number(params.get("limit")) : undefined,
       }),
     });
+  }
+
+  // Module dashboard counters.
+  if (method === "GET" && parts[2] === "stats") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    return json(await scannerDashboardStats());
+  }
+
+  // Documents approaching or past expiry.
+  if (method === "GET" && parts[2] === "expiring") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const days = Number(req.nextUrl.searchParams.get("days") ?? 90);
+    return json({ data: await listExpiringDocuments(Number.isFinite(days) ? days : 90) });
+  }
+
+  // QR lookup: resolves a token to its document id.
+  if (method === "GET" && parts[2] === "qr" && parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const id = await getScannedDocumentByQr(String(parts[3]));
+    if (!id) return error("المستمسك غير موجود", 404);
+    const meta = await getScannedDocumentMeta(id);
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, { via: "qr" });
+    return json(meta);
   }
 
   const id = parts[2] ? int(parts[2]) : null;
@@ -21524,7 +21578,61 @@ async function handleDocumentScanner(
     if (isResponse(auth)) return auth;
     const meta = await getScannedDocumentMeta(id);
     if (!meta) return error("المستمسك غير موجود", 404);
-    return json(meta);
+    const [pages, versions] = await Promise.all([
+      listDocumentPages(id).catch(() => []),
+      listDocumentVersions(id).catch(() => []),
+    ]);
+    return json({ ...meta, pages, versions });
+  }
+
+  // Metadata edit — bumps the version and keeps the previous snapshot.
+  if ((method === "PATCH" || method === "PUT") && id && !parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_edit");
+    if (isResponse(auth)) return auth;
+    const parsed = updateDocumentSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.update", parsed);
+    const a = actor(auth);
+    const before = await getScannedDocumentMeta(id);
+    if (!before) return error("المستمسك غير موجود", 404);
+    const ok = await updateScannedDocument(id, {
+      ...parsed.data,
+      updatedBy: a.id,
+      updatedByName: a.name,
+    });
+    if (!ok) return error("تعذر التعديل", 404);
+    void logAdminActivity(req, "document_edited", "scanned_document", id, {
+      documentType: before.documentType,
+      changeSummary: parsed.data.changeSummary ?? null,
+    });
+    return json(await getScannedDocumentMeta(id));
+  }
+
+  // Protected page delivery — object storage or inline, always behind auth.
+  if (method === "GET" && id && parts[3] === "page" && parts[4]) {
+    const pageId = int(parts[4]);
+    if (!pageId) return error("رقم الصفحة غير صحيح", 400);
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const asset = await getDocumentPageBytes(id, pageId);
+    if (!asset) return error("لا توجد صورة لهذه الصفحة", 404);
+
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, {
+      documentType: meta.documentType, pageId,
+    });
+
+    return new NextResponse(new Uint8Array(asset.bytes), {
+      status: 200,
+      headers: {
+        "content-type": asset.mime,
+        // Never cached by browser, proxy or PWA service worker.
+        "cache-control": "no-store, no-cache, must-revalidate, private",
+        pragma: "no-cache",
+        "content-disposition": `inline; filename="document-${id}-p${pageId}"`,
+        "x-content-type-options": "nosniff",
+      },
+    });
   }
 
   // Protected image delivery — the only way an image ever leaves the server.

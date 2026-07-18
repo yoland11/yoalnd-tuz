@@ -22,6 +22,29 @@ const OWNER_TYPES: Array<{ value: string; label: string }> = [
 const FIELD =
   "w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+function Field({
+  label, value, onChange, ltr, type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  ltr?: boolean;
+  type?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="block text-[11px] text-muted-foreground mb-1">{label}</span>
+      <input
+        type={type}
+        dir={ltr ? "ltr" : undefined}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={FIELD}
+      />
+    </label>
+  );
+}
+
 /**
  * Optional persistence. Nothing is uploaded until the user presses save — the
  * scanner is print-first by design. Saved images go to a protected endpoint and
@@ -48,6 +71,14 @@ export default function DocumentSave({
   const [notes, setNotes] = useState("");
   const [savedId, setSavedId] = useState<number | null>(null);
 
+  // Document fields. When OCR runs it pre-fills these; the user always confirms
+  // or corrects them here before anything is stored.
+  const [fields, setFields] = useState({
+    title: "", documentNumber: "", fullName: "", nationalId: "",
+    passportNumber: "", phone: "", issueDate: "", expiryDate: "", tags: "",
+  });
+  const setField = (k: keyof typeof fields, v: string) => setFields((f) => ({ ...f, [k]: v }));
+
   const save = useMutation({
     mutationFn: () =>
       adminFetch<{ id: number }>("/admin/document-scanner", {
@@ -62,6 +93,19 @@ export default function DocumentSave({
           backImage: scans.back?.dataUrl ?? null,
           widthMm: scans.front?.widthMm ?? scans.back?.widthMm ?? null,
           heightMm: scans.front?.heightMm ?? scans.back?.heightMm ?? null,
+          // Document fields — empty strings are sent as null, not "".
+          title: fields.title || null,
+          documentNumber: fields.documentNumber || null,
+          fullName: fields.fullName || null,
+          nationalId: fields.nationalId || null,
+          passportNumber: fields.passportNumber || null,
+          phone: fields.phone || null,
+          issueDate: fields.issueDate || null,
+          expiryDate: fields.expiryDate || null,
+          tags: fields.tags
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean),
         }),
       }),
     onSuccess: (res) => {
@@ -124,6 +168,27 @@ export default function DocumentSave({
               <input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} className={FIELD} />
             </label>
           </>
+        )}
+      </div>
+
+      {/* Document fields — used by search, expiry warnings and the dashboard. */}
+      <div className="rounded-lg border border-border/20 bg-background/40 p-3 space-y-3">
+        <p className="text-xs font-semibold text-foreground">بيانات المستمسك</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <Field label="العنوان" value={fields.title} onChange={(v) => setField("title", v)} />
+          <Field label="رقم المستمسك" value={fields.documentNumber} onChange={(v) => setField("documentNumber", v)} ltr />
+          <Field label="الاسم الكامل" value={fields.fullName} onChange={(v) => setField("fullName", v)} />
+          <Field label="الرقم الوطني" value={fields.nationalId} onChange={(v) => setField("nationalId", v)} ltr />
+          <Field label="رقم الجواز" value={fields.passportNumber} onChange={(v) => setField("passportNumber", v)} ltr />
+          <Field label="رقم الهاتف" value={fields.phone} onChange={(v) => setField("phone", v)} ltr />
+          <Field label="تاريخ الإصدار" value={fields.issueDate} onChange={(v) => setField("issueDate", v)} type="date" />
+          <Field label="تاريخ الانتهاء" value={fields.expiryDate} onChange={(v) => setField("expiryDate", v)} type="date" />
+          <Field label="وسوم (بفاصلة)" value={fields.tags} onChange={(v) => setField("tags", v)} />
+        </div>
+        {fields.expiryDate && (
+          <p className="text-[11px] text-muted-foreground">
+            سيُنبّهك النظام قبل الانتهاء بـ 90 و30 و7 ويوم واحد.
+          </p>
         )}
       </div>
 

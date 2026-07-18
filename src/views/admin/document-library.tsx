@@ -24,7 +24,45 @@ type SavedDoc = {
   createdAt: string;
   hasFront: boolean;
   hasBack: boolean;
+  title?: string | null;
+  documentNumber?: string | null;
+  fullName?: string | null;
+  expiryDate?: string | null;
+  daysLeft?: number | null;
+  tags?: string[];
+  version?: number;
+  pageCount?: number;
 };
+
+function Stat({ label, value, tone }: { label: string; value: number; tone?: "warn" }) {
+  return (
+    <div className="bg-card rounded-lg border border-border/30 p-3">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className={`text-lg font-bold tabular-nums mt-0.5 ${tone === "warn" ? "text-status-warning" : "text-foreground"}`}>
+        {value ?? 0}
+      </p>
+    </div>
+  );
+}
+
+/** Colour-codes how close a document is to expiry. */
+function ExpiryBadge({ date, daysLeft }: { date?: string | null; daysLeft?: number | null }) {
+  if (!date) return null;
+  const d = daysLeft ?? null;
+  const tone =
+    d === null ? "text-muted-foreground border-border/30"
+    : d < 0 ? "bg-status-danger/10 text-status-danger border-status-danger/30"
+    : d <= 7 ? "bg-status-danger/10 text-status-danger border-status-danger/30"
+    : d <= 30 ? "bg-status-warning/10 text-status-warning border-status-warning/30"
+    : d <= 90 ? "bg-status-warning/10 text-status-warning border-status-warning/30"
+    : "bg-status-success/10 text-status-success border-status-success/30";
+  const text =
+    d === null ? date
+    : d < 0 ? `منتهية منذ ${Math.abs(d)} يوم`
+    : d === 0 ? "تنتهي اليوم"
+    : `تنتهي خلال ${d} يوم`;
+  return <span className={`text-[11px] px-2 py-0.5 rounded-full border ${tone}`}>{text}</span>;
+}
 
 const OWNER_LABELS: Record<string, string> = {
   customer: "عميل",
@@ -45,6 +83,8 @@ export default function DocumentLibraryPage() {
   const { toast } = useToast();
   const [docType, setDocType] = useState("");
   const [ownerType, setOwnerType] = useState("");
+  const [search, setSearch] = useState("");
+  const [expiry, setExpiry] = useState("");
   const [revealed, setRevealed] = useState<Record<number, boolean>>({});
   const [deleteTarget, setDeleteTarget] = useState<SavedDoc | null>(null);
   const [reason, setReason] = useState("");
@@ -60,10 +100,18 @@ export default function DocumentLibraryPage() {
   const params = new URLSearchParams();
   if (docType) params.set("documentType", docType);
   if (ownerType) params.set("ownerType", ownerType);
+  if (search.trim()) params.set("search", search.trim());
+  if (expiry) params.set("expiry", expiry);
 
   const { data, isLoading, isError, isFetching, refetch } = useQuery<{ data: SavedDoc[] }>({
-    queryKey: [...libraryKey, docType, ownerType],
+    queryKey: [...libraryKey, docType, ownerType, search, expiry],
     queryFn: () => adminFetch(`/admin/document-scanner?${params.toString()}`),
+  });
+
+  const { data: stats } = useQuery<Record<string, number>>({
+    queryKey: [...libraryKey, "stats"],
+    queryFn: () => adminFetch("/admin/document-scanner/stats"),
+    staleTime: 60_000,
   });
 
   const remove = useMutation({
@@ -121,20 +169,60 @@ export default function DocumentLibraryPage() {
         </span>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        <select value={docType} onChange={(e) => setDocType(e.target.value)} className={FIELD}>
-          <option value="">كل الأنواع</option>
-          {DOCUMENT_TYPES.map((t) => (
-            <option key={t.value} value={t.value}>{t.label}</option>
-          ))}
-        </select>
-        <select value={ownerType} onChange={(e) => setOwnerType(e.target.value)} className={FIELD}>
-          <option value="">كل الجهات</option>
-          {Object.entries(OWNER_LABELS).map(([v, l]) => (
-            <option key={v} value={v}>{l}</option>
-          ))}
-        </select>
+      {/* Dashboard counters */}
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+          <Stat label="اليوم" value={stats.today} />
+          <Stat label="هذا الشهر" value={stats.thisMonth} />
+          <Stat label="العملاء" value={stats.customers} />
+          <Stat label="الموظفون" value={stats.employees} />
+          <Stat label="الأصول والمركبات" value={stats.assets} />
+          <Stat label="العقود" value={stats.contracts} />
+          <Stat
+            label="تنتهي قريباً"
+            value={stats.expiringSoon}
+            tone={stats.expiringSoon > 0 ? "warn" : undefined}
+          />
+        </div>
+      )}
+      {Boolean(stats?.expired) && (
+        <button
+          type="button"
+          onClick={() => setExpiry(expiry === "expired" ? "" : "expired")}
+          className="w-full text-right rounded-lg border border-status-danger/30 bg-status-danger/10 p-3 text-xs text-status-danger flex items-center gap-2"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          {stats!.expired} مستمسك منتهي الصلاحية — اضغط للعرض
+        </button>
+      )}
+
+      {/* Search + filters */}
+      <div className="space-y-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="بحث: الاسم، رقم المستمسك، الرقم الوطني، الجواز، الهاتف، الوسوم، نص المستمسك…"
+          className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+        <div className="flex flex-wrap gap-2">
+          <select value={docType} onChange={(e) => setDocType(e.target.value)} className={FIELD}>
+            <option value="">كل الأنواع</option>
+            {DOCUMENT_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+          <select value={ownerType} onChange={(e) => setOwnerType(e.target.value)} className={FIELD}>
+            <option value="">كل الجهات</option>
+            {Object.entries(OWNER_LABELS).map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+          <select value={expiry} onChange={(e) => setExpiry(e.target.value)} className={FIELD}>
+            <option value="">كل الصلاحيات</option>
+            <option value="expiring">تنتهي خلال 90 يوماً</option>
+            <option value="expired">منتهية</option>
+          </select>
+        </div>
       </div>
 
       {isError ? (
@@ -152,8 +240,23 @@ export default function DocumentLibraryPage() {
             return (
               <div key={doc.id} className="bg-card rounded-xl border border-border/30 p-3 sm:p-4 space-y-3">
                 <div className="flex items-start justify-between flex-wrap gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">{typeLabel(doc.documentType)}</p>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-semibold text-foreground">
+                        {doc.title || typeLabel(doc.documentType)}
+                      </p>
+                      <ExpiryBadge date={doc.expiryDate} daysLeft={doc.daysLeft} />
+                      {(doc.version ?? 1) > 1 && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full border border-border/30 text-muted-foreground">
+                          نسخة {doc.version}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {typeLabel(doc.documentType)}
+                      {doc.documentNumber ? ` · ${doc.documentNumber}` : ""}
+                      {doc.fullName ? ` · ${doc.fullName}` : ""}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {doc.ownerType
                         ? `${OWNER_LABELS[doc.ownerType] ?? doc.ownerType}${doc.ownerName ? `: ${doc.ownerName}` : ""}${doc.ownerId ? ` (#${doc.ownerId})` : ""}`
@@ -161,8 +264,17 @@ export default function DocumentLibraryPage() {
                     </p>
                     <p className="text-[11px] text-muted-foreground">
                       {doc.createdByName} · {new Date(doc.createdAt).toLocaleString("ar-IQ")}
-                      {doc.widthMm ? ` · ${doc.widthMm} × ${doc.heightMm} ملم` : ""}
+                      {doc.pageCount ? ` · ${doc.pageCount} صفحة` : ""}
                     </p>
+                    {(doc.tags?.length ?? 0) > 0 && (
+                      <div className="flex gap-1 flex-wrap mt-1">
+                        {doc.tags!.map((t) => (
+                          <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-1.5">
                     <Button
