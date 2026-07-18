@@ -13319,6 +13319,12 @@ function addressPayload(row: any) {
     landmark: row.landmark,
     notes: row.notes,
     isDefault: row.isDefault,
+    // Province delivery fields (nullable on legacy rows).
+    provinceId: row.provinceId ?? null,
+    district: row.district ?? "",
+    area: row.area ?? "",
+    altPhone: row.altPhone ?? null,
+    mapsUrl: row.mapsUrl ?? null,
     createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
     updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
   };
@@ -29969,7 +29975,9 @@ async function handleSalesInvoices(
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
     const qr = await ensureQrForEntity("invoice", inv, req);
     const lastPayments = await collectionLastPayments("sales_invoice", [id]);
-    return json({ ...inv, items, qr, lastPayment: lastPayments.get(id) ?? null });
+    const deliveryRow = await getInvoiceDelivery(id);
+    const delivery = deliveryRow ? formatDeliveryDetail(deliveryRow.detail, deliveryRow.order) : null;
+    return json({ ...inv, items, qr, delivery, lastPayment: lastPayments.get(id) ?? null });
   }
 
   if (method === "POST") {
@@ -29996,7 +30004,41 @@ async function handleSalesInvoices(
     if (couponDiscountAmount > discountAmount)
       discountAmount = couponDiscountAmount;
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
-    const total = Math.max(subtotal - discountAmount + taxAmount, 0);
+
+    // ── Province delivery — resolve the fee server-side, never trust the client ──
+    const deliveryPrepResult = await prepareInvoiceDelivery(b.delivery, subtotal);
+    if (!deliveryPrepResult.ok) return error(deliveryPrepResult.message, 400);
+    const deliveryPrep = deliveryPrepResult.data;
+    let deliveryFee = 0;
+    let deliveryCodFee = 0;
+    let deliveryOverridden = false;
+    let deliveryOverrideReason: string | null = null;
+    if (deliveryPrep) {
+      deliveryFee = deliveryPrep.resolvedFee;
+      deliveryCodFee = deliveryPrep.codFee;
+      // A manual fee is honored only for users with the override permission and
+      // a reason; otherwise the resolved fee stands. Overrides are audit-logged.
+      const requestedFee = deliveryPrep.input.deliveryFee;
+      if (
+        requestedFee !== undefined &&
+        Math.abs(requestedFee - deliveryPrep.resolvedFee) >= 0.01 &&
+        deliveryPrep.method === "province"
+      ) {
+        if (hasPermission(auth, "delivery_fee_override")) {
+          const reason = textFallback(deliveryPrep.input.feeOverrideReason);
+          if (!reason) return error("سبب تعديل أجور التوصيل مطلوب", 400);
+          deliveryFee = requestedFee;
+          deliveryOverridden = true;
+          deliveryOverrideReason = reason;
+        }
+        // Without the permission the resolved fee is kept silently.
+      }
+    }
+
+    const total = Math.max(
+      subtotal - discountAmount + taxAmount + deliveryFee + deliveryCodFee,
+      0,
+    );
     const paymentMethod = b.paymentMethod ?? "cash";
     const payment = paymentSummary(
       total,
@@ -30099,6 +30141,46 @@ async function handleSalesInvoices(
       });
     }
 
+    // ── Persist delivery detail + auto-create one delivery order (idempotent) ──
+    let deliveryResult: Awaited<ReturnType<typeof persistInvoiceDelivery>> | null = null;
+    if (deliveryPrep) {
+      try {
+        deliveryResult = await persistInvoiceDelivery({
+          salesInvoiceId: inv.id,
+          prep: deliveryPrep,
+          finalFee: deliveryFee,
+          overridden: deliveryOverridden,
+          overrideReason: deliveryOverrideReason,
+          // COD collects the unpaid balance on delivery.
+          codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
+          customerId: b.customerId ?? null,
+          actor: a,
+        });
+        if (deliveryResult.created) {
+          void logAdminActivity(req, "delivery_added", "sales_invoice", inv.id, {
+            method: deliveryPrep.method,
+            provinceName: deliveryPrep.province?.governorateAr ?? null,
+            deliveryFee,
+            deliveryNo: deliveryResult.deliveryOrder?.deliveryNo ?? null,
+            overridden: deliveryOverridden,
+            overrideReason: deliveryOverrideReason,
+          });
+          if (deliveryResult.deliveryOrder) {
+            void notifyTelegramDelivery({
+              event: "delivery_created",
+              title: "🚚 تم إنشاء طلب توصيل",
+              deliveryNo: deliveryResult.deliveryOrder.deliveryNo,
+              provinceName: deliveryPrep.province?.governorateAr ?? null,
+              receiverName: deliveryPrep.input.receiverName ?? null,
+              statusLabel: DELIVERY_STATUS_LABELS.pending_prep,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("delivery persistence failed", { invoiceId: inv.id, err });
+      }
+    }
+
     const final = await db.query.salesInvoicesTable.findFirst({
       where: eq(salesInvoicesTable.id, inv.id),
     });
@@ -30154,13 +30236,17 @@ async function handleSalesInvoices(
         items: finalItems,
       });
     }
+    const deliveryPayload = deliveryResult
+      ? formatDeliveryDetail(deliveryResult.deliveryDetail, deliveryResult.deliveryOrder)
+      : null;
     return json(
       {
         ...final,
         qr,
         items: finalItems,
         financialTransaction,
-        invoice: final ? { ...final, qr } : final,
+        delivery: deliveryPayload,
+        invoice: final ? { ...final, qr, delivery: deliveryPayload } : final,
       },
       201,
     );
