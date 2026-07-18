@@ -485,6 +485,18 @@ export const ALL_PERMISSIONS = [
   "execution_team_assign",
   "execution_photos_upload",
   "execution_checklist_manage",
+  // Staff Kosha Portal. These permissions are deliberately separate from the
+  // administrative `koshas` umbrella so a crew member never inherits access
+  // to every booking merely by being able to execute one.
+  "kosha_assigned_view",
+  "kosha_assigned_status_update",
+  "kosha_booking_qr_scan",
+  "kosha_asset_qr_scan",
+  "kosha_warehouse_issue_confirm",
+  "kosha_asset_return_confirm",
+  "kosha_task_complete",
+  "kosha_damage_report",
+  "kosha_execution_notes",
   "photography",
   "graduation",
   "hr",
@@ -36622,6 +36634,89 @@ function eventExecutionState(details: Record<string, any>) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
+/** Administrative access is intentionally distinct from staff execution access. */
+function canManageAllKoshaBookings(user: AdminUser) {
+  return user.role === "admin" || user.role === "manager" || hasPermission(user, "koshas");
+}
+
+function executionTeamIncludes(details: Record<string, any>, staffId: number) {
+  const state = eventExecutionState(details);
+  const team = [state.team, details.team, details.executionTeam, details.assignedTeam]
+    .filter(Array.isArray)
+    .flat();
+  return team.some((member: any) => Number(member?.staffId ?? member?.id) === staffId);
+}
+
+async function staffCanAccessExecution(
+  user: AdminUser,
+  reference: BookingOperationsReference,
+) {
+  if (canManageAllKoshaBookings(user)) return true;
+  const assigned = Number(reference.row.assignedStaffId ?? reference.row.assigned_staff_id ?? reference.details.assignedStaffId ?? 0);
+  if (assigned === user.id || executionTeamIncludes(reference.details, user.id)) return true;
+  const task = await db.query.tasksTable.findFirst({
+    where: and(
+      eq(tasksTable.relatedType, reference.entityType),
+      eq(tasksTable.relatedId, reference.id),
+      sql`${tasksTable.archivedAt} is null`,
+      sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([user.id])}::jsonb`,
+    ),
+  });
+  return Boolean(task);
+}
+
+async function koshaRowsVisibleToStaff(rows: any[], user: AdminUser) {
+  if (canManageAllKoshaBookings(user)) return rows;
+  const visible = await Promise.all(rows.map(async (row) => {
+    const details = (row.bookingDetails ?? {}) as Record<string, any>;
+    return (await staffCanAccessExecution(user, {
+      source: "kosha", entityType: "kosha_booking", id: row.id, row, details,
+      operations: bookingOperationsState(details), customerName: row.customerName,
+      customerId: row.customerId ?? null, eventDate: row.eventDate ?? null,
+    })) ? row : null;
+  }));
+  return visible.filter(Boolean);
+}
+
+function staffExecutionView(detail: any, user: AdminUser) {
+  const state = detail.state ?? {};
+  return {
+    source: detail.source,
+    entityType: detail.entityType,
+    id: detail.id,
+    services: detail.services,
+    // Never return financial fields, asset valuation, depreciation or audit
+    // data to the staff portal. UI hiding is not the authorization boundary.
+    state: {
+      mainStage: state.mainStage,
+      warehouseStage: state.warehouseStage,
+      team: Array.isArray(state.team) ? state.team.map((item: any) => ({ name: item.name, role: item.role, task: item.task, status: item.status })) : [],
+      staffNotes: Array.isArray(state.staffNotes) ? state.staffNotes : [],
+    },
+    booking: {
+      id: detail.booking.id,
+      number: detail.booking.number,
+      customerName: detail.booking.customerName,
+      phone: detail.booking.phone,
+      eventDate: detail.booking.eventDate,
+      eventTime: detail.booking.eventTime,
+      venue: detail.booking.venue,
+      eventType: detail.booking.eventType,
+      status: detail.booking.status,
+    },
+    setup: detail.setup ? {
+      kosha: detail.setup.kosha ? { name: detail.setup.kosha.name, image: detail.setup.kosha.image, specs: detail.setup.kosha.specs } : null,
+      welcomeBoards: detail.setup.welcomeBoards?.map((item: any) => ({ name: item.name, image: item.image })) ?? [],
+      addons: detail.setup.addons?.map((item: any) => ({ name: item.name, image: item.image })) ?? [],
+      accessories: detail.setup.accessories?.map((item: any) => ({ name: item.name, image: item.image })) ?? [],
+    } : null,
+    assets: detail.assets.map((item: any) => ({ productId: item.productId, name: item.name, assetCode: item.assetCode, quantity: item.quantity, out: item.out, returned: item.returned, stage: item.stage, status: item.status, barcode: item.barcode, qrToken: item.qrToken, problem: item.problem })),
+    tasks: detail.tasks.filter((item: any) => (item.assignedStaffIds ?? []).includes(user.id)).map((item: any) => ({ id: item.id, title: item.title, description: item.description, status: item.status, dueAt: item.dueAt, assignedStaffIds: item.assignedStaffIds ?? [] })),
+    photos: detail.photos,
+    timeline: detail.timeline.filter((item: any) => !/payment|financial|ledger|cashbox/i.test(`${item.type} ${item.title}`)).slice(0, 40),
+  };
+}
+
 function normalizeEventExecutionStage(value: unknown) {
   const stage = String(value ?? "").trim();
   const legacy: Record<string, string> = {
@@ -36720,6 +36815,10 @@ async function executionPortalRows() {
       ...(String(ops.warehouseStage ?? "reserved") === "out" ? ["معدات خارج المستودع"] : []),
     ];
     const team = Array.isArray(state.team) ? state.team : [];
+    const assignedStaffIds = Array.from(new Set([
+      Number(raw.assignedStaffId ?? raw.assigned_staff_id ?? details.assignedStaffId ?? 0),
+      ...team.map((item: any) => Number(item?.staffId ?? item?.id ?? 0)),
+    ].filter((id) => Number.isInteger(id) && id > 0)));
     const executionStage = state.mainStage || normalizeEventExecutionStage(raw.executionStage || ops.bookingStage);
     return [{
       source, id: raw.id, key: `${source}:${raw.id}`,
@@ -36733,6 +36832,7 @@ async function executionPortalRows() {
       responsibleTeam: team.map((item: any) => item.name).filter(Boolean).join("، ") || details.primaryEmployeeName || details.crewName || "غير معيّن",
       total, paid, remaining: Number(raw.remainingAmount ?? Math.max(0, total - paid)), alerts,
       cancelled: String(raw.status) === "cancelled", completed: ["completed", "delivered"].includes(String(raw.status)) || executionStage === "completed",
+      assignedStaffIds,
     }];
   }).sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || a.id - b.id);
 }
@@ -36983,13 +37083,34 @@ async function handleStaffPortal(
 
   // Everything below requires either the legacy Kosha umbrella or a scoped
   // Event Execution Portal permission. Historical roles keep working.
-  const auth = await requireAnyPermission(req, ["koshas", "kosha_portal_view", "kosha_execution_view"]);
+  const auth = await requireAnyPermission(req, ["koshas", "kosha_portal_view", "kosha_execution_view", "kosha_assigned_view"]);
   if (isResponse(auth)) return auth;
   const canPortal = (permission: Permission) => auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "koshas") || hasPermission(auth, permission);
+  const staffScoped = !canManageAllKoshaBookings(auth);
+
+  // Legacy `/bookings/*` calls are still supported for older clients, but a
+  // staff session is constrained before any detail or mutation is processed.
+  if (staffScoped && resource === "bookings" && id) {
+    const reference = await loadBookingOperationsReference("kosha", id);
+    if (!reference || !(await staffCanAccessExecution(auth, reference))) return error("الحجز غير موجود", 404);
+  }
 
   // ── Unified Event Execution Portal list (Kosha + service orders) ──
   if (resource === "execution-bookings" && method === "GET") {
     let rows = await executionPortalRows();
+    if (staffScoped) {
+      const assignedTasks = await db.query.tasksTable.findMany({
+        where: and(
+          sql`${tasksTable.archivedAt} is null`,
+          sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`,
+          inArray(tasksTable.relatedType, ["kosha_booking", "service_order"]),
+        ),
+        columns: { relatedType: true, relatedId: true },
+        limit: 1000,
+      });
+      const taskKeys = new Set(assignedTasks.map((task: any) => `${task.relatedType === "kosha_booking" ? "kosha" : "service"}:${task.relatedId}`));
+      rows = rows.filter((row: any) => row.assignedStaffIds.includes(auth.id) || taskKeys.has(row.key));
+    }
     const filter = String(req.nextUrl.searchParams.get("filter") ?? "all");
     const search = String(req.nextUrl.searchParams.get("search") ?? "").trim().toLowerCase();
     const today = baghdadToday();
@@ -37011,7 +37132,8 @@ async function handleStaffPortal(
     else if (filter === "cancelled") rows = rows.filter((row) => row.cancelled);
     else rows = rows.filter((row) => !row.cancelled);
     if (search) rows = rows.filter((row) => [row.number, row.customerName, row.phone, row.venue, row.location, row.services.map((item: any) => item.label).join(" ")].join(" ").toLowerCase().includes(search));
-    return json({ data: rows, today, counts: { total: rows.length, today: rows.filter((row) => row.eventDate === today).length, equipmentOut: rows.filter((row) => ["out", "loaded"].includes(row.warehouseStage)).length, inspection: rows.filter((row) => row.executionStage === "inspection" || row.warehouseStage === "inspection").length, alerts: rows.reduce((sum, row) => sum + row.alerts.length, 0) } });
+    const data = rows.map(({ assignedStaffIds: _assignedStaffIds, ...row }: any) => row);
+    return json({ data, today, counts: { total: data.length, today: data.filter((row) => row.eventDate === today).length, equipmentOut: data.filter((row) => ["out", "loaded"].includes(row.warehouseStage)).length, inspection: data.filter((row) => row.executionStage === "inspection" || row.warehouseStage === "inspection").length, alerts: data.reduce((sum, row) => sum + row.alerts.length, 0) } });
   }
 
   // ── Unified execution detail/state/photos/tasks ──
@@ -37022,18 +37144,31 @@ async function handleStaffPortal(
     if (!executionId || !["kosha", "service"].includes(executionSource)) return error("مسار حجز التنفيذ غير صحيح", 400);
     const reference = await loadBookingOperationsReference(executionSource, executionId);
     if (!reference) return error("الحجز غير موجود", 404);
+    if (staffScoped && !(await staffCanAccessExecution(auth, reference))) return error("الحجز غير موجود", 404);
 
     if (!executionAction && method === "GET") {
       const detail = await loadEventExecutionDetail(executionSource, executionId);
-      return detail ? json(detail) : error("الحجز غير موجود", 404);
+      return detail ? json(staffScoped ? staffExecutionView(detail, auth) : detail) : error("الحجز غير موجود", 404);
+    }
+
+    if (executionAction === "verify-qr" && method === "POST") {
+      if (!hasPermission(auth, "kosha_booking_qr_scan") && !canPortal("kosha_execution_view")) return error("ليس لديك صلاحية مسح QR الحجز", 403);
+      const scanned = String((await body(req))?.code ?? "").trim();
+      const number = String(reference.row.trackingCode || `${executionSource === "kosha" ? "KB" : "SRV"}-${String(executionId).padStart(5, "0")}`);
+      if (!scanned || (!scanned.includes(number) && scanned !== String(executionId))) return error("رمز QR لا يخص هذا الحجز", 409);
+      await addEntityTimeline({ entityType: reference.entityType, entityId: executionId, type: "booking_qr_verified", title: "تم التحقق من QR الحجز", actor: erpActorFromAdmin(auth) });
+      return json({ ok: true });
     }
 
     if (executionAction === "state" && method === "PATCH") {
-      if (!canPortal("kosha_execution_edit")) return error("ليس لديك صلاحية تعديل تنفيذ الحجز", 403);
+      if (!canPortal("kosha_execution_edit") && !hasPermission(auth, "kosha_assigned_status_update")) return error("ليس لديك صلاحية تعديل تنفيذ الحجز", 403);
       const b = await body(req);
       const section = String(b?.section ?? "main");
-      const allowed = new Set(["main", "kosha", "sound", "lighting", "furniture", "decoration", "team", "financial"]);
+      const allowed = new Set(["main", "kosha", "sound", "lighting", "furniture", "decoration", "team", "financial", "warehouse", "notes"]);
       if (!allowed.has(section)) return error("قسم التنفيذ غير صحيح", 400);
+      if (staffScoped && !["main", "warehouse", "notes"].includes(section)) return error("إجراء الموظف يجب أن يكون ضمن التنفيذ أو المستودع أو الملاحظات", 403);
+      if (staffScoped && section === "warehouse" && !hasPermission(auth, "kosha_warehouse_issue_confirm") && !hasPermission(auth, "kosha_asset_return_confirm")) return error("ليس لديك صلاحية تأكيد حركة المستودع", 403);
+      if (staffScoped && section === "notes" && !hasPermission(auth, "kosha_execution_notes")) return error("ليس لديك صلاحية إضافة ملاحظات التنفيذ", 403);
       const permission: Partial<Record<string, Permission>> = { kosha: "kosha_details_manage", sound: "sound_details_manage", lighting: "lighting_details_manage", furniture: "decor_details_manage", decoration: "decor_details_manage", team: "execution_team_assign" };
       const sectionPermission = permission[section];
       if (sectionPermission && !canPortal(sectionPermission)) return error("ليس لديك صلاحية إدارة هذا القسم", 403);
@@ -37047,7 +37182,8 @@ async function handleStaffPortal(
       const sections = { ...(state.sections ?? {}) };
       const current = section === "main" ? String(state.mainStage ?? "booked") : String(sections[section]?.stage ?? "");
       const requestedStage = b?.stage == null ? null : String(b.stage);
-      const workflow = section === "main" ? EVENT_EXECUTION_MAIN_STAGES : EVENT_EXECUTION_SECTION_STAGES[section];
+      const workflow = section === "main" ? EVENT_EXECUTION_MAIN_STAGES : section === "warehouse" ? BOOKING_WAREHOUSE_STAGES : EVENT_EXECUTION_SECTION_STAGES[section];
+      if (staffScoped && section === "main" && requestedStage === "completed") return error("إغلاق الحجز من صلاحيات الإدارة فقط", 403);
       if (requestedStage && workflow) {
         if (!workflow.includes(requestedStage)) return error("مرحلة التنفيذ غير صحيحة", 400);
         const currentIndex = current ? workflow.indexOf(current) : -1;
@@ -37055,6 +37191,15 @@ async function handleStaffPortal(
         if (requestedStage !== current && nextIndex !== currentIndex + 1) return error("يجب تنفيذ المراحل بالترتيب", 409);
       }
       const incoming = b?.data && typeof b.data === "object" && !Array.isArray(b.data) ? b.data : {};
+      if (staffScoped && section === "notes") {
+        const note = String(incoming.note ?? "").trim().slice(0, 2000);
+        if (!note) return error("اكتب ملاحظة التنفيذ", 422);
+        const notes = Array.isArray(state.staffNotes) ? state.staffNotes : [];
+        const nextState = { ...state, staffNotes: [...notes, { note, staffId: auth.id, staffName: auth.fullName || auth.username, createdAt: new Date().toISOString() }].slice(-100), updatedAt: new Date().toISOString() };
+        await saveEventExecutionState(reference, nextState);
+        await addEntityTimeline({ entityType: reference.entityType, entityId: executionId, type: "execution_staff_note", title: "ملاحظة تنفيذ", body: note, actor: erpActorFromAdmin(auth) });
+        return json({ ok: true, state: nextState });
+      }
       if (section === "sound" && requestedStage === "ready") {
         const checklist = { ...(sections.sound?.checklist ?? {}), ...(incoming.checklist ?? {}) };
         const required = ["speakersConnected", "mixerTested", "microphonesTested", "cablesChecked", "backupPowerChecked", "soundLevelTested", "managerConfirmed"];
@@ -37078,6 +37223,13 @@ async function handleStaffPortal(
       }
       let nextState: Record<string, any>;
       if (section === "main") nextState = { ...state, ...incoming, mainStage: requestedStage ?? state.mainStage ?? "booked", updatedAt: new Date().toISOString() };
+      else if (section === "warehouse") {
+        const nextWarehouseStage = requestedStage ?? state.warehouseStage ?? "reserved";
+        if (staffScoped && nextWarehouseStage === "out" && !hasPermission(auth, "kosha_warehouse_issue_confirm")) return error("ليس لديك صلاحية تأكيد إخراج المعدات", 403);
+        if (staffScoped && ["returned", "inspection", "completed"].includes(nextWarehouseStage) && !hasPermission(auth, "kosha_asset_return_confirm")) return error("ليس لديك صلاحية تأكيد إرجاع المعدات", 403);
+        nextState = { ...state, warehouseStage: nextWarehouseStage, updatedAt: new Date().toISOString() };
+        await saveBookingOperations(reference, { ...operationState, warehouseStage: nextWarehouseStage, updatedAt: new Date().toISOString() });
+      }
       else if (section === "team") nextState = { ...state, team: Array.isArray(b?.data?.team) ? b.data.team.slice(0, 30) : state.team ?? [], updatedAt: new Date().toISOString() };
       else nextState = { ...state, sections: { ...sections, [section]: { ...(sections[section] ?? {}), ...incoming, stage: requestedStage ?? sections[section]?.stage ?? null, updatedAt: new Date().toISOString() } }, updatedAt: new Date().toISOString() };
       await saveEventExecutionState(reference, nextState);
@@ -37101,7 +37253,20 @@ async function handleStaffPortal(
         }
       }
       await addEntityTimeline({ entityType: reference.entityType, entityId: executionId, type: "execution_photos_uploaded", title: "تم رفع صور التنفيذ", body: `${media.length} ملف · ${purpose}`, actor: erpActorFromAdmin(auth), metadata: { purpose, count: media.length } });
-      return json(await loadEventExecutionDetail(executionSource, executionId));
+      const detail = await loadEventExecutionDetail(executionSource, executionId);
+      return json(staffScoped && detail ? staffExecutionView(detail, auth) : detail);
+    }
+
+    if (executionAction === "tasks" && method === "POST" && parts[7] === "complete") {
+      if (!hasPermission(auth, "kosha_task_complete") && !canPortal("booking_tasks_manage")) return error("ليس لديك صلاحية إكمال المهمة", 403);
+      const taskId = int(parts[6]);
+      if (!taskId) return error("معرّف المهمة غير صحيح", 400);
+      const task = await db.query.tasksTable.findFirst({ where: and(eq(tasksTable.id, taskId), eq(tasksTable.relatedType, reference.entityType), eq(tasksTable.relatedId, executionId), sql`${tasksTable.archivedAt} is null`) });
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (staffScoped && !(task.assignedStaffIds ?? []).includes(auth.id)) return error("هذه المهمة غير معيّنة لك", 403);
+      const [updated] = await db.update(tasksTable).set({ status: "completed", completedAt: new Date(), updatedAt: new Date() }).where(eq(tasksTable.id, taskId)).returning();
+      await addEntityTimeline({ entityType: reference.entityType, entityId: executionId, type: "execution_task_completed", title: "تم إكمال مهمة التنفيذ", body: updated.title, actor: erpActorFromAdmin(auth), metadata: { taskId } });
+      return json({ ok: true, task: formatTask(updated) });
     }
 
     if (executionAction === "suggest-tasks" && method === "POST") {
@@ -37205,6 +37370,11 @@ async function handleStaffPortal(
     if (action === "assets" && method === "POST") {
       const b = await body(req);
       const mode = String(b?.mode ?? "checkout"); // resolve | checkout | return | link | setqty | unlink
+      if (staffScoped && ["link", "setqty", "unlink"].includes(mode)) return error("ربط الأصول وتعديل الكميات من صلاحيات الإدارة", 403);
+      if (staffScoped && mode === "resolve" && !hasPermission(auth, "kosha_asset_qr_scan")) return error("ليس لديك صلاحية مسح QR الأصل", 403);
+      if (staffScoped && mode === "checkout" && !hasPermission(auth, "kosha_warehouse_issue_confirm")) return error("ليس لديك صلاحية تأكيد إخراج الأصل", 403);
+      if (staffScoped && mode === "return" && String(b?.problem ?? "none") === "none" && !hasPermission(auth, "kosha_asset_return_confirm")) return error("ليس لديك صلاحية تأكيد إرجاع الأصل", 403);
+      if (staffScoped && mode === "return" && String(b?.problem ?? "none") !== "none" && !hasPermission(auth, "kosha_damage_report")) return error("ليس لديك صلاحية الإبلاغ عن تلف أو نقص", 403);
       const productId = (optionalPositiveId(b?.productId) ?? 0) || (await resolveCode(String(b?.code ?? "")));
       if (!productId) return error("لم يتم التعرف على المنتج/الأصل", 404);
 
@@ -37268,6 +37438,13 @@ async function handleStaffPortal(
       const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
       const cost = String(Number(product?.costPrice ?? 0));
       if (problem === "lost") {
+        if (staffScoped) {
+          const report = { productId, name: product?.nameAr || product?.name || `#${productId}`, problem: "missing", note, reportedBy: auth.id, reportedAt: new Date().toISOString(), status: "pending_approval" };
+          const state = eventExecutionState(details);
+          await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, eventExecution: { ...state, damageReports: [...(Array.isArray(state.damageReports) ? state.damageReports : []), report].slice(-100) } }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
+          await addEntityTimeline({ entityType: "kosha_booking", entityId: id, type: "asset_missing_reported", title: "بلاغ نقص بانتظار اعتماد الإدارة", body: `${report.name}${note ? ` · ${note}` : ""}`, actor: erpActorFromAdmin(auth), metadata: report });
+          return json({ ok: true, productId, name: report.name, status: "pending_approval" });
+        }
         if (b?.managerApproval !== true) return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
         await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" })
           .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
@@ -37305,7 +37482,8 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
-    const active = rows.filter(
+    const visibleRows = await koshaRowsVisibleToStaff(rows, auth);
+    const active = visibleRows.filter(
       (r: any) => String(r.status ?? "") !== "cancelled",
     );
     const counts: Record<CrewBucket, number> = {
@@ -37347,6 +37525,7 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
+    rows = await koshaRowsVisibleToStaff(rows, auth);
     rows = rows.filter((r: any) => String(r.status ?? "") !== "cancelled");
     if (bucket && bucket !== "all")
       rows = rows.filter((r: any) => crewBucket(r, today) === bucket);
@@ -37372,7 +37551,10 @@ async function handleStaffPortal(
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
     const detail = await loadKoshaBookingDetail(id);
-    return detail ? json(detail) : error("الحجز غير موجود", 404);
+    if (!detail) return error("الحجز غير موجود", 404);
+    if (!staffScoped) return json(detail);
+    const { totalAmount, paidAmount, remainingAmount, paymentStatus, ...booking } = detail.booking as any;
+    return json({ ...detail, booking, paymentRequests: [] });
   }
 
   // ── Change execution stage ──

@@ -356,8 +356,8 @@ export default function Admin() {
           </Route>
           <Route path="/admin/koshas">
             {() => (
-              <Guard me={me} perm="services">
-                <AdminKoshasPage />
+              <Guard me={me} anyPerm={["kosha_portal_view", "koshas", "orders"]}>
+                <BookingCenterPage />
               </Guard>
             )}
           </Route>
