@@ -192,6 +192,31 @@ export function sheetReportCss(size: "a4" | "a5" = "a4") {
   `;
 }
 
+/**
+ * Shared depreciation report styles.  Both the browser print window and the
+ * downloadable PDF preview use this builder so A4 and thermal never drift.
+ */
+export function depreciationReportCss(kind: "a4" | "80mm") {
+  if (kind === "80mm") return `${thermalReceiptCss("80mm")}
+    .depreciation-thermal .asset { padding:4px 0; border-bottom:1.5px solid #000; }
+    .depreciation-thermal .asset b { display:block; font-size:1.03em; }
+    .depreciation-thermal .asset .line { display:flex; justify-content:space-between; gap:5px; font-size:.88em; }
+    .depreciation-thermal .filter-note { font-size:.82em; line-height:1.45; }
+  `;
+  return `${sheetReportCss("a4")}
+    @page { size:A4 portrait; margin:10mm; }
+    .depreciation-sheet { min-height:277mm; }
+    .depreciation-sheet .report-summary { grid-template-columns:repeat(5,1fr); }
+    .depreciation-sheet .filter-note { border:1px solid #000; padding:7px; margin:10px 0; font-size:10px; }
+    .depreciation-sheet .report-table { font-size:9px; }
+    .depreciation-sheet .report-table thead { display:table-header-group; }
+    .depreciation-sheet .report-table tr { break-inside:avoid; page-break-inside:avoid; }
+    .depreciation-sheet .report-table .num { direction:ltr; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .depreciation-sheet .print-page { position:fixed; bottom:2mm; left:10mm; right:10mm; display:flex; justify-content:space-between; font-size:9px; }
+    .depreciation-sheet .page-counter:after { content:"صفحة " counter(page); }
+  `;
+}
+
 /** Shared A4 salary-slip layout. Keep salary printing out of view-local CSS. */
 export function salarySlipCss() {
   return `

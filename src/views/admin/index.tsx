@@ -37,6 +37,7 @@ const AssetNewPage = lazy(() => import("./asset-new"));
 const AssetGatePage = lazy(() => import("./asset-gate"));
 const AssetReportsPage = lazy(() => import("./asset-reports"));
 const DepreciationCategoriesPage = lazy(() => import("./depreciation-categories"));
+const DepreciationPage = lazy(() => import("./depreciation"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const ProductionPage = lazy(() => import("./production"));
@@ -357,8 +358,8 @@ export default function Admin() {
           </Route>
           <Route path="/admin/koshas">
             {() => (
-              <Guard me={me} anyPerm={["kosha_portal_view", "koshas", "orders"]}>
-                <BookingCenterPage />
+              <Guard me={me} perm="services">
+                <AdminKoshasPage />
               </Guard>
             )}
           </Route>
@@ -827,6 +828,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} anyPerm={["products", "depreciation_categories_view"]}>
                 <DepreciationCategoriesPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/assets/depreciation">
+            {() => (
+              <Guard me={me} anyPerm={["products", "depreciation_view"]}>
+                <DepreciationPage />
               </Guard>
             )}
           </Route>

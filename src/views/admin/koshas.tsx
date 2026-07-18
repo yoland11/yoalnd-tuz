@@ -903,7 +903,7 @@ function KoshaHub() {
         <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
       </div>
       <Link
-        href="/admin/bookings"
+        href="/staff/koshas"
         className="group flex flex-col gap-4 overflow-hidden rounded-2xl border border-primary/25 bg-gradient-to-l from-primary/15 via-card to-card p-5 shadow-sm transition hover:border-primary/45 sm:flex-row sm:items-center sm:justify-between"
       >
         <div>

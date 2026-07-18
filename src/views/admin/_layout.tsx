@@ -208,9 +208,9 @@ export const NAV: NavItem[] = [
   },
   {
     href: "/admin/koshas",
-    label: "بوابة الكوشات والتنفيذ",
+    label: "إدارة الكوشات",
     icon: Sparkles,
-    perm: "kosha_portal_view",
+    perm: "services",
   },
   {
     href: "/admin/kosha-packages",
@@ -554,7 +554,7 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
-    href: "/admin/assets",
+    href: "/admin/assets/depreciation",
     label: "إهلاك الأصول",
     icon: Package,
     perm: "products",

@@ -111,10 +111,8 @@ export const staffApi = {
   dashboard: () => adminFetch<{ today: string; counts: Record<Bucket, number>; todayBookings: CrewBooking[]; tomorrowBookings: CrewBooking[] }>(`${base}/dashboard`),
   executionBookings: (filter = "all", search = "") => adminFetch<{ data: ExecutionBooking[]; today: string; counts: { total: number; today: number; equipmentOut: number; inspection: number; alerts: number } }>(`${base}/execution-bookings?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}`),
   execution: (source: "kosha" | "service", id: number) => adminFetch<ExecutionDetail>(`${base}/execution/${source}/${id}`),
-  verifyBookingQr: (source: "kosha" | "service", id: number, code: string) => adminFetch<{ ok: boolean }>(`${base}/execution/${source}/${id}/verify-qr`, { method: "POST", body: JSON.stringify({ code }) }),
   updateExecution: (source: "kosha" | "service", id: number, payload: { section: string; stage?: string; data?: Record<string, any> }) => adminFetch<{ ok: boolean; state: Record<string, any> }>(`${base}/execution/${source}/${id}/state`, { method: "PATCH", body: JSON.stringify(payload) }),
   uploadExecutionPhotos: (source: "kosha" | "service", id: number, purpose: string, media: MediaInput[]) => adminFetch<ExecutionDetail>(`${base}/execution/${source}/${id}/photos`, { method: "POST", body: JSON.stringify({ purpose, media }) }),
-  completeExecutionTask: (source: "kosha" | "service", id: number, taskId: number) => adminFetch<{ ok: boolean }>(`${base}/execution/${source}/${id}/tasks/${taskId}/complete`, { method: "POST", body: "{}" }),
   suggestExecutionTasks: (source: "kosha" | "service", id: number) => adminFetch<{ ok: boolean; created: number }>(`${base}/execution/${source}/${id}/suggest-tasks`, { method: "POST", body: "{}" }),
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),

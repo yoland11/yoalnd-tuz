@@ -61,6 +61,11 @@ function BookingCard({ b }: { b: CrewBooking }) {
         </div>
         <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${STAGE_BADGE[b.executionStage] ?? "bg-muted"}`}>{STAGE_LABEL[b.executionStage]}</span>
       </div>
+      {isKoshaPendingPricing(b) ? (
+        <div className="mt-2 text-xs font-medium text-primary">بانتظار التسعير من الإدارة</div>
+      ) : b.remainingAmount > 0 ? (
+        <div className="mt-2 text-xs font-medium text-destructive">متبقٍ: {money(b.remainingAmount)} د.ع</div>
+      ) : null}
     </Link>
   );
 }
@@ -74,7 +79,7 @@ const EXECUTION_FILTERS = [
 function ExecutionBookingCard({ booking }: { booking: ExecutionBooking }) {
   return <Link href={`/staff/koshas/execution/${booking.source}/${booking.id}`} className="block rounded-xl border border-border bg-card p-3 transition-colors hover:border-primary/35 hover:bg-card/80">
     <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><b className="text-sm">حجز #{booking.number}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${booking.completed ? "bg-status-success/15 text-status-success" : booking.cancelled ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>{EXECUTION_STAGE_LABEL[booking.executionStage] || booking.executionStage}</span></div><p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><Phone className="h-3 w-3" /> {booking.customerName} · {booking.phone}</p></div><div className="text-left text-xs"><b>{booking.eventDate}</b><small className="mt-1 block text-muted-foreground">{booking.installationTime || booking.eventTime || "بدون وقت"}</small></div></div>
-    <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" /> {booking.eventType}</span><span className="flex items-center gap-1"><MapPin className="h-3 w-3" /> {booking.venue || booking.location || "الموقع غير محدد"}</span><span className="flex items-center gap-1"><Users className="h-3 w-3" /> {booking.responsibleTeam}</span></div>
+    <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" /> {booking.eventType}</span><span className="flex items-center gap-1"><MapPin className="h-3 w-3" /> {booking.venue || booking.location || "الموقع غير محدد"}</span><span className="flex items-center gap-1"><Users className="h-3 w-3" /> {booking.responsibleTeam}</span><span className="flex items-center gap-1"><CircleDollarSign className="h-3 w-3" /> المتبقي {money(booking.remaining)} د.ع</span></div>
     <div className="mt-2 flex flex-wrap gap-1">{booking.services.map((service) => { const Icon = EXECUTION_SERVICE_ICON[service.key]; return <span key={service.key} className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-1 text-[10px] font-semibold text-foreground"><Icon className="h-3 w-3 text-primary" /> {service.label}</span>; })}</div>
     {booking.alerts.length > 0 && <div className="mt-2 flex items-center gap-1 rounded-lg bg-destructive/8 px-2 py-1.5 text-[11px] text-destructive"><AlertTriangle className="h-3.5 w-3.5" /> {booking.alerts.join(" · ")}</div>}
   </Link>;
@@ -242,7 +247,7 @@ export default function StaffPortal() {
   const refreshMe = useCallback(() => { fetchAdminMe({ force: true }).then(setMe); }, []);
   useEffect(() => { refreshMe(); }, [refreshMe]);
 
-  const canStaff = !!me && (hasPerm(me, "koshas") || hasPerm(me, "kosha_portal_view") || hasPerm(me, "kosha_execution_view") || hasPerm(me, "kosha_assigned_view"));
+  const canStaff = !!me && (hasPerm(me, "koshas") || hasPerm(me, "kosha_portal_view") || hasPerm(me, "kosha_execution_view"));
   const isManager = !!me && (hasPerm(me, "accounting") || hasPerm(me, "bookings") || me.role === "admin");
   const allowed = canStaff || isManager;
 
@@ -296,8 +301,9 @@ export default function StaffPortal() {
 
   const onDetail = /^\/staff\/koshas\/(booking|execution)\//.test(location);
   const tabs = [
-    canStaff && { href: "/staff/koshas", label: "حجوزات الكوشات", icon: Home, match: location === "/staff/koshas" },
+    canStaff && { href: "/staff/koshas", label: "الرئيسية", icon: Home, match: location === "/staff/koshas" },
     canStaff && { href: "/staff/koshas/list/all", label: "التنفيذ", icon: ClipboardList, match: location.startsWith("/staff/koshas/list") },
+    canStaff && { href: "/staff/koshas/reports", label: "تقاريري", icon: BarChart3, match: location === "/staff/koshas/reports" },
     { href: "/staff/koshas/notifications", label: "الإشعارات", icon: Bell, match: location === "/staff/koshas/notifications", badge: unread },
   ].filter(Boolean) as Array<{ href: string; label: string; icon: any; match: boolean; badge?: number }>;
 
