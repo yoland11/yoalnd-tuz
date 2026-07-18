@@ -329,11 +329,22 @@ function BookingDashboard() {
   const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center") });
   const servicesQuery = useQuery({ queryKey: ["admin", "services", "booking-center"], queryFn: () => adminFetch<AdminService[]>("/admin/services") });
   const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers") });
-  const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map((row) => ({
-    ...row,
-    services: (row.departments ?? []).map((type: ServiceKey) => ({ type, status: normalizeServiceStatus(row.status), amount: num(row.total) })),
-    raw: row,
-  })) as UnifiedBooking[], [centralBookingsQuery.data]);
+  const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map((row) => {
+    const departments = Array.isArray(row.departments)
+      ? row.departments.filter((type: unknown): type is ServiceKey =>
+          SERVICE_META.some((meta) => meta.key === type),
+        )
+      : [];
+    return {
+      ...row,
+      services: (departments.length ? departments : (["decorations"] as ServiceKey[])).map((type: ServiceKey) => ({
+        type,
+        status: normalizeServiceStatus(row.status),
+        amount: num(row.total),
+      })),
+      raw: row,
+    };
+  }) as UnifiedBooking[], [centralBookingsQuery.data]);
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   const month = today.slice(0, 7);
