@@ -4405,6 +4405,38 @@ async function formatKoshaBooking(row: any) {
  * a qualifying service order as the single source of truth and only projects
  * it into the existing endpoint response.  No Kosha booking is created.
  */
+/**
+ * Generic English words that must match as whole words, so "sound" routes a
+ * booking but "resounding" does not.
+ */
+const KOSHA_ROUTING_WORDS = [
+  "sound", "sounds", "audio", "speaker", "speakers", "mixer", "mixers",
+  "microphone", "microphones", "mic", "mics", "dj", "amplifier", "amplifiers",
+  "subwoofer", "subwoofers",
+];
+
+/**
+ * Unambiguous tokens matched anywhere in the text: brand/model names that only
+ * ever refer to sound gear, plus Arabic stems whose inflected forms (صوتيات،
+ * سماعات) all contain the stem.
+ */
+const KOSHA_ROUTING_TOKENS = [
+  "kosha", "rcf", "w17",
+  "كوش",
+  "صوت",      // صوت، صوتيات، الصوتيات
+  "سماع",     // سماعة، سماعات
+  "سبيكر",
+  "مكسر", "ميكسر",
+  "ميكرفون", "مايكرفون", "مايك",
+  "دي جي",
+  "مضخم",
+];
+
+const KOSHA_ROUTING_WORD_RE = new RegExp(
+  `(^|[^\\p{L}\\p{N}])(${KOSHA_ROUTING_WORDS.join("|")})([^\\p{L}\\p{N}]|$)`,
+  "u",
+);
+
 function isKoshaOrSoundBooking(
   order: { customFields?: unknown },
   service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
@@ -4416,12 +4448,25 @@ function isKoshaOrSoundBooking(
     service?.nameAr,
     fields.serviceType,
     fields.department,
-    ...(Array.isArray(fields.bookingCenterServices) ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key ?? item?.name) : []),
+    // Descriptors that name the booked equipment. Free-text notes are
+    // deliberately excluded — a passing mention must not reroute a booking.
+    fields.packageName,
+    fields.category,
+    fields.categoryName,
+    ...(Array.isArray(fields.bookingCenterServices)
+      ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key ?? item?.name)
+      : []),
+    ...(Array.isArray(fields.items)
+      ? fields.items.map((item: any) => item?.name ?? item?.nameAr ?? item?.productName)
+      : []),
   ]
     .filter(Boolean)
     .map((value) => String(value).trim().toLowerCase());
-  return selected.some((value) =>
-    /(^|[\s_\-/])(kosha|sound|audio)([\s_\-/]|$)|كوش|صوت/.test(value),
+
+  return selected.some(
+    (value) =>
+      KOSHA_ROUTING_TOKENS.some((token) => value.includes(token)) ||
+      KOSHA_ROUTING_WORD_RE.test(value),
   );
 }
 
