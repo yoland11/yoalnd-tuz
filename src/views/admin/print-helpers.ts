@@ -192,6 +192,49 @@ export function sheetReportCss(size: "a4" | "a5" = "a4") {
   `;
 }
 
+/**
+ * Shared depreciation report styles.  Both the browser print window and the
+ * downloadable PDF preview use this builder so A4 and thermal never drift.
+ */
+export function depreciationReportCss(kind: "a4" | "80mm") {
+  if (kind === "80mm") return `${thermalReceiptCss("80mm")}
+    .depreciation-thermal .asset { padding:4px 0; border-bottom:1.5px solid #000; }
+    .depreciation-thermal .asset b { display:block; font-size:1.03em; }
+    .depreciation-thermal .asset .line { display:flex; justify-content:space-between; gap:5px; font-size:.88em; }
+    .depreciation-thermal .filter-note { font-size:.82em; line-height:1.45; }
+  `;
+  return `${sheetReportCss("a4")}
+    @page { size:A4 portrait; margin:10mm; }
+    .depreciation-sheet { min-height:277mm; }
+    .depreciation-sheet .report-summary { grid-template-columns:repeat(5,1fr); }
+    .depreciation-sheet .filter-note { border:1px solid #000; padding:7px; margin:10px 0; font-size:10px; }
+    .depreciation-sheet .report-table { font-size:9px; }
+    .depreciation-sheet .report-table thead { display:table-header-group; }
+    .depreciation-sheet .report-table tr { break-inside:avoid; page-break-inside:avoid; }
+    .depreciation-sheet .report-table .num { direction:ltr; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .depreciation-sheet .print-page { position:fixed; bottom:2mm; left:10mm; right:10mm; display:flex; justify-content:space-between; font-size:9px; }
+    .depreciation-sheet .page-counter:after { content:"صفحة " counter(page); }
+  `;
+}
+
+/** Shared A4 salary-slip layout. Keep salary printing out of view-local CSS. */
+export function salarySlipCss() {
+  return `
+    ${sheetReportCss("a4")}
+    .salary-slip { border: 1px solid #111; padding: 9mm; min-height: 180mm; }
+    .salary-person { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; margin: 14px 0; }
+    .salary-person .field { border: 1px solid #bbb; padding: 8px; min-height: 52px; }
+    .salary-person .field span { display:block; font-size:10px; margin-bottom:4px; }
+    .salary-person .field b { font-size:13px; }
+    .salary-components { width:100%; border-collapse:collapse; margin-top:12px; font-variant-numeric:tabular-nums; }
+    .salary-components th,.salary-components td { border:1px solid #111; padding:7px; text-align:right; }
+    .salary-components th { background:#f2f2f2; font-weight:800; }
+    .salary-net { display:flex; justify-content:space-between; align-items:center; border:2px solid #111; padding:12px; margin-top:14px; font-size:18px; font-weight:800; }
+    .salary-signatures { display:flex; justify-content:space-between; gap:30px; margin-top:35px; }
+    .salary-signatures div { width:42%; border-top:1px dashed #111; padding-top:7px; text-align:center; }
+  `;
+}
+
 /** A4 portrait sheet containing two identical compact luxury invoices for cutting. */
 export function luxuryDuplicateInvoiceCss() {
   return `
@@ -217,6 +260,90 @@ export function luxuryDuplicateInvoiceCss() {
     @media screen { .luxury-invoice-page { margin:20px auto; box-shadow:0 20px 50px rgba(133,91,79,.16); } }
     @media print { html,body { width:210mm; height:297mm; background:#fffdf9; }.luxury-invoice-page { margin:0; box-shadow:none; } }
   `;
+}
+
+/**
+ * Premium full-page wedding invoice. The outer sheet is 216 × 303 mm so the
+ * 210 × 297 mm A4 trim receives a real 3 mm bleed on every edge.
+ * Palette targets CMYK-friendly blush/rose/champagne inks while keeping body
+ * copy dark enough for reliable offset and office printing.
+ */
+export function luxuryWeddingInvoiceCss() {
+  return `
+    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap');
+    @page { size: 216mm 303mm; margin: 0; }
+    :root { --wi-ivory:#fffaf3; --wi-cream:#fff3e7; --wi-blush:#f8dfe3; --wi-rose:#b64b68; --wi-rose-dark:#733647; --wi-gold:#c6953f; --wi-gold-light:#e7c87d; --wi-ink:#4d3038; }
+    * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    html,body { margin:0; min-height:100%; background:#f4f0ed; color:var(--wi-ink); direction:rtl; font-family:Cairo,Tahoma,Arial,sans-serif; }
+    .wedding-invoice-bleed { position:relative; width:216mm; min-height:303mm; margin:0 auto; padding:3mm; overflow:hidden; background:linear-gradient(145deg,#fffdf9 0%,var(--wi-cream) 52%,#fffdf9 100%); }
+    .wedding-invoice { position:relative; min-height:297mm; padding:11mm 11mm 9mm; overflow:hidden; isolation:isolate; background:radial-gradient(circle at 50% 3%,rgba(255,255,255,.96),transparent 34%),linear-gradient(135deg,rgba(255,255,255,.96),rgba(255,248,242,.94)); border:.35mm solid var(--wi-gold); }
+    .wedding-invoice:before { content:""; position:absolute; inset:2.2mm; z-index:0; pointer-events:none; border:.18mm solid rgba(198,149,63,.72); border-radius:7mm 7mm 4mm 4mm; }
+    .wedding-invoice:after { content:""; position:absolute; inset:4.1mm; z-index:0; pointer-events:none; border:.12mm solid rgba(182,75,104,.24); border-radius:5.5mm; }
+    .wi-content { position:relative; z-index:3; min-height:274mm; display:flex; flex-direction:column; }
+    .wi-floral { position:absolute; z-index:2; width:59mm; height:84mm; object-fit:contain; pointer-events:none; opacity:.88; filter:saturate(.92) contrast(1.03); }
+    .wi-floral.tr { top:-8mm; right:-8mm; }.wi-floral.tl { top:-8mm; left:-8mm; transform:scaleX(-1); }
+    .wi-floral.br { right:-8mm; bottom:-10mm; transform:scaleY(-1); }.wi-floral.bl { left:-8mm; bottom:-10mm; transform:scale(-1); }
+    .wi-sparkles { position:absolute; inset:8mm; z-index:1; pointer-events:none; opacity:.42; background-image:radial-gradient(circle,#d8a84d 0 .35mm,transparent .42mm),radial-gradient(circle,#e5afbc 0 .3mm,transparent .38mm); background-size:38mm 43mm,51mm 37mm; background-position:5mm 8mm,21mm 18mm; }
+    .wi-crop { position:absolute; z-index:9; width:5mm; height:5mm; pointer-events:none; opacity:.75; }.wi-crop:before,.wi-crop:after { content:""; position:absolute; background:#5b3b42; }
+    .wi-crop:before { width:5mm; height:.12mm; top:2.5mm; }.wi-crop:after { width:.12mm; height:5mm; left:2.5mm; }
+    .wi-crop.tl{top:.5mm;left:.5mm}.wi-crop.tr{top:.5mm;right:.5mm}.wi-crop.bl{bottom:.5mm;left:.5mm}.wi-crop.br{bottom:.5mm;right:.5mm}
+    .wi-brand { text-align:center; padding:0 42mm 2.2mm; }
+    .wi-crown { display:block; height:6mm; color:var(--wi-gold); font:700 22px Georgia,serif; line-height:1; }
+    .wi-logo { display:block; width:24mm; height:14mm; margin:0 auto 1mm; object-fit:contain; }
+    .wi-company-en { color:#9e6f2e; font:700 17px "Playfair Display",Georgia,serif; letter-spacing:.12em; line-height:1.05; }
+    .wi-company-ar { margin-top:.7mm; color:var(--wi-rose); font-size:12px; font-weight:800; line-height:1.25; }
+    .wi-for-events { color:#a77734; font:700 8px "Playfair Display",Georgia,serif; letter-spacing:.25em; direction:ltr; }
+    .wi-title { display:flex; align-items:center; justify-content:center; gap:3mm; margin-top:1.5mm; color:var(--wi-rose); font:700 21px "Playfair Display",Cairo,serif; }
+    .wi-title:before,.wi-title:after { content:""; width:18mm; height:.18mm; background:linear-gradient(90deg,transparent,var(--wi-gold)); }.wi-title:after{transform:scaleX(-1)}
+    .wi-title small { color:var(--wi-gold); font:600 8px Cairo,sans-serif; letter-spacing:.08em; }
+    .wi-top { display:grid; grid-template-columns:1fr 45mm 1fr; gap:3.2mm; align-items:start; margin-top:-28mm; min-height:36mm; }
+    .wi-top-spacer { min-height:1px; }
+    .wi-panel { min-height:36mm; padding:3mm 3.4mm; border:.22mm solid rgba(198,149,63,.6); border-radius:4mm; background:rgba(255,255,255,.74); }
+    .wi-panel-title { display:flex; align-items:center; gap:1.6mm; margin-bottom:1.5mm; padding-bottom:1mm; color:var(--wi-rose); border-bottom:.16mm solid rgba(198,149,63,.35); font-size:8.5px; font-weight:800; }
+    .wi-panel-title:before { content:"✦"; color:var(--wi-gold); }
+    .wi-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:.85mm 2mm; }
+    .wi-field { min-width:0; display:grid; grid-template-columns:19mm 1fr; gap:1.2mm; align-items:start; font-size:7.2px; line-height:1.45; }
+    .wi-field.wide { grid-column:1/-1; }.wi-field span { color:#875b67; font-weight:600; }.wi-field b { min-width:0; color:var(--wi-ink); font-weight:700; overflow-wrap:anywhere; }
+    .wi-codes { display:grid; grid-template-columns:19mm 1fr; gap:2mm; align-items:end; margin-top:2mm; }
+    .wi-qr { width:18mm; height:18mm; padding:1mm; border:.18mm solid var(--wi-gold-light); border-radius:2mm; background:#fff; image-rendering:pixelated; }
+    .wi-code-caption { display:block; margin-top:.7mm; color:var(--wi-rose); font-size:5.8px; text-align:center; direction:ltr; }
+    .wi-barcode { width:100%; height:11mm; overflow:hidden; }.wi-barcode svg { width:100%; height:10mm; display:block; }
+    .wi-readable { margin-top:.3mm; direction:ltr; color:#76535c; font:600 6px ui-monospace,Consolas,monospace; text-align:center; letter-spacing:.08em; }
+    .wi-section { margin-top:3.4mm; }
+    .wi-section-heading { display:flex; align-items:center; gap:2mm; margin-bottom:1.5mm; color:var(--wi-rose); font-size:9px; font-weight:800; }
+    .wi-section-heading:before { content:"✦"; color:var(--wi-gold); }.wi-section-heading:after { content:""; height:.15mm; flex:1; background:linear-gradient(90deg,var(--wi-gold-light),transparent); }
+    table.wi-items { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; overflow:hidden; border:.2mm solid rgba(198,149,63,.65); border-radius:3mm; font-size:7.1px; font-variant-numeric:tabular-nums; }
+    .wi-items thead { display:table-header-group; }.wi-items th { padding:2mm 1mm; color:#923e57; background:linear-gradient(90deg,#f9d8de,#fff0e9); border-bottom:.2mm solid rgba(198,149,63,.55); font-weight:800; text-align:center; }
+    .wi-items td { padding:1.7mm 1mm; border-bottom:.12mm solid #ecd8d1; border-inline-start:.1mm solid #f0dfd8; vertical-align:top; text-align:center; overflow-wrap:anywhere; }
+    .wi-items tbody tr:nth-child(even) td { background:rgba(249,223,227,.32); }.wi-items tbody tr:last-child td { border-bottom:0; }
+    .wi-items td.service,.wi-items td.description { text-align:right; }.wi-items td.num { direction:ltr; white-space:nowrap; }
+    .wi-bottom { display:grid; grid-template-columns:1.08fr .96fr 1fr; gap:3mm; margin-top:3.5mm; break-inside:avoid; page-break-inside:avoid; }
+    .wi-bottom-panel { min-height:48mm; padding:2.8mm; border:.18mm solid rgba(198,149,63,.5); border-radius:3mm; background:rgba(255,255,255,.62); }
+    .wi-payments { display:flex; flex-wrap:wrap; gap:1.2mm; margin-top:1.8mm; }.wi-payment { display:inline-flex; align-items:center; gap:1mm; min-height:6mm; padding:.8mm 1.8mm; border:.16mm solid #dec18a; border-radius:8mm; color:#775437; background:#fffdfa; font-size:6px; white-space:nowrap; }
+    .wi-payment.active { color:#fff; background:var(--wi-rose); border-color:var(--wi-rose); }.wi-payment i { color:var(--wi-gold); font-style:normal; font-size:8px; }.wi-payment.active i{color:#fff}
+    .wi-pay-state { display:grid; grid-template-columns:1fr 1fr; gap:1.2mm; margin-top:2.5mm; }.wi-pay-state div { padding:1.5mm; border-radius:2mm; background:var(--wi-blush); font-size:6.5px; }.wi-pay-state span{display:block;color:#865666}.wi-pay-state b{display:block;margin-top:.5mm;font-size:8px}
+    .wi-note-block + .wi-note-block { margin-top:1.7mm; }.wi-note-block b { display:block; color:var(--wi-rose); font-size:6.7px; }.wi-note-block p { margin:.5mm 0 0; color:#63434c; font-size:6.2px; line-height:1.55; white-space:pre-line; }
+    .wi-summary-row { display:flex; justify-content:space-between; gap:3mm; padding:1.1mm 0; border-bottom:.12mm solid #ead9d1; font-size:7px; }.wi-summary-row b{direction:ltr;font-variant-numeric:tabular-nums}.wi-summary-row.remaining{color:var(--wi-rose);font-weight:800}
+    .wi-grand { position:relative; margin-top:2.1mm; padding:3.2mm 2mm; text-align:center; border:.35mm solid var(--wi-gold); border-radius:3mm; background:linear-gradient(135deg,#f7d9df,#fff0e3); box-shadow:inset 0 0 0 .6mm rgba(255,255,255,.75); }.wi-grand:before{content:"♛";position:absolute;top:-3.2mm;right:calc(50% - 3mm);width:6mm;color:var(--wi-gold);background:var(--wi-ivory);font-size:12px}.wi-grand span{display:block;color:#9d4059;font:700 7px "Playfair Display",Cairo,serif;letter-spacing:.09em}.wi-grand b{display:block;margin-top:.8mm;color:var(--wi-rose);font:700 18px "Playfair Display",Cairo,serif;direction:ltr}
+    .wi-signatures { display:grid; grid-template-columns:repeat(5,1fr); gap:3mm; margin-top:auto; padding:5mm 3mm 0; break-inside:avoid; page-break-inside:avoid; }.wi-signature { min-height:16mm; text-align:center; color:#724b56; font-size:6.5px; }.wi-signature .line { display:flex; align-items:flex-end; justify-content:center; height:10mm; border-bottom:.16mm solid #c79b51; color:#8d5362; font:600 10px "Playfair Display",Cairo,serif; }.wi-stamp { width:18mm; height:18mm; margin:-2mm auto 0; display:flex; align-items:center; justify-content:center; border:.35mm double var(--wi-rose); border-radius:50%; color:var(--wi-rose); font:700 7px "Playfair Display",serif; transform:rotate(-8deg); }
+    .wi-footer { margin-top:3.2mm; padding:2.4mm 15mm 0; border-top:.16mm solid rgba(198,149,63,.65); text-align:center; }.wi-footer-main { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:1.3mm 4mm; direction:ltr; color:#7b5360; font-size:6.2px; }.wi-footer-main span:before{content:"✦";margin-right:1mm;color:var(--wi-gold)}.wi-footer-address{margin-top:1mm;color:#8a653d;font-size:6.3px}.wi-website-qr{position:absolute;bottom:4.2mm;left:7mm;width:13mm;height:13mm;padding:.6mm;background:#fff;border:.15mm solid var(--wi-gold-light);border-radius:1.5mm}
+    .wi-status { display:inline-flex; align-items:center; justify-content:center; padding:.7mm 2mm; border-radius:8mm; color:#fff; background:var(--wi-rose); font-size:6.2px; font-weight:800; }
+    .wi-continued { display:none; }
+    @media screen { .wedding-invoice-bleed { margin:20px auto; box-shadow:0 8px 24px rgba(92,54,62,.16); }.wedding-invoice-stage{overflow:auto;padding:1px}.wi-crop{display:none} }
+    @media print { html,body { width:216mm; min-height:303mm; background:#fff; }.wedding-invoice-bleed{margin:0;box-shadow:none;break-after:page}.wedding-invoice-stage{overflow:visible}.wi-items tr,.wi-bottom,.wi-signatures{break-inside:avoid;page-break-inside:avoid} }
+  `;
+}
+
+/** Print the current document only after every logo/QR/decorative image settles. */
+export async function printDocumentWhenImagesReady(root: ParentNode = document) {
+  const images = Array.from(root.querySelectorAll("img"));
+  await Promise.all(images.map((img) => img.complete && img.naturalWidth > 0 ? Promise.resolve() : new Promise<void>((resolve) => {
+    const done = () => resolve();
+    img.addEventListener("load", done, { once: true });
+    img.addEventListener("error", done, { once: true });
+    window.setTimeout(done, 2500);
+  })));
+  window.print();
 }
 
 export function printWhenImagesReadyScript(closeAfterPrint = true) {

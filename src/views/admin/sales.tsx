@@ -15,6 +15,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
+import DeliverySection, { type DeliveryOutput } from "./delivery-section";
+import { printDeliveryLabel } from "./delivery-label";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
@@ -163,6 +165,10 @@ export default function SalesPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQ, setSearchQ] = useState("");
   const [saving, setSaving] = useState(false);
+  const { data: invoiceSettings } = usePublicSettings();
+  const [delivery, setDelivery] = useState<DeliveryOutput>({
+    method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null,
+  });
 
   // Held invoices (localStorage)
   const [held, setHeld] = useState<HeldInvoice[]>(() => {
@@ -273,8 +279,12 @@ export default function SalesPage() {
   const totalDiscount = cart.reduce((s, i) => s + i.discount, 0) + parseFloat(form.discountAmount || "0") + couponDiscount;
   const taxPct = parseFloat(form.taxPct || "0");
   const taxAmount = +((subtotal - totalDiscount) * taxPct / 100).toFixed(2);
-  const grandTotal = +(subtotal - totalDiscount + taxAmount).toFixed(2);
-  const paidAmt = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
+  const deliveryFee = delivery.deliveryFee || 0;
+  const codFee = delivery.codFee || 0;
+  const grandTotal = +(subtotal - totalDiscount + taxAmount + deliveryFee + codFee).toFixed(2);
+  // Cash-on-delivery is collected on delivery, so the sale is not auto-paid.
+  const paidAmt = delivery.codEnabled ? parseFloat(form.paidAmount || "0")
+                  : isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining = +(grandTotal - paidAmt).toFixed(2);
 
   // Auto paymentStatus
@@ -310,6 +320,10 @@ export default function SalesPage() {
   // ── Save ─────────────────────────────────────────────────────────────────
   async function saveInvoice() {
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
+    if (delivery.method === "province" && !delivery.valid) {
+      toast({ title: "بيانات التوصيل ناقصة", description: "أكمل تفاصيل توصيل المحافظة", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
@@ -325,22 +339,32 @@ export default function SalesPage() {
         paymentStatus: autoStatus,
         isInternal: form.isInternal ? 1 : 0,
         notes: form.notes,
+        delivery: delivery.payload ?? undefined,
         items: cart.map(i => ({
           productId: i.productId, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),
       };
-      const res = await adminFetch<{ invoice: SalesInvoice }>("/admin/sales-invoices", {
+      const res = await adminFetch<{ invoice: SalesInvoice; delivery?: any; qr?: { dataUrl?: string } }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
       toast({ title: "تم حفظ الفاتورة", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
+      if (res?.delivery?.order?.id) {
+        printDeliveryLabel({
+          delivery: res.delivery,
+          invoiceNo: res?.invoice?.invoiceNo ?? "",
+          company: invoiceSettings?.site_name ?? "AJN",
+          qrDataUrl: res?.qr?.dataUrl,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setCart([]);
       setForm(newInvoice());
+      setDelivery({ method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null });
       setSearchQ("");
       // Ready for the next invoice: focus the barcode/search field with no mouse.
       requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
@@ -713,11 +737,32 @@ export default function SalesPage() {
                 <span>{formatCurrency(taxAmount)}</span>
               </div>
             )}
+            {deliveryFee > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">أجور التوصيل</span>
+                <span>{formatCurrency(deliveryFee)}</span>
+              </div>
+            )}
+            {codFee > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">أجور الدفع عند الاستلام</span>
+                <span>{formatCurrency(codFee)}</span>
+              </div>
+            )}
+            {delivery.codEnabled && (
+              <div className="flex justify-between text-xs text-status-warning">
+                <span>تحصيل عند الاستلام</span>
+                <span>{formatCurrency(remaining)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-base font-bold pt-2 border-t border-border/30">
               <span>الإجمالي الكلي</span>
               <span className="text-primary">{formatCurrency(grandTotal)}</span>
             </div>
           </div>
+
+          {/* Delivery (province-based) */}
+          <DeliverySection subtotal={subtotal} onChange={setDelivery} />
 
           {/* Payment */}
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">

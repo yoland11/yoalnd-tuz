@@ -51,6 +51,9 @@ import {
   customerPreferencesTable,
   customerRewardHistoryTable,
   customersTable,
+  deliveryDetailsTable,
+  deliveryOrdersTable,
+  deliveryOrderStatusHistoryTable,
   deliveryZonesTable,
   employeeAdvancesTable,
   employeeSalarySettingsTable,
@@ -227,6 +230,7 @@ import {
   saveBonusRule,
   deleteBonusRule,
   createPayrollRun,
+  createManualSalaryRecord,
   editPayrollLine,
   deleteDraftPayrollLine,
   cancelPayrollRun,
@@ -242,11 +246,21 @@ import {
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
+  reversePayrollRunPayment,
   submitPayrollForApproval,
   rejectPayrollRun,
   reopenPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
+import {
+  addEmployeeSalaryAdjustment,
+  addEmployeeSalaryAttachment,
+  correctPaidEmployeeSalary,
+  getEmployeeSalaryManagementDetail,
+  linkHistoricalSalaryPayment,
+  payEmployeeSalary,
+  reverseEmployeeSalaryPayment,
+} from "@/server/employee-salaries";
 import {
   computeEmployeeScores,
   ensureEmployeePerformanceTables,
@@ -265,6 +279,7 @@ import {
 import {
   getTelegramSettings,
   notifyTelegramDailyReport,
+  notifyTelegramDelivery,
   notifyTelegramInvoice,
   notifyTelegramKoshaBooking,
   notifyTelegramLogin,
@@ -293,6 +308,75 @@ import {
   normalizeColors,
   type ProductColor,
 } from "@/lib/colors";
+import {
+  computeCashboxDrift,
+  listRecycleBin,
+  purgeRecycleItem,
+  recycleBinSummary,
+  recycleEntity,
+  restoreRecycleItem,
+  runSystemHealth,
+} from "@/server/integration-health";
+import {
+  auditActionSchema,
+  decodeDataUrl,
+  deleteScannedDocument,
+  DOCUMENT_TYPE_LABELS,
+  ensureScannerTables,
+  EXPIRY_THRESHOLDS,
+  getDocumentPageBytes,
+  getScannedDocumentByQr,
+  getScannedDocumentImage,
+  getScannedDocumentMeta,
+  listDocumentPages,
+  listDocumentVersions,
+  listExpiringDocuments,
+  listScannedDocuments,
+  saveDocumentSchema,
+  saveScannedDocument,
+  scannerDashboardStats,
+  updateDocumentSchema,
+  updateScannedDocument,
+} from "@/server/document-scanner";
+import {
+  addDays,
+  DELIVERY_ACCOUNTING_MODES,
+  DELIVERY_ACCOUNTING_MODE_LABELS,
+  DELIVERY_STATUS_LABELS,
+  DELIVERY_STATUSES as DELIVERY_ORDER_STATUSES,
+  DELIVERY_TYPE_LABELS,
+  cancelDeliverySchema,
+  codSettlementSchema,
+  completeCodSettlement,
+  deliveryQuoteSchema,
+  ensureDeliveryDetailsTables,
+  findProvince,
+  formatDeliveryDetail,
+  formatDeliveryOrderFull,
+  formatProvince,
+  getCodSettlement,
+  getDeliveryAccountingMode,
+  getDeliveryOrderById,
+  getDeliveryOrderDetails,
+  getInvoiceDelivery,
+  insertCodSettlement,
+  listDeliveryOrders,
+  listProvinces,
+  markCodSettled,
+  markLabelPrinted,
+  persistInvoiceDelivery,
+  prepareInvoiceDelivery,
+  provinceCreateSchema,
+  provinceReorderSchema,
+  provinceUpdateSchema,
+  resolveDeliveryFee,
+  returnDeliverySchema,
+  saveCancelReason,
+  saveReturnMetadata,
+  setDeliveryAccountingMode,
+  updateDeliveryOrderStatus,
+  type DeliveryAccountingMode,
+} from "@/server/delivery-details";
 import {
   AddToCartBody,
   CreateDeliveryZoneBody,
@@ -349,9 +433,40 @@ export const ALL_PERMISSIONS = [
   "dashboard",
   "orders",
   "bookings",
+  "booking_operations_view",
+  "booking_edit",
+  "booking_status_change",
+  "booking_products_manage",
+  "inventory_shortage_override",
+  "booking_assets_manage",
+  "asset_reserve",
+  "asset_release",
+  "warehouse_issue",
+  "booking_return_confirm",
+  "asset_damage_record",
+  "asset_damage_approve",
+  "depreciation_view",
+  "depreciation_usage_edit",
+  "depreciation_print_a4",
+  "depreciation_print_80mm",
+  "depreciation_export_pdf",
+  "booking_finance_view",
+  "booking_payment_receive",
+  "booking_finance_approve",
+  "booking_payment_reverse",
+  "booking_tasks_manage",
+  "booking_documents_manage",
+  "booking_close",
+  "booking_cancel",
   "services",
   "products",
   "asset_depreciation_remove",
+  "depreciation_categories_view",
+  "depreciation_categories_create",
+  "depreciation_categories_edit",
+  "depreciation_categories_archive",
+  "depreciation_categories_apply",
+  "depreciation_categories_audit_view",
   "gallery",
   "delivery",
   "customers",
@@ -393,6 +508,22 @@ export const ALL_PERMISSIONS = [
   "payroll_approve",
   "payroll_reject",
   "payroll_pay",
+  "employee_salaries_view",
+  "employee_salaries_create",
+  "employee_salaries_edit",
+  "employee_salaries_delete_draft",
+  "employee_salaries_view_historical",
+  "employee_salaries_repair_historical",
+  "employee_salaries_add_amount",
+  "employee_salaries_reduce_amount",
+  "employee_salaries_approve",
+  "employee_salaries_pay",
+  "employee_salaries_reverse",
+  "employee_salaries_cancel",
+  "employee_salaries_print",
+  "employee_salaries_export",
+  "employee_salaries_view_accounting",
+  "employee_salaries_view_cashbox",
   "bonus_view",
   "bonus_create",
   "bonus_edit",
@@ -413,6 +544,39 @@ export const ALL_PERMISSIONS = [
   "production_edit",
   "production_delete",
   "production_approve",
+  // Province delivery — granular. The coarse "delivery" permission stays an
+  // umbrella grant so existing staff keep the access they already had.
+  "delivery_view",
+  "delivery_add",
+  "delivery_edit",
+  "delivery_fee_override",
+  "delivery_status_update",
+  "delivery_label_print",
+  "delivery_provinces_manage",
+  "delivery_pricing_manage",
+  // Delivery orders lifecycle, COD settlement and accounting.
+  "delivery_cod_settle",
+  "delivery_cancel",
+  "delivery_return",
+  "delivery_accounting_manage",
+  // Cross-module oversight. Detect-and-report health/reconciliation and the
+  // unified recycle bin. Repairs and purges are separately gated.
+  "system_health",
+  "reconciliation_repair",
+  "recycle_bin_view",
+  "recycle_bin_restore",
+  "recycle_bin_purge",
+  // ID document scanner. Identity documents are sensitive, so viewing a saved
+  // scan and viewing its untouched original are separately grantable.
+  "doc_scanner_view",
+  "doc_scanner_scan",
+  "doc_scanner_edit",
+  "doc_scanner_print",
+  "doc_scanner_export",
+  "doc_scanner_save",
+  "doc_scanner_view_saved",
+  "doc_scanner_delete",
+  "doc_scanner_view_original",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -731,6 +895,28 @@ function paymentSummary(
     remaining: settled.remaining,
     status: settled.status,
   };
+}
+
+/**
+ * Invoice payment terms include "credit", while the financial transaction
+ * schema deliberately accepts only actual collection methods.  A partial
+ * payment on a credit invoice must therefore be recorded as an unclassified
+ * collection instead of passing the unsupported "credit" enum value through
+ * and turning a successfully saved invoice into an HTTP 500.
+ */
+function financialPaymentMethod(
+  value: unknown,
+): "cash" | "transfer" | "card" | "pos" | "other" {
+  const method = String(value ?? "").trim().toLowerCase();
+  if (
+    method === "cash" ||
+    method === "transfer" ||
+    method === "card" ||
+    method === "pos" ||
+    method === "other"
+  )
+    return method as "cash" | "transfer" | "card" | "pos" | "other";
+  return "other";
 }
 
 function sessionSecret(): string {
@@ -2791,6 +2977,37 @@ async function runSmartNotificationsSweep() {
       });
     }
   }
+
+  // ── Expiring documents ──
+  // One alert per document per threshold; createSmartAlert dedupes on
+  // (type, entityType, entityId). The body deliberately carries no document
+  // number and no personal name — identity data must not leak into
+  // notifications or their Telegram side channel.
+  try {
+    const expiring = await listExpiringDocuments(90);
+    for (const doc of expiring) {
+      const days = doc.daysLeft;
+      if (days === null) continue;
+      const threshold = days < 0 ? "expired" : EXPIRY_THRESHOLDS.find((t) => days <= t);
+      if (!threshold) continue;
+      const typeLabel = DOCUMENT_TYPE_LABELS[doc.documentType] ?? doc.documentType;
+      await add({
+        type: `document_expiry_${threshold}`,
+        title: days < 0 ? `📄 مستمسك منتهي الصلاحية` : `📄 مستمسك يقترب من الانتهاء`,
+        body:
+          days < 0
+            ? `${typeLabel} انتهت صلاحيته منذ ${Math.abs(days)} يوم`
+            : `${typeLabel} تنتهي صلاحيته خلال ${days} يوم`,
+        entityType: "scanned_document",
+        entityId: doc.id,
+        href: "/admin/document-library?expiry=expiring",
+        metadata: { documentType: doc.documentType, daysLeft: days, threshold },
+      });
+    }
+  } catch (err) {
+    console.warn("document expiry sweep failed", err);
+  }
+
   return summary;
 }
 
@@ -4243,6 +4460,243 @@ async function formatKoshaBooking(row: any) {
     createdAt: row.createdAt?.toISOString?.() ?? String(row.createdAt ?? ""),
     updatedAt: row.updatedAt?.toISOString?.() ?? String(row.updatedAt ?? ""),
   };
+}
+
+/**
+ * The booking centre stores service bookings in service_orders, while the
+ * legacy Kosha portal reads the kosha-bookings endpoint.  This adapter keeps
+ * a qualifying service order as the single source of truth and only projects
+ * it into the existing endpoint response.  No Kosha booking is created.
+ */
+/**
+ * Generic English words that must match as whole words, so "sound" routes a
+ * booking but "resounding" does not.
+ */
+const KOSHA_ROUTING_WORDS = [
+  "sound", "sounds", "audio", "speaker", "speakers", "mixer", "mixers",
+  "microphone", "microphones", "mic", "mics", "dj", "amplifier", "amplifiers",
+  "subwoofer", "subwoofers",
+];
+
+/**
+ * Unambiguous tokens matched anywhere in the text: brand/model names that only
+ * ever refer to sound gear, plus Arabic stems whose inflected forms (صوتيات،
+ * سماعات) all contain the stem.
+ */
+const KOSHA_ROUTING_TOKENS = [
+  "kosha", "rcf", "w17",
+  "كوش",
+  "صوت",      // صوت، صوتيات، الصوتيات
+  "سماع",     // سماعة، سماعات
+  "سبيكر",
+  "مكسر", "ميكسر",
+  "ميكرفون", "مايكرفون", "مايك",
+  "دي جي",
+  "مضخم",
+];
+
+const KOSHA_ROUTING_WORD_RE = new RegExp(
+  `(^|[^\\p{L}\\p{N}])(${KOSHA_ROUTING_WORDS.join("|")})([^\\p{L}\\p{N}]|$)`,
+  "u",
+);
+
+/**
+ * Broad SQL pre-filter for kosha/sound candidates.
+ *
+ * The precise decision still belongs to isKoshaOrSoundBooking(); this only stops
+ * unrelated service orders from consuming the row cap. Without it the cap is
+ * applied BEFORE classification, so a sound booking that falls outside the
+ * newest N service orders silently disappears from the Kosha portal while still
+ * showing in the Booking Centre (which caps higher and does not filter).
+ *
+ * Being a superset is intentional: a false positive here is discarded by the
+ * exact predicate, but a false negative would hide a real booking.
+ */
+const KOSHA_ROUTING_SQL_PATTERN =
+  "(kosha|sound|audio|speaker|mixer|microphone|mic|dj|amplifier|subwoofer|rcf|w17|كوش|صوت|سماع|سبيكر|مكسر|ميكسر|ميكرفون|مايك|دي جي|مضخم)";
+
+function koshaRoutingCandidateSql() {
+  return sql`(
+    ${serviceOrdersTable.customFields}::text ~* ${KOSHA_ROUTING_SQL_PATTERN}
+    or ${serviceOrdersTable.serviceId} in (
+      select ${servicesTable.id} from ${servicesTable}
+      where coalesce(${servicesTable.type}, '') || ' '
+         || coalesce(${servicesTable.name}, '') || ' '
+         || coalesce(${servicesTable.nameAr}, '') ~* ${KOSHA_ROUTING_SQL_PATTERN}
+    )
+  )`;
+}
+
+function isKoshaOrSoundBooking(
+  order: { customFields?: unknown },
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = (order.customFields ?? {}) as Record<string, any>;
+  const selected = [
+    service?.type,
+    service?.name,
+    service?.nameAr,
+    fields.serviceType,
+    fields.department,
+    // Descriptors that name the booked equipment. Free-text notes are
+    // deliberately excluded — a passing mention must not reroute a booking.
+    fields.packageName,
+    fields.category,
+    fields.categoryName,
+    ...(Array.isArray(fields.bookingCenterServices)
+      ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key ?? item?.name)
+      : []),
+    ...(Array.isArray(fields.items)
+      ? fields.items.map((item: any) => item?.name ?? item?.nameAr ?? item?.productName)
+      : []),
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).trim().toLowerCase());
+
+  return selected.some(
+    (value) =>
+      KOSHA_ROUTING_TOKENS.some((token) => value.includes(token)) ||
+      KOSHA_ROUTING_WORD_RE.test(value),
+  );
+}
+
+async function formatRoutedKoshaServiceBooking(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = (order.customFields ?? {}) as Record<string, any>;
+  return formatKoshaBooking({
+    ...order,
+    koshaId: fields.koshaId ?? null,
+    packageId: fields.packageId ?? null,
+    packageName: fields.packageName ?? service?.nameAr ?? service?.name ?? null,
+    packagePrice: fields.packagePrice ?? null,
+    customerId: fields.customerId ?? null,
+    eventTime: fields.eventTime ?? "",
+    eventType: fields.eventType ?? service?.nameAr ?? service?.name ?? "",
+    serviceLevel: fields.serviceLevel ?? "",
+    venueType: fields.venueType ?? "",
+    themeColor: fields.themeColor ?? "",
+    province: fields.province ?? "",
+    area: fields.area ?? "",
+    mahalla: fields.mahalla ?? "",
+    nearestPoint: fields.nearestPoint ?? "",
+    addressNotes: fields.addressNotes ?? "",
+    brideName: fields.brideName ?? "",
+    groomName: fields.groomName ?? "",
+    bridePhone: fields.bridePhone ?? "",
+    groomPhone: fields.groomPhone ?? "",
+    alternatePhone: fields.alternatePhone ?? "",
+    cityArea: fields.cityArea ?? "",
+    hallLocation: fields.hallLocation ?? order.eventLocation ?? "",
+    selectedAddons: fields.selectedAddons ?? [],
+    welcomeBoards: fields.welcomeBoards ?? [],
+    selectedAccessories: fields.selectedAccessories ?? [],
+    venueImages: fields.venueImages ?? [],
+    bookingDetails: { ...fields, routedBookingSource: "service_order" },
+    trackingStatus: fields.trackingStatus ?? "booked",
+    paidAmount: order.depositAmount,
+    internalNotes: order.internalNotes ?? "",
+    updatedAt: order.createdAt,
+  });
+}
+
+async function findRoutedKoshaServiceBooking(id: number) {
+  const order = await db.query.serviceOrdersTable.findFirst({
+    where: and(
+      eq(serviceOrdersTable.id, id),
+      sql`${serviceOrdersTable.archivedAt} is null`,
+    ),
+  });
+  if (!order) return null;
+  const service = await db.query.servicesTable.findFirst({
+    where: eq(servicesTable.id, order.serviceId),
+  });
+  return isKoshaOrSoundBooking(order, service) ? { order, service } : null;
+}
+
+async function updateRoutedKoshaServiceBooking(
+  req: NextRequest,
+  auth: any,
+  order: typeof serviceOrdersTable.$inferSelect,
+  service: { type?: string | null; name?: string | null; nameAr?: string | null } | null | undefined,
+) {
+  const parsed = KoshaBookingUpdateSchema.safeParse(await body(req));
+  if (!parsed.success)
+    return validationError("admin.kosha-bookings.update", parsed);
+
+  const data = parsed.data as Record<string, any>;
+  const fields: Record<string, any> = { ...((order.customFields ?? {}) as Record<string, any>) };
+  const update: Partial<typeof serviceOrdersTable.$inferInsert> = {
+    customFields: fields,
+  };
+  for (const key of [
+    "koshaId", "brideName", "groomName", "bridePhone", "groomPhone",
+    "alternatePhone", "eventTime", "eventType", "serviceLevel", "venueType",
+    "themeColor", "province", "area", "mahalla", "nearestPoint",
+    "addressNotes", "cityArea", "selectedAddons", "welcomeBoards",
+    "selectedAccessories", "trackingStatus", "dueDate", "pricing",
+    "paymentMethod",
+  ]) {
+    if (data[key] !== undefined) fields[key] = data[key];
+  }
+  if (data.customerName !== undefined)
+    update.customerName = textFallback(data.customerName, order.customerName);
+  if (data.phone !== undefined) {
+    const phone = normalizeIraqiPhone(data.phone);
+    if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    update.phone = phone;
+  }
+  if (data.eventDate !== undefined) update.eventDate = nullableText(data.eventDate);
+  if (data.hallLocation !== undefined) {
+    fields.hallLocation = nullableText(data.hallLocation);
+    update.eventLocation = nullableText(data.hallLocation);
+  }
+  if (data.notes !== undefined) update.notes = nullableText(data.notes);
+  if (data.internalNotes !== undefined) update.internalNotes = nullableText(data.internalNotes);
+  if (data.status !== undefined) update.status = data.status;
+
+  if (
+    data.totalAmount !== undefined ||
+    data.paidAmount !== undefined ||
+    data.paymentStatus !== undefined ||
+    data.paymentMethod !== undefined ||
+    data.pricing !== undefined
+  ) {
+    const total = money(data.totalAmount ?? data.pricing?.totalAmount ?? order.totalAmount);
+    const paid = money(data.paidAmount ?? data.pricing?.paidAmount ?? order.depositAmount);
+    const payment = paymentSummary(total, paid, data.paymentStatus, data.paymentMethod ?? fields.paymentMethod);
+    update.totalAmount = String(total);
+    update.depositAmount = String(payment.deposit);
+    update.remainingAmount = String(payment.remaining);
+    update.paymentStatus = payment.status;
+    fields.pricing = {
+      ...(fields.pricing ?? {}),
+      ...(data.pricing ?? {}),
+      totalAmount: total,
+      paidAmount: payment.deposit,
+      remainingAmount: payment.remaining,
+      paymentMethod: data.paymentMethod ?? fields.paymentMethod ?? "cash",
+    };
+  }
+
+  const [row] = await db
+    .update(serviceOrdersTable)
+    .set(update)
+    .where(eq(serviceOrdersTable.id, order.id))
+    .returning();
+  if (update.status !== undefined && row.status !== order.status) {
+    await syncAutomaticTasksForEntityStatus({
+      entityType: "service_order",
+      entityId: row.id,
+      status: row.status,
+      actor: erpActorFromAdmin(auth),
+    });
+  }
+  void logAdminActivity(req, "service_order_routed_from_kosha_portal", "service_order", row.id, {
+    fields: Object.keys(data),
+  });
+  return json(await formatRoutedKoshaServiceBooking(row, service));
 }
 
 function productSharedStockId(row: any): number | null {
@@ -8561,12 +9015,14 @@ async function insertServiceOrderWithTracking(
     typeof serviceOrdersTable.$inferInsert,
     "trackingCode" | "phoneLast4"
   >,
+  options?: { executor?: any; skipCustomerSync?: boolean },
 ) {
   await ensureTrackingColumns();
   await ensurePaymentWorkflowColumns();
   // Surface the service customer on /admin/customers — create-or-link by phone.
-  if (values.phone)
+  if (values.phone && !options?.skipCustomerSync)
     await ensureCustomerForPhone(values.phone, (values as any).customerName);
+  const executor = options?.executor ?? db;
   const paymentMethod = (values as any)?.customFields?.paymentMethod;
   const payment = paymentSummary(
     (values as any).totalAmount,
@@ -8574,7 +9030,7 @@ async function insertServiceOrderWithTracking(
     (values as any).paymentStatus,
     paymentMethod,
   );
-  const [row] = await db
+  const [row] = await executor
     .insert(serviceOrdersTable)
     .values({
       ...values,
@@ -8587,6 +9043,323 @@ async function insertServiceOrderWithTracking(
     })
     .returning();
   return row;
+}
+
+const SOUND_BOOKING_TAXONOMY =
+  /(^|[\s_\-/])(sound(?:[\s_\-/]*systems?)?|audio|speaker)(?=$|[\s_\-/])|صوت|سماعة|أنظمة\s*صوتية/i;
+
+function isSoundBookingTaxonomyValue(value: unknown) {
+  return SOUND_BOOKING_TAXONOMY.test(String(value ?? "").trim());
+}
+
+function parseStoreItemMetadata(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getSoundStoreProducts(products: any[]) {
+  // The Store category itself is the source of truth. Product titles are never
+  // used to decide whether an order is a Sound booking.
+  const soundStoreCategory = await db.query.categoriesTable.findFirst({
+    where: eq(categoriesTable.nameAr, "صوتيات"),
+  });
+  if (soundStoreCategory) {
+    const soundCategoryId = soundStoreCategory.id;
+    return products.filter(
+      (product) =>
+        Number(product.categoryId) === soundCategoryId ||
+        Number(product.subcategoryId) === soundCategoryId ||
+        (Array.isArray(product.subcategoryIds) &&
+          product.subcategoryIds.some(
+            (categoryId: unknown) => Number(categoryId) === soundCategoryId,
+          )),
+    );
+  }
+
+  const categoryIds = [
+    ...new Set(
+      products
+        .flatMap((product) => [
+          product.categoryId,
+          product.subcategoryId,
+          ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
+        ])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+  const categories = categoryIds.length
+    ? await db.query.categoriesTable.findMany({
+        where: inArray(categoriesTable.id, categoryIds),
+      })
+    : [];
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+
+  return products.filter((product) => {
+    const linkedCategories = [
+      product.categoryId,
+      product.subcategoryId,
+      ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
+    ]
+      .map((id) => categoryById.get(Number(id)))
+      .filter(Boolean);
+    const categoryValues = linkedCategories.flatMap((category: any) => [
+      category.slug,
+      category.name,
+      category.nameAr,
+      category.imageMetadata?.department,
+      category.imageMetadata?.serviceType,
+      category.imageMetadata?.type,
+    ]);
+    return [
+      product.category,
+      product.subcategory,
+      product.serviceType,
+      product.department,
+      ...categoryValues,
+    ].some(isSoundBookingTaxonomyValue);
+  });
+}
+
+function storeSoundEventDetails(order: any, items: any[]) {
+  const itemDetails = items.map((item) => parseStoreItemMetadata(item.customization));
+  const first = (keys: string[]) =>
+    itemDetails
+      .map((detail) => keys.map((key) => detail[key]).find(Boolean))
+      .find(Boolean);
+  const eventDate = String(
+    first(["eventDate", "event_date", "startDate", "start_date"]) ??
+      order.eventDate ??
+      "",
+  ).slice(0, 10);
+  const eventTime = String(first(["eventTime", "event_time"]) ?? "");
+  const venue = String(
+    first(["venue", "venueName", "hallName", "eventLocation", "location"]) ??
+      [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+  );
+  const mapUrl = String(first(["mapUrl", "mapsUrl", "locationUrl"]) ?? order.mapsUrl ?? "");
+  return { eventDate, eventTime, venue, mapUrl };
+}
+
+function storeSoundBookingItems(
+  items: any[],
+  soundProducts: any[],
+) {
+  const soundProductById = new Map(
+    soundProducts.map((product) => [Number(product.id), product]),
+  );
+  return items
+    .filter((item) => soundProductById.has(Number(item.productId)))
+    .map((item) => {
+      const product = soundProductById.get(Number(item.productId));
+      return {
+        productId: Number(item.productId),
+        name: item.productNameAr || item.productName || product?.nameAr || product?.name || "",
+        quantity: Number(item.quantity) || 0,
+        unitPrice: money(item.price),
+        selectedVariant: item.selectedColorData ?? item.selectedColor ?? null,
+        rental: parseStoreItemMetadata(item.customization),
+      };
+    });
+}
+
+async function findSoundBookingService() {
+  const services = await db.query.servicesTable.findMany({
+    where: eq(servicesTable.isActive, true),
+  });
+  return (
+    services.find((service) =>
+      [service.type, service.name, service.nameAr].some(
+        isSoundBookingTaxonomyValue,
+      ),
+    ) ?? null
+  );
+}
+
+/**
+ * Creates or refreshes the one Booking Center service order linked to a Store
+ * order. The Store order remains the source record; the Store order ID held in
+ * custom_fields is the idempotency key for checkout and payment retries.
+ */
+async function syncStoreSoundBooking(input: {
+  order: any;
+  items: any[];
+  products: any[];
+}) {
+  const soundProducts = await getSoundStoreProducts(input.products);
+  const soundProductIds = new Set(soundProducts.map((product) => Number(product.id)));
+  const storeOrderId = Number(input.order.id);
+  if (!storeOrderId) return { booking: null, created: false, requiresSync: false };
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from orders where id = ${storeOrderId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'storeOrderId' = ${String(storeOrderId)}
+      limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!soundProductIds.size && !linked)
+      return { booking: null, created: false, requiresSync: false };
+
+    const soundItems = storeSoundBookingItems(input.items, soundProducts);
+    const event = storeSoundEventDetails(input.order, input.items);
+    const eventInfoPending = !event.eventDate || !event.venue;
+    const payment = paymentSummary(
+      input.order.total,
+      input.order.depositAmount,
+      input.order.paymentStatus,
+      input.order.paymentMethod,
+    );
+    const commonFields = {
+      bookingSource: "store",
+      bookingType: "sound",
+      department: "sound",
+      storeOrderId,
+      storeOrderReference: input.order.trackingCode,
+      originalOrderReference: input.order.trackingCode,
+      customerId: input.order.customerId ?? null,
+      customerAddress: [input.order.governorate, input.order.area, input.order.address]
+        .filter(Boolean)
+        .join(" - "),
+      mapUrl: event.mapUrl || null,
+      eventTime: event.eventTime || null,
+      eventInformationStatus: eventInfoPending ? "pending_completion" : "complete",
+      bookingCenterServices: [{ type: "sound", status: "waiting", amount: soundItems.reduce((sum, item) => sum + money(item.unitPrice) * item.quantity, 0) }],
+      soundItems,
+      paymentMethod: input.order.paymentMethod ?? "cod",
+    };
+    const internalNotes = eventInfoPending ? "بانتظار استكمال معلومات المناسبة" : null;
+
+    if (linked) {
+      const previousFields =
+        linked.custom_fields && typeof linked.custom_fields === "object"
+          ? linked.custom_fields
+          : {};
+      const [booking] = await tx
+        .update(serviceOrdersTable)
+        .set({
+          customerName: input.order.customerName,
+          phone: input.order.customerPhone,
+          eventDate: event.eventDate || null,
+          eventLocation: event.venue || null,
+          notes: input.order.notes ?? null,
+          totalAmount: String(money(input.order.total)),
+          depositAmount: String(payment.deposit),
+          remainingAmount: String(payment.remaining),
+          paymentStatus: payment.status,
+          internalNotes: internalNotes ?? linked.internal_notes ?? null,
+          customFields: { ...previousFields, ...commonFields },
+        } as any)
+        .where(eq(serviceOrdersTable.id, Number(linked.id)))
+        .returning();
+      return { booking, created: false, requiresSync: false };
+    }
+
+    const soundService = await findSoundBookingService();
+    if (!soundService) return { booking: null, created: false, requiresSync: true };
+
+    const booking = await insertServiceOrderWithTracking(
+      {
+        serviceId: soundService.id,
+        customerName: input.order.customerName,
+        phone: input.order.customerPhone,
+        eventDate: event.eventDate || null,
+        eventLocation: event.venue || null,
+        notes: input.order.notes ?? null,
+        internalNotes,
+        totalAmount: String(money(input.order.total)),
+        depositAmount: String(payment.deposit),
+        remainingAmount: String(payment.remaining),
+        paymentStatus: payment.status,
+        customFields: commonFields,
+      },
+      { executor: tx, skipCustomerSync: true },
+    );
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: booking.id,
+      status: booking.status,
+      notes: "إنشاء تلقائي من طلب متجر صوتيات",
+    });
+    await tx.insert(entityTimelineTable).values({
+      entityType: "service_order",
+      entityId: booking.id,
+      type: "created",
+      title: "حجز صوتيات جديد من المتجر",
+      body: `طلب المتجر ${input.order.trackingCode}`,
+      actorName: "المتجر الإلكتروني",
+      metadata: { source: "store", storeOrderId },
+    });
+    return { booking, created: true, requiresSync: false };
+  });
+}
+
+async function markStoreSoundBookingSyncRequired(
+  order: any,
+  reason: string,
+) {
+  const marker = "[sound-booking-sync-required]";
+  const existing = String(order.internalNotes ?? "");
+  const internalNotes = existing.includes(marker)
+    ? existing
+    : [existing, marker, "يتطلب مزامنة حجز الصوتيات"].filter(Boolean).join("\n");
+  await db
+    .update(ordersTable)
+    .set({ internalNotes, updatedAt: new Date() })
+    .where(eq(ordersTable.id, Number(order.id)));
+  await db.insert(entityTimelineTable).values({
+    entityType: "order",
+    entityId: Number(order.id),
+    type: "sound_booking_sync_required",
+    title: "يتطلب مزامنة حجز الصوتيات",
+    body: reason,
+    actorName: "النظام",
+    metadata: { source: "store", retrySafe: true },
+  });
+}
+
+async function cancelStoreSoundBooking(order: any, note: string) {
+  const storeOrderId = Number(order.id);
+  if (!storeOrderId) return { cancelled: false, requiresApproval: false };
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from orders where id = ${storeOrderId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'storeOrderId' = ${String(storeOrderId)}
+      limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!linked) return { cancelled: false, requiresApproval: false };
+    if (["completed", "delivered"].includes(String(linked.status)))
+      return { cancelled: false, requiresApproval: true };
+    const [booking] = await tx
+      .update(serviceOrdersTable)
+      .set({ status: "cancelled" })
+      .where(eq(serviceOrdersTable.id, Number(linked.id)))
+      .returning();
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: Number(linked.id),
+      status: "cancelled",
+      notes: note,
+    });
+    await tx.insert(entityTimelineTable).values({
+      entityType: "service_order",
+      entityId: Number(linked.id),
+      type: "cancelled",
+      title: "إلغاء حجز الصوتيات من طلب المتجر",
+      body: `طلب المتجر ${order.trackingCode}`,
+      actorName: "النظام",
+      metadata: { source: "store", storeOrderId },
+    });
+    return { cancelled: Boolean(booking), requiresApproval: false };
+  });
 }
 
 async function handleAuth(req: NextRequest, parts: string[]) {
@@ -9078,8 +9851,8 @@ async function adjustVariantStock(
       productId: row?.product_id ?? null,
       quantityChange: String(delta),
       reason: meta.reason,
-      relatedType: "variant",
-      relatedId: variantId,
+      relatedType: meta.sourceType ?? "variant",
+      relatedId: meta.sourceId ?? variantId,
       createdBy: meta.who?.id ?? null,
       createdByName: meta.who?.name ?? "",
     } as any);
@@ -9106,6 +9879,8 @@ async function consumeReservations(
     if (r.variant_id != null) {
       await adjustVariantStock(Number(r.variant_id), -qty, {
         reason: `reservation_consumed:${sourceType}`,
+        sourceType,
+        sourceId,
         who,
       });
     } else {
@@ -9142,7 +9917,7 @@ async function releaseReservations(
     if (r.status === "consumed" && qty > 0) {
       // Restore actual inventory that was deducted at checkout.
       if (r.variant_id != null) {
-        await adjustVariantStock(Number(r.variant_id), qty, { reason: `reservation_restored:${sourceType}`, who });
+        await adjustVariantStock(Number(r.variant_id), qty, { reason: `reservation_restored:${sourceType}`, sourceType, sourceId, who });
       } else {
         await adjustProductStock(Number(r.product_id), qty, {
           reason: `reservation_restored:${sourceType}`,
@@ -12049,6 +12824,52 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
     }
     const formatted = await formatOrder(order);
+    // Store Sound orders are projected once into the existing Booking Center as
+    // a service order. Routing failures never invalidate the completed checkout.
+    try {
+      const soundBooking = await syncStoreSoundBooking({
+        order,
+        items: cartItems,
+        products,
+      });
+      if (soundBooking.requiresSync) {
+        await markStoreSoundBookingSyncRequired(
+          order,
+          "لم يتم العثور على خدمة صوتيات فعّالة لربط طلب المتجر",
+        );
+      } else if (soundBooking.created && soundBooking.booking) {
+        void createNotification({
+          type: "booking_new",
+          title: "حجز صوتيات جديد من المتجر",
+          body: `${order.customerName} · طلب ${order.trackingCode} · حجز ${soundBooking.booking.trackingCode ?? soundBooking.booking.id} · ${storeSoundEventDetails(order, cartItems).eventDate || "الموعد غير محدد"} · ${formatCurrency(Number(order.total))}`,
+          entityType: "service_order",
+          entityId: soundBooking.booking.id,
+          href: `/admin/bookings/service/${soundBooking.booking.id}`,
+        });
+        void logAdminActivity(req, "store_sound_booking_routed", "service_order", soundBooking.booking.id, {
+          storeOrderId: order.id,
+          storeOrderReference: order.trackingCode,
+        });
+      }
+    } catch (err: any) {
+      console.error("Store Sound booking routing failed", {
+        orderId: order.id,
+        trackingCode: order.trackingCode,
+        message: err?.message,
+        stack: err?.stack,
+      });
+      try {
+        await markStoreSoundBookingSyncRequired(
+          order,
+          "فشلت مزامنة حجز الصوتيات؛ يمكن إعادة المحاولة بأمان",
+        );
+      } catch (markError: any) {
+        console.error("Store Sound booking sync marker failed", {
+          orderId: order.id,
+          message: markError?.message,
+        });
+      }
+    }
     void ensureQrForEntity("order", order, req).catch((err) =>
       console.error("order QR generation failed", { orderId: order.id, message: err?.message }),
     );
@@ -13059,6 +13880,22 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_cancel",
     "payroll_approve",
     "payroll_pay",
+    "employee_salaries_view",
+    "employee_salaries_create",
+    "employee_salaries_edit",
+    "employee_salaries_delete_draft",
+    "employee_salaries_view_historical",
+    "employee_salaries_repair_historical",
+    "employee_salaries_add_amount",
+    "employee_salaries_reduce_amount",
+    "employee_salaries_approve",
+    "employee_salaries_pay",
+    "employee_salaries_reverse",
+    "employee_salaries_cancel",
+    "employee_salaries_print",
+    "employee_salaries_export",
+    "employee_salaries_view_accounting",
+    "employee_salaries_view_cashbox",
     "bonus_view",
     "bonus_create",
     "bonus_edit",
@@ -13094,6 +13931,19 @@ const ROLE_PERMISSION_PRESETS: Record<string, Permission[]> = {
     "payroll_recalculate",
     "payroll_approve",
     "payroll_pay",
+    "employee_salaries_view",
+    "employee_salaries_create",
+    "employee_salaries_edit",
+    "employee_salaries_delete_draft",
+    "employee_salaries_view_historical",
+    "employee_salaries_add_amount",
+    "employee_salaries_reduce_amount",
+    "employee_salaries_approve",
+    "employee_salaries_pay",
+    "employee_salaries_print",
+    "employee_salaries_export",
+    "employee_salaries_view_accounting",
+    "employee_salaries_view_cashbox",
     "bonus_view",
     "bonus_create",
     "bonus_approve",
@@ -13206,6 +14056,12 @@ function addressPayload(row: any) {
     landmark: row.landmark,
     notes: row.notes,
     isDefault: row.isDefault,
+    // Province delivery fields (nullable on legacy rows).
+    provinceId: row.provinceId ?? null,
+    district: row.district ?? "",
+    area: row.area ?? "",
+    altPhone: row.altPhone ?? null,
+    mapsUrl: row.mapsUrl ?? null,
     createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
     updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
   };
@@ -15020,7 +15876,43 @@ async function handleAdminKoshas(
         orderBy: (b, { desc }) => [desc(b.createdAt)],
         limit: 150,
       });
-      const formatted = await Promise.all(rows.map((row) => formatKoshaBooking(row)));
+      const serviceRows = await db.query.serviceOrdersTable.findMany({
+        where: and(
+          sql`${serviceOrdersTable.archivedAt} is null`,
+          // Narrow to routing candidates BEFORE the row cap, so a sound booking
+          // outside the newest N service orders is no longer dropped.
+          koshaRoutingCandidateSql(),
+          status ? eq(serviceOrdersTable.status, status) : undefined,
+          search
+            ? or(
+                ilike(serviceOrdersTable.customerName, `%${search}%`),
+                ilike(serviceOrdersTable.phone, `%${search}%`),
+                ilike(serviceOrdersTable.eventLocation, `%${search}%`),
+              )
+            : undefined,
+        ),
+        orderBy: (b, { desc }) => [desc(b.createdAt)],
+        limit: 500,
+      });
+      const services = serviceRows.length
+        ? await db.query.servicesTable.findMany({
+            where: inArray(servicesTable.id, [...new Set(serviceRows.map((row) => row.serviceId))]),
+          })
+        : [];
+      const servicesById = new Map(services.map((service) => [service.id, service]));
+      const routedServiceRows = serviceRows.filter((row) =>
+        isKoshaOrSoundBooking(row, servicesById.get(row.serviceId)),
+      );
+      const formatted = await Promise.all([
+        ...rows.map((row) => formatKoshaBooking(row)),
+        ...routedServiceRows.map((row) =>
+          formatRoutedKoshaServiceBooking(row, servicesById.get(row.serviceId)),
+        ),
+      ]).then((items) =>
+        items.sort((left, right) =>
+          String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")),
+        ),
+      );
       const latestPayments = rows.length
         ? await db.query.financialTransactionsTable.findMany({
             where: and(
@@ -15122,7 +16014,40 @@ async function handleAdminKoshas(
       const existing = await db.query.koshaBookingsTable.findFirst({
         where: eq(koshaBookingsTable.id, id),
       });
-      if (!existing) return error("الحجز غير موجود", 404);
+      if (!existing) {
+        const routed = await findRoutedKoshaServiceBooking(id);
+        if (!routed) return error("الحجز غير موجود", 404);
+
+        if (!parts[3] && method === "GET") {
+          const qr = await ensureQrForEntity("service_order", routed.order, req).catch(() => null);
+          return json({ ...(await formatRoutedKoshaServiceBooking(routed.order, routed.service)), qr });
+        }
+        if (!parts[3] && method === "PATCH")
+          return updateRoutedKoshaServiceBooking(req, auth, routed.order, routed.service);
+        if (parts[3] === "finance" && method === "GET") {
+          const fields = (routed.order.customFields ?? {}) as Record<string, any>;
+          return json({
+            bookingId: routed.order.id,
+            bookingNo: routed.order.trackingCode ?? `AJN-${routed.order.id}`,
+            customerId: fields.customerId ?? null,
+            totalAmount: money(routed.order.totalAmount),
+            paidAmount: money(routed.order.depositAmount),
+            approvedCollectedAmount: 0,
+            pendingCollectionAmount: 0,
+            refundedAmount: 0,
+            discount: money(fields.pricing?.discountAmount),
+            additionalCharges: 0,
+            remainingAmount: money(routed.order.remainingAmount),
+            paymentStatus: routed.order.paymentStatus,
+            latestPaymentDate: null,
+            payments: [],
+            collections: [],
+            cashboxMovements: [],
+            journalEntries: [],
+          });
+        }
+        return error("هذا الإجراء غير متاح للحجز المحوّل", 404);
+      }
 
       if (parts[3] === "finance" && method === "GET") {
         const details = (existing.bookingDetails ?? {}) as Record<string, any>;
@@ -20079,12 +21004,21 @@ async function resolveAssetProductId(raw: string): Promise<number> {
 async function handleHrAdmin(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "hr") return null;
   await ensureHrTables();
-  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
+  const auth = await requireAnyPermission(req, ["staff", "accounting", "dashboard", "hr", "executive", "payroll_view", "payroll_edit", "payroll_delete", "payroll_recalculate", "payroll_reopen", "payroll_cancel", "payroll_submit", "payroll_approve", "payroll_reject", "payroll_pay", "employee_salaries_view", "employee_salaries_create", "employee_salaries_edit", "employee_salaries_delete_draft", "employee_salaries_view_historical", "employee_salaries_repair_historical", "employee_salaries_add_amount", "employee_salaries_reduce_amount", "employee_salaries_approve", "employee_salaries_pay", "employee_salaries_reverse", "employee_salaries_cancel", "employee_salaries_print", "employee_salaries_export", "employee_salaries_view_accounting", "employee_salaries_view_cashbox", "bonus_view", "bonus_create", "bonus_edit", "bonus_submit", "bonus_approve", "bonus_reject", "bonus_delete", "bonus_apply", "bonus_reverse", "bonus_rules_manage"]);
   if (isResponse(auth)) return auth;
   const actor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
   const method = req.method, resource = parts[2], id = parts[3] ? int(parts[3]) : null;
   const adminOnly = () => auth.role === "admin" || auth.role === "manager" || auth.role === "accountant";
-  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) ? null : error(message, 403);
+  const salaryPermissionAliases: Partial<Record<Permission, Permission[]>> = {
+    payroll_view: ["employee_salaries_view"],
+    payroll_edit: ["employee_salaries_create", "employee_salaries_edit", "employee_salaries_add_amount", "employee_salaries_reduce_amount"],
+    payroll_delete: ["employee_salaries_delete_draft"],
+    payroll_submit: ["employee_salaries_approve"],
+    payroll_approve: ["employee_salaries_approve"],
+    payroll_pay: ["employee_salaries_pay"],
+    payroll_cancel: ["employee_salaries_cancel"],
+  };
+  const requirePayroll = (permission: Permission, message = "ليس لديك صلاحية") => hasPermission(auth, permission) || (salaryPermissionAliases[permission] || []).some((candidate) => hasPermission(auth, candidate)) ? null : error(message, 403);
   try {
     if (method === "GET" && (!resource || resource === "dashboard")) return json(await hrDashboard(String(req.nextUrl.searchParams.get("period") || "" ) || undefined));
     if (method === "GET" && resource === "executive") {
@@ -20232,8 +21166,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       if (method === "GET" && id) { const denied = requirePayroll("payroll_view"); if (denied) return denied; const run = await getPayrollRun(id); return run ? json(run) : error("دورة الرواتب غير موجودة", 404); }
       if (method === "POST" && !id) {
         const denied = requirePayroll("payroll_edit"); if (denied) return denied;
-        const payload = await body(req); const run = await createPayrollRun(payload, actor);
-        void logAdminActivity(req, "payroll_created", "payroll_run", run?.id, { period: payload?.period });
+        const payload = await body(req); const run = payload?.manual === true ? await createManualSalaryRecord(payload, actor) : await createPayrollRun(payload, actor);
+        void logAdminActivity(req, payload?.manual === true ? "employee_salary_created" : "payroll_created", "payroll_run", run?.id, { period: payload?.period, employeeId: payload?.employeeId, newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        if (payload?.manual === true && run?.lines?.length) void addEntityTimeline({ entityType: "payroll_run", entityId: run.id, type: "employee_salary_created", title: "تم إنشاء راتب موظف يدويًا", body: payload?.notes || null, actor: erpActorFromAdmin(auth), metadata: { employeeId: payload.employeeId, period: payload.period } });
         return json(run, 201);
       }
       if (method === "POST" && id && parts[4] === "recalculate") {
@@ -20264,6 +21199,39 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         void logAdminActivity(req, "payroll_edited", "payroll_line", lineId, metadata);
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_edited", title: "تم تعديل راتب الموظف", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
         return json(result.run);
+      }
+      if (method === "GET" && id && parts[4] === "lines" && parts[5] && parts[6] === "management") {
+        const denied = requirePayroll("payroll_view"); if (denied) return denied;
+        const detail = await getEmployeeSalaryManagementDetail(id, int(parts[5])!); return detail ? json(detail) : error("سجل الراتب غير موجود", 404);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "pay") {
+        const denied = requirePayroll("employee_salaries_pay", "لا تملك صلاحية صرف راتب الموظف"); if (denied) return denied;
+        const lineId = int(parts[5])!; const payload = await body(req); const result = await payEmployeeSalary(id, lineId, payload, actor);
+        void logAdminActivity(req, "employee_salary_paid", "payroll_line", lineId, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_line", entityId: lineId, type: "employee_salary_paid", title: "تم صرف دفعة راتب", body: payload?.notes || null, actor: erpActorFromAdmin(auth), metadata: result });
+        return json(result, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "adjustments") {
+        const payload = await body(req); const permission = payload?.direction === "deduction" ? "employee_salaries_reduce_amount" : "employee_salaries_add_amount"; const denied = requirePayroll(permission, "لا تملك صلاحية تعديل مبلغ الراتب"); if (denied) return denied;
+        const lineId = int(parts[5])!; const result = await addEmployeeSalaryAdjustment(id, lineId, payload, actor);
+        void logAdminActivity(req, payload?.direction === "deduction" ? "employee_salary_amount_reduced" : "employee_salary_amount_added", "payroll_line", lineId, { oldValues: result.before, newValues: result.after, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        return json(result, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "attachments") {
+        const denied = requirePayroll("employee_salaries_edit"); if (denied) return denied; const lineId = int(parts[5])!;
+        const saved = await addEmployeeSalaryAttachment(id, lineId, await body(req), actor); void logAdminActivity(req, "employee_salary_attachment_added", "payroll_line", lineId, { attachmentId: saved.id, name: saved.name }); return json(saved, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "reconcile") {
+        const denied = requirePayroll("employee_salaries_repair_historical", "لا تملك صلاحية إصلاح روابط الرواتب القديمة"); if (denied) return denied; const lineId = int(parts[5])!; const payload = await body(req);
+        const result = await linkHistoricalSalaryPayment(id, lineId, payload, actor); void logAdminActivity(req, "historical_salary_linked", "payroll_line", lineId, { newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "correct") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية تصحيح راتب مصروف"); if (denied) return denied; const lineId = int(parts[5])!; const payload = await body(req);
+        const result = await correctPaidEmployeeSalary(id, lineId, payload, actor); void logAdminActivity(req, "paid_salary_corrected", "payroll_line", lineId, { oldValues: result.before, newValues: result.after, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "payments" && parts[7] && parts[8] === "reverse") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية عكس دفعة راتب"); if (denied) return denied; const lineId = int(parts[5])!, paymentId = int(parts[7])!; const payload = await body(req);
+        const result = await reverseEmployeeSalaryPayment(id, lineId, paymentId, payload, actor); void logAdminActivity(req, "employee_salary_payment_reversed", "payroll_line", lineId, { newValues: result, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" }); return json(result);
       }
       if (method === "DELETE" && id && parts[4] === "lines" && parts[5]) {
         const denied = requirePayroll("payroll_delete", "لا تملك صلاحية حذف سجل راتب الموظف"); if (denied) return denied;
@@ -20302,6 +21270,14 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const run = await payPayrollRun(id, actor);
         void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "reverse") {
+        const denied = requirePayroll("employee_salaries_reverse", "لا تملك صلاحية عكس راتب مصروف"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const run = await reversePayrollRunPayment(id, actor, payload);
+        const metadata = { oldValues: oldRun, newValues: run, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "employee_salary_reversed", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "employee_salary_reversed", title: "تم عكس صرف دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
         return json(run);
       }
     }
@@ -20551,9 +21527,1837 @@ async function handleEventBrain(req: NextRequest, parts: string[], section: stri
   return error("مسار عقل الفعاليات غير مدعوم", 404);
 }
 
+// ─── ID document scanner ────────────────────────────────────────────────────
+
+/**
+ * Scanned identity documents.
+ *
+ * Privacy rules enforced here:
+ *  - images are served only from an authenticated endpoint, never a public URL;
+ *  - every view / save / delete is audit-logged;
+ *  - audit metadata never carries image bytes or document numbers;
+ *  - nothing is written unless the user explicitly saves.
+ */
+async function handleDocumentScanner(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "document-scanner") return null;
+  const method = req.method;
+  await ensureScannerTables();
+
+  // Lightweight audit beacon for client-side actions (print / export / capture).
+  if (method === "POST" && parts[2] === "audit") {
+    const auth = await requireAnyPermission(req, ["doc_scanner_view", "doc_scanner_scan"]);
+    if (isResponse(auth)) return auth;
+    const parsed = auditActionSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.audit", parsed);
+    const d = parsed.data;
+    // Metadata only — no image, no document number.
+    void logAdminActivity(req, d.action, "scanned_document", d.ownerId ?? undefined, {
+      documentType: d.documentType ?? null,
+      ownerType: d.ownerType ?? null,
+      format: d.format ?? null,
+      copies: d.copies ?? null,
+    });
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && !parts[2]) {
+    const auth = await requirePermission(req, "doc_scanner_save");
+    if (isResponse(auth)) return auth;
+    const parsed = saveDocumentSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.save", parsed);
+    const a = actor(auth);
+    const id = await saveScannedDocument({
+      ...parsed.data,
+      createdBy: a.id,
+      createdByName: a.name,
+    });
+    void logAdminActivity(req, "document_saved", "scanned_document", id, {
+      documentType: parsed.data.documentType,
+      ownerType: parsed.data.ownerType ?? null,
+      ownerId: parsed.data.ownerId ?? null,
+      sides: [parsed.data.frontImage ? "front" : null, parsed.data.backImage ? "back" : null].filter(Boolean),
+    });
+    return json({ id }, 201);
+  }
+
+  if (method === "GET" && !parts[2]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const params = req.nextUrl.searchParams;
+    return json({
+      data: await listScannedDocuments({
+        ownerType: params.get("ownerType"),
+        ownerId: params.get("ownerId") ? Number(params.get("ownerId")) : null,
+        documentType: params.get("documentType"),
+        search: params.get("search"),
+        expiry: params.get("expiry"),
+        limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+      }),
+    });
+  }
+
+  // Module dashboard counters.
+  if (method === "GET" && parts[2] === "stats") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    return json(await scannerDashboardStats());
+  }
+
+  // Documents approaching or past expiry.
+  if (method === "GET" && parts[2] === "expiring") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const days = Number(req.nextUrl.searchParams.get("days") ?? 90);
+    return json({ data: await listExpiringDocuments(Number.isFinite(days) ? days : 90) });
+  }
+
+  // QR lookup: resolves a token to its document id.
+  if (method === "GET" && parts[2] === "qr" && parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const id = await getScannedDocumentByQr(String(parts[3]));
+    if (!id) return error("المستمسك غير موجود", 404);
+    const meta = await getScannedDocumentMeta(id);
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, { via: "qr" });
+    return json(meta);
+  }
+
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && id && !parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const [pages, versions] = await Promise.all([
+      listDocumentPages(id).catch(() => []),
+      listDocumentVersions(id).catch(() => []),
+    ]);
+    return json({ ...meta, pages, versions });
+  }
+
+  // Metadata edit — bumps the version and keeps the previous snapshot.
+  if ((method === "PATCH" || method === "PUT") && id && !parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_edit");
+    if (isResponse(auth)) return auth;
+    const parsed = updateDocumentSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.update", parsed);
+    const a = actor(auth);
+    const before = await getScannedDocumentMeta(id);
+    if (!before) return error("المستمسك غير موجود", 404);
+    const ok = await updateScannedDocument(id, {
+      ...parsed.data,
+      updatedBy: a.id,
+      updatedByName: a.name,
+    });
+    if (!ok) return error("تعذر التعديل", 404);
+    void logAdminActivity(req, "document_edited", "scanned_document", id, {
+      documentType: before.documentType,
+      changeSummary: parsed.data.changeSummary ?? null,
+    });
+    return json(await getScannedDocumentMeta(id));
+  }
+
+  // QR image for a document. The code encodes an admin deep link, so scanning
+  // still lands on a permission-gated screen — it is not a public share link.
+  if (method === "GET" && id && parts[3] === "qr") {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    if (!meta.qrToken) return error("لا يوجد رمز QR لهذا المستمسك", 404);
+    const target = `${baseUrlFromReq(req)}/admin/document-library?qr=${meta.qrToken}`;
+    const dataUrl = await QRCode.toDataURL(target, { margin: 1, width: 320 });
+    return json({ token: meta.qrToken, targetUrl: target, dataUrl });
+  }
+
+  // Protected page delivery — object storage or inline, always behind auth.
+  if (method === "GET" && id && parts[3] === "page" && parts[4]) {
+    const pageId = int(parts[4]);
+    if (!pageId) return error("رقم الصفحة غير صحيح", 400);
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const asset = await getDocumentPageBytes(id, pageId);
+    if (!asset) return error("لا توجد صورة لهذه الصفحة", 404);
+
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, {
+      documentType: meta.documentType, pageId,
+    });
+
+    return new NextResponse(new Uint8Array(asset.bytes), {
+      status: 200,
+      headers: {
+        "content-type": asset.mime,
+        // Never cached by browser, proxy or PWA service worker.
+        "cache-control": "no-store, no-cache, must-revalidate, private",
+        pragma: "no-cache",
+        "content-disposition": `inline; filename="document-${id}-p${pageId}"`,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  }
+
+  // Protected image delivery — the only way an image ever leaves the server.
+  if (method === "GET" && id && parts[3] === "image" && parts[4]) {
+    const sideParam = parts[4];
+    if (sideParam !== "front" && sideParam !== "back")
+      return error("وجه غير معروف", 400);
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const stored = await getScannedDocumentImage(id, sideParam);
+    if (!stored) return error("لا توجد صورة لهذا الوجه", 404);
+    const decoded = decodeDataUrl(stored);
+    if (!decoded) return error("تعذر قراءة الصورة", 500);
+
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, {
+      documentType: meta.documentType,
+      side: sideParam,
+      ownerType: meta.ownerType,
+      ownerId: meta.ownerId,
+    });
+
+    return new NextResponse(new Uint8Array(decoded.bytes), {
+      status: 200,
+      headers: {
+        "content-type": decoded.mime,
+        // Never cached by the browser, a proxy, or the PWA service worker.
+        "cache-control": "no-store, no-cache, must-revalidate, private",
+        pragma: "no-cache",
+        "content-disposition": `inline; filename="document-${id}-${sideParam}"`,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  }
+
+  if (method === "DELETE" && id) {
+    const auth = await requirePermission(req, "doc_scanner_delete");
+    if (isResponse(auth)) return auth;
+    const reason = String((await body(req))?.reason ?? "").trim();
+    if (reason.length < 3) return error("يجب إدخال سبب الحذف", 400);
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const a = actor(auth);
+    const ok = await deleteScannedDocument(id, a.id, reason);
+    if (!ok) return error("تعذر الحذف", 404);
+    void logAdminActivity(req, "document_deleted", "scanned_document", id, {
+      documentType: meta.documentType, reason,
+    });
+    return json({ ok: true, id });
+  }
+
+  return error("طريقة غير مدعومة", 405);
+}
+
+// ─── Cross-module oversight (health / reconciliation / recycle bin) ─────────
+
+/**
+ * Health Monitor, Reconciliation Center and the unified Recycle Bin.
+ *
+ * Reads are detect-and-report only. Reconciliation exposes a read-only Dry Run;
+ * applying a repair additionally requires a manager role and a written reason,
+ * and is always audit-logged. Nothing here runs automatically on page load.
+ */
+async function handleIntegrationOversight(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  const method = req.method;
+
+  if (section === "system-health") {
+    const auth = await requireAnyPermission(req, ["system_health", "executive"]);
+    if (isResponse(auth)) return auth;
+    if (method !== "GET") return error("طريقة غير مدعومة", 405);
+    return json(await runSystemHealth());
+  }
+
+  if (section === "reconciliation") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["system_health", "executive"]);
+      if (isResponse(auth)) return auth;
+      return json({ cashbox: await computeCashboxDrift() });
+    }
+
+    // Dry Run — read-only preview of what a repair WOULD change. Never writes.
+    if (method === "POST" && parts[2] === "dry-run") {
+      const auth = await requireAnyPermission(req, [
+        "system_health", "executive", "reconciliation_repair",
+      ]);
+      if (isResponse(auth)) return auth;
+      const target = String((await body(req))?.target ?? "");
+      if (target === "cashbox") {
+        const d = await computeCashboxDrift();
+        const affected = Math.abs(d.drift) >= 0.01 ? 1 : 0;
+        return json({
+          target,
+          generatedAt: new Date().toISOString(),
+          affectedCount: affected,
+          changes: affected
+            ? [{
+                record: "الصندوق الرئيسي",
+                field: "current_balance",
+                before: d.stored,
+                after: d.expected,
+                delta: Math.round((d.expected - d.stored) * 100) / 100,
+              }]
+            : [],
+          detail: affected
+            ? `سيُعاد احتساب رصيد الصندوق من ${d.stored} إلى ${d.expected}.`
+            : "لا يوجد فرق — لن تتغير أي قيمة.",
+        });
+      }
+      return error("المعاينة متاحة حالياً للصندوق الرئيسي فقط", 400);
+    }
+
+    if (method === "POST" && parts[2] === "repair") {
+      const auth = await requireAnyPermission(req, ["reconciliation_repair"]);
+      if (isResponse(auth)) return auth;
+      // Repairs touch financial truth — restrict to manager/admin on top of the
+      // granular permission.
+      if (auth.role !== "admin" && auth.role !== "manager")
+        return error("تنفيذ التسوية متاح للمدير فقط", 403);
+      const b = await body(req);
+      const target = String(b?.target ?? "");
+      const reason = String(b?.reason ?? "").trim();
+      if (reason.length < 3) return error("يجب إدخال سبب التسوية (٣ أحرف على الأقل)", 400);
+      const fActor = financialActor(auth);
+      try {
+        if (target === "cashbox") {
+          const before = await computeCashboxDrift();
+          const box = await recalculateMasterCashBox(fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "master_cash_box", undefined, {
+            target,
+            reason,
+            oldValues: { currentBalance: before.stored },
+            newValues: { currentBalance: box?.currentBalance },
+          });
+          return json({ ok: true, target, currentBalance: box?.currentBalance });
+        }
+        if (target === "payroll") {
+          const id = int(b?.id);
+          if (!id) return error("معرف دورة الرواتب مطلوب", 400);
+          await recalculatePayrollRun(id, fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "payroll_run", id, { target, reason });
+          return json({ ok: true, target, id });
+        }
+        if (target === "bonus") {
+          const period = String(b?.period ?? "");
+          if (!period) return error("فترة المكافآت مطلوبة", 400);
+          await recalculateBonusPeriod(period, fActor);
+          void logAdminActivity(req, "reconciliation_repaired", "bonus_period", undefined, {
+            target, reason, period,
+          });
+          return json({ ok: true, target, period });
+        }
+        return error("هدف تسوية غير معروف", 400);
+      } catch (err) {
+        return error(err instanceof Error ? err.message : "تعذر تنفيذ التسوية", 500);
+      }
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  if (section === "recycle-bin") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["recycle_bin_view"]);
+      if (isResponse(auth)) return auth;
+      const type = parts[2];
+      if (!type) return json({ summary: await recycleBinSummary() });
+      if (!recycleEntity(type)) return error("نوع غير معروف", 400);
+      return json({ type, items: await listRecycleBin(type) });
+    }
+    if (method === "POST" && parts[3] === "restore") {
+      const auth = await requireAnyPermission(req, ["recycle_bin_restore"]);
+      if (isResponse(auth)) return auth;
+      const type = parts[2];
+      const id = int((await body(req))?.id);
+      if (!type || !recycleEntity(type) || !id) return error("طلب غير صحيح", 400);
+      const ok = await restoreRecycleItem(type, id);
+      if (!ok) return error("تعذر الاستعادة — العنصر غير موجود أو غير محذوف", 404);
+      void logAdminActivity(req, "recycle_bin_restored", type, id, {});
+      return json({ ok: true, type, id });
+    }
+    if (method === "POST" && parts[3] === "purge") {
+      // Permanent delete is admin-role only, on top of the granular permission.
+      const auth = await requirePermission(req, "recycle_bin_purge");
+      if (isResponse(auth)) return auth;
+      if (auth.role !== "admin") return error("الحذف النهائي متاح للمدير فقط", 403);
+      const b = await body(req);
+      const type = parts[2];
+      const id = int(b?.id);
+      const reason = String(b?.reason ?? "").trim();
+      if (!type || !recycleEntity(type) || !id) return error("طلب غير صحيح", 400);
+      if (reason.length < 3) return error("يجب إدخال سبب الحذف النهائي", 400);
+      const result = await purgeRecycleItem(type, id);
+      if (!result.ok)
+        return error(result.message ?? "تعذر الحذف النهائي", result.blocked ? 409 : 400);
+      void logAdminActivity(req, "recycle_bin_purged", type, id, { reason });
+      return json({ ok: true, type, id });
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  return null;
+}
+
+// ─── Delivery — COD settlement + returns ─────────────────────────────────────
+
+/**
+ * Confirms receipt of a Cash-on-Delivery amount. Records the payment on the
+ * invoice through the SAME path a normal collection uses (receipt voucher +
+ * syncSourcePaymentTarget → cashbox), then writes the settlement row. The unique
+ * index on delivery_cod_settlements.delivery_order_id blocks a double settlement.
+ */
+async function handleCodSettlement(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery_cod_settle"]);
+  if (isResponse(auth)) return auth;
+  const parsed = codSettlementSchema.safeParse({ ...(await body(req)), deliveryOrderId: orderId });
+  if (!parsed.success) return validationError("delivery.cod.settle", parsed);
+  const data = parsed.data;
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details) return error("طلب التوصيل غير موجود", 404);
+  const { order, detail, invoice } = details;
+  if (!detail?.codEnabled) return error("هذا الطلب ليس دفعاً عند الاستلام", 400);
+  if (!invoice) return error("لا توجد فاتورة مرتبطة بهذا الطلب", 400);
+  if ((invoice as any).financiallyReversed) return error("تم عكس الأثر المالي لهذه الفاتورة", 409);
+
+  // Duplicate guard (defence-in-depth alongside the unique index).
+  if (await getCodSettlement(orderId)) return error("تم تأكيد التحصيل مسبقاً لهذا الطلب", 409);
+
+  const total = money(invoice.total);
+  const priorPaid = money(invoice.paidAmount);
+  const remaining = money(Math.max(total - priorPaid, 0));
+  if (remaining <= 0) return error("الفاتورة مدفوعة بالكامل", 409);
+  const received = money(data.receivedAmount);
+  if (received <= 0) return error("أدخل مبلغاً مستلماً صحيحاً", 400);
+  if (received > remaining + 0.01)
+    return error(`المبلغ أكبر من المتبقي (${formatCurrency(remaining)})`, 400);
+
+  const newPaid = money(priorPaid + received);
+  const newRemaining = money(Math.max(total - newPaid, 0));
+  const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
+  const a = actor(auth);
+  const fActor = financialActor(auth);
+  const sourceMethod: "cash" | "transfer" | "pos" =
+    data.account === "bank" || data.account === "transfer" ? "transfer" : data.account === "pos" ? "pos" : "cash";
+  const settlementDate = data.settlementDate ?? new Date().toISOString().slice(0, 10);
+  const mode = await getDeliveryAccountingMode();
+
+  // 1) Receipt voucher (same shape as a normal invoice collection).
+  const [voucher] = await db.insert(receiptVouchersTable).values({
+    voucherNo: temporaryVoucherNo(),
+    date: settlementDate,
+    amount: String(received),
+    payerName: textFallback(invoice.customerName, "زبون"),
+    customerId: invoice.customerId,
+    reference: nullableText(
+      data.referenceNo ? `COD ${order.deliveryNo} | ${data.referenceNo}` : `COD ${order.deliveryNo}`,
+    ),
+    method: sourceMethod,
+    notes: nullableText(data.notes),
+    createdBy: a.id,
+    createdByName: a.name,
+  }).returning();
+  const [savedVoucher] = await db.update(receiptVouchersTable).set({
+    voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
+  }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
+
+  // 3) Post to the cashbox through the existing invoice-payment funnel.
+  let financialTransaction: any = await syncSourcePaymentTarget({
+    sourceType: "sales_invoice",
+    sourceId: invoice.id,
+    sourceEvent: "payment",
+    targetAmount: newPaid,
+    normalDirection: "revenue",
+    transactionDate: settlementDate,
+    department: "store",
+    transactionType: "sales_invoice",
+    description: `تحصيل عند الاستلام ${order.deliveryNo} - فاتورة ${invoice.invoiceNo}`,
+    paymentMethod: sourceMethod,
+    customerId: invoice.customerId,
+    customerName: invoice.customerName,
+    customerPhone: invoice.customerPhone,
+    notes: nullableText(data.notes),
+  }, fActor);
+  if (financialTransaction?.approvalStatus === "pending" && canApproveFinancialTransactions(fActor)) {
+    financialTransaction = await approveAndExecuteFinancialTransaction(
+      financialTransaction.id, fActor, "تأكيد تحصيل الدفع عند الاستلام",
+    );
+  }
+  if (financialTransaction) {
+    await db.update(receiptVouchersTable).set({
+      approvalStatus: financialTransaction.approvalStatus,
+      financialTransactionId: financialTransaction.id,
+    }).where(eq(receiptVouchersTable.id, savedVoucher.id));
+  }
+
+  // 3) The invoice advances ONLY once the money is actually executed. When the
+  //    collector cannot approve, the settlement waits for a manager and the
+  //    invoice stays unpaid — money must never be recorded before it lands.
+  const executed = financialTransaction?.approvalStatus === "executed";
+  if (executed) {
+    await db.update(salesInvoicesTable).set({
+      paidAmount: String(newPaid),
+      remainingAmount: String(newRemaining),
+      paymentStatus,
+      updatedAt: new Date(),
+    } as any).where(eq(salesInvoicesTable.id, invoice.id));
+  }
+
+  // 4) Delivery accounting split — treat the fee per the configured mode. The
+  //    idempotency key makes a repeat call a no-op.
+  const deliveryFeeAmount = money(detail.deliveryFee);
+  if (executed && deliveryFeeAmount > 0 && (mode === "payable" || mode === "expense")) {
+    await createFinancialTransaction({
+      transactionDate: settlementDate,
+      direction: "expense",
+      amount: deliveryFeeAmount,
+      department: "delivery",
+      transactionType: mode === "payable" ? "delivery_company_payable" : "delivery_expense",
+      description: mode === "payable"
+        ? `مستحق شركة التوصيل عن ${order.deliveryNo}`
+        : `مصروف توصيل عن ${order.deliveryNo}`,
+      paymentMethod: "cash",
+      sourceType: "delivery_order",
+      sourceId: String(orderId),
+      sourceEvent: `accounting_${mode}`,
+      idempotencyKey: `delivery_order:${orderId}:accounting:${mode}`,
+      approvalStatus: "pending",
+      notes: `نمط محاسبة التوصيل: ${DELIVERY_ACCOUNTING_MODE_LABELS[mode]}`,
+      attachments: [],
+    }, fActor).catch((err) => console.warn("delivery accounting split failed", { orderId, err }));
+  }
+
+  // 5) Persist the settlement row + mark the order settled.
+  const attachmentUrl = data.attachmentUrl
+    ? await persistMediaValue(data.attachmentUrl, `receipts/delivery_cod/${orderId}`).catch(() => null)
+    : null;
+  const settlementId = await insertCodSettlement({
+    deliveryOrderId: orderId,
+    salesInvoiceId: invoice.id,
+    customerId: invoice.customerId,
+    deliveryCompany: nullableText(data.deliveryCompany ?? detail.deliveryCompany),
+    expectedAmount: money(detail.codAmount) || remaining,
+    receivedAmount: received,
+    settlementDate,
+    referenceNo: nullableText(data.referenceNo),
+    account: data.account,
+    accountingMode: mode,
+    notes: nullableText(data.notes),
+    attachmentUrl,
+    receiptVoucherId: savedVoucher.id,
+    financialTransactionId: financialTransaction?.id ?? null,
+    status: executed ? "completed" : "pending_approval",
+    createdBy: a.id,
+    createdByName: a.name,
+  });
+  if (executed) await markCodSettled(orderId);
+
+  // 6) Audit + timeline + notification.
+  void logAdminActivity(req, "cod_collected", "delivery_order", orderId, {
+    invoiceNo: invoice.invoiceNo, received, mode, settlementId,
+    executed,
+    oldValues: { paid: priorPaid, remaining },
+    newValues: executed
+      ? { paid: newPaid, remaining: newRemaining, paymentStatus }
+      : { paid: priorPaid, remaining, paymentStatus: invoice.paymentStatus },
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "cod_settled",
+    title: executed ? "تم تأكيد تحصيل الدفع عند الاستلام" : "تحصيل بانتظار اعتماد المدير",
+    body: `${formatCurrency(received)} · ${savedVoucher.voucherNo}`,
+    actor: erpActorFromAdmin(auth),
+    metadata: { received, voucherNo: savedVoucher.voucherNo, mode, executed },
+  });
+  if (executed) {
+    void addEntityTimeline({
+      entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
+      title: "تحصيل عند الاستلام",
+      body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
+      actor: erpActorFromAdmin(auth),
+    });
+  }
+  void notifyTelegramDelivery({
+    event: executed ? "cod_settled" : "cod_awaiting_settlement",
+    title: executed ? "💵 تم تحصيل الدفع عند الاستلام" : "⏳ تحصيل بانتظار اعتماد المدير",
+    deliveryNo: order.deliveryNo, invoiceNo: invoice.invoiceNo,
+    receiverName: detail.receiverName, codAmount: received,
+  });
+
+  return json({
+    ok: true, id: orderId, settlementId,
+    executed,
+    awaitingApproval: !executed,
+    message: executed
+      ? "تم ترحيل المبلغ إلى الصندوق وتحديث الفاتورة"
+      : "سُجّل التحصيل وبانتظار اعتماد المدير — لن تتغير الفاتورة قبل الاعتماد",
+    invoice: executed
+      ? { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus }
+      : { paidAmount: priorPaid, remainingAmount: remaining, paymentStatus: invoice.paymentStatus },
+    financialTransaction: financialTransaction
+      ? { id: financialTransaction.id, status: financialTransaction.approvalStatus }
+      : null,
+  });
+}
+
+/**
+ * Manager confirmation for a COD settlement that was recorded by a collector
+ * without approval rights. Approves + executes the pending money, then — and
+ * only then — advances the invoice.
+ */
+async function handleCodConfirmation(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery_cod_settle", "accounting"]);
+  if (isResponse(auth)) return auth;
+  const fActor = financialActor(auth);
+  if (!canApproveFinancialTransactions(fActor))
+    return error("اعتماد التحصيل متاح للمدير أو المحاسب فقط", 403);
+
+  const settlement: any = await getCodSettlement(orderId);
+  if (!settlement) return error("لا يوجد تحصيل مسجّل لهذا الطلب", 404);
+  if (String(settlement.status) === "completed")
+    return error("تم اعتماد هذا التحصيل مسبقاً", 409);
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details?.invoice) return error("لا توجد فاتورة مرتبطة بهذا الطلب", 400);
+  const { order, invoice } = details;
+
+  let txn: any = null;
+  const txnId = settlement.financial_transaction_id
+    ? Number(settlement.financial_transaction_id)
+    : null;
+  if (txnId) {
+    try {
+      txn = await approveAndExecuteFinancialTransaction(txnId, fActor, "اعتماد تحصيل الدفع عند الاستلام");
+    } catch (err) {
+      return error(err instanceof Error ? err.message : "تعذر اعتماد الحركة المالية", 500);
+    }
+  }
+  if (txn && txn.approvalStatus !== "executed")
+    return error("لم تُنفَّذ الحركة المالية — راجع مركز الموافقات", 409);
+
+  const received = money(settlement.received_amount);
+  const total = money(invoice.total);
+  const priorPaid = money(invoice.paidAmount);
+  const newPaid = money(Math.min(priorPaid + received, total));
+  const newRemaining = money(Math.max(total - newPaid, 0));
+  const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
+
+  await db.update(salesInvoicesTable).set({
+    paidAmount: String(newPaid),
+    remainingAmount: String(newRemaining),
+    paymentStatus,
+    updatedAt: new Date(),
+  } as any).where(eq(salesInvoicesTable.id, invoice.id));
+
+  await completeCodSettlement(orderId, txn?.id ?? txnId);
+  await markCodSettled(orderId);
+
+  void logAdminActivity(req, "cod_collected", "delivery_order", orderId, {
+    invoiceNo: invoice.invoiceNo, received, confirmed: true,
+    oldValues: { paid: priorPaid },
+    newValues: { paid: newPaid, remaining: newRemaining, paymentStatus },
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "cod_settled",
+    title: "اعتمد المدير تحصيل الدفع عند الاستلام",
+    body: formatCurrency(received),
+    actor: erpActorFromAdmin(auth),
+  });
+  void addEntityTimeline({
+    entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
+    title: "تحصيل عند الاستلام (معتمد)",
+    body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
+    actor: erpActorFromAdmin(auth),
+  });
+  void notifyTelegramDelivery({
+    event: "cod_settled", title: "💵 اعتماد تحصيل الدفع عند الاستلام",
+    deliveryNo: order.deliveryNo, invoiceNo: invoice.invoiceNo, codAmount: received,
+  });
+
+  return json({
+    ok: true, id: orderId, executed: true,
+    invoice: { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus },
+  });
+}
+
+/**
+ * Marks a delivery as returned: records the reason + returned items, restores
+ * stock via the existing sales-invoice stock logic, and never collects COD.
+ */
+async function handleDeliveryReturn(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery", "delivery_return"]);
+  if (isResponse(auth)) return auth;
+  const parsed = returnDeliverySchema.safeParse(await body(req));
+  if (!parsed.success) return validationError("delivery.return", parsed);
+  const data = parsed.data;
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details) return error("طلب التوصيل غير موجود", 404);
+  const { order, invoice } = details;
+  if (order.status === "returned") return error("الطلب مُعلّم كمرتجع مسبقاً", 409);
+  if (await getCodSettlement(orderId))
+    return error("تم تحصيل مبلغ لهذا الطلب — عالج التحصيل قبل الإرجاع", 409);
+
+  const a = actor(auth);
+  await saveReturnMetadata(orderId, data.reason, data.returnedItems ?? []);
+  const updated = await updateDeliveryOrderStatus(orderId, "returned", a, data.reason);
+
+  // Restore stock through the existing sales-invoice stock path (only when the
+  // invoice still has stock applied — never double-restore).
+  let stockRestored = false;
+  if (data.restoreStock && invoice && (invoice as any).stockApplied) {
+    try {
+      await applySalesInvoiceItemsStock(invoice.id, 1, "sales_invoice_stock_restored", a);
+      await db.update(salesInvoicesTable).set({
+        stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date(),
+      } as any).where(eq(salesInvoicesTable.id, invoice.id));
+      stockRestored = true;
+    } catch (err) {
+      console.warn("delivery return stock restore failed", { orderId, err });
+    }
+  }
+
+  void logAdminActivity(req, "delivery_returned", "delivery_order", orderId, {
+    reason: data.reason, stockRestored, returnedItems: data.returnedItems,
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "delivery_returned",
+    title: "تم تحديد التوصيل كمرتجع", body: data.reason,
+    actor: erpActorFromAdmin(auth), metadata: { stockRestored },
+  });
+  void notifyTelegramDelivery({
+    event: "delivery_returned", title: "↩️ توصيل مرتجع",
+    deliveryNo: updated?.deliveryNo ?? String(orderId), reason: data.reason,
+  });
+
+  return json({ ok: true, id: orderId, status: "returned", stockRestored });
+}
+
+// ─── Province Delivery (settings, pricing, orders) ───────────────────────────
+
+/**
+ * Province registry, per-province pricing, the fee quote used by the Sales
+ * Invoice and POS, and the delivery-orders lifecycle. The coarse "delivery"
+ * permission remains an umbrella grant over the granular delivery_* permissions.
+ */
+async function handleProvinceDelivery(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "delivery") return null;
+  const resource = parts[2];
+  if (
+    resource !== "provinces" &&
+    resource !== "quote" &&
+    resource !== "orders" &&
+    resource !== "accounting-mode"
+  )
+    return null;
+
+  const method = req.method;
+  await ensureDeliveryDetailsTables();
+
+  // Reads are shared with the invoice/POS screens, so anyone who can raise a
+  // sale can resolve a province fee.
+  const readPerms: Permission[] = [
+    "delivery",
+    "delivery_view",
+    "delivery_provinces_manage",
+    "delivery_pricing_manage",
+    "accounting",
+    "invoices",
+    "orders",
+  ];
+
+  // ── Delivery orders — list, details, status, label, COD, return, cancel ──
+  if (resource === "orders") {
+    if (method === "GET" && !parts[3]) {
+      const auth = await requireAnyPermission(req, readPerms);
+      if (isResponse(auth)) return auth;
+      const params = req.nextUrl.searchParams;
+      const list = await listDeliveryOrders({
+        status: params.get("status") ?? undefined,
+        provinceId: params.get("provinceId") ? Number(params.get("provinceId")) : undefined,
+        q: params.get("q") ?? undefined,
+        limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+      });
+      return json({
+        data: list,
+        statuses: DELIVERY_ORDER_STATUSES.map((s) => ({ value: s, label: DELIVERY_STATUS_LABELS[s] })),
+      });
+    }
+
+    const orderId = parts[3] ? int(parts[3]) : null;
+
+    if (method === "GET" && orderId && !parts[4]) {
+      const auth = await requireAnyPermission(req, readPerms);
+      if (isResponse(auth)) return auth;
+      const data = await getDeliveryOrderDetails(orderId);
+      if (!data) return error("طلب التوصيل غير موجود", 404);
+      const [timeline, auditLog] = await Promise.all([
+        db.query.entityTimelineTable.findMany({
+          where: and(
+            eq(entityTimelineTable.entityType, "delivery_order"),
+            eq(entityTimelineTable.entityId, orderId),
+          ),
+          orderBy: [desc(entityTimelineTable.createdAt)],
+          limit: 200,
+        }).catch(() => []),
+        db.query.adminActivityLogsTable.findMany({
+          where: and(
+            eq(adminActivityLogsTable.entityType, "delivery_order"),
+            eq(adminActivityLogsTable.entityId, orderId),
+          ),
+          orderBy: [desc(adminActivityLogsTable.createdAt)],
+          limit: 100,
+        }).catch(() => []),
+      ]);
+      return json({ ...formatDeliveryOrderFull(data), timeline, auditLog });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "status") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_status_update"]);
+      if (isResponse(auth)) return auth;
+      const b = await body(req);
+      const status = String(b?.status ?? "");
+      if (!DELIVERY_ORDER_STATUSES.includes(status as any))
+        return error("حالة توصيل غير معروفة", 400);
+      // Return / cancel have their own dedicated, side-effecting endpoints.
+      if (status === "returned" || status === "cancelled")
+        return error("استخدم إجراء الإرجاع أو الإلغاء المخصص", 400);
+      const updated = await updateDeliveryOrderStatus(orderId, status as any, actor(auth), b?.reason ?? null);
+      if (!updated) return error("طلب التوصيل غير موجود", 404);
+      void logAdminActivity(req, "delivery_status_updated", "delivery_order", orderId, {
+        status, reason: b?.reason ?? null,
+      });
+      void addEntityTimeline({
+        entityType: "delivery_order", entityId: orderId, type: "delivery_status",
+        title: `تحديث حالة التوصيل: ${DELIVERY_STATUS_LABELS[status] ?? status}`,
+        actor: erpActorFromAdmin(auth), metadata: { status, reason: b?.reason ?? null },
+      });
+      const notif = await getDeliveryOrderDetails(orderId).catch(() => null);
+      void notifyTelegramDelivery({
+        event: `delivery_${status}`,
+        title: `🚚 ${DELIVERY_STATUS_LABELS[status] ?? status}`,
+        deliveryNo: updated.deliveryNo,
+        invoiceNo: notif?.invoice?.invoiceNo ?? null,
+        provinceName: notif?.detail?.provinceName ?? null,
+        receiverName: notif?.detail?.receiverName ?? null,
+        statusLabel: DELIVERY_STATUS_LABELS[status] ?? status,
+      });
+      return json({ ok: true, id: orderId, status, statusLabel: DELIVERY_STATUS_LABELS[status] });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "label-printed") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_label_print"]);
+      if (isResponse(auth)) return auth;
+      await markLabelPrinted(orderId);
+      void logAdminActivity(req, "delivery_label_printed", "delivery_order", orderId, {});
+      return json({ ok: true, id: orderId });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "settle-cod") {
+      return handleCodSettlement(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "confirm-cod") {
+      return handleCodConfirmation(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "return") {
+      return handleDeliveryReturn(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "cancel") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_cancel"]);
+      if (isResponse(auth)) return auth;
+      const parsed = cancelDeliverySchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("delivery.cancel", parsed);
+      const order = await getDeliveryOrderById(orderId);
+      if (!order) return error("طلب التوصيل غير موجود", 404);
+      if (order.status === "delivered") return error("لا يمكن إلغاء طلب تم تسليمه", 409);
+      await saveCancelReason(orderId, parsed.data.reason);
+      const updated = await updateDeliveryOrderStatus(orderId, "cancelled", actor(auth), parsed.data.reason);
+      void logAdminActivity(req, "delivery_cancelled", "delivery_order", orderId, { reason: parsed.data.reason });
+      void addEntityTimeline({
+        entityType: "delivery_order", entityId: orderId, type: "delivery_cancelled",
+        title: "تم إلغاء طلب التوصيل", body: parsed.data.reason, actor: erpActorFromAdmin(auth),
+      });
+      void notifyTelegramDelivery({
+        event: "delivery_cancelled", title: "❌ إلغاء طلب توصيل",
+        deliveryNo: updated?.deliveryNo ?? String(orderId), reason: parsed.data.reason,
+      });
+      return json({ ok: true, id: orderId, status: "cancelled" });
+    }
+
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  // ── Delivery accounting mode setting ──
+  if (resource === "accounting-mode") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_accounting_manage", "accounting"]);
+      if (isResponse(auth)) return auth;
+      return json({
+        mode: await getDeliveryAccountingMode(),
+        modes: DELIVERY_ACCOUNTING_MODES.map((m) => ({ value: m, label: DELIVERY_ACCOUNTING_MODE_LABELS[m] })),
+      });
+    }
+    if (method === "PUT") {
+      const auth = await requireAnyPermission(req, ["delivery_accounting_manage"]);
+      if (isResponse(auth)) return auth;
+      const mode = String((await body(req))?.mode ?? "");
+      if (!DELIVERY_ACCOUNTING_MODES.includes(mode as any))
+        return error("نمط محاسبة غير معروف", 400);
+      await setDeliveryAccountingMode(mode as DeliveryAccountingMode);
+      void logAdminActivity(req, "delivery_accounting_mode_changed", "settings", undefined, { mode });
+      return json({ ok: true, mode });
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  if (method === "GET" && resource === "provinces") {
+    const auth = await requireAnyPermission(req, readPerms);
+    if (isResponse(auth)) return auth;
+    const activeOnly = req.nextUrl.searchParams.get("activeOnly") === "1";
+    const zones = await listProvinces(activeOnly);
+    return json(zones.map(formatProvince));
+  }
+
+  if (method === "POST" && resource === "quote") {
+    const auth = await requireAnyPermission(req, readPerms);
+    if (isResponse(auth)) return auth;
+    const parsed = deliveryQuoteSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.quote", parsed);
+    const zone = await findProvince(parsed.data.provinceId);
+    if (!zone) return error("المحافظة غير موجودة", 404);
+    if (!zone.isActive) return error("المحافظة غير مفعّلة للتوصيل", 400);
+    const quote = resolveDeliveryFee(
+      zone, parsed.data.deliveryType, parsed.data.subtotal, parsed.data.codEnabled,
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    return json({
+      ...quote,
+      provinceId: zone.id,
+      provinceName: zone.governorateAr,
+      deliveryType: parsed.data.deliveryType,
+      deliveryTypeLabel: DELIVERY_TYPE_LABELS[parsed.data.deliveryType],
+      expectedArrivalDate: addDays(today, quote.estimatedDays),
+    });
+  }
+
+  if (method === "POST" && resource === "provinces" && parts[3] === "reorder") {
+    const auth = await requireAnyPermission(req, ["delivery", "delivery_provinces_manage"]);
+    if (isResponse(auth)) return auth;
+    const parsed = provinceReorderSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.reorder", parsed);
+    for (const [index, id] of parsed.data.ids.entries()) {
+      await db.update(deliveryZonesTable).set({ sortOrder: index }).where(eq(deliveryZonesTable.id, id));
+    }
+    void logAdminActivity(req, "delivery_provinces_reordered", "delivery_province", undefined, {
+      ids: parsed.data.ids,
+    });
+    return json((await listProvinces(false)).map(formatProvince));
+  }
+
+  if (method === "POST" && resource === "provinces") {
+    const auth = await requireAnyPermission(req, ["delivery", "delivery_provinces_manage"]);
+    if (isResponse(auth)) return auth;
+    const parsed = provinceCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.create", parsed);
+    const data = parsed.data;
+    const governorateAr = data.governorateAr;
+    const governorate = textFallback(data.governorate, governorateAr);
+    const [zone] = await db.insert(deliveryZonesTable).values({
+      governorate,
+      governorateAr,
+      areas: data.areas,
+      pricedRegions: [],
+      price: String(data.price),
+      expressFee: String(data.expressFee),
+      sameDayFee: String(data.sameDayFee),
+      codFee: String(data.codFee),
+      freeDeliveryThreshold: String(data.freeDeliveryThreshold),
+      maxWeight: String(data.maxWeight),
+      estimatedDays: data.estimatedDays,
+      deliveryCompany: nullableText(data.deliveryCompany),
+      notes: nullableText(data.notes),
+      sortOrder: data.sortOrder,
+      isActive: data.isActive,
+    }).returning();
+    void logAdminActivity(req, "delivery_province_created", "delivery_province", zone.id, {
+      governorateAr, newValues: formatProvince(zone),
+    });
+    return json(formatProvince(zone), 201);
+  }
+
+  if (method === "PATCH" && resource === "provinces" && parts[3]) {
+    const id = int(parts[3]);
+    if (!id) return error("معرف غير صحيح", 400);
+    const parsed = provinceUpdateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.update", parsed);
+    const data = parsed.data;
+
+    // Pricing edits and registry edits are separately grantable.
+    const touchesPricing = [
+      data.price, data.expressFee, data.sameDayFee,
+      data.codFee, data.freeDeliveryThreshold, data.maxWeight,
+    ].some((value) => value !== undefined);
+    const auth = await requireAnyPermission(
+      req,
+      touchesPricing
+        ? ["delivery", "delivery_pricing_manage"]
+        : ["delivery", "delivery_provinces_manage"],
+    );
+    if (isResponse(auth)) return auth;
+
+    const before = await findProvince(id);
+    if (!before) return error("المحافظة غير موجودة", 404);
+
+    const update: Record<string, unknown> = {};
+    if (data.governorateAr !== undefined) update.governorateAr = data.governorateAr;
+    if (data.governorate !== undefined) update.governorate = data.governorate;
+    if (data.areas !== undefined) update.areas = data.areas;
+    if (data.price !== undefined) update.price = String(data.price);
+    if (data.expressFee !== undefined) update.expressFee = String(data.expressFee);
+    if (data.sameDayFee !== undefined) update.sameDayFee = String(data.sameDayFee);
+    if (data.codFee !== undefined) update.codFee = String(data.codFee);
+    if (data.freeDeliveryThreshold !== undefined)
+      update.freeDeliveryThreshold = String(data.freeDeliveryThreshold);
+    if (data.maxWeight !== undefined) update.maxWeight = String(data.maxWeight);
+    if (data.estimatedDays !== undefined) update.estimatedDays = data.estimatedDays;
+    if (data.deliveryCompany !== undefined) update.deliveryCompany = nullableText(data.deliveryCompany);
+    if (data.notes !== undefined) update.notes = nullableText(data.notes);
+    if (data.sortOrder !== undefined) update.sortOrder = data.sortOrder;
+    if (data.isActive !== undefined) update.isActive = data.isActive;
+    if (Object.keys(update).length === 0) return json(formatProvince(before));
+
+    const [zone] = await db.update(deliveryZonesTable)
+      .set(update as any)
+      .where(eq(deliveryZonesTable.id, id))
+      .returning();
+    void logAdminActivity(
+      req,
+      touchesPricing ? "delivery_fee_changed" : "delivery_province_updated",
+      "delivery_province",
+      id,
+      { governorateAr: zone.governorateAr, oldValues: formatProvince(before), newValues: formatProvince(zone) },
+    );
+    return json(formatProvince(zone));
+  }
+
+  return null;
+}
+
+type BookingOperationsSource = "kosha" | "service";
+
+type BookingOperationsReference = {
+  source: BookingOperationsSource;
+  entityType: "kosha_booking" | "service_order";
+  id: number;
+  row: any;
+  details: Record<string, any>;
+  operations: Record<string, any>;
+  customerName: string;
+  customerId: number | null;
+  eventDate: string | null;
+};
+
+const BOOKING_OPERATION_STAGES = [
+  "booked",
+  "preparing",
+  "ready",
+  "assets_out",
+  "event_active",
+  "returned",
+  "inspection",
+  "completed",
+  "cancelled",
+] as const;
+
+const BOOKING_WAREHOUSE_STAGES = [
+  "reserved",
+  "picked",
+  "loaded",
+  "out",
+  "returned",
+  "inspection",
+  "completed",
+] as const;
+
+const BookingProductLinesSchema = z.object({
+  items: z.array(z.object({
+    productId: z.coerce.number().int().positive(),
+    variantId: z.coerce.number().int().positive().nullable().optional(),
+    quantity: z.coerce.number().positive().max(100000),
+    unitPrice: z.coerce.number().min(0).max(1_000_000_000).default(0),
+    discount: z.coerce.number().min(0).max(1_000_000_000).default(0),
+    warehouseId: z.coerce.number().int().positive().nullable().optional(),
+    note: z.string().trim().max(1000).nullable().optional(),
+  })).max(200),
+});
+
+const BookingWorkflowSchema = z.object({
+  stage: z.enum(BOOKING_OPERATION_STAGES),
+  note: z.string().trim().max(2000).optional(),
+  confirmation: z.literal(true),
+});
+
+const BookingWarehouseWorkflowSchema = z.object({
+  stage: z.enum(BOOKING_WAREHOUSE_STAGES),
+  note: z.string().trim().max(2000).optional(),
+  scannedCode: z.string().trim().max(300).optional(),
+  signatureUrl: z.string().trim().max(2000).optional(),
+  confirmation: z.literal(true),
+});
+
+const BookingAssetActionSchema = z.object({
+  mode: z.enum(["link", "unlink", "reserve", "pick", "checkout", "return", "inspect"]),
+  productId: z.coerce.number().int().positive(),
+  quantity: z.coerce.number().int().positive().max(100000).default(1),
+  usageHours: z.coerce.number().min(0).max(100000).optional(),
+  problem: z.enum(["none", "damaged", "missing"]).default("none"),
+  description: z.string().trim().max(2000).optional(),
+  estimatedCost: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  photoUrls: z.array(z.string().trim().max(2000)).max(20).default([]),
+  managerApproval: z.boolean().default(false),
+  scannedCode: z.string().trim().max(300).optional(),
+  confirmation: z.literal(true),
+});
+
+function bookingOperationsState(details: Record<string, any>) {
+  const current = details.bookingOperations;
+  return current && typeof current === "object" && !Array.isArray(current)
+    ? current as Record<string, any>
+    : {};
+}
+
+async function loadBookingOperationsReference(
+  source: string,
+  id: number,
+): Promise<BookingOperationsReference | null> {
+  if (source === "kosha") {
+    const row = await db.query.koshaBookingsTable.findFirst({
+      where: and(eq(koshaBookingsTable.id, id), sql`${koshaBookingsTable.archivedAt} is null`),
+    });
+    if (!row) return null;
+    const details = (row.bookingDetails ?? {}) as Record<string, any>;
+    return {
+      source,
+      entityType: "kosha_booking",
+      id,
+      row,
+      details,
+      operations: bookingOperationsState(details),
+      customerName: row.customerName,
+      customerId: row.customerId ?? null,
+      eventDate: row.eventDate ?? null,
+    };
+  }
+  if (source === "service") {
+    const row = await db.query.serviceOrdersTable.findFirst({
+      where: and(eq(serviceOrdersTable.id, id), sql`${serviceOrdersTable.archivedAt} is null`),
+    });
+    if (!row) return null;
+    const details = (row.customFields ?? {}) as Record<string, any>;
+    const customer = row.phone ? await findCustomerByPhone(row.phone) : null;
+    return {
+      source,
+      entityType: "service_order",
+      id,
+      row,
+      details,
+      operations: bookingOperationsState(details),
+      customerName: row.customerName,
+      customerId: customer?.id ?? null,
+      eventDate: row.eventDate ?? null,
+    };
+  }
+  return null;
+}
+
+async function saveBookingOperations(
+  reference: BookingOperationsReference,
+  operations: Record<string, any>,
+) {
+  const details = { ...reference.details, bookingOperations: operations };
+  if (reference.source === "kosha") {
+    await db.update(koshaBookingsTable)
+      .set({ bookingDetails: details, updatedAt: new Date() })
+      .where(eq(koshaBookingsTable.id, reference.id));
+  } else {
+    await db.update(serviceOrdersTable)
+      .set({ customFields: details })
+      .where(eq(serviceOrdersTable.id, reference.id));
+  }
+  reference.details = details;
+  reference.operations = operations;
+}
+
+async function bookingOperationProducts(reference: BookingOperationsReference) {
+  await ensureVariantTables();
+  const result: any = await db.execute(sql`
+    select r.*, coalesce(p.name_ar, p.name) as product_name, p.barcode,
+           p.price as product_price, p.stock as product_stock, p.images,
+           v.color, v.size, v.stock as variant_stock
+    from stock_reservations r
+    join products p on p.id = r.product_id
+    left join product_variants v on v.id = r.variant_id
+    where r.source_type = ${reference.entityType} and r.source_id = ${reference.id}
+    order by r.id desc
+  `);
+  const meta = (reference.operations.productMeta ?? {}) as Record<string, any>;
+  const rows = result.rows ?? result ?? [];
+  const summaries = new Map<number, any>();
+  const productIds: number[] = [...new Set<number>(rows.map((row: any) => Number(row.product_id)))];
+  await Promise.all(productIds.map(async (productId: number) => {
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    if (product) summaries.set(productId, await getProductStockSummary(product));
+  }));
+  return rows.map((row: any) => {
+    const productId = Number(row.product_id);
+    const variantId = row.variant_id == null ? null : Number(row.variant_id);
+    const key = `${productId}:${variantId ?? 0}`;
+    const line = meta[key] ?? {};
+    const quantity = Number(row.quantity ?? 0);
+    const unitPrice = Number(line.unitPrice ?? row.product_price ?? 0);
+    const discount = Number(line.discount ?? 0);
+    const total = Math.max(0, unitPrice * quantity - discount);
+    const stock = summaries.get(productId);
+    const variant = variantId ? stock?.variants?.find((item: any) => item.id === variantId) : null;
+    return {
+      id: Number(row.id), productId, variantId,
+      productName: row.product_name || `#${productId}`,
+      variantLabel: [row.color, row.size].filter(Boolean).join(" / ") || null,
+      color: row.color ?? null, quantity, unitPrice, discount, total,
+      warehouseId: line.warehouseId ?? null, note: line.note ?? null,
+      status: row.status,
+      available: Number(variant?.available ?? stock?.available ?? 0),
+      reserved: Number(variant?.reserved ?? stock?.reserved ?? 0),
+      barcode: row.barcode ?? null,
+    };
+  });
+}
+
+async function bookingOperationAssets(reference: BookingOperationsReference) {
+  const legacy = Array.isArray(reference.details.linkedAssets) ? reference.details.linkedAssets : [];
+  const stateAssets = Array.isArray(reference.operations.assets) ? reference.operations.assets : [];
+  const merged = new Map<number, any>();
+  for (const item of [...legacy, ...stateAssets]) {
+    const productId = Number(item?.productId);
+    if (productId) merged.set(productId, { ...(merged.get(productId) ?? {}), ...item, productId });
+  }
+  const linked = [...merged.values()];
+  const ids = linked.map((item) => item.productId);
+  if (!ids.length) return [];
+  const [products, profiles, passports, custody, warehouses] = await Promise.all([
+    db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }),
+    db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }),
+    db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }),
+    db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }),
+    db.query.warehousesTable.findMany(),
+  ]);
+  const productMap = new Map(products.map((row) => [row.id, row]));
+  const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+  const passportMap = new Map(passports.map((row) => [row.productId, row]));
+  const custodyMap = new Map(custody.map((row) => [row.productId, row]));
+  const warehouseMap = new Map(warehouses.map((row) => [row.id, row.name]));
+  return linked.map((item) => {
+    const product: any = productMap.get(item.productId);
+    const profile: any = profileMap.get(item.productId);
+    const passport: any = passportMap.get(item.productId);
+    const issued: any = custodyMap.get(item.productId);
+    const metadata = (passport?.metadata ?? {}) as Record<string, any>;
+    const quantity = Math.max(1, Number(item.quantity ?? 1));
+    const out = issued ? Number(issued.quantity ?? quantity) : 0;
+    const returned = item.stage === "returned" || item.stage === "inspection" || item.stage === "completed" ? quantity : 0;
+    const damaged = item.problem === "damaged" ? Number(item.problemQuantity ?? quantity) : 0;
+    const missing = item.problem === "missing" ? Number(item.problemQuantity ?? quantity) : 0;
+    const purchaseValue = Number(profile?.purchasePrice ?? product?.costPrice ?? 0);
+    const currentValue = Number(profile?.currentValue ?? purchaseValue);
+    return {
+      productId: item.productId,
+      name: product?.nameAr || product?.name || `#${item.productId}`,
+      assetCode: `AJN-A${String(item.productId).padStart(6, "0")}`,
+      serialNumber: profile?.serialNumber ?? passport?.serialNumber ?? null,
+      barcode: product?.barcode ?? null,
+      qrToken: passport?.qrToken ?? null,
+      category: product?.category ?? null,
+      warehouseId: passport?.warehouseId ?? null,
+      warehouse: passport?.warehouseId ? warehouseMap.get(passport.warehouseId) ?? null : null,
+      location: passport?.shelfCode ?? passport?.lastLocation ?? null,
+      quantity,
+      available: Math.max(0, Number(product?.stock ?? quantity) - out),
+      reserved: ["reserved", "picked"].includes(item.stage) ? quantity : 0,
+      out, returned, damaged, missing,
+      stage: issued ? "out" : (item.stage ?? "linked"),
+      status: profile?.status ?? "active",
+      usageCount: Number(profile?.usageCount ?? 0),
+      usageHours: Number(metadata.usageHours ?? 0),
+      healthScore: Number(metadata.healthScore ?? 100),
+      purchaseValue, currentValue,
+      depreciationAmount: Math.max(0, purchaseValue - currentValue),
+      remainingValue: currentValue,
+      depreciationMethod: metadata.depreciationMethod ?? "usage",
+      automaticDepreciation: metadata.automaticDepreciation === true,
+      lastBooking: metadata.lastBooking ?? null,
+      lastCustomer: metadata.lastCustomer ?? null,
+      lastInspection: metadata.lastInspection ?? null,
+      nextMaintenanceDate: passport?.nextMaintenanceDate ?? null,
+      maintenanceRequired: profile?.status === "maintenance" || (profile?.maintenanceEveryUses > 0 && profile?.usageCount > 0 && profile.usageCount % profile.maintenanceEveryUses === 0),
+      problem: item.problem ?? "none",
+      description: item.description ?? null,
+      estimatedCost: Number(item.estimatedCost ?? 0),
+      photoUrls: Array.isArray(item.photoUrls) ? item.photoUrls : [],
+    };
+  });
+}
+
+async function assetConflictForBooking(reference: BookingOperationsReference, productId: number) {
+  const day = String(reference.eventDate ?? "").slice(0, 10);
+  if (!day) return null;
+  const [koshaRows, serviceRows] = await Promise.all([
+    db.query.koshaBookingsTable.findMany({
+      where: sql`${koshaBookingsTable.archivedAt} is null and ${koshaBookingsTable.status} not in ('cancelled','completed') and ${koshaBookingsTable.eventDate}::text like ${`${day}%`}`,
+      limit: 200,
+    }),
+    db.query.serviceOrdersTable.findMany({
+      where: sql`${serviceOrdersTable.archivedAt} is null and ${serviceOrdersTable.status} not in ('cancelled','completed','delivered') and ${serviceOrdersTable.eventDate} like ${`${day}%`}`,
+      limit: 200,
+    }),
+  ]);
+  const rows = [
+    ...koshaRows.map((row) => ({ source: "kosha", id: row.id, details: row.bookingDetails as any })),
+    ...serviceRows.map((row) => ({ source: "service", id: row.id, details: row.customFields as any })),
+  ];
+  return rows.find((candidate) => {
+    if (candidate.source === reference.source && candidate.id === reference.id) return false;
+    const details = candidate.details ?? {};
+    const opsAssets = Array.isArray(details.bookingOperations?.assets) ? details.bookingOperations.assets : [];
+    const legacyAssets = Array.isArray(details.linkedAssets) ? details.linkedAssets : [];
+    return [...opsAssets, ...legacyAssets].some((item: any) => Number(item?.productId) === productId && !["released", "completed"].includes(String(item?.stage ?? "")));
+  }) ?? null;
+}
+
+function bookingOperationStage(reference: BookingOperationsReference) {
+  const saved = String(reference.operations.bookingStage ?? "");
+  if ((BOOKING_OPERATION_STAGES as readonly string[]).includes(saved)) return saved;
+  const status = String(reference.row.status ?? "");
+  if (status === "cancelled") return "cancelled";
+  if (["completed", "delivered"].includes(status)) return "completed";
+  if (["processing", "preparing", "in_progress"].includes(status)) return "preparing";
+  if (["confirmed", "active"].includes(status)) return "booked";
+  return "booked";
+}
+
+async function handleBookingOperations(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "booking-operations") return null;
+  const auth = await requireAnyPermission(req, [
+    "bookings", "koshas", "orders", "booking_operations_view", "booking_edit",
+    "booking_status_change", "booking_products_manage", "booking_assets_manage",
+    "asset_reserve", "asset_release", "warehouse_issue", "booking_return_confirm",
+    "asset_damage_record", "asset_damage_approve", "depreciation_view",
+    "depreciation_usage_edit", "booking_finance_view", "booking_tasks_manage",
+    "booking_documents_manage", "booking_close", "booking_cancel",
+  ]);
+  if (isResponse(auth)) return auth;
+  const can = (...permissions: Permission[]) => auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "bookings") || permissions.some((permission) => hasPermission(auth, permission));
+  await Promise.all([ensureAdminExtensionsTables(), ensureVariantTables(), ensureMasterCashBoxTables()]);
+  const source = parts[2];
+  const id = int(parts[3]);
+  const resource = parts[4] ?? "overview";
+  if (!id || !["kosha", "service"].includes(source ?? "")) return error("مسار الحجز غير صحيح", 400);
+  const reference = await loadBookingOperationsReference(source, id);
+  if (!reference) return error("الحجز غير موجود", 404);
+  const method = req.method;
+
+  if (resource === "catalog" && method === "GET") {
+    const q = String(req.nextUrl.searchParams.get("q") ?? "").trim();
+    const filters: any[] = [eq(productsTable.isActive, true)];
+    if (q) filters.push(or(ilike(productsTable.nameAr, `%${q}%`), ilike(productsTable.name, `%${q}%`), ilike(productsTable.barcode, `%${q}%`)));
+    const products = await db.query.productsTable.findMany({ where: and(...filters), limit: 40, orderBy: [desc(productsTable.updatedAt)] });
+    const profiles = products.length ? await db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, products.map((row) => row.id)) }) : [];
+    const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+    const data = await Promise.all(products.map(async (product: any) => ({
+      id: product.id,
+      name: product.nameAr || product.name,
+      barcode: product.barcode ?? null,
+      price: Number(product.price ?? 0),
+      category: product.category ?? null,
+      isRental: Boolean(product.isRental),
+      isAsset: Boolean(profileMap.get(product.id) || product.isRental),
+      profileStatus: profileMap.get(product.id)?.status ?? null,
+      ...(await getProductStockSummary(product)),
+    })));
+    return json({ data });
+  }
+
+  if (resource === "products") {
+    if (method === "GET") {
+      const items = await bookingOperationProducts(reference);
+      return json({
+        items,
+        stage: reference.operations.productsStage ?? (items.length ? "reserved" : "draft"),
+        subtotal: items.filter((item: any) => item.status !== "released").reduce((sum: number, item: any) => sum + item.total, 0),
+      });
+    }
+    if (method === "PUT") {
+      if (!can("booking_products_manage")) return error("ليس لديك صلاحية إدارة منتجات الحجز", 403);
+      const parsed = BookingProductLinesSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("booking-operations.products", parsed);
+      const availability = await checkAvailability(parsed.data.items, { ignoreSourceType: reference.entityType, ignoreSourceId: reference.id });
+      if (!availability.ok) return json({ error: "المخزون المتاح غير كافٍ", shortages: availability.shortages }, 409);
+      await reserveStockForSource(reference.entityType, reference.id, `${reference.customerName} · #${reference.id}`, parsed.data.items, actor(auth));
+      const productMeta: Record<string, any> = {};
+      let productCharges = 0;
+      for (const item of parsed.data.items) productMeta[`${item.productId}:${item.variantId ?? 0}`] = {
+        unitPrice: item.unitPrice, discount: item.discount, warehouseId: item.warehouseId ?? null, note: item.note ?? null,
+      };
+      for (const item of parsed.data.items) productCharges += Math.max(0, item.unitPrice * item.quantity - item.discount);
+      const previousProductCharges = Number(reference.operations.productCharges ?? 0);
+      const baseBookingAmount = Number(reference.operations.baseBookingAmount ?? Math.max(0, Number(reference.row.totalAmount ?? 0) - previousProductCharges));
+      const nextTotal = baseBookingAmount + productCharges;
+      const paid = Number(reference.row.paidAmount ?? reference.row.depositAmount ?? 0);
+      const nextRemaining = Math.max(0, nextTotal - paid);
+      const operations = { ...reference.operations, productMeta, productCharges, baseBookingAmount, productsStage: "reserved", warehouseStage: reference.operations.warehouseStage ?? "reserved" };
+      await saveBookingOperations(reference, operations);
+      if (reference.source === "kosha") {
+        await db.update(koshaBookingsTable).set({ totalAmount: String(nextTotal), remainingAmount: String(nextRemaining), paymentStatus: nextRemaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", updatedAt: new Date() }).where(eq(koshaBookingsTable.id, reference.id));
+      } else {
+        await db.update(serviceOrdersTable).set({ totalAmount: String(nextTotal), remainingAmount: String(nextRemaining), paymentStatus: nextRemaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid" }).where(eq(serviceOrdersTable.id, reference.id));
+      }
+      await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "booking_products_reserved", title: "تم حجز منتجات الحجز", body: `${parsed.data.items.length} مادة من المتجر`, actor: erpActorFromAdmin(auth), metadata: { count: parsed.data.items.length } });
+      void logAdminActivity(req, "booking_products_reserved", reference.entityType, reference.id, { count: parsed.data.items.length });
+      return json({ ok: true });
+    }
+    if (method === "POST") {
+      if (!can("booking_products_manage")) return error("ليس لديك صلاحية إدارة منتجات الحجز", 403);
+      const actionName = String((await body(req))?.action ?? "");
+      if (actionName === "consume") await consumeReservations(reference.entityType, reference.id, actor(auth));
+      else if (actionName === "release") await releaseReservations(reference.entityType, reference.id, actor(auth));
+      else return error("إجراء المنتجات غير مدعوم", 405);
+      const productsStage = actionName === "consume" ? "consumed" : "released";
+      const nextOperations = { ...reference.operations, productsStage, ...(actionName === "release" ? { productCharges: 0 } : {}) };
+      await saveBookingOperations(reference, nextOperations);
+      if (actionName === "release") {
+        const nextTotal = Number(reference.operations.baseBookingAmount ?? reference.row.totalAmount ?? 0);
+        const paid = Number(reference.row.paidAmount ?? reference.row.depositAmount ?? 0);
+        const nextRemaining = Math.max(0, nextTotal - paid);
+        if (reference.source === "kosha") await db.update(koshaBookingsTable).set({ totalAmount: String(nextTotal), remainingAmount: String(nextRemaining), paymentStatus: nextRemaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", updatedAt: new Date() }).where(eq(koshaBookingsTable.id, reference.id));
+        else await db.update(serviceOrdersTable).set({ totalAmount: String(nextTotal), remainingAmount: String(nextRemaining), paymentStatus: nextRemaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid" }).where(eq(serviceOrdersTable.id, reference.id));
+      }
+      await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: `booking_products_${productsStage}`, title: actionName === "consume" ? "تم صرف منتجات الحجز" : "تم تحرير حجز المنتجات", actor: erpActorFromAdmin(auth) });
+      void logAdminActivity(req, `booking_products_${productsStage}`, reference.entityType, reference.id);
+      return json({ ok: true, stage: productsStage });
+    }
+  }
+
+  if (resource === "assets") {
+    if (method === "GET") return json({ assets: await bookingOperationAssets(reference) });
+    if (method === "POST") {
+      const parsed = BookingAssetActionSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("booking-operations.assets", parsed);
+      const input = parsed.data;
+      const assetPermission = input.mode === "reserve" ? "asset_reserve" : input.mode === "unlink" ? "asset_release" : input.mode === "return" ? "booking_return_confirm" : input.mode === "inspect" ? "depreciation_usage_edit" : "booking_assets_manage";
+      if (!can(assetPermission)) return error("ليس لديك صلاحية تنفيذ إجراء الأصل", 403);
+      if (["damaged", "missing"].includes(input.problem) && !can("asset_damage_record")) return error("ليس لديك صلاحية تسجيل التلف أو النقص", 403);
+      if (input.managerApproval && !can("asset_damage_approve")) return error("ليس لديك صلاحية اعتماد التلف أو النقص", 403);
+      const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, input.productId) });
+      if (!product) return error("الأصل غير موجود", 404);
+      const assets = Array.isArray(reference.operations.assets) ? [...reference.operations.assets] : [];
+      const index = assets.findIndex((item: any) => Number(item?.productId) === input.productId);
+      const current = index >= 0 ? assets[index] : { productId: input.productId, quantity: input.quantity, stage: "linked" };
+      if (input.mode === "unlink") {
+        const issued = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
+        if (issued) return error("لا يمكن إزالة أصل ما زال خارج المستودع", 409);
+        if (index >= 0) assets.splice(index, 1);
+      } else {
+        if (["reserve", "pick", "checkout"].includes(input.mode)) {
+          const conflict = await assetConflictForBooking(reference, input.productId);
+          if (conflict) return error(`الأصل محجوز في حجز آخر بنفس التاريخ (#${conflict.id})`, 409);
+          const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
+          if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الحجز`, 423);
+        }
+        let next = { ...current, productId: input.productId, quantity: input.quantity, updatedAt: new Date().toISOString() };
+        if (input.mode === "link") next.stage = current.stage ?? "linked";
+        if (input.mode === "reserve") next = { ...next, stage: "reserved", reservedAt: new Date().toISOString() };
+        if (input.mode === "pick") next = { ...next, stage: "picked", pickedAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
+        if (input.mode === "checkout") {
+          const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
+          if (active) return error("الأصل خارج المستودع مسبقاً", 409);
+          const [custody] = await db.insert(equipmentCustodyTable).values({ productId: input.productId, staffId: auth.id, quantity: input.quantity, issuedBy: auth.id, notes: `${reference.entityType} #${reference.id}` }).returning();
+          await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: auth.id, lastLocation: `حجز #${reference.id}` }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: auth.id, lastLocation: `حجز #${reference.id}`, updatedAt: new Date() } });
+          next = { ...next, stage: "out", custodyId: custody.id, checkedOutAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
+        }
+        if (input.mode === "return") {
+          const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
+          if (active) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, active.id));
+          if (input.problem !== "none" && !input.description) return error("اكتب وصف التلف أو النقص", 422);
+          if (input.problem === "missing" && !input.managerApproval) return error("تسجيل النقص يتطلب اعتماد المدير", 422);
+          if (input.problem === "damaged") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "maintenance" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
+          if (input.problem === "missing") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "lost" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
+          next = { ...next, stage: "returned", returnedAt: new Date().toISOString(), problem: input.problem, problemQuantity: input.problem === "none" ? 0 : input.quantity, description: input.description ?? null, estimatedCost: input.estimatedCost, photoUrls: input.photoUrls };
+        }
+        if (input.mode === "inspect") {
+          if (!["returned", "inspection"].includes(String(current.stage))) return error("يجب تسجيل إرجاع الأصل قبل الفحص", 409);
+          const profile: any = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
+          const passport: any = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, input.productId) });
+          const metadata = { ...(passport?.metadata ?? {}) } as Record<string, any>;
+          const alreadyRecorded = Boolean(current.usageRecordedAt);
+          const usageHours = Number(input.usageHours ?? metadata.usageHoursPerBooking ?? 0);
+          const nextUsageCount = Number(profile?.usageCount ?? 0) + (alreadyRecorded ? 0 : 1);
+          const purchase = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
+          const previousValue = Number(profile?.currentValue ?? purchase);
+          const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
+          const automatic = metadata.automaticDepreciation === true;
+          const nextValue = automatic && !alreadyRecorded ? Math.max(0, previousValue - perUse) : previousValue;
+          const healthPenalty = input.problem === "damaged" ? 15 : input.problem === "missing" ? 30 : 1;
+          const healthScore = Math.max(0, Number(metadata.healthScore ?? 100) - (alreadyRecorded ? 0 : healthPenalty));
+          await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(purchase), currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active", updatedAt: new Date() } });
+          await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() } }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() }, updatedAt: new Date() } });
+          next = { ...next, stage: "completed", inspectedAt: new Date().toISOString(), usageRecordedAt: current.usageRecordedAt ?? new Date().toISOString() };
+        }
+        if (index >= 0) assets[index] = next; else assets.push(next);
+      }
+      const operations = { ...reference.operations, assets };
+      await saveBookingOperations(reference, operations);
+      await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: `booking_asset_${input.mode}`, title: ({ link: "تمت إضافة أصل للحجز", unlink: "تمت إزالة أصل من الحجز", reserve: "تم حجز الأصل", pick: "تم تجهيز الأصل", checkout: "خرج الأصل من المستودع", return: "تم إرجاع الأصل", inspect: "اكتمل فحص الأصل" } as any)[input.mode], body: product.nameAr || product.name, actor: erpActorFromAdmin(auth), metadata: { productId: input.productId, problem: input.problem, estimatedCost: input.estimatedCost } });
+      void logAdminActivity(req, `booking_asset_${input.mode}`, reference.entityType, reference.id, { productId: input.productId, problem: input.problem });
+      return json({ ok: true });
+    }
+  }
+
+  if (resource === "workflow" && method === "PATCH") {
+    const parsed = BookingWorkflowSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("booking-operations.workflow", parsed);
+    const current = bookingOperationStage(reference);
+    const next = parsed.data.stage;
+    if (!can(next === "completed" ? "booking_close" : next === "cancelled" ? "booking_cancel" : "booking_status_change")) return error("ليس لديك صلاحية تغيير مرحلة الحجز", 403);
+    if (next === current) return json({ ok: true, stage: current, duplicate: true });
+    const currentIndex = BOOKING_OPERATION_STAGES.indexOf(current as any);
+    const nextIndex = BOOKING_OPERATION_STAGES.indexOf(next);
+    if (next !== "cancelled" && nextIndex !== currentIndex + 1) return error("يجب تنفيذ مراحل الحجز بالترتيب", 409);
+    const assets = await bookingOperationAssets(reference);
+    const products = await bookingOperationProducts(reference);
+    const tasks = await db.query.tasksTable.findMany({ where: and(eq(tasksTable.relatedType, reference.entityType), eq(tasksTable.relatedId, reference.id), sql`${tasksTable.archivedAt} is null`) });
+    const pendingFinancial = await db.query.financialTransactionsTable.findFirst({ where: and(eq(financialTransactionsTable.sourceType, reference.entityType), eq(financialTransactionsTable.sourceId, String(reference.id)), eq(financialTransactionsTable.approvalStatus, "pending")) });
+    if (next === "completed") {
+      if (assets.some((item: any) => item.out > 0 || !["completed", "linked"].includes(item.stage))) return error("لا يمكن إغلاق الحجز قبل إرجاع وفحص جميع الأصول", 409);
+      if (products.some((item: any) => item.status === "reserved")) return error("لا يمكن إغلاق الحجز مع وجود حركات مخزون غير مكتملة", 409);
+      if (assets.some((item: any) => ["damaged", "missing"].includes(item.problem) && item.status !== "maintenance" && item.status !== "lost")) return error("يوجد تلف أو نقص لم تتم معالجته", 409);
+      if (tasks.some((task) => !["completed", "cancelled"].includes(task.status))) return error("توجد مهام مطلوبة غير مكتملة", 409);
+      if (pendingFinancial) return error("توجد عملية مالية بانتظار الموافقة", 409);
+    }
+    if (next === "cancelled") {
+      if (assets.some((item: any) => item.out > 0)) return error("لا يمكن إلغاء الحجز بينما توجد أصول خارج المستودع", 409);
+      await releaseReservations(reference.entityType, reference.id, actor(auth));
+    }
+    const operations = { ...reference.operations, bookingStage: next, bookingStageUpdatedAt: new Date().toISOString() };
+    await saveBookingOperations(reference, operations);
+    const status = next === "cancelled" ? "cancelled" : next === "completed" ? "completed" : ["booked", "preparing", "ready"].includes(next) ? "processing" : "in_progress";
+    if (reference.source === "kosha") await db.update(koshaBookingsTable).set({ status, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, reference.id));
+    else await db.update(serviceOrdersTable).set({ status }).where(eq(serviceOrdersTable.id, reference.id));
+    await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "booking_stage_changed", title: "تم تحديث مسار الحجز", body: `${current} ← ${next}${parsed.data.note ? ` · ${parsed.data.note}` : ""}`, actor: erpActorFromAdmin(auth), metadata: { before: current, after: next } });
+    void logAdminActivity(req, "booking_stage_changed", reference.entityType, reference.id, { before: current, after: next });
+    return json({ ok: true, stage: next });
+  }
+
+  if (resource === "warehouse" && method === "PATCH") {
+    const parsed = BookingWarehouseWorkflowSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("booking-operations.warehouse", parsed);
+    const current = String(reference.operations.warehouseStage ?? "reserved");
+    const next = parsed.data.stage;
+    if (!can(["returned", "inspection", "completed"].includes(next) ? "booking_return_confirm" : "warehouse_issue")) return error("ليس لديك صلاحية تحديث مسار المستودع", 403);
+    if (next === current) return json({ ok: true, stage: current, duplicate: true });
+    const currentIndex = BOOKING_WAREHOUSE_STAGES.indexOf(current as any);
+    const nextIndex = BOOKING_WAREHOUSE_STAGES.indexOf(next);
+    if (nextIndex !== currentIndex + 1) return error("يجب تنفيذ مراحل المستودع بالترتيب", 409);
+    if (next === "picked") await consumeReservations(reference.entityType, reference.id, actor(auth));
+    if (["returned", "inspection", "completed"].includes(next)) {
+      const assets = await bookingOperationAssets(reference);
+      if (next !== "returned" && assets.some((item: any) => item.out > 0)) return error("ما زالت أصول خارج المستودع", 409);
+      if (next === "completed" && assets.some((item: any) => !["completed", "linked"].includes(item.stage))) return error("يجب إكمال فحص الأصول قبل إغلاق حركة المستودع", 409);
+    }
+    const history = Array.isArray(reference.operations.warehouseHistory) ? reference.operations.warehouseHistory : [];
+    const event = { stage: next, employeeId: auth.id, employeeName: auth.fullName || auth.username, at: new Date().toISOString(), scannedCode: parsed.data.scannedCode ?? null, signatureUrl: parsed.data.signatureUrl ?? null, note: parsed.data.note ?? null };
+    await saveBookingOperations(reference, { ...reference.operations, warehouseStage: next, warehouseHistory: [...history, event].slice(-200) });
+    await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "booking_warehouse_stage", title: "تم تحديث مسار المستودع", body: `${current} ← ${next}`, actor: erpActorFromAdmin(auth), metadata: event });
+    void logAdminActivity(req, "booking_warehouse_stage", reference.entityType, reference.id, { before: current, after: next, scannedCode: parsed.data.scannedCode ?? null });
+    return json({ ok: true, stage: next });
+  }
+
+  if (resource === "inventory" && method === "GET") {
+    const rows = await db.query.stockMovementsTable.findMany({ where: and(eq(stockMovementsTable.relatedType, reference.entityType), eq(stockMovementsTable.relatedId, reference.id)), orderBy: [desc(stockMovementsTable.createdAt)], limit: 500 });
+    return json({ data: rows });
+  }
+
+  if (resource === "tasks" && method === "GET") {
+    const rows = await db.query.tasksTable.findMany({ where: and(eq(tasksTable.relatedType, reference.entityType), eq(tasksTable.relatedId, reference.id), sql`${tasksTable.archivedAt} is null`), orderBy: [desc(tasksTable.createdAt)], limit: 200 });
+    return json({ data: rows });
+  }
+
+  if (resource === "documents" && method === "GET") {
+    const rows = await db.query.entityDocumentsTable.findMany({ where: and(eq(entityDocumentsTable.entityType, reference.entityType), eq(entityDocumentsTable.entityId, reference.id), sql`${entityDocumentsTable.archivedAt} is null`), orderBy: [desc(entityDocumentsTable.createdAt)], limit: 200 });
+    return json({ data: rows.map(formatEntityDocument) });
+  }
+
+  if (resource === "activity" && method === "GET") {
+    const [timeline, audit] = await Promise.all([
+      db.query.entityTimelineTable.findMany({ where: and(eq(entityTimelineTable.entityType, reference.entityType), eq(entityTimelineTable.entityId, reference.id)), orderBy: [desc(entityTimelineTable.createdAt)], limit: 300 }),
+      db.query.adminActivityLogsTable.findMany({ where: and(eq(adminActivityLogsTable.entityType, reference.entityType), eq(adminActivityLogsTable.entityId, reference.id)), orderBy: [desc(adminActivityLogsTable.createdAt)], limit: 300 }),
+    ]);
+    return json({ timeline: timeline.map(formatTimelineRow), audit });
+  }
+
+  if (resource === "finance" && method === "GET") {
+    if (!can("booking_finance_view")) return error("ليس لديك صلاحية عرض مالية الحجز", 403);
+    const transactions = await db.query.financialTransactionsTable.findMany({ where: and(eq(financialTransactionsTable.sourceType, reference.entityType), eq(financialTransactionsTable.sourceId, String(reference.id))), orderBy: [desc(financialTransactionsTable.transactionTime)], limit: 300 });
+    const transactionIds = transactions.map((row) => row.id);
+    const ledger = transactionIds.length ? await db.query.financialLedgerEntriesTable.findMany({ where: inArray(financialLedgerEntriesTable.transactionId, transactionIds), orderBy: [desc(financialLedgerEntriesTable.createdAt)] }) : [];
+    const products = await bookingOperationProducts(reference);
+    const assets = await bookingOperationAssets(reference);
+    const total = Number(reference.row.totalAmount ?? 0);
+    const paid = Number(reference.row.paidAmount ?? reference.row.depositAmount ?? 0);
+    const productCharges = products.filter((item: any) => item.status !== "released").reduce((sum: number, item: any) => sum + item.total, 0);
+    const damageCharges = assets.reduce((sum: number, item: any) => sum + Number(item.estimatedCost ?? 0), 0);
+    const finalAmount = total + productCharges + damageCharges;
+    const estimatedCost = assets.reduce((sum: number, item: any) => sum + Math.max(0, item.purchaseValue - item.currentValue), 0);
+    return json({ total, paid, remaining: Math.max(0, finalAmount - paid), productCharges, damageCharges, finalAmount, estimatedCost, estimatedProfit: finalAmount - estimatedCost, transactions, ledger, customerId: reference.customerId });
+  }
+
+  if ((resource === "depreciation" || resource === "overview") && method === "GET") {
+    if (resource === "depreciation" && !can("depreciation_view")) return error("ليس لديك صلاحية عرض الإهلاك", 403);
+    const [products, assets, tasks, documents, timeline] = await Promise.all([
+      bookingOperationProducts(reference),
+      bookingOperationAssets(reference),
+      db.query.tasksTable.findMany({ where: and(eq(tasksTable.relatedType, reference.entityType), eq(tasksTable.relatedId, reference.id), sql`${tasksTable.archivedAt} is null`), limit: 200 }),
+      db.query.entityDocumentsTable.findMany({ where: and(eq(entityDocumentsTable.entityType, reference.entityType), eq(entityDocumentsTable.entityId, reference.id), sql`${entityDocumentsTable.archivedAt} is null`), limit: 200 }),
+      db.query.entityTimelineTable.findMany({ where: and(eq(entityTimelineTable.entityType, reference.entityType), eq(entityTimelineTable.entityId, reference.id)), orderBy: [desc(entityTimelineTable.createdAt)], limit: 20 }),
+    ]);
+    if (resource === "depreciation") return json({ assets });
+    const productReady = products.length ? products.filter((item: any) => !["released"].includes(item.status) && item.available >= 0).length / products.length : 1;
+    const assetReady = assets.length ? assets.filter((item: any) => !["maintenance", "lost", "retired", "locked"].includes(item.status)).length / assets.length : 1;
+    const taskReady = tasks.length ? tasks.filter((item) => item.status === "completed").length / tasks.length : 1;
+    const financialReady = Number(reference.row.remainingAmount ?? 0) <= 0 ? 1 : Number(reference.row.totalAmount ?? 0) > 0 ? Number(reference.row.paidAmount ?? reference.row.depositAmount ?? 0) / Number(reference.row.totalAmount) : 0.5;
+    const docsReady = documents.length ? 1 : 0.5;
+    const inspectionReady = assets.some((item: any) => ["returned", "inspection"].includes(item.stage)) ? 0.4 : 1;
+    const readiness = Math.round(Math.max(0, Math.min(1, (productReady + assetReady + taskReady + Math.min(1, financialReady) + docsReady + inspectionReady) / 6)) * 100);
+    const alerts = [
+      ...products.filter((item: any) => item.available < 0).map((item: any) => ({ type: "shortage", severity: "high", title: `نقص في ${item.productName}`, tab: "products" })),
+      ...assets.filter((item: any) => item.maintenanceRequired).map((item: any) => ({ type: "maintenance", severity: "high", title: `${item.name} يحتاج صيانة`, tab: "assets" })),
+      ...assets.filter((item: any) => item.problem === "damaged" || item.problem === "missing").map((item: any) => ({ type: item.problem, severity: "high", title: `${item.name}: ${item.problem === "damaged" ? "تلف" : "نقص"}`, tab: "assets" })),
+      ...(Number(reference.row.remainingAmount ?? 0) > 0 ? [{ type: "unpaid", severity: "medium", title: "يوجد رصيد متبقٍ على الحجز", tab: "finance" }] : []),
+      ...tasks.filter((item) => item.dueAt && new Date(item.dueAt) < new Date() && !["completed", "cancelled"].includes(item.status)).map((item) => ({ type: "overdue_task", severity: "medium", title: `مهمة متأخرة: ${item.title}`, tab: "tasks" })),
+    ];
+    return json({
+      readiness,
+      bookingStage: bookingOperationStage(reference),
+      warehouseStage: reference.operations.warehouseStage ?? "reserved",
+      warehouseHistory: reference.operations.warehouseHistory ?? [],
+      counts: { products: products.length, assets: assets.length, tasks: tasks.length, completedTasks: tasks.filter((item) => item.status === "completed").length, documents: documents.length, alerts: alerts.length },
+      readinessParts: { products: Math.round(productReady * 100), assets: Math.round(assetReady * 100), tasks: Math.round(taskReady * 100), finance: Math.round(Math.min(1, financialReady) * 100), documents: Math.round(docsReady * 100), inspection: Math.round(inspectionReady * 100) },
+      alerts,
+      recentActivity: timeline.map(formatTimelineRow),
+    });
+  }
+
+  return error("مسار عمليات الحجز غير موجود", 404);
+}
+
+function centralBookingDepartments(value: unknown) {
+  const normalized = String(value ?? "").toLowerCase();
+  if (/kosha|كوش/.test(normalized)) return ["kosha"];
+  if (/sound|audio|speaker|صوت/.test(normalized)) return ["sound"];
+  if (/photo|camera|تصوير/.test(normalized)) return ["photography"];
+  if (/flower|ورد/.test(normalized)) return ["flowers"];
+  if (/gift|هدية|توزيع/.test(normalized)) return ["gifts"];
+  if (/graduation|تخرج/.test(normalized)) return ["graduation"];
+  if (/rental|إيجار/.test(normalized)) return ["rental"];
+  return ["decorations"];
+}
+
+async function handleCentralBookingCenter(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "booking-center" || req.method !== "GET") return null;
+  const auth = await requirePermission(req, "orders");
+  if (isResponse(auth)) return auth;
+
+  const [serviceOrders, services, koshas, storeOrders, graduationOrders, photographyOrders, rentals] =
+    await Promise.all([
+      db.query.serviceOrdersTable.findMany({
+        where: sql`${serviceOrdersTable.archivedAt} is null`,
+        orderBy: [desc(serviceOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.servicesTable.findMany(),
+      db.query.koshaBookingsTable.findMany({
+        where: sql`${koshaBookingsTable.archivedAt} is null`,
+        orderBy: [desc(koshaBookingsTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.ordersTable.findMany({
+        where: sql`${ordersTable.archivedAt} is null`,
+        orderBy: [desc(ordersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.graduationOrdersTable.findMany({
+        orderBy: [desc(graduationOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.photographyOrdersTable.findMany({
+        orderBy: [desc(photographyOrdersTable.createdAt)],
+        limit: 500,
+      }),
+      db.query.rentalOrdersTable.findMany({
+        orderBy: [desc(rentalOrdersTable.createdAt)],
+        limit: 500,
+      }),
+    ]);
+  const serviceMap = new Map(services.map((service) => [service.id, service]));
+  const linkedStoreOrderIds = new Set(
+    serviceOrders
+      .map((order) => Number((order.customFields as any)?.storeOrderId))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  );
+  const storeTrackingCodes = new Set(storeOrders.map((order) => String(order.trackingCode)));
+  const rows = [
+    ...serviceOrders.map((order) => {
+      const fields = (order.customFields ?? {}) as Record<string, any>;
+      const selected = Array.isArray(fields.bookingCenterServices)
+        ? fields.bookingCenterServices.map((item: any) => String(item?.type ?? ""))
+        : [];
+      const service = serviceMap.get(order.serviceId);
+      return {
+        source: "service",
+        id: order.id,
+        number: order.trackingCode ?? `SRV-${order.id}`,
+        customerId: fields.customerId ?? null,
+        customerName: order.customerName,
+        phone: order.phone,
+        bookingSource: fields.bookingSource === "store" ? "المتجر" : "الخدمات",
+        departments: selected.length ? selected : centralBookingDepartments(service?.type ?? service?.nameAr),
+        eventDate: order.eventDate ?? "",
+        eventTime: fields.eventTime ?? "",
+        hall: order.eventLocation ?? "",
+        mapUrl: fields.mapUrl ?? "",
+        status: order.status,
+        total: Number(order.totalAmount ?? 0),
+        paid: Number(order.depositAmount ?? 0),
+        remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid",
+        notes: order.notes ?? "",
+        createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/bookings/service/${order.id}`,
+      };
+    }),
+    ...koshas.map((booking) => ({
+      source: "kosha",
+      id: booking.id,
+      number: booking.trackingCode ?? `KB-${booking.id}`,
+      customerId: booking.customerId ?? null,
+      customerName: booking.customerName,
+      phone: booking.phone,
+      bookingSource: "الكوشات",
+      departments: ["kosha"],
+      eventDate: booking.eventDate ?? "",
+      eventTime: booking.eventTime ?? "",
+      hall: booking.hallLocation ?? "",
+      mapUrl: (booking.bookingDetails as any)?.mapUrl ?? "",
+      status: booking.status,
+      total: Number(booking.totalAmount ?? 0),
+      paid: Number(booking.paidAmount ?? 0),
+      remaining: Number(booking.remainingAmount ?? 0),
+      paymentStatus: booking.paymentStatus ?? "unpaid",
+      notes: booking.notes ?? "",
+      createdAt: booking.createdAt.toISOString(),
+      detailHref: `/admin/bookings/kosha/${booking.id}`,
+    })),
+    ...storeOrders
+      .filter((order) => !linkedStoreOrderIds.has(order.id))
+      .map((order) => ({
+        source: "store",
+        id: order.id,
+        number: order.trackingCode,
+        customerId: order.customerId ?? null,
+        customerName: order.customerName,
+        phone: order.customerPhone,
+        bookingSource: "المتجر",
+        departments: centralBookingDepartments(order.serviceType),
+        eventDate: "",
+        eventTime: "",
+        hall: [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+        mapUrl: order.mapsUrl ?? "",
+        status: order.status,
+        total: Number(order.total ?? 0),
+        paid: Number(order.depositAmount ?? 0),
+        remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid",
+        notes: order.notes ?? "",
+        createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/orders?order=${order.id}`,
+      })),
+    ...graduationOrders.map((order) => ({
+      source: "graduation", id: order.id, number: order.orderNo, customerId: order.customerId ?? null,
+      customerName: order.customerName, phone: order.phone, bookingSource: "التخرج", departments: ["graduation"],
+      eventDate: "", eventTime: "", hall: "", mapUrl: "", status: order.status,
+      total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+      paymentStatus: order.paymentStatus ?? "unpaid", notes: "", createdAt: order.createdAt.toISOString(),
+      detailHref: `/admin/graduation/orders?order=${order.id}`,
+    })),
+    ...photographyOrders.map((order) => ({
+      source: "photography", id: order.id, number: order.orderNo, customerId: null,
+      customerName: order.customerName, phone: order.phone, bookingSource: "التصوير", departments: ["photography"],
+      eventDate: "", eventTime: "", hall: "", mapUrl: "", status: order.status,
+      total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+      paymentStatus: order.paymentStatus ?? "unpaid", notes: order.notes ?? "", createdAt: order.createdAt.toISOString(),
+      detailHref: "/staff/photography",
+    })),
+    ...rentals
+      .filter((order) => !storeTrackingCodes.has(String(order.orderNo)))
+      .map((order) => ({
+        source: "rental", id: order.id, number: order.orderNo, customerId: order.customerId ?? null,
+        customerName: order.customerName, phone: order.phone, bookingSource: "الإيجار", departments: ["rental"],
+        eventDate: String(order.startDate ?? ""), eventTime: "", hall: "", mapUrl: "", status: order.status,
+        total: Number(order.totalAmount ?? 0), paid: Number(order.paidAmount ?? 0), remaining: Number(order.remainingAmount ?? 0),
+        paymentStatus: order.paymentStatus ?? "unpaid", notes: order.notes ?? "", createdAt: order.createdAt.toISOString(),
+        detailHref: `/admin/orders?order=${order.id}`,
+      })),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return json(rows);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const centralBookingCenter = await handleCentralBookingCenter(req, parts, section);
+  if (centralBookingCenter) return centralBookingCenter;
+
+  const bookingOperations = await handleBookingOperations(req, parts, section);
+  if (bookingOperations) return bookingOperations;
+
+  const documentScanner = await handleDocumentScanner(req, parts, section);
+  if (documentScanner) return documentScanner;
+
+  const integrationOversight = await handleIntegrationOversight(req, parts, section);
+  if (integrationOversight) return integrationOversight;
+
+  const provinceDelivery = await handleProvinceDelivery(req, parts, section);
+  if (provinceDelivery) return provinceDelivery;
 
   const eventBrain = await handleEventBrain(req, parts, section);
   if (eventBrain) return eventBrain;
@@ -21522,6 +24326,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requireAnyPermission(req, [
       "orders",
       "bookings",
+      "booking_documents_manage",
       "invoices",
       "gallery",
       "accounting",
@@ -22551,9 +25356,90 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "assets") {
-    const auth = await requirePermission(req, "products");
+    const categoryRoute = parts[2] === "depreciation-categories";
+    const depreciationReportRoute = parts[2] === "depreciation" && ["report", "report-audit"].includes(String(parts[3] ?? ""));
+    const auth = categoryRoute
+      ? await requireAnyPermission(req, ["products", "depreciation_categories_view"])
+      : depreciationReportRoute
+        ? await requireAnyPermission(req, ["products", "depreciation_view"])
+      : await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
+
+    if (categoryRoute) {
+      await ensureDepreciationCategoryTables();
+      const categoryId = int(parts[3]);
+      const action = parts[4];
+      const can = (permission: Permission) => auth.role === "admin" || hasPermission(auth, "products") || hasPermission(auth, permission);
+      const schema = z.object({
+        name: z.string().trim().min(2).max(160), code: z.string().trim().max(50).nullable().optional(), assetType: z.string().trim().max(80).nullable().optional(), description: z.string().trim().max(2000).nullable().optional(), method: z.enum(["straight_line", "declining_balance", "usage", "manual"]), usefulLifeYears: z.coerce.number().int().min(0).max(200).default(0), usefulLifeMonths: z.coerce.number().int().min(0).max(2400).default(0), annualRate: z.coerce.number().min(0).max(100).default(0), monthlyRate: z.coerce.number().min(0).max(100).default(0), residualValue: z.coerce.number().min(0).max(1_000_000_000).default(0), perBooking: z.coerce.number().min(0).max(1_000_000_000).default(0), perHour: z.coerce.number().min(0).max(1_000_000_000).default(0), maxUses: z.coerce.number().int().min(0).max(10_000_000).default(0), maintenanceThreshold: z.coerce.number().int().min(0).max(10_000_000).default(0), isActive: z.boolean().default(true), notes: z.string().trim().max(2000).nullable().optional(), effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), reason: z.string().trim().max(1000).nullable().optional(), managerNote: z.string().trim().max(2000).nullable().optional(), applyMode: z.enum(["new_only", "all", "selected"]).optional(), selectedAssetIds: z.array(z.coerce.number().int().positive()).max(500).optional(),
+      });
+      const assetCount = async (id: number) => Number((await db.execute(sql`select count(*)::int as count from asset_passports where metadata->>'depreciationCategoryId' = ${String(id)}`) as any).rows?.[0]?.count ?? 0);
+      const format = async (row: any) => ({ ...row, id: Number(row.id), linkedAssets: await assetCount(Number(row.id)), isActive: Boolean(row.is_active), isArchived: Boolean(row.is_archived), usefulLifeYears: Number(row.useful_life_years), usefulLifeMonths: Number(row.useful_life_months), annualRate: Number(row.annual_rate), monthlyRate: Number(row.monthly_rate), residualValue: Number(row.residual_value), perBooking: Number(row.per_booking), perHour: Number(row.per_hour), maxUses: Number(row.max_uses), maintenanceThreshold: Number(row.maintenance_threshold) });
+      if (method === "POST" && parts[3] === "report-audit") {
+        const payload = z.object({ action: z.enum(["print_a4", "print_80mm", "export_a4", "export_80mm"]), paperSize: z.enum(["A4", "80mm"]), filters: z.record(z.string(), z.unknown()).default({}), categoryCount: z.coerce.number().int().min(0).max(10_000).default(0) }).safeParse(await body(req));
+        if (!payload.success) return validationError("depreciation-categories.report-audit", payload);
+        const permission: Permission = payload.data.action === "print_a4" ? "depreciation_print_a4" : payload.data.action === "print_80mm" ? "depreciation_print_80mm" : "depreciation_export_pdf";
+        if (!(auth.role === "admin" || hasPermission(auth, permission))) return error("ليس لديك صلاحية طباعة أو تصدير تقرير الإهلاك", 403);
+        await logAdminActivity(req, "depreciation_category_report_exported", "depreciation_category_report", undefined, { reportType: "categories", paperSize: payload.data.paperSize, action: payload.data.action, filters: payload.data.filters, categoryCount: payload.data.categoryCount });
+        return json({ ok: true });
+      }
+      if (method === "GET" && !categoryId) {
+        const q = String(req.nextUrl.searchParams.get("q") ?? "").trim(); const status = String(req.nextUrl.searchParams.get("status") ?? "all"); const methodFilter = String(req.nextUrl.searchParams.get("method") ?? "all"); const assetType = String(req.nextUrl.searchParams.get("assetType") ?? ""); const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") ?? 1)); const limit = Math.min(100, Math.max(10, Number(req.nextUrl.searchParams.get("limit") ?? 20))); const sort = ["name", "updated_at", "created_at"].includes(String(req.nextUrl.searchParams.get("sort"))) ? String(req.nextUrl.searchParams.get("sort")) : "updated_at";
+        const result: any = await db.execute(sql`select *, count(*) over()::int as total from asset_depreciation_categories where (${q} = '' or name ilike ${`%${q}%`} or coalesce(code,'') ilike ${`%${q}%`}) and (${status} = 'all' or (${status} = 'active' and is_active and not is_archived) or (${status} = 'inactive' and not is_active and not is_archived) or (${status} = 'archived' and is_archived)) and (${methodFilter} = 'all' or method = ${methodFilter}) and (${assetType} = '' or asset_type = ${assetType}) order by case when ${sort} = 'name' then name end asc, updated_at desc limit ${limit} offset ${(page - 1) * limit}`);
+        const rows = await Promise.all((result.rows ?? []).map(format)); return json({ data: rows, total: Number(result.rows?.[0]?.total ?? 0), page, limit });
+      }
+      if (method === "POST" && !categoryId) {
+        if (!can("depreciation_categories_create")) return error("ليس لديك صلاحية إضافة فئة إهلاك", 403); const parsed = schema.safeParse(await body(req)); if (!parsed.success) return validationError("depreciation-categories.create", parsed); const d = parsed.data;
+        const duplicate: any = await db.execute(sql`select id from asset_depreciation_categories where lower(name) = lower(${d.name}) or (${d.code ?? null} is not null and lower(coalesce(code,'')) = lower(${d.code ?? ""})) limit 1`); if ((duplicate.rows ?? []).length) return error("اسم الفئة أو رمزها مستخدم مسبقاً", 409);
+        const created: any = await db.execute(sql`insert into asset_depreciation_categories (name,code,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,is_active,notes,created_by,created_by_name,updated_by,updated_by_name) values (${d.name},${d.code ?? null},${d.assetType ?? null},${d.description ?? null},${d.method},${d.usefulLifeYears},${d.usefulLifeMonths},${d.annualRate},${d.monthlyRate},${d.residualValue},${d.perBooking},${d.perHour},${d.maxUses},${d.maintenanceThreshold},${d.isActive},${d.notes ?? null},${auth.id},${auth.fullName || auth.username},${auth.id},${auth.fullName || auth.username}) returning *`); const row = created.rows[0]; await recordDepreciationCategoryAudit(row.id, "created", null, row, auth, d.effectiveDate ?? new Date().toISOString().slice(0,10), d.reason, d.managerNote, undefined, undefined, req); return json(await format(row), 201);
+      }
+      if (!categoryId) return error("معرّف الفئة غير صحيح", 400);
+      const found: any = await db.execute(sql`select * from asset_depreciation_categories where id = ${categoryId} limit 1`); const current = found.rows?.[0]; if (!current) return error("فئة الإهلاك غير موجودة", 404);
+      if (method === "GET" && action === "audit") { if (!can("depreciation_categories_audit_view")) return error("ليس لديك صلاحية عرض سجل التدقيق", 403); const result: any = await db.execute(sql`select * from asset_depreciation_category_audit where category_id = ${categoryId} order by created_at desc limit 200`); return json({ data: result.rows ?? [] }); }
+      if (method === "POST" && action === "clone") { if (!can("depreciation_categories_create")) return error("ليس لديك صلاحية نسخ الفئة", 403); const row: any = await db.execute(sql`insert into asset_depreciation_categories (name,code,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,is_active,notes,created_by,created_by_name,updated_by,updated_by_name) select ${`${current.name} (نسخة)`},null,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,false,notes,${auth.id},${auth.fullName || auth.username},${auth.id},${auth.fullName || auth.username} from asset_depreciation_categories where id = ${categoryId} returning *`); await recordDepreciationCategoryAudit(row.rows[0].id, "cloned", null, row.rows[0], auth, new Date().toISOString().slice(0,10), null, null, undefined, undefined, req); return json(await format(row.rows[0]), 201); }
+      if (method === "POST" && action === "archive") { if (!can("depreciation_categories_archive")) return error("ليس لديك صلاحية أرشفة الفئة", 403); await db.execute(sql`update asset_depreciation_categories set is_archived = true, is_active = false, updated_at = now(), updated_by = ${auth.id}, updated_by_name = ${auth.fullName || auth.username} where id = ${categoryId}`); await recordDepreciationCategoryAudit(categoryId, "archived", current, { ...current, is_archived: true, is_active: false }, auth, new Date().toISOString().slice(0,10), null, null, undefined, undefined, req); return json({ ok: true }); }
+      if (method === "PATCH") { if (!can("depreciation_categories_edit")) return error("ليس لديك صلاحية تعديل الفئة", 403); const parsed = schema.safeParse(await body(req)); if (!parsed.success) return validationError("depreciation-categories.update", parsed); const d = parsed.data; const linked = await assetCount(categoryId); const rulesChanged = ["method","useful_life_years","useful_life_months","annual_rate","monthly_rate","residual_value","per_booking","per_hour","max_uses","maintenance_threshold"].some((key) => String((current as any)[key]) !== String((({ method:d.method,useful_life_years:d.usefulLifeYears,useful_life_months:d.usefulLifeMonths,annual_rate:d.annualRate,monthly_rate:d.monthlyRate,residual_value:d.residualValue,per_booking:d.perBooking,per_hour:d.perHour,max_uses:d.maxUses,maintenance_threshold:d.maintenanceThreshold } as any)[key]))); if (rulesChanged && !d.effectiveDate) return error("تاريخ بدء تطبيق التعديل مطلوب عند تغيير قواعد الإهلاك", 422); if (linked && rulesChanged && !d.applyMode) return error("اختر طريقة تطبيق التغييرات على الأصول المرتبطة", 422); if (d.applyMode && d.applyMode !== "new_only" && !can("depreciation_categories_apply")) return error("ليس لديك صلاحية تطبيق التغييرات على الأصول", 403);
+        const duplicate: any = await db.execute(sql`select id from asset_depreciation_categories where id <> ${categoryId} and (lower(name) = lower(${d.name}) or (${d.code ?? null} is not null and lower(coalesce(code,'')) = lower(${d.code ?? ""}))) limit 1`); if ((duplicate.rows ?? []).length) return error("اسم الفئة أو رمزها مستخدم مسبقاً", 409); const updated: any = await db.execute(sql`update asset_depreciation_categories set name=${d.name},code=${d.code ?? null},asset_type=${d.assetType ?? null},description=${d.description ?? null},method=${d.method},useful_life_years=${d.usefulLifeYears},useful_life_months=${d.usefulLifeMonths},annual_rate=${d.annualRate},monthly_rate=${d.monthlyRate},residual_value=${d.residualValue},per_booking=${d.perBooking},per_hour=${d.perHour},max_uses=${d.maxUses},maintenance_threshold=${d.maintenanceThreshold},is_active=${d.isActive},notes=${d.notes ?? null},updated_at=now(),updated_by=${auth.id},updated_by_name=${auth.fullName || auth.username} where id=${categoryId} returning *`); const row = updated.rows[0];
+        if (d.applyMode === "all" || d.applyMode === "selected") { const ids = d.applyMode === "all" ? null : (d.selectedAssetIds ?? []); if (d.applyMode === "selected" && !ids?.length) return error("اختر أصلاً واحداً على الأقل", 422); const targets: any = await db.execute(ids ? sql`select product_id from asset_passports where product_id = any(${ids})` : sql`select product_id from asset_passports where metadata->>'depreciationCategoryId' = ${String(categoryId)}`); for (const target of targets.rows ?? []) { await db.execute(sql`update asset_passports set metadata = coalesce(metadata,'{}'::jsonb) || ${JSON.stringify({ depreciationCategoryId: categoryId, depreciationCategoryEffectiveDate: d.effectiveDate, depreciationCategoryRules: { method:d.method, usefulLifeYears:d.usefulLifeYears, usefulLifeMonths:d.usefulLifeMonths, annualRate:d.annualRate, monthlyRate:d.monthlyRate, residualValue:d.residualValue, perBooking:d.perBooking, perHour:d.perHour, maxUses:d.maxUses, maintenanceThreshold:d.maintenanceThreshold } })}::jsonb, updated_at = now() where product_id = ${target.product_id}`); await addEntityTimeline({ entityType:"asset", entityId:target.product_id, type:"depreciation_category_applied", title:"تم تطبيق قواعد فئة الإهلاك", body:`تسري من ${d.effectiveDate}`, actor:erpActorFromAdmin(auth), metadata:{ categoryId, effectiveDate:d.effectiveDate, mode:d.applyMode } }); } }
+        await recordDepreciationCategoryAudit(categoryId, "updated", current, row, auth, d.effectiveDate ?? new Date().toISOString().slice(0,10), d.reason, d.managerNote, d.applyMode, d.selectedAssetIds, req); return json(await format(row)); }
+      return error("الإجراء غير مدعوم", 405);
+    }
+
+    if (depreciationReportRoute) {
+      const can = (permission: Permission) => auth.role === "admin" || hasPermission(auth, "products") || hasPermission(auth, permission);
+      if (parts[3] === "report-audit" && method === "POST") {
+        const payload = z.object({ action: z.enum(["print_a4", "print_80mm", "export_a4", "export_80mm"]), paperSize: z.enum(["A4", "80mm"]), filters: z.record(z.string(), z.unknown()).default({}), assetCount: z.coerce.number().int().min(0).max(10_000).default(0) }).safeParse(await body(req));
+        if (!payload.success) return validationError("asset-depreciation.report-audit", payload);
+        const permission: Permission = payload.data.action === "print_a4" ? "depreciation_print_a4" : payload.data.action === "print_80mm" ? "depreciation_print_80mm" : "depreciation_export_pdf";
+        if (!(auth.role === "admin" || hasPermission(auth, permission))) return error("ليس لديك صلاحية طباعة أو تصدير تقرير الإهلاك", 403);
+        await logAdminActivity(req, "asset_depreciation_report_exported", "asset_depreciation_report", undefined, { reportType: "assets", paperSize: payload.data.paperSize, action: payload.data.action, filters: payload.data.filters, assetCount: payload.data.assetCount });
+        return json({ ok: true });
+      }
+      if (parts[3] !== "report" || method !== "GET") return error("الإجراء غير مدعوم", 405);
+      await ensureDepreciationCategoryTables();
+      const params = req.nextUrl.searchParams;
+      const filters = Object.fromEntries(["categoryId", "assetType", "method", "status", "warehouseId", "from", "to", "assetId"].map((key) => [key, String(params.get(key) ?? "").trim()]));
+      const [products, profiles, passports, categories, warehouses] = await Promise.all([
+        db.query.productsTable.findMany({ where: eq(productsTable.isAsset, true), orderBy: [asc(productsTable.id)], limit: 2000 }),
+        db.query.assetProfilesTable.findMany({ limit: 2000 }),
+        db.query.assetPassportsTable.findMany({ limit: 2000 }),
+        db.execute(sql`select id, name, method, annual_rate from asset_depreciation_categories order by name asc`),
+        db.query.warehousesTable.findMany({ orderBy: [asc(warehousesTable.name)] }),
+      ]);
+      const profileByProduct = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+      const passportByProduct = new Map(passports.map((row) => [row.productId, row]));
+      const categoryById = new Map<number, any>((categories as any).rows?.map((row: any) => [Number(row.id), row] as [number, any]) ?? []);
+      const warehouseById = new Map(warehouses.map((row) => [row.id, row.name]));
+      const data = products.map((product) => {
+        const profile = profileByProduct.get(product.id); const passport = passportByProduct.get(product.id); const metadata = assetMetadataObject(passport?.metadata);
+        const categoryId = Number(metadata.depreciationCategoryId ?? 0) || null; const category = categoryId ? categoryById.get(categoryId) : null;
+        const purchasePrice = Math.max(0, Number(profile?.purchasePrice ?? product.costPrice ?? 0)); const currentValue = Math.max(0, Number(profile?.currentValue ?? purchasePrice));
+        const warehouseId = Number((product as any).warehouseId ?? 0) || null; const purchaseDate = profile?.purchaseDate ? new Date(profile.purchaseDate).toISOString().slice(0, 10) : null;
+        return { productId: product.id, assetCode: `AJN-A${String(product.id).padStart(5, "0")}`, name: product.nameAr || product.name, category: category?.name ?? product.category ?? null, categoryId, assetType: product.category ?? null, warehouse: warehouseId ? warehouseById.get(warehouseId) ?? null : null, warehouseId, purchaseDate, purchasePrice, currentValue, depreciationAmount: Math.max(0, purchasePrice - currentValue), depreciationMethod: String(metadata.depreciationMethod ?? category?.method ?? "usage"), annualRate: Number(metadata.annualRate ?? category?.annual_rate ?? 0), usageCount: Number(profile?.usageCount ?? 0), status: profile?.status ?? "active" };
+      }).filter((row) => (!filters.categoryId || row.categoryId === Number(filters.categoryId)) && (!filters.assetType || row.assetType === filters.assetType) && (!filters.method || row.depreciationMethod === filters.method) && (!filters.status || row.status === filters.status) && (!filters.warehouseId || row.warehouseId === Number(filters.warehouseId)) && (!filters.assetId || row.productId === Number(filters.assetId)) && (!filters.from || (row.purchaseDate && row.purchaseDate >= filters.from)) && (!filters.to || (row.purchaseDate && row.purchaseDate <= filters.to)));
+      return json({ data, categories: [...categoryById.entries()].map(([id, row]) => ({ id, name: row.name })), warehouses: warehouses.map((row) => ({ id: row.id, name: row.name })), filters });
+    }
 
     if (parts[2] === "scan" && method === "GET") {
       const rawCode = String(req.nextUrl.searchParams.get("code") ?? "").trim();
@@ -23738,12 +26624,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "tasks") {
-    const auth = await requirePermission(req, "tasks");
+    const auth = await requireAnyPermission(req, ["tasks", "booking_tasks_manage"]);
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
     const canManageAll = auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "staff");
-    const canCreateTasks = canManageAll || hasPermission(auth, "task_create");
-    const canEditTasks = canManageAll || hasPermission(auth, "task_edit") || hasPermission(auth, "task_assign");
+    const canCreateTasks = canManageAll || hasPermission(auth, "task_create") || hasPermission(auth, "booking_tasks_manage");
+    const canEditTasks = canManageAll || hasPermission(auth, "task_edit") || hasPermission(auth, "task_assign") || hasPermission(auth, "booking_tasks_manage");
     const canDeleteTasks = canManageAll || hasPermission(auth, "task_delete");
     const canApproveTasks = canManageAll || hasPermission(auth, "task_approve");
 
@@ -28287,6 +31173,61 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           })) ?? row,
         );
       }
+      // Keep the one linked Sound booking aligned with Store edits. This does
+      // not copy the Booking Center execution status back onto the Store order.
+      try {
+        if (row.status === "cancelled") {
+          const cancellation = await cancelStoreSoundBooking(
+            row,
+            "إلغاء من طلب المتجر",
+          );
+          if (cancellation.requiresApproval) {
+            void logAdminActivity(req, "store_sound_booking_cancel_confirmation_required", "order", row.id, {
+              storeOrderId: row.id,
+            });
+          }
+        } else {
+          const syncItems = hasItemsUpdate ? nextItems : oldItems;
+          const syncProductIds = [
+            ...new Set(
+              syncItems
+                .map((item: any) => numberId(item.productId))
+                .filter((value): value is number => !!value),
+            ),
+          ];
+          const syncProducts = syncProductIds.length
+            ? await db.query.productsTable.findMany({
+                where: inArray(productsTable.id, syncProductIds),
+              })
+            : [];
+          const soundBooking = await syncStoreSoundBooking({
+            order: row,
+            items: syncItems,
+            products: syncProducts,
+          });
+          if (soundBooking.requiresSync) {
+            await markStoreSoundBookingSyncRequired(
+              row,
+              "لم يتم العثور على خدمة صوتيات فعّالة لربط طلب المتجر",
+            );
+          } else if (soundBooking.created && soundBooking.booking) {
+            void createNotification({
+              type: "booking_new",
+              title: "حجز صوتيات جديد من المتجر",
+              body: `${row.customerName} · طلب ${row.trackingCode} · حجز ${soundBooking.booking.trackingCode ?? soundBooking.booking.id}`,
+              entityType: "service_order",
+              entityId: soundBooking.booking.id,
+              href: `/admin/bookings/service/${soundBooking.booking.id}`,
+            });
+          }
+        }
+      } catch (err: any) {
+        console.error("Store Sound booking synchronization failed", {
+          orderId: row.id,
+          message: err?.message,
+          stack: err?.stack,
+        });
+      }
       if (
         update.paymentStatus !== undefined ||
         update.remainingAmount !== undefined
@@ -28437,6 +31378,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (archived && isRentalStoreOrder(current)) {
         await syncRentalRowFromStoreOrder(archived);
       }
+      if (archived) {
+        const cancellation = await cancelStoreSoundBooking(
+          archived,
+          "إلغاء وأرشفة طلب المتجر",
+        );
+        if (cancellation.requiresApproval) {
+          void logAdminActivity(req, "store_sound_booking_cancel_confirmation_required", "order", id, {
+            storeOrderId: id,
+          });
+        }
+      }
       await db.insert(orderStatusHistoryTable).values({
         orderId: id,
         status: "cancelled",
@@ -28586,12 +31538,124 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "invoices" && method === "GET" && parts[2]) {
-    const auth = await requirePermission(req, "invoices");
+    const requestedType = req.nextUrl.searchParams.get("type");
+    const type = requestedType === "kosha" ? "kosha" : requestedType === "booking" ? "booking" : "order";
+    const auth = await requirePermission(req, type === "kosha" ? "orders" : "invoices");
     if (isResponse(auth)) return auth;
     const id = int(parts[2]);
     if (!id) return error("معرف غير صحيح", 400);
-    const type =
-      req.nextUrl.searchParams.get("type") === "booking" ? "booking" : "order";
+    if (type === "kosha") {
+      await ensureKoshaTables();
+      const booking = await db.query.koshaBookingsTable.findFirst({
+        where: eq(koshaBookingsTable.id, id),
+      });
+      if (!booking) return error("حجز الكوشة غير موجود", 404);
+      const formatted = await formatKoshaBooking(booking);
+      const details = (formatted.bookingDetails ?? {}) as Record<string, any>;
+      const pricing = (details.pricing ?? {}) as Record<string, any>;
+      const customer = formatted.customerId
+        ? await db.query.customersTable.findFirst({ where: eq(customersTable.id, formatted.customerId) })
+        : await findCustomerByPhone(formatted.phone);
+      const creator = await db.query.adminActivityLogsTable.findFirst({
+        where: and(eq(adminActivityLogsTable.entityType, "kosha_booking"), eq(adminActivityLogsTable.entityId, booking.id)),
+        orderBy: [asc(adminActivityLogsTable.createdAt)],
+      });
+      const components = [
+        {
+          id: `kosha-${booking.id}`,
+          productNameAr: formatted.koshaName || formatted.packageName || "حجز كوشة",
+          category: "الكوشة",
+          description: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.koshaPrice ?? 0),
+        },
+        {
+          id: `welcome-${booking.id}`,
+          productNameAr: "بورد الترحيب",
+          category: "تنسيق المناسبة",
+          description: formatted.welcomeBoards.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.welcomeBoardPrice ?? 0),
+        },
+        {
+          id: `accessories-${booking.id}`,
+          productNameAr: "الإكسسوارات",
+          category: "إكسسوارات",
+          description: formatted.selectedAccessories.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.accessoriesPrice ?? 0),
+        },
+        {
+          id: `addons-${booking.id}`,
+          productNameAr: "الخدمات الإضافية",
+          category: "خدمات إضافية",
+          description: formatted.selectedAddons.join("، "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(pricing.addonsPrice ?? 0),
+        },
+      ].filter((item) => item.price > 0 || item.description);
+      const qr = await ensureQrForEntity("kosha_booking", booking, req);
+      return json({
+        kind: "kosha",
+        sourceType: "kosha_booking",
+        id: booking.id,
+        trackingCode: formatted.trackingCode ?? `KB-${booking.id}`,
+        customerId: formatted.customerId ?? customer?.id ?? null,
+        customerName: formatted.customerName,
+        customerPhone: formatted.phone,
+        customerEmail: customer?.email ?? null,
+        customerAddress: customer?.address ?? null,
+        customerCity: customer?.city ?? formatted.area ?? formatted.cityArea ?? null,
+        serviceName: formatted.koshaName || formatted.packageName || "حجز كوشة",
+        serviceType: formatted.eventType || "مناسبات",
+        serviceDescription: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+        eventDate: formatted.eventDate,
+        eventTime: formatted.eventTime,
+        eventLocation: formatted.hallLocation || [formatted.province, formatted.area, formatted.mahalla, formatted.nearestPoint].filter(Boolean).join(" - "),
+        notes: formatted.notes,
+        status: formatted.status,
+        price: Number(formatted.totalAmount ?? 0),
+        deposit: Number(formatted.paidAmount ?? 0),
+        balance: Number(formatted.remainingAmount ?? 0),
+        paymentStatus: formatted.paymentStatus ?? "unpaid",
+        paymentMethod: details.paymentMethod ?? pricing.paymentMethod ?? null,
+        dueDate: formatted.dueDate ?? null,
+        createdByName: creator?.userName || formatted.primaryEmployeeName || null,
+        customFields: {
+          ...details,
+          brideName: formatted.brideName,
+          groomName: formatted.groomName,
+          alternativePhone: formatted.alternatePhone,
+          province: formatted.province,
+          city: formatted.area || formatted.cityArea,
+          address: [formatted.province, formatted.area, formatted.mahalla, formatted.nearestPoint, formatted.addressNotes].filter(Boolean).join(" - "),
+          hallName: formatted.hallLocation,
+          eventType: formatted.eventType,
+          eventTime: formatted.eventTime,
+          color: formatted.themeColor,
+          bookingNumber: formatted.trackingCode ?? `KB-${booking.id}`,
+          salesRepresentative: formatted.primaryEmployeeName,
+          deliveryNotes: formatted.addressNotes,
+          discount: Number(pricing.discountAmount ?? 0),
+          additionalCharges: Number(pricing.additionalCharges ?? pricing.additionalAmount ?? 0),
+        },
+        items: components.length ? components : [{
+          id: booking.id,
+          productNameAr: formatted.koshaName || formatted.packageName || "حجز كوشة",
+          category: formatted.eventType || "مناسبات",
+          description: [formatted.packageName, formatted.serviceLevel, formatted.venueType].filter(Boolean).join(" · "),
+          selectedColor: formatted.themeColor,
+          quantity: 1,
+          price: Number(formatted.totalAmount ?? 0),
+        }],
+        qr,
+        createdAt: formatted.createdAt,
+      });
+    }
     if (type === "booking") {
       const booking = await db.query.serviceOrdersTable.findFirst({
         where: eq(serviceOrdersTable.id, id),
@@ -28600,6 +31664,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const service = await db.query.servicesTable.findFirst({
         where: eq(servicesTable.id, booking.serviceId),
       });
+      const [customer, creator] = await Promise.all([
+        db.query.customersTable.findFirst({ where: inArray(customersTable.phone, iraqiPhoneVariants(booking.phone)) }),
+        db.query.adminActivityLogsTable.findFirst({
+          where: and(eq(adminActivityLogsTable.entityType, "service_order"), eq(adminActivityLogsTable.entityId, booking.id)),
+          orderBy: [asc(adminActivityLogsTable.createdAt)],
+        }),
+      ]);
       const cf = (booking.customFields ?? {}) as Record<string, any>;
       const num = (v: any) => {
         const n = typeof v === "string" ? Number.parseFloat(v) : Number(v);
@@ -28626,8 +31697,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         trackingCode: booking.trackingCode,
         customerName: booking.customerName,
         customerPhone: booking.phone,
+        customerId: customer?.id ?? null,
+        customerEmail: customer?.email ?? null,
+        customerAddress: customer?.address ?? null,
+        customerCity: customer?.city ?? null,
         serviceId: booking.serviceId,
         serviceName: service?.nameAr ?? service?.name ?? "—",
+        serviceDescription: service?.descriptionAr ?? service?.description ?? null,
         serviceType: service?.type ?? null,
         eventDate: booking.eventDate ?? null,
         eventLocation: booking.eventLocation ?? null,
@@ -28639,6 +31715,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         paymentStatus: booking.paymentStatus ?? "unpaid",
         financiallyReversed: !!(booking as any).financiallyReversed,
         customFields: cf,
+        dueDate: booking.dueDate ?? null,
+        createdByName: creator?.userName || null,
         qr,
         createdAt: booking.createdAt.toISOString(),
       });
@@ -28650,6 +31728,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const items = await db.query.orderItemsTable.findMany({
       where: eq(orderItemsTable.orderId, order.id),
     });
+    const productIds = [...new Set(items.map((item) => Number(item.productId)).filter((value) => Number.isInteger(value) && value > 0))];
+    const [customer, products, creator] = await Promise.all([
+      order.customerId ? db.query.customersTable.findFirst({ where: eq(customersTable.id, order.customerId) }) : Promise.resolve(null),
+      productIds.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) }) : Promise.resolve([]),
+      db.query.adminActivityLogsTable.findFirst({
+        where: and(eq(adminActivityLogsTable.entityType, "order"), eq(adminActivityLogsTable.entityId, order.id)),
+        orderBy: [asc(adminActivityLogsTable.createdAt)],
+      }),
+    ]);
+    const productById = new Map(products.map((product) => [Number(product.id), product]));
     const qr = await ensureQrForEntity("order", order, req);
     return json({
       kind: "order",
@@ -28657,18 +31745,28 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       trackingCode: order.trackingCode,
       customerName: order.customerName,
       customerPhone: order.customerPhone,
+      customerId: order.customerId ?? customer?.id ?? null,
+      customerEmail: customer?.email ?? null,
+      customerAddress: customer?.address ?? null,
+      customerCity: customer?.city ?? null,
       governorate: order.governorate ?? null,
       area: order.area ?? null,
       address: order.address ?? null,
       paymentMethod: order.paymentMethod ?? "cod",
+      serviceType: order.serviceType ?? null,
       depositAmount: Number.parseFloat(order.depositAmount ?? "0"),
       remainingAmount: Number.parseFloat(order.remainingAmount ?? "0"),
       paymentStatus: order.paymentStatus ?? "unpaid",
       financiallyReversed: !!(order as any).financiallyReversed,
       notes: order.notes ?? null,
+      dueDate: order.dueDate ?? null,
+      couponCode: order.couponCode ?? null,
+      couponDiscountAmount: Number.parseFloat(order.couponDiscountAmount ?? "0"),
+      loyaltyDiscountAmount: Number.parseFloat(order.loyaltyDiscountAmount ?? "0"),
       deliveryFee: Number.parseFloat(order.deliveryFee),
       total: Number.parseFloat(order.total),
       status: order.status,
+      createdByName: creator?.userName || null,
       qr,
       createdAt: order.createdAt.toISOString(),
       items: items.map((i) => ({
@@ -28677,6 +31775,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         productNameAr: i.productNameAr,
         quantity: i.quantity,
         price: Number.parseFloat(i.price),
+        category: productById.get(Number(i.productId))?.category ?? order.serviceType ?? null,
+        description: productById.get(Number(i.productId))?.descriptionAr ?? productById.get(Number(i.productId))?.description ?? i.customization ?? null,
+        customization: i.customization ?? null,
         selectedColor: selectedColorName(i.selectedColorData, i.selectedColor),
         selectedColorData: selectedColorPayload(
           i.selectedColorData,
@@ -29105,7 +32206,9 @@ async function handleSalesInvoices(
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
     const qr = await ensureQrForEntity("invoice", inv, req);
     const lastPayments = await collectionLastPayments("sales_invoice", [id]);
-    return json({ ...inv, items, qr, lastPayment: lastPayments.get(id) ?? null });
+    const deliveryRow = await getInvoiceDelivery(id);
+    const delivery = deliveryRow ? formatDeliveryDetail(deliveryRow.detail, deliveryRow.order) : null;
+    return json({ ...inv, items, qr, delivery, lastPayment: lastPayments.get(id) ?? null });
   }
 
   if (method === "POST") {
@@ -29132,7 +32235,41 @@ async function handleSalesInvoices(
     if (couponDiscountAmount > discountAmount)
       discountAmount = couponDiscountAmount;
     const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
-    const total = Math.max(subtotal - discountAmount + taxAmount, 0);
+
+    // ── Province delivery — resolve the fee server-side, never trust the client ──
+    const deliveryPrepResult = await prepareInvoiceDelivery(b.delivery, subtotal);
+    if (!deliveryPrepResult.ok) return error(deliveryPrepResult.message, 400);
+    const deliveryPrep = deliveryPrepResult.data;
+    let deliveryFee = 0;
+    let deliveryCodFee = 0;
+    let deliveryOverridden = false;
+    let deliveryOverrideReason: string | null = null;
+    if (deliveryPrep) {
+      deliveryFee = deliveryPrep.resolvedFee;
+      deliveryCodFee = deliveryPrep.codFee;
+      // A manual fee is honored only for users with the override permission and
+      // a reason; otherwise the resolved fee stands. Overrides are audit-logged.
+      const requestedFee = deliveryPrep.input.deliveryFee;
+      if (
+        requestedFee !== undefined &&
+        Math.abs(requestedFee - deliveryPrep.resolvedFee) >= 0.01 &&
+        deliveryPrep.method === "province"
+      ) {
+        if (hasPermission(auth, "delivery_fee_override")) {
+          const reason = textFallback(deliveryPrep.input.feeOverrideReason);
+          if (!reason) return error("سبب تعديل أجور التوصيل مطلوب", 400);
+          deliveryFee = requestedFee;
+          deliveryOverridden = true;
+          deliveryOverrideReason = reason;
+        }
+        // Without the permission the resolved fee is kept silently.
+      }
+    }
+
+    const total = Math.max(
+      subtotal - discountAmount + taxAmount + deliveryFee + deliveryCodFee,
+      0,
+    );
     const paymentMethod = b.paymentMethod ?? "cash";
     const payment = paymentSummary(
       total,
@@ -29235,6 +32372,46 @@ async function handleSalesInvoices(
       });
     }
 
+    // ── Persist delivery detail + auto-create one delivery order (idempotent) ──
+    let deliveryResult: Awaited<ReturnType<typeof persistInvoiceDelivery>> | null = null;
+    if (deliveryPrep) {
+      try {
+        deliveryResult = await persistInvoiceDelivery({
+          salesInvoiceId: inv.id,
+          prep: deliveryPrep,
+          finalFee: deliveryFee,
+          overridden: deliveryOverridden,
+          overrideReason: deliveryOverrideReason,
+          // COD collects the unpaid balance on delivery.
+          codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
+          customerId: b.customerId ?? null,
+          actor: a,
+        });
+        if (deliveryResult.created) {
+          void logAdminActivity(req, "delivery_added", "sales_invoice", inv.id, {
+            method: deliveryPrep.method,
+            provinceName: deliveryPrep.province?.governorateAr ?? null,
+            deliveryFee,
+            deliveryNo: deliveryResult.deliveryOrder?.deliveryNo ?? null,
+            overridden: deliveryOverridden,
+            overrideReason: deliveryOverrideReason,
+          });
+          if (deliveryResult.deliveryOrder) {
+            void notifyTelegramDelivery({
+              event: "delivery_created",
+              title: "🚚 تم إنشاء طلب توصيل",
+              deliveryNo: deliveryResult.deliveryOrder.deliveryNo,
+              provinceName: deliveryPrep.province?.governorateAr ?? null,
+              receiverName: deliveryPrep.input.receiverName ?? null,
+              statusLabel: DELIVERY_STATUS_LABELS.pending_prep,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("delivery persistence failed", { invoiceId: inv.id, err });
+      }
+    }
+
     const final = await db.query.salesInvoicesTable.findFirst({
       where: eq(salesInvoicesTable.id, inv.id),
     });
@@ -29255,7 +32432,7 @@ async function handleSalesInvoices(
             department: "store",
             transactionType: "sales_invoice",
             description: `فاتورة مبيعات ${final.invoiceNo}`,
-            paymentMethod: (final.paymentMethod as any) || "cash",
+            paymentMethod: financialPaymentMethod(final.paymentMethod),
             customerId: final.customerId,
             customerName: final.customerName,
             customerPhone: final.customerPhone,
@@ -29290,13 +32467,17 @@ async function handleSalesInvoices(
         items: finalItems,
       });
     }
+    const deliveryPayload = deliveryResult
+      ? formatDeliveryDetail(deliveryResult.deliveryDetail, deliveryResult.deliveryOrder)
+      : null;
     return json(
       {
         ...final,
         qr,
         items: finalItems,
         financialTransaction,
-        invoice: final ? { ...final, qr } : final,
+        delivery: deliveryPayload,
+        invoice: final ? { ...final, qr, delivery: deliveryPayload } : final,
       },
       201,
     );
@@ -34570,6 +37751,135 @@ async function loadKoshaBookingDetail(bookingId: number) {
   };
 }
 
+function routedServiceExecutionFields(order: typeof serviceOrdersTable.$inferSelect) {
+  return { ...((order.customFields ?? {}) as Record<string, any>) };
+}
+
+async function formatRoutedKoshaServiceBookingForCrew(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = routedServiceExecutionFields(order);
+  const executionStage = fields.executionStage ?? "preparing";
+  return {
+    ...(await formatRoutedKoshaServiceBooking(order, service)),
+    executionStage,
+    assignedStaffId: fields.assignedStaffId ?? null,
+    bucket: crewBucket({ eventDate: order.eventDate, executionStage }, baghdadToday()),
+  };
+}
+
+async function loadRoutedKoshaServiceBookingDetail(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = routedServiceExecutionFields(order);
+  return {
+    booking: await formatRoutedKoshaServiceBookingForCrew(order, service),
+    setup: await koshaBookingSetup({
+      ...fields,
+      koshaId: fields.koshaId ?? null,
+      packageId: fields.packageId ?? null,
+      selectedAddons: fields.selectedAddons ?? [],
+      welcomeBoards: fields.welcomeBoards ?? [],
+      selectedAccessories: fields.selectedAccessories ?? [],
+    }),
+    timeline: Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : [],
+    media: Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : [],
+    delivery: fields.koshaPortalDelivery ?? null,
+    paymentRequests: [],
+  };
+}
+
+async function saveRoutedKoshaServiceExecution(
+  order: typeof serviceOrdersTable.$inferSelect,
+  fields: Record<string, any>,
+) {
+  const [updated] = await db
+    .update(serviceOrdersTable)
+    .set({ customFields: fields })
+    .where(eq(serviceOrdersTable.id, order.id))
+    .returning();
+  return updated;
+}
+
+async function persistRoutedKoshaServiceMedia(
+  orderId: number,
+  media: Array<{ url?: string; kind?: string }>,
+  purpose: string,
+  stage: string | null,
+) {
+  const saved: Array<Record<string, any>> = [];
+  for (const item of media) {
+    const raw = String(item?.url ?? "").trim();
+    if (!raw) continue;
+    const url = raw.startsWith("data:")
+      ? await persistDataUrlToStorage(raw, `service-orders/kosha-portal/${orderId}`)
+      : raw;
+    saved.push({
+      id: `service-${orderId}-${Date.now()}-${saved.length}`,
+      url,
+      kind: item?.kind === "video" || raw.startsWith("data:video") ? "video" : "image",
+      purpose,
+      stage,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return saved;
+}
+
+async function loadRoutedKoshaServiceOrders() {
+  const rows = await db.query.serviceOrdersTable.findMany({
+    where: and(
+      sql`${serviceOrdersTable.archivedAt} is null`,
+      sql`${serviceOrdersTable.status} <> 'cancelled'`,
+      // Candidates only, so the cap is spent on bookings that can actually route.
+      koshaRoutingCandidateSql(),
+    ),
+    orderBy: [desc(serviceOrdersTable.createdAt)],
+    limit: 500,
+  });
+  const services = rows.length
+    ? await db.query.servicesTable.findMany({
+        where: inArray(servicesTable.id, [...new Set(rows.map((row) => row.serviceId))]),
+      })
+    : [];
+  const servicesById = new Map(services.map((service) => [service.id, service]));
+  return rows
+    .filter((row) => isKoshaOrSoundBooking(row, servicesById.get(row.serviceId)))
+    .map((order) => ({ order, service: servicesById.get(order.serviceId) }));
+}
+
+
+let depreciationCategoryTablesPromise: Promise<void> | null = null;
+async function ensureDepreciationCategoryTables() {
+  if (!depreciationCategoryTablesPromise) depreciationCategoryTablesPromise = db.execute(sql`
+    create table if not exists asset_depreciation_categories (
+      id serial primary key, name varchar(160) not null, code varchar(50), asset_type varchar(80), description text,
+      method varchar(30) not null default 'straight_line', useful_life_years integer not null default 0, useful_life_months integer not null default 0,
+      annual_rate numeric(8,3) not null default 0, monthly_rate numeric(8,3) not null default 0, residual_value numeric(16,2) not null default 0,
+      per_booking numeric(16,2) not null default 0, per_hour numeric(16,2) not null default 0, max_uses integer not null default 0, maintenance_threshold integer not null default 0,
+      is_active boolean not null default true, is_archived boolean not null default false, notes text,
+      created_by integer, created_by_name text not null default '', updated_by integer, updated_by_name text not null default '', created_at timestamp not null default now(), updated_at timestamp not null default now()
+    );
+    create unique index if not exists asset_depreciation_categories_name_uq on asset_depreciation_categories (lower(name));
+    create unique index if not exists asset_depreciation_categories_code_uq on asset_depreciation_categories (lower(code)) where code is not null;
+    create table if not exists asset_depreciation_category_audit (
+      id serial primary key, category_id integer not null references asset_depreciation_categories(id), action varchar(30) not null,
+      previous_value jsonb, new_value jsonb, changed_by integer, changed_by_name text not null default '', effective_date date not null,
+      reason text, manager_note text, apply_mode varchar(20), selected_asset_ids jsonb not null default '[]'::jsonb, created_at timestamp not null default now()
+    );
+    create index if not exists asset_depreciation_category_audit_category_idx on asset_depreciation_category_audit(category_id, created_at desc);
+  `).then(() => undefined).catch((error) => { depreciationCategoryTablesPromise = null; throw error; });
+  await depreciationCategoryTablesPromise;
+}
+
+async function recordDepreciationCategoryAudit(categoryId: number, action: string, previousValue: unknown, newValue: unknown, user: AdminUser, effectiveDate: string, reason?: string | null, managerNote?: string | null, applyMode?: string, selectedAssetIds?: number[], req?: NextRequest) {
+  await db.execute(sql`insert into asset_depreciation_category_audit (category_id,action,previous_value,new_value,changed_by,changed_by_name,effective_date,reason,manager_note,apply_mode,selected_asset_ids) values (${categoryId},${action},${JSON.stringify(previousValue ?? null)}::jsonb,${JSON.stringify(newValue ?? null)}::jsonb,${user.id},${user.fullName || user.username},${effectiveDate},${reason ?? null},${managerNote ?? null},${applyMode ?? null},${JSON.stringify(selectedAssetIds ?? [])}::jsonb)`);
+  if (req) void logAdminActivity(req, `depreciation_category_${action}`, "depreciation_category", categoryId, { previousValue, newValue, effectiveDate, reason, managerNote, applyMode, selectedAssetIds });
+}
+
+
 async function handleStaffPortal(
   req: NextRequest,
   parts: string[],
@@ -34949,7 +38259,14 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
-    const active = rows.filter(
+    const routedOrders = await loadRoutedKoshaServiceOrders();
+    const crewRows = [
+      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
+      ...(await Promise.all(routedOrders.map(({ order, service }) =>
+        formatRoutedKoshaServiceBookingForCrew(order, service),
+      ))),
+    ];
+    const active = crewRows.filter(
       (r: any) => String(r.status ?? "") !== "cancelled",
     );
     const counts: Record<CrewBucket, number> = {
@@ -34967,16 +38284,7 @@ async function handleStaffPortal(
       if (b === "today") todayList.push(r);
       if (b === "tomorrow") tomorrowList.push(r);
     }
-    return json({
-      today,
-      counts,
-      todayBookings: await Promise.all(
-        todayList.map(formatKoshaBookingForCrew),
-      ),
-      tomorrowBookings: await Promise.all(
-        tomorrowList.map(formatKoshaBookingForCrew),
-      ),
-    });
+    return json({ today, counts, todayBookings: todayList, tomorrowBookings: tomorrowList });
   }
 
   // ── Bookings list ──
@@ -34991,12 +38299,18 @@ async function handleStaffPortal(
       orderBy: [desc(koshaBookingsTable.createdAt)],
       limit: 500,
     });
-    rows = rows.filter((r: any) => String(r.status ?? "") !== "cancelled");
+    const routedOrders = await loadRoutedKoshaServiceOrders();
+    let crewRows = [
+      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
+      ...(await Promise.all(routedOrders.map(({ order, service }) =>
+        formatRoutedKoshaServiceBookingForCrew(order, service),
+      ))),
+    ].filter((r: any) => String(r.status ?? "") !== "cancelled");
     if (bucket && bucket !== "all")
-      rows = rows.filter((r: any) => crewBucket(r, today) === bucket);
+      crewRows = crewRows.filter((r: any) => r.bucket === bucket);
     if (search) {
       const q = search.toLowerCase();
-      rows = rows.filter(
+      crewRows = crewRows.filter(
         (r: any) =>
           String(r.customerName ?? "")
             .toLowerCase()
@@ -35010,13 +38324,20 @@ async function handleStaffPortal(
             .includes(q),
       );
     }
-    return json(await Promise.all(rows.map(formatKoshaBookingForCrew)));
+    return json(crewRows);
   }
 
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
     const detail = await loadKoshaBookingDetail(id);
-    return detail ? json(detail) : error("الحجز غير موجود", 404);
+    if (detail) return json(detail);
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
+      where: eq(koshaBookingsTable.id, id),
+    });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    return routed
+      ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
+      : error("الحجز غير موجود", 404);
   }
 
   // ── Change execution stage ──
@@ -35032,11 +38353,11 @@ async function handleStaffPortal(
       return error("مرحلة غير صحيحة", 400);
     if (toStage === "delivered")
       return error("استخدم نموذج التسليم لإكمال هذه المرحلة", 400);
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
-    if (!booking) return error("الحجز غير موجود", 404);
-    const fromStage = (booking as any).executionStage ?? "preparing";
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (!nativeBooking && !routed) return error("الحجز غير موجود", 404);
     const media: Array<{ url?: string; kind?: string }> = Array.isArray(
       data?.media,
     )
@@ -35049,6 +38370,38 @@ async function handleStaffPortal(
         400,
       );
     }
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const fromStage = fields.executionStage ?? "preparing";
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        "execution",
+        toStage,
+      );
+      fields.executionStage = toStage;
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+      ];
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "stage",
+          staffName: auth.fullName || auth.username,
+          fromStage,
+          toStage,
+          note: data?.note ?? null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const updated = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking!;
+    const fromStage = (booking as any).executionStage ?? "preparing";
     const event = await addKoshaEvent({
       bookingId: id,
       staff: auth,
@@ -35087,9 +38440,39 @@ async function handleStaffPortal(
       ? data.media
       : [];
     if (media.length === 0) return error("لا توجد ملفات للرفع", 400);
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        String(data?.purpose ?? "execution"),
+        fields.executionStage ?? "preparing",
+      );
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+      ];
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "media",
+          staffName: auth.fullName || auth.username,
+          fromStage: null,
+          toStage: null,
+          note: data?.note ?? null,
+          meta: { count: savedMedia.length },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const updated = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking;
     if (!booking) return error("الحجز غير موجود", 404);
     const event = await addKoshaEvent({
       bookingId: id,
@@ -35132,9 +38515,70 @@ async function handleStaffPortal(
     if (!note || media.length === 0) {
       return error("التسليم يتطلب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
     }
-    const booking = await db.query.koshaBookingsTable.findFirst({
+    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
       where: eq(koshaBookingsTable.id, id),
     });
+    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (routed) {
+      const fields = routedServiceExecutionFields(routed.order);
+      const savedMedia = await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        media,
+        hasLoss || hasBreakage ? "breakage" : "delivery",
+        "delivered",
+      );
+      const signature = String(data?.signature ?? "").trim();
+      const signatures = signature ? await persistRoutedKoshaServiceMedia(
+        routed.order.id,
+        [{ url: signature, kind: "image" }],
+        "signature",
+        "delivered",
+      ) : [];
+      const total = money(routed.order.totalAmount) + compensation;
+      const remaining = money(routed.order.remainingAmount) + compensation;
+      const fromStage = fields.executionStage ?? "preparing";
+      fields.executionStage = "delivered";
+      fields.koshaPortalMedia = [
+        ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
+        ...savedMedia,
+        ...signatures,
+      ];
+      fields.koshaPortalDelivery = {
+        id: `service-${routed.order.id}-delivery`,
+        hasLoss,
+        hasBreakage,
+        note: note || null,
+        compensationAmount: compensation,
+        signatureUrl: signatures[0]?.url ?? null,
+        createdAt: new Date().toISOString(),
+      };
+      fields.koshaPortalTimeline = [
+        ...(Array.isArray(fields.koshaPortalTimeline) ? fields.koshaPortalTimeline : []),
+        {
+          id: `service-${routed.order.id}-${Date.now()}`,
+          type: "delivery",
+          staffName: auth.fullName || auth.username,
+          fromStage,
+          toStage: "delivered",
+          note,
+          meta: { hasLoss, hasBreakage, compensation },
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      const [updated] = await db
+        .update(serviceOrdersTable)
+        .set({
+          customFields: fields,
+          totalAmount: String(total),
+          remainingAmount: String(remaining),
+          paymentStatus: remaining <= 0 ? "paid" : Number(routed.order.depositAmount) > 0 ? "partial" : "unpaid",
+          status: "delivered",
+        })
+        .where(eq(serviceOrdersTable.id, routed.order.id))
+        .returning();
+      return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
+    }
+    const booking = nativeBooking;
     if (!booking) return error("الحجز غير موجود", 404);
 
     const event = await addKoshaEvent({

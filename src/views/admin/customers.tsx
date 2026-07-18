@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
+import ScanDocumentButton from "./scan-document-button";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { useToast } from "@/hooks/use-toast";
 
@@ -243,6 +244,12 @@ export default function CustomersPage() {
                   >
                     <MessageCircle className="h-4 w-4" /> واتساب
                   </a>
+                  <ScanDocumentButton
+                    ownerType="customer"
+                    ownerId={detail.id}
+                    ownerName={detail.fullName || detail.name || null}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-sm text-foreground hover:border-primary/40"
+                  />
                   <button
                     type="button"
                     onClick={() => exportCustomerCsv(detail)}

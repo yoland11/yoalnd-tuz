@@ -24,6 +24,7 @@ import {
   PenTool,
   Monitor,
   History,
+  ScanLine,
   Barcode,
   Printer,
   WalletCards,
@@ -40,6 +41,7 @@ import {
   CalendarDays,
   Inbox,
   Activity,
+  Trash2,
   QrCode,
   UserCheck,
   Bell,
@@ -55,9 +57,9 @@ import {
   GraduationCap,
   Ruler,
   Scissors,
-  ScanLine,
   Factory,
   Lock,
+  SlidersHorizontal,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -186,9 +188,15 @@ export const NAV: NavItem[] = [
     perm: "graduation",
   },
   {
+    href: "/admin/bookings",
+    label: "مركز الحجوزات",
+    icon: CalendarDays,
+    perm: "orders",
+  },
+  {
     href: "/admin/orders",
-    label: "الطلبات والحجوزات",
-    icon: ShoppingBag,
+    label: "إدارة الطلبات",
+    icon: Receipt,
     perm: "orders",
   },
   {
@@ -346,6 +354,13 @@ export const NAV: NavItem[] = [
     perm: "hr",
   },
   {
+    href: "/admin/employee-salaries",
+    label: "رواتب الموظفين",
+    icon: WalletCards,
+    perm: "employee_salaries_view",
+    anyPerm: ["employee_salaries_view", "payroll_view", "hr"],
+  },
+  {
     href: "/admin/hr?focus=bonuses",
     label: "المكافآت",
     icon: Trophy,
@@ -419,6 +434,7 @@ export const NAV: NavItem[] = [
     perm: "gallery",
   },
   { href: "/admin/delivery", label: "التوصيل", icon: Truck, perm: "delivery" },
+  { href: "/admin/delivery-orders", label: "طلبات التوصيل", icon: Truck, perm: "delivery" },
   {
     href: "/admin/customers",
     label: "العملاء",
@@ -526,6 +542,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets",
+    label: "الأصول",
+    icon: Package,
+    perm: "products",
+  },
+  {
     href: "/admin/assets/new",
     label: "إضافة أصل جديد",
     icon: PackageCheck,
@@ -544,10 +566,16 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
-    href: "/admin/assets",
+    href: "/admin/assets/depreciation",
     label: "إهلاك الأصول",
     icon: Package,
     perm: "products",
+  },
+  {
+    href: "/admin/assets/depreciation-categories",
+    label: "فئات الإهلاك",
+    icon: SlidersHorizontal,
+    perm: "depreciation_categories_view",
   },
   {
     href: "/admin/asset-movements",
@@ -572,6 +600,30 @@ export const NAV: NavItem[] = [
     label: "الواتساب",
     icon: MessageCircle,
     perm: "whatsapp",
+  },
+  {
+    href: "/admin/document-scanner",
+    label: "مسح المستمسكات",
+    icon: ScanLine,
+    perm: "doc_scanner_view",
+  },
+  {
+    href: "/admin/document-library",
+    label: "المستمسكات المحفوظة",
+    icon: FileText,
+    perm: "doc_scanner_view_saved",
+  },
+  {
+    href: "/admin/system-health",
+    label: "صحة النظام",
+    icon: Activity,
+    perm: "system_health",
+  },
+  {
+    href: "/admin/recycle-bin",
+    label: "سلة المحذوفات",
+    icon: Trash2,
+    perm: "recycle_bin_view",
   },
   {
     href: "/admin/backup",
@@ -677,6 +729,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "إدارة المتجر",
     icon: ShoppingBag,
     items: [
+      navItem("/admin/bookings"),
       navItem("/admin/orders"),
       navItem("/admin/calendar"),
       navItem("/admin/qr-orders"),
@@ -722,6 +775,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/asset-gate"),
       navItem("/admin/asset-reports"),
       navItem("/admin/assets"),
+      navItem("/admin/assets/depreciation-categories"),
       navItem("/admin/asset-movements"),
       navItem("/admin/maintenance-scheduler"),
     ],
@@ -734,6 +788,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/hr"),
       navItem("/admin/staff"),
       navItem("/admin/attendance"),
+      navItem("/admin/employee-salaries"),
       navItem("/admin/hr?tab=payroll"),
       navItem("/admin/hr?focus=bonuses"),
       navItem("/admin/hr?focus=deductions"),
@@ -803,6 +858,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "النظام",
     icon: Settings,
     items: [
+      navItem("/admin/document-scanner"),
       navItem("/admin/backup"),
       navItem("/admin/disaster-recovery"),
       navItem("/admin/invoice-designer"),

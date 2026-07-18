@@ -8,10 +8,13 @@ export type PublicSettings = {
   address: string;
   city: string;
   map_url: string;
+  website: string;
+  email: string;
   social_links: {
     instagram: string;
     facebook: string;
     whatsapp: string;
+    tiktok: string;
   };
   logo_url: string;
   logo_metadata?: Record<string, unknown>;
@@ -45,7 +48,9 @@ export const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
   address: "طوزخورماتو، العراق",
   city: "طوزخورماتو",
   map_url: "",
-  social_links: { instagram: "", facebook: "", whatsapp: "" },
+  website: "",
+  email: "",
+  social_links: { instagram: "", facebook: "", whatsapp: "", tiktok: "" },
   logo_url: "",
   logo_metadata: {},
   appearance_settings: DEFAULT_APPEARANCE_SETTINGS,

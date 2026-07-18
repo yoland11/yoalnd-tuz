@@ -13,6 +13,14 @@ export const customerAddressesTable = pgTable("customer_addresses", {
   landmark: text("landmark").notNull().default(""),
   notes: text("notes").notNull().default(""),
   isDefault: boolean("is_default").notNull().default(false),
+  // ── Province delivery fields ──
+  // provinceId points at delivery_zones; the FK is declared in SQL rather than
+  // here to keep this module free of a delivery -> customer-profile cycle.
+  provinceId: integer("province_id"),
+  district: text("district").notNull().default(""),
+  area: text("area").notNull().default(""),
+  altPhone: varchar("alt_phone", { length: 20 }),
+  mapsUrl: text("maps_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

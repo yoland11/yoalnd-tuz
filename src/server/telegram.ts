@@ -734,6 +734,42 @@ export async function notifyTelegramInvoice(
   }
 }
 
+/**
+ * Delivery lifecycle notification. Best-effort — swallows its own errors so a
+ * Telegram outage can never block saving a delivery or a COD settlement.
+ */
+export async function notifyTelegramDelivery(input: {
+  event: string;
+  title: string;
+  deliveryNo: string;
+  invoiceNo?: string | null;
+  provinceName?: string | null;
+  receiverName?: string | null;
+  statusLabel?: string | null;
+  codAmount?: number | null;
+  reason?: string | null;
+}): Promise<void> {
+  try {
+    const lines = [
+      line("رقم التوصيل", input.deliveryNo),
+      input.invoiceNo ? line("الفاتورة", input.invoiceNo) : "",
+      input.provinceName ? line("المحافظة", input.provinceName) : "",
+      input.receiverName ? line("المستلم", input.receiverName) : "",
+      input.statusLabel ? line("الحالة", input.statusLabel) : "",
+      input.codAmount ? line("مبلغ التحصيل", amount(input.codAmount)) : "",
+      input.reason ? line("السبب", input.reason) : "",
+    ].filter(Boolean);
+    await sendTelegramMessage(
+      messageBlock(input.title, lines, adminLink("/admin/delivery-orders")),
+    );
+  } catch (error) {
+    console.warn("telegram delivery notification failed", {
+      event: input.event,
+      message: safeError(error),
+    });
+  }
+}
+
 export async function notifyTelegramOrder(
   order: TelegramOrderInput,
 ): Promise<void> {

@@ -15,6 +15,7 @@ import AdminLogin from "./login";
 const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
+const BookingCenterPage = lazy(() => import("./booking-center"));
 const InvoicePage = lazy(() => import("./invoice"));
 const CalendarPage = lazy(() => import("./calendar"));
 const QrOrdersPage = lazy(() => import("./qr-orders"));
@@ -35,6 +36,8 @@ const PrintLabelsPage = lazy(() => import("./print-labels"));
 const AssetNewPage = lazy(() => import("./asset-new"));
 const AssetGatePage = lazy(() => import("./asset-gate"));
 const AssetReportsPage = lazy(() => import("./asset-reports"));
+const DepreciationCategoriesPage = lazy(() => import("./depreciation-categories"));
+const DepreciationPage = lazy(() => import("./depreciation"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const ProductionPage = lazy(() => import("./production"));
@@ -59,11 +62,17 @@ const DailyCashReconciliationPage = lazy(() =>
 const CouponsPage = lazy(() => import("./coupons"));
 const GalleryPage = lazy(() => import("./gallery"));
 const DeliveryPage = lazy(() => import("./delivery"));
+const DeliveryOrdersPage = lazy(() => import("./delivery-orders"));
+const SystemHealthPage = lazy(() => import("./system-health"));
+const RecycleBinPage = lazy(() => import("./recycle-bin"));
+const DocumentScannerPage = lazy(() => import("./document-scanner"));
+const DocumentLibraryPage = lazy(() => import("./document-library"));
 const CustomersPage = lazy(() => import("./customers"));
 const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
 const StaffPage = lazy(() => import("./staff"));
 const EmployeeAdvancesPage = lazy(() => import("./employee-advances"));
+const EmployeeSalariesPage = lazy(() => import("./employee-salaries"));
 const PayrollHistoryPage = lazy(() => import("./payroll-history"));
 const ActivityLogPage = lazy(() => import("./activity-log"));
 const TasksPage = lazy(() => import("./tasks"));
@@ -281,6 +290,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <OrdersPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/bookings/:source/:id">
+            {() => (
+              <Guard me={me} perm="orders">
+                <BookingCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/bookings">
+            {() => (
+              <Guard me={me} perm="orders">
+                <BookingCenterPage />
               </Guard>
             )}
           </Route>
@@ -612,6 +635,41 @@ export default function Admin() {
               </Guard>
             )}
           </Route>
+          <Route path="/admin/delivery-orders">
+            {() => (
+              <Guard me={me} perm="delivery">
+                <DeliveryOrdersPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/system-health">
+            {() => (
+              <Guard me={me} perm="system_health">
+                <SystemHealthPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/recycle-bin">
+            {() => (
+              <Guard me={me} perm="recycle_bin_view">
+                <RecycleBinPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/document-scanner">
+            {() => (
+              <Guard me={me} perm="doc_scanner_view">
+                <DocumentScannerPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/document-library">
+            {() => (
+              <Guard me={me} perm="doc_scanner_view_saved">
+                <DocumentLibraryPage />
+              </Guard>
+            )}
+          </Route>
           <Route path="/admin/customers">
             {() => (
               <Guard me={me} perm="customers">
@@ -645,6 +703,9 @@ export default function Admin() {
           </Route>
           <Route path="/admin/hr">
             {() => (<Guard me={me} perm="hr"><HrPage /></Guard>)}
+          </Route>
+          <Route path="/admin/employee-salaries">
+            {() => (<Guard me={me} anyPerm={["employee_salaries_view", "payroll_view", "hr"]}><EmployeeSalariesPage /></Guard>)}
           </Route>
           <Route path="/admin/payroll-history">
             {() => (<Guard me={me} perm="hr"><PayrollHistoryPage /></Guard>)}
@@ -760,6 +821,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <AssetNewPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/assets/depreciation-categories">
+            {() => (
+              <Guard me={me} anyPerm={["products", "depreciation_categories_view"]}>
+                <DepreciationCategoriesPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/assets/depreciation">
+            {() => (
+              <Guard me={me} anyPerm={["products", "depreciation_view"]}>
+                <DepreciationPage />
               </Guard>
             )}
           </Route>

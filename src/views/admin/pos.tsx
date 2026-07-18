@@ -13,6 +13,8 @@ import { adminFetch, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
 import { formatMoney } from "@/lib/money";
+import DeliverySection, { type DeliveryOutput } from "./delivery-section";
+import { printDeliveryLabel } from "./delivery-label";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +51,7 @@ type PrinterSettings = {
   copies: number;
   showLogo: boolean;
 };
-type Totals = { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number };
+type Totals = { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number; deliveryFee?: number; codFee?: number };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -243,6 +245,41 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
 
 // ─── Print Receipt Helper ─────────────────────────────────────────────────────
 
+/**
+ * Delivery details block for the A4 sheet. Rendered only for a province
+ * delivery, appended after the totals so the existing layout is untouched.
+ */
+function deliveryBlockHtml(delivery: any, esc: (v: unknown) => string): string {
+  if (!delivery || delivery.method !== "province") return "";
+  const row = (label: string, value: unknown) =>
+    value ? `<tr><td style="width:32%">${esc(label)}</td><td>${esc(value)}</td></tr>` : "";
+  const flags = [
+    delivery.isFragile ? "قابل للكسر" : "",
+    delivery.needsRefrigeration ? "يحتاج تبريد" : "",
+  ].filter(Boolean).join(" · ");
+  return `
+  <hr class="divider" />
+  <div class="meta" style="font-weight:700;margin-bottom:4px">تفاصيل التوصيل</div>
+  <table>
+    ${row("رقم التوصيل", delivery.order?.deliveryNo)}
+    ${row("المحافظة", delivery.provinceName)}
+    ${row("القضاء / المدينة", delivery.city)}
+    ${row("الناحية", delivery.district)}
+    ${row("الحي / المنطقة", delivery.area)}
+    ${row("العنوان التفصيلي", delivery.fullAddress)}
+    ${row("أقرب نقطة دالة", delivery.landmark)}
+    ${row("اسم المستلم", delivery.receiverName)}
+    ${row("هاتف المستلم", delivery.receiverPhone)}
+    ${row("هاتف بديل", delivery.receiverAltPhone)}
+    ${row("شركة التوصيل", delivery.deliveryCompany)}
+    ${row("نوع التوصيل", delivery.deliveryTypeLabel)}
+    ${row("أجور التوصيل", formatCurrency(delivery.deliveryFee ?? 0))}
+    ${delivery.codEnabled ? row("مبلغ التحصيل عند الاستلام", formatCurrency(delivery.codAmount ?? 0)) : ""}
+    ${row("تاريخ الوصول المتوقع", delivery.expectedArrivalDate)}
+    ${flags ? row("ملاحظات الشحنة", flags) : ""}
+  </table>`;
+}
+
 function openPrintWindow(
   cart: CartItem[],
   form: ReturnType<typeof newForm>,
@@ -250,7 +287,7 @@ function openPrintWindow(
   invoiceNo: string,
   size: PrintSize,
   settings: any,
-  options: { showLogo?: boolean; qrDataUrl?: string } = {},
+  options: { showLogo?: boolean; qrDataUrl?: string; delivery?: any } = {},
 ) {
   const logo = options.showLogo === false ? "" : logoSrc(settings);
   const companyName = settings?.site_name ?? "مجموعة علي جان";
@@ -292,6 +329,8 @@ function openPrintWindow(
         <div class="row"><span>المجموع الفرعي</span><span class="num">${formatCurrency(totals.subtotal)}</span></div>
         ${totals.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${formatCurrency(totals.discount)}</span></div>` : ""}
         ${totals.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${formatCurrency(totals.tax)}</span></div>` : ""}
+        ${(totals.deliveryFee ?? 0) > 0 ? `<div class="row"><span>التوصيل</span><span class="num">${formatCurrency(totals.deliveryFee ?? 0)}</span></div>` : ""}
+        ${(totals.codFee ?? 0) > 0 ? `<div class="row"><span>رسوم الدفع عند الاستلام</span><span class="num">${formatCurrency(totals.codFee ?? 0)}</span></div>` : ""}
         <div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(totals.grand)}</span></div>
         <div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(totals.paid)}</span></div>
         <div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(totals.remaining)}</span></div>
@@ -352,10 +391,13 @@ function openPrintWindow(
     <tr><td>المجموع الفرعي</td><td>${formatCurrency(totals.subtotal)}</td></tr>
     ${totals.discount > 0 ? `<tr><td>الخصم</td><td>- ${formatCurrency(totals.discount)}</td></tr>` : ""}
     ${totals.tax > 0 ? `<tr><td>الضريبة</td><td>${formatCurrency(totals.tax)}</td></tr>` : ""}
+    ${(totals.deliveryFee ?? 0) > 0 ? `<tr><td>التوصيل</td><td>${formatCurrency(totals.deliveryFee ?? 0)}</td></tr>` : ""}
+    ${(totals.codFee ?? 0) > 0 ? `<tr><td>رسوم الدفع عند الاستلام</td><td>${formatCurrency(totals.codFee ?? 0)}</td></tr>` : ""}
     <tr class="grand"><td>الإجمالي الكلي</td><td>${formatCurrency(totals.grand)}</td></tr>
     <tr><td>المدفوع</td><td>${formatCurrency(totals.paid)}</td></tr>
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${formatCurrency(totals.remaining)}</td></tr>` : ""}
   </table>
+  ${deliveryBlockHtml(options.delivery, esc)}
   ${form.notes ? `<hr class="divider" /><div class="meta">ملاحظات: ${esc(form.notes)}</div>` : ""}
   ${options.qrDataUrl ? `<div class="qr"><img class="qr-code" src="${options.qrDataUrl}" alt="QR" /><div class="meta">امسح الرمز لفتح الفاتورة</div></div>` : ""}
   <div class="footer">شكراً لتعاملكم معنا</div>
@@ -391,6 +433,12 @@ export default function POSPage() {
     try { return JSON.parse(localStorage.getItem("ajn_held_invoices") || "[]"); } catch { return []; }
   });
   const [showHeld, setShowHeld] = useState(false);
+
+  // Delivery (province-based) — selected customer id + delivery output.
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryOutput>({
+    method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null,
+  });
 
   // Numpad
   const [numpadField, setNumpadField] = useState<{ idx: number; field: "quantity" | "unitPrice" | "discount" | "paidAmount" } | null>(null);
@@ -452,11 +500,15 @@ export default function POSPage() {
   const totalDisc  = itemDisc + extraDisc + couponDisc;
   const taxPct     = parseFloat(form.taxPct || "0");
   const taxAmount  = +((subtotal - totalDisc) * taxPct / 100).toFixed(2);
-  const grandTotal = +(subtotal - totalDisc + taxAmount).toFixed(2);
-  const paidAmt    = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
+  const deliveryFee = delivery.deliveryFee || 0;
+  const codFee      = delivery.codFee || 0;
+  const grandTotal = +(subtotal - totalDisc + taxAmount + deliveryFee + codFee).toFixed(2);
+  // Cash-on-delivery is collected on delivery, so the sale is not auto-paid.
+  const paidAmt    = delivery.codEnabled ? parseFloat(form.paidAmount || "0")
+                     : isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining  = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
-  const totals     = { subtotal, discount: totalDisc, tax: taxAmount, grand: grandTotal, paid: paidAmt, remaining };
+  const totals     = { subtotal, discount: totalDisc, tax: taxAmount, grand: grandTotal, paid: paidAmt, remaining, deliveryFee, codFee };
 
   // ── Cart operations ────────────────────────────────────────────────────────
   const addToCart = useCallback((p: Product) => {
@@ -585,6 +637,7 @@ export default function POSPage() {
   // ── Customer select ────────────────────────────────────────────────────────
   async function handleSelectCustomer(c: Customer) {
     setForm(f => ({ ...f, customerName: c.name, customerPhone: c.phone ?? "" }));
+    setSelectedCustomerId(c.id);
     try {
       const res = await adminFetch<{ data: any[]; total: number }>(
         `/admin/sales-invoices?limit=200`
@@ -600,27 +653,35 @@ export default function POSPage() {
   // ── Save ───────────────────────────────────────────────────────────────────
   async function saveInvoice(andPrint?: PrintSize) {
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
+    // Block completion when province delivery is chosen but incomplete.
+    if (delivery.method === "province" && !delivery.valid) {
+      toast({ title: "بيانات التوصيل ناقصة", description: "أكمل تفاصيل توصيل المحافظة", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
         date: form.date,
         customerName: form.customerName, customerPhone: form.customerPhone,
+        customerId: selectedCustomerId ?? undefined,
         subtotal, discountAmount: totalDisc, taxAmount, total: grandTotal,
         couponCode: form.couponCode || undefined,
         paidAmount: paidAmt, remainingAmount: remaining,
         paymentMethod: form.paymentMethod, paymentStatus: autoStatus,
         isInternal: 0, notes: form.notes,
+        delivery: delivery.payload ?? undefined,
         items: cart.map(i => ({
           productId: i.productId, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),
       };
-      const res = await adminFetch<{ invoice: { invoiceNo: string; qr?: { dataUrl?: string } } }>("/admin/sales-invoices", {
+      const res = await adminFetch<{ invoice: { invoiceNo: string; qr?: { dataUrl?: string } }; delivery?: any }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
       const invoiceNo = res?.invoice?.invoiceNo;
       const qrDataUrl = res?.invoice?.qr?.dataUrl;
+      const savedDelivery = res?.delivery ?? null;
       if (!invoiceNo) throw new Error("تم حفظ الفاتورة لكن لم يرجع رقمها من الخادم");
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
@@ -638,14 +699,25 @@ export default function POSPage() {
         }
         const copies = andPrint ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 5);
         for (let index = 0; index < copies; index++) {
-          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl });
+          openPrintWindow(cart, form, totals, invoiceNo, printSize, settings, { showLogo: printerSettings?.showLogo !== false, qrDataUrl, delivery: savedDelivery });
         }
+      }
+      // Print the A6 delivery label for a province delivery order.
+      if (savedDelivery?.order?.id) {
+        printDeliveryLabel({
+          delivery: savedDelivery,
+          invoiceNo,
+          company: settings?.site_name ?? "AJN",
+          qrDataUrl,
+        });
       }
       setLastInvoiceNo(invoiceNo);
       setLastSavedCart([...cart]);
       setLastSavedForm({ ...form });
       setLastSavedTotals({ ...totals });
       setCart([]); setForm(newForm()); setCustomerStats(null); setSearchQ("");
+      setSelectedCustomerId(null);
+      setDelivery({ method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null });
       // Return focus to the barcode field so the next sale can be scanned/typed with no mouse.
       requestAnimationFrame(() => { barcodeRef.current?.focus(); barcodeRef.current?.select(); });
     } catch (e: any) {
@@ -995,6 +1067,9 @@ export default function POSPage() {
             </div>
           </div>
 
+          {/* Delivery (province-based) */}
+          <DeliverySection subtotal={subtotal} customerId={selectedCustomerId} onChange={setDelivery} />
+
           {/* Totals */}
           <div className="bg-card rounded-xl border border-border/30 p-3 space-y-1.5">
             <div className="flex justify-between text-sm text-muted-foreground">
@@ -1017,6 +1092,24 @@ export default function POSPage() {
               <div className="flex justify-between text-sm text-muted-foreground">
                 <span>ضريبة {taxPct}%</span>
                 <span>{formatCurrency(taxAmount)}</span>
+              </div>
+            )}
+            {deliveryFee > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>أجور التوصيل</span>
+                <span>{formatCurrency(deliveryFee)}</span>
+              </div>
+            )}
+            {codFee > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>أجور الدفع عند الاستلام</span>
+                <span>{formatCurrency(codFee)}</span>
+              </div>
+            )}
+            {delivery.codEnabled && (
+              <div className="flex justify-between text-xs text-status-warning">
+                <span>تحصيل عند الاستلام</span>
+                <span>{formatCurrency(remaining)}</span>
               </div>
             )}
             {/* Extra discount + tax inputs */}
