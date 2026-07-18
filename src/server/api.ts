@@ -4399,6 +4399,171 @@ async function formatKoshaBooking(row: any) {
   };
 }
 
+/**
+ * The booking centre stores service bookings in service_orders, while the
+ * legacy Kosha portal reads the kosha-bookings endpoint.  This adapter keeps
+ * a qualifying service order as the single source of truth and only projects
+ * it into the existing endpoint response.  No Kosha booking is created.
+ */
+function isKoshaOrSoundBooking(
+  order: { customFields?: unknown },
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = (order.customFields ?? {}) as Record<string, any>;
+  const selected = [
+    service?.type,
+    service?.name,
+    service?.nameAr,
+    fields.serviceType,
+    fields.department,
+    ...(Array.isArray(fields.bookingCenterServices) ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key ?? item?.name) : []),
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).trim().toLowerCase());
+  return selected.some((value) =>
+    /(^|[\s_\-/])(kosha|sound|audio)([\s_\-/]|$)|كوش|صوت/.test(value),
+  );
+}
+
+async function formatRoutedKoshaServiceBooking(
+  order: typeof serviceOrdersTable.$inferSelect,
+  service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
+) {
+  const fields = (order.customFields ?? {}) as Record<string, any>;
+  return formatKoshaBooking({
+    ...order,
+    koshaId: fields.koshaId ?? null,
+    packageId: fields.packageId ?? null,
+    packageName: fields.packageName ?? service?.nameAr ?? service?.name ?? null,
+    packagePrice: fields.packagePrice ?? null,
+    customerId: fields.customerId ?? null,
+    eventTime: fields.eventTime ?? "",
+    eventType: fields.eventType ?? service?.nameAr ?? service?.name ?? "",
+    serviceLevel: fields.serviceLevel ?? "",
+    venueType: fields.venueType ?? "",
+    themeColor: fields.themeColor ?? "",
+    province: fields.province ?? "",
+    area: fields.area ?? "",
+    mahalla: fields.mahalla ?? "",
+    nearestPoint: fields.nearestPoint ?? "",
+    addressNotes: fields.addressNotes ?? "",
+    brideName: fields.brideName ?? "",
+    groomName: fields.groomName ?? "",
+    bridePhone: fields.bridePhone ?? "",
+    groomPhone: fields.groomPhone ?? "",
+    alternatePhone: fields.alternatePhone ?? "",
+    cityArea: fields.cityArea ?? "",
+    hallLocation: fields.hallLocation ?? order.eventLocation ?? "",
+    selectedAddons: fields.selectedAddons ?? [],
+    welcomeBoards: fields.welcomeBoards ?? [],
+    selectedAccessories: fields.selectedAccessories ?? [],
+    venueImages: fields.venueImages ?? [],
+    bookingDetails: { ...fields, routedBookingSource: "service_order" },
+    trackingStatus: fields.trackingStatus ?? "booked",
+    paidAmount: order.depositAmount,
+    internalNotes: order.internalNotes ?? "",
+    updatedAt: order.createdAt,
+  });
+}
+
+async function findRoutedKoshaServiceBooking(id: number) {
+  const order = await db.query.serviceOrdersTable.findFirst({
+    where: and(
+      eq(serviceOrdersTable.id, id),
+      sql`${serviceOrdersTable.archivedAt} is null`,
+    ),
+  });
+  if (!order) return null;
+  const service = await db.query.servicesTable.findFirst({
+    where: eq(servicesTable.id, order.serviceId),
+  });
+  return isKoshaOrSoundBooking(order, service) ? { order, service } : null;
+}
+
+async function updateRoutedKoshaServiceBooking(
+  req: NextRequest,
+  auth: any,
+  order: typeof serviceOrdersTable.$inferSelect,
+  service: { type?: string | null; name?: string | null; nameAr?: string | null } | null | undefined,
+) {
+  const parsed = KoshaBookingUpdateSchema.safeParse(await body(req));
+  if (!parsed.success)
+    return validationError("admin.kosha-bookings.update", parsed);
+
+  const data = parsed.data as Record<string, any>;
+  const fields: Record<string, any> = { ...((order.customFields ?? {}) as Record<string, any>) };
+  const update: Partial<typeof serviceOrdersTable.$inferInsert> = {
+    customFields: fields,
+  };
+  for (const key of [
+    "koshaId", "brideName", "groomName", "bridePhone", "groomPhone",
+    "alternatePhone", "eventTime", "eventType", "serviceLevel", "venueType",
+    "themeColor", "province", "area", "mahalla", "nearestPoint",
+    "addressNotes", "cityArea", "selectedAddons", "welcomeBoards",
+    "selectedAccessories", "trackingStatus", "dueDate", "pricing",
+    "paymentMethod",
+  ]) {
+    if (data[key] !== undefined) fields[key] = data[key];
+  }
+  if (data.customerName !== undefined)
+    update.customerName = textFallback(data.customerName, order.customerName);
+  if (data.phone !== undefined) {
+    const phone = normalizeIraqiPhone(data.phone);
+    if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    update.phone = phone;
+  }
+  if (data.eventDate !== undefined) update.eventDate = nullableText(data.eventDate);
+  if (data.hallLocation !== undefined) {
+    fields.hallLocation = nullableText(data.hallLocation);
+    update.eventLocation = nullableText(data.hallLocation);
+  }
+  if (data.notes !== undefined) update.notes = nullableText(data.notes);
+  if (data.internalNotes !== undefined) update.internalNotes = nullableText(data.internalNotes);
+  if (data.status !== undefined) update.status = data.status;
+
+  if (
+    data.totalAmount !== undefined ||
+    data.paidAmount !== undefined ||
+    data.paymentStatus !== undefined ||
+    data.paymentMethod !== undefined ||
+    data.pricing !== undefined
+  ) {
+    const total = money(data.totalAmount ?? data.pricing?.totalAmount ?? order.totalAmount);
+    const paid = money(data.paidAmount ?? data.pricing?.paidAmount ?? order.depositAmount);
+    const payment = paymentSummary(total, paid, data.paymentStatus, data.paymentMethod ?? fields.paymentMethod);
+    update.totalAmount = String(total);
+    update.depositAmount = String(payment.deposit);
+    update.remainingAmount = String(payment.remaining);
+    update.paymentStatus = payment.status;
+    fields.pricing = {
+      ...(fields.pricing ?? {}),
+      ...(data.pricing ?? {}),
+      totalAmount: total,
+      paidAmount: payment.deposit,
+      remainingAmount: payment.remaining,
+      paymentMethod: data.paymentMethod ?? fields.paymentMethod ?? "cash",
+    };
+  }
+
+  const [row] = await db
+    .update(serviceOrdersTable)
+    .set(update)
+    .where(eq(serviceOrdersTable.id, order.id))
+    .returning();
+  if (update.status !== undefined && row.status !== order.status) {
+    await syncAutomaticTasksForEntityStatus({
+      entityType: "service_order",
+      entityId: row.id,
+      status: row.status,
+      actor: erpActorFromAdmin(auth),
+    });
+  }
+  void logAdminActivity(req, "service_order_routed_from_kosha_portal", "service_order", row.id, {
+    fields: Object.keys(data),
+  });
+  return json(await formatRoutedKoshaServiceBooking(row, service));
+}
+
 function productSharedStockId(row: any): number | null {
   return numberId(row?.sharedStockProductId ?? row?.shared_stock_product_id);
 }
@@ -15211,7 +15376,40 @@ async function handleAdminKoshas(
         orderBy: (b, { desc }) => [desc(b.createdAt)],
         limit: 150,
       });
-      const formatted = await Promise.all(rows.map((row) => formatKoshaBooking(row)));
+      const serviceRows = await db.query.serviceOrdersTable.findMany({
+        where: and(
+          sql`${serviceOrdersTable.archivedAt} is null`,
+          status ? eq(serviceOrdersTable.status, status) : undefined,
+          search
+            ? or(
+                ilike(serviceOrdersTable.customerName, `%${search}%`),
+                ilike(serviceOrdersTable.phone, `%${search}%`),
+                ilike(serviceOrdersTable.eventLocation, `%${search}%`),
+              )
+            : undefined,
+        ),
+        orderBy: (b, { desc }) => [desc(b.createdAt)],
+        limit: 150,
+      });
+      const services = serviceRows.length
+        ? await db.query.servicesTable.findMany({
+            where: inArray(servicesTable.id, [...new Set(serviceRows.map((row) => row.serviceId))]),
+          })
+        : [];
+      const servicesById = new Map(services.map((service) => [service.id, service]));
+      const routedServiceRows = serviceRows.filter((row) =>
+        isKoshaOrSoundBooking(row, servicesById.get(row.serviceId)),
+      );
+      const formatted = await Promise.all([
+        ...rows.map((row) => formatKoshaBooking(row)),
+        ...routedServiceRows.map((row) =>
+          formatRoutedKoshaServiceBooking(row, servicesById.get(row.serviceId)),
+        ),
+      ]).then((items) =>
+        items.sort((left, right) =>
+          String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")),
+        ),
+      );
       const latestPayments = rows.length
         ? await db.query.financialTransactionsTable.findMany({
             where: and(
@@ -15313,7 +15511,40 @@ async function handleAdminKoshas(
       const existing = await db.query.koshaBookingsTable.findFirst({
         where: eq(koshaBookingsTable.id, id),
       });
-      if (!existing) return error("الحجز غير موجود", 404);
+      if (!existing) {
+        const routed = await findRoutedKoshaServiceBooking(id);
+        if (!routed) return error("الحجز غير موجود", 404);
+
+        if (!parts[3] && method === "GET") {
+          const qr = await ensureQrForEntity("service_order", routed.order, req).catch(() => null);
+          return json({ ...(await formatRoutedKoshaServiceBooking(routed.order, routed.service)), qr });
+        }
+        if (!parts[3] && method === "PATCH")
+          return updateRoutedKoshaServiceBooking(req, auth, routed.order, routed.service);
+        if (parts[3] === "finance" && method === "GET") {
+          const fields = (routed.order.customFields ?? {}) as Record<string, any>;
+          return json({
+            bookingId: routed.order.id,
+            bookingNo: routed.order.trackingCode ?? `AJN-${routed.order.id}`,
+            customerId: fields.customerId ?? null,
+            totalAmount: money(routed.order.totalAmount),
+            paidAmount: money(routed.order.depositAmount),
+            approvedCollectedAmount: 0,
+            pendingCollectionAmount: 0,
+            refundedAmount: 0,
+            discount: money(fields.pricing?.discountAmount),
+            additionalCharges: 0,
+            remainingAmount: money(routed.order.remainingAmount),
+            paymentStatus: routed.order.paymentStatus,
+            latestPaymentDate: null,
+            payments: [],
+            collections: [],
+            cashboxMovements: [],
+            journalEntries: [],
+          });
+        }
+        return error("هذا الإجراء غير متاح للحجز المحوّل", 404);
+      }
 
       if (parts[3] === "finance" && method === "GET") {
         const details = (existing.bookingDetails ?? {}) as Record<string, any>;
