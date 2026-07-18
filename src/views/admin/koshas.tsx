@@ -902,6 +902,21 @@ function KoshaHub() {
         </div>
         <Link href="/admin/koshas/new"><Button size="sm" className="gap-2"><Plus className="h-4 w-4" /> إضافة كوشة</Button></Link>
       </div>
+      <Link
+        href="/staff/koshas"
+        className="group flex flex-col gap-4 overflow-hidden rounded-2xl border border-primary/25 bg-gradient-to-l from-primary/15 via-card to-card p-5 shadow-sm transition hover:border-primary/45 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <div className="mb-2 inline-flex rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+            مركز العمليات الميدانية
+          </div>
+          <h2 className="text-xl font-bold text-foreground">بوابة الكوشات والتنفيذ</h2>
+          <p className="mt-1 text-sm text-muted-foreground">إدارة الكوشات والصوتيات وتجهيز وتنفيذ المناسبات من مساحة تشغيل موحدة.</p>
+        </div>
+        <Button type="button" className="shrink-0 gap-2 group-hover:bg-primary/90">
+          فتح بوابة التنفيذ <ArrowLeft className="h-4 w-4" />
+        </Button>
+      </Link>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {cards.map((card) => <KoshaHubCard key={card.title} {...card} />)}
       </div>

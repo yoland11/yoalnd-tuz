@@ -36369,6 +36369,19 @@ function eventExecutionState(details: Record<string, any>) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
+function normalizeEventExecutionStage(value: unknown) {
+  const stage = String(value ?? "").trim();
+  const legacy: Record<string, string> = {
+    preparing: "preparing",
+    out_of_warehouse: "loaded",
+    on_the_way: "installing",
+    executing: "installing",
+    executed: "executed",
+    delivered: "completed",
+  };
+  return legacy[stage] ?? (EVENT_EXECUTION_MAIN_STAGES.includes(stage as any) ? stage : "booked");
+}
+
 function eventServiceKeys(source: string, row: any, service: any, assets: Array<{ name?: string; category?: string }> = []) {
   const details = (source === "kosha" ? row.bookingDetails : row.customFields) ?? {};
   const state = eventExecutionState(details);
@@ -36416,13 +36429,17 @@ async function executionPortalRows() {
     ...koshaRows.map((row) => ({ source: "kosha" as const, row, service: null })),
     ...serviceRows.map((row) => ({ source: "service" as const, row, service: serviceMap.get(row.serviceId) })),
   ];
-  const assetIds = new Set<number>();
+  const itemIds = new Set<number>();
   for (const item of candidates) {
     const details = executionDetailsForRow(item.source, item.row);
-    const linked = [...(Array.isArray(details.linkedAssets) ? details.linkedAssets : []), ...(Array.isArray(details.bookingOperations?.assets) ? details.bookingOperations.assets : [])];
-    linked.forEach((asset: any) => { const id = Number(asset?.productId); if (id) assetIds.add(id); });
+    const linked = [
+      ...(Array.isArray(details.linkedAssets) ? details.linkedAssets : []),
+      ...(Array.isArray(details.bookingOperations?.assets) ? details.bookingOperations.assets : []),
+      ...(Array.isArray(details.bookingOperations?.products) ? details.bookingOperations.products : []),
+    ];
+    linked.forEach((entry: any) => { const productId = Number(entry?.productId); if (productId) itemIds.add(productId); });
   }
-  const products = assetIds.size ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, [...assetIds]) }) : [];
+  const products = itemIds.size ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, [...itemIds]) }) : [];
   const productMap = new Map(products.map((item: any) => [item.id, item]));
   return candidates.flatMap(({ source, row, service }) => {
     // The candidates intentionally combine two historical booking tables. Their
@@ -36431,7 +36448,11 @@ async function executionPortalRows() {
     const raw = row as any;
     const details = executionDetailsForRow(source, row);
     const state = eventExecutionState(details);
-    const linked = [...(Array.isArray(details.linkedAssets) ? details.linkedAssets : []), ...(Array.isArray(details.bookingOperations?.assets) ? details.bookingOperations.assets : [])];
+    const linked = [
+      ...(Array.isArray(details.linkedAssets) ? details.linkedAssets : []),
+      ...(Array.isArray(details.bookingOperations?.assets) ? details.bookingOperations.assets : []),
+      ...(Array.isArray(details.bookingOperations?.products) ? details.bookingOperations.products : []),
+    ];
     const assets = linked.map((item: any) => productMap.get(Number(item?.productId))).filter(Boolean).map((item: any) => ({ name: item.nameAr || item.name, category: item.category }));
     const serviceKeys = eventServiceKeys(source, row, service, assets);
     if (!serviceKeys.length) return [];
@@ -36446,6 +36467,7 @@ async function executionPortalRows() {
       ...(String(ops.warehouseStage ?? "reserved") === "out" ? ["معدات خارج المستودع"] : []),
     ];
     const team = Array.isArray(state.team) ? state.team : [];
+    const executionStage = state.mainStage || normalizeEventExecutionStage(raw.executionStage || ops.bookingStage);
     return [{
       source, id: raw.id, key: `${source}:${raw.id}`,
       number: raw.trackingCode || `${source === "kosha" ? "KB" : "SRV"}-${String(raw.id).padStart(5, "0")}`,
@@ -36453,11 +36475,11 @@ async function executionPortalRows() {
       eventDate, eventTime: raw.eventTime || details.eventTime || "", installationTime: state.installationTime || details.installationTime || raw.eventTime || "",
       venue: raw.hallLocation || details.hallName || raw.eventLocation || "", location: [raw.area, raw.cityArea, raw.province].filter(Boolean).join(" · ") || raw.eventLocation || "",
       services: serviceKeys.map((key) => ({ key, label: EVENT_SERVICE_LABELS[key] })),
-      status: raw.status, executionStage: state.mainStage || raw.executionStage || ops.bookingStage || "booked", warehouseStage: ops.warehouseStage || "reserved",
+      status: raw.status, executionStage, warehouseStage: ops.warehouseStage || "reserved",
       paymentStatus: raw.paymentStatus || (Number(raw.remainingAmount ?? 0) <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid"),
       responsibleTeam: team.map((item: any) => item.name).filter(Boolean).join("، ") || details.primaryEmployeeName || details.crewName || "غير معيّن",
       total, paid, remaining: Number(raw.remainingAmount ?? Math.max(0, total - paid)), alerts,
-      cancelled: String(raw.status) === "cancelled", completed: ["completed", "delivered"].includes(String(raw.status)) || state.mainStage === "completed",
+      cancelled: String(raw.status) === "cancelled", completed: ["completed", "delivered"].includes(String(raw.status)) || executionStage === "completed",
     }];
   }).sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || a.id - b.id);
 }
@@ -36475,7 +36497,13 @@ async function loadEventExecutionDetail(source: string, id: number) {
     source === "kosha" ? db.query.koshaMediaTable.findMany({ where: eq(koshaMediaTable.bookingId, id), orderBy: [desc(koshaMediaTable.createdAt)] }) : Promise.resolve([]),
     source === "kosha" ? db.query.koshaBookingEventsTable.findMany({ where: eq(koshaBookingEventsTable.bookingId, id), orderBy: [desc(koshaBookingEventsTable.createdAt)] }) : Promise.resolve([]),
   ]);
-  const state = eventExecutionState(reference.details);
+  const storedState = eventExecutionState(reference.details);
+  const operationState = bookingOperationsState(reference.details);
+  const state: Record<string, any> = {
+    ...storedState,
+    mainStage: normalizeEventExecutionStage(storedState.mainStage || reference.row.executionStage || operationState.bookingStage),
+    warehouseStage: operationState.warehouseStage || storedState.warehouseStage || "reserved",
+  };
   const services = eventServiceKeys(source, reference.row, service, assets);
   const total = Number(reference.row.totalAmount ?? 0);
   const paid = Number(source === "kosha" ? reference.row.paidAmount : reference.row.depositAmount);
@@ -36756,7 +36784,13 @@ async function handleStaffPortal(
       const permission: Partial<Record<string, Permission>> = { kosha: "kosha_details_manage", sound: "sound_details_manage", lighting: "lighting_details_manage", furniture: "decor_details_manage", decoration: "decor_details_manage", team: "execution_team_assign" };
       const sectionPermission = permission[section];
       if (sectionPermission && !canPortal(sectionPermission)) return error("ليس لديك صلاحية إدارة هذا القسم", 403);
-      const state = eventExecutionState(reference.details);
+      const storedState = eventExecutionState(reference.details);
+      const operationState = bookingOperationsState(reference.details);
+      const state: Record<string, any> = {
+        ...storedState,
+        mainStage: normalizeEventExecutionStage(storedState.mainStage || reference.row.executionStage || operationState.bookingStage),
+        warehouseStage: operationState.warehouseStage || storedState.warehouseStage || "reserved",
+      };
       const sections = { ...(state.sections ?? {}) };
       const current = section === "main" ? String(state.mainStage ?? "booked") : String(sections[section]?.stage ?? "");
       const requestedStage = b?.stage == null ? null : String(b.stage);

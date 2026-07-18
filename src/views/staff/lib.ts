@@ -72,6 +72,26 @@ export type KoshaSetup = {
 };
 export type BookingDetail = { booking: CrewBooking; setup?: KoshaSetup; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[] };
 
+export type ExecutionServiceKey = "kosha" | "sound" | "lighting" | "furniture" | "decoration" | "transport" | "screens";
+export type ExecutionBooking = {
+  source: "kosha" | "service"; id: number; key: string; number: string;
+  customerName: string; phone: string; eventType: string; eventDate: string; eventTime: string;
+  installationTime: string; venue: string; location: string;
+  services: Array<{ key: ExecutionServiceKey; label: string }>;
+  status: string; executionStage: string; warehouseStage: string; paymentStatus: string;
+  responsibleTeam: string; total: number; paid: number; remaining: number; alerts: string[];
+  cancelled: boolean; completed: boolean;
+};
+export type ExecutionAsset = { productId: number; name: string; assetCode: string; category?: string | null; warehouse?: string | null; location?: string | null; quantity: number; available: number; reserved: number; out: number; returned: number; damaged: number; missing: number; stage: string; status: string; healthScore: number; currentValue: number; purchaseValue: number; depreciationAmount: number; usageCount: number; usageHours: number; lastBooking?: string | null; lastCustomer?: string | null; maintenanceRequired: boolean; barcode?: string | null; qrToken?: string | null; problem: string; estimatedCost: number };
+export type ExecutionDetail = {
+  source: "kosha" | "service"; entityType: string; id: number; services: ExecutionServiceKey[];
+  state: Record<string, any>; assets: ExecutionAsset[]; products: any[]; setup?: KoshaSetup | null;
+  booking: { id: number; number: string; customerName: string; phone: string; eventDate: string; eventTime: string; venue: string; eventType: string; status: string; paymentStatus: string; total: number; paid: number; remaining: number };
+  tasks: any[]; photos: Array<{ id: string; url: string; purpose: string; kind: "image" | "video"; createdAt: string }>;
+  documents: any[]; timeline: Array<{ id: string | number; type: string; title: string; body?: string | null; actorName?: string; createdAt: string }>;
+  audit: any[]; finance: { total: number; paid: number; remaining: number; serviceAmounts: Record<string, number>; additionalCharges: any[]; discounts: number; damageCharges: number };
+};
+
 export type MediaInput = { url: string; kind: "image" | "video" };
 
 export async function filesToMedia(files: FileList | File[]): Promise<MediaInput[]> {
@@ -89,6 +109,11 @@ export async function filesToMedia(files: FileList | File[]): Promise<MediaInput
 const base = "/staff/koshas";
 export const staffApi = {
   dashboard: () => adminFetch<{ today: string; counts: Record<Bucket, number>; todayBookings: CrewBooking[]; tomorrowBookings: CrewBooking[] }>(`${base}/dashboard`),
+  executionBookings: (filter = "all", search = "") => adminFetch<{ data: ExecutionBooking[]; today: string; counts: { total: number; today: number; equipmentOut: number; inspection: number; alerts: number } }>(`${base}/execution-bookings?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}`),
+  execution: (source: "kosha" | "service", id: number) => adminFetch<ExecutionDetail>(`${base}/execution/${source}/${id}`),
+  updateExecution: (source: "kosha" | "service", id: number, payload: { section: string; stage?: string; data?: Record<string, any> }) => adminFetch<{ ok: boolean; state: Record<string, any> }>(`${base}/execution/${source}/${id}/state`, { method: "PATCH", body: JSON.stringify(payload) }),
+  uploadExecutionPhotos: (source: "kosha" | "service", id: number, purpose: string, media: MediaInput[]) => adminFetch<ExecutionDetail>(`${base}/execution/${source}/${id}/photos`, { method: "POST", body: JSON.stringify({ purpose, media }) }),
+  suggestExecutionTasks: (source: "kosha" | "service", id: number) => adminFetch<{ ok: boolean; created: number }>(`${base}/execution/${source}/${id}/suggest-tasks`, { method: "POST", body: "{}" }),
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),
   booking: (id: number) => adminFetch<BookingDetail>(`${base}/bookings/${id}`),
