@@ -194,6 +194,12 @@ export const NAV: NavItem[] = [
     perm: "orders",
   },
   {
+    href: "/admin/orders",
+    label: "إدارة الطلبات",
+    icon: Receipt,
+    perm: "orders",
+  },
+  {
     href: "/admin/calendar",
     label: "تقويم الحجوزات",
     icon: CalendarDays,
@@ -724,6 +730,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingBag,
     items: [
       navItem("/admin/bookings"),
+      navItem("/admin/orders"),
       navItem("/admin/calendar"),
       navItem("/admin/qr-orders"),
       navItem("/admin/archive"),
@@ -851,6 +858,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "النظام",
     icon: Settings,
     items: [
+      navItem("/admin/document-scanner"),
       navItem("/admin/backup"),
       navItem("/admin/disaster-recovery"),
       navItem("/admin/invoice-designer"),
