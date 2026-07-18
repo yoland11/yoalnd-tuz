@@ -8925,12 +8925,14 @@ async function insertServiceOrderWithTracking(
     typeof serviceOrdersTable.$inferInsert,
     "trackingCode" | "phoneLast4"
   >,
+  options?: { executor?: any; skipCustomerSync?: boolean },
 ) {
   await ensureTrackingColumns();
   await ensurePaymentWorkflowColumns();
   // Surface the service customer on /admin/customers — create-or-link by phone.
-  if (values.phone)
+  if (values.phone && !options?.skipCustomerSync)
     await ensureCustomerForPhone(values.phone, (values as any).customerName);
+  const executor = options?.executor ?? db;
   const paymentMethod = (values as any)?.customFields?.paymentMethod;
   const payment = paymentSummary(
     (values as any).totalAmount,
@@ -8938,7 +8940,7 @@ async function insertServiceOrderWithTracking(
     (values as any).paymentStatus,
     paymentMethod,
   );
-  const [row] = await db
+  const [row] = await executor
     .insert(serviceOrdersTable)
     .values({
       ...values,
@@ -8951,6 +8953,305 @@ async function insertServiceOrderWithTracking(
     })
     .returning();
   return row;
+}
+
+const SOUND_BOOKING_TAXONOMY =
+  /(^|[\s_\-/])(sound(?:[\s_\-/]*systems?)?|audio|speaker)(?=$|[\s_\-/])|صوت|سماعة|أنظمة\s*صوتية/i;
+
+function isSoundBookingTaxonomyValue(value: unknown) {
+  return SOUND_BOOKING_TAXONOMY.test(String(value ?? "").trim());
+}
+
+function parseStoreItemMetadata(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getSoundStoreProducts(products: any[]) {
+  const categoryIds = [
+    ...new Set(
+      products
+        .flatMap((product) => [
+          product.categoryId,
+          product.subcategoryId,
+          ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
+        ])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+  const categories = categoryIds.length
+    ? await db.query.categoriesTable.findMany({
+        where: inArray(categoriesTable.id, categoryIds),
+      })
+    : [];
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+
+  return products.filter((product) => {
+    const linkedCategories = [
+      product.categoryId,
+      product.subcategoryId,
+      ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
+    ]
+      .map((id) => categoryById.get(Number(id)))
+      .filter(Boolean);
+    const categoryValues = linkedCategories.flatMap((category: any) => [
+      category.slug,
+      category.name,
+      category.nameAr,
+      category.imageMetadata?.department,
+      category.imageMetadata?.serviceType,
+      category.imageMetadata?.type,
+    ]);
+    return [
+      product.category,
+      product.subcategory,
+      product.serviceType,
+      product.department,
+      ...categoryValues,
+    ].some(isSoundBookingTaxonomyValue);
+  });
+}
+
+function storeSoundEventDetails(order: any, items: any[]) {
+  const itemDetails = items.map((item) => parseStoreItemMetadata(item.customization));
+  const first = (keys: string[]) =>
+    itemDetails
+      .map((detail) => keys.map((key) => detail[key]).find(Boolean))
+      .find(Boolean);
+  const eventDate = String(
+    first(["eventDate", "event_date", "startDate", "start_date"]) ??
+      order.eventDate ??
+      "",
+  ).slice(0, 10);
+  const eventTime = String(first(["eventTime", "event_time"]) ?? "");
+  const venue = String(
+    first(["venue", "venueName", "hallName", "eventLocation", "location"]) ??
+      [order.governorate, order.area, order.address].filter(Boolean).join(" - "),
+  );
+  const mapUrl = String(first(["mapUrl", "mapsUrl", "locationUrl"]) ?? order.mapsUrl ?? "");
+  return { eventDate, eventTime, venue, mapUrl };
+}
+
+function storeSoundBookingItems(
+  items: any[],
+  soundProducts: any[],
+) {
+  const soundProductById = new Map(
+    soundProducts.map((product) => [Number(product.id), product]),
+  );
+  return items
+    .filter((item) => soundProductById.has(Number(item.productId)))
+    .map((item) => {
+      const product = soundProductById.get(Number(item.productId));
+      return {
+        productId: Number(item.productId),
+        name: item.productNameAr || item.productName || product?.nameAr || product?.name || "",
+        quantity: Number(item.quantity) || 0,
+        unitPrice: money(item.price),
+        selectedVariant: item.selectedColorData ?? item.selectedColor ?? null,
+        rental: parseStoreItemMetadata(item.customization),
+      };
+    });
+}
+
+async function findSoundBookingService() {
+  const services = await db.query.servicesTable.findMany({
+    where: eq(servicesTable.isActive, true),
+  });
+  return (
+    services.find((service) =>
+      [service.type, service.name, service.nameAr].some(
+        isSoundBookingTaxonomyValue,
+      ),
+    ) ?? null
+  );
+}
+
+/**
+ * Creates or refreshes the one Booking Center service order linked to a Store
+ * order. The Store order remains the source record; the Store order ID held in
+ * custom_fields is the idempotency key for checkout and payment retries.
+ */
+async function syncStoreSoundBooking(input: {
+  order: any;
+  items: any[];
+  products: any[];
+}) {
+  const soundProducts = await getSoundStoreProducts(input.products);
+  const soundProductIds = new Set(soundProducts.map((product) => Number(product.id)));
+  const storeOrderId = Number(input.order.id);
+  if (!storeOrderId) return { booking: null, created: false, requiresSync: false };
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from orders where id = ${storeOrderId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'storeOrderId' = ${String(storeOrderId)}
+      limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!soundProductIds.size && !linked)
+      return { booking: null, created: false, requiresSync: false };
+
+    const soundItems = storeSoundBookingItems(input.items, soundProducts);
+    const event = storeSoundEventDetails(input.order, input.items);
+    const eventInfoPending = !event.eventDate || !event.venue;
+    const payment = paymentSummary(
+      input.order.total,
+      input.order.depositAmount,
+      input.order.paymentStatus,
+      input.order.paymentMethod,
+    );
+    const commonFields = {
+      bookingSource: "store",
+      bookingType: "sound",
+      department: "sound",
+      storeOrderId,
+      storeOrderReference: input.order.trackingCode,
+      originalOrderReference: input.order.trackingCode,
+      customerId: input.order.customerId ?? null,
+      customerAddress: [input.order.governorate, input.order.area, input.order.address]
+        .filter(Boolean)
+        .join(" - "),
+      mapUrl: event.mapUrl || null,
+      eventTime: event.eventTime || null,
+      eventInformationStatus: eventInfoPending ? "pending_completion" : "complete",
+      bookingCenterServices: [{ type: "sound", status: "waiting", amount: soundItems.reduce((sum, item) => sum + money(item.unitPrice) * item.quantity, 0) }],
+      soundItems,
+      paymentMethod: input.order.paymentMethod ?? "cod",
+    };
+    const internalNotes = eventInfoPending ? "بانتظار استكمال معلومات المناسبة" : null;
+
+    if (linked) {
+      const previousFields =
+        linked.custom_fields && typeof linked.custom_fields === "object"
+          ? linked.custom_fields
+          : {};
+      const [booking] = await tx
+        .update(serviceOrdersTable)
+        .set({
+          customerName: input.order.customerName,
+          phone: input.order.customerPhone,
+          eventDate: event.eventDate || null,
+          eventLocation: event.venue || null,
+          notes: input.order.notes ?? null,
+          totalAmount: String(money(input.order.total)),
+          depositAmount: String(payment.deposit),
+          remainingAmount: String(payment.remaining),
+          paymentStatus: payment.status,
+          internalNotes: internalNotes ?? linked.internal_notes ?? null,
+          customFields: { ...previousFields, ...commonFields },
+        } as any)
+        .where(eq(serviceOrdersTable.id, Number(linked.id)))
+        .returning();
+      return { booking, created: false, requiresSync: false };
+    }
+
+    const soundService = await findSoundBookingService();
+    if (!soundService) return { booking: null, created: false, requiresSync: true };
+
+    const booking = await insertServiceOrderWithTracking(
+      {
+        serviceId: soundService.id,
+        customerName: input.order.customerName,
+        phone: input.order.customerPhone,
+        eventDate: event.eventDate || null,
+        eventLocation: event.venue || null,
+        notes: input.order.notes ?? null,
+        internalNotes,
+        totalAmount: String(money(input.order.total)),
+        depositAmount: String(payment.deposit),
+        remainingAmount: String(payment.remaining),
+        paymentStatus: payment.status,
+        customFields: commonFields,
+      },
+      { executor: tx, skipCustomerSync: true },
+    );
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: booking.id,
+      status: booking.status,
+      notes: "إنشاء تلقائي من طلب متجر صوتيات",
+    });
+    await tx.insert(entityTimelineTable).values({
+      entityType: "service_order",
+      entityId: booking.id,
+      type: "created",
+      title: "حجز صوتيات جديد من المتجر",
+      body: `طلب المتجر ${input.order.trackingCode}`,
+      actorName: "المتجر الإلكتروني",
+      metadata: { source: "store", storeOrderId },
+    });
+    return { booking, created: true, requiresSync: false };
+  });
+}
+
+async function markStoreSoundBookingSyncRequired(
+  order: any,
+  reason: string,
+) {
+  const marker = "[sound-booking-sync-required]";
+  const existing = String(order.internalNotes ?? "");
+  const internalNotes = existing.includes(marker)
+    ? existing
+    : [existing, marker, "يتطلب مزامنة حجز الصوتيات"].filter(Boolean).join("\n");
+  await db
+    .update(ordersTable)
+    .set({ internalNotes, updatedAt: new Date() })
+    .where(eq(ordersTable.id, Number(order.id)));
+  await db.insert(entityTimelineTable).values({
+    entityType: "order",
+    entityId: Number(order.id),
+    type: "sound_booking_sync_required",
+    title: "يتطلب مزامنة حجز الصوتيات",
+    body: reason,
+    actorName: "النظام",
+    metadata: { source: "store", retrySafe: true },
+  });
+}
+
+async function cancelStoreSoundBooking(order: any, note: string) {
+  const storeOrderId = Number(order.id);
+  if (!storeOrderId) return { cancelled: false, requiresApproval: false };
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from orders where id = ${storeOrderId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'storeOrderId' = ${String(storeOrderId)}
+      limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!linked) return { cancelled: false, requiresApproval: false };
+    if (["completed", "delivered"].includes(String(linked.status)))
+      return { cancelled: false, requiresApproval: true };
+    const [booking] = await tx
+      .update(serviceOrdersTable)
+      .set({ status: "cancelled" })
+      .where(eq(serviceOrdersTable.id, Number(linked.id)))
+      .returning();
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: Number(linked.id),
+      status: "cancelled",
+      notes: note,
+    });
+    await tx.insert(entityTimelineTable).values({
+      entityType: "service_order",
+      entityId: Number(linked.id),
+      type: "cancelled",
+      title: "إلغاء حجز الصوتيات من طلب المتجر",
+      body: `طلب المتجر ${order.trackingCode}`,
+      actorName: "النظام",
+      metadata: { source: "store", storeOrderId },
+    });
+    return { cancelled: Boolean(booking), requiresApproval: false };
+  });
 }
 
 async function handleAuth(req: NextRequest, parts: string[]) {
@@ -12415,6 +12716,52 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       return error("فشل حفظ البيانات. لم يتم إنشاء أي طلب", 500);
     }
     const formatted = await formatOrder(order);
+    // Store Sound orders are projected once into the existing Booking Center as
+    // a service order. Routing failures never invalidate the completed checkout.
+    try {
+      const soundBooking = await syncStoreSoundBooking({
+        order,
+        items: cartItems,
+        products,
+      });
+      if (soundBooking.requiresSync) {
+        await markStoreSoundBookingSyncRequired(
+          order,
+          "لم يتم العثور على خدمة صوتيات فعّالة لربط طلب المتجر",
+        );
+      } else if (soundBooking.created && soundBooking.booking) {
+        void createNotification({
+          type: "booking_new",
+          title: "حجز صوتيات جديد من المتجر",
+          body: `${order.customerName} · طلب ${order.trackingCode} · حجز ${soundBooking.booking.trackingCode ?? soundBooking.booking.id} · ${storeSoundEventDetails(order, cartItems).eventDate || "الموعد غير محدد"} · ${formatCurrency(Number(order.total))}`,
+          entityType: "service_order",
+          entityId: soundBooking.booking.id,
+          href: `/admin/bookings/service/${soundBooking.booking.id}`,
+        });
+        void logAdminActivity(req, "store_sound_booking_routed", "service_order", soundBooking.booking.id, {
+          storeOrderId: order.id,
+          storeOrderReference: order.trackingCode,
+        });
+      }
+    } catch (err: any) {
+      console.error("Store Sound booking routing failed", {
+        orderId: order.id,
+        trackingCode: order.trackingCode,
+        message: err?.message,
+        stack: err?.stack,
+      });
+      try {
+        await markStoreSoundBookingSyncRequired(
+          order,
+          "فشلت مزامنة حجز الصوتيات؛ يمكن إعادة المحاولة بأمان",
+        );
+      } catch (markError: any) {
+        console.error("Store Sound booking sync marker failed", {
+          orderId: order.id,
+          message: markError?.message,
+        });
+      }
+    }
     void ensureQrForEntity("order", order, req).catch((err) =>
       console.error("order QR generation failed", { orderId: order.id, message: err?.message }),
     );
@@ -30452,6 +30799,61 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           })) ?? row,
         );
       }
+      // Keep the one linked Sound booking aligned with Store edits. This does
+      // not copy the Booking Center execution status back onto the Store order.
+      try {
+        if (row.status === "cancelled") {
+          const cancellation = await cancelStoreSoundBooking(
+            row,
+            "إلغاء من طلب المتجر",
+          );
+          if (cancellation.requiresApproval) {
+            void logAdminActivity(req, "store_sound_booking_cancel_confirmation_required", "order", row.id, {
+              storeOrderId: row.id,
+            });
+          }
+        } else {
+          const syncItems = hasItemsUpdate ? nextItems : oldItems;
+          const syncProductIds = [
+            ...new Set(
+              syncItems
+                .map((item: any) => numberId(item.productId))
+                .filter((value): value is number => !!value),
+            ),
+          ];
+          const syncProducts = syncProductIds.length
+            ? await db.query.productsTable.findMany({
+                where: inArray(productsTable.id, syncProductIds),
+              })
+            : [];
+          const soundBooking = await syncStoreSoundBooking({
+            order: row,
+            items: syncItems,
+            products: syncProducts,
+          });
+          if (soundBooking.requiresSync) {
+            await markStoreSoundBookingSyncRequired(
+              row,
+              "لم يتم العثور على خدمة صوتيات فعّالة لربط طلب المتجر",
+            );
+          } else if (soundBooking.created && soundBooking.booking) {
+            void createNotification({
+              type: "booking_new",
+              title: "حجز صوتيات جديد من المتجر",
+              body: `${row.customerName} · طلب ${row.trackingCode} · حجز ${soundBooking.booking.trackingCode ?? soundBooking.booking.id}`,
+              entityType: "service_order",
+              entityId: soundBooking.booking.id,
+              href: `/admin/bookings/service/${soundBooking.booking.id}`,
+            });
+          }
+        }
+      } catch (err: any) {
+        console.error("Store Sound booking synchronization failed", {
+          orderId: row.id,
+          message: err?.message,
+          stack: err?.stack,
+        });
+      }
       if (
         update.paymentStatus !== undefined ||
         update.remainingAmount !== undefined
@@ -30601,6 +31003,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .returning();
       if (archived && isRentalStoreOrder(current)) {
         await syncRentalRowFromStoreOrder(archived);
+      }
+      if (archived) {
+        const cancellation = await cancelStoreSoundBooking(
+          archived,
+          "إلغاء وأرشفة طلب المتجر",
+        );
+        if (cancellation.requiresApproval) {
+          void logAdminActivity(req, "store_sound_booking_cancel_confirmation_required", "order", id, {
+            storeOrderId: id,
+          });
+        }
       }
       await db.insert(orderStatusHistoryTable).values({
         orderId: id,
