@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle, Camera, CheckCircle2, Crop, ImageUp, Loader2, RefreshCw,
   RotateCcw, RotateCw, ScanLine, Trash2, Upload, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { adminFetch, fetchAdminMe, hasPerm, type AdminMe } from "./_lib";
+import DocumentLayout from "./document-layout";
+import DocumentSave from "./document-save";
 import {
   analyzeQuality, canvasFrom, canvasToDataUrl, defaultCorners, detectDocumentCorners,
   effectiveDpi, enhance, loadImage, pixelsForMm, presetFor, rotateCanvas, warpPerspective,
@@ -52,6 +56,17 @@ type Stage = "capture" | "adjust" | "done";
 
 export default function DocumentScannerPage() {
   const { toast } = useToast();
+  const { data: me } = useQuery<AdminMe | null>({
+    queryKey: ["admin", "me"],
+    queryFn: () => fetchAdminMe(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const user = me ?? null;
+  const canScan = hasPerm(user, "doc_scanner_scan");
+  const canPrint = hasPerm(user, "doc_scanner_print");
+  const canExport = hasPerm(user, "doc_scanner_export");
+  const canSave = hasPerm(user, "doc_scanner_save");
+
   const [docType, setDocType] = useState<string>("national_id");
   const [customSize, setCustomSize] = useState({ w: "85.6", h: "53.98" });
   const [side, setSide] = useState<Side>("front");
@@ -185,6 +200,22 @@ export default function DocumentScannerPage() {
       return copy;
     });
   }
+
+  /**
+   * Records an action in the audit log. Only metadata travels — never the image
+   * itself and never any document number.
+   */
+  const audit = useCallback(
+    (action: string, extra: Record<string, unknown> = {}) => {
+      void adminFetch("/admin/document-scanner/audit", {
+        method: "POST",
+        body: JSON.stringify({ action, documentType: docType, ...extra }),
+      }).catch(() => {
+        // Auditing must never block the user's print/export.
+      });
+    },
+    [docType],
+  );
 
   const sourceDpi = sourceCanvas
     ? effectiveDpi(Math.max(sourceCanvas.width, sourceCanvas.height), Math.max(targetMm.w, targetMm.h))
@@ -426,10 +457,35 @@ export default function DocumentScannerPage() {
               ) : null,
             )}
           </div>
-          <p className="text-[11px] text-muted-foreground">
-            تخطيط A4 والطباعة وتصدير PDF والحفظ والربط بالعميل/الموظف تُضاف في المرحلة التالية.
-          </p>
         </section>
+      )}
+
+      {/* ── A4 layout designer + print/export ── */}
+      {(scans.front || scans.back) && (
+        <DocumentLayout
+          scans={scans}
+          docTypeLabel={typeDef.label}
+          canPrint={canPrint}
+          canExport={canExport}
+          onPrinted={() => audit("document_printed", { copies: 1 })}
+          onExported={(format) => audit("pdf_exported", { format })}
+        />
+      )}
+
+      {/* ── Optional protected save + entity linking ── */}
+      {(scans.front || scans.back) && canSave && (
+        <DocumentSave
+          scans={scans}
+          documentType={docType}
+          documentTypeLabel={typeDef.label}
+          onSaved={() => audit("document_saved")}
+        />
+      )}
+
+      {!canScan && (
+        <div className="rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-xs text-status-warning flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" /> لا تملك صلاحية مسح المستمسكات — العرض فقط.
+        </div>
       )}
     </div>
   );
