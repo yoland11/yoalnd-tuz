@@ -31,17 +31,20 @@ export default function DocumentSave({
   scans,
   documentType,
   documentTypeLabel,
+  prefill,
   onSaved,
 }: {
   scans: Partial<Record<Side, SaveSource>>;
   documentType: string;
   documentTypeLabel: string;
+  /** Owner carried over from a deep link (e.g. opened from a customer page). */
+  prefill?: { ownerType?: string; ownerId?: string; ownerName?: string };
   onSaved?: () => void;
 }) {
   const { toast } = useToast();
-  const [ownerType, setOwnerType] = useState("");
-  const [ownerId, setOwnerId] = useState("");
-  const [ownerName, setOwnerName] = useState("");
+  const [ownerType, setOwnerType] = useState(prefill?.ownerType ?? "");
+  const [ownerId, setOwnerId] = useState(prefill?.ownerId ?? "");
+  const [ownerName, setOwnerName] = useState(prefill?.ownerName ?? "");
   const [notes, setNotes] = useState("");
   const [savedId, setSavedId] = useState<number | null>(null);
 

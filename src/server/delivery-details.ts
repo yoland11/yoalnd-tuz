@@ -911,6 +911,8 @@ export type InsertCodSettlement = {
   attachmentUrl: string | null;
   receiptVoucherId: number | null;
   financialTransactionId: number | null;
+  /** "completed" once the money is executed; "pending_approval" until a manager confirms. */
+  status?: "completed" | "pending_approval";
   createdBy: number | null;
   createdByName: string;
 };
@@ -929,11 +931,25 @@ export async function insertCodSettlement(s: InsertCodSettlement): Promise<numbe
         ${s.deliveryOrderId}, ${s.salesInvoiceId}, ${s.customerId}, ${s.deliveryCompany},
         ${String(s.expectedAmount)}, ${String(s.receivedAmount)}, ${s.settlementDate},
         ${s.referenceNo}, ${s.account}, ${s.accountingMode}, ${s.notes}, ${s.attachmentUrl},
-        ${s.receiptVoucherId}, ${s.financialTransactionId}, 'completed', ${s.createdBy}, ${s.createdByName}
+        ${s.receiptVoucherId}, ${s.financialTransactionId}, ${s.status ?? "completed"},
+        ${s.createdBy}, ${s.createdByName}
       ) returning id
     `),
   );
   return Number(rows[0]?.id);
+}
+
+/** Marks a pending settlement as completed once a manager has confirmed it. */
+export async function completeCodSettlement(
+  deliveryOrderId: number,
+  financialTransactionId: number | null,
+): Promise<void> {
+  await db.execute(sql`
+    update delivery_cod_settlements
+    set status = 'completed',
+        financial_transaction_id = coalesce(${financialTransactionId}, financial_transaction_id)
+    where delivery_order_id = ${deliveryOrderId}
+  `);
 }
 
 export async function markCodSettled(deliveryOrderId: number): Promise<void> {
@@ -1033,6 +1049,7 @@ export function formatDeliveryOrderFull(data: NonNullable<Awaited<ReturnType<typ
           deliveryCompany: settlement.delivery_company,
           notes: settlement.notes,
           attachmentUrl: settlement.attachment_url,
+          status: settlement.status,
           createdByName: settlement.created_by_name,
           createdAt: settlement.created_at,
         }

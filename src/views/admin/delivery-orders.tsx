@@ -311,6 +311,7 @@ type DetailsResponse = {
     receivedAmount: number; expectedAmount: number; settlementDate: string;
     referenceNo: string | null; account: string; accountingMode: string;
     deliveryCompany: string | null; createdByName: string; createdAt: string;
+    status?: string;
   } | null;
   history: Array<{ status: string; statusLabel: string; reason: string | null; createdByName: string; createdAt: string }>;
   timeline: Array<{ id: number; type: string; title: string; body: string | null; createdAt: string }>;
@@ -361,6 +362,13 @@ function DeliveryOrderDetails({
     onError: (e: any) => toast({ title: "تعذر الإرجاع", description: e?.message, variant: "destructive" }),
   });
 
+  const confirmCod = useMutation({
+    mutationFn: () =>
+      adminFetch(`/admin/delivery/orders/${id}/confirm-cod`, { method: "POST", body: "{}" }),
+    onSuccess: () => done("تم اعتماد التحصيل وتحديث الفاتورة"),
+    onError: (e: any) => toast({ title: "تعذر اعتماد التحصيل", description: e?.message, variant: "destructive" }),
+  });
+
   const cancelOrder = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
       adminFetch(`/admin/delivery/orders/${id}/cancel`, { method: "POST", body: JSON.stringify(payload) }),
@@ -372,6 +380,9 @@ function DeliveryOrderDetails({
 
   const d = data.detail ?? {};
   const settled = Boolean(data.settlement);
+  // A settlement recorded by a non-approver waits for a manager; the invoice is
+  // untouched until then.
+  const awaitingApproval = settled && data.settlement?.status === "pending_approval";
   const mapsHref =
     d.mapsUrl ||
     (d.fullAddress
@@ -418,10 +429,28 @@ function DeliveryOrderDetails({
       </div>
 
       {/* Settlement state */}
-      {settled && (
+      {settled && !awaitingApproval && (
         <div className="rounded-lg border border-status-success/30 bg-status-success/10 p-3 text-xs text-status-success">
           تم التحصيل: {formatCurrency(data.settlement!.receivedAmount)} بتاريخ {data.settlement!.settlementDate}
           {data.settlement!.referenceNo ? ` · مرجع ${data.settlement!.referenceNo}` : ""} · بواسطة {data.settlement!.createdByName}
+        </div>
+      )}
+      {awaitingApproval && (
+        <div className="rounded-lg border border-status-warning/30 bg-status-warning/10 p-3 text-xs text-status-warning space-y-2">
+          <p className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            سُجّل تحصيل {formatCurrency(data.settlement!.receivedAmount)} بواسطة {data.settlement!.createdByName} —
+            بانتظار اعتماد المدير. لم تتغير الفاتورة بعد.
+          </p>
+          {canSettle && (
+            <Button size="sm" className="gap-1.5" disabled={confirmCod.isPending} onClick={() => {
+              if (!window.confirm("سيتم اعتماد التحصيل وترحيله إلى الصندوق وتحديث الفاتورة. متابعة؟")) return;
+              confirmCod.mutate();
+            }}>
+              {confirmCod.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />}
+              اعتماد التحصيل
+            </Button>
+          )}
         </div>
       )}
       {data.returnReason && (

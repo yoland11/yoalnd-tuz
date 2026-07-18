@@ -41,6 +41,15 @@ export const DOCUMENT_TYPES: DocTypeDef[] = [
 
 export type Side = "front" | "back";
 
+const OWNER_LABELS: Record<string, string> = {
+  customer: "عميل",
+  staff: "موظف",
+  order: "طلب",
+  booking: "حجز",
+  graduation_order: "طلب تخرج",
+  printing_job: "عمل طباعة",
+};
+
 /** A finished, print-ready side. Phase 2 consumes these for the A4 layout. */
 export type ScannedSide = {
   side: Side;
@@ -54,8 +63,23 @@ export type ScannedSide = {
 
 type Stage = "capture" | "adjust" | "done";
 
+/** Owner carried in the URL when the scanner is opened from another module. */
+function readPrefill(): { ownerType?: string; ownerId?: string; ownerName?: string; docType?: string } {
+  if (typeof window === "undefined") return {};
+  const p = new URLSearchParams(window.location.search);
+  return {
+    ownerType: p.get("ownerType") ?? undefined,
+    ownerId: p.get("ownerId") ?? undefined,
+    ownerName: p.get("ownerName") ?? undefined,
+    docType: p.get("docType") ?? undefined,
+  };
+}
+
 export default function DocumentScannerPage() {
   const { toast } = useToast();
+  // Read once on mount — the admin shell is client-rendered, so there is no
+  // server/client markup to mismatch.
+  const [prefill] = useState(readPrefill);
   const { data: me } = useQuery<AdminMe | null>({
     queryKey: ["admin", "me"],
     queryFn: () => fetchAdminMe(),
@@ -67,7 +91,9 @@ export default function DocumentScannerPage() {
   const canExport = hasPerm(user, "doc_scanner_export");
   const canSave = hasPerm(user, "doc_scanner_save");
 
-  const [docType, setDocType] = useState<string>("national_id");
+  const [docType, setDocType] = useState<string>(
+    () => (DOCUMENT_TYPES.some((t) => t.value === prefill.docType) ? prefill.docType! : "national_id"),
+  );
   const [customSize, setCustomSize] = useState({ w: "85.6", h: "53.98" });
   const [side, setSide] = useState<Side>("front");
   const [stage, setStage] = useState<Stage>("capture");
@@ -240,6 +266,15 @@ export default function DocumentScannerPage() {
       <p className="text-xs text-muted-foreground">
         تتم كل المعالجة داخل جهازك — لا تُرفع صور المستمسكات إلى الخادم إلا إذا ضغطت زر الحفظ.
       </p>
+
+      {prefill.ownerType && (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-xs text-foreground flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />
+          سيُربط هذا المسح بـ {OWNER_LABELS[prefill.ownerType] ?? prefill.ownerType}
+          {prefill.ownerName ? `: ${prefill.ownerName}` : ""}
+          {prefill.ownerId ? ` (#${prefill.ownerId})` : ""} عند الحفظ.
+        </div>
+      )}
 
       {/* ── Document type + side ── */}
       <section className="bg-card rounded-xl border border-border/30 p-3 sm:p-4 space-y-3">
@@ -478,6 +513,7 @@ export default function DocumentScannerPage() {
           scans={scans}
           documentType={docType}
           documentTypeLabel={typeDef.label}
+          prefill={prefill}
           onSaved={() => audit("document_saved")}
         />
       )}

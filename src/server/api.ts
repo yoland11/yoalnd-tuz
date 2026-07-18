@@ -337,6 +337,7 @@ import {
   DELIVERY_TYPE_LABELS,
   cancelDeliverySchema,
   codSettlementSchema,
+  completeCodSettlement,
   deliveryQuoteSchema,
   ensureDeliveryDetailsTables,
   findProvince,
@@ -21124,15 +21125,7 @@ async function handleCodSettlement(req: NextRequest, orderId: number) {
   const settlementDate = data.settlementDate ?? new Date().toISOString().slice(0, 10);
   const mode = await getDeliveryAccountingMode();
 
-  // 1) Advance the invoice's paid / remaining / status.
-  await db.update(salesInvoicesTable).set({
-    paidAmount: String(newPaid),
-    remainingAmount: String(newRemaining),
-    paymentStatus,
-    updatedAt: new Date(),
-  } as any).where(eq(salesInvoicesTable.id, invoice.id));
-
-  // 2) Receipt voucher (same shape as a normal invoice collection).
+  // 1) Receipt voucher (same shape as a normal invoice collection).
   const [voucher] = await db.insert(receiptVouchersTable).values({
     voucherNo: temporaryVoucherNo(),
     date: settlementDate,
@@ -21180,10 +21173,23 @@ async function handleCodSettlement(req: NextRequest, orderId: number) {
     }).where(eq(receiptVouchersTable.id, savedVoucher.id));
   }
 
+  // 3) The invoice advances ONLY once the money is actually executed. When the
+  //    collector cannot approve, the settlement waits for a manager and the
+  //    invoice stays unpaid — money must never be recorded before it lands.
+  const executed = financialTransaction?.approvalStatus === "executed";
+  if (executed) {
+    await db.update(salesInvoicesTable).set({
+      paidAmount: String(newPaid),
+      remainingAmount: String(newRemaining),
+      paymentStatus,
+      updatedAt: new Date(),
+    } as any).where(eq(salesInvoicesTable.id, invoice.id));
+  }
+
   // 4) Delivery accounting split — treat the fee per the configured mode. The
   //    idempotency key makes a repeat call a no-op.
   const deliveryFeeAmount = money(detail.deliveryFee);
-  if (deliveryFeeAmount > 0 && (mode === "payable" || mode === "expense")) {
+  if (executed && deliveryFeeAmount > 0 && (mode === "payable" || mode === "expense")) {
     await createFinancialTransaction({
       transactionDate: settlementDate,
       direction: "expense",
@@ -21223,42 +21229,136 @@ async function handleCodSettlement(req: NextRequest, orderId: number) {
     attachmentUrl,
     receiptVoucherId: savedVoucher.id,
     financialTransactionId: financialTransaction?.id ?? null,
+    status: executed ? "completed" : "pending_approval",
     createdBy: a.id,
     createdByName: a.name,
   });
-  await markCodSettled(orderId);
+  if (executed) await markCodSettled(orderId);
 
   // 6) Audit + timeline + notification.
   void logAdminActivity(req, "cod_collected", "delivery_order", orderId, {
     invoiceNo: invoice.invoiceNo, received, mode, settlementId,
+    executed,
     oldValues: { paid: priorPaid, remaining },
-    newValues: { paid: newPaid, remaining: newRemaining, paymentStatus },
+    newValues: executed
+      ? { paid: newPaid, remaining: newRemaining, paymentStatus }
+      : { paid: priorPaid, remaining, paymentStatus: invoice.paymentStatus },
   });
   void addEntityTimeline({
     entityType: "delivery_order", entityId: orderId, type: "cod_settled",
-    title: "تم تأكيد تحصيل الدفع عند الاستلام",
+    title: executed ? "تم تأكيد تحصيل الدفع عند الاستلام" : "تحصيل بانتظار اعتماد المدير",
     body: `${formatCurrency(received)} · ${savedVoucher.voucherNo}`,
     actor: erpActorFromAdmin(auth),
-    metadata: { received, voucherNo: savedVoucher.voucherNo, mode },
+    metadata: { received, voucherNo: savedVoucher.voucherNo, mode, executed },
   });
-  void addEntityTimeline({
-    entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
-    title: "تحصيل عند الاستلام",
-    body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
-    actor: erpActorFromAdmin(auth),
-  });
+  if (executed) {
+    void addEntityTimeline({
+      entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
+      title: "تحصيل عند الاستلام",
+      body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
+      actor: erpActorFromAdmin(auth),
+    });
+  }
   void notifyTelegramDelivery({
-    event: "cod_settled", title: "💵 تم تحصيل الدفع عند الاستلام",
+    event: executed ? "cod_settled" : "cod_awaiting_settlement",
+    title: executed ? "💵 تم تحصيل الدفع عند الاستلام" : "⏳ تحصيل بانتظار اعتماد المدير",
     deliveryNo: order.deliveryNo, invoiceNo: invoice.invoiceNo,
     receiverName: detail.receiverName, codAmount: received,
   });
 
   return json({
     ok: true, id: orderId, settlementId,
-    invoice: { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus },
+    executed,
+    awaitingApproval: !executed,
+    message: executed
+      ? "تم ترحيل المبلغ إلى الصندوق وتحديث الفاتورة"
+      : "سُجّل التحصيل وبانتظار اعتماد المدير — لن تتغير الفاتورة قبل الاعتماد",
+    invoice: executed
+      ? { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus }
+      : { paidAmount: priorPaid, remainingAmount: remaining, paymentStatus: invoice.paymentStatus },
     financialTransaction: financialTransaction
       ? { id: financialTransaction.id, status: financialTransaction.approvalStatus }
       : null,
+  });
+}
+
+/**
+ * Manager confirmation for a COD settlement that was recorded by a collector
+ * without approval rights. Approves + executes the pending money, then — and
+ * only then — advances the invoice.
+ */
+async function handleCodConfirmation(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery_cod_settle", "accounting"]);
+  if (isResponse(auth)) return auth;
+  const fActor = financialActor(auth);
+  if (!canApproveFinancialTransactions(fActor))
+    return error("اعتماد التحصيل متاح للمدير أو المحاسب فقط", 403);
+
+  const settlement: any = await getCodSettlement(orderId);
+  if (!settlement) return error("لا يوجد تحصيل مسجّل لهذا الطلب", 404);
+  if (String(settlement.status) === "completed")
+    return error("تم اعتماد هذا التحصيل مسبقاً", 409);
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details?.invoice) return error("لا توجد فاتورة مرتبطة بهذا الطلب", 400);
+  const { order, invoice } = details;
+
+  let txn: any = null;
+  const txnId = settlement.financial_transaction_id
+    ? Number(settlement.financial_transaction_id)
+    : null;
+  if (txnId) {
+    try {
+      txn = await approveAndExecuteFinancialTransaction(txnId, fActor, "اعتماد تحصيل الدفع عند الاستلام");
+    } catch (err) {
+      return error(err instanceof Error ? err.message : "تعذر اعتماد الحركة المالية", 500);
+    }
+  }
+  if (txn && txn.approvalStatus !== "executed")
+    return error("لم تُنفَّذ الحركة المالية — راجع مركز الموافقات", 409);
+
+  const received = money(settlement.received_amount);
+  const total = money(invoice.total);
+  const priorPaid = money(invoice.paidAmount);
+  const newPaid = money(Math.min(priorPaid + received, total));
+  const newRemaining = money(Math.max(total - newPaid, 0));
+  const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
+
+  await db.update(salesInvoicesTable).set({
+    paidAmount: String(newPaid),
+    remainingAmount: String(newRemaining),
+    paymentStatus,
+    updatedAt: new Date(),
+  } as any).where(eq(salesInvoicesTable.id, invoice.id));
+
+  await completeCodSettlement(orderId, txn?.id ?? txnId);
+  await markCodSettled(orderId);
+
+  void logAdminActivity(req, "cod_collected", "delivery_order", orderId, {
+    invoiceNo: invoice.invoiceNo, received, confirmed: true,
+    oldValues: { paid: priorPaid },
+    newValues: { paid: newPaid, remaining: newRemaining, paymentStatus },
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "cod_settled",
+    title: "اعتمد المدير تحصيل الدفع عند الاستلام",
+    body: formatCurrency(received),
+    actor: erpActorFromAdmin(auth),
+  });
+  void addEntityTimeline({
+    entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
+    title: "تحصيل عند الاستلام (معتمد)",
+    body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
+    actor: erpActorFromAdmin(auth),
+  });
+  void notifyTelegramDelivery({
+    event: "cod_settled", title: "💵 اعتماد تحصيل الدفع عند الاستلام",
+    deliveryNo: order.deliveryNo, invoiceNo: invoice.invoiceNo, codAmount: received,
+  });
+
+  return json({
+    ok: true, id: orderId, executed: true,
+    invoice: { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus },
   });
 }
 
@@ -21441,6 +21541,10 @@ async function handleProvinceDelivery(
 
     if (method === "POST" && orderId && parts[4] === "settle-cod") {
       return handleCodSettlement(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "confirm-cod") {
+      return handleCodConfirmation(req, orderId);
     }
 
     if (method === "POST" && orderId && parts[4] === "return") {

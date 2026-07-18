@@ -589,6 +589,12 @@ export const NAV: NavItem[] = [
     perm: "doc_scanner_view",
   },
   {
+    href: "/admin/document-library",
+    label: "المستمسكات المحفوظة",
+    icon: FileText,
+    perm: "doc_scanner_view_saved",
+  },
+  {
     href: "/admin/system-health",
     label: "صحة النظام",
     icon: Activity,

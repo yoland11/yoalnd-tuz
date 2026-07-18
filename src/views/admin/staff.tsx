@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, ALL_PERMISSIONS, PERMISSION_LABELS } from "./_lib";
 import { EmptyState } from "./_layout";
+import ScanDocumentButton from "./scan-document-button";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { SalarySettingsTab } from "./salary-settings-tab";
@@ -296,7 +297,17 @@ export default function StaffPage() {
               <div className="mb-3 rounded-lg border border-primary/15 bg-primary/5 p-2 text-xs">
                 <div className="mb-1 flex items-center justify-between font-medium text-primary">
                   <span>سلف الموظف</span>
-                  <Link href={`/admin/employee-advances?employeeId=${s.id}`} className="underline">التفاصيل</Link>
+                  <div className="flex items-center gap-2">
+                    <ScanDocumentButton
+                      ownerType="staff"
+                      ownerId={s.id}
+                      ownerName={s.fullName || s.username}
+                      docType="employee_id"
+                      label="مستمسك"
+                      className="underline text-primary"
+                    />
+                    <Link href={`/admin/employee-advances?employeeId=${s.id}`} className="underline">التفاصيل</Link>
+                  </div>
                 </div>
                 <div className="grid grid-cols-3 gap-1 text-muted-foreground">
                   <span>إجمالي: {Number(s.advanceSummary?.totalAdvances ?? 0).toLocaleString("ar-IQ")}</span>
