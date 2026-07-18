@@ -125,7 +125,7 @@ type AdminService = { id: number; name: string; nameAr: string; type: string; is
 type Customer = { id: number; name: string; fullName?: string | null; phone: string; city?: string | null };
 
 type UnifiedBooking = {
-  source: "service" | "kosha";
+  source: "service" | "kosha" | "store" | "graduation" | "photography" | "rental";
   id: number;
   number: string;
   customerId?: number | null;
@@ -144,6 +144,8 @@ type UnifiedBooking = {
   notes?: string;
   contractNumber?: string;
   createdAt?: string;
+  bookingSource?: string;
+  detailHref?: string;
   raw: ServiceOrder | KoshaBooking;
 };
 
@@ -324,11 +326,14 @@ function BookingDashboard() {
   const [search, setSearch] = useState("");
   const [serviceFilter, setServiceFilter] = useState<ServiceKey | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
-  const serviceOrdersQuery = useQuery({ queryKey: ["admin", "booking-center", "service-orders"], queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=250") });
-  const koshaQuery = useQuery({ queryKey: ["admin", "booking-center", "kosha"], queryFn: () => adminFetch<KoshaBooking[]>("/admin/kosha-bookings?search=&status=") });
+  const centralBookingsQuery = useQuery({ queryKey: ["admin", "booking-center"], queryFn: () => adminFetch<any[]>("/admin/booking-center") });
   const servicesQuery = useQuery({ queryKey: ["admin", "services", "booking-center"], queryFn: () => adminFetch<AdminService[]>("/admin/services") });
   const customersQuery = useQuery({ queryKey: ["admin", "customers", "booking-center"], queryFn: () => adminFetch<Customer[]>("/admin/customers") });
-  const bookings = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []), [serviceOrdersQuery.data, koshaQuery.data]);
+  const bookings = useMemo(() => (centralBookingsQuery.data ?? []).map((row) => ({
+    ...row,
+    services: (row.departments ?? []).map((type: ServiceKey) => ({ type, status: normalizeServiceStatus(row.status), amount: num(row.total) })),
+    raw: row,
+  })) as UnifiedBooking[], [centralBookingsQuery.data]);
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   const month = today.slice(0, 7);
@@ -422,7 +427,7 @@ function BookingDashboard() {
           <div><span>العمل الجاري</span><h2>{serviceFilter === "all" ? "كل الحجوزات" : SERVICE_META.find((item) => item.key === serviceFilter)?.label}</h2></div>
           <div className="relative w-full sm:w-80"><Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} className="pr-10" placeholder="رقم الحجز، العميل، الهاتف أو القاعة" /></div>
         </div>
-        {serviceOrdersQuery.isLoading || koshaQuery.isLoading ? (
+        {centralBookingsQuery.isLoading ? (
           <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-48 rounded-xl" />)}</div>
         ) : filtered.length === 0 ? (
           <div className="ajn-empty"><CalendarDays /><h3>لا توجد حجوزات مطابقة</h3><p>غيّر البحث أو أنشئ أول حجز موحّد لهذه الخدمة.</p></div>
@@ -447,7 +452,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-services">{booking.services.slice(0, 5).map((service) => { const meta = SERVICE_META.find((item) => item.key === service.type)!; const Icon = meta.icon; return <span key={service.type} title={meta.label}><Icon /><small>{meta.short}</small></span>; })}</div>
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
-      <div className="flex items-center justify-between border-t border-border/60 pt-3"><span className="flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" />{booking.hall || "الموقع غير محدد"}</span><Button size="sm" variant="ghost" asChild><Link href={`/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div>
+      <div className="flex items-center justify-between border-t border-border/60 pt-3"><span className="flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" />{booking.hall || "الموقع غير محدد"}</span><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div>
     </article>
   );
 }
@@ -532,7 +537,7 @@ function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: num
   const data = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []).find((booking) => booking.source === source && booking.id === id), [source, id, serviceOrdersQuery.data, koshaQuery.data]);
   if (serviceOrdersQuery.isLoading || koshaQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
   if (!data) return <div className="ajn-empty"><AlertTriangle /><h2>الحجز غير موجود</h2><p>قد يكون مؤرشفاً أو لم تعد لديك صلاحية عرضه.</p><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div>;
-  return <BookingOperationsWorkspace booking={data} />;
+  return <BookingOperationsWorkspace booking={data as any} />;
 }
 
 function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
