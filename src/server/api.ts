@@ -318,6 +318,17 @@ import {
   runSystemHealth,
 } from "@/server/integration-health";
 import {
+  auditActionSchema,
+  decodeDataUrl,
+  deleteScannedDocument,
+  ensureScannerTables,
+  getScannedDocumentImage,
+  getScannedDocumentMeta,
+  listScannedDocuments,
+  saveDocumentSchema,
+  saveScannedDocument,
+} from "@/server/document-scanner";
+import {
   addDays,
   DELIVERY_ACCOUNTING_MODES,
   DELIVERY_ACCOUNTING_MODE_LABELS,
@@ -20782,6 +20793,141 @@ async function handleEventBrain(req: NextRequest, parts: string[], section: stri
   return error("مسار عقل الفعاليات غير مدعوم", 404);
 }
 
+// ─── ID document scanner ────────────────────────────────────────────────────
+
+/**
+ * Scanned identity documents.
+ *
+ * Privacy rules enforced here:
+ *  - images are served only from an authenticated endpoint, never a public URL;
+ *  - every view / save / delete is audit-logged;
+ *  - audit metadata never carries image bytes or document numbers;
+ *  - nothing is written unless the user explicitly saves.
+ */
+async function handleDocumentScanner(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "document-scanner") return null;
+  const method = req.method;
+  await ensureScannerTables();
+
+  // Lightweight audit beacon for client-side actions (print / export / capture).
+  if (method === "POST" && parts[2] === "audit") {
+    const auth = await requireAnyPermission(req, ["doc_scanner_view", "doc_scanner_scan"]);
+    if (isResponse(auth)) return auth;
+    const parsed = auditActionSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.audit", parsed);
+    const d = parsed.data;
+    // Metadata only — no image, no document number.
+    void logAdminActivity(req, d.action, "scanned_document", d.ownerId ?? undefined, {
+      documentType: d.documentType ?? null,
+      ownerType: d.ownerType ?? null,
+      format: d.format ?? null,
+      copies: d.copies ?? null,
+    });
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && !parts[2]) {
+    const auth = await requirePermission(req, "doc_scanner_save");
+    if (isResponse(auth)) return auth;
+    const parsed = saveDocumentSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("document-scanner.save", parsed);
+    const a = actor(auth);
+    const id = await saveScannedDocument({
+      ...parsed.data,
+      createdBy: a.id,
+      createdByName: a.name,
+    });
+    void logAdminActivity(req, "document_saved", "scanned_document", id, {
+      documentType: parsed.data.documentType,
+      ownerType: parsed.data.ownerType ?? null,
+      ownerId: parsed.data.ownerId ?? null,
+      sides: [parsed.data.frontImage ? "front" : null, parsed.data.backImage ? "back" : null].filter(Boolean),
+    });
+    return json({ id }, 201);
+  }
+
+  if (method === "GET" && !parts[2]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const params = req.nextUrl.searchParams;
+    return json({
+      data: await listScannedDocuments({
+        ownerType: params.get("ownerType"),
+        ownerId: params.get("ownerId") ? Number(params.get("ownerId")) : null,
+        documentType: params.get("documentType"),
+        limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+      }),
+    });
+  }
+
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && id && !parts[3]) {
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    return json(meta);
+  }
+
+  // Protected image delivery — the only way an image ever leaves the server.
+  if (method === "GET" && id && parts[3] === "image" && parts[4]) {
+    const sideParam = parts[4];
+    if (sideParam !== "front" && sideParam !== "back")
+      return error("وجه غير معروف", 400);
+    const auth = await requirePermission(req, "doc_scanner_view_saved");
+    if (isResponse(auth)) return auth;
+
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const stored = await getScannedDocumentImage(id, sideParam);
+    if (!stored) return error("لا توجد صورة لهذا الوجه", 404);
+    const decoded = decodeDataUrl(stored);
+    if (!decoded) return error("تعذر قراءة الصورة", 500);
+
+    void logAdminActivity(req, "document_viewed", "scanned_document", id, {
+      documentType: meta.documentType,
+      side: sideParam,
+      ownerType: meta.ownerType,
+      ownerId: meta.ownerId,
+    });
+
+    return new NextResponse(new Uint8Array(decoded.bytes), {
+      status: 200,
+      headers: {
+        "content-type": decoded.mime,
+        // Never cached by the browser, a proxy, or the PWA service worker.
+        "cache-control": "no-store, no-cache, must-revalidate, private",
+        pragma: "no-cache",
+        "content-disposition": `inline; filename="document-${id}-${sideParam}"`,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  }
+
+  if (method === "DELETE" && id) {
+    const auth = await requirePermission(req, "doc_scanner_delete");
+    if (isResponse(auth)) return auth;
+    const reason = String((await body(req))?.reason ?? "").trim();
+    if (reason.length < 3) return error("يجب إدخال سبب الحذف", 400);
+    const meta = await getScannedDocumentMeta(id);
+    if (!meta) return error("المستمسك غير موجود", 404);
+    const a = actor(auth);
+    const ok = await deleteScannedDocument(id, a.id, reason);
+    if (!ok) return error("تعذر الحذف", 404);
+    void logAdminActivity(req, "document_deleted", "scanned_document", id, {
+      documentType: meta.documentType, reason,
+    });
+    return json({ ok: true, id });
+  }
+
+  return error("طريقة غير مدعومة", 405);
+}
+
 // ─── Cross-module oversight (health / reconciliation / recycle bin) ─────────
 
 /**
@@ -22103,6 +22249,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const bookingOperations = await handleBookingOperations(req, parts, section);
   if (bookingOperations) return bookingOperations;
+
+  const documentScanner = await handleDocumentScanner(req, parts, section);
+  if (documentScanner) return documentScanner;
 
   const integrationOversight = await handleIntegrationOversight(req, parts, section);
   if (integrationOversight) return integrationOversight;
