@@ -51,6 +51,9 @@ import {
   customerPreferencesTable,
   customerRewardHistoryTable,
   customersTable,
+  deliveryDetailsTable,
+  deliveryOrdersTable,
+  deliveryOrderStatusHistoryTable,
   deliveryZonesTable,
   employeeAdvancesTable,
   employeeSalarySettingsTable,
@@ -276,6 +279,7 @@ import {
 import {
   getTelegramSettings,
   notifyTelegramDailyReport,
+  notifyTelegramDelivery,
   notifyTelegramInvoice,
   notifyTelegramKoshaBooking,
   notifyTelegramLogin,
@@ -304,6 +308,44 @@ import {
   normalizeColors,
   type ProductColor,
 } from "@/lib/colors";
+import {
+  addDays,
+  DELIVERY_ACCOUNTING_MODES,
+  DELIVERY_ACCOUNTING_MODE_LABELS,
+  DELIVERY_STATUS_LABELS,
+  DELIVERY_STATUSES as DELIVERY_ORDER_STATUSES,
+  DELIVERY_TYPE_LABELS,
+  cancelDeliverySchema,
+  codSettlementSchema,
+  deliveryQuoteSchema,
+  ensureDeliveryDetailsTables,
+  findProvince,
+  formatDeliveryDetail,
+  formatDeliveryOrderFull,
+  formatProvince,
+  getCodSettlement,
+  getDeliveryAccountingMode,
+  getDeliveryOrderById,
+  getDeliveryOrderDetails,
+  getInvoiceDelivery,
+  insertCodSettlement,
+  listDeliveryOrders,
+  listProvinces,
+  markCodSettled,
+  markLabelPrinted,
+  persistInvoiceDelivery,
+  prepareInvoiceDelivery,
+  provinceCreateSchema,
+  provinceReorderSchema,
+  provinceUpdateSchema,
+  resolveDeliveryFee,
+  returnDeliverySchema,
+  saveCancelReason,
+  saveReturnMetadata,
+  setDeliveryAccountingMode,
+  updateDeliveryOrderStatus,
+  type DeliveryAccountingMode,
+} from "@/server/delivery-details";
 import {
   AddToCartBody,
   CreateDeliveryZoneBody,
@@ -440,6 +482,21 @@ export const ALL_PERMISSIONS = [
   "production_edit",
   "production_delete",
   "production_approve",
+  // Province delivery — granular. The coarse "delivery" permission stays an
+  // umbrella grant so existing staff keep the access they already had.
+  "delivery_view",
+  "delivery_add",
+  "delivery_edit",
+  "delivery_fee_override",
+  "delivery_status_update",
+  "delivery_label_print",
+  "delivery_provinces_manage",
+  "delivery_pricing_manage",
+  // Delivery orders lifecycle, COD settlement and accounting.
+  "delivery_cod_settle",
+  "delivery_cancel",
+  "delivery_return",
+  "delivery_accounting_manage",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -20658,9 +20715,560 @@ async function handleEventBrain(req: NextRequest, parts: string[], section: stri
   return error("مسار عقل الفعاليات غير مدعوم", 404);
 }
 
+// ─── Delivery — COD settlement + returns ─────────────────────────────────────
+
+/**
+ * Confirms receipt of a Cash-on-Delivery amount. Records the payment on the
+ * invoice through the SAME path a normal collection uses (receipt voucher +
+ * syncSourcePaymentTarget → cashbox), then writes the settlement row. The unique
+ * index on delivery_cod_settlements.delivery_order_id blocks a double settlement.
+ */
+async function handleCodSettlement(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery_cod_settle"]);
+  if (isResponse(auth)) return auth;
+  const parsed = codSettlementSchema.safeParse({ ...(await body(req)), deliveryOrderId: orderId });
+  if (!parsed.success) return validationError("delivery.cod.settle", parsed);
+  const data = parsed.data;
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details) return error("طلب التوصيل غير موجود", 404);
+  const { order, detail, invoice } = details;
+  if (!detail?.codEnabled) return error("هذا الطلب ليس دفعاً عند الاستلام", 400);
+  if (!invoice) return error("لا توجد فاتورة مرتبطة بهذا الطلب", 400);
+  if ((invoice as any).financiallyReversed) return error("تم عكس الأثر المالي لهذه الفاتورة", 409);
+
+  // Duplicate guard (defence-in-depth alongside the unique index).
+  if (await getCodSettlement(orderId)) return error("تم تأكيد التحصيل مسبقاً لهذا الطلب", 409);
+
+  const total = money(invoice.total);
+  const priorPaid = money(invoice.paidAmount);
+  const remaining = money(Math.max(total - priorPaid, 0));
+  if (remaining <= 0) return error("الفاتورة مدفوعة بالكامل", 409);
+  const received = money(data.receivedAmount);
+  if (received <= 0) return error("أدخل مبلغاً مستلماً صحيحاً", 400);
+  if (received > remaining + 0.01)
+    return error(`المبلغ أكبر من المتبقي (${formatCurrency(remaining)})`, 400);
+
+  const newPaid = money(priorPaid + received);
+  const newRemaining = money(Math.max(total - newPaid, 0));
+  const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
+  const a = actor(auth);
+  const fActor = financialActor(auth);
+  const sourceMethod: "cash" | "transfer" | "pos" =
+    data.account === "bank" || data.account === "transfer" ? "transfer" : data.account === "pos" ? "pos" : "cash";
+  const settlementDate = data.settlementDate ?? new Date().toISOString().slice(0, 10);
+  const mode = await getDeliveryAccountingMode();
+
+  // 1) Advance the invoice's paid / remaining / status.
+  await db.update(salesInvoicesTable).set({
+    paidAmount: String(newPaid),
+    remainingAmount: String(newRemaining),
+    paymentStatus,
+    updatedAt: new Date(),
+  } as any).where(eq(salesInvoicesTable.id, invoice.id));
+
+  // 2) Receipt voucher (same shape as a normal invoice collection).
+  const [voucher] = await db.insert(receiptVouchersTable).values({
+    voucherNo: temporaryVoucherNo(),
+    date: settlementDate,
+    amount: String(received),
+    payerName: textFallback(invoice.customerName, "زبون"),
+    customerId: invoice.customerId,
+    reference: nullableText(
+      data.referenceNo ? `COD ${order.deliveryNo} | ${data.referenceNo}` : `COD ${order.deliveryNo}`,
+    ),
+    method: sourceMethod,
+    notes: nullableText(data.notes),
+    createdBy: a.id,
+    createdByName: a.name,
+  }).returning();
+  const [savedVoucher] = await db.update(receiptVouchersTable).set({
+    voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
+  }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
+
+  // 3) Post to the cashbox through the existing invoice-payment funnel.
+  let financialTransaction: any = await syncSourcePaymentTarget({
+    sourceType: "sales_invoice",
+    sourceId: invoice.id,
+    sourceEvent: "payment",
+    targetAmount: newPaid,
+    normalDirection: "revenue",
+    transactionDate: settlementDate,
+    department: "store",
+    transactionType: "sales_invoice",
+    description: `تحصيل عند الاستلام ${order.deliveryNo} - فاتورة ${invoice.invoiceNo}`,
+    paymentMethod: sourceMethod,
+    customerId: invoice.customerId,
+    customerName: invoice.customerName,
+    customerPhone: invoice.customerPhone,
+    notes: nullableText(data.notes),
+  }, fActor);
+  if (financialTransaction?.approvalStatus === "pending" && canApproveFinancialTransactions(fActor)) {
+    financialTransaction = await approveAndExecuteFinancialTransaction(
+      financialTransaction.id, fActor, "تأكيد تحصيل الدفع عند الاستلام",
+    );
+  }
+  if (financialTransaction) {
+    await db.update(receiptVouchersTable).set({
+      approvalStatus: financialTransaction.approvalStatus,
+      financialTransactionId: financialTransaction.id,
+    }).where(eq(receiptVouchersTable.id, savedVoucher.id));
+  }
+
+  // 4) Delivery accounting split — treat the fee per the configured mode. The
+  //    idempotency key makes a repeat call a no-op.
+  const deliveryFeeAmount = money(detail.deliveryFee);
+  if (deliveryFeeAmount > 0 && (mode === "payable" || mode === "expense")) {
+    await createFinancialTransaction({
+      transactionDate: settlementDate,
+      direction: "expense",
+      amount: deliveryFeeAmount,
+      department: "delivery",
+      transactionType: mode === "payable" ? "delivery_company_payable" : "delivery_expense",
+      description: mode === "payable"
+        ? `مستحق شركة التوصيل عن ${order.deliveryNo}`
+        : `مصروف توصيل عن ${order.deliveryNo}`,
+      paymentMethod: "cash",
+      sourceType: "delivery_order",
+      sourceId: String(orderId),
+      sourceEvent: `accounting_${mode}`,
+      idempotencyKey: `delivery_order:${orderId}:accounting:${mode}`,
+      approvalStatus: "pending",
+      notes: `نمط محاسبة التوصيل: ${DELIVERY_ACCOUNTING_MODE_LABELS[mode]}`,
+      attachments: [],
+    }, fActor).catch((err) => console.warn("delivery accounting split failed", { orderId, err }));
+  }
+
+  // 5) Persist the settlement row + mark the order settled.
+  const attachmentUrl = data.attachmentUrl
+    ? await persistMediaValue(data.attachmentUrl, `receipts/delivery_cod/${orderId}`).catch(() => null)
+    : null;
+  const settlementId = await insertCodSettlement({
+    deliveryOrderId: orderId,
+    salesInvoiceId: invoice.id,
+    customerId: invoice.customerId,
+    deliveryCompany: nullableText(data.deliveryCompany ?? detail.deliveryCompany),
+    expectedAmount: money(detail.codAmount) || remaining,
+    receivedAmount: received,
+    settlementDate,
+    referenceNo: nullableText(data.referenceNo),
+    account: data.account,
+    accountingMode: mode,
+    notes: nullableText(data.notes),
+    attachmentUrl,
+    receiptVoucherId: savedVoucher.id,
+    financialTransactionId: financialTransaction?.id ?? null,
+    createdBy: a.id,
+    createdByName: a.name,
+  });
+  await markCodSettled(orderId);
+
+  // 6) Audit + timeline + notification.
+  void logAdminActivity(req, "cod_collected", "delivery_order", orderId, {
+    invoiceNo: invoice.invoiceNo, received, mode, settlementId,
+    oldValues: { paid: priorPaid, remaining },
+    newValues: { paid: newPaid, remaining: newRemaining, paymentStatus },
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "cod_settled",
+    title: "تم تأكيد تحصيل الدفع عند الاستلام",
+    body: `${formatCurrency(received)} · ${savedVoucher.voucherNo}`,
+    actor: erpActorFromAdmin(auth),
+    metadata: { received, voucherNo: savedVoucher.voucherNo, mode },
+  });
+  void addEntityTimeline({
+    entityType: "sales_invoice", entityId: invoice.id, type: "payment_added",
+    title: "تحصيل عند الاستلام",
+    body: `${formatCurrency(received)} عبر التوصيل ${order.deliveryNo}`,
+    actor: erpActorFromAdmin(auth),
+  });
+  void notifyTelegramDelivery({
+    event: "cod_settled", title: "💵 تم تحصيل الدفع عند الاستلام",
+    deliveryNo: order.deliveryNo, invoiceNo: invoice.invoiceNo,
+    receiverName: detail.receiverName, codAmount: received,
+  });
+
+  return json({
+    ok: true, id: orderId, settlementId,
+    invoice: { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus },
+    financialTransaction: financialTransaction
+      ? { id: financialTransaction.id, status: financialTransaction.approvalStatus }
+      : null,
+  });
+}
+
+/**
+ * Marks a delivery as returned: records the reason + returned items, restores
+ * stock via the existing sales-invoice stock logic, and never collects COD.
+ */
+async function handleDeliveryReturn(req: NextRequest, orderId: number) {
+  const auth = await requireAnyPermission(req, ["delivery", "delivery_return"]);
+  if (isResponse(auth)) return auth;
+  const parsed = returnDeliverySchema.safeParse(await body(req));
+  if (!parsed.success) return validationError("delivery.return", parsed);
+  const data = parsed.data;
+
+  const details = await getDeliveryOrderDetails(orderId);
+  if (!details) return error("طلب التوصيل غير موجود", 404);
+  const { order, invoice } = details;
+  if (order.status === "returned") return error("الطلب مُعلّم كمرتجع مسبقاً", 409);
+  if (await getCodSettlement(orderId))
+    return error("تم تحصيل مبلغ لهذا الطلب — عالج التحصيل قبل الإرجاع", 409);
+
+  const a = actor(auth);
+  await saveReturnMetadata(orderId, data.reason, data.returnedItems ?? []);
+  const updated = await updateDeliveryOrderStatus(orderId, "returned", a, data.reason);
+
+  // Restore stock through the existing sales-invoice stock path (only when the
+  // invoice still has stock applied — never double-restore).
+  let stockRestored = false;
+  if (data.restoreStock && invoice && (invoice as any).stockApplied) {
+    try {
+      await applySalesInvoiceItemsStock(invoice.id, 1, "sales_invoice_stock_restored", a);
+      await db.update(salesInvoicesTable).set({
+        stockApplied: 0, stockRestoredAt: new Date(), updatedAt: new Date(),
+      } as any).where(eq(salesInvoicesTable.id, invoice.id));
+      stockRestored = true;
+    } catch (err) {
+      console.warn("delivery return stock restore failed", { orderId, err });
+    }
+  }
+
+  void logAdminActivity(req, "delivery_returned", "delivery_order", orderId, {
+    reason: data.reason, stockRestored, returnedItems: data.returnedItems,
+  });
+  void addEntityTimeline({
+    entityType: "delivery_order", entityId: orderId, type: "delivery_returned",
+    title: "تم تحديد التوصيل كمرتجع", body: data.reason,
+    actor: erpActorFromAdmin(auth), metadata: { stockRestored },
+  });
+  void notifyTelegramDelivery({
+    event: "delivery_returned", title: "↩️ توصيل مرتجع",
+    deliveryNo: updated?.deliveryNo ?? String(orderId), reason: data.reason,
+  });
+
+  return json({ ok: true, id: orderId, status: "returned", stockRestored });
+}
+
+// ─── Province Delivery (settings, pricing, orders) ───────────────────────────
+
+/**
+ * Province registry, per-province pricing, the fee quote used by the Sales
+ * Invoice and POS, and the delivery-orders lifecycle. The coarse "delivery"
+ * permission remains an umbrella grant over the granular delivery_* permissions.
+ */
+async function handleProvinceDelivery(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "delivery") return null;
+  const resource = parts[2];
+  if (
+    resource !== "provinces" &&
+    resource !== "quote" &&
+    resource !== "orders" &&
+    resource !== "accounting-mode"
+  )
+    return null;
+
+  const method = req.method;
+  await ensureDeliveryDetailsTables();
+
+  // Reads are shared with the invoice/POS screens, so anyone who can raise a
+  // sale can resolve a province fee.
+  const readPerms: Permission[] = [
+    "delivery",
+    "delivery_view",
+    "delivery_provinces_manage",
+    "delivery_pricing_manage",
+    "accounting",
+    "invoices",
+    "orders",
+  ];
+
+  // ── Delivery orders — list, details, status, label, COD, return, cancel ──
+  if (resource === "orders") {
+    if (method === "GET" && !parts[3]) {
+      const auth = await requireAnyPermission(req, readPerms);
+      if (isResponse(auth)) return auth;
+      const params = req.nextUrl.searchParams;
+      const list = await listDeliveryOrders({
+        status: params.get("status") ?? undefined,
+        provinceId: params.get("provinceId") ? Number(params.get("provinceId")) : undefined,
+        q: params.get("q") ?? undefined,
+        limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+      });
+      return json({
+        data: list,
+        statuses: DELIVERY_ORDER_STATUSES.map((s) => ({ value: s, label: DELIVERY_STATUS_LABELS[s] })),
+      });
+    }
+
+    const orderId = parts[3] ? int(parts[3]) : null;
+
+    if (method === "GET" && orderId && !parts[4]) {
+      const auth = await requireAnyPermission(req, readPerms);
+      if (isResponse(auth)) return auth;
+      const data = await getDeliveryOrderDetails(orderId);
+      if (!data) return error("طلب التوصيل غير موجود", 404);
+      const [timeline, auditLog] = await Promise.all([
+        db.query.entityTimelineTable.findMany({
+          where: and(
+            eq(entityTimelineTable.entityType, "delivery_order"),
+            eq(entityTimelineTable.entityId, orderId),
+          ),
+          orderBy: [desc(entityTimelineTable.createdAt)],
+          limit: 200,
+        }).catch(() => []),
+        db.query.adminActivityLogsTable.findMany({
+          where: and(
+            eq(adminActivityLogsTable.entityType, "delivery_order"),
+            eq(adminActivityLogsTable.entityId, orderId),
+          ),
+          orderBy: [desc(adminActivityLogsTable.createdAt)],
+          limit: 100,
+        }).catch(() => []),
+      ]);
+      return json({ ...formatDeliveryOrderFull(data), timeline, auditLog });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "status") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_status_update"]);
+      if (isResponse(auth)) return auth;
+      const b = await body(req);
+      const status = String(b?.status ?? "");
+      if (!DELIVERY_ORDER_STATUSES.includes(status as any))
+        return error("حالة توصيل غير معروفة", 400);
+      // Return / cancel have their own dedicated, side-effecting endpoints.
+      if (status === "returned" || status === "cancelled")
+        return error("استخدم إجراء الإرجاع أو الإلغاء المخصص", 400);
+      const updated = await updateDeliveryOrderStatus(orderId, status as any, actor(auth), b?.reason ?? null);
+      if (!updated) return error("طلب التوصيل غير موجود", 404);
+      void logAdminActivity(req, "delivery_status_updated", "delivery_order", orderId, {
+        status, reason: b?.reason ?? null,
+      });
+      void addEntityTimeline({
+        entityType: "delivery_order", entityId: orderId, type: "delivery_status",
+        title: `تحديث حالة التوصيل: ${DELIVERY_STATUS_LABELS[status] ?? status}`,
+        actor: erpActorFromAdmin(auth), metadata: { status, reason: b?.reason ?? null },
+      });
+      const notif = await getDeliveryOrderDetails(orderId).catch(() => null);
+      void notifyTelegramDelivery({
+        event: `delivery_${status}`,
+        title: `🚚 ${DELIVERY_STATUS_LABELS[status] ?? status}`,
+        deliveryNo: updated.deliveryNo,
+        invoiceNo: notif?.invoice?.invoiceNo ?? null,
+        provinceName: notif?.detail?.provinceName ?? null,
+        receiverName: notif?.detail?.receiverName ?? null,
+        statusLabel: DELIVERY_STATUS_LABELS[status] ?? status,
+      });
+      return json({ ok: true, id: orderId, status, statusLabel: DELIVERY_STATUS_LABELS[status] });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "label-printed") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_label_print"]);
+      if (isResponse(auth)) return auth;
+      await markLabelPrinted(orderId);
+      void logAdminActivity(req, "delivery_label_printed", "delivery_order", orderId, {});
+      return json({ ok: true, id: orderId });
+    }
+
+    if (method === "POST" && orderId && parts[4] === "settle-cod") {
+      return handleCodSettlement(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "return") {
+      return handleDeliveryReturn(req, orderId);
+    }
+
+    if (method === "POST" && orderId && parts[4] === "cancel") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_cancel"]);
+      if (isResponse(auth)) return auth;
+      const parsed = cancelDeliverySchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("delivery.cancel", parsed);
+      const order = await getDeliveryOrderById(orderId);
+      if (!order) return error("طلب التوصيل غير موجود", 404);
+      if (order.status === "delivered") return error("لا يمكن إلغاء طلب تم تسليمه", 409);
+      await saveCancelReason(orderId, parsed.data.reason);
+      const updated = await updateDeliveryOrderStatus(orderId, "cancelled", actor(auth), parsed.data.reason);
+      void logAdminActivity(req, "delivery_cancelled", "delivery_order", orderId, { reason: parsed.data.reason });
+      void addEntityTimeline({
+        entityType: "delivery_order", entityId: orderId, type: "delivery_cancelled",
+        title: "تم إلغاء طلب التوصيل", body: parsed.data.reason, actor: erpActorFromAdmin(auth),
+      });
+      void notifyTelegramDelivery({
+        event: "delivery_cancelled", title: "❌ إلغاء طلب توصيل",
+        deliveryNo: updated?.deliveryNo ?? String(orderId), reason: parsed.data.reason,
+      });
+      return json({ ok: true, id: orderId, status: "cancelled" });
+    }
+
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  // ── Delivery accounting mode setting ──
+  if (resource === "accounting-mode") {
+    if (method === "GET") {
+      const auth = await requireAnyPermission(req, ["delivery", "delivery_accounting_manage", "accounting"]);
+      if (isResponse(auth)) return auth;
+      return json({
+        mode: await getDeliveryAccountingMode(),
+        modes: DELIVERY_ACCOUNTING_MODES.map((m) => ({ value: m, label: DELIVERY_ACCOUNTING_MODE_LABELS[m] })),
+      });
+    }
+    if (method === "PUT") {
+      const auth = await requireAnyPermission(req, ["delivery_accounting_manage"]);
+      if (isResponse(auth)) return auth;
+      const mode = String((await body(req))?.mode ?? "");
+      if (!DELIVERY_ACCOUNTING_MODES.includes(mode as any))
+        return error("نمط محاسبة غير معروف", 400);
+      await setDeliveryAccountingMode(mode as DeliveryAccountingMode);
+      void logAdminActivity(req, "delivery_accounting_mode_changed", "settings", undefined, { mode });
+      return json({ ok: true, mode });
+    }
+    return error("طريقة غير مدعومة", 405);
+  }
+
+  if (method === "GET" && resource === "provinces") {
+    const auth = await requireAnyPermission(req, readPerms);
+    if (isResponse(auth)) return auth;
+    const activeOnly = req.nextUrl.searchParams.get("activeOnly") === "1";
+    const zones = await listProvinces(activeOnly);
+    return json(zones.map(formatProvince));
+  }
+
+  if (method === "POST" && resource === "quote") {
+    const auth = await requireAnyPermission(req, readPerms);
+    if (isResponse(auth)) return auth;
+    const parsed = deliveryQuoteSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.quote", parsed);
+    const zone = await findProvince(parsed.data.provinceId);
+    if (!zone) return error("المحافظة غير موجودة", 404);
+    if (!zone.isActive) return error("المحافظة غير مفعّلة للتوصيل", 400);
+    const quote = resolveDeliveryFee(
+      zone, parsed.data.deliveryType, parsed.data.subtotal, parsed.data.codEnabled,
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    return json({
+      ...quote,
+      provinceId: zone.id,
+      provinceName: zone.governorateAr,
+      deliveryType: parsed.data.deliveryType,
+      deliveryTypeLabel: DELIVERY_TYPE_LABELS[parsed.data.deliveryType],
+      expectedArrivalDate: addDays(today, quote.estimatedDays),
+    });
+  }
+
+  if (method === "POST" && resource === "provinces" && parts[3] === "reorder") {
+    const auth = await requireAnyPermission(req, ["delivery", "delivery_provinces_manage"]);
+    if (isResponse(auth)) return auth;
+    const parsed = provinceReorderSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.reorder", parsed);
+    for (const [index, id] of parsed.data.ids.entries()) {
+      await db.update(deliveryZonesTable).set({ sortOrder: index }).where(eq(deliveryZonesTable.id, id));
+    }
+    void logAdminActivity(req, "delivery_provinces_reordered", "delivery_province", undefined, {
+      ids: parsed.data.ids,
+    });
+    return json((await listProvinces(false)).map(formatProvince));
+  }
+
+  if (method === "POST" && resource === "provinces") {
+    const auth = await requireAnyPermission(req, ["delivery", "delivery_provinces_manage"]);
+    if (isResponse(auth)) return auth;
+    const parsed = provinceCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.create", parsed);
+    const data = parsed.data;
+    const governorateAr = data.governorateAr;
+    const governorate = textFallback(data.governorate, governorateAr);
+    const [zone] = await db.insert(deliveryZonesTable).values({
+      governorate,
+      governorateAr,
+      areas: data.areas,
+      pricedRegions: [],
+      price: String(data.price),
+      expressFee: String(data.expressFee),
+      sameDayFee: String(data.sameDayFee),
+      codFee: String(data.codFee),
+      freeDeliveryThreshold: String(data.freeDeliveryThreshold),
+      maxWeight: String(data.maxWeight),
+      estimatedDays: data.estimatedDays,
+      deliveryCompany: nullableText(data.deliveryCompany),
+      notes: nullableText(data.notes),
+      sortOrder: data.sortOrder,
+      isActive: data.isActive,
+    }).returning();
+    void logAdminActivity(req, "delivery_province_created", "delivery_province", zone.id, {
+      governorateAr, newValues: formatProvince(zone),
+    });
+    return json(formatProvince(zone), 201);
+  }
+
+  if (method === "PATCH" && resource === "provinces" && parts[3]) {
+    const id = int(parts[3]);
+    if (!id) return error("معرف غير صحيح", 400);
+    const parsed = provinceUpdateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("delivery.provinces.update", parsed);
+    const data = parsed.data;
+
+    // Pricing edits and registry edits are separately grantable.
+    const touchesPricing = [
+      data.price, data.expressFee, data.sameDayFee,
+      data.codFee, data.freeDeliveryThreshold, data.maxWeight,
+    ].some((value) => value !== undefined);
+    const auth = await requireAnyPermission(
+      req,
+      touchesPricing
+        ? ["delivery", "delivery_pricing_manage"]
+        : ["delivery", "delivery_provinces_manage"],
+    );
+    if (isResponse(auth)) return auth;
+
+    const before = await findProvince(id);
+    if (!before) return error("المحافظة غير موجودة", 404);
+
+    const update: Record<string, unknown> = {};
+    if (data.governorateAr !== undefined) update.governorateAr = data.governorateAr;
+    if (data.governorate !== undefined) update.governorate = data.governorate;
+    if (data.areas !== undefined) update.areas = data.areas;
+    if (data.price !== undefined) update.price = String(data.price);
+    if (data.expressFee !== undefined) update.expressFee = String(data.expressFee);
+    if (data.sameDayFee !== undefined) update.sameDayFee = String(data.sameDayFee);
+    if (data.codFee !== undefined) update.codFee = String(data.codFee);
+    if (data.freeDeliveryThreshold !== undefined)
+      update.freeDeliveryThreshold = String(data.freeDeliveryThreshold);
+    if (data.maxWeight !== undefined) update.maxWeight = String(data.maxWeight);
+    if (data.estimatedDays !== undefined) update.estimatedDays = data.estimatedDays;
+    if (data.deliveryCompany !== undefined) update.deliveryCompany = nullableText(data.deliveryCompany);
+    if (data.notes !== undefined) update.notes = nullableText(data.notes);
+    if (data.sortOrder !== undefined) update.sortOrder = data.sortOrder;
+    if (data.isActive !== undefined) update.isActive = data.isActive;
+    if (Object.keys(update).length === 0) return json(formatProvince(before));
+
+    const [zone] = await db.update(deliveryZonesTable)
+      .set(update as any)
+      .where(eq(deliveryZonesTable.id, id))
+      .returning();
+    void logAdminActivity(
+      req,
+      touchesPricing ? "delivery_fee_changed" : "delivery_province_updated",
+      "delivery_province",
+      id,
+      { governorateAr: zone.governorateAr, oldValues: formatProvince(before), newValues: formatProvince(zone) },
+    );
+    return json(formatProvince(zone));
+  }
+
+  return null;
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const provinceDelivery = await handleProvinceDelivery(req, parts, section);
+  if (provinceDelivery) return provinceDelivery;
 
   const eventBrain = await handleEventBrain(req, parts, section);
   if (eventBrain) return eventBrain;
