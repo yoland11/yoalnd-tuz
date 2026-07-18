@@ -36,6 +36,7 @@ const PrintLabelsPage = lazy(() => import("./print-labels"));
 const AssetNewPage = lazy(() => import("./asset-new"));
 const AssetGatePage = lazy(() => import("./asset-gate"));
 const AssetReportsPage = lazy(() => import("./asset-reports"));
+const DepreciationCategoriesPage = lazy(() => import("./depreciation-categories"));
 const InventoryAlertsPage = lazy(() => import("./inventory-alerts"));
 const InventoryValueReportPage = lazy(() => import("./inventory-value-report"));
 const ProductionPage = lazy(() => import("./production"));
@@ -819,6 +820,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <AssetNewPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/assets/depreciation-categories">
+            {() => (
+              <Guard me={me} anyPerm={["products", "depreciation_categories_view"]}>
+                <DepreciationCategoriesPage />
               </Guard>
             )}
           </Route>

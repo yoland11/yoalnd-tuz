@@ -59,6 +59,7 @@ import {
   Scissors,
   Factory,
   Lock,
+  SlidersHorizontal,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -559,6 +560,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets/depreciation-categories",
+    label: "فئات الإهلاك",
+    icon: SlidersHorizontal,
+    perm: "depreciation_categories_view",
+  },
+  {
     href: "/admin/asset-movements",
     label: "حركة الأصول والمخزن",
     icon: ScanLine,
@@ -755,6 +762,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/asset-gate"),
       navItem("/admin/asset-reports"),
       navItem("/admin/assets"),
+      navItem("/admin/assets/depreciation-categories"),
       navItem("/admin/asset-movements"),
       navItem("/admin/maintenance-scheduler"),
     ],

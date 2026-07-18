@@ -448,6 +448,12 @@ export const ALL_PERMISSIONS = [
   "services",
   "products",
   "asset_depreciation_remove",
+  "depreciation_categories_view",
+  "depreciation_categories_create",
+  "depreciation_categories_edit",
+  "depreciation_categories_archive",
+  "depreciation_categories_apply",
+  "depreciation_categories_audit_view",
   "gallery",
   "delivery",
   "customers",
@@ -24372,9 +24378,44 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "assets") {
-    const auth = await requirePermission(req, "products");
+    const categoryRoute = parts[2] === "depreciation-categories";
+    const auth = categoryRoute
+      ? await requireAnyPermission(req, ["products", "depreciation_categories_view"])
+      : await requirePermission(req, "products");
     if (isResponse(auth)) return auth;
     await ensureAdminExtensionsTables();
+
+    if (categoryRoute) {
+      await ensureDepreciationCategoryTables();
+      const categoryId = int(parts[3]);
+      const action = parts[4];
+      const can = (permission: Permission) => auth.role === "admin" || hasPermission(auth, "products") || hasPermission(auth, permission);
+      const schema = z.object({
+        name: z.string().trim().min(2).max(160), code: z.string().trim().max(50).nullable().optional(), assetType: z.string().trim().max(80).nullable().optional(), description: z.string().trim().max(2000).nullable().optional(), method: z.enum(["straight_line", "declining_balance", "usage", "manual"]), usefulLifeYears: z.coerce.number().int().min(0).max(200).default(0), usefulLifeMonths: z.coerce.number().int().min(0).max(2400).default(0), annualRate: z.coerce.number().min(0).max(100).default(0), monthlyRate: z.coerce.number().min(0).max(100).default(0), residualValue: z.coerce.number().min(0).max(1_000_000_000).default(0), perBooking: z.coerce.number().min(0).max(1_000_000_000).default(0), perHour: z.coerce.number().min(0).max(1_000_000_000).default(0), maxUses: z.coerce.number().int().min(0).max(10_000_000).default(0), maintenanceThreshold: z.coerce.number().int().min(0).max(10_000_000).default(0), isActive: z.boolean().default(true), notes: z.string().trim().max(2000).nullable().optional(), effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), reason: z.string().trim().max(1000).nullable().optional(), managerNote: z.string().trim().max(2000).nullable().optional(), applyMode: z.enum(["new_only", "all", "selected"]).optional(), selectedAssetIds: z.array(z.coerce.number().int().positive()).max(500).optional(),
+      });
+      const assetCount = async (id: number) => Number((await db.execute(sql`select count(*)::int as count from asset_passports where metadata->>'depreciationCategoryId' = ${String(id)}`) as any).rows?.[0]?.count ?? 0);
+      const format = async (row: any) => ({ ...row, id: Number(row.id), linkedAssets: await assetCount(Number(row.id)), isActive: Boolean(row.is_active), isArchived: Boolean(row.is_archived), usefulLifeYears: Number(row.useful_life_years), usefulLifeMonths: Number(row.useful_life_months), annualRate: Number(row.annual_rate), monthlyRate: Number(row.monthly_rate), residualValue: Number(row.residual_value), perBooking: Number(row.per_booking), perHour: Number(row.per_hour), maxUses: Number(row.max_uses), maintenanceThreshold: Number(row.maintenance_threshold) });
+      if (method === "GET" && !categoryId) {
+        const q = String(req.nextUrl.searchParams.get("q") ?? "").trim(); const status = String(req.nextUrl.searchParams.get("status") ?? "all"); const methodFilter = String(req.nextUrl.searchParams.get("method") ?? "all"); const assetType = String(req.nextUrl.searchParams.get("assetType") ?? ""); const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") ?? 1)); const limit = Math.min(100, Math.max(10, Number(req.nextUrl.searchParams.get("limit") ?? 20))); const sort = ["name", "updated_at", "created_at"].includes(String(req.nextUrl.searchParams.get("sort"))) ? String(req.nextUrl.searchParams.get("sort")) : "updated_at";
+        const result: any = await db.execute(sql`select *, count(*) over()::int as total from asset_depreciation_categories where (${q} = '' or name ilike ${`%${q}%`} or coalesce(code,'') ilike ${`%${q}%`}) and (${status} = 'all' or (${status} = 'active' and is_active and not is_archived) or (${status} = 'inactive' and not is_active and not is_archived) or (${status} = 'archived' and is_archived)) and (${methodFilter} = 'all' or method = ${methodFilter}) and (${assetType} = '' or asset_type = ${assetType}) order by case when ${sort} = 'name' then name end asc, updated_at desc limit ${limit} offset ${(page - 1) * limit}`);
+        const rows = await Promise.all((result.rows ?? []).map(format)); return json({ data: rows, total: Number(result.rows?.[0]?.total ?? 0), page, limit });
+      }
+      if (method === "POST" && !categoryId) {
+        if (!can("depreciation_categories_create")) return error("ليس لديك صلاحية إضافة فئة إهلاك", 403); const parsed = schema.safeParse(await body(req)); if (!parsed.success) return validationError("depreciation-categories.create", parsed); const d = parsed.data;
+        const duplicate: any = await db.execute(sql`select id from asset_depreciation_categories where lower(name) = lower(${d.name}) or (${d.code ?? null} is not null and lower(coalesce(code,'')) = lower(${d.code ?? ""})) limit 1`); if ((duplicate.rows ?? []).length) return error("اسم الفئة أو رمزها مستخدم مسبقاً", 409);
+        const created: any = await db.execute(sql`insert into asset_depreciation_categories (name,code,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,is_active,notes,created_by,created_by_name,updated_by,updated_by_name) values (${d.name},${d.code ?? null},${d.assetType ?? null},${d.description ?? null},${d.method},${d.usefulLifeYears},${d.usefulLifeMonths},${d.annualRate},${d.monthlyRate},${d.residualValue},${d.perBooking},${d.perHour},${d.maxUses},${d.maintenanceThreshold},${d.isActive},${d.notes ?? null},${auth.id},${auth.fullName || auth.username},${auth.id},${auth.fullName || auth.username}) returning *`); const row = created.rows[0]; await recordDepreciationCategoryAudit(row.id, "created", null, row, auth, d.effectiveDate ?? new Date().toISOString().slice(0,10), d.reason, d.managerNote, undefined, undefined, req); return json(await format(row), 201);
+      }
+      if (!categoryId) return error("معرّف الفئة غير صحيح", 400);
+      const found: any = await db.execute(sql`select * from asset_depreciation_categories where id = ${categoryId} limit 1`); const current = found.rows?.[0]; if (!current) return error("فئة الإهلاك غير موجودة", 404);
+      if (method === "GET" && action === "audit") { if (!can("depreciation_categories_audit_view")) return error("ليس لديك صلاحية عرض سجل التدقيق", 403); const result: any = await db.execute(sql`select * from asset_depreciation_category_audit where category_id = ${categoryId} order by created_at desc limit 200`); return json({ data: result.rows ?? [] }); }
+      if (method === "POST" && action === "clone") { if (!can("depreciation_categories_create")) return error("ليس لديك صلاحية نسخ الفئة", 403); const row: any = await db.execute(sql`insert into asset_depreciation_categories (name,code,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,is_active,notes,created_by,created_by_name,updated_by,updated_by_name) select ${`${current.name} (نسخة)`},null,asset_type,description,method,useful_life_years,useful_life_months,annual_rate,monthly_rate,residual_value,per_booking,per_hour,max_uses,maintenance_threshold,false,notes,${auth.id},${auth.fullName || auth.username},${auth.id},${auth.fullName || auth.username} from asset_depreciation_categories where id = ${categoryId} returning *`); await recordDepreciationCategoryAudit(row.rows[0].id, "cloned", null, row.rows[0], auth, new Date().toISOString().slice(0,10), null, null, undefined, undefined, req); return json(await format(row.rows[0]), 201); }
+      if (method === "POST" && action === "archive") { if (!can("depreciation_categories_archive")) return error("ليس لديك صلاحية أرشفة الفئة", 403); await db.execute(sql`update asset_depreciation_categories set is_archived = true, is_active = false, updated_at = now(), updated_by = ${auth.id}, updated_by_name = ${auth.fullName || auth.username} where id = ${categoryId}`); await recordDepreciationCategoryAudit(categoryId, "archived", current, { ...current, is_archived: true, is_active: false }, auth, new Date().toISOString().slice(0,10), null, null, undefined, undefined, req); return json({ ok: true }); }
+      if (method === "PATCH") { if (!can("depreciation_categories_edit")) return error("ليس لديك صلاحية تعديل الفئة", 403); const parsed = schema.safeParse(await body(req)); if (!parsed.success) return validationError("depreciation-categories.update", parsed); const d = parsed.data; const linked = await assetCount(categoryId); const rulesChanged = ["method","useful_life_years","useful_life_months","annual_rate","monthly_rate","residual_value","per_booking","per_hour","max_uses","maintenance_threshold"].some((key) => String((current as any)[key]) !== String((({ method:d.method,useful_life_years:d.usefulLifeYears,useful_life_months:d.usefulLifeMonths,annual_rate:d.annualRate,monthly_rate:d.monthlyRate,residual_value:d.residualValue,per_booking:d.perBooking,per_hour:d.perHour,max_uses:d.maxUses,maintenance_threshold:d.maintenanceThreshold } as any)[key]))); if (rulesChanged && !d.effectiveDate) return error("تاريخ بدء تطبيق التعديل مطلوب عند تغيير قواعد الإهلاك", 422); if (linked && rulesChanged && !d.applyMode) return error("اختر طريقة تطبيق التغييرات على الأصول المرتبطة", 422); if (d.applyMode && d.applyMode !== "new_only" && !can("depreciation_categories_apply")) return error("ليس لديك صلاحية تطبيق التغييرات على الأصول", 403);
+        const duplicate: any = await db.execute(sql`select id from asset_depreciation_categories where id <> ${categoryId} and (lower(name) = lower(${d.name}) or (${d.code ?? null} is not null and lower(coalesce(code,'')) = lower(${d.code ?? ""}))) limit 1`); if ((duplicate.rows ?? []).length) return error("اسم الفئة أو رمزها مستخدم مسبقاً", 409); const updated: any = await db.execute(sql`update asset_depreciation_categories set name=${d.name},code=${d.code ?? null},asset_type=${d.assetType ?? null},description=${d.description ?? null},method=${d.method},useful_life_years=${d.usefulLifeYears},useful_life_months=${d.usefulLifeMonths},annual_rate=${d.annualRate},monthly_rate=${d.monthlyRate},residual_value=${d.residualValue},per_booking=${d.perBooking},per_hour=${d.perHour},max_uses=${d.maxUses},maintenance_threshold=${d.maintenanceThreshold},is_active=${d.isActive},notes=${d.notes ?? null},updated_at=now(),updated_by=${auth.id},updated_by_name=${auth.fullName || auth.username} where id=${categoryId} returning *`); const row = updated.rows[0];
+        if (d.applyMode === "all" || d.applyMode === "selected") { const ids = d.applyMode === "all" ? null : (d.selectedAssetIds ?? []); if (d.applyMode === "selected" && !ids?.length) return error("اختر أصلاً واحداً على الأقل", 422); const targets: any = await db.execute(ids ? sql`select product_id from asset_passports where product_id = any(${ids})` : sql`select product_id from asset_passports where metadata->>'depreciationCategoryId' = ${String(categoryId)}`); for (const target of targets.rows ?? []) { await db.execute(sql`update asset_passports set metadata = coalesce(metadata,'{}'::jsonb) || ${JSON.stringify({ depreciationCategoryId: categoryId, depreciationCategoryEffectiveDate: d.effectiveDate, depreciationCategoryRules: { method:d.method, usefulLifeYears:d.usefulLifeYears, usefulLifeMonths:d.usefulLifeMonths, annualRate:d.annualRate, monthlyRate:d.monthlyRate, residualValue:d.residualValue, perBooking:d.perBooking, perHour:d.perHour, maxUses:d.maxUses, maintenanceThreshold:d.maintenanceThreshold } })}::jsonb, updated_at = now() where product_id = ${target.product_id}`); await addEntityTimeline({ entityType:"asset", entityId:target.product_id, type:"depreciation_category_applied", title:"تم تطبيق قواعد فئة الإهلاك", body:`تسري من ${d.effectiveDate}`, actor:erpActorFromAdmin(auth), metadata:{ categoryId, effectiveDate:d.effectiveDate, mode:d.applyMode } }); } }
+        await recordDepreciationCategoryAudit(categoryId, "updated", current, row, auth, d.effectiveDate ?? new Date().toISOString().slice(0,10), d.reason, d.managerNote, d.applyMode, d.selectedAssetIds, req); return json(await format(row)); }
+      return error("الإجراء غير مدعوم", 405);
+    }
 
     if (parts[2] === "scan" && method === "GET") {
       const rawCode = String(req.nextUrl.searchParams.get("code") ?? "").trim();
@@ -36632,6 +36673,34 @@ const EVENT_SERVICE_LABELS: Record<string, string> = { kosha: "كوشة", sound:
 function eventExecutionState(details: Record<string, any>) {
   const value = details.eventExecution;
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
+}
+
+let depreciationCategoryTablesPromise: Promise<void> | null = null;
+async function ensureDepreciationCategoryTables() {
+  if (!depreciationCategoryTablesPromise) depreciationCategoryTablesPromise = db.execute(sql`
+    create table if not exists asset_depreciation_categories (
+      id serial primary key, name varchar(160) not null, code varchar(50), asset_type varchar(80), description text,
+      method varchar(30) not null default 'straight_line', useful_life_years integer not null default 0, useful_life_months integer not null default 0,
+      annual_rate numeric(8,3) not null default 0, monthly_rate numeric(8,3) not null default 0, residual_value numeric(16,2) not null default 0,
+      per_booking numeric(16,2) not null default 0, per_hour numeric(16,2) not null default 0, max_uses integer not null default 0, maintenance_threshold integer not null default 0,
+      is_active boolean not null default true, is_archived boolean not null default false, notes text,
+      created_by integer, created_by_name text not null default '', updated_by integer, updated_by_name text not null default '', created_at timestamp not null default now(), updated_at timestamp not null default now()
+    );
+    create unique index if not exists asset_depreciation_categories_name_uq on asset_depreciation_categories (lower(name));
+    create unique index if not exists asset_depreciation_categories_code_uq on asset_depreciation_categories (lower(code)) where code is not null;
+    create table if not exists asset_depreciation_category_audit (
+      id serial primary key, category_id integer not null references asset_depreciation_categories(id), action varchar(30) not null,
+      previous_value jsonb, new_value jsonb, changed_by integer, changed_by_name text not null default '', effective_date date not null,
+      reason text, manager_note text, apply_mode varchar(20), selected_asset_ids jsonb not null default '[]'::jsonb, created_at timestamp not null default now()
+    );
+    create index if not exists asset_depreciation_category_audit_category_idx on asset_depreciation_category_audit(category_id, created_at desc);
+  `).then(() => undefined).catch((error) => { depreciationCategoryTablesPromise = null; throw error; });
+  await depreciationCategoryTablesPromise;
+}
+
+async function recordDepreciationCategoryAudit(categoryId: number, action: string, previousValue: unknown, newValue: unknown, user: AdminUser, effectiveDate: string, reason?: string | null, managerNote?: string | null, applyMode?: string, selectedAssetIds?: number[], req?: NextRequest) {
+  await db.execute(sql`insert into asset_depreciation_category_audit (category_id,action,previous_value,new_value,changed_by,changed_by_name,effective_date,reason,manager_note,apply_mode,selected_asset_ids) values (${categoryId},${action},${JSON.stringify(previousValue ?? null)}::jsonb,${JSON.stringify(newValue ?? null)}::jsonb,${user.id},${user.fullName || user.username},${effectiveDate},${reason ?? null},${managerNote ?? null},${applyMode ?? null},${JSON.stringify(selectedAssetIds ?? [])}::jsonb)`);
+  if (req) void logAdminActivity(req, `depreciation_category_${action}`, "depreciation_category", categoryId, { previousValue, newValue, effectiveDate, reason, managerNote, applyMode, selectedAssetIds });
 }
 
 /** Administrative access is intentionally distinct from staff execution access. */
