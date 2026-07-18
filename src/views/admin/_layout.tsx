@@ -40,6 +40,7 @@ import {
   CalendarDays,
   Inbox,
   Activity,
+  Trash2,
   QrCode,
   UserCheck,
   Bell,
@@ -580,6 +581,18 @@ export const NAV: NavItem[] = [
     label: "الواتساب",
     icon: MessageCircle,
     perm: "whatsapp",
+  },
+  {
+    href: "/admin/system-health",
+    label: "صحة النظام",
+    icon: Activity,
+    perm: "system_health",
+  },
+  {
+    href: "/admin/recycle-bin",
+    label: "سلة المحذوفات",
+    icon: Trash2,
+    perm: "recycle_bin_view",
   },
   {
     href: "/admin/backup",
