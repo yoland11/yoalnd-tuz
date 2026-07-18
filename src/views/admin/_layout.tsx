@@ -24,6 +24,7 @@ import {
   PenTool,
   Monitor,
   History,
+  ScanLine,
   Barcode,
   Printer,
   WalletCards,
@@ -56,7 +57,6 @@ import {
   GraduationCap,
   Ruler,
   Scissors,
-  ScanLine,
   Factory,
   Lock,
 } from "lucide-react";
@@ -581,6 +581,12 @@ export const NAV: NavItem[] = [
     label: "الواتساب",
     icon: MessageCircle,
     perm: "whatsapp",
+  },
+  {
+    href: "/admin/document-scanner",
+    label: "مسح المستمسكات",
+    icon: ScanLine,
+    perm: "doc_scanner_view",
   },
   {
     href: "/admin/system-health",

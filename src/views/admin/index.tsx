@@ -63,6 +63,7 @@ const DeliveryPage = lazy(() => import("./delivery"));
 const DeliveryOrdersPage = lazy(() => import("./delivery-orders"));
 const SystemHealthPage = lazy(() => import("./system-health"));
 const RecycleBinPage = lazy(() => import("./recycle-bin"));
+const DocumentScannerPage = lazy(() => import("./document-scanner"));
 const CustomersPage = lazy(() => import("./customers"));
 const LoyaltyPage = lazy(() => import("./loyalty"));
 const CrewsPage = lazy(() => import("./crews"));
@@ -649,6 +650,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="recycle_bin_view">
                 <RecycleBinPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/document-scanner">
+            {() => (
+              <Guard me={me} perm="doc_scanner_view">
+                <DocumentScannerPage />
               </Guard>
             )}
           </Route>
