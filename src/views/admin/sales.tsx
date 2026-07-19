@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
@@ -52,6 +52,11 @@ type Customer = {
 };
 type Supplier = { id: number; name: string };
 
+function finiteNumber(value: unknown, min = 0, max = 100_000_000) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : min;
+}
+
 const PAYMENT_METHODS = [
   { value: "cash",     label: "نقداً" },
   { value: "card",     label: "بطاقة" },
@@ -67,7 +72,7 @@ const PAYMENT_STATUSES = [
 
 function newInvoice() {
   return {
-    customerName: "", customerPhone: "", notes: "",
+    customerName: "", customerPhone: "", customerId: "", notes: "",
     supplierId: "", supplierName: "",
     paymentMethod: "cash", paymentStatus: "paid",
     paidAmount: "", taxPct: "0", discountAmount: "0", couponCode: "", couponDiscountAmount: "0",
@@ -159,6 +164,7 @@ export default function SalesPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const searchRef = useRef<HTMLInputElement>(null);
+  const submitKeyRef = useRef<string | null>(null);
 
   // Invoice state
   const [form, setForm] = useState(newInvoice());
@@ -227,15 +233,15 @@ export default function SalesPage() {
 
   // ── Cart operations ──────────────────────────────────────────────────────
   function addToCart(p: Product) {
-    const price = parseFloat(p.price) || 0;
-    const cost = parseFloat(p.costPrice || "0") || 0;
+    const price = finiteNumber(p.price);
+    const cost = finiteNumber(p.costPrice);
     setCart(prev => {
       const idx = prev.findIndex(i => i.productId === p.id);
       if (idx >= 0) {
         const updated = [...prev];
         const item = { ...updated[idx] };
-        item.quantity += 1;
-        item.total = item.quantity * item.unitPrice - item.discount;
+        item.quantity = finiteNumber(item.quantity + 1, 0.001, 1_000_000);
+        item.total = Math.max(0, item.quantity * item.unitPrice - item.discount);
         updated[idx] = item;
         return updated;
       }
@@ -254,16 +260,21 @@ export default function SalesPage() {
     setCart(prev => {
       const updated = [...prev];
       const item = { ...updated[idx] } as any;
-      const val = parseFloat(raw) || 0;
+      const val = field === "quantity"
+        ? finiteNumber(raw, 0, 1_000_000)
+        : field === "discountPct"
+          ? finiteNumber(raw, 0, 100)
+          : finiteNumber(raw);
       item[field] = field === "productName" || field === "barcode" ? raw : val;
       if (field === "discountPct") {
         item.discount = +(item.unitPrice * item.quantity * val / 100).toFixed(2);
       } else if (field === "discount") {
         item.discountPct = item.unitPrice > 0
-          ? +(val / (item.unitPrice * item.quantity) * 100).toFixed(2)
+          ? +(Math.min(val, item.unitPrice * item.quantity) / (item.unitPrice * item.quantity) * 100).toFixed(2)
           : 0;
       }
-      item.total = +(item.quantity * item.unitPrice - item.discount).toFixed(2);
+      item.discount = Math.min(item.discount, item.quantity * item.unitPrice);
+      item.total = +Math.max(0, item.quantity * item.unitPrice - item.discount).toFixed(2);
       updated[idx] = item;
       return updated;
     });
@@ -274,18 +285,18 @@ export default function SalesPage() {
   }
 
   // ── Totals ───────────────────────────────────────────────────────────────
-  const subtotal = cart.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
-  const couponDiscount = parseFloat(form.couponDiscountAmount || "0");
-  const totalDiscount = cart.reduce((s, i) => s + i.discount, 0) + parseFloat(form.discountAmount || "0") + couponDiscount;
-  const taxPct = parseFloat(form.taxPct || "0");
-  const taxAmount = +((subtotal - totalDiscount) * taxPct / 100).toFixed(2);
-  const deliveryFee = delivery.deliveryFee || 0;
-  const codFee = delivery.codFee || 0;
-  const grandTotal = +(subtotal - totalDiscount + taxAmount + deliveryFee + codFee).toFixed(2);
+  const subtotal = cart.reduce((s, i) => s + finiteNumber(i.quantity) * finiteNumber(i.unitPrice), 0);
+  const couponDiscount = finiteNumber(form.couponDiscountAmount);
+  const totalDiscount = Math.min(subtotal, cart.reduce((s, i) => s + finiteNumber(i.discount), 0) + finiteNumber(form.discountAmount) + couponDiscount);
+  const taxPct = finiteNumber(form.taxPct, 0, 100);
+  const taxAmount = +(Math.max(0, subtotal - totalDiscount) * taxPct / 100).toFixed(2);
+  const deliveryFee = finiteNumber(delivery.deliveryFee);
+  const codFee = finiteNumber(delivery.codFee);
+  const grandTotal = +Math.max(0, subtotal - totalDiscount + taxAmount + deliveryFee + codFee).toFixed(2);
   // Cash-on-delivery is collected on delivery, so the sale is not auto-paid.
-  const paidAmt = delivery.codEnabled ? parseFloat(form.paidAmount || "0")
-                  : isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
-  const remaining = +(grandTotal - paidAmt).toFixed(2);
+  const paidAmt = delivery.codEnabled ? finiteNumber(form.paidAmount)
+                  : isCashPaymentMethod(form.paymentMethod) ? grandTotal : Math.min(grandTotal, finiteNumber(form.paidAmount));
+  const remaining = +Math.max(0, grandTotal - paidAmt).toFixed(2);
 
   // Auto paymentStatus
   const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
@@ -319,17 +330,25 @@ export default function SalesPage() {
 
   // ── Save ─────────────────────────────────────────────────────────────────
   async function saveInvoice() {
+    if (saving) return;
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
     if (delivery.method === "province" && !delivery.valid) {
       toast({ title: "بيانات التوصيل ناقصة", description: "أكمل تفاصيل توصيل المحافظة", variant: "destructive" });
       return;
     }
+    const invalidLine = cart.find((item) => !item.productName.trim() || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unitPrice) || item.unitPrice < 0);
+    if (invalidLine || !Number.isFinite(grandTotal)) {
+      toast({ title: "بيانات الفاتورة غير صالحة", description: "تحقق من المنتجات والكميات والأسعار قبل الحفظ.", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
+      submitKeyRef.current ??= `sales-invoice:${crypto.randomUUID()}`;
       const payload = {
         date: form.date,
         customerName: form.customerName,
         customerPhone: form.customerPhone,
+        customerId: form.customerId ? Number(form.customerId) : null,
         supplierId: form.supplierId || null,
         supplierName: form.supplierName || null,
         subtotal, discountAmount: totalDiscount, taxAmount, total: grandTotal,
@@ -347,8 +366,11 @@ export default function SalesPage() {
         })),
       };
       const res = await adminFetch<{ invoice: SalesInvoice; delivery?: any; qr?: { dataUrl?: string } }>("/admin/sales-invoices", {
-        method: "POST", body: JSON.stringify(payload),
+        method: "POST",
+        headers: { "x-idempotency-key": submitKeyRef.current },
+        body: JSON.stringify(payload),
       });
+      submitKeyRef.current = null;
       toast({ title: "تم حفظ الفاتورة", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
       if (res?.delivery?.order?.id) {
         printDeliveryLabel({
@@ -368,8 +390,8 @@ export default function SalesPage() {
       setSearchQ("");
       // Ready for the next invoice: focus the barcode/search field with no mouse.
       requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
-    } catch (e: any) {
-      toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
+    } catch (e: unknown) {
+      toast({ title: "خطأ في الحفظ", description: apiErrorMessage(e), variant: "destructive" });
     } finally {
       setSaving(false);
     }
@@ -637,11 +659,12 @@ export default function SalesPage() {
               <CustomerLookup
                 value={form.customerName}
                 onValueChange={(value) =>
-                  setForm((current) => ({ ...current, customerName: value }))
+                  setForm((current) => ({ ...current, customerName: value, customerId: "" }))
                 }
                 onSelect={(customer) =>
                   setForm((current) => ({
                     ...current,
+                    customerId: String(customer.id),
                     customerName: customer.name,
                     customerPhone: formatIraqiPhoneInput(customer.phone),
                   }))

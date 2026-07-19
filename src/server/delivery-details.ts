@@ -580,6 +580,9 @@ export type PersistDeliveryOptions = {
   codAmount: number;
   customerId: number | null;
   actor: { id: number | null; name: string };
+  /** Optional Drizzle transaction.  Invoice creation supplies this so a
+   * delivery record can never outlive a failed invoice save. */
+  executor?: any;
 };
 
 /**
@@ -593,20 +596,21 @@ export async function persistInvoiceDelivery(
 ): Promise<{ deliveryDetail: DeliveryDetail; deliveryOrder: DeliveryOrder | null; created: boolean }> {
   await ensureDeliveryDetailsTables();
   const { prep, actor } = opts;
+  const executor = opts.executor ?? db;
   const input = prep.input;
 
-  const existing = await db.query.deliveryDetailsTable.findFirst({
+  const existing = await executor.query.deliveryDetailsTable.findFirst({
     where: eq(deliveryDetailsTable.salesInvoiceId, opts.salesInvoiceId),
   });
   if (existing) {
-    const order = await db.query.deliveryOrdersTable.findFirst({
+    const order = await executor.query.deliveryOrdersTable.findFirst({
       where: eq(deliveryOrdersTable.deliveryDetailsId, existing.id),
     });
     return { deliveryDetail: existing, deliveryOrder: order ?? null, created: false };
   }
 
   const codEnabled = input.codEnabled ?? false;
-  const [detail] = await db
+  const [detail] = await executor
     .insert(deliveryDetailsTable)
     .values({
       salesInvoiceId: opts.salesInvoiceId,
@@ -649,7 +653,7 @@ export async function persistInvoiceDelivery(
   // still record the detail but need no shippable order.
   let order: DeliveryOrder | null = null;
   if (prep.method === "province") {
-    const [created] = await db
+    const [created] = await executor
       .insert(deliveryOrdersTable)
       .values({
         deliveryNo: `DLV-TEMP-${randomBytes(6).toString("hex")}`,
@@ -663,13 +667,14 @@ export async function persistInvoiceDelivery(
         createdByName: actor.name,
       })
       .returning();
-    const [renamed] = await db
+    const [renamed] = await executor
       .update(deliveryOrdersTable)
       .set({ deliveryNo: deliveryNo(created.id, new Date(created.createdAt)) })
       .where(eq(deliveryOrdersTable.id, created.id))
       .returning();
     order = renamed ?? created;
-    await db.insert(deliveryOrderStatusHistoryTable).values({
+    if (!order) throw new Error("تعذر إنشاء طلب التوصيل");
+    await executor.insert(deliveryOrderStatusHistoryTable).values({
       deliveryOrderId: order.id,
       status: "pending_prep",
       notes: "أُنشئ تلقائياً عند إصدار الفاتورة",
@@ -680,7 +685,7 @@ export async function persistInvoiceDelivery(
 
   // Optionally persist the address to the customer's address book.
   if (input.saveAddressToCustomer && opts.customerId && prep.method === "province") {
-    await db.insert(customerAddressesTable).values({
+    await executor.insert(customerAddressesTable).values({
       customerId: opts.customerId,
       type: "delivery",
       fullName: input.receiverName ?? "",

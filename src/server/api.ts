@@ -8175,17 +8175,18 @@ async function recordCouponUsage(
     salesInvoiceId?: number | null;
     discountAmount: number;
   },
+  executor: any = db,
 ) {
   if (!coupon?.id || data.discountAmount <= 0) return;
   await ensureCouponsTables();
-  await db.insert(couponUsagesTable).values({
+  await executor.insert(couponUsagesTable).values({
     couponId: coupon.id,
     customerPhone: data.customerPhone ?? null,
     orderId: data.orderId ?? null,
     salesInvoiceId: data.salesInvoiceId ?? null,
     discountAmount: String(data.discountAmount),
   });
-  await db
+  await executor
     .update(couponsTable)
     .set({
       usedCount: sql`${couponsTable.usedCount} + 1`,
@@ -32434,7 +32435,11 @@ function salesInvoiceItems(value: unknown) {
         0,
       );
       const unitPrice = money(item?.unitPrice);
-      const discount = money(item?.discount);
+      const gross = quantity * unitPrice;
+      // A line discount may never exceed its gross value.  Keeping this rule at
+      // the boundary prevents a malformed client payload from producing a
+      // negative line, NaN totals, or an impossible stock/ledger entry.
+      const discount = Math.min(money(item?.discount), gross);
       const productName = textFallback(item?.productName, item?.productNameAr);
       return {
         productId:
@@ -32446,12 +32451,118 @@ function salesInvoiceItems(value: unknown) {
         quantity,
         unitPrice,
         discount,
-        discountPct: money(item?.discountPct),
-        total: Math.max(quantity * unitPrice - discount, 0),
+        discountPct: Math.min(money(item?.discountPct), 100),
+        total: Math.max(gross - discount, 0),
         costPrice: money(item?.costPrice),
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
+}
+
+const salesInvoiceItemSchema = z.object({
+  productId: z.coerce.number().int().positive().nullable().optional(),
+  productName: z.string().trim().min(1).max(500),
+  barcode: z.string().trim().max(100).optional().nullable(),
+  quantity: z.coerce.number().finite().positive().max(1_000_000),
+  unitPrice: z.coerce.number().finite().min(0).max(100_000_000),
+  discount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  discountPct: z.coerce.number().finite().min(0).max(100).default(0),
+  costPrice: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  // The server always recomputes the line total; it is accepted only for
+  // backward compatibility with the existing admin client.
+  total: z.coerce.number().finite().min(0).max(100_000_000).optional(),
+});
+
+const salesInvoiceCreateSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  customerName: z.string().trim().max(500).default(""),
+  customerPhone: z.string().trim().max(30).optional().nullable(),
+  customerId: z.coerce.number().int().positive().nullable().optional(),
+  supplierId: z.coerce.number().int().positive().nullable().optional(),
+  supplierName: z.string().trim().max(500).optional().nullable(),
+  discountAmount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  taxAmount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  couponCode: z.string().trim().max(60).optional(),
+  paidAmount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  paymentMethod: z.enum(["cash", "card", "transfer", "credit"]).default("cash"),
+  paymentStatus: z.enum(["paid", "partial", "unpaid"]).optional(),
+  status: z.enum(["active", "draft", "cancelled", "deleted"]).optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  isInternal: z.union([z.boolean(), z.literal(0), z.literal(1)]).optional(),
+  notes: z.string().trim().max(10_000).optional().nullable(),
+  delivery: z.unknown().optional(),
+  items: z.array(salesInvoiceItemSchema).min(1).max(500),
+});
+
+/**
+ * Reserve stock with a conditional update while the invoice transaction is
+ * open.  This is both the availability check and the deduction, so concurrent
+ * sales cannot race each other into a negative balance.
+ */
+async function deductSalesInvoiceStockInTransaction(
+  tx: any,
+  items: ReturnType<typeof salesInvoiceItems>,
+  invoiceId: number,
+  actorInfo: { id: number | null; name: string },
+) {
+  const owners = new Map<number, { id: number; name: string; quantity: number }>();
+  const itemOwners = new Map<number, number>();
+  for (const item of items) {
+    if (!item.productId) continue;
+    const resolved = await getStockOwnerProduct(item.productId);
+    if (!resolved) throw new CheckoutError("المنتج المحدد غير موجود", 404);
+    const ownerId = Number(resolved.stockProduct.id);
+    itemOwners.set(item.productId, ownerId);
+    const current = owners.get(ownerId);
+    owners.set(ownerId, {
+      id: ownerId,
+      name: resolved.stockProduct.nameAr || resolved.stockProduct.name || item.productName,
+      quantity: (current?.quantity ?? 0) + item.quantity,
+    });
+  }
+
+  for (const owner of owners.values()) {
+    const result: any = await tx.execute(sql`
+      UPDATE products
+      SET stock = stock - ${owner.quantity}, updated_at = now()
+      WHERE id = ${owner.id} AND stock::numeric >= ${owner.quantity}
+      RETURNING id
+    `);
+    const rows = result?.rows ?? result ?? [];
+    if (!rows.length)
+      throw new CheckoutError(`المخزون غير كافٍ للمنتج: ${owner.name}`, 409);
+  }
+
+  const movements = items
+    .filter((item) => item.productId && item.quantity > 0)
+    .map((item) => ({
+      productId: item.productId,
+      stockSourceProductId: itemOwners.get(item.productId!) ?? item.productId,
+      quantityChange: String(-item.quantity),
+      reason: "sales_invoice_stock_deducted",
+      relatedType: "sales_invoice",
+      relatedId: invoiceId,
+      createdBy: actorInfo.id,
+      createdByName: actorInfo.name,
+    }));
+  if (movements.length) await tx.insert(stockMovementsTable).values(movements);
+}
+
+async function nextSalesInvoiceNo(tx: any, date: string): Promise<string> {
+  const prefix = `SI-${date.slice(2, 4)}${date.slice(5, 7)}-`;
+  // PostgreSQL sequences are intentionally non-transactional.  A transaction
+  // scoped advisory lock plus this committed-number lookup avoids gaps in the
+  // *business* invoice number when a save rolls back, without adding a table.
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ajn:sales-invoice-number'))`);
+  const result: any = await tx.execute(sql`
+    SELECT invoice_no FROM sales_invoices
+    WHERE invoice_no LIKE ${`${prefix}%`}
+    ORDER BY length(invoice_no) DESC, invoice_no DESC
+    LIMIT 1
+  `);
+  const last = (result?.rows ?? result ?? [])[0]?.invoice_no as string | undefined;
+  const lastNumber = Number.parseInt(last?.slice(prefix.length) ?? "0", 10) || 0;
+  return `${prefix}${String(lastNumber + 1).padStart(5, "0")}`;
 }
 
 function purchaseInvoiceItems(value: unknown) {
@@ -32572,18 +32683,20 @@ async function handleSalesInvoices(
   }
 
   if (method === "POST") {
-    const b = await body(req);
+    const parsed = salesInvoiceCreateSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("sales-invoice.create", parsed);
+    const b = parsed.data;
     const a = actor(auth);
-    const items = salesInvoiceItems(b?.items);
+    const items = salesInvoiceItems(b.items);
     if (items.length === 0)
       return error("أضف منتجاً واحداً على الأقل إلى الفاتورة", 400);
 
-    const dateVal = b.date ?? new Date().toISOString().slice(0, 10);
+    const dateVal = normalizeDateOnly(b.date) ?? new Date().toISOString().slice(0, 10);
     const subtotal = items.reduce(
       (sum, item) => sum + item.quantity * item.unitPrice,
       0,
     );
-    let discountAmount = parseFloat(b.discountAmount ?? "0") || 0;
+    let discountAmount = money(b.discountAmount);
     const couponPreview = b.couponCode
       ? await calculateCouponDiscount(b.couponCode, subtotal, 0)
       : null;
@@ -32594,7 +32707,8 @@ async function handleSalesInvoices(
       : 0;
     if (couponDiscountAmount > discountAmount)
       discountAmount = couponDiscountAmount;
-    const taxAmount = parseFloat(b.taxAmount ?? "0") || 0;
+    discountAmount = Math.min(discountAmount, subtotal);
+    const taxAmount = money(b.taxAmount);
 
     // ── Province delivery — resolve the fee server-side, never trust the client ──
     const deliveryPrepResult = await prepareInvoiceDelivery(b.delivery, subtotal);
@@ -32652,15 +32766,22 @@ async function handleSalesInvoices(
       : null;
     if (supplierId && !supplier) return error("المورد المختار غير موجود", 400);
     const supplierName = nullableText(b.supplierName ?? supplier?.name);
+    const customerId = optionalPositiveId(b.customerId);
+    if (customerId) {
+      const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+      if (!customer) return error("العميل المحدد غير موجود", 400);
+    }
 
-    const [inv] = await db
+    // Header, lines, stock, coupon use, and delivery are a single unit of work.
+    const saved = await db.transaction(async (tx) => {
+    const [inv] = await tx
       .insert(salesInvoicesTable)
       .values({
-        invoiceNo: `SI-TEMP-${randomBytes(8).toString("hex")}`,
+        invoiceNo: await nextSalesInvoiceNo(tx, dateVal),
         date: dateVal,
         customerName: b.customerName ?? "",
         customerPhone,
-        customerId: b.customerId ?? null,
+        customerId,
         supplierId,
         supplierName,
         subtotal: String(subtotal),
@@ -32682,14 +32803,10 @@ async function handleSalesInvoices(
       } as any)
       .returning();
 
-    const invoiceNo = fmtInvoiceNo("SI", inv.id, new Date(inv.createdAt));
-    await db
-      .update(salesInvoicesTable)
-      .set({ invoiceNo })
-      .where(eq(salesInvoicesTable.id, inv.id));
+    const invoiceNo = inv.invoiceNo;
 
     if (items.length > 0) {
-      await db.insert(salesInvoiceItemsTable).values(
+      await tx.insert(salesInvoiceItemsTable).values(
         items.map((item: any) => ({
           invoiceId: inv.id,
           productId: item.productId ?? null,
@@ -32703,25 +32820,7 @@ async function handleSalesInvoices(
           costPrice: String(item.costPrice),
         })),
       );
-      // Update product stock
-      for (const item of items) {
-        if (item.productId && item.quantity > 0) {
-          await adjustProductStock(
-            Number(item.productId),
-            -Number(item.quantity),
-            {
-              reason: "sales_invoice_stock_deducted",
-              relatedType: "sales_invoice",
-              relatedId: inv.id,
-              createdBy: a.id,
-              createdByName: a.name,
-            },
-          );
-        }
-      }
-      void notifyLowStockForProductIds(
-        items.map((item) => Number(item.productId)),
-      );
+      await deductSalesInvoiceStockInTransaction(tx, items, inv.id, a);
     }
 
     if (couponPreview?.ok) {
@@ -32729,7 +32828,7 @@ async function handleSalesInvoices(
         customerPhone,
         salesInvoiceId: inv.id,
         discountAmount: couponDiscountAmount,
-      });
+      }, tx);
     }
 
     // ── Persist delivery detail + auto-create one delivery order (idempotent) ──
@@ -32744,8 +32843,9 @@ async function handleSalesInvoices(
           overrideReason: deliveryOverrideReason,
           // COD collects the unpaid balance on delivery.
           codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
-          customerId: b.customerId ?? null,
+          customerId,
           actor: a,
+          executor: tx,
         });
         if (deliveryResult.created) {
           void logAdminActivity(req, "delivery_added", "sales_invoice", inv.id, {
@@ -32768,9 +32868,15 @@ async function handleSalesInvoices(
           }
         }
       } catch (err) {
-        console.warn("delivery persistence failed", { invoiceId: inv.id, err });
+        // A missing delivery detail is not an acceptable partial invoice.
+        throw err;
       }
     }
+
+    return { inv, invoiceNo, deliveryResult };
+    });
+    const { inv, invoiceNo, deliveryResult } = saved;
+    void notifyLowStockForProductIds(items.map((item) => Number(item.productId)));
 
     const final = await db.query.salesInvoicesTable.findFirst({
       where: eq(salesInvoicesTable.id, inv.id),
@@ -32780,8 +32886,10 @@ async function handleSalesInvoices(
       .select()
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
-    const financialTransaction = final
-      ? await syncSourcePaymentTarget(
+    let financialTransaction: any = null;
+    if (final) {
+      try {
+        financialTransaction = await syncSourcePaymentTarget(
           {
             sourceType: "sales_invoice",
             sourceId: final.id,
@@ -32800,8 +32908,20 @@ async function handleSalesInvoices(
             notes: final.notes,
           },
           financialActor(auth),
-        )
-      : null;
+        );
+      } catch (err) {
+        // The transaction has committed.  Financial synchronization is
+        // idempotent and may be retried; never report a false failed-save.
+        console.error("sales invoice financial sync failed", {
+          invoiceId: final.id,
+          invoiceNo: final.invoiceNo,
+          customerId: final.customerId,
+          actorId: a.id,
+          error: err instanceof Error ? err.message : err,
+          stack: err instanceof Error ? err.stack : undefined,
+        });
+      }
+    }
     void logAdminActivity(
       req,
       "sales_invoice_created",
@@ -32844,7 +32964,9 @@ async function handleSalesInvoices(
   }
 
   if (method === "PUT" && id) {
-    const b = await body(req);
+    const parsed = salesInvoiceCreateSchema.partial().safeParse(await body(req));
+    if (!parsed.success) return validationError("sales-invoice.update", parsed);
+    const b = parsed.data;
     const a = actor(auth);
     const existing = await db.query.salesInvoicesTable.findFirst({
       where: eq(salesInvoicesTable.id, id),
@@ -32868,15 +32990,11 @@ async function handleSalesInvoices(
           (sum, item) => sum + item.quantity * item.unitPrice,
           0,
         )
-      : parseFloat(b.subtotal ?? String(existing.subtotal)) || 0;
-    const discountAmount =
-      parseFloat(b.discountAmount ?? String(existing.discountAmount)) || 0;
-    const taxAmount =
-      parseFloat(b.taxAmount ?? String(existing.taxAmount)) || 0;
-    const total = Math.max(
-      parseFloat(b.total ?? String(subtotal - discountAmount + taxAmount)) || 0,
-      0,
-    );
+      : money(existing.subtotal);
+    const discountAmount = b.discountAmount ?? money(existing.discountAmount);
+    const taxAmount = b.taxAmount ?? money(existing.taxAmount);
+    // Totals are derived server-side.  Never accept a browser-provided total.
+    const total = Math.max(subtotal - discountAmount + taxAmount, 0);
     const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
     const payment = paymentSummary(
       total,
@@ -33074,6 +33192,7 @@ async function handleSalesInvoices(
       .set({ status: "deleted", updatedAt: new Date() } as any)
       .where(eq(salesInvoicesTable.id, id))
       .returning();
+    if (!deleted) return error("الفاتورة غير موجودة", 404);
     if (deleted) {
       await syncSalesInvoiceStockState(deleted, a);
       await syncSourcePaymentTarget(
@@ -42053,6 +42172,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   } catch (err) {
     if (err instanceof RequestBodyTooLargeError)
       return error("حجم الطلب يتجاوز الحد المسموح", 413);
+    if (err instanceof CheckoutError) return error(err.message, err.status);
     console.error("API route failed", {
       method: req.method,
       path: req.nextUrl.pathname,
