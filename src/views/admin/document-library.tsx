@@ -277,6 +277,12 @@ export default function DocumentLibraryPage() {
                     )}
                   </div>
                   <div className="flex gap-1.5">
+                    <a
+                      href={`/admin/document-library/${doc.id}`}
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/40 hover:bg-muted"
+                    >
+                      <FileText className="w-3.5 h-3.5" /> التفاصيل
+                    </a>
                     <Button
                       size="sm"
                       variant="outline"
