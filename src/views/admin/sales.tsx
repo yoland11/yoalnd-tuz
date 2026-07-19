@@ -872,6 +872,33 @@ function InvoiceListView({
   reversed: string; onReversed: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
 }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [cancellingInvoice, setCancellingInvoice] = useState<SalesInvoice | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelPassword, setCancelPassword] = useState("");
+  const [cancelConfirmed, setCancelConfirmed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const { data: currentUser } = useQuery({ queryKey: ["admin", "me", "sales-register-cancel"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
+  const { data: cancellationDetail, isLoading: cancellationDetailLoading } = useQuery<SalesInvoice>({
+    queryKey: ["admin", "sales-invoice", "cancel-preview", cancellingInvoice?.id],
+    queryFn: () => adminFetch(`/admin/sales-invoices/${cancellingInvoice?.id}`),
+    enabled: !!cancellingInvoice,
+  });
+  const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
+  async function confirmCancellation() {
+    if (!cancellingInvoice || !cancelConfirmed || cancelReason.trim().length < 3 || !cancelPassword) return;
+    setCancelling(true);
+    try {
+      await adminFetch(`/admin/sales-invoices/${cancellingInvoice.id}/cancel`, { method: "POST", body: JSON.stringify({ reason: cancelReason.trim(), password: cancelPassword, confirmed: true }) });
+      toast({ title: "تم إلغاء الفاتورة وعكس آثارها" });
+      setCancellingInvoice(null); setCancelReason(""); setCancelPassword(""); setCancelConfirmed(false);
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+    } catch (error) {
+      toast({ title: "تعذر إلغاء الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally { setCancelling(false); }
+  }
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
     <div dir="rtl" className="space-y-4">
@@ -937,7 +964,11 @@ function InvoiceListView({
                         <StatusBadge status={inv.status} />
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <PayStatusBadge status={inv.paymentStatus} />
+                        {inv.status === "cancelled" ? (
+                          <span className="text-xs text-status-warning">معكوس</span>
+                        ) : (
+                          <PayStatusBadge status={inv.paymentStatus} />
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {inv.isInternal === 1
@@ -946,9 +977,9 @@ function InvoiceListView({
                         }
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
+                        <div className="flex items-center justify-center gap-1"><Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
                           تفاصيل
-                        </Button>
+                        </Button>{inv.status === "cancelled" ? <Button variant="ghost" size="sm" disabled>ملغاة</Button> : canCancel && inv.status === "active" ? <Button variant="destructive" size="sm" onClick={() => setCancellingInvoice(inv)}>إلغاء الفاتورة</Button> : null}</div>
                       </td>
                     </tr>
                   ))
@@ -956,6 +987,7 @@ function InvoiceListView({
             </tbody>
           </table>
         </div>
+        {cancellingInvoice && <SalesInvoiceRegisterCancellationDialog invoice={cancellationDetail ?? cancellingInvoice} itemCount={cancellationDetailLoading ? null : cancellationDetail?.items?.length ?? 0} reason={cancelReason} setReason={setCancelReason} password={cancelPassword} setPassword={setCancelPassword} confirmed={cancelConfirmed} setConfirmed={setCancelConfirmed} loadingDetails={cancellationDetailLoading} busy={cancelling} onClose={() => { setCancellingInvoice(null); setCancelReason(""); setCancelPassword(""); setCancelConfirmed(false); }} onConfirm={confirmCancellation} />}
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 p-3 border-t border-border/20">
             <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
@@ -972,6 +1004,10 @@ function InvoiceListView({
       </div>
     </div>
   );
+}
+
+function SalesInvoiceRegisterCancellationDialog({ invoice, itemCount, reason, setReason, password, setPassword, confirmed, setConfirmed, loadingDetails, busy, onClose, onConfirm }: { invoice: SalesInvoice; itemCount: number | null; reason: string; setReason: (value: string) => void; password: string; setPassword: (value: string) => void; confirmed: boolean; setConfirmed: (value: boolean) => void; loadingDetails: boolean; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" dir="rtl"><div className="w-full max-w-lg rounded-xl border border-destructive/40 bg-card p-5 shadow-xl"><h3 className="text-lg font-bold text-destructive">إلغاء الفاتورة</h3><div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-3 text-xs"><span>الفاتورة: {invoice.invoiceNo}</span><span>العميل: {invoice.customerName || "—"}</span><span>المورد: {invoice.supplierName || "—"}</span><span>البنود: {itemCount ?? "جارٍ التحميل..."}</span><span>الإجمالي: {formatCurrency(invoice.total)}</span><span>المدفوع: {formatCurrency(invoice.paidAmount)}</span><span>المتبقي: {formatCurrency(invoice.remainingAmount)}</span><span>الدفع: {invoice.paymentMethod}</span></div><p className="mt-3 text-sm text-destructive">سيتم إرجاع المواد إلى المخزون وعكس المبلغ المالي.</p><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="سبب الإلغاء *" className="mt-4 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="كلمة المرور للتأكيد *" className="mt-3 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><label className="mt-4 flex items-start gap-2 text-xs"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>أؤكد إلغاء الفاتورة وإرجاع المواد إلى المخزون وعكس المبلغ المالي</span></label><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>رجوع</Button><Button variant="destructive" disabled={busy || loadingDetails || !confirmed || reason.trim().length < 3 || !password} onClick={onConfirm}>{busy ? "جارٍ الإلغاء..." : "تأكيد إلغاء الفاتورة"}</Button></div></div></div>;
 }
 
 function toNumber(value: unknown) {
@@ -1519,6 +1555,7 @@ function SalesInvoiceCancellationDialog({ invoice, itemCount, reason, setReason,
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; class: string }> = {
     active:  { label: "نشطة",   class: "bg-status-success/10 text-status-success" },
+    cancelled: { label: "ملغاة", class: "bg-status-danger/10 text-status-danger" },
     deleted: { label: "محذوفة", class: "bg-status-danger/10 text-status-danger" },
     held:    { label: "معلقة",  class: "bg-status-warning/10 text-status-warning" },
   };
