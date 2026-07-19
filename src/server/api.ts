@@ -4535,10 +4535,9 @@ function koshaRoutingCandidateSql() {
   return sql`(
     ${serviceOrdersTable.customFields}::text ~* ${KOSHA_ROUTING_SQL_PATTERN}
     or ${serviceOrdersTable.serviceId} in (
-      select ${servicesTable.id} from ${servicesTable}
-      where coalesce(${servicesTable.type}, '') || ' '
-         || coalesce(${servicesTable.name}, '') || ' '
-         || coalesce(${servicesTable.nameAr}, '') ~* ${KOSHA_ROUTING_SQL_PATTERN}
+      select id from services
+      where concat_ws(' ', coalesce(type, ''), coalesce(name, ''), coalesce(name_ar, ''))
+        ~* ${KOSHA_ROUTING_SQL_PATTERN}
     )
   )`;
 }
