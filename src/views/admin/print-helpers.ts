@@ -192,6 +192,15 @@ export function sheetReportCss(size: "a4" | "a5" = "a4") {
   `;
 }
 
+/** A4 employee custody statement; shared so every branch prints the same form. */
+export function custodyStatementCss() {
+  return `${sheetReportCss("a4")}
+    .custody-statement .signatures { display:flex; justify-content:space-between; gap:40px; margin-top:42px; }
+    .custody-statement .signatures div { width:42%; border-top:1px dashed #000; padding-top:8px; text-align:center; }
+    .custody-statement .report-table { margin-top:14px; }
+  `;
+}
+
 /**
  * Shared depreciation report styles.  Both the browser print window and the
  * downloadable PDF preview use this builder so A4 and thermal never drift.

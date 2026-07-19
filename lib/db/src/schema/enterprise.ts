@@ -216,6 +216,68 @@ export const equipmentCustodyTable = pgTable("equipment_custody", {
   productStatusIdx: index("equipment_custody_product_status_idx").on(table.productId, table.status),
 }));
 
+/**
+ * Permanent employee equipment custody. These rows only link existing fixed
+ * assets; they never create a product, stock item, or depreciation profile.
+ */
+export const employeeCustodyGroupsTable = pgTable("employee_custody_groups", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "restrict" }),
+  department: text("department"),
+  groupType: varchar("group_type", { length: 40 }).notNull().default("general"),
+  description: text("description"),
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  lastInspectionDate: date("last_inspection_date"),
+  nextInspectionDate: date("next_inspection_date"),
+  notes: text("notes"),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  staffStatusIdx: index("employee_custody_groups_staff_status_idx").on(table.staffId, table.status),
+}));
+
+export const employeeCustodyGroupAssetsTable = pgTable("employee_custody_group_assets", {
+  id: serial("id").primaryKey(),
+  groupId: integer("group_id").notNull().references(() => employeeCustodyGroupsTable.id, { onDelete: "cascade" }),
+  productId: integer("product_id").notNull().references(() => productsTable.id, { onDelete: "restrict" }),
+  isActive: boolean("is_active").notNull().default(true),
+  addedBy: integer("added_by").references(() => staffTable.id, { onDelete: "set null" }),
+  addedAt: timestamp("added_at").notNull().defaultNow(),
+  removedAt: timestamp("removed_at"),
+  notes: text("notes"),
+}, (table) => ({
+  groupAssetIdx: uniqueIndex("employee_custody_group_assets_group_asset_idx").on(table.groupId, table.productId),
+  productActiveIdx: index("employee_custody_group_assets_product_active_idx").on(table.productId, table.isActive),
+}));
+
+export const employeeCustodyReservationsTable = pgTable("employee_custody_reservations", {
+  id: serial("id").primaryKey(),
+  groupId: integer("group_id").notNull().references(() => employeeCustodyGroupsTable.id, { onDelete: "restrict" }),
+  productId: integer("product_id").notNull().references(() => productsTable.id, { onDelete: "restrict" }),
+  staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "restrict" }),
+  bookingType: varchar("booking_type", { length: 20 }).notNull(),
+  bookingId: integer("booking_id").notNull(),
+  startAt: timestamp("start_at").notNull(),
+  endAt: timestamp("end_at").notNull(),
+  status: varchar("status", { length: 24 }).notNull().default("reserved"),
+  checkoutAt: timestamp("checkout_at"),
+  returnedAt: timestamp("returned_at"),
+  depreciationAppliedAt: timestamp("depreciation_applied_at"),
+  conditionOut: varchar("condition_out", { length: 20 }),
+  conditionIn: varchar("condition_in", { length: 20 }),
+  damageReason: text("damage_reason"),
+  damagePhotoUrl: text("damage_photo_url"),
+  signatureUrl: text("signature_url"),
+  createdBy: integer("created_by").references(() => staffTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  bookingIdx: index("employee_custody_reservations_booking_idx").on(table.bookingType, table.bookingId, table.status),
+  productTimeIdx: index("employee_custody_reservations_product_time_idx").on(table.productId, table.startAt, table.endAt),
+}));
+
 export const eventCostEstimatesTable = pgTable("event_cost_estimates", {
   id: serial("id").primaryKey(),
   entityType: varchar("entity_type", { length: 40 }).notNull(),
@@ -353,3 +415,4 @@ export type EnterpriseBranch = typeof enterpriseBranchesTable.$inferSelect;
 export type FleetVehicle = typeof fleetVehiclesTable.$inferSelect;
 export type DispatchAssignment = typeof dispatchAssignmentsTable.$inferSelect;
 export type AssetPassport = typeof assetPassportsTable.$inferSelect;
+export type EmployeeCustodyGroup = typeof employeeCustodyGroupsTable.$inferSelect;

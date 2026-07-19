@@ -554,6 +554,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets/custody-groups",
+    label: "مجموعات عهدة الموظفين",
+    icon: Users,
+    perm: "custody_groups_view",
+  },
+  {
     href: "/admin/asset-gate",
     label: "بوابة مسح الأصول",
     icon: ScanLine,
