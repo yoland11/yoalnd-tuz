@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff } from "lucide-react";
-import { fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
+import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
 import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
@@ -17,6 +17,45 @@ const STAGE_BADGE: Record<string, string> = {
 
 function Spinner() {
   return <div className="flex min-h-dvh items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
+}
+
+class StaffPortalBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Kosha staff portal crashed", { message: error.message, componentStack: info.componentStack });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-background p-6 text-center" dir="rtl">
+        <XCircle className="h-10 w-10 text-destructive" aria-hidden="true" />
+        <div className="space-y-1">
+          <h1 className="text-lg font-bold">تعذر فتح بوابة الكوشات</h1>
+          <p className="text-sm text-muted-foreground">لم تتأثر بيانات الحجوزات. أعد المحاولة، وإذا تكرر الخطأ تواصل مع الإدارة.</p>
+        </div>
+        <button type="button" onClick={() => this.setState({ error: null })} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+}
+
+function toNonNegativeNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function asRows<T>(value: unknown): T[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is T => item !== null && typeof item === "object")
+    : [];
 }
 
 function Login({ onDone }: { onDone: () => void }) {
@@ -70,8 +109,44 @@ function BookingCard({ b }: { b: CrewBooking }) {
 
 function Dashboard() {
   const [data, setData] = useState<Awaited<ReturnType<typeof staffApi.dashboard>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [, nav] = useLocation();
-  useEffect(() => { staffApi.dashboard().then(setData).catch(() => {}); }, []);
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    staffApi.dashboard()
+      .then((payload) => {
+        if (!active) return;
+        const raw = (payload && typeof payload === "object" ? payload : {}) as Partial<Awaited<ReturnType<typeof staffApi.dashboard>>>;
+        const rawCounts: Partial<Record<Bucket, unknown>> = raw.counts && typeof raw.counts === "object"
+          ? raw.counts as Partial<Record<Bucket, unknown>>
+          : {};
+        setData({
+          today: typeof raw.today === "string" ? raw.today : "",
+          counts: {
+            today: toNonNegativeNumber(rawCounts.today),
+            tomorrow: toNonNegativeNumber(rawCounts.tomorrow),
+            upcoming: toNonNegativeNumber(rawCounts.upcoming),
+            late: toNonNegativeNumber(rawCounts.late),
+            completed: toNonNegativeNumber(rawCounts.completed),
+          },
+          todayBookings: asRows<CrewBooking>(raw.todayBookings),
+          tomorrowBookings: asRows<CrewBooking>(raw.tomorrowBookings),
+        });
+      })
+      .catch((requestError) => {
+        if (active) setError(apiErrorMessage(requestError, "تعذر تحميل لوحة الحجوزات"));
+      });
+    return () => { active = false; };
+  }, [reloadKey]);
+
+  if (error) return (
+    <div className="space-y-3 p-8 text-center" dir="rtl">
+      <p className="text-sm text-destructive">{error}</p>
+      <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</button>
+    </div>
+  );
   if (!data) return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>;
   const order: Bucket[] = ["today", "tomorrow", "upcoming", "late", "completed"];
   return (
@@ -106,8 +181,29 @@ function Dashboard() {
 function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
   const [rows, setRows] = useState<CrewBooking[] | null>(null);
   const [search, setSearch] = useState("");
-  const load = useCallback(() => { staffApi.bookings(bucket, search).then(setRows).catch(() => setRows([])); }, [bucket, search]);
-  useEffect(() => { const t = setTimeout(load, search ? 300 : 0); return () => clearTimeout(t); }, [load, search]);
+  const [error, setError] = useState<string | null>(null);
+  const requestVersion = useRef(0);
+  const load = useCallback(() => {
+    const version = ++requestVersion.current;
+    setError(null);
+    staffApi.bookings(bucket, search)
+      .then((payload) => {
+        if (version === requestVersion.current) setRows(asRows<CrewBooking>(payload));
+      })
+      .catch((requestError) => {
+        if (version === requestVersion.current) {
+          setRows([]);
+          setError(apiErrorMessage(requestError, "تعذر تحميل الحجوزات"));
+        }
+      });
+  }, [bucket, search]);
+  useEffect(() => {
+    const timer = setTimeout(load, search ? 300 : 0);
+    return () => {
+      clearTimeout(timer);
+      requestVersion.current += 1;
+    };
+  }, [load, search]);
   return (
     <div className="space-y-3 p-4">
       <h1 className="text-lg font-bold">{bucket === "all" ? "كل الحجوزات" : BUCKET_LABEL[bucket as Bucket]}</h1>
@@ -115,6 +211,7 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
         <Search className="h-4 w-4 text-muted-foreground" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الهاتف..." className="w-full bg-transparent py-2 text-sm outline-none" />
       </div>
+      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
       {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>
         : rows.length === 0 ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد حجوزات</div>
         : <div className="space-y-2">{rows.map((b) => <BookingCard key={b.id} b={b} />)}</div>}
@@ -124,7 +221,16 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
 
 function Notifications() {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof staffApi.notifications>> | null>(null);
-  const load = useCallback(() => staffApi.notifications().then(setRows).catch(() => setRows([])), []);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    setError(null);
+    return staffApi.notifications()
+      .then((payload) => setRows(asRows<Awaited<ReturnType<typeof staffApi.notifications>>[number]>(payload)))
+      .catch((requestError) => {
+        setRows([]);
+        setError(apiErrorMessage(requestError, "تعذر تحميل الإشعارات"));
+      });
+  }, []);
   useEffect(() => { load(); }, [load]);
   async function readAll() { await staffApi.markAllRead().catch(() => {}); load(); }
   return (
@@ -133,6 +239,7 @@ function Notifications() {
         <h1 className="text-lg font-bold">الإشعارات</h1>
         <button onClick={readAll} className="text-sm text-primary">تعليم الكل كمقروء</button>
       </div>
+      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
       {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>
         : rows.length === 0 ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد إشعارات</div>
         : <div className="space-y-2">{rows.map((n) => (
@@ -148,7 +255,35 @@ function Notifications() {
 
 function Reports() {
   const [r, setR] = useState<Awaited<ReturnType<typeof staffApi.reportMe>> | null>(null);
-  useEffect(() => { staffApi.reportMe().then(setR).catch(() => {}); }, []);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    staffApi.reportMe()
+      .then((payload) => {
+        if (!active) return;
+        const raw = (payload && typeof payload === "object" ? payload : {}) as Partial<Awaited<ReturnType<typeof staffApi.reportMe>>>;
+        setR({
+          executed: toNonNegativeNumber(raw.executed),
+          delivered: toNonNegativeNumber(raw.delivered),
+          breakage: toNonNegativeNumber(raw.breakage),
+          loss: toNonNegativeNumber(raw.loss),
+          collected: toNonNegativeNumber(raw.collected),
+          collectedCount: toNonNegativeNumber(raw.collectedCount),
+        });
+      })
+      .catch((requestError) => {
+        if (active) setError(apiErrorMessage(requestError, "تعذر تحميل التقرير"));
+      });
+    return () => { active = false; };
+  }, [reloadKey]);
+  if (error) return (
+    <div className="space-y-3 p-8 text-center" dir="rtl">
+      <p className="text-sm text-destructive">{error}</p>
+      <button type="button" onClick={() => setReloadKey((key) => key + 1)} className="rounded-lg border border-border px-4 py-2 text-sm font-bold text-primary">إعادة المحاولة</button>
+    </div>
+  );
   if (!r) return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>;
   const cards = [
     ["كوشات منفّذة", r.executed], ["كوشات مسلّمة", r.delivered],
@@ -208,13 +343,21 @@ function Approvals() {
 }
 
 export default function StaffPortal() {
+  return <StaffPortalBoundary><StaffPortalContent /></StaffPortalBoundary>;
+}
+
+function StaffPortalContent() {
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [unread, setUnread] = useState(0);
   const [pendingOps, setPendingOps] = useState(0);
   const [location, nav] = useLocation();
   const lastNotifIds = useRef<Set<number>>(new Set());
 
-  const refreshMe = useCallback(() => { fetchAdminMe({ force: true }).then(setMe); }, []);
+  const refreshMe = useCallback(() => {
+    fetchAdminMe({ force: true }).then((user) => {
+      setMe(user ? { ...user, permissions: Array.isArray(user.permissions) ? user.permissions : [] } : null);
+    });
+  }, []);
   useEffect(() => { refreshMe(); }, [refreshMe]);
 
   const canStaff = !!me && hasPerm(me, "koshas");
@@ -227,7 +370,7 @@ export default function StaffPortal() {
     let alive = true;
     async function poll() {
       try {
-        const rows = await staffApi.notifications();
+        const rows = asRows<Awaited<ReturnType<typeof staffApi.notifications>>[number]>(await staffApi.notifications());
         if (!alive) return;
         setUnread(rows.filter((n) => !n.isRead).length);
         for (const n of rows) {
@@ -249,10 +392,11 @@ export default function StaffPortal() {
   // Offline write-queue: flush on mount + when connectivity returns; track pending count.
   useEffect(() => {
     if (!allowed) return;
-    const update = () => countOps().then(setPendingOps).catch(() => {});
-    const onOnline = () => flushQueue().then(() => update());
+    const update = () => countOps().then((count) => setPendingOps(toNonNegativeNumber(count))).catch(() => {});
+    const synchronize = () => flushQueue().catch(() => undefined).then(update);
+    const onOnline = () => { void synchronize(); };
     update();
-    flushQueue().then(() => update());
+    void synchronize();
     window.addEventListener("online", onOnline);
     window.addEventListener("ajn-queue-changed", update);
     return () => { window.removeEventListener("online", onOnline); window.removeEventListener("ajn-queue-changed", update); };
