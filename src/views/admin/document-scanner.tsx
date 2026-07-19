@@ -9,7 +9,6 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, fetchAdminMe, hasPerm, type AdminMe } from "./_lib";
 import DocumentLayout from "./document-layout";
 import DocumentSave from "./document-save";
-import { ACCEPT_ATTRIBUTE, ingestFile } from "@/lib/document-formats";
 import {
   analyzeQuality, canvasFrom, canvasToDataUrl, defaultCorners, detectDocumentCorners,
   effectiveDpi, enhance, loadImage, pixelsForMm, presetFor, rotateCanvas, warpPerspective,
@@ -157,57 +156,24 @@ export default function DocumentScannerPage() {
     [toast],
   );
 
-  /**
-   * Accepts JPG, PNG, WEBP, HEIC and PDF. A multi-page PDF is rasterised
-   * locally: the first page enters the editor and the rest queue as pages, so a
-   * whole contract can be brought in with one pick.
-   */
   const onFiles = useCallback(
-    async (files: FileList | null) => {
+    (files: FileList | null) => {
       const file = files?.[0];
       if (!file) return;
-      if (file.size > 50 * 1024 * 1024) {
-        toast({ title: "حجم الملف كبير جدًا", description: "الحد الأقصى 50 ميغابايت", variant: "destructive" });
+      if (!file.type.startsWith("image/")) {
+        toast({ title: "الملف ليس صورة", variant: "destructive" });
         return;
       }
-      setBusy(true);
-      try {
-        const ingested = await ingestFile(file);
-        if (!ingested.length) throw new Error("لم يُستخرج أي صفحة من الملف");
-
-        if (ingested.length > 1) {
-          // Remaining sheets go straight to the page list, already flattened.
-          const [first, ...rest] = ingested;
-          setExtraPages((prev) => [
-            ...prev,
-            ...rest.map((page) => ({
-              side: "front" as Side,
-              dataUrl: page.dataUrl,
-              widthPx: page.widthPx,
-              heightPx: page.heightPx,
-              widthMm: targetMm.w,
-              heightMm: targetMm.h,
-            })),
-          ]);
-          toast({
-            title: `تم استيراد ${ingested.length} صفحة`,
-            description: "الصفحة الأولى في المحرر والباقي في قائمة الصفحات",
-          });
-          await acceptImage(first.dataUrl);
-          return;
-        }
-        await acceptImage(ingested[0].dataUrl);
-      } catch (err: any) {
-        toast({
-          title: "تعذر قراءة الملف",
-          description: err?.message ?? "صيغة غير مدعومة",
-          variant: "destructive",
-        });
-      } finally {
-        setBusy(false);
+      if (file.size > 25 * 1024 * 1024) {
+        toast({ title: "حجم الملف كبير جدًا", description: "الحد الأقصى 25 ميغابايت", variant: "destructive" });
+        return;
       }
+      const reader = new FileReader();
+      reader.onload = () => void acceptImage(String(reader.result));
+      reader.onerror = () => toast({ title: "تعذر قراءة الملف", variant: "destructive" });
+      reader.readAsDataURL(file);
     },
-    [acceptImage, targetMm, toast],
+    [acceptImage, toast],
   );
 
   // ── Apply (warp + enhance) ────────────────────────────────────────────────
@@ -695,7 +661,7 @@ function CapturePanel({
 }: {
   busy: boolean;
   onImage: (dataUrl: string) => void;
-  onFiles: (files: FileList | null) => void | Promise<void>;
+  onFiles: (files: FileList | null) => void;
 }) {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -802,10 +768,8 @@ function CapturePanel({
           ) : (
             <>
               <ImageUp className="w-8 h-8 text-muted-foreground/50 mx-auto mb-3" />
-              <p className="text-sm text-foreground mb-1">اسحب المستمسك وأفلته هنا</p>
-              <p className="text-xs text-muted-foreground mb-4">
-                JPG · PNG · WEBP · HEIC · PDF — ملف PDF متعدد الصفحات يُستورَد كاملاً
-              </p>
+              <p className="text-sm text-foreground mb-1">اسحب صورة المستمسك وأفلتها هنا</p>
+              <p className="text-xs text-muted-foreground mb-4">أو اختر من الخيارات أدناه</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 <Button className="gap-2" onClick={() => void startCamera()}>
                   <Camera className="w-4 h-4" /> فتح الكاميرا
@@ -817,7 +781,7 @@ function CapturePanel({
               <input
                 ref={fileRef}
                 type="file"
-                accept={ACCEPT_ATTRIBUTE}
+                accept="image/*"
                 className="hidden"
                 onChange={(e) => { onFiles(e.target.files); e.target.value = ""; }}
               />
