@@ -63,6 +63,10 @@ export const ALL_PERMISSIONS = [
   "salary_settings_approve",
   "settings",
   "invoices",
+  "sales_invoice.cancel",
+  "sales_invoice.view_cancelled",
+  "sales_invoice.print_cancelled",
+  "sales_invoice.approve_cancellation",
   "whatsapp",
   "accounting",
   "voucher_view",
@@ -161,6 +165,10 @@ export const ALL_PERMISSIONS = [
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  "sales_invoice.cancel": "إلغاء وعكس فاتورة مبيعات",
+  "sales_invoice.view_cancelled": "عرض الفواتير الملغاة",
+  "sales_invoice.print_cancelled": "طباعة فاتورة ملغاة",
+  "sales_invoice.approve_cancellation": "اعتماد إلغاء فاتورة مبيعات",
   custody_groups_view: "عرض مجموعات عهدة الموظفين",
   custody_groups_create: "إنشاء مجموعات العهدة",
   custody_groups_edit: "تعديل مجموعات العهدة",

@@ -10,11 +10,11 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   CheckCircle2, Clock, AlertCircle, QrCode, Download,
-  Printer,
+  Printer, Ban,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency } from "./_lib";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
@@ -40,6 +40,8 @@ type SalesInvoice = {
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   financiallyReversed?: boolean;
+  cancelledAt?: string | null; cancelledByName?: string | null; cancellationReason?: string | null;
+  reversalCompletedAt?: string | null; inventoryReversed?: boolean; financeReversed?: boolean;
   supplierId?: number | null; supplierName?: string | null; lastPayment?: LastPayment;
   items?: CartItem[];
   qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
@@ -981,6 +983,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelPassword, setCancelPassword] = useState("");
+  const [cancelConfirmed, setCancelConfirmed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [draft, setDraft] = useState({
     date: "",
     customerName: "",
@@ -996,6 +1003,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   });
   const [items, setItems] = useState<CartItem[]>([]);
   const { data: settings } = usePublicSettings();
+  const { data: currentUser } = useQuery({ queryKey: ["admin", "me", "sales-cancel"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers", "sales"],
     queryFn: () => adminFetch("/admin/suppliers"),
@@ -1140,6 +1148,29 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
+  const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
+
+  async function cancelInvoice() {
+    if (!invoice || !cancelConfirmed || cancelReason.trim().length < 3 || !cancelPassword) return;
+    setCancelling(true);
+    try {
+      await adminFetch(`/admin/sales-invoices/${invoice.id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: cancelReason.trim(), password: cancelPassword, confirmed: true }),
+      });
+      toast({ title: "تم إلغاء الفاتورة وعكس آثارها" });
+      setCancelOpen(false);
+      setCancelPassword("");
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+    } catch (error) {
+      toast({ title: "تعذر إلغاء الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   function printQr() {
     try {
       openQrPrintWindow({
@@ -1164,6 +1195,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
 
   function printInvoice() {
     if (!invoice) return;
+    const cancelled = invoice.status === "cancelled";
     const popup = window.open("", "_blank", "width=520,height=760");
     if (!popup) {
       toast({ title: "تعذر فتح نافذة الطباعة", variant: "destructive" });
@@ -1174,10 +1206,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     `).join("");
     popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${invoice.invoiceNo}</title><style>${thermalReceiptCss("80mm")}</style></head><body>
       <div class="receipt">
-        <div class="r-head"><img class="r-logo" src="${logoSrc(settings)}" alt=""><div class="r-company">${settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div class="r-sub">فاتورة مبيعات</div><div class="r-sub num">${invoice.invoiceNo} · ${draft.date}</div></div>
+        <div class="r-head"><img class="r-logo" src="${logoSrc(settings)}" alt=""><div class="r-company">${settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div class="r-sub">${cancelled ? "فاتورة ملغاة" : "فاتورة مبيعات"}</div><div class="r-sub num">${invoice.invoiceNo} · ${draft.date}</div></div>
         <hr class="rule"><div class="kv"><span>العميل</span><span class="v">${draft.customerName || "زبون"}</span></div>
         <div class="kv"><span>الهاتف</span><span class="v num">${formatIraqiPhone(draft.customerPhone) || "غير مسجل"}</span></div>
-        ${draft.supplierName ? `<div class="kv"><span>المورد</span><span class="v">${draft.supplierName}</span></div>` : ""}
+        ${draft.supplierName ? `<div class="kv"><span>المورد</span><span class="v">${draft.supplierName}</span></div>` : ""}${cancelled ? `<div class="kv"><span>حالة الإلغاء</span><span class="v">ملغاة</span></div><div class="kv"><span>تاريخ الإلغاء</span><span class="v num">${invoice.cancelledAt ?? "—"}</span></div><div class="kv"><span>بواسطة</span><span class="v">${invoice.cancelledByName ?? "—"}</span></div><div class="kv"><span>السبب</span><span class="v">${invoice.cancellationReason ?? "—"}</span></div>` : ""}
         <hr class="rule dashed"><table class="items"><thead><tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>المبلغ</th></tr></thead><tbody>${itemRows}</tbody></table>
         <div class="totals"><div class="payline"><span>الخصم</span><span class="num">${formatCurrency(discountAmount)}</span></div><div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(total)}</span></div><div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(paidAmount)}</span></div><div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(remainingAmount)}</span></div></div>
         ${invoice.qr?.dataUrl ? `<div class="qr"><img src="${invoice.qr.dataUrl}" alt="QR"><div class="cap num">${invoice.invoiceNo}</div></div>` : ""}<div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
@@ -1188,6 +1220,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
       <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92dvh] overflow-hidden shadow-xl">
+        {cancelOpen && invoice && <SalesInvoiceCancellationDialog invoice={invoice} itemCount={items.length} reason={cancelReason} setReason={setCancelReason} password={cancelPassword} setPassword={setCancelPassword} confirmed={cancelConfirmed} setConfirmed={setCancelConfirmed} busy={cancelling} onClose={() => setCancelOpen(false)} onConfirm={cancelInvoice} />}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border/30">
           <div>
             <h2 className="text-lg font-bold text-foreground">تفاصيل الفاتورة</h2>
@@ -1207,6 +1240,12 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
               <Download className="w-4 h-4 ml-1" />
               تحميل QR
             </Button>
+            {canCancel && invoice?.status === "active" && !invoice?.financiallyReversed && (
+              <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
+                <Ban className="w-4 h-4 ml-1" />
+                إلغاء ومسح الفاتورة
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={onClose}>
               <X className="w-4 h-4" />
             </Button>
@@ -1471,6 +1510,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       </div>
     </div>
   );
+}
+
+function SalesInvoiceCancellationDialog({ invoice, itemCount, reason, setReason, password, setPassword, confirmed, setConfirmed, busy, onClose, onConfirm }: { invoice: SalesInvoice; itemCount: number; reason: string; setReason: (v: string) => void; password: string; setPassword: (v: string) => void; confirmed: boolean; setConfirmed: (v: boolean) => void; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+  return <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" dir="rtl"><div className="w-full max-w-lg rounded-xl border border-destructive/40 bg-card p-5 shadow-2xl"><h3 className="text-lg font-bold text-destructive">إلغاء ومسح الفاتورة</h3><p className="mt-2 text-sm text-muted-foreground">{invoice.invoiceNo} · {invoice.customerName} · {invoice.date} · {formatCurrency(invoice.total)}</p><div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-3 text-xs"><span>المدفوع: {formatCurrency(invoice.paidAmount)}</span><span>الدفع: {invoice.paymentMethod}</span><span>البنود: {itemCount}</span><span>المتبقي: {formatCurrency(invoice.remainingAmount)}</span></div><p className="mt-3 text-sm font-medium text-destructive">سيتم إرجاع المواد إلى المخزون وعكس الحركات المالية المرتبطة. لا يمكن التراجع عن الإلغاء.</p><textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="سبب الإلغاء *" rows={3} className="mt-4 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="كلمة المرور للتأكيد *" className="mt-3 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><label className="mt-4 flex items-start gap-2 text-xs text-foreground"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5" /><span>أؤكد إلغاء الفاتورة وإرجاع المواد إلى المخزون وعكس المبلغ من الصندوق الرئيسي</span></label><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>إغلاق</Button><Button variant="destructive" disabled={busy || !confirmed || reason.trim().length < 3 || !password} onClick={onConfirm}>{busy ? "جارٍ الإلغاء..." : "تأكيد إلغاء الفاتورة"}</Button></div></div></div>;
 }
 
 function StatusBadge({ status }: { status: string }) {

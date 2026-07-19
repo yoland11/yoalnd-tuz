@@ -486,6 +486,10 @@ export const ALL_PERMISSIONS = [
   "salary_settings_approve",
   "settings",
   "invoices",
+  "sales_invoice.cancel",
+  "sales_invoice.view_cancelled",
+  "sales_invoice.print_cancelled",
+  "sales_invoice.approve_cancellation",
   "whatsapp",
   "accounting",
   // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
@@ -32349,7 +32353,14 @@ async function ensureSalesInvoicesTables() {
         ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
         ADD COLUMN IF NOT EXISTS supplier_name TEXT,
         ADD COLUMN IF NOT EXISTS stock_applied INTEGER NOT NULL DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS stock_restored_at TIMESTAMP;
+        ADD COLUMN IF NOT EXISTS stock_restored_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES staff(id),
+        ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT,
+        ADD COLUMN IF NOT EXISTS cancellation_reason TEXT,
+        ADD COLUMN IF NOT EXISTS reversal_completed_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS inventory_reversed BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS finance_reversed BOOLEAN NOT NULL DEFAULT false;
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
       CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
@@ -32494,6 +32505,12 @@ const salesInvoiceCreateSchema = z.object({
   items: z.array(salesInvoiceItemSchema).min(1).max(500),
 });
 
+const salesInvoiceCancellationSchema = z.object({
+  reason: z.string().trim().min(3).max(2_000),
+  password: z.string().min(1).max(500),
+  confirmed: z.literal(true),
+});
+
 /**
  * Reserve stock with a conditional update while the invoice transaction is
  * open.  This is both the availability check and the deduction, so concurrent
@@ -32599,7 +32616,10 @@ async function handleSalesInvoices(
   section: string | undefined,
 ) {
   if (section !== "sales-invoices") return null;
-  const auth = await requirePermission(req, "accounting");
+  const auth = await requirePermission(
+    req,
+    parts[3] === "cancel" ? "sales_invoice.cancel" : "accounting",
+  );
   if (isResponse(auth)) return auth;
   await ensureSalesInvoicesTables();
   await ensureStockTrackingTables();
@@ -32664,6 +32684,145 @@ async function handleSalesInvoices(
       .from(salesInvoicesTable)
       .where(and(...conds) as any);
     return json({ data: rows, total: countRow?.c ?? 0 });
+  }
+
+  if (method === "POST" && id && parts[3] === "cancel") {
+    const cancellationAuth = await requirePermission(req, "sales_invoice.cancel");
+    if (isResponse(cancellationAuth)) return cancellationAuth;
+    const parsed = salesInvoiceCancellationSchema.safeParse(await body(req));
+    if (!parsed.success) return validationError("sales-invoice.cancel", parsed);
+    const data = parsed.data;
+    const staff = await db.query.staffTable.findFirst({ where: eq(staffTable.id, cancellationAuth.id) });
+    if (!staff || !verifyPassword(data.password, staff.passwordHash))
+      return error("تعذر التحقق من كلمة المرور", 401);
+
+    const existing = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+    if (!existing) return error("الفاتورة غير موجودة", 404);
+    if (existing.status === "cancelled") {
+      return json({ ok: true, alreadyCancelled: true, invoice: existing });
+    }
+    if (existing.status === "cancelled") return error("الفاتورة ملغاة ولا يمكن تعديلها", 409);
+    if ((existing as any).financiallyReversed)
+      return error("تم عكس الأثر المالي لهذه الفاتورة مسبقاً؛ راجع المدير", 409);
+
+    const received = money(existing.paidAmount);
+    const approvalLimit = money(process.env.SALES_INVOICE_CANCELLATION_APPROVAL_LIMIT ?? 0);
+    if (approvalLimit > 0 && received > approvalLimit && !hasPermission(cancellationAuth, "sales_invoice.approve_cancellation"))
+      return error("يتطلب هذا الإلغاء اعتماد مدير بسبب مبلغ التحصيل", 403);
+
+    const a = actor(cancellationAuth);
+    const fActor = financialActor(cancellationAuth);
+    const cancellation = await db.transaction(async (tx) => {
+      const locked: any = await tx.execute(sql`SELECT id FROM sales_invoices WHERE id = ${id} FOR UPDATE`);
+      if (!(locked.rows ?? locked ?? []).length) throw new CheckoutError("الفاتورة غير موجودة", 404);
+      const [invoice] = await tx.select().from(salesInvoicesTable).where(eq(salesInvoicesTable.id, id)).limit(1);
+      if (!invoice) throw new CheckoutError("الفاتورة غير موجودة", 404);
+      if (invoice.status === "cancelled") return { invoice, inventoryMovementIds: [], financialMovementIds: [], alreadyCancelled: true };
+      if ((invoice as any).financiallyReversed) throw new CheckoutError("تم عكس هذه الفاتورة مسبقاً", 409);
+
+      const items = await tx.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
+      if (!items.length) throw new CheckoutError("لا تحتوي الفاتورة على بنود قابلة للعكس", 409);
+      const productItems = items.filter((item) => Number(item.productId ?? 0) > 0);
+      const originalMoves = await tx.select().from(stockMovementsTable).where(and(
+        eq(stockMovementsTable.relatedType, "sales_invoice"),
+        eq(stockMovementsTable.relatedId, id),
+        eq(stockMovementsTable.reason, "sales_invoice_stock_deducted"),
+      ));
+      if (productItems.length && !originalMoves.length)
+        throw new CheckoutError("تعذر العثور على حركات المخزون الأصلية لهذه الفاتورة", 409);
+      const alreadyReturned = await tx.select().from(stockMovementsTable).where(and(
+        eq(stockMovementsTable.relatedType, "sales_invoice"),
+        eq(stockMovementsTable.relatedId, id),
+        eq(stockMovementsTable.reason, "sales_invoice_cancellation_return"),
+      ));
+      if (alreadyReturned.length) throw new CheckoutError("تم إرجاع مخزون هذه الفاتورة مسبقاً", 409);
+
+      const grouped = new Map<number, { quantity: number; name: string; sourceId: number }>();
+      for (const item of productItems) {
+        const productId = Number(item.productId);
+        const source = originalMoves.find((move) => Number(move.productId) === productId);
+        if (!source) throw new CheckoutError(`حركة المخزون الأصلية للمنتج ${item.productName} غير موجودة`, 409);
+        const sourceId = Number(source.stockSourceProductId ?? productId);
+        const current = grouped.get(sourceId);
+        grouped.set(sourceId, { quantity: (current?.quantity ?? 0) + money(item.quantity), name: item.productName, sourceId });
+      }
+      const inventoryMovementIds: number[] = [];
+      for (const group of grouped.values()) {
+        const [product] = await tx.update(productsTable).set({
+          stock: sql`${productsTable.stock} + ${group.quantity}`,
+          updatedAt: new Date(),
+        } as any).where(eq(productsTable.id, group.sourceId)).returning();
+        if (!product) throw new CheckoutError(`تعذر إرجاع المنتج ${group.name} إلى المخزون`, 409);
+        const [movement] = await tx.insert(stockMovementsTable).values({
+          productId: group.sourceId,
+          stockSourceProductId: group.sourceId,
+          quantityChange: String(group.quantity),
+          reason: "sales_invoice_cancellation_return",
+          relatedType: "sales_invoice",
+          relatedId: id,
+          createdBy: a.id,
+          createdByName: a.name,
+        }).returning();
+        inventoryMovementIds.push(movement.id);
+      }
+
+      const financialRows = await tx.select().from(financialTransactionsTable).where(and(
+        eq(financialTransactionsTable.sourceType, "sales_invoice"),
+        eq(financialTransactionsTable.sourceId, String(id)),
+        eq(financialTransactionsTable.approvalStatus, "executed"),
+      ));
+      if (received > 0 && !financialRows.length)
+        throw new CheckoutError("تعذر تحديد حركة التحصيل الأصلية لهذه الفاتورة", 409);
+      const financialMovementIds: number[] = [];
+      for (const row of financialRows) {
+        if (row.transactionType.endsWith("_reversal") || row.reversalTxnId || row.reversedAt) continue;
+        const result = await reverseFinancialTransaction(row.id, fActor, `إلغاء فاتورة مبيعات ${invoice.invoiceNo}: ${data.reason}`, undefined, tx);
+        financialMovementIds.push(result.reverse.id);
+      }
+
+      const now = new Date();
+      const [cancelled] = await tx.update(salesInvoicesTable).set({
+        status: "cancelled",
+        paidAmount: "0",
+        remainingAmount: "0",
+        paymentStatus: "unpaid",
+        financiallyReversed: financialRows.length > 0,
+        cancelledAt: now,
+        cancelledBy: a.id,
+        cancelledByName: a.name,
+        cancellationReason: data.reason,
+        reversalCompletedAt: now,
+        inventoryReversed: true,
+        financeReversed: financialRows.length > 0,
+        stockApplied: 0,
+        stockRestoredAt: now,
+        updatedAt: now,
+      } as any).where(eq(salesInvoicesTable.id, id)).returning();
+      await tx.insert(adminActivityLogsTable).values({
+        staffId: a.id,
+        userName: a.name,
+        action: "sales_invoice_cancelled",
+        entityType: "sales_invoice",
+        entityId: id,
+        metadata: { invoiceNo: invoice.invoiceNo, reason: data.reason, received, inventoryMovementIds, financialMovementIds, ipAddress: ip(req) },
+        ipAddress: ip(req),
+        userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
+      });
+      return { invoice: cancelled, inventoryMovementIds, financialMovementIds, alreadyCancelled: false };
+    });
+
+    if (!cancellation.alreadyCancelled) {
+      void createNotification({
+        audienceType: "admin",
+        type: "sales_invoice_cancelled",
+        title: "تم إلغاء فاتورة مبيعات",
+        body: `${cancellation.invoice.invoiceNo} · ${cancellation.invoice.customerName} · ${formatCurrency(received)} · ${a.name}`,
+        entityType: "sales_invoice",
+        entityId: id,
+        href: `/admin/sales?invoice=${id}`,
+      });
+    }
+    return json({ ok: true, ...cancellation });
   }
 
   if (method === "GET" && id) {
