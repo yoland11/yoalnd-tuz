@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { buildPdf, buildZip, downloadBlob } from "@/lib/document-formats";
 import {
   A4, SAFE_MARGIN_MM, SIZE_PRESETS, TEMPLATES, capacity, defaultMargins, fitWithin,
   mmToPx, placeItems, planForTemplate, printDpi, qualityForDpi, sizeForWidth,
@@ -207,6 +208,59 @@ export default function DocumentLayout({
       onExported?.(format);
     } catch (err: any) {
       toast({ title: "تعذر إنشاء الصورة", description: err?.message, variant: "destructive" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * A PDF of the scans themselves at their true millimetre size — one page per
+   * side. Distinct from the A4 sheet export above, which is the print layout.
+   */
+  async function exportDocumentPdf() {
+    setBusy("docpdf");
+    try {
+      const sources = available
+        .map((s) => scans[s])
+        .filter(Boolean)
+        .map((s) => ({ dataUrl: s!.dataUrl, widthMm: s!.widthMm, heightMm: s!.heightMm }));
+      if (!sources.length) throw new Error("لا توجد صفحات للتصدير");
+      const blob = await buildPdf(sources, docTypeLabel);
+      downloadBlob(blob, `${docTypeLabel}.pdf`);
+      onExported?.("document-pdf");
+    } catch (err: any) {
+      toast({ title: "تعذر إنشاء ملف PDF", description: err?.message, variant: "destructive" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Bundles every scanned side plus the combined PDF into one archive. */
+  async function exportZip() {
+    setBusy("zip");
+    try {
+      const entries: Array<{ name: string; blob: Blob }> = [];
+      for (const s of available) {
+        const scan = scans[s];
+        if (!scan) continue;
+        const res = await fetch(scan.dataUrl);
+        entries.push({
+          name: `${docTypeLabel}-${s === "front" ? "امامي" : "خلفي"}.jpg`,
+          blob: await res.blob(),
+        });
+      }
+      const pdf = await buildPdf(
+        available
+          .map((s) => scans[s])
+          .filter(Boolean)
+          .map((s) => ({ dataUrl: s!.dataUrl, widthMm: s!.widthMm, heightMm: s!.heightMm })),
+        docTypeLabel,
+      );
+      entries.push({ name: `${docTypeLabel}.pdf`, blob: pdf });
+      downloadBlob(await buildZip(entries), `${docTypeLabel}.zip`);
+      onExported?.("zip");
+    } catch (err: any) {
+      toast({ title: "تعذر إنشاء الأرشيف", description: err?.message, variant: "destructive" });
     } finally {
       setBusy(null);
     }
@@ -429,6 +483,24 @@ export default function DocumentLayout({
               </Button>
               <Button variant="outline" className="gap-2" disabled={busy !== null || cap.overflow} onClick={() => void exportRaster("jpeg")}>
                 {busy === "jpeg" ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileImage className="w-4 h-4" />} JPEG
+              </Button>
+              <Button
+                variant="outline"
+                className="gap-2"
+                disabled={busy !== null}
+                onClick={() => void exportDocumentPdf()}
+              >
+                {busy === "docpdf" ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                PDF بالقياس الفعلي
+              </Button>
+              <Button
+                variant="outline"
+                className="gap-2"
+                disabled={busy !== null}
+                onClick={() => void exportZip()}
+              >
+                {busy === "zip" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                ZIP
               </Button>
               {available.map((s) => (
                 <Button key={s} variant="outline" className="gap-2" onClick={() => exportScan(s)}>
