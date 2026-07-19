@@ -445,6 +445,16 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "custody_groups_view",
+  "custody_groups_create",
+  "custody_groups_edit",
+  "custody_groups_assign_employee",
+  "custody_groups_manage_assets",
+  "custody_groups_reserve",
+  "custody_groups_checkout",
+  "custody_groups_return",
+  "custody_groups_damage_report",
+  "custody_groups_history_view",
   "depreciation_view",
   "depreciation_usage_edit",
   "depreciation_print_a4",
@@ -4393,6 +4403,8 @@ async function formatKoshaBooking(row: any) {
     : null;
   return {
     id: row.id,
+    // Defaults to the native table; the routed adapter overrides it to "service".
+    source: "kosha" as string,
     koshaId: row.koshaId ?? null,
     koshaName: kosha?.name ?? null,
     koshaSlug: kosha?.slug ?? null,
@@ -4598,7 +4610,73 @@ async function formatRoutedKoshaServiceBooking(
     paidAmount: order.depositAmount,
     internalNotes: order.internalNotes ?? "",
     updatedAt: order.createdAt,
+  }).then((formatted) => ({
+    // Discriminator so the client can address this record unambiguously; the id
+    // itself stays the original service-order id.
+    ...formatted,
+    source: "service" as const,
+  }));
+}
+
+/**
+ * Which table a portal booking id belongs to.
+ *
+ * kosha_bookings and service_orders both use SERIAL, so they share the same id
+ * space and an id ALONE is ambiguous: booking 5 exists in both. Resolving by id
+ * only (kosha first) meant a routed sound booking whose id collided with a kosha
+ * booking opened — and was updated — as the wrong record, so a payment or stage
+ * change could land on an unrelated booking.
+ *
+ * List responses now carry `source`, and clients echo it back as ?source=.
+ */
+export type KoshaPortalSource = "kosha" | "service";
+
+export function koshaSourceHint(req: NextRequest): KoshaPortalSource | null {
+  const value = req.nextUrl.searchParams.get("source");
+  return value === "kosha" || value === "service" ? value : null;
+}
+
+type ResolvedPortalBooking =
+  | { kind: "kosha"; native: typeof koshaBookingsTable.$inferSelect; routed: null }
+  | {
+      kind: "service";
+      native: null;
+      routed: NonNullable<Awaited<ReturnType<typeof findRoutedKoshaServiceBooking>>>;
+    }
+  /** The id exists in both tables and no source was supplied. */
+  | { kind: "ambiguous"; native: null; routed: null };
+
+/**
+ * Resolves an id to the record the caller actually meant. With an explicit
+ * `source` the lookup is unambiguous; without one it keeps the historical
+ * kosha-first order so existing links and bookmarks still work.
+ */
+async function resolveKoshaPortalBooking(
+  id: number,
+  source: KoshaPortalSource | null,
+): Promise<ResolvedPortalBooking | null> {
+  if (source === "service") {
+    const routed = await findRoutedKoshaServiceBooking(id);
+    return routed ? { kind: "service", native: null, routed } : null;
+  }
+
+  const native = await db.query.koshaBookingsTable.findFirst({
+    where: eq(koshaBookingsTable.id, id),
   });
+  if (source === "kosha") {
+    return native ? { kind: "kosha", native, routed: null } : null;
+  }
+
+  const routed = await findRoutedKoshaServiceBooking(id);
+
+  // Genuine collision: the id matches a record in BOTH tables and the caller
+  // gave no hint. Guessing here is what let a payment or stage change land on
+  // an unrelated booking, so refuse instead — a visible error beats silent
+  // corruption. Callers that send ?source= never reach this.
+  if (native && routed) return { kind: "ambiguous", native: null, routed: null };
+
+  if (native) return { kind: "kosha", native, routed: null };
+  return routed ? { kind: "service", native: null, routed } : null;
 }
 
 async function findRoutedKoshaServiceBooking(id: number) {
@@ -16011,9 +16089,15 @@ async function handleAdminKoshas(
     if (parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف الحجز غير صحيح", 400);
-      const existing = await db.query.koshaBookingsTable.findFirst({
-        where: eq(koshaBookingsTable.id, id),
-      });
+      // Same id-space ambiguity as the staff portal: honour an explicit source
+      // so a routed service order is never mistaken for a kosha booking.
+      const sourceHint = koshaSourceHint(req);
+      const existing =
+        sourceHint === "service"
+          ? undefined
+          : await db.query.koshaBookingsTable.findFirst({
+              where: eq(koshaBookingsTable.id, id),
+            });
       if (!existing) {
         const routed = await findRoutedKoshaServiceBooking(id);
         if (!routed) return error("الحجز غير موجود", 404);
@@ -22861,6 +22945,175 @@ function bookingOperationStage(reference: BookingOperationsReference) {
   return "booked";
 }
 
+let custodyGroupTablesPromise: Promise<void> | null = null;
+
+/** Additive storage for permanent employee custody and booking-only reservations. */
+async function ensureCustodyGroupTables() {
+  if (!custodyGroupTablesPromise) custodyGroupTablesPromise = db.execute(sql`
+    create table if not exists employee_custody_groups (
+      id serial primary key, name text not null, staff_id integer not null references staff(id) on delete restrict,
+      department text, group_type varchar(40) not null default 'general', description text,
+      status varchar(20) not null default 'active', last_inspection_date date, next_inspection_date date,
+      notes text, created_by integer references staff(id) on delete set null,
+      created_at timestamp not null default now(), updated_at timestamp not null default now()
+    );
+    create table if not exists employee_custody_group_assets (
+      id serial primary key, group_id integer not null references employee_custody_groups(id) on delete cascade,
+      product_id integer not null references products(id) on delete restrict, is_active boolean not null default true,
+      added_by integer references staff(id) on delete set null, added_at timestamp not null default now(),
+      removed_at timestamp, notes text, unique(group_id, product_id)
+    );
+    create unique index if not exists employee_custody_active_asset_unique
+      on employee_custody_group_assets(product_id) where is_active;
+    create index if not exists employee_custody_group_assets_group_idx on employee_custody_group_assets(group_id,is_active);
+    create table if not exists employee_custody_reservations (
+      id serial primary key, group_id integer not null references employee_custody_groups(id) on delete restrict,
+      product_id integer not null references products(id) on delete restrict, staff_id integer not null references staff(id) on delete restrict,
+      booking_type varchar(20) not null, booking_id integer not null, start_at timestamp not null, end_at timestamp not null,
+      status varchar(24) not null default 'reserved', checkout_at timestamp, returned_at timestamp,
+      depreciation_applied_at timestamp, condition_out varchar(20), condition_in varchar(20),
+      damage_reason text, damage_photo_url text, signature_url text, created_by integer references staff(id) on delete set null,
+      created_at timestamp not null default now(), updated_at timestamp not null default now(),
+      unique(booking_type,booking_id,product_id)
+    );
+    create index if not exists employee_custody_reservations_product_time_idx on employee_custody_reservations(product_id,start_at,end_at);
+    create index if not exists employee_custody_reservations_booking_idx on employee_custody_reservations(booking_type,booking_id,status);
+    create table if not exists employee_custody_audit (
+      id serial primary key, group_id integer references employee_custody_groups(id) on delete set null,
+      product_id integer references products(id) on delete set null, staff_id integer references staff(id) on delete set null,
+      booking_type varchar(20), booking_id integer, action varchar(50) not null,
+      previous_value jsonb not null default '{}'::jsonb, new_value jsonb not null default '{}'::jsonb,
+      actor_id integer references staff(id) on delete set null, actor_name text not null default '', created_at timestamp not null default now()
+    );
+    create index if not exists employee_custody_audit_group_idx on employee_custody_audit(group_id,created_at desc);
+  `).then(() => undefined).catch((error) => { custodyGroupTablesPromise = null; throw error; });
+  await custodyGroupTablesPromise;
+}
+
+function custodyIsManager(auth: AdminUser) {
+  return auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "products");
+}
+
+async function logCustodyAudit(input: { groupId?: number | null; productId?: number | null; staffId?: number | null; bookingType?: string | null; bookingId?: number | null; action: string; previous?: unknown; next?: unknown; auth: AdminUser }) {
+  await db.execute(sql`insert into employee_custody_audit(group_id,product_id,staff_id,booking_type,booking_id,action,previous_value,new_value,actor_id,actor_name)
+    values(${input.groupId ?? null},${input.productId ?? null},${input.staffId ?? null},${input.bookingType ?? null},${input.bookingId ?? null},${input.action},${JSON.stringify(input.previous ?? {})}::jsonb,${JSON.stringify(input.next ?? {})}::jsonb,${input.auth.id},${input.auth.fullName || input.auth.username})`);
+}
+
+async function custodyAvailability(productId: number, startAt: Date, endAt: Date, bookingType?: string, bookingId?: number) {
+  const result: any = await db.execute(sql`
+    select p.id, p.is_active, ap.status as asset_status, ap.deleted_at, pass.metadata,
+      exists(select 1 from equipment_custody ec where ec.product_id=p.id and ec.status='issued') as is_checked_out,
+      (select concat(r.booking_type,' #',r.booking_id) from employee_custody_reservations r
+       where r.product_id=p.id and r.status in ('reserved','checked_out')
+       and r.start_at < ${endAt} and r.end_at > ${startAt}
+       and not (r.booking_type=${bookingType ?? ''} and r.booking_id=${bookingId ?? 0}) limit 1) as conflict_booking
+    from products p left join asset_profiles ap on ap.product_id=p.id left join asset_passports pass on pass.product_id=p.id where p.id=${productId}`);
+  const row = result.rows?.[0];
+  if (!row || !row.is_active) return { available: false, reason: "الأصل غير نشط أو مؤرشف" };
+  if (row.deleted_at || ["maintenance", "lost", "retired", "locked"].includes(String(row.asset_status ?? "active"))) return { available: false, reason: `حالة الأصل: ${row.asset_status ?? "مؤرشف"}` };
+  if (row.metadata?.inspectionBlocked === true || row.metadata?.damageHold === true) return { available: false, reason: "الأصل موقوف للفحص أو بسبب تلف" };
+  if (row.is_checked_out) return { available: false, reason: "الأصل خارج المستودع بعهدة تشغيلية" };
+  if (row.conflict_booking) return { available: false, reason: "المعدة غير متاحة", conflictBooking: row.conflict_booking };
+  return { available: true, reason: null };
+}
+
+async function custodyPreview(staffIds: number[], startAt: Date, endAt: Date, bookingType?: string, bookingId?: number) {
+  if (!staffIds.length) return [];
+  const result: any = await db.execute(sql`
+    select g.id as group_id,g.name as group_name,g.group_type,g.staff_id,s.full_name,s.username,s.department,
+      a.product_id,coalesce(p.name_ar,p.name) as asset_name,p.barcode,ap.serial_number,ap.status as asset_status,
+      pass.qr_token,pass.warehouse_id,pass.shelf_code,pass.metadata
+    from employee_custody_groups g join staff s on s.id=g.staff_id
+    join employee_custody_group_assets a on a.group_id=g.id and a.is_active=true
+    join products p on p.id=a.product_id left join asset_profiles ap on ap.product_id=p.id
+    left join asset_passports pass on pass.product_id=p.id
+    where g.status='active' and g.staff_id = any(${staffIds}) order by s.full_name,g.id,asset_name`);
+  return Promise.all((result.rows ?? []).map(async (row: any) => ({
+    groupId: Number(row.group_id), groupName: row.group_name, groupType: row.group_type,
+    employeeId: Number(row.staff_id), employeeName: row.full_name || row.username,
+    department: row.department ?? null, productId: Number(row.product_id), name: row.asset_name,
+    assetCode: `AJN-A${String(row.product_id).padStart(6, "0")}`, qrCode: row.qr_token ?? row.barcode ?? null,
+    serialNumber: row.serial_number ?? null, condition: row.asset_status ?? "active",
+    ...(await custodyAvailability(Number(row.product_id), startAt, endAt, bookingType, bookingId)),
+  })));
+}
+
+async function handleCustodyGroups(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "custody-groups") return null;
+  const auth = await requireAnyPermission(req, ["products", "staff", "custody_groups_view", "custody_groups_create", "custody_groups_edit"]);
+  if (isResponse(auth)) return auth;
+  await Promise.all([ensureCustodyGroupTables(), ensureAdminExtensionsTables(), ensureEnterprisePhase5Tables()]);
+  const method = req.method; const groupId = int(parts[2]); const sub = parts[3];
+  const can = (...permissions: Permission[]) => custodyIsManager(auth) || permissions.some((p) => hasPermission(auth, p));
+
+  if (!groupId && method === "GET") {
+    const ownOnly = !custodyIsManager(auth); const rows: any = await db.execute(sql`
+      select g.*,s.full_name,s.username,s.department,count(a.id)::int as asset_count
+      from employee_custody_groups g join staff s on s.id=g.staff_id
+      left join employee_custody_group_assets a on a.group_id=g.id and a.is_active=true
+      where (${ownOnly} = false or g.staff_id=${auth.id}) group by g.id,s.id order by g.updated_at desc`);
+    return json({ data: (rows.rows ?? []).map((r: any) => ({ ...r, groupId: `CG-${String(r.id).padStart(6, "0")}`, employeeName: r.full_name || r.username })) });
+  }
+  if (!groupId && method === "POST") {
+    if (!can("custody_groups_create")) return error("ليس لديك صلاحية إنشاء مجموعات العهدة", 403);
+    const data = await body(req); const name = String(data?.name ?? "").trim(); const staffId = optionalPositiveId(data?.staffId);
+    if (!name || !staffId) return error("اسم المجموعة والموظف مطلوبان", 422);
+    const staff = await db.query.staffTable.findFirst({ where: and(eq(staffTable.id, staffId), eq(staffTable.isActive, true)) });
+    if (!staff) return error("الموظف غير موجود أو غير نشط", 404);
+    const result: any = await db.execute(sql`insert into employee_custody_groups(name,staff_id,department,group_type,description,status,last_inspection_date,next_inspection_date,notes,created_by)
+      values(${name},${staffId},${data?.department ?? staff.department ?? null},${String(data?.groupType ?? "general")},${nullableText(data?.description)},'active',${data?.lastInspectionDate ?? null},${data?.nextInspectionDate ?? null},${nullableText(data?.notes)},${auth.id}) returning *`);
+    const row = result.rows[0]; await logCustodyAudit({ groupId: row.id, staffId, action: "group_created", next: row, auth });
+    void logAdminActivity(req, "custody_group_created", "employee_custody_group", row.id, { staffId, name });
+    return json({ ...row, groupId: `CG-${String(row.id).padStart(6, "0")}` }, 201);
+  }
+  if (!groupId) return error("معرّف مجموعة العهدة مطلوب", 400);
+
+  const groupResult: any = await db.execute(sql`select g.*,s.full_name,s.username,s.department from employee_custody_groups g join staff s on s.id=g.staff_id where g.id=${groupId} limit 1`);
+  const group = groupResult.rows?.[0]; if (!group) return error("مجموعة العهدة غير موجودة", 404);
+  if (!custodyIsManager(auth) && Number(group.staff_id) !== auth.id) return error("يمكن للموظف عرض عهدته فقط", 403);
+
+  if (!sub && method === "GET") {
+    const [assets, reservations, history]: any[] = await Promise.all([
+      db.execute(sql`select a.*,coalesce(p.name_ar,p.name) as name,p.barcode,ap.status as asset_status,ap.usage_count,ap.current_value,pass.serial_number,pass.qr_token,pass.shelf_code,pass.warehouse_id
+        from employee_custody_group_assets a join products p on p.id=a.product_id left join asset_profiles ap on ap.product_id=p.id left join asset_passports pass on pass.product_id=p.id where a.group_id=${groupId} order by a.is_active desc,a.added_at desc`),
+      db.execute(sql`select * from employee_custody_reservations where group_id=${groupId} and status in ('reserved','checked_out') order by start_at`),
+      db.execute(sql`select * from employee_custody_audit where group_id=${groupId} order by created_at desc limit 200`),
+    ]);
+    return json({ group: { ...group, groupId: `CG-${String(group.id).padStart(6, "0")}`, employeeName: group.full_name || group.username }, assets: assets.rows ?? [], reservations: reservations.rows ?? [], history: history.rows ?? [] });
+  }
+  if (!sub && method === "PATCH") {
+    if (!can("custody_groups_edit")) return error("ليس لديك صلاحية تعديل مجموعة العهدة", 403);
+    const data = await body(req); const status = data?.status ? String(data.status) : group.status; const staffId = optionalPositiveId(data?.staffId) ?? Number(group.staff_id);
+    const result: any = await db.execute(sql`update employee_custody_groups set name=${String(data?.name ?? group.name).trim()},staff_id=${staffId},department=${data?.department ?? group.department},group_type=${data?.groupType ?? group.group_type},description=${data?.description ?? group.description},status=${status},last_inspection_date=${data?.lastInspectionDate ?? group.last_inspection_date},next_inspection_date=${data?.nextInspectionDate ?? group.next_inspection_date},notes=${data?.notes ?? group.notes},updated_at=now() where id=${groupId} returning *`);
+    await logCustodyAudit({ groupId, staffId, action: staffId !== Number(group.staff_id) ? "employee_changed" : status !== group.status ? "group_status_changed" : "group_updated", previous: group, next: result.rows[0], auth });
+    return json(result.rows[0]);
+  }
+  if (sub === "assets" && method === "POST") {
+    if (!can("custody_groups_manage_assets")) return error("ليس لديك صلاحية إدارة أصول العهدة", 403);
+    const data = await body(req); const productId = optionalPositiveId(data?.productId); if (!productId) return error("الأصل مطلوب", 422);
+    if (group.status !== "active") return error("فعّل مجموعة العهدة قبل إضافة أصول إليها", 409);
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
+    const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
+    if (!product?.isAsset || !product.isActive || profile?.deletedAt || ["maintenance","lost","retired","locked"].includes(String(profile?.status ?? "active"))) return error("لا يمكن إضافة أصل غير نشط أو مفقود أو تحت الصيانة", 422);
+    const owner: any = await db.execute(sql`select group_id from employee_custody_group_assets a join employee_custody_groups g on g.id=a.group_id where a.product_id=${productId} and a.is_active=true and g.status='active' limit 1`);
+    if (owner.rows?.[0] && Number(owner.rows[0].group_id) !== groupId) return error("الأصل مرتبط بالفعل بمجموعة عهدة موظف نشطة", 409);
+    await db.execute(sql`insert into employee_custody_group_assets(group_id,product_id,is_active,added_by,notes) values(${groupId},${productId},true,${auth.id},${nullableText(data?.notes)}) on conflict(group_id,product_id) do update set is_active=true,removed_at=null,added_by=excluded.added_by,added_at=now(),notes=excluded.notes`);
+    await logCustodyAudit({ groupId, productId, staffId: Number(group.staff_id), action: "asset_added", next: { productId }, auth });
+    await addEntityTimeline({ entityType: "asset", entityId: productId, type: "fixed_custody_assigned", title: "تمت إضافة الأصل إلى عهدة موظف", body: `${group.name}`, actor: erpActorFromAdmin(auth), metadata: { groupId, staffId: group.staff_id } });
+    return json({ ok: true });
+  }
+  if (sub === "assets" && method === "DELETE") {
+    if (!can("custody_groups_manage_assets")) return error("ليس لديك صلاحية إدارة أصول العهدة", 403);
+    const productId = int(req.nextUrl.searchParams.get("productId") ?? ""); if (!productId) return error("الأصل مطلوب", 422);
+    const active: any = await db.execute(sql`select 1 from employee_custody_reservations where group_id=${groupId} and product_id=${productId} and status in ('reserved','checked_out') limit 1`);
+    if (active.rows?.length) return error("لا يمكن إزالة أصل له حجز أو إخراج نشط", 409);
+    await db.execute(sql`update employee_custody_group_assets set is_active=false,removed_at=now() where group_id=${groupId} and product_id=${productId}`);
+    await logCustodyAudit({ groupId, productId, staffId: Number(group.staff_id), action: "asset_removed", auth });
+    return json({ ok: true });
+  }
+  return error("إجراء مجموعة العهدة غير مدعوم", 405);
+}
+
 async function handleBookingOperations(req: NextRequest, parts: string[], section: string | undefined) {
   if (section !== "booking-operations") return null;
   const auth = await requireAnyPermission(req, [
@@ -22961,6 +23214,110 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
       void logAdminActivity(req, `booking_products_${productsStage}`, reference.entityType, reference.id);
       return json({ ok: true, stage: productsStage });
     }
+  }
+
+  // Fixed employee custody is deliberately separate from store reservations.
+  // It reserves existing asset IDs only and is attached to this booking after
+  // the responsible employee selection is explicitly saved.
+  if (resource === "custody") {
+    await ensureCustodyGroupTables();
+    const canCustody = (...permissions: Permission[]) => auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "products") || permissions.some((p) => hasPermission(auth, p));
+    const eventTime = String(reference.details.eventTime ?? reference.details.event_time ?? reference.operations.eventTime ?? "08:00").slice(0, 5);
+    const eventStart = reference.eventDate ? new Date(`${String(reference.eventDate).slice(0, 10)}T${eventTime}:00`) : new Date();
+    const eventEnd = new Date(eventStart.getTime() + 8 * 60 * 60 * 1000);
+    const savedEmployeeIds = Array.isArray(reference.operations.custodyEmployeeIds) ? reference.operations.custodyEmployeeIds.map(Number).filter(Boolean) : [];
+    if (method === "GET") {
+      const requested = String(req.nextUrl.searchParams.get("employeeIds") ?? "").split(",").map(Number).filter(Boolean);
+      const employeeIds = requested.length ? requested : savedEmployeeIds;
+      const assets = await custodyPreview(employeeIds, eventStart, eventEnd, reference.entityType, reference.id);
+      const reservations: any = await db.execute(sql`select * from employee_custody_reservations where booking_type=${reference.entityType} and booking_id=${reference.id} and status in ('reserved','checked_out') order by id`);
+      return json({ employeeIds, startAt: eventStart.toISOString(), endAt: eventEnd.toISOString(), assets, reservations: reservations.rows ?? [] });
+    }
+    if (method !== "POST") return error("إجراء عهدة الحجز غير مدعوم", 405);
+    const data = await body(req); const action = String(data?.action ?? "preview");
+    const employeeIds = Array.isArray(data?.employeeIds) ? data.employeeIds.map(Number).filter(Boolean) : savedEmployeeIds;
+    if (action === "set-employees") {
+      if (!canCustody("custody_groups_assign_employee")) return error("ليس لديك صلاحية تعيين موظف العهدة", 403);
+      const before = savedEmployeeIds;
+      if (JSON.stringify([...before].sort()) !== JSON.stringify([...employeeIds].sort())) {
+        await db.execute(sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`);
+        await logCustodyAudit({ bookingType: reference.entityType, bookingId: reference.id, action: "reservation_released", previous: { employeeIds: before }, next: { employeeIds }, auth });
+      }
+      await saveBookingOperations(reference, { ...reference.operations, custodyEmployeeIds: employeeIds });
+      await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: "custody_employee_changed", title: "تغيير موظف عهدة الحجز", body: employeeIds.join(", ") || "بدون موظف", actor: erpActorFromAdmin(auth), metadata: { previous: before, next: employeeIds } });
+      return json({ ok: true, assets: await custodyPreview(employeeIds, eventStart, eventEnd, reference.entityType, reference.id) });
+    }
+    if (action === "reserve") {
+      if (!canCustody("custody_groups_reserve", "asset_reserve")) return error("ليس لديك صلاحية حجز معدات العهدة", 403);
+      const preview = await custodyPreview(employeeIds, eventStart, eventEnd, reference.entityType, reference.id);
+      const unavailable = preview.filter((row) => !row.available);
+      // Replacing an unexecuted employee selection releases its prior holds; checked
+      // out equipment is intentionally never released automatically.
+      await db.execute(sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`);
+      for (const item of preview.filter((row) => row.available)) await db.execute(sql`
+        insert into employee_custody_reservations(group_id,product_id,staff_id,booking_type,booking_id,start_at,end_at,status,created_by)
+        values(${item.groupId},${item.productId},${item.employeeId},${reference.entityType},${reference.id},${eventStart},${eventEnd},'reserved',${auth.id})
+        on conflict(booking_type,booking_id,product_id) do update set group_id=excluded.group_id,staff_id=excluded.staff_id,start_at=excluded.start_at,end_at=excluded.end_at,status='reserved',updated_at=now()`);
+      const linked = Array.isArray(reference.operations.assets) ? reference.operations.assets.filter((item: any) => item.source !== "fixed_custody") : [];
+      linked.push(...preview.filter((row) => row.available).map((row) => ({ productId: row.productId, quantity: 1, stage: "reserved", source: "fixed_custody", custodyGroupId: row.groupId, custodyEmployeeId: row.employeeId, reservedAt: new Date().toISOString() })));
+      await saveBookingOperations(reference, { ...reference.operations, custodyEmployeeIds: employeeIds, assets: linked, custodyReservedAt: new Date().toISOString() });
+      for (const item of preview.filter((row) => row.available)) {
+        await logCustodyAudit({ groupId: item.groupId, productId: item.productId, staffId: item.employeeId, bookingType: reference.entityType, bookingId: reference.id, action: "booking_reservation_created", next: { status: "reserved", startAt: eventStart, endAt: eventEnd }, auth });
+        await addEntityTimeline({ entityType: "asset", entityId: item.productId, type: "custody_booking_reserved", title: "محجوز للحجز", body: `حجز #${reference.id} · بذمة ${item.employeeName}`, actor: erpActorFromAdmin(auth), metadata: { groupId: item.groupId, bookingType: reference.entityType, bookingId: reference.id, staffId: item.employeeId } });
+      }
+      return json({ ok: true, reserved: preview.filter((row) => row.available), unavailable });
+    }
+    if (action === "release") {
+      if (!canCustody("asset_release")) return error("ليس لديك صلاحية تحرير معدات العهدة", 403);
+      await db.execute(sql`update employee_custody_reservations set status='released',updated_at=now() where booking_type=${reference.entityType} and booking_id=${reference.id} and status='reserved'`);
+      await saveBookingOperations(reference, { ...reference.operations, assets: (reference.operations.assets ?? []).filter((item: any) => item.source !== "fixed_custody") });
+      await logCustodyAudit({ bookingType: reference.entityType, bookingId: reference.id, action: "reservation_released", auth });
+      return json({ ok: true });
+    }
+    const requestedAssets = Array.isArray(data?.assets) ? data.assets : [];
+    const activeRows: any = await db.execute(sql`select r.*,g.name as group_name,s.full_name,s.username from employee_custody_reservations r join employee_custody_groups g on g.id=r.group_id join staff s on s.id=r.staff_id where r.booking_type=${reference.entityType} and r.booking_id=${reference.id} and r.status in ('reserved','checked_out')`);
+    if (action === "checkout") {
+      if (!canCustody("custody_groups_checkout", "warehouse_issue")) return error("ليس لديك صلاحية تسليم معدات العهدة", 403);
+      const ids = requestedAssets.length ? new Set(requestedAssets.map((x: any) => Number(x.productId))) : new Set((activeRows.rows ?? []).map((x: any) => Number(x.product_id)));
+      for (const row of activeRows.rows ?? []) {
+        if (!ids.has(Number(row.product_id))) continue;
+        const available = await custodyAvailability(Number(row.product_id), eventStart, eventEnd, reference.entityType, reference.id);
+        if (!available.available && available.reason !== "المعدة غير متاحة") return error(`المعدة غير متاحة: ${available.reason}`, 409);
+        const detail = requestedAssets.find((x: any) => Number(x.productId) === Number(row.product_id)) ?? {};
+        const existing = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, Number(row.product_id)), eq(equipmentCustodyTable.status, "issued")) });
+        if (!existing) await db.insert(equipmentCustodyTable).values({ productId: Number(row.product_id), staffId: Number(row.staff_id), quantity: 1, status: "issued", issuedBy: auth.id, signatureUrl: nullableText(detail.signatureUrl), notes: `حجز ${reference.entityType} #${reference.id} · مجموعة عهدة ${row.group_name}` });
+        await db.execute(sql`update employee_custody_reservations set status='checked_out',checkout_at=now(),condition_out=${detail.conditionOut ?? "good"},signature_url=${nullableText(detail.signatureUrl)},updated_at=now() where id=${row.id}`);
+        await db.insert(assetPassportsTable).values({ productId: Number(row.product_id), lastStaffId: Number(row.staff_id), lastLocation: `خرجت للحجز – بذمة ${row.full_name || row.username}` }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: Number(row.staff_id), lastLocation: `خرجت للحجز – بذمة ${row.full_name || row.username}`, updatedAt: new Date() } });
+        await logCustodyAudit({ groupId: Number(row.group_id), productId: Number(row.product_id), staffId: Number(row.staff_id), bookingType: reference.entityType, bookingId: reference.id, action: "equipment_checked_out", next: { conditionOut: detail.conditionOut ?? "good" }, auth });
+      }
+      return json({ ok: true });
+    }
+    if (action === "return") {
+      if (!canCustody("custody_groups_return", "booking_return_confirm")) return error("ليس لديك صلاحية استلام معدات العهدة", 403);
+      const rows = (activeRows.rows ?? []).filter((row: any) => row.status === "checked_out");
+      if (requestedAssets.length !== rows.length || rows.some((row: any) => !requestedAssets.find((x: any) => Number(x.productId) === Number(row.product_id) && x.condition))) return error("يجب فحص حالة كل معدة قبل تأكيد الاستلام", 422);
+      for (const row of rows) {
+        const detail = requestedAssets.find((x: any) => Number(x.productId) === Number(row.product_id));
+        const problem = detail.condition === "missing" ? "missing" : detail.condition === "damaged" ? "damaged" : "none";
+        if (problem !== "none" && (!detail.damageReason || !detail.damagePhotoUrl)) return error("سبب التلف أو الفقدان وصورته مطلوبان", 422);
+        await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(and(eq(equipmentCustodyTable.productId, Number(row.product_id)), eq(equipmentCustodyTable.status, "issued")));
+        const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, Number(row.product_id)) });
+        const profile: any = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, Number(row.product_id)) });
+        const passport: any = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, Number(row.product_id)) });
+        const metadata = assetMetadataObject(passport?.metadata); const purchase = Number(profile?.purchasePrice ?? product?.costPrice ?? 0); const previous = Number(profile?.currentValue ?? purchase);
+        const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
+        const nextValue = metadata.automaticDepreciation === true ? Math.max(0, previous - perUse) : previous;
+        // depreciation_applied_at provides the idempotency boundary: one completed
+        // custody reservation can update centralized usage only once.
+        await db.execute(sql`update employee_custody_reservations set status=${problem === "missing" ? "missing" : "returned"},returned_at=now(),condition_in=${detail.condition},damage_reason=${nullableText(detail.damageReason)},damage_photo_url=${nullableText(detail.damagePhotoUrl)},depreciation_applied_at=coalesce(depreciation_applied_at,now()),updated_at=now() where id=${row.id}`);
+        if (!row.depreciation_applied_at) await db.insert(assetProfilesTable).values({ productId: Number(row.product_id), purchasePrice: String(purchase), currentValue: String(nextValue), usageCount: Number(profile?.usageCount ?? 0) + 1, status: problem === "missing" ? "lost" : problem === "damaged" ? "maintenance" : "active" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { currentValue: String(nextValue), usageCount: Number(profile?.usageCount ?? 0) + 1, status: problem === "missing" ? "lost" : problem === "damaged" ? "maintenance" : "active", updatedAt: new Date() } });
+        await db.insert(assetPassportsTable).values({ productId: Number(row.product_id), lastStaffId: null, lastLocation: passport?.lastLocation ?? "داخل المستودع", metadata: { ...metadata, lastBooking: `${reference.entityType}:${reference.id}`, lastInspection: new Date().toISOString() } }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation: passport?.lastLocation ?? "داخل المستودع", metadata: { ...metadata, lastBooking: `${reference.entityType}:${reference.id}`, lastInspection: new Date().toISOString() }, updatedAt: new Date() } });
+        await logCustodyAudit({ groupId: Number(row.group_id), productId: Number(row.product_id), staffId: Number(row.staff_id), bookingType: reference.entityType, bookingId: reference.id, action: problem === "missing" ? "missing_reported" : problem === "damaged" ? "damage_reported" : "equipment_returned", next: { condition: detail.condition }, auth });
+        await addEntityTimeline({ entityType: "asset", entityId: Number(row.product_id), type: "custody_booking_returned", title: "إرجاع معدات عهدة الموظف", body: `حجز #${reference.id} · ${detail.condition}`, actor: erpActorFromAdmin(auth), metadata: { bookingType: reference.entityType, bookingId: reference.id, staffId: row.staff_id, problem } });
+      }
+      return json({ ok: true });
+    }
+    return error("إجراء عهدة الحجز غير مدعوم", 405);
   }
 
   if (resource === "assets") {
@@ -23346,6 +23703,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const centralBookingCenter = await handleCentralBookingCenter(req, parts, section);
   if (centralBookingCenter) return centralBookingCenter;
+
+  const custodyGroups = await handleCustodyGroups(req, parts, section);
+  if (custodyGroups) return custodyGroups;
 
   const bookingOperations = await handleBookingOperations(req, parts, section);
   if (bookingOperations) return bookingOperations;
@@ -37512,6 +37872,28 @@ function crewBucket(row: any, today: string): CrewBucket {
   return "late";
 }
 
+/**
+ * Supervisors keep the whole board. Everyone else is scoped to their own work.
+ * Admin and manager roles are the existing supervisory roles in this codebase.
+ */
+function canSeeAllKoshaBookings(user: AdminUser) {
+  return user.role === "admin" || user.role === "manager";
+}
+
+/**
+ * A booking belongs to a crew member when they are its primary or assistant
+ * employee, or the assigned staff on a routed service order.
+ */
+function isKoshaBookingAssignedTo(row: any, staffId: number | null) {
+  if (!staffId) return false;
+  const candidates = [
+    row?.primaryEmployeeId,
+    row?.assistantEmployeeId,
+    row?.assignedStaffId,
+  ];
+  return candidates.some((value) => Number(value) === Number(staffId));
+}
+
 async function formatKoshaBookingForCrew(row: any) {
   const base = await formatKoshaBooking(row);
   return {
@@ -37791,13 +38173,27 @@ async function loadRoutedKoshaServiceBookingDetail(
   };
 }
 
+/**
+ * Persists execution state onto the service order's custom_fields.
+ *
+ * Merges with `||` at the database level instead of replacing the object, so a
+ * concurrent writer can never drop keys it did not touch — losing
+ * `bookingCenterServices` or `department` here would silently remove the
+ * booking from the Kosha portal, since those are what the routing predicate
+ * reads.
+ *
+ * Note: two writers appending to the SAME array key still race (last write
+ * wins). Fixing that needs optimistic locking on the row.
+ */
 async function saveRoutedKoshaServiceExecution(
   order: typeof serviceOrdersTable.$inferSelect,
   fields: Record<string, any>,
 ) {
   const [updated] = await db
     .update(serviceOrdersTable)
-    .set({ customFields: fields })
+    .set({
+      customFields: sql`coalesce(${serviceOrdersTable.customFields}, '{}'::jsonb) || ${JSON.stringify(fields)}::jsonb`,
+    } as any)
     .where(eq(serviceOrdersTable.id, order.id))
     .returning();
   return updated;
@@ -38306,6 +38702,14 @@ async function handleStaffPortal(
         formatRoutedKoshaServiceBookingForCrew(order, service),
       ))),
     ].filter((r: any) => String(r.status ?? "") !== "cancelled");
+
+    // Crew see only their own work; managers and admins keep the full view so
+    // they can dispatch and supervise. Previously every holder of the "koshas"
+    // permission saw — and could open — every booking.
+    if (!canSeeAllKoshaBookings(auth)) {
+      crewRows = crewRows.filter((r: any) => isKoshaBookingAssignedTo(r, auth.id));
+    }
+
     if (bucket && bucket !== "all")
       crewRows = crewRows.filter((r: any) => r.bucket === bucket);
     if (search) {
@@ -38330,11 +38734,20 @@ async function handleStaffPortal(
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
     const detail = await loadKoshaBookingDetail(id);
-    if (detail) return json(detail);
-    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.id, id),
-    });
-    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    if (detail) {
+      // Direct-URL guard: the list is filtered by assignment, so the detail
+      // endpoint must enforce the same rule or the filter is bypassable.
+      if (!canSeeAllKoshaBookings(auth) && !isKoshaBookingAssignedTo(detail.booking, auth.id))
+        return error("هذا الحجز غير مُسند إليك", 403);
+      return json(detail);
+    }
+    // Resolve by the explicit source when the client sends one: kosha_bookings
+    // and service_orders share an id space, so id alone can select the wrong row.
+    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
+    if (resolved?.kind === "ambiguous")
+      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
+    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
+    const routed = resolved?.kind === "service" ? resolved.routed : null;
     return routed
       ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
       : error("الحجز غير موجود", 404);
@@ -38353,10 +38766,13 @@ async function handleStaffPortal(
       return error("مرحلة غير صحيحة", 400);
     if (toStage === "delivered")
       return error("استخدم نموذج التسليم لإكمال هذه المرحلة", 400);
-    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.id, id),
-    });
-    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    // Resolve by the explicit source when the client sends one: kosha_bookings
+    // and service_orders share an id space, so id alone can select the wrong row.
+    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
+    if (resolved?.kind === "ambiguous")
+      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
+    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
+    const routed = resolved?.kind === "service" ? resolved.routed : null;
     if (!nativeBooking && !routed) return error("الحجز غير موجود", 404);
     const media: Array<{ url?: string; kind?: string }> = Array.isArray(
       data?.media,
@@ -38440,10 +38856,13 @@ async function handleStaffPortal(
       ? data.media
       : [];
     if (media.length === 0) return error("لا توجد ملفات للرفع", 400);
-    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.id, id),
-    });
-    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    // Resolve by the explicit source when the client sends one: kosha_bookings
+    // and service_orders share an id space, so id alone can select the wrong row.
+    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
+    if (resolved?.kind === "ambiguous")
+      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
+    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
+    const routed = resolved?.kind === "service" ? resolved.routed : null;
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const savedMedia = await persistRoutedKoshaServiceMedia(
@@ -38515,10 +38934,13 @@ async function handleStaffPortal(
     if (!note || media.length === 0) {
       return error("التسليم يتطلب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
     }
-    const nativeBooking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.id, id),
-    });
-    const routed = nativeBooking ? null : await findRoutedKoshaServiceBooking(id);
+    // Resolve by the explicit source when the client sends one: kosha_bookings
+    // and service_orders share an id space, so id alone can select the wrong row.
+    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
+    if (resolved?.kind === "ambiguous")
+      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
+    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
+    const routed = resolved?.kind === "service" ? resolved.routed : null;
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const savedMedia = await persistRoutedKoshaServiceMedia(

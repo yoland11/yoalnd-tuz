@@ -182,7 +182,12 @@ function koshaRemaining(booking: Pick<KoshaBooking, "totalAmount" | "paidAmount"
   const total = Number(booking.totalAmount ?? 0);
   const paid = Number(booking.paidAmount ?? 0);
   const stored = booking.remainingAmount;
-  return stored === null || stored === undefined ? Math.max(0, total - paid) : Number(stored);
+  // Clamp both paths: an overpaid or out-of-sync booking must never render a
+  // negative "remaining", which reads as the shop owing money to the customer.
+  return Math.max(
+    0,
+    stored === null || stored === undefined ? total - paid : Number(stored),
+  );
 }
 
 /** Colour rule: 0 = green · <50% of total = orange · ≥50% of total = red. */
