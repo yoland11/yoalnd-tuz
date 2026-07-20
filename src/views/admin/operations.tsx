@@ -617,7 +617,6 @@ export function AssetsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
-  const [editing, setEditing] = useState<AssetRow | null>(null);
   const [adding, setAdding] = useState(false);
   const rows = data?.data ?? [];
   const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
@@ -775,9 +774,11 @@ export function AssetsPage() {
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => setEditing(row)} className="gap-1 text-primary">
-                            <Pencil className="h-3.5 w-3.5" /> تعديل
-                          </Button>
+                          <Link href={`/admin/assets/new?edit=${row.productId}&returnTo=depreciation`}>
+                            <Button variant="ghost" size="sm" className="gap-1 text-primary">
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </Button>
+                          </Link>
                           <Link href={`/admin/print-labels?productId=${row.productId}&kind=asset`}>
                             <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground">
                               <QrCode className="h-3.5 w-3.5" /> طباعة ملصق
@@ -821,11 +822,11 @@ export function AssetsPage() {
           </div>
         </div>
       )}
-      {(editing || adding) && (
+      {adding && (
         <DepreciationModal
-          asset={editing}
+          asset={null}
           assets={rows}
-          onClose={() => { setEditing(null); setAdding(false); }}
+          onClose={() => setAdding(false)}
         />
       )}
       <RemoveDepreciationDialog asset={removeTarget} busy={removeDepreciation.isPending} onClose={() => setRemoveTarget(null)} onConfirm={(reason) => removeTarget?.depreciationRecordId && removeDepreciation.mutate({ recordId: removeTarget.depreciationRecordId, reason })} />

@@ -25985,6 +25985,56 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json({ data, categories: [...categoryById.entries()].map(([id, row]) => ({ id, name: row.name })), warehouses: warehouses.map((row) => ({ id: row.id, name: row.name })), filters });
     }
 
+    // Full edit payload for the shared Add Asset screen. Keep product, depreciation
+    // profile, passport, and existing documents together so the edit workflow does
+    // not need a second, reduced depreciation-only form.
+    if (parts[2] === "edit" && method === "GET") {
+      await ensureAssetCategoriesTables();
+      const productId = int(parts[3]);
+      if (!productId) return error("معرّف الأصل غير صحيح", 400);
+      const [product, profile, passport, documents, custody] = await Promise.all([
+        db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
+        db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) }),
+        db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) }),
+        db.query.entityDocumentsTable.findMany({
+          where: and(
+            eq(entityDocumentsTable.entityType, "asset"),
+            eq(entityDocumentsTable.entityId, productId),
+            isNull(entityDocumentsTable.archivedAt),
+          ),
+          orderBy: [asc(entityDocumentsTable.createdAt)],
+          limit: 200,
+        }),
+        db.query.equipmentCustodyTable.findFirst({
+          where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")),
+          orderBy: [desc(equipmentCustodyTable.issuedAt)],
+        }),
+      ]);
+      if (!product || !product.isAsset) return error("الأصل غير موجود", 404);
+      const metadata = assetMetadataObject(passport?.metadata);
+      return json({
+        productId,
+        assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
+        product,
+        profile: profile ? { ...profile, purchaseDate: iso(profile.purchaseDate) } : null,
+        passport: passport
+          ? {
+              ...passport,
+              warrantyUntil: passport.warrantyUntil ? String(passport.warrantyUntil).slice(0, 10) : null,
+              lastStaffId: passport.lastStaffId ?? custody?.staffId ?? null,
+              metadata,
+            }
+          : { lastStaffId: custody?.staffId ?? null, metadata },
+        documents: documents.map((document) => ({
+          id: document.id,
+          title: document.title,
+          fileUrl: document.fileUrl,
+          fileName: document.fileName,
+          documentType: document.documentType,
+        })),
+      });
+    }
+
     if (parts[2] === "scan" && method === "GET") {
       const rawCode = String(req.nextUrl.searchParams.get("code") ?? "").trim();
       if (!rawCode) return error("أدخل QR أو الباركود أو الرقم التسلسلي", 400);

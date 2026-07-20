@@ -1,23 +1,61 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Aperture,
+  Armchair,
   ArrowRight,
   Boxes,
   Camera,
+  CarFront,
   CheckSquare,
   ClipboardList,
+  Edit3,
+  FileText,
   Link2,
   Loader2,
+  Lightbulb,
+  Monitor,
+  Package,
   Plus,
   Printer,
   QrCode,
   Save,
+  SlidersHorizontal,
+  Speaker,
+  Tag,
   Trash2,
   Warehouse,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "./_layout";
 import {
   adminFetch,
@@ -35,22 +73,6 @@ import {
   type LabelData,
 } from "./label-helpers";
 
-// ── Reference data ─────────────────────────────────────────────────────────
-const CATEGORIES: [string, string][] = [
-  ["Camera", "كاميرا"],
-  ["Lens", "عدسة"],
-  ["Drone", "درون"],
-  ["Lighting", "إضاءة"],
-  ["Audio", "صوت"],
-  ["Speaker", "سماعة"],
-  ["Mixer", "مكسر صوت"],
-  ["Screen", "شاشة"],
-  ["Decoration", "ديكور"],
-  ["Vehicle", "مركبة"],
-  ["Furniture", "أثاث"],
-  ["Other", "أخرى"],
-];
-
 const STATUSES: [string, string][] = [
   ["available", "متاح"],
   ["reserved", "محجوز"],
@@ -58,6 +80,7 @@ const STATUSES: [string, string][] = [
   ["maintenance", "صيانة"],
   ["lost", "مفقود"],
   ["retired", "مستبعد"],
+  ["locked", "مقفول"],
 ];
 
 // Map the form status → the server-side assetProfilesTable.status vocabulary.
@@ -68,11 +91,32 @@ const STATUS_TO_PROFILE: Record<string, string> = {
   maintenance: "maintenance",
   lost: "lost",
   retired: "retired",
+  locked: "locked",
 };
 
 type Supplier = { id: number; name: string };
 type WarehouseRow = { id: number; name: string };
 type ProductRow = { id: number; name: string; nameAr: string; barcode?: string };
+type AssetCategory = {
+  id: number;
+  name: string;
+  description: string | null;
+  color: string | null;
+  icon: string | null;
+  linkedAssetsCount: number;
+};
+type AssetCategoryEditor = Pick<AssetCategory, "name" | "description" | "color" | "icon"> & { id?: number };
+type AssetCategoriesResponse = { data: AssetCategory[] };
+type StaffOption = { id: number; fullName?: string | null; username?: string | null };
+type AssetDocument = { id: number; title: string; fileUrl: string; fileName?: string | null; documentType?: string | null };
+type AssetEditPayload = {
+  productId: number;
+  assetCode: string;
+  product: any;
+  profile: any;
+  passport: any;
+  documents: AssetDocument[];
+};
 
 type SavedAsset = {
   productId: number;
@@ -86,7 +130,7 @@ type SavedAsset = {
 const EMPTY = {
   name: "",
   nameAr: "",
-  category: "Camera",
+  category: "",
   brand: "",
   model: "",
   serialNumber: "",
@@ -107,6 +151,9 @@ const EMPTY = {
   depreciationEnabled: true,
   salvageValue: "",
   usefulLife: "50",
+  depreciationMethod: "straight_line",
+  assignedStaffId: "",
+  lastLocation: "",
   notes: "",
 };
 
@@ -120,7 +167,13 @@ function assetCodePreview(id?: number) {
 }
 
 export default function AssetNewPage() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
+  const routeParams = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  const editProductId = Number(routeParams.get("edit")) || 0;
+  const isEditMode = editProductId > 0;
+  const returnTo = routeParams.get("returnTo");
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [form, setForm] = useState({ ...EMPTY });
   const [mainPhoto, setMainPhoto] = useState<string | null>(null);
   const [invoiceImage, setInvoiceImage] = useState<string | null>(null);
@@ -129,10 +182,18 @@ export default function AssetNewPage() {
   const [checklistDraft, setChecklistDraft] = useState("");
   const [accessories, setAccessories] = useState<number[]>([]);
   const [accessorySearch, setAccessorySearch] = useState("");
+  const [assetDocuments, setAssetDocuments] = useState<AssetDocument[]>([]);
+  const [loadedEditId, setLoadedEditId] = useState<number | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [saved, setSaved] = useState<SavedAsset | null>(null);
+  const [categorySelectOpen, setCategorySelectOpen] = useState(false);
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [categoryEditor, setCategoryEditor] = useState<AssetCategoryEditor | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<AssetCategory | null>(null);
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [deletingCategory, setDeletingCategory] = useState(false);
 
   // Live QR + barcode preview (reuses the label engine; keyed off the serial).
   const [qrPreview, setQrPreview] = useState("");
@@ -155,6 +216,80 @@ export default function AssetNewPage() {
     queryFn: () => adminFetch("/admin/products?limit=1000"),
     staleTime: 3 * 60 * 1000,
   });
+  const { data: staff = [] } = useQuery<StaffOption[]>({
+    queryKey: ["admin", "staff"],
+    queryFn: () => adminFetch("/admin/staff"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const { data: assetCategoriesData, isLoading: assetCategoriesLoading } = useQuery<AssetCategoriesResponse>({
+    queryKey: ["admin", "asset-categories"],
+    queryFn: () => adminFetch("/admin/asset-categories"),
+    staleTime: 60_000,
+  });
+  const assetCategories = assetCategoriesData?.data ?? [];
+  const assetEditQuery = useQuery<AssetEditPayload>({
+    queryKey: ["admin", "asset-edit", editProductId],
+    queryFn: () => adminFetch(`/admin/assets/edit/${editProductId}`),
+    enabled: isEditMode,
+  });
+
+  useEffect(() => {
+    if (!isEditMode && !form.category && assetCategories.length) {
+      set("category", String(assetCategories[0].id));
+    }
+  }, [assetCategories, form.category, isEditMode]);
+
+  useEffect(() => {
+    const asset = assetEditQuery.data;
+    if (!asset || loadedEditId === asset.productId) return;
+    const metadata = asset.passport?.metadata ?? {};
+    const depreciation = metadata.depreciation ?? {};
+    const persistedImages = Array.isArray(asset.product?.images) ? asset.product.images.filter(Boolean) : [];
+    const mainImage = metadata.mainImageUrl ?? asset.passport?.imageUrl ?? persistedImages[0] ?? null;
+    const invoiceImage = metadata.invoiceImageUrl ?? null;
+    const additionalImages = Array.isArray(metadata.additionalImages)
+      ? metadata.additionalImages.filter(Boolean)
+      : persistedImages.filter((image: string) => image !== mainImage && image !== invoiceImage);
+    const profileStatus = String(asset.profile?.status ?? "active");
+    const status = profileStatus === "active" ? "available" : profileStatus;
+    setForm({
+      ...EMPTY,
+      name: asset.product?.name ?? "",
+      nameAr: asset.product?.nameAr ?? "",
+      category: asset.product?.assetCategoryId ? String(asset.product.assetCategoryId) : "",
+      brand: metadata.brand ?? "",
+      model: metadata.model ?? "",
+      serialNumber: asset.profile?.serialNumber ?? asset.passport?.serialNumber ?? "",
+      invoiceNumber: metadata.purchaseInvoiceNumber ?? "",
+      supplierName: asset.passport?.supplierName ?? "",
+      purchaseDate: String(asset.profile?.purchaseDate ?? "").slice(0, 10),
+      purchaseCost: String(asset.profile?.purchasePrice ?? asset.product?.costPrice ?? ""),
+      currentValue: String(asset.profile?.currentValue ?? asset.product?.price ?? ""),
+      warrantyUntil: String(asset.passport?.warrantyUntil ?? "").slice(0, 10),
+      insuranceUntil: String(metadata.insuranceUntil ?? "").slice(0, 10),
+      warehouseId: asset.passport?.warehouseId ? String(asset.passport.warehouseId) : "",
+      room: metadata.room ?? "",
+      shelf: metadata.shelf ?? "",
+      position: metadata.position ?? "",
+      status: STATUSES.some(([value]) => value === status) ? status : "available",
+      isRental: Boolean(asset.product?.isRental),
+      pricePerDay: String(asset.product?.pricePerDay ?? ""),
+      depreciationEnabled: depreciation.enabled !== false,
+      salvageValue: String(depreciation.salvageValue ?? ""),
+      usefulLife: String(asset.profile?.expectedLifeUses ?? depreciation.usefulLife ?? 50),
+      depreciationMethod: String(depreciation.method ?? "straight_line"),
+      assignedStaffId: asset.passport?.lastStaffId ? String(asset.passport.lastStaffId) : "",
+      lastLocation: asset.passport?.lastLocation ?? "",
+      notes: asset.profile?.notes ?? metadata.notes ?? asset.product?.description ?? "",
+    });
+    setMainPhoto(mainImage);
+    setInvoiceImage(invoiceImage);
+    setAdditionalPhotos(additionalImages);
+    setChecklist(Array.isArray(metadata.checklist) ? metadata.checklist.map((item: any) => typeof item === "string" ? item : item?.text).filter(Boolean) : []);
+    setAccessories(Array.isArray(metadata.relatedProductIds) ? metadata.relatedProductIds.map(Number).filter(Number.isFinite) : []);
+    setAssetDocuments(asset.documents ?? []);
+    setLoadedEditId(asset.productId);
+  }, [assetEditQuery.data, loadedEditId]);
 
   useEffect(() => {
     let alive = true;
@@ -171,6 +306,110 @@ export default function AssetNewPage() {
 
   function set<K extends keyof typeof EMPTY>(key: K, value: (typeof EMPTY)[K]) {
     setForm((f) => ({ ...f, [key]: value }));
+  }
+
+  function updateAssetCategories(updater: (categories: AssetCategory[]) => AssetCategory[]) {
+    queryClient.setQueryData<AssetCategoriesResponse>(["admin", "asset-categories"], (current) => ({
+      data: updater(current?.data ?? []),
+    }));
+  }
+
+  function openCategoryDialog(category?: AssetCategory) {
+    setCategorySelectOpen(false);
+    setCategoryEditor(
+      category
+        ? {
+            id: category.id,
+            name: category.name,
+            description: category.description,
+            color: category.color,
+            icon: category.icon,
+          }
+        : { name: "", description: "", color: "", icon: "" },
+    );
+    setCategoryDialogOpen(true);
+  }
+
+  async function saveCategory() {
+    if (!categoryEditor?.name.trim()) {
+      toast({ title: "أدخل اسم الفئة", variant: "destructive" });
+      return;
+    }
+    setSavingCategory(true);
+    const payload = {
+      name: categoryEditor.name.trim(),
+      description: categoryEditor.description?.trim() || null,
+      color: categoryEditor.color || null,
+      icon: categoryEditor.icon?.trim() || null,
+    };
+    try {
+      const category = await adminFetch<AssetCategory>(
+        categoryEditor.id
+          ? `/admin/asset-categories/${categoryEditor.id}`
+          : "/admin/asset-categories",
+        {
+          method: categoryEditor.id ? "PATCH" : "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+      updateAssetCategories((items) => {
+        const next = categoryEditor.id
+          ? items.map((item) => (item.id === category.id ? category : item))
+          : [...items, category];
+        return next.sort((a, b) => a.name.localeCompare(b.name, "ar"));
+      });
+      if (!categoryEditor.id) set("category", String(category.id));
+      setCategoryDialogOpen(false);
+      setCategoryEditor(null);
+      toast({ title: categoryEditor.id ? "تم تحديث الفئة" : "تمت إضافة الفئة واختيارها" });
+    } catch (error) {
+      toast({
+        title: "تعذر حفظ الفئة",
+        description: apiErrorMessage(error, "حاول مرة أخرى."),
+        variant: "destructive",
+      });
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  function requestDeleteCategory(category: AssetCategory) {
+    setCategorySelectOpen(false);
+    if (category.linkedAssetsCount > 0) {
+      toast({
+        title: "لا يمكن حذف الفئة",
+        description: `مرتبطة بـ ${category.linkedAssetsCount} أصل${category.linkedAssetsCount === 1 ? "" : "اً"}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    setCategoryToDelete(category);
+  }
+
+  async function deleteCategory() {
+    if (!categoryToDelete) return;
+    setDeletingCategory(true);
+    try {
+      await adminFetch(`/admin/asset-categories/${categoryToDelete.id}`, { method: "DELETE" });
+      updateAssetCategories((items) => items.filter((item) => item.id !== categoryToDelete.id));
+      if (form.category === String(categoryToDelete.id)) {
+        const next = assetCategories.find((item) => item.id !== categoryToDelete.id);
+        set("category", next ? String(next.id) : "");
+      }
+      setCategoryToDelete(null);
+      toast({ title: "تم حذف الفئة" });
+    } catch (error) {
+      const linkedAssetsCount = (error as any)?.data?.linkedAssetsCount;
+      toast({
+        title: "تعذر حذف الفئة",
+        description: linkedAssetsCount
+          ? `مرتبطة بـ ${linkedAssetsCount} أصل${linkedAssetsCount === 1 ? "" : "اً"}.`
+          : apiErrorMessage(error, "حاول مرة أخرى."),
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingCategory(false);
+    }
   }
 
   function flash(kind: "ok" | "err", msg: string) {
@@ -212,8 +451,11 @@ export default function AssetNewPage() {
    *  4) GET  /admin/assets/qr     → ensures QR token row + returns scannable QR image
    */
   async function persist(): Promise<SavedAsset> {
-    const categoryLabel =
-      CATEGORIES.find(([v]) => v === form.category)?.[1] ?? form.category;
+    const selectedCategory = assetCategories.find(
+      (category) => String(category.id) === form.category,
+    );
+    if (!selectedCategory) throw new Error("اختر فئة أصل صالحة");
+    const categoryLabel = selectedCategory.name;
 
     // Build the product image list in a known order so we can map roles back to URLs.
     const imageInputs: string[] = [];
@@ -230,23 +472,26 @@ export default function AssetNewPage() {
     const addStart = imageInputs.length;
     imageInputs.push(...additionalPhotos);
 
-    // 1) Product
-    const product = await adminFetch<any>("/products", {
-      method: "POST",
+    // 1) Product — reuse the same product API for create and edit so media validation stays identical.
+    const productPayload = {
+      name: form.name.trim() || form.nameAr.trim(),
+      nameAr: form.nameAr.trim() || form.name.trim(),
+      description: form.notes.trim() || undefined,
+      price: num(form.currentValue) || num(form.purchaseCost),
+      costPrice: num(form.purchaseCost),
+      ...(isEditMode ? {} : { stock: 1, minStock: 0 }),
+      isRental: form.isRental,
+      isAsset: true,
+      pricePerDay: num(form.pricePerDay),
+      category: categoryLabel,
+      assetCategoryId: selectedCategory.id,
+      images: imageInputs,
+      isActive: true,
+    };
+    const product = await adminFetch<any>(isEditMode ? `/products/${editProductId}` : "/products", {
+      method: isEditMode ? "PATCH" : "POST",
       body: JSON.stringify({
-        name: form.name.trim() || form.nameAr.trim(),
-        nameAr: form.nameAr.trim() || form.name.trim(),
-        description: form.notes.trim() || undefined,
-        price: num(form.currentValue) || num(form.purchaseCost),
-        costPrice: num(form.purchaseCost),
-        stock: 1,
-        minStock: 0,
-        isRental: form.isRental,
-        isAsset: true,
-        pricePerDay: num(form.pricePerDay),
-        category: categoryLabel,
-        images: imageInputs,
-        isActive: true,
+        ...productPayload,
       }),
     });
     const productId: number = product.id;
@@ -258,7 +503,7 @@ export default function AssetNewPage() {
 
     // 2) Depreciation profile
     await adminFetch("/admin/assets", {
-      method: "POST",
+      method: isEditMode ? "PATCH" : "POST",
       body: JSON.stringify({
         productId,
         purchasePrice: num(form.purchaseCost),
@@ -283,7 +528,8 @@ export default function AssetNewPage() {
         warehouseId: form.warehouseId ? Number(form.warehouseId) : undefined,
         shelfCode: [form.shelf, form.position].filter(Boolean).join("-") || undefined,
         imageUrl: mainUrl ?? undefined,
-        lastLocation: "المخزن",
+        lastStaffId: form.assignedStaffId ? Number(form.assignedStaffId) : null,
+        lastLocation: form.lastLocation.trim() || "المخزن",
         metadata: {
           brand: form.brand.trim() || null,
           model: form.model.trim() || null,
@@ -299,14 +545,14 @@ export default function AssetNewPage() {
           healthScore: 100,
           usageCount: 0,
           roi: 0,
-          currentEmployee: null,
-          currentLocation: "warehouse",
+          currentEmployee: form.assignedStaffId ? Number(form.assignedStaffId) : null,
+          currentLocation: form.lastLocation.trim() || "warehouse",
           depreciation: {
             enabled: form.depreciationEnabled,
             purchaseValue: num(form.purchaseCost),
             salvageValue: num(form.salvageValue),
             usefulLife: Math.max(1, Math.floor(num(form.usefulLife) || 50)),
-            method: "straight_line",
+            method: form.depreciationMethod,
           },
           mainImageUrl: mainUrl,
           invoiceImageUrl: invoiceUrl,
@@ -345,7 +591,10 @@ export default function AssetNewPage() {
     try {
       const result = await persist();
       setSaved(result);
-      flash("ok", `تم إنشاء الأصل ${result.assetCode} وتوليد الجواز الرقمي والباركود.`);
+      queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
+      queryClient.invalidateQueries({ queryKey: ["asset-depreciation-report"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] });
+      flash("ok", isEditMode ? `تم تحديث الأصل ${result.assetCode} وبيانات الإهلاك.` : `تم إنشاء الأصل ${result.assetCode} وتوليد الجواز الرقمي والباركود.`);
 
       if (mode === "print") {
         const label: LabelData = {
@@ -354,7 +603,9 @@ export default function AssetNewPage() {
           code: result.assetCode,
           barcodeValue: result.barcode || result.assetCode,
           qrValue: result.scanUrl,
-          category: CATEGORIES.find(([v]) => v === form.category)?.[1] ?? form.category,
+          category:
+            assetCategories.find((category) => String(category.id) === form.category)
+              ?.name ?? form.category,
           status: STATUSES.find(([v]) => v === form.status)?.[1] ?? form.status,
         };
         try {
@@ -391,6 +642,7 @@ export default function AssetNewPage() {
     setAdditionalPhotos([]);
     setChecklist([]);
     setAccessories([]);
+    setAssetDocuments([]);
     setSaved(null);
     setNotice(null);
   }
@@ -405,27 +657,27 @@ export default function AssetNewPage() {
         <div>
           <button
             type="button"
-            onClick={() => setLocation("/admin/assets")}
+            onClick={() => setLocation(returnTo === "depreciation" ? "/admin/assets/depreciation" : "/admin/assets")}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mb-1"
           >
-            <ArrowRight className="w-3.5 h-3.5" /> رجوع إلى الأصول
+            <ArrowRight className="w-3.5 h-3.5" /> {returnTo === "depreciation" ? "رجوع إلى قائمة الإهلاك" : "رجوع إلى الأصول"}
           </button>
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-            <Boxes className="w-6 h-6 text-primary" /> إضافة أصل جديد
+            <Boxes className="w-6 h-6 text-primary" /> {isEditMode ? "Edit Asset" : "إضافة أصل جديد"}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            يُنشئ الجواز الرقمي و QR والباركود ويُسجّل الأصل في المخزون والمخزن تلقائياً.
+            {isEditMode ? "تعديل بيانات الأصل والإهلاك والجواز الرقمي من نفس النموذج." : "يُنشئ الجواز الرقمي و QR والباركود ويُسجّل الأصل في المخزون والمخزن تلقائياً."}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" onClick={() => handleSave("print")} disabled={saving} className="gap-2">
-            <Printer className="w-4 h-4" /> حفظ وطباعة QR
+            <Printer className="w-4 h-4" /> {isEditMode ? "تحديث وطباعة QR" : "حفظ وطباعة QR"}
           </Button>
           <Button variant="outline" onClick={() => handleSave("passport")} disabled={saving} className="gap-2">
-            <QrCode className="w-4 h-4" /> حفظ وفتح الجواز
+            <QrCode className="w-4 h-4" /> {isEditMode ? "تحديث وفتح الجواز" : "حفظ وفتح الجواز"}
           </Button>
           <Button onClick={() => handleSave("save")} disabled={saving} className="gap-2">
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} حفظ
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {isEditMode ? "Update Asset" : "حفظ"}
           </Button>
         </div>
       </div>
@@ -445,7 +697,7 @@ export default function AssetNewPage() {
       {saved && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-sm">
-            <p className="font-semibold text-foreground">تم إنشاء الأصل: {saved.assetCode}</p>
+            <p className="font-semibold text-foreground">{isEditMode ? "تم تحديث الأصل" : "تم إنشاء الأصل"}: {saved.assetCode}</p>
             <p className="text-muted-foreground font-mono" dir="ltr">
               Barcode: {saved.barcode || "—"}
             </p>
@@ -454,10 +706,10 @@ export default function AssetNewPage() {
             {saved.qrDataUrl && (
               <img src={saved.qrDataUrl} alt="QR" className="w-16 h-16 rounded bg-white p-1" />
             )}
-            <Button size="sm" variant="outline" onClick={() => setLocation("/admin/assets")}>
-              عرض الأصول
+            <Button size="sm" variant="outline" onClick={() => setLocation(returnTo === "depreciation" ? "/admin/assets/depreciation" : "/admin/assets")}>
+              {returnTo === "depreciation" ? "قائمة الإهلاك" : "عرض الأصول"}
             </Button>
-            <Button size="sm" onClick={resetForm} className="gap-1">
+            <Button size="sm" onClick={() => isEditMode ? setLocation("/admin/assets/new") : resetForm()} className="gap-1">
               <Plus className="w-4 h-4" /> أصل آخر
             </Button>
           </div>
@@ -476,13 +728,81 @@ export default function AssetNewPage() {
                 <input className={inputCls} value={form.nameAr} onChange={(e) => set("nameAr", e.target.value)} dir="rtl" />
               </Field>
               <Field label="الفئة">
-                <select className={inputCls} value={form.category} onChange={(e) => set("category", e.target.value)}>
-                  {CATEGORIES.map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  value={form.category}
+                  onValueChange={(value) => set("category", value)}
+                  open={categorySelectOpen}
+                  onOpenChange={setCategorySelectOpen}
+                >
+                  <SelectTrigger className="mt-1 h-[38px] rounded-lg border-border/40 bg-background px-3 text-sm">
+                    <SelectValue placeholder={assetCategoriesLoading ? "جارٍ تحميل الفئات..." : "اختر الفئة"} />
+                  </SelectTrigger>
+                  <SelectContent dir="rtl" className="min-w-[var(--radix-select-trigger-width)]">
+                    {assetCategories.map((category) => (
+                      <SelectItem key={category.id} value={String(category.id)} className="py-2 pe-9">
+                        <div className="flex w-full min-w-0 items-center gap-2 ps-1">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full bg-muted"
+                            style={category.color ? { backgroundColor: category.color } : undefined}
+                            aria-hidden="true"
+                          />
+                          <CategoryIcon icon={category.icon} color={category.color} />
+                          <span className="min-w-0 flex-1 truncate">{category.name}</span>
+                          <span className="flex shrink-0 items-center gap-0.5" dir="ltr">
+                            <button
+                              type="button"
+                              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              aria-label={`تعديل فئة ${category.name}`}
+                              onPointerDown={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openCategoryDialog(category);
+                              }}
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                              aria-label={`حذف فئة ${category.name}`}
+                              onPointerDown={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                requestDeleteCategory(category);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                    {!assetCategoriesLoading && assetCategories.length === 0 && (
+                      <p className="px-2 py-3 text-center text-xs text-muted-foreground">لا توجد فئات بعد.</p>
+                    )}
+                    <SelectSeparator />
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm font-medium text-primary outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openCategoryDialog();
+                      }}
+                    >
+                      <Plus className="h-4 w-4" /> إضافة فئة جديدة
+                    </button>
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="الماركة">
                 <input className={inputCls} value={form.brand} onChange={(e) => set("brand", e.target.value)} />
@@ -562,6 +882,17 @@ export default function AssetNewPage() {
                   ))}
                 </select>
               </Field>
+              <Field label="الشخص المسؤول">
+                <select className={inputCls} value={form.assignedStaffId} onChange={(e) => set("assignedStaffId", e.target.value)}>
+                  <option value="">— غير مخصص —</option>
+                  {staff.map((member) => (
+                    <option key={member.id} value={String(member.id)}>{member.fullName || member.username || `#${member.id}`}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="الموقع الحالي">
+                <input className={inputCls} value={form.lastLocation} onChange={(e) => set("lastLocation", e.target.value)} placeholder="مثال: المخزن الرئيسي" />
+              </Field>
             </Grid>
           </Section>
 
@@ -598,6 +929,21 @@ export default function AssetNewPage() {
             </div>
           </Section>
 
+          {isEditMode && (
+            <Section title="المستندات المرتبطة" icon={<FileText className="w-4 h-4 text-primary" />}>
+              {assetDocuments.length ? (
+                <div className="space-y-2">
+                  {assetDocuments.map((document) => (
+                    <a key={document.id} href={document.fileUrl} target="_blank" rel="noreferrer" className="flex items-center justify-between gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2 text-sm hover:border-primary/40">
+                      <span className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0 text-primary" /><span className="truncate">{document.title || document.fileName || "مستند"}</span></span>
+                      <span className="shrink-0 text-xs text-muted-foreground">فتح</span>
+                    </a>
+                  ))}
+                </div>
+              ) : <p className="text-xs text-muted-foreground">لا توجد مستندات مرتبطة بهذا الأصل.</p>}
+            </Section>
+          )}
+
           <Section title="الإيجار والإهلاك">
             <Grid>
               <Field label="متاح للإيجار">
@@ -622,7 +968,12 @@ export default function AssetNewPage() {
                 <input type="number" className={inputCls} value={form.usefulLife} onChange={(e) => set("usefulLife", e.target.value)} disabled={!form.depreciationEnabled} />
               </Field>
               <Field label="طريقة الإهلاك">
-                <input className={inputCls} value="القسط الثابت (Straight Line)" readOnly dir="rtl" />
+                <select className={inputCls} value={form.depreciationMethod} onChange={(e) => set("depreciationMethod", e.target.value)} disabled={!form.depreciationEnabled}>
+                  <option value="straight_line">القسط الثابت (Straight Line)</option>
+                  <option value="declining_balance">الرصيد المتناقص</option>
+                  <option value="usage">حسب الاستخدام</option>
+                  <option value="manual">يدوي</option>
+                </select>
               </Field>
             </Grid>
           </Section>
@@ -726,7 +1077,7 @@ export default function AssetNewPage() {
               <div>
                 <p className="text-xs text-muted-foreground">رمز الأصل</p>
                 <p className="font-mono font-bold text-foreground" dir="ltr">
-                  {assetCodePreview(saved?.productId)}
+                  {assetCodePreview(saved?.productId ?? editProductId)}
                 </p>
               </div>
               <div className="grid place-items-center">
@@ -760,6 +1111,117 @@ export default function AssetNewPage() {
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={categoryDialogOpen}
+        onOpenChange={(open) => {
+          setCategoryDialogOpen(open);
+          if (!open) setCategoryEditor(null);
+        }}
+      >
+        <DialogContent dir="rtl" className="max-w-md">
+          <DialogHeader className="text-right">
+            <DialogTitle className="flex items-center gap-2">
+              <Tag className="h-5 w-5 text-primary" />
+              {categoryEditor?.id ? "تعديل الفئة" : "إضافة فئة جديدة"}
+            </DialogTitle>
+            <DialogDescription>
+              استخدم اسماً واضحاً لتمييز الأصول في التقارير والبحث.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="grid gap-1.5 text-sm">
+              <span className="font-medium">اسم الفئة *</span>
+              <input
+                autoFocus
+                value={categoryEditor?.name ?? ""}
+                onChange={(event) =>
+                  setCategoryEditor((current) => current && { ...current, name: event.target.value })
+                }
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </label>
+            <label className="grid gap-1.5 text-sm">
+              <span className="font-medium">الوصف <span className="font-normal text-muted-foreground">(اختياري)</span></span>
+              <textarea
+                value={categoryEditor?.description ?? ""}
+                onChange={(event) =>
+                  setCategoryEditor((current) => current && { ...current, description: event.target.value })
+                }
+                className="min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-sm">
+                <span className="font-medium">اللون <span className="font-normal text-muted-foreground">(اختياري)</span></span>
+                <span className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2">
+                  <input
+                    type="color"
+                    value={categoryEditor?.color || "#64748b"}
+                    onChange={(event) =>
+                      setCategoryEditor((current) => current && { ...current, color: event.target.value })
+                    }
+                    className="h-6 w-7 cursor-pointer rounded border-0 bg-transparent p-0"
+                    aria-label="لون الفئة"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCategoryEditor((current) => current && { ...current, color: "" })}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    بدون لون
+                  </button>
+                </span>
+              </label>
+              <label className="grid gap-1.5 text-sm">
+                <span className="font-medium">الأيقونة <span className="font-normal text-muted-foreground">(اختياري)</span></span>
+                <input
+                  value={categoryEditor?.icon ?? ""}
+                  onChange={(event) =>
+                    setCategoryEditor((current) => current && { ...current, icon: event.target.value })
+                  }
+                  placeholder="مثال: camera"
+                  dir="ltr"
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </label>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <Button variant="outline" onClick={() => setCategoryDialogOpen(false)} disabled={savingCategory}>
+              إلغاء
+            </Button>
+            <Button onClick={saveCategory} disabled={savingCategory} className="gap-2">
+              {savingCategory && <Loader2 className="h-4 w-4 animate-spin" />}
+              حفظ الفئة
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={Boolean(categoryToDelete)}
+        onOpenChange={(open) => !open && !deletingCategory && setCategoryToDelete(null)}
+      >
+        <AlertDialogContent dir="rtl">
+          <AlertDialogHeader className="text-right">
+            <AlertDialogTitle>حذف الفئة؟</AlertDialogTitle>
+            <AlertDialogDescription>
+              سيتم حذف فئة «{categoryToDelete?.name}» نهائياً. لا يوجد أي أصل مرتبط بها.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:space-x-0">
+            <AlertDialogCancel disabled={deletingCategory}>إلغاء</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={deleteCategory}
+              disabled={deletingCategory}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingCategory ? "جارٍ الحذف..." : "حذف الفئة"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -787,6 +1249,26 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       {children}
     </label>
   );
+}
+
+function CategoryIcon({ icon, color }: { icon: string | null; color: string | null }) {
+  const props = {
+    className: "h-3.5 w-3.5 shrink-0 text-muted-foreground",
+    style: color ? { color } : undefined,
+    "aria-hidden": true,
+  };
+  switch (icon?.toLowerCase()) {
+    case "camera": return <Camera {...props} />;
+    case "aperture": return <Aperture {...props} />;
+    case "lightbulb": return <Lightbulb {...props} />;
+    case "speaker": return <Speaker {...props} />;
+    case "sliders-horizontal": return <SlidersHorizontal {...props} />;
+    case "monitor": return <Monitor {...props} />;
+    case "car-front": return <CarFront {...props} />;
+    case "armchair": return <Armchair {...props} />;
+    case "package": return <Package {...props} />;
+    default: return <Tag {...props} />;
+  }
 }
 
 function ImageSlot({

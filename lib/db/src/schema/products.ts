@@ -2,6 +2,7 @@ import { date, pgTable, serial, text, numeric, integer, boolean, timestamp, varc
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { categoriesTable } from "./categories";
+import { assetCategoriesTable } from "./asset-categories";
 import { customersTable } from "./customers";
 import { staffTable } from "./staff";
 
@@ -41,6 +42,9 @@ export const productsTable = pgTable("products", {
 
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
+  // Internal equipment category. It is distinct from the storefront category
+  // fields above and keeps fixed-asset classification referentially safe.
+  assetCategoryId: integer("asset_category_id").references(() => assetCategoriesTable.id, { onDelete: "restrict" }),
 
   images: jsonb("images")
     .$type<string[]>()
