@@ -625,8 +625,10 @@ export function AssetsPage() {
   const [filter, setFilter] = useState<"all" | "maintenance">("all");
   const [removeTarget, setRemoveTarget] = useState<AssetRow | null>(null);
   const filtered = filter === "maintenance" ? rows.filter((r) => r.maintenanceDue) : rows;
+  // Removing an asset from depreciation keeps it in `rows` (the Assets page) but drops it
+  // from every depreciation surface until a depreciation record is created again.
   const depreciationRows = [...rows]
-    .filter((row) => row.purchasePrice > 0)
+    .filter((row) => row.hasDepreciationRecord && row.purchasePrice > 0)
     .sort(
       (a, b) =>
         1 - b.currentValue / b.purchasePrice -
@@ -644,6 +646,7 @@ export function AssetsPage() {
       queryClient.invalidateQueries({
         queryKey: ["admin", "enterprise", "assets"],
       });
+      queryClient.invalidateQueries({ queryKey: ["asset-depreciation-report"] });
       toast({
         title: variables.paused ? "تم إيقاف الإهلاك" : "تم استئناف الإهلاك",
       });
@@ -658,9 +661,13 @@ export function AssetsPage() {
   const removeDepreciation = useMutation({
     mutationFn: ({ recordId, reason }: { recordId: number; reason: string }) => adminFetch(`/admin/assets/depreciation/${recordId}`, { method: "DELETE", body: JSON.stringify({ reason }) }),
     onSuccess: () => {
+      // Refetch every depreciation surface so counters, totals and reports drop the asset
+      // immediately, with no page reload. On failure nothing is invalidated and the asset stays.
       queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] });
-      toast({ title: "تمت إزالة سجل الإهلاك", description: "تمت استعادة قيمة الأصل دون تغيير المخزون أو المنتج." });
+      queryClient.invalidateQueries({ queryKey: ["asset-depreciation-report"] });
+      queryClient.invalidateQueries({ queryKey: ["depreciation-categories"] });
+      toast({ title: "تمت إزالة الأصل من نظام الإهلاك بنجاح", description: "الأصل ما زال موجوداً في صفحة الأصول، وتمت استعادة قيمته دون تغيير المخزون أو المنتج." });
       setRemoveTarget(null);
     },
     onError: (error) => toast({ title: "تعذّرت إزالة سجل الإهلاك", description: apiErrorMessage(error), variant: "destructive" }),

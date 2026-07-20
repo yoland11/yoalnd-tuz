@@ -40,6 +40,7 @@ import {
   attendanceRecordsTable,
   approvalRequestsTable,
   assetProfilesTable,
+  assetCategoriesTable,
   cartItemsTable,
   categoriesTable,
   couponUsagesTable,
@@ -634,6 +635,7 @@ let performanceIndexesPromise: Promise<void> | null = null;
 let couponsTablesPromise: Promise<void> | null = null;
 let reportTemplatesTablesPromise: Promise<void> | null = null;
 let storeCategoryColumnsPromise: Promise<void> | null = null;
+let assetCategoriesTablesPromise: Promise<void> | null = null;
 let adminExtensionsTablesPromise: Promise<void> | null = null;
 let enterprisePhase5TablesPromise: Promise<void> | null = null;
 let accountingTablesPromise: Promise<void> | null = null;
@@ -3462,6 +3464,7 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     costPrice:
       Number.parseFloat(String(p.costPrice ?? p.cost_price ?? "0")) || 0,
     categoryId: p.categoryId ?? p.category_id ?? null,
+    assetCategoryId: p.assetCategoryId ?? p.asset_category_id ?? null,
     subcategoryId: p.subcategoryId ?? p.subcategory_id ?? null,
     subcategoryIds: Array.isArray(p.subcategoryIds ?? p.subcategory_ids) ? (p.subcategoryIds ?? p.subcategory_ids).map(Number).filter(Number.isInteger) : [],
     categoryName: p.categoryName ?? p.category_name ?? null,
@@ -10666,6 +10669,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureAdminProductsColumns();
   await ensureStoreCategoryColumns();
+  await ensureAssetCategoriesTables();
 
   // ── Recipe stock verification (POST /products/recipe/check-stock) ──
   // Body: { items: [{ productId, quantity }] } → { ok, shortages, requirements }.
@@ -10928,6 +10932,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     if (requestedBarcode && (await productBarcodeExists(requestedBarcode)))
       return error("الباركود مستخدم مسبقاً", 409);
     const productCategories = await resolveProductCategories(data);
+    const assetCategoryId = numberId(data.assetCategoryId);
+    if (assetCategoryId) {
+      const assetCategory = await db.query.assetCategoriesTable.findFirst({
+        where: eq(assetCategoriesTable.id, assetCategoryId),
+      });
+      if (!assetCategory) return error("فئة الأصل غير موجودة", 404);
+    }
     const sharedStock = await resolveSharedStockProductId(
       data.sharedStockProductId,
     );
@@ -10970,6 +10981,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         subcategoryId: productCategories.subcategoryId,
         subcategoryIds: productCategories.subcategoryIds,
         category: productCategories.category,
+        assetCategoryId,
         images: storedImages,
         videos: storedVideos,
         imageMetadata: Array.isArray(data.imageMetadata)
@@ -11073,6 +11085,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "isAsset",
       "barcode",
       "categoryId",
+      "assetCategoryId",
       "subcategoryId",
       "subcategoryIds",
     ]) {
@@ -11086,6 +11099,15 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           update[k] = barcode || null;
         } else if (k === "categoryId" || k === "subcategoryId") {
           update[k] = numberId(data[k]);
+        } else if (k === "assetCategoryId") {
+          const assetCategoryId = numberId(data[k]);
+          if (assetCategoryId) {
+            const assetCategory = await db.query.assetCategoriesTable.findFirst({
+              where: eq(assetCategoriesTable.id, assetCategoryId),
+            });
+            if (!assetCategory) return error("فئة الأصل غير موجودة", 404);
+          }
+          update[k] = assetCategoryId;
         } else if (k === "subcategoryIds") {
           update[k] = Array.isArray(data[k]) ? [...new Set(data[k].map(numberId).filter(Boolean))] : [];
         } else {
@@ -23310,7 +23332,10 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
         const passport: any = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, Number(row.product_id)) });
         const metadata = assetMetadataObject(passport?.metadata); const purchase = Number(profile?.purchasePrice ?? product?.costPrice ?? 0); const previous = Number(profile?.currentValue ?? purchase);
         const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
-        const nextValue = metadata.automaticDepreciation === true ? Math.max(0, previous - perUse) : previous;
+        // A removed or paused depreciation record freezes the asset value: usage is still
+        // tracked, but no depreciation accrues for the disabled period.
+        const depreciationActive = !profile?.deletedAt && metadata.depreciationPaused !== true;
+        const nextValue = metadata.automaticDepreciation === true && depreciationActive ? Math.max(0, previous - perUse) : previous;
         // depreciation_applied_at provides the idempotency boundary: one completed
         // custody reservation can update centralized usage only once.
         await db.execute(sql`update employee_custody_reservations set status=${problem === "missing" ? "missing" : "returned"},returned_at=now(),condition_in=${detail.condition},damage_reason=${nullableText(detail.damageReason)},damage_photo_url=${nullableText(detail.damagePhotoUrl)},depreciation_applied_at=coalesce(depreciation_applied_at,now()),updated_at=now() where id=${row.id}`);
@@ -23381,7 +23406,8 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
           const purchase = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
           const previousValue = Number(profile?.currentValue ?? purchase);
           const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
-          const automatic = metadata.automaticDepreciation === true;
+          // Removed/paused depreciation freezes the value; usage tracking continues.
+          const automatic = metadata.automaticDepreciation === true && !profile?.deletedAt && metadata.depreciationPaused !== true;
           const nextValue = automatic && !alreadyRecorded ? Math.max(0, previousValue - perUse) : previousValue;
           const healthPenalty = input.problem === "damaged" ? 15 : input.problem === "missing" ? 30 : 1;
           const healthScore = Math.max(0, Number(metadata.healthScore ?? 100) - (alreadyRecorded ? 0 : healthPenalty));
@@ -23701,9 +23727,160 @@ async function handleCentralBookingCenter(
   return json(rows);
 }
 
+type AssetCategoryInput = {
+  name: string;
+  description: string | null;
+  color: string | null;
+  icon: string | null;
+};
+
+function parseAssetCategoryInput(value: unknown): AssetCategoryInput | null {
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(120),
+      description: z.string().trim().max(1000).optional().nullable(),
+      color: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),
+      icon: z.string().trim().max(80).optional().nullable(),
+    })
+    .safeParse(value);
+  if (!parsed.success) return null;
+  return {
+    name: parsed.data.name,
+    description: nullableText(parsed.data.description),
+    color: nullableText(parsed.data.color),
+    icon: nullableText(parsed.data.icon),
+  };
+}
+
+async function assetCategoryLinkedCount(categoryId: number): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(productsTable)
+    .where(
+      and(
+        eq(productsTable.isAsset, true),
+        eq(productsTable.assetCategoryId, categoryId),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+async function handleAssetCategories(req: NextRequest, parts: string[]) {
+  const auth = await requirePermission(req, "products");
+  if (isResponse(auth)) return auth;
+  await ensureAssetCategoriesTables();
+
+  const method = req.method;
+  const id = parts[2] ? int(parts[2]) : null;
+
+  if (method === "GET" && !id) {
+    const [rows, assets] = await Promise.all([
+      db.query.assetCategoriesTable.findMany({
+        orderBy: (category, { asc }) => [asc(category.name), asc(category.id)],
+      }),
+      db
+        .select({ assetCategoryId: productsTable.assetCategoryId })
+        .from(productsTable)
+        .where(eq(productsTable.isAsset, true)),
+    ]);
+    const linkedCounts = new Map<number, number>();
+    for (const asset of assets) {
+      if (!asset.assetCategoryId) continue;
+      linkedCounts.set(
+        asset.assetCategoryId,
+        (linkedCounts.get(asset.assetCategoryId) ?? 0) + 1,
+      );
+    }
+    return json({
+      data: rows.map((row) => ({
+        ...row,
+        linkedAssetsCount: linkedCounts.get(row.id) ?? 0,
+      })),
+    });
+  }
+
+  if (method === "POST" && !id) {
+    const input = parseAssetCategoryInput(await body(req));
+    if (!input) return error("تحقق من اسم الفئة والحقول الاختيارية", 400);
+    const duplicate = await db.query.assetCategoriesTable.findFirst({
+      where: sql`lower(${assetCategoriesTable.name}) = lower(${input.name})`,
+    });
+    if (duplicate) return error("اسم الفئة مستخدم مسبقاً", 409);
+    const [created] = await db.insert(assetCategoriesTable).values(input).returning();
+    void logAdminActivity(req, "asset_category_created", "asset_category", created.id, {
+      name: created.name,
+    });
+    return json({ ...created, linkedAssetsCount: 0 }, 201);
+  }
+
+  if (!id) return error("معرف الفئة غير صحيح", 400);
+
+  const current = await db.query.assetCategoriesTable.findFirst({
+    where: eq(assetCategoriesTable.id, id),
+  });
+  if (!current) return error("فئة الأصل غير موجودة", 404);
+
+  if (method === "PATCH") {
+    const input = parseAssetCategoryInput(await body(req));
+    if (!input) return error("تحقق من اسم الفئة والحقول الاختيارية", 400);
+    const duplicate = await db.query.assetCategoriesTable.findFirst({
+      where: and(
+        ne(assetCategoriesTable.id, id),
+        sql`lower(${assetCategoriesTable.name}) = lower(${input.name})`,
+      ),
+    });
+    if (duplicate) return error("اسم الفئة مستخدم مسبقاً", 409);
+    const [updated] = await db
+      .update(assetCategoriesTable)
+      .set({ ...input, updatedAt: new Date() })
+      .where(eq(assetCategoriesTable.id, id))
+      .returning();
+    if (updated.name !== current.name) {
+      // Keep the legacy display column in sync for existing asset lists and
+      // reports while the foreign key remains the source of truth.
+      await db
+        .update(productsTable)
+        .set({ category: updated.name, updatedAt: new Date() })
+        .where(
+          and(
+            eq(productsTable.isAsset, true),
+            eq(productsTable.assetCategoryId, id),
+          ),
+        );
+    }
+    const linkedAssetsCount = await assetCategoryLinkedCount(id);
+    void logAdminActivity(req, "asset_category_updated", "asset_category", id, {
+      fields: Object.keys(input),
+    });
+    return json({ ...updated, linkedAssetsCount });
+  }
+
+  if (method === "DELETE") {
+    const linkedAssetsCount = await assetCategoryLinkedCount(id);
+    if (linkedAssetsCount > 0) {
+      return json(
+        {
+          error: `لا يمكن حذف الفئة لأنها مرتبطة بـ ${linkedAssetsCount} أصل${linkedAssetsCount === 1 ? "" : "اً"}`,
+          linkedAssetsCount,
+        },
+        409,
+      );
+    }
+    await db.delete(assetCategoriesTable).where(eq(assetCategoriesTable.id, id));
+    void logAdminActivity(req, "asset_category_deleted", "asset_category", id, {
+      name: current.name,
+    });
+    return json({ ok: true, id });
+  }
+
+  return error("طريقة غير مدعومة", 405);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "asset-categories") return handleAssetCategories(req, parts);
 
   const centralBookingCenter = await handleCentralBookingCenter(req, parts, section);
   if (centralBookingCenter) return centralBookingCenter;
@@ -25792,10 +25969,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.warehousesTable.findMany({ orderBy: [asc(warehousesTable.name)] }),
       ]);
       const profileByProduct = new Map(profiles.filter((row) => !row.deletedAt).map((row) => [row.productId, row]));
+      // An asset whose depreciation record was removed stays a product/asset, but must never
+      // appear again in depreciation lists, reports or calculations until it is re-enabled.
+      const removedProductIds = new Set(profiles.filter((row) => row.deletedAt).map((row) => row.productId));
       const passportByProduct = new Map(passports.map((row) => [row.productId, row]));
       const categoryById = new Map<number, any>((categories as any).rows?.map((row: any) => [Number(row.id), row] as [number, any]) ?? []);
       const warehouseById = new Map(warehouses.map((row) => [row.id, row.name]));
-      const data = products.map((product) => {
+      const data = products.filter((product) => !removedProductIds.has(product.id)).map((product) => {
         const profile = profileByProduct.get(product.id); const passport = passportByProduct.get(product.id); const metadata = assetMetadataObject(passport?.metadata);
         const categoryId = Number(metadata.depreciationCategoryId ?? 0) || null; const category = categoryId ? categoryById.get(categoryId) : null;
         const purchasePrice = Math.max(0, Number(profile?.purchasePrice ?? product.costPrice ?? 0)); const currentValue = Math.max(0, Number(profile?.currentValue ?? purchasePrice));
@@ -26632,11 +26812,24 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           (purchasePrice * Math.min(usageCount, expectedLifeUses)) /
             expectedLifeUses,
       );
+      // Re-enabling a removed record resumes from the value frozen at removal time, so the
+      // disabled period never depreciates retroactively — depreciation restarts from now.
+      // An explicit currentValue or an explicit recalculate request still takes precedence.
+      const resumedValue =
+        existing?.deletedAt &&
+        payload?.recalculate !== true &&
+        hasValue(existing.valueBeforeRemoval)
+          ? Math.max(0, Number(existing.valueBeforeRemoval) || 0)
+          : null;
+      const currentValue =
+        hasValue(payload?.currentValue) && payload?.recalculate !== true
+          ? Math.max(0, Number(payload.currentValue) || 0)
+          : resumedValue !== null
+            ? resumedValue
+            : computedValue;
+      // True only when the value was derived from usage rather than supplied or resumed.
       const recalculate =
-        payload?.recalculate === true || !hasValue(payload?.currentValue);
-      const currentValue = recalculate
-        ? computedValue
-        : Math.max(0, Number(payload.currentValue) || 0);
+        currentValue === computedValue && resumedValue === null;
       const status =
         typeof payload?.status === "string" && payload.status.trim()
           ? payload.status.trim().slice(0, 30)
@@ -32467,6 +32660,42 @@ function salesInvoiceItems(value: unknown) {
       };
     })
     .filter((item) => item.productName && item.quantity > 0);
+}
+
+async function ensureAssetCategoriesTables(): Promise<void> {
+  if (!assetCategoriesTablesPromise) {
+    assetCategoriesTablesPromise = db
+      .execute(sql`
+        create table if not exists "asset_categories" (
+          "id" serial primary key,
+          "name" text not null,
+          "description" text,
+          "color" varchar(20),
+          "icon" varchar(80),
+          "created_at" timestamp not null default now(),
+          "updated_at" timestamp not null default now()
+        );
+        create unique index if not exists "asset_categories_name_idx" on "asset_categories" ("name");
+        create index if not exists "asset_categories_created_idx" on "asset_categories" ("created_at");
+        alter table "products" add column if not exists "asset_category_id" integer references "asset_categories" ("id") on delete restrict;
+        create index if not exists "products_asset_category_id_idx" on "products" ("asset_category_id");
+        insert into "asset_categories" ("name", "icon") values
+          ('كاميرا', 'camera'), ('عدسة', 'aperture'), ('درون', 'drone'),
+          ('إضاءة', 'lightbulb'), ('صوت', 'audio-lines'), ('سماعة', 'speaker'),
+          ('مكسر صوت', 'sliders-horizontal'), ('شاشة', 'monitor'), ('ديكور', 'lamp'),
+          ('مركبة', 'car-front'), ('أثاث', 'armchair'), ('أخرى', 'package')
+        on conflict ("name") do nothing;
+        update "products" p set "asset_category_id" = c."id"
+        from "asset_categories" c
+        where p."asset_category_id" is null and p."is_asset" = true and p."category" = c."name";
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        assetCategoriesTablesPromise = null;
+        throw err;
+      });
+  }
+  await assetCategoriesTablesPromise;
 }
 
 const salesInvoiceItemSchema = z.object({
