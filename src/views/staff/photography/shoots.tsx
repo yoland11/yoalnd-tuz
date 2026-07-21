@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiErrorMessage, type AdminMe } from "@/views/admin/_lib";
 import { formatCurrency } from "@/lib/money";
 import { LiveScanner } from "../live-scanner";
+import { ShootMediaPanel } from "./post";
 import {
   CHECKLIST_ITEMS, SHOOT_STAGES, SHOOT_STAGE_LABEL, nextStage, readPositionOnce, shootApi,
   type PhotographyAsset, type ShootBoard, type ShootCard, type ShootDetail, type ShootStage,
@@ -156,6 +157,23 @@ export function ShootsListPage() {
 
   return (
     <div className="space-y-3 p-4">
+      {/* Post-production surfaces live one tap away rather than crowding the tab bar. */}
+      <nav className="grid grid-cols-3 gap-2">
+        {[
+          { href: "/staff/photography/editing", label: "المونتاج" },
+          { href: "/staff/photography/cards", label: "البطاقات" },
+          { href: "/staff/photography/ops-reports", label: "تقارير العمليات" },
+        ].map((link) => (
+          <button
+            key={link.href}
+            type="button"
+            onClick={() => navigate(link.href)}
+            className="min-h-11 rounded-lg border border-border/40 bg-card text-xs font-bold text-foreground"
+          >
+            {link.label}
+          </button>
+        ))}
+      </nav>
       <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="ابحث باسم الزبون أو الموقع" />
       <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1">
         <button
@@ -348,6 +366,8 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
       </section>
 
       <ShootEquipment shootRef={shootRef} equipment={data.equipment} onChanged={load} />
+
+      <ShootMediaPanel shootRef={shootRef} />
 
       {/* Crew */}
       {data.crew.length ? (

@@ -265,6 +265,168 @@ export const shootApi = {
     }),
 };
 
+// ── Post-production ──────────────────────────────────────────────────────────
+
+export type EditStatus =
+  | "waiting" | "copying_files" | "editing" | "color_correction"
+  | "exporting" | "quality_check" | "ready" | "delivered";
+
+export const EDIT_STATUSES: Array<{ key: EditStatus; label: string }> = [
+  { key: "waiting", label: "بالانتظار" },
+  { key: "copying_files", label: "نسخ الملفات" },
+  { key: "editing", label: "قيد المونتاج" },
+  { key: "color_correction", label: "تصحيح الألوان" },
+  { key: "exporting", label: "التصدير" },
+  { key: "quality_check", label: "فحص الجودة" },
+  { key: "ready", label: "جاهز" },
+  { key: "delivered", label: "تم التسليم" },
+];
+
+export const EDIT_STATUS_LABEL: Record<string, string> = Object.fromEntries(
+  EDIT_STATUSES.map((item) => [item.key, item.label]),
+);
+
+export function nextEditStatus(status: EditStatus): EditStatus | null {
+  const index = EDIT_STATUSES.findIndex((item) => item.key === status);
+  return index < 0 || index >= EDIT_STATUSES.length - 1 ? null : EDIT_STATUSES[index + 1].key;
+}
+
+export const MEDIA_KINDS: Array<{ key: string; label: string }> = [
+  { key: "raw", label: "صور RAW" },
+  { key: "edited", label: "صور معدّلة" },
+  { key: "video", label: "فيديو" },
+  { key: "drone", label: "لقطات درون" },
+  { key: "preview", label: "معاينات" },
+];
+
+export const CARD_STATUSES: Array<{ key: string; label: string }> = [
+  { key: "available", label: "متاحة" },
+  { key: "assigned", label: "مع المصور" },
+  { key: "full", label: "ممتلئة" },
+  { key: "copying", label: "قيد النسخ" },
+  { key: "delivered", label: "سُلّمت للمونتاج" },
+  { key: "returned", label: "أُرجعت" },
+  { key: "damaged", label: "تالفة" },
+];
+
+export type EditProject = {
+  id: number;
+  shootId: number;
+  eventId: number | null;
+  clientToken: string | null;
+  customerName: string;
+  eventName: string | null;
+  eventDate: string | null;
+  status: EditStatus;
+  statusLabel: string;
+  editorStaffId: number | null;
+  editorName: string | null;
+  dueDate: string | null;
+  notes: string | null;
+  assignedAt: string | null;
+  startedAt: string | null;
+  readyAt: string | null;
+  deliveredAt: string | null;
+  turnaroundHours: number | null;
+  timeline?: Array<{
+    id: number; staffName: string; fromStatus: string | null;
+    toStatus: string | null; note: string | null; createdAt: string;
+  }>;
+};
+
+export type MemoryCard = {
+  id: number;
+  label: string;
+  capacityGb: number;
+  serialNumber: string | null;
+  status: string;
+  statusLabel: string;
+  notes: string | null;
+  activeShootId: number | null;
+  photographerName: string | null;
+  cameraName: string | null;
+  filesCopied: number;
+};
+
+export type CardAssignment = {
+  id: number; cardId: number; label: string; capacityGb: number;
+  photographerName: string; cameraName: string | null;
+  status: string; statusLabel: string; filesCopied: number;
+  copiedAt: string | null; deliveredAt: string | null; returnedAt: string | null;
+};
+
+export type MediaBatch = {
+  id: number; kind: string; kindLabel: string;
+  fileCount: number; totalBytes: number; sizeLabel: string;
+  externalUrl: string | null; note: string | null;
+  recordedByName: string; createdAt: string;
+};
+
+export type MediaTotals = {
+  byKind: Record<string, { files: number; bytes: number }>;
+  files: number;
+  bytes: number;
+};
+
+export type OpsReport = {
+  filters: { from: string; to: string; scope: string };
+  totals: {
+    events: number; shoots: number; completed: number; delivered: number;
+    photos: number; videos: number; files: number; bytes: number; sizeLabel: string;
+  };
+  media: Record<string, { files: number; bytes: number }>;
+  turnaround: { shootToDeliveryHours: number | null; editingHours: number | null };
+  photographers: Array<{ staffId: number; name: string; shoots: number; completed: number }>;
+  editors: Array<{ staffId: number; name: string; projects: number; avgTurnaroundHours: number | null }>;
+};
+
+const ref = (value: string | number) => encodeURIComponent(String(value));
+
+export const postApi = {
+  editQueue: (status = "") =>
+    adminFetch<{ data: EditProject[]; statusCounts: Record<string, number> }>(
+      `${base}/editing${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  editProject: (shootRef: string | number) => adminFetch<EditProject>(`${base}/editing/${ref(shootRef)}`),
+  assignEditor: (shootRef: string | number, editorStaffId: number, dueDate?: string) =>
+    adminFetch<{ ok: boolean; editorName: string }>(`${base}/editing/${ref(shootRef)}/assign`, {
+      method: "POST", body: JSON.stringify({ editorStaffId, dueDate }),
+    }),
+  setEditStatus: (shootRef: string | number, status: EditStatus, note = "") =>
+    adminFetch<{ ok: boolean; status: EditStatus }>(`${base}/editing/${ref(shootRef)}/status`, {
+      method: "POST", body: JSON.stringify({ status, note }),
+    }),
+
+  cards: () => adminFetch<{ data: MemoryCard[] }>(`${base}/cards`),
+  createCard: (payload: Record<string, unknown>) =>
+    adminFetch<{ ok: boolean; id: number }>(`${base}/cards`, { method: "POST", body: JSON.stringify(payload) }),
+  setCardStatus: (cardId: number, status: string, filesCopied?: number) =>
+    adminFetch<{ ok: boolean; status: string }>(`${base}/cards/${cardId}/status`, {
+      method: "POST", body: JSON.stringify({ status, filesCopied }),
+    }),
+  shootCards: (shootRef: string | number) =>
+    adminFetch<{ data: CardAssignment[] }>(`${base}/cards/${ref(shootRef)}`),
+  assignCard: (shootRef: string | number, payload: Record<string, unknown>) =>
+    adminFetch<{ ok: boolean; cardId: number }>(`${base}/cards/${ref(shootRef)}/assign`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+
+  media: (shootRef: string | number) =>
+    adminFetch<{ data: MediaBatch[]; totals: MediaTotals }>(`${base}/media/${ref(shootRef)}`),
+  addMedia: (shootRef: string | number, payload: Record<string, unknown>) =>
+    adminFetch<{ ok: boolean; id: number }>(`${base}/media/${ref(shootRef)}`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+
+  opsReport: (opts: { from?: string; to?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.from) params.set("from", opts.from);
+    if (opts.to) params.set("to", opts.to);
+    const q = params.toString();
+    return adminFetch<OpsReport>(`${base}/ops-reports${q ? `?${q}` : ""}`);
+  },
+};
+
 /** Reads the device position once, for the arrival check-in. Never throws. */
 export function readPositionOnce(timeoutMs = 8000): Promise<{ lat: number; lng: number } | null> {
   if (typeof navigator === "undefined" || !navigator.geolocation) return Promise.resolve(null);

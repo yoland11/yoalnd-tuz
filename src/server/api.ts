@@ -92,8 +92,17 @@ import {
   photographyShootsTable,
   photographyShootEventsTable,
   photographyShootCrewTable,
+  photographyEditProjectsTable,
+  photographyEditEventsTable,
+  photographyMemoryCardsTable,
+  photographyCardAssignmentsTable,
+  photographyMediaBatchesTable,
   PHOTOGRAPHY_SHOOT_STAGES,
+  PHOTOGRAPHY_EDIT_STATUSES,
   type PhotographyShootStage,
+  type PhotographyEditStatus,
+  type MemoryCardStatus,
+  type PhotographyMediaKind,
   loyaltyPointsTable,
   messageRepliesTable,
   messageThreadsTable,
@@ -282,8 +291,26 @@ import {
   mapsLink,
   normalizeChecklist,
   parseCoordinate,
+  stageIndex,
   stageTimestamps,
 } from "@/server/photography-shoots";
+import {
+  CARD_STATUS_LABELS,
+  EDIT_STATUS_LABELS,
+  MEDIA_KIND_LABELS,
+  averageOf,
+  cardTimestamps,
+  editTimestamps,
+  evaluateCardTransition,
+  evaluateEditTransition,
+  formatBytes,
+  isMediaKind,
+  parseBytes,
+  parseCount,
+  shootStageForEditStatus,
+  summarizeMedia,
+  turnaroundHours,
+} from "@/server/photography-post";
 import {
   addEventBrainFeedback,
   getEventBrainDashboard,
@@ -658,6 +685,7 @@ let koshaTablesPromise: Promise<void> | null = null;
 let koshaStaffTablesPromise: Promise<void> | null = null;
 let photographyStaffTablesPromise: Promise<void> | null = null;
 let photographyShootTablesPromise: Promise<void> | null = null;
+let photographyPostTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
 let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
@@ -7299,6 +7327,101 @@ async function ensurePhotographyShootTables(): Promise<void> {
       });
   }
   await photographyShootTablesPromise;
+}
+
+/**
+ * Post-production tables (edit room, memory cards, media ledger). Depends on
+ * `photography_shoots`, so it provisions that first.
+ */
+async function ensurePhotographyPostTables(): Promise<void> {
+  await ensurePhotographyShootTables();
+  if (!photographyPostTablesPromise) {
+    photographyPostTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "photography_edit_projects" (
+        "id" serial primary key,
+        "shoot_id" integer not null unique references "photography_shoots" ("id") on delete cascade,
+        "status" varchar(30) not null default 'waiting',
+        "editor_staff_id" integer references "staff" ("id") on delete set null,
+        "editor_name" text,
+        "due_date" varchar(10),
+        "notes" text,
+        "assigned_at" timestamp,
+        "started_at" timestamp,
+        "ready_at" timestamp,
+        "delivered_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_edit_events" (
+        "id" serial primary key,
+        "project_id" integer not null references "photography_edit_projects" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "type" varchar(40) not null,
+        "from_status" varchar(30),
+        "to_status" varchar(30),
+        "note" text,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "photography_memory_cards" (
+        "id" serial primary key,
+        "label" text not null,
+        "capacity_gb" integer not null default 0,
+        "serial_number" varchar(120),
+        "product_id" integer references "products" ("id") on delete set null,
+        "status" varchar(20) not null default 'available',
+        "notes" text,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_card_assignments" (
+        "id" serial primary key,
+        "card_id" integer not null references "photography_memory_cards" ("id") on delete cascade,
+        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
+        "photographer_staff_id" integer references "staff" ("id") on delete set null,
+        "photographer_name" text not null default '',
+        "camera_product_id" integer references "products" ("id") on delete set null,
+        "camera_name" text,
+        "status" varchar(20) not null default 'assigned',
+        "files_copied" integer not null default 0,
+        "copied_at" timestamp,
+        "delivered_at" timestamp,
+        "returned_at" timestamp,
+        "note" text,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now(),
+        constraint "photography_card_assignments_unique" unique ("card_id", "shoot_id")
+      );
+      create table if not exists "photography_media_batches" (
+        "id" serial primary key,
+        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
+        "kind" varchar(20) not null,
+        "file_count" integer not null default 0,
+        "total_bytes" bigint not null default 0,
+        "card_id" integer references "photography_memory_cards" ("id") on delete set null,
+        "external_url" text,
+        "note" text,
+        "recorded_by" integer references "staff" ("id") on delete set null,
+        "recorded_by_name" text not null default '',
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "photography_edit_projects_status_idx" on "photography_edit_projects" ("status", "updated_at");
+      create index if not exists "photography_edit_projects_editor_idx" on "photography_edit_projects" ("editor_staff_id", "status");
+      create index if not exists "photography_edit_events_project_idx" on "photography_edit_events" ("project_id", "created_at");
+      create index if not exists "photography_memory_cards_status_idx" on "photography_memory_cards" ("status", "label");
+      create index if not exists "photography_card_assignments_shoot_idx" on "photography_card_assignments" ("shoot_id", "status");
+      create index if not exists "photography_media_batches_shoot_idx" on "photography_media_batches" ("shoot_id", "kind");
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        photographyPostTablesPromise = null;
+        throw err;
+      });
+  }
+  await photographyPostTablesPromise;
 }
 
 async function ensureStoreCategoryColumns(): Promise<void> {
@@ -37055,6 +37178,196 @@ function shootCardPayload(
   };
 }
 
+// ── Post-production helpers ──────────────────────────────────────────────────
+
+/** Returns the edit project for a shoot, creating it on first hand-off. */
+async function ensureEditProject(shootId: number) {
+  const existing = await db.query.photographyEditProjectsTable.findFirst({
+    where: eq(photographyEditProjectsTable.shootId, shootId),
+  });
+  if (existing) return existing;
+  const [created] = await db
+    .insert(photographyEditProjectsTable)
+    .values({ shootId })
+    .onConflictDoNothing({ target: photographyEditProjectsTable.shootId })
+    .returning();
+  if (created) return created;
+  const row = await db.query.photographyEditProjectsTable.findFirst({
+    where: eq(photographyEditProjectsTable.shootId, shootId),
+  });
+  if (!row) throw new Error(`failed to provision edit project for shoot ${shootId}`);
+  return row;
+}
+
+type EditProjectContext = {
+  shoots: Map<number, typeof photographyShootsTable.$inferSelect>;
+  events: Map<number, typeof photographyEventsTable.$inferSelect>;
+};
+
+/** Loads the shoots and events an edit-project list needs to render customer names. */
+async function editProjectContext(shootIds: number[]): Promise<EditProjectContext> {
+  if (!shootIds.length) return { shoots: new Map(), events: new Map() };
+  const shoots = await db.query.photographyShootsTable.findMany({
+    where: inArray(photographyShootsTable.id, shootIds),
+  });
+  const eventIds = shoots.map((row) => row.eventId);
+  const events = eventIds.length
+    ? await db.query.photographyEventsTable.findMany({
+        where: inArray(photographyEventsTable.id, eventIds),
+      })
+    : [];
+  const eventById = new Map(events.map((row) => [row.id, row]));
+  return {
+    shoots: new Map(shoots.map((row) => [row.id, row])),
+    events: new Map(
+      shoots
+        .map((shoot) => [shoot.id, eventById.get(shoot.eventId)] as const)
+        .filter((pair): pair is [number, typeof photographyEventsTable.$inferSelect] => Boolean(pair[1])),
+    ),
+  };
+}
+
+function editProjectPayload(
+  project: typeof photographyEditProjectsTable.$inferSelect,
+  context: EditProjectContext,
+) {
+  const shoot = context.shoots.get(project.shootId) ?? null;
+  const event = context.events.get(project.shootId) ?? null;
+  return {
+    id: project.id,
+    shootId: project.shootId,
+    eventId: shoot?.eventId ?? null,
+    clientToken: event?.clientToken ?? null,
+    customerName: event?.groomName ?? "—",
+    eventName: event?.eventName ?? null,
+    eventDate: event?.eventDate ?? null,
+    status: project.status,
+    statusLabel: EDIT_STATUS_LABELS[project.status as PhotographyEditStatus] ?? project.status,
+    editorStaffId: project.editorStaffId,
+    editorName: project.editorName,
+    dueDate: project.dueDate,
+    notes: project.notes,
+    assignedAt: project.assignedAt?.toISOString() ?? null,
+    startedAt: project.startedAt?.toISOString() ?? null,
+    readyAt: project.readyAt?.toISOString() ?? null,
+    deliveredAt: project.deliveredAt?.toISOString() ?? null,
+    // Turnaround is what the reports rank editors by.
+    turnaroundHours: turnaroundHours(project.startedAt, project.readyAt),
+  };
+}
+
+/**
+ * Operations report: volume, media captured, and the two turnaround numbers that
+ * actually matter — shoot→delivery and edit start→ready.
+ */
+async function photographyOpsReport(
+  req: NextRequest,
+  auth: AdminUser,
+  manager: boolean,
+  own: <T extends { assignedStaffId: number | null }>(rows: T[]) => T[],
+): Promise<NextResponse> {
+  const params = req.nextUrl.searchParams;
+  const from = String(params.get("from") ?? "").trim();
+  const to = String(params.get("to") ?? "").trim();
+
+  let events = own(
+    await db.query.photographyEventsTable.findMany({
+      orderBy: [desc(photographyEventsTable.eventDate)],
+      limit: 600,
+    }),
+  ).filter((row) => row.status !== "archived");
+  if (from) events = events.filter((row) => row.eventDate >= from);
+  if (to) events = events.filter((row) => row.eventDate <= to);
+
+  const eventIds = events.map((row) => row.id);
+  const shoots = eventIds.length
+    ? await db.query.photographyShootsTable.findMany({
+        where: inArray(photographyShootsTable.eventId, eventIds),
+      })
+    : [];
+  const shootIds = shoots.map((row) => row.id);
+  const [projects, batches] = await Promise.all([
+    shootIds.length
+      ? db.query.photographyEditProjectsTable.findMany({
+          where: inArray(photographyEditProjectsTable.shootId, shootIds),
+        })
+      : Promise.resolve([]),
+    shootIds.length
+      ? db.query.photographyMediaBatchesTable.findMany({
+          where: inArray(photographyMediaBatchesTable.shootId, shootIds),
+          limit: 3000,
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const media = summarizeMedia(batches);
+  const completed = shoots.filter((row) => row.stage === "completed").length;
+  const delivered = shoots.filter((row) => row.completedAt || row.deliveredAt).length;
+
+  // Per-photographer productivity, keyed off the event assignment.
+  const byPhotographer = new Map<number, { name: string; shoots: number; completed: number }>();
+  for (const event of events) {
+    if (!event.assignedStaffId) continue;
+    const entry = byPhotographer.get(event.assignedStaffId) ?? {
+      name: event.assignedStaffName || `#${event.assignedStaffId}`,
+      shoots: 0,
+      completed: 0,
+    };
+    entry.shoots += 1;
+    const shoot = shoots.find((row) => row.eventId === event.id);
+    if (shoot?.stage === "completed") entry.completed += 1;
+    byPhotographer.set(event.assignedStaffId, entry);
+  }
+
+  const byEditor = new Map<number, { name: string; projects: number; turnarounds: Array<number | null> }>();
+  for (const project of projects) {
+    if (!project.editorStaffId) continue;
+    const entry = byEditor.get(project.editorStaffId) ?? {
+      name: project.editorName || `#${project.editorStaffId}`,
+      projects: 0,
+      turnarounds: [],
+    };
+    entry.projects += 1;
+    entry.turnarounds.push(turnaroundHours(project.startedAt, project.readyAt));
+    byEditor.set(project.editorStaffId, entry);
+  }
+
+  return json({
+    filters: { from, to, scope: manager ? "all" : "own" },
+    totals: {
+      events: events.length,
+      shoots: shoots.length,
+      completed,
+      delivered,
+      photos: media.byKind.raw.files + media.byKind.edited.files,
+      videos: media.byKind.video.files + media.byKind.drone.files,
+      files: media.files,
+      bytes: media.bytes,
+      sizeLabel: formatBytes(media.bytes),
+    },
+    media: media.byKind,
+    turnaround: {
+      shootToDeliveryHours: averageOf(
+        shoots.map((row) => turnaroundHours(row.shootingEndedAt, row.deliveredAt)),
+      ),
+      editingHours: averageOf(
+        projects.map((row) => turnaroundHours(row.startedAt, row.readyAt)),
+      ),
+    },
+    photographers: [...byPhotographer.entries()]
+      .map(([id, entry]) => ({ staffId: id, ...entry }))
+      .sort((a, b) => b.shoots - a.shoots),
+    editors: [...byEditor.entries()]
+      .map(([id, entry]) => ({
+        staffId: id,
+        name: entry.name,
+        projects: entry.projects,
+        avgTurnaroundHours: averageOf(entry.turnarounds),
+      }))
+      .sort((a, b) => b.projects - a.projects),
+  });
+}
+
 /** Equipment attached to a shoot, with live custody + condition status. */
 async function shootEquipmentPayload(shootId: number) {
   await ensureAssetLinksTable();
@@ -38454,6 +38767,405 @@ async function handlePhotographyStaffPortal(
           payload,
         });
         return result;
+      }
+    }
+
+    return error("الإجراء غير مدعوم", 405);
+  }
+
+  // ── Post-production: edit room, memory cards, media ledger, reports ──
+  if (resource === "editing" || resource === "cards" || resource === "media" || resource === "ops-reports") {
+    await ensurePhotographyPostTables();
+    const actorName = photographyStaffName(auth);
+
+    // Edit-room queue. Editors see their own projects; managers see everything.
+    if (resource === "editing" && method === "GET" && !ref) {
+      const statusFilter = String(req.nextUrl.searchParams.get("status") ?? "").trim();
+      const projects = await db.query.photographyEditProjectsTable.findMany({
+        orderBy: [asc(photographyEditProjectsTable.status), desc(photographyEditProjectsTable.updatedAt)],
+        limit: 300,
+      });
+      const visible = manager
+        ? projects
+        : projects.filter((row) => row.editorStaffId === auth.id || row.editorStaffId === null);
+      const filtered = statusFilter ? visible.filter((row) => row.status === statusFilter) : visible;
+      const context = await editProjectContext(filtered.map((row) => row.shootId));
+      return json({
+        data: filtered.map((row) => editProjectPayload(row, context)),
+        statusCounts: Object.fromEntries(
+          PHOTOGRAPHY_EDIT_STATUSES.map((status) => [
+            status,
+            visible.filter((row) => row.status === status).length,
+          ]),
+        ),
+      });
+    }
+
+    // Memory-card registry.
+    if (resource === "cards" && !ref) {
+      if (method === "GET") {
+        const cards = await db.query.photographyMemoryCardsTable.findMany({
+          orderBy: [asc(photographyMemoryCardsTable.label)],
+          limit: 300,
+        });
+        const assignments = await db.query.photographyCardAssignmentsTable.findMany({
+          where: inArray(
+            photographyCardAssignmentsTable.status,
+            ["assigned", "full", "copying", "delivered"],
+          ),
+          limit: 500,
+        });
+        const activeByCard = new Map(assignments.map((row) => [row.cardId, row]));
+        return json({
+          data: cards.map((card) => {
+            const active = activeByCard.get(card.id);
+            return {
+              id: card.id,
+              label: card.label,
+              capacityGb: card.capacityGb,
+              serialNumber: card.serialNumber,
+              status: card.status,
+              statusLabel: CARD_STATUS_LABELS[card.status as MemoryCardStatus] ?? card.status,
+              notes: card.notes,
+              activeShootId: active?.shootId ?? null,
+              photographerName: active?.photographerName ?? null,
+              cameraName: active?.cameraName ?? null,
+              filesCopied: active?.filesCopied ?? 0,
+            };
+          }),
+        });
+      }
+      if (method === "POST") {
+        if (!manager) return error("إضافة بطاقة ذاكرة تحتاج صلاحية مدير", 403);
+        const payload = await body(req);
+        const label = String(payload?.label ?? "").trim();
+        if (label.length < 2) return error("اسم البطاقة مطلوب", 400);
+        const [card] = await db
+          .insert(photographyMemoryCardsTable)
+          .values({
+            label: label.slice(0, 120),
+            capacityGb: parseCount(payload?.capacityGb, 100_000),
+            serialNumber: nullableText(payload?.serialNumber)?.slice(0, 120) ?? null,
+            productId: optionalPositiveId(payload?.productId) ?? null,
+            notes: nullableText(payload?.notes),
+          })
+          .returning();
+        void logAdminActivity(req, "photography_card_created", "photography_card", card.id, { label });
+        return json({ ok: true, id: card.id });
+      }
+    }
+
+    // Card status transitions live on the card itself so they work from any screen.
+    if (resource === "cards" && ref && action === "status" && method === "POST") {
+      const cardId = optionalPositiveId(ref);
+      if (!cardId) return error("معرّف البطاقة مطلوب", 400);
+      const card = await db.query.photographyMemoryCardsTable.findFirst({
+        where: eq(photographyMemoryCardsTable.id, cardId),
+      });
+      if (!card) return error("البطاقة غير موجودة", 404);
+      const payload = await body(req);
+      const to = String(payload?.status ?? "").trim();
+      const decision = evaluateCardTransition({ from: card.status, to, isManager: manager });
+      if (!decision.ok) return error(decision.reason, decision.status);
+      const now = new Date();
+      await db
+        .update(photographyMemoryCardsTable)
+        .set({ status: to, updatedAt: now })
+        .where(eq(photographyMemoryCardsTable.id, cardId));
+      // Mirror onto the open assignment so per-shoot history stays truthful.
+      const open = await db.query.photographyCardAssignmentsTable.findFirst({
+        where: and(
+          eq(photographyCardAssignmentsTable.cardId, cardId),
+          ne(photographyCardAssignmentsTable.status, "returned"),
+        ),
+        orderBy: [desc(photographyCardAssignmentsTable.id)],
+      });
+      if (open) {
+        await db
+          .update(photographyCardAssignmentsTable)
+          .set({
+            status: to,
+            filesCopied:
+              payload?.filesCopied === undefined
+                ? open.filesCopied
+                : parseCount(payload.filesCopied),
+            ...cardTimestamps(to as MemoryCardStatus, now),
+            updatedAt: now,
+          })
+          .where(eq(photographyCardAssignmentsTable.id, open.id));
+      }
+      void logAdminActivity(req, "photography_card_status", "photography_card", cardId, {
+        from: card.status,
+        to,
+      });
+      return json({ ok: true, id: cardId, status: to });
+    }
+
+    // Everything below is scoped to one shoot.
+    if (resource === "ops-reports" && method === "GET") {
+      return photographyOpsReport(req, auth, manager, own);
+    }
+
+    if (!ref) return error("معرّف المهمة مطلوب", 400);
+    const eventRow = await getPhotographyEventByRef(ref);
+    if (!eventRow) return error("المناسبة غير موجودة", 404);
+    if (!canAccessPhotographyEvent(auth, eventRow))
+      return error("هذه المهمة غير مُسندة إليك", 403);
+    const shootRow = await ensureShootRow(eventRow, auth.id);
+
+    if (resource === "editing") {
+      const project = await ensureEditProject(shootRow.id);
+      if (method === "GET") {
+        const timeline = await db.query.photographyEditEventsTable.findMany({
+          where: eq(photographyEditEventsTable.projectId, project.id),
+          orderBy: [desc(photographyEditEventsTable.createdAt)],
+          limit: 80,
+        });
+        return json({
+          ...editProjectPayload(project, {
+            shoots: new Map([[shootRow.id, shootRow]]),
+            events: new Map([[shootRow.id, eventRow]]),
+          }),
+          timeline: timeline.map((row) => ({
+            id: row.id,
+            staffName: row.staffName,
+            fromStatus: row.fromStatus,
+            toStatus: row.toStatus,
+            note: row.note,
+            createdAt: row.createdAt.toISOString(),
+          })),
+        });
+      }
+
+      if (action === "assign" && method === "POST") {
+        if (!manager) return error("إسناد المونتير يحتاج صلاحية مدير", 403);
+        const payload = await body(req);
+        const editorId = optionalPositiveId(payload?.editorStaffId);
+        if (!editorId) return error("معرّف المونتير مطلوب", 400);
+        const editor = await db.query.staffTable.findFirst({
+          where: and(eq(staffTable.id, editorId), eq(staffTable.isActive, true)),
+        });
+        if (!editor) return error("المونتير غير موجود أو غير نشط", 404);
+        const editorName = editor.fullName || editor.username;
+        await db
+          .update(photographyEditProjectsTable)
+          .set({
+            editorStaffId: editorId,
+            editorName,
+            assignedAt: project.assignedAt ?? new Date(),
+            dueDate: nullableText(payload?.dueDate)?.slice(0, 10) ?? project.dueDate,
+            updatedAt: new Date(),
+          })
+          .where(eq(photographyEditProjectsTable.id, project.id));
+        await db.insert(photographyEditEventsTable).values({
+          projectId: project.id,
+          staffId: auth.id,
+          staffName: actorName,
+          type: "editor_assigned",
+          note: editorName,
+        });
+        await createNotification({
+          type: "photography_edit_assigned",
+          title: "مشروع مونتاج جديد",
+          body: eventRow.groomName,
+          entityType: "photography_event",
+          entityId: eventRow.id,
+          href: "/staff/photography/editing",
+        });
+        return json({ ok: true, editorStaffId: editorId, editorName });
+      }
+
+      if (action === "status" && method === "POST") {
+        const payload = await body(req);
+        const to = String(payload?.status ?? "").trim();
+        // An editor may only move their own project.
+        if (!manager && project.editorStaffId !== auth.id)
+          return error("هذا المشروع غير مُسند إليك", 403);
+        const decision = evaluateEditTransition({
+          from: project.status,
+          to,
+          hasEditor: Boolean(project.editorStaffId),
+          isManager: manager,
+        });
+        if (!decision.ok) return error(decision.reason, decision.status);
+        const now = new Date();
+        await db
+          .update(photographyEditProjectsTable)
+          .set({
+            status: to,
+            ...editTimestamps(to as PhotographyEditStatus, now),
+            updatedAt: now,
+          })
+          .where(eq(photographyEditProjectsTable.id, project.id));
+        await db.insert(photographyEditEventsTable).values({
+          projectId: project.id,
+          staffId: auth.id,
+          staffName: actorName,
+          type: decision.backward ? "status_reverted" : "status_changed",
+          fromStatus: project.status,
+          toStatus: to,
+          note: nullableText(payload?.note),
+        });
+        // Reaching `ready` / `delivered` pulls the shoot timeline along with it — but only
+        // forward. A shoot already past this point (e.g. completed) must not be rewound by
+        // an edit-room correction.
+        const impliedStage = shootStageForEditStatus(to as PhotographyEditStatus);
+        const movesShootForward =
+          impliedStage !== null && stageIndex(impliedStage) > stageIndex(shootRow.stage);
+        if (impliedStage && movesShootForward && !decision.backward) {
+          await db
+            .update(photographyShootsTable)
+            .set({
+              stage: impliedStage,
+              ...stageTimestamps(impliedStage, now),
+              updatedAt: now,
+            })
+            .where(eq(photographyShootsTable.id, shootRow.id));
+          await db.insert(photographyShootEventsTable).values({
+            shootId: shootRow.id,
+            staffId: auth.id,
+            staffName: actorName,
+            type: "stage_changed",
+            fromStage: shootRow.stage,
+            toStage: impliedStage,
+            note: `تلقائياً من حالة المونتاج «${EDIT_STATUS_LABELS[to as PhotographyEditStatus]}»`,
+          });
+        }
+        void addEntityTimeline({
+          entityType: "photography_event",
+          entityId: eventRow.id,
+          type: "edit_status",
+          title: `🎬 ${EDIT_STATUS_LABELS[to as PhotographyEditStatus]}`,
+          body: eventRow.groomName,
+          actor: { id: auth.id, name: actorName },
+          metadata: { projectId: project.id, from: project.status, to },
+        });
+        void logAdminActivity(req, "photography_edit_status", "photography_event", eventRow.id, {
+          projectId: project.id,
+          from: project.status,
+          to,
+        });
+        return json({ ok: true, status: to });
+      }
+      return error("الإجراء غير مدعوم", 405);
+    }
+
+    if (resource === "cards" && action === "assign" && method === "POST") {
+      const payload = await body(req);
+      const cardId = optionalPositiveId(payload?.cardId);
+      if (!cardId) return error("معرّف البطاقة مطلوب", 400);
+      const card = await db.query.photographyMemoryCardsTable.findFirst({
+        where: eq(photographyMemoryCardsTable.id, cardId),
+      });
+      if (!card) return error("البطاقة غير موجودة", 404);
+      const decision = evaluateCardTransition({ from: card.status, to: "assigned", isManager: manager });
+      if (!decision.ok) return error(decision.reason, decision.status);
+      const camera = optionalPositiveId(payload?.cameraProductId);
+      const cameraRow = camera
+        ? await db.query.productsTable.findFirst({ where: eq(productsTable.id, camera) })
+        : null;
+      await db
+        .insert(photographyCardAssignmentsTable)
+        .values({
+          cardId,
+          shootId: shootRow.id,
+          photographerStaffId: auth.id,
+          photographerName: actorName,
+          cameraProductId: camera ?? null,
+          cameraName: cameraRow ? cameraRow.nameAr || cameraRow.name : null,
+        })
+        .onConflictDoNothing();
+      await db
+        .update(photographyMemoryCardsTable)
+        .set({ status: "assigned", updatedAt: new Date() })
+        .where(eq(photographyMemoryCardsTable.id, cardId));
+      return json({ ok: true, cardId });
+    }
+
+    if (resource === "cards" && method === "GET" && !action) {
+      const assignments = await db.query.photographyCardAssignmentsTable.findMany({
+        where: eq(photographyCardAssignmentsTable.shootId, shootRow.id),
+        orderBy: [desc(photographyCardAssignmentsTable.id)],
+      });
+      const cardIds = assignments.map((row) => row.cardId);
+      const cards = cardIds.length
+        ? await db.query.photographyMemoryCardsTable.findMany({
+            where: inArray(photographyMemoryCardsTable.id, cardIds),
+          })
+        : [];
+      const cardById = new Map(cards.map((row) => [row.id, row]));
+      return json({
+        data: assignments.map((row) => ({
+          id: row.id,
+          cardId: row.cardId,
+          label: cardById.get(row.cardId)?.label ?? `#${row.cardId}`,
+          capacityGb: cardById.get(row.cardId)?.capacityGb ?? 0,
+          photographerName: row.photographerName,
+          cameraName: row.cameraName,
+          status: row.status,
+          statusLabel: CARD_STATUS_LABELS[row.status as MemoryCardStatus] ?? row.status,
+          filesCopied: row.filesCopied,
+          copiedAt: row.copiedAt?.toISOString() ?? null,
+          deliveredAt: row.deliveredAt?.toISOString() ?? null,
+          returnedAt: row.returnedAt?.toISOString() ?? null,
+        })),
+      });
+    }
+
+    if (resource === "media") {
+      if (method === "GET") {
+        const batches = await db.query.photographyMediaBatchesTable.findMany({
+          where: eq(photographyMediaBatchesTable.shootId, shootRow.id),
+          orderBy: [desc(photographyMediaBatchesTable.createdAt)],
+          limit: 200,
+        });
+        return json({
+          data: batches.map((row) => ({
+            id: row.id,
+            kind: row.kind,
+            kindLabel: MEDIA_KIND_LABELS[row.kind as PhotographyMediaKind] ?? row.kind,
+            fileCount: row.fileCount,
+            totalBytes: row.totalBytes,
+            sizeLabel: formatBytes(row.totalBytes),
+            externalUrl: row.externalUrl,
+            note: row.note,
+            recordedByName: row.recordedByName,
+            createdAt: row.createdAt.toISOString(),
+          })),
+          totals: summarizeMedia(batches),
+        });
+      }
+      if (method === "POST") {
+        const payload = await body(req);
+        const kind = String(payload?.kind ?? "").trim();
+        if (!isMediaKind(kind)) return error("نوع الملفات غير معروف", 400);
+        const fileCount = parseCount(payload?.fileCount);
+        const totalBytes = parseBytes(payload?.totalBytes);
+        if (fileCount <= 0) return error("عدد الملفات مطلوب", 400);
+        const [batch] = await db
+          .insert(photographyMediaBatchesTable)
+          .values({
+            shootId: shootRow.id,
+            kind,
+            fileCount,
+            totalBytes,
+            cardId: optionalPositiveId(payload?.cardId) ?? null,
+            externalUrl: nullableText(payload?.externalUrl),
+            note: nullableText(payload?.note),
+            recordedBy: auth.id,
+            recordedByName: actorName,
+          })
+          .returning();
+        void addEntityTimeline({
+          entityType: "photography_event",
+          entityId: eventRow.id,
+          type: "media_recorded",
+          title: `📂 ${MEDIA_KIND_LABELS[kind]}`,
+          body: `${fileCount} ملف · ${formatBytes(totalBytes)}`,
+          actor: { id: auth.id, name: actorName },
+          metadata: { shootId: shootRow.id, kind, fileCount, totalBytes },
+        });
+        return json({ ok: true, id: batch.id });
       }
     }
 
