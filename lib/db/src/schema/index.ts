@@ -31,6 +31,7 @@ export * from "./daily-cash";
 export * from "./koshas";
 export * from "./kosha-staff";
 export * from "./photography-staff";
+export * from "./photography-shoots";
 export * from "./master-cash-box";
 export * from "./enterprise";
 export * from "./desktop";

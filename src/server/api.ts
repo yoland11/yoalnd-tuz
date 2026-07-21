@@ -89,6 +89,11 @@ import {
   photographyOrdersTable,
   photographyOrderEventsTable,
   photographyPaymentRequestsTable,
+  photographyShootsTable,
+  photographyShootEventsTable,
+  photographyShootCrewTable,
+  PHOTOGRAPHY_SHOOT_STAGES,
+  type PhotographyShootStage,
   loyaltyPointsTable,
   messageRepliesTable,
   messageThreadsTable,
@@ -270,6 +275,15 @@ import {
   getPerformanceTrends,
   LEVEL_LABEL,
 } from "@/server/employee-performance";
+import {
+  SHOOT_STAGE_LABELS,
+  checklistComplete,
+  evaluateTransition,
+  mapsLink,
+  normalizeChecklist,
+  parseCoordinate,
+  stageTimestamps,
+} from "@/server/photography-shoots";
 import {
   addEventBrainFeedback,
   getEventBrainDashboard,
@@ -643,6 +657,7 @@ let stockTrackingTablesPromise: Promise<void> | null = null;
 let koshaTablesPromise: Promise<void> | null = null;
 let koshaStaffTablesPromise: Promise<void> | null = null;
 let photographyStaffTablesPromise: Promise<void> | null = null;
+let photographyShootTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
 let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
@@ -7213,6 +7228,77 @@ async function ensurePhotographyStaffTables(): Promise<void> {
       });
   }
   await photographyStaffTablesPromise;
+}
+
+/**
+ * Field-operations tables for photography. Purely additive: `photography_events` and
+ * `photography_orders` are untouched, so the existing print/payment workflow is unaffected
+ * whether or not a shoot row exists for an event.
+ */
+async function ensurePhotographyShootTables(): Promise<void> {
+  if (!photographyShootTablesPromise) {
+    photographyShootTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "photography_shoots" (
+        "id" serial primary key,
+        "event_id" integer not null unique references "photography_events" ("id") on delete cascade,
+        "stage" varchar(30) not null default 'assigned',
+        "venue" text,
+        "gps_lat" numeric(10,7),
+        "gps_lng" numeric(10,7),
+        "event_time" varchar(10),
+        "checklist" jsonb not null default '{}'::jsonb,
+        "checklist_completed_at" timestamp,
+        "checklist_completed_by" integer references "staff" ("id") on delete set null,
+        "departed_at" timestamp,
+        "arrived_at" timestamp,
+        "arrived_lat" numeric(10,7),
+        "arrived_lng" numeric(10,7),
+        "shooting_started_at" timestamp,
+        "shooting_ended_at" timestamp,
+        "delivered_at" timestamp,
+        "completed_at" timestamp,
+        "notes" text,
+        "cancelled_at" timestamp,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_shoot_events" (
+        "id" serial primary key,
+        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "type" varchar(40) not null,
+        "from_stage" varchar(30),
+        "to_stage" varchar(30),
+        "note" text,
+        "lat" numeric(10,7),
+        "lng" numeric(10,7),
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "photography_shoot_crew" (
+        "id" serial primary key,
+        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
+        "staff_id" integer not null references "staff" ("id") on delete cascade,
+        "staff_name" text not null default '',
+        "role" varchar(30) not null default 'photographer',
+        "is_lead" boolean not null default false,
+        "created_at" timestamp not null default now(),
+        constraint "photography_shoot_crew_unique" unique ("shoot_id", "staff_id")
+      );
+      create index if not exists "photography_shoots_stage_idx" on "photography_shoots" ("stage", "updated_at");
+      create index if not exists "photography_shoot_events_shoot_idx" on "photography_shoot_events" ("shoot_id", "created_at");
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        photographyShootTablesPromise = null;
+        throw err;
+      });
+  }
+  await photographyShootTablesPromise;
 }
 
 async function ensureStoreCategoryColumns(): Promise<void> {
@@ -36905,6 +36991,306 @@ function canAccessPhotographyEvent(
   return isPhotographyManager(user) || event.assignedStaffId === user.id;
 }
 
+// ── Field-shoot helpers ──────────────────────────────────────────────────────
+
+async function loadShootsForEvents(eventIds: number[]) {
+  if (!eventIds.length) return new Map<number, typeof photographyShootsTable.$inferSelect>();
+  const rows = await db.query.photographyShootsTable.findMany({
+    where: inArray(photographyShootsTable.eventId, eventIds),
+  });
+  return new Map(rows.map((row) => [row.eventId, row]));
+}
+
+/**
+ * Returns the shoot row for an event, creating it on first field interaction.
+ * Venue seeds from the event's own location so the maps link works immediately.
+ */
+async function ensureShootRow(
+  event: typeof photographyEventsTable.$inferSelect,
+  createdBy: number,
+) {
+  const existing = await db.query.photographyShootsTable.findFirst({
+    where: eq(photographyShootsTable.eventId, event.id),
+  });
+  if (existing) return existing;
+  const [created] = await db
+    .insert(photographyShootsTable)
+    .values({ eventId: event.id, venue: event.location ?? null, createdBy })
+    .onConflictDoNothing({ target: photographyShootsTable.eventId })
+    .returning();
+  if (created) return created;
+  // A concurrent request won the insert — read it back.
+  const row = await db.query.photographyShootsTable.findFirst({
+    where: eq(photographyShootsTable.eventId, event.id),
+  });
+  if (!row) throw new Error(`failed to provision shoot for event ${event.id}`);
+  return row;
+}
+
+/** The shape every shoot list/board/detail response shares. */
+function shootCardPayload(
+  event: typeof photographyEventsTable.$inferSelect,
+  shoot: typeof photographyShootsTable.$inferSelect | null,
+) {
+  const venue = shoot?.venue ?? event.location ?? null;
+  return {
+    eventId: event.id,
+    clientToken: event.clientToken,
+    shootId: shoot?.id ?? null,
+    stage: (shoot?.stage ?? "assigned") as PhotographyShootStage,
+    stageLabel: SHOOT_STAGE_LABELS[(shoot?.stage ?? "assigned") as PhotographyShootStage],
+    customerName: event.groomName,
+    eventName: event.eventName,
+    eventDate: event.eventDate,
+    eventTime: shoot?.eventTime ?? null,
+    venue,
+    gpsLat: shoot?.gpsLat ? Number(shoot.gpsLat) : null,
+    gpsLng: shoot?.gpsLng ? Number(shoot.gpsLng) : null,
+    mapsUrl: mapsLink(shoot?.gpsLat, shoot?.gpsLng, venue),
+    assignedStaffId: event.assignedStaffId,
+    assignedStaffName: event.assignedStaffName,
+    checklistComplete: checklistComplete(shoot?.checklist),
+    arrivedAt: shoot?.arrivedAt?.toISOString() ?? null,
+    updatedAt: (shoot?.updatedAt ?? event.updatedAt).toISOString(),
+  };
+}
+
+/** Equipment attached to a shoot, with live custody + condition status. */
+async function shootEquipmentPayload(shootId: number) {
+  await ensureAssetLinksTable();
+  const linkRows: any[] =
+    ((await db.execute(
+      sql`select product_id from "asset_links" where entity_type = 'photography_shoot' and entity_id = ${shootId} order by id`,
+    )) as any).rows ?? [];
+  const ids = linkRows.map((row) => Number(row.product_id)).filter(Boolean);
+  if (!ids.length) return [];
+  const [products, passports, profiles, warehouses, custody] = await Promise.all([
+    db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }),
+    db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }),
+    db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }),
+    db.query.warehousesTable.findMany(),
+    db.query.equipmentCustodyTable.findMany({
+      where: and(
+        inArray(equipmentCustodyTable.productId, ids),
+        eq(equipmentCustodyTable.status, "issued"),
+      ),
+    }),
+  ]);
+  const productMap = new Map(products.map((row: any) => [row.id, row]));
+  const passportMap = new Map(passports.map((row: any) => [row.productId, row]));
+  const profileMap = new Map(profiles.map((row: any) => [row.productId, row]));
+  const warehouseMap = new Map(warehouses.map((row: any) => [row.id, row.name]));
+  const checkedOut = new Set(custody.map((row) => row.productId));
+  return ids.map((productId) => {
+    const product: any = productMap.get(productId);
+    const passport: any = passportMap.get(productId);
+    const profile: any = profileMap.get(productId);
+    return {
+      productId,
+      name: product?.nameAr || product?.name || `#${productId}`,
+      assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
+      barcode: product?.barcode ?? null,
+      imageUrl: (publicMediaList("product", product, product?.images) ?? [])[0] ?? null,
+      category: product?.category ?? null,
+      status: checkedOut.has(productId) ? "checked_out" : (profile?.status ?? "active"),
+      warehouse: passport?.warehouseId ? (warehouseMap.get(passport.warehouseId) ?? null) : null,
+      health: assetHealthScore(profile, assetMetadataObject(passport?.metadata)),
+      checkedOut: checkedOut.has(productId),
+    };
+  });
+}
+
+/**
+ * Link / unlink / check out / return a piece of kit for a shoot.
+ * Mirrors the per-order asset flow, including the custody and damage side effects.
+ */
+async function runShootAssetOperation(input: {
+  req: NextRequest;
+  mode: string;
+  productId: number;
+  product: any;
+  shootId: number;
+  eventId: number;
+  actor: { id: number; name: string };
+  payload: any;
+}): Promise<NextResponse> {
+  const { req, mode, productId, product, shootId, eventId, actor, payload } = input;
+  const tag = ` · تصوير ميداني #${shootId}`;
+  const name = product.nameAr || product.name;
+
+  if (mode === "unlink") {
+    await db.execute(
+      sql`delete from "asset_links" where product_id = ${productId} and entity_type = 'photography_shoot' and entity_id = ${shootId}`,
+    );
+    void logAdminActivity(req, "asset_unlinked", "product", productId, {
+      entityType: "photography_shoot",
+      entityId: shootId,
+    });
+    return json({ ok: true, productId });
+  }
+
+  if (mode === "link") {
+    await db.execute(
+      sql`insert into "asset_links" (product_id, entity_type, entity_id) values (${productId}, 'photography_shoot', ${shootId}) on conflict do nothing`,
+    );
+    void logAdminActivity(req, "asset_linked", "product", productId, {
+      entityType: "photography_shoot",
+      entityId: shootId,
+    });
+    return json({ ok: true, productId, name });
+  }
+
+  const linked: any[] =
+    ((await db.execute(
+      sql`select 1 from "asset_links" where product_id = ${productId} and entity_type = 'photography_shoot' and entity_id = ${shootId} limit 1`,
+    )) as any).rows ?? [];
+  if (!linked.length) return error("هذا الأصل غير مرتبط بهذه المهمة", 409);
+
+  const activeCustody = await db.query.equipmentCustodyTable.findFirst({
+    where: and(
+      eq(equipmentCustodyTable.productId, productId),
+      eq(equipmentCustodyTable.status, "issued"),
+    ),
+    orderBy: [desc(equipmentCustodyTable.issuedAt)],
+  });
+
+  if (mode === "checkout") {
+    const profile = await db.query.assetProfilesTable.findFirst({
+      where: eq(assetProfilesTable.productId, productId),
+    });
+    if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status))
+      return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+    if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
+    const [row] = await db
+      .insert(equipmentCustodyTable)
+      .values({
+        productId,
+        staffId: actor.id,
+        quantity: 1,
+        issuedBy: actor.id,
+        notes: `إخراج${tag}`,
+      })
+      .returning();
+    await db
+      .insert(assetPassportsTable)
+      .values({ productId, lastStaffId: actor.id, lastLocation: "بعهدة موظف" })
+      .onConflictDoUpdate({
+        target: assetPassportsTable.productId,
+        set: { lastStaffId: actor.id, lastLocation: "بعهدة موظف", updatedAt: new Date() },
+      });
+    void addEntityTimeline({
+      entityType: "asset",
+      entityId: productId,
+      type: "checkout",
+      title: "📤 خروج الأصل",
+      body: `تصوير ميداني #${shootId}`,
+      actor,
+      metadata: { custodyId: row.id, entityType: "photography_shoot", entityId: shootId, eventId },
+    });
+    void logAdminActivity(req, "asset_checkout", "product", productId, {
+      entityType: "photography_shoot",
+      entityId: shootId,
+      custodyId: row.id,
+    });
+    return json({ ok: true, productId, name });
+  }
+
+  if (mode !== "return") return error("الإجراء غير مدعوم", 400);
+
+  // return: none | broken | lost — the damage paths double as maintenance reports.
+  const problem = String(payload?.problem ?? "none");
+  const note = nullableText(payload?.note);
+  const repairCost = Math.max(0, Number(payload?.cost ?? 0) || 0);
+  const cost = String(Number(product.costPrice ?? 0));
+
+  if (problem === "lost") {
+    if (payload?.managerApproval !== true)
+      return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
+    await db
+      .insert(assetProfilesTable)
+      .values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" })
+      .onConflictDoUpdate({
+        target: assetProfilesTable.productId,
+        set: { status: "lost", updatedAt: new Date() },
+      });
+    void addEntityTimeline({
+      entityType: "asset",
+      entityId: productId,
+      type: "lost",
+      title: "⚠️ فقدان أصل",
+      body: `${note ?? ""}${tag} · باعتماد المدير`,
+      actor,
+      metadata: { entityType: "photography_shoot", entityId: shootId },
+    });
+    await createNotification({
+      type: "asset_lost",
+      title: "فقدان أصل",
+      body: name,
+      entityType: "product",
+      entityId: productId,
+      href: "/admin/asset-movements",
+    });
+  } else if (problem === "broken") {
+    await db
+      .insert(assetProfilesTable)
+      .values({ productId, purchasePrice: cost, currentValue: cost, status: "maintenance" })
+      .onConflictDoUpdate({
+        target: assetProfilesTable.productId,
+        set: { status: "maintenance", updatedAt: new Date() },
+      });
+    if (repairCost > 0)
+      await db
+        .insert(assetPassportsTable)
+        .values({ productId, maintenanceCost: String(repairCost) })
+        .onConflictDoUpdate({
+          target: assetPassportsTable.productId,
+          set: {
+            maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`,
+            updatedAt: new Date(),
+          },
+        });
+    void addEntityTimeline({
+      entityType: "asset",
+      entityId: productId,
+      type: "damage",
+      title: "🛠️ تلف — صيانة",
+      body: [note, repairCost > 0 ? `تكلفة: ${repairCost}` : null].filter(Boolean).join(" · ") || null,
+      actor,
+      metadata: { entityType: "photography_shoot", entityId: shootId, repairCost },
+    });
+    await createNotification({
+      type: "asset_damage",
+      title: "تلف معدة تصوير",
+      body: name,
+      entityType: "product",
+      entityId: productId,
+      href: "/admin/asset-movements",
+    });
+  }
+
+  if (activeCustody)
+    await db
+      .update(equipmentCustodyTable)
+      .set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() })
+      .where(eq(equipmentCustodyTable.id, activeCustody.id));
+  if (problem === "none")
+    void addEntityTimeline({
+      entityType: "asset",
+      entityId: productId,
+      type: "return",
+      title: "📥 إرجاع الأصل",
+      body: `تصوير ميداني #${shootId}`,
+      actor,
+      metadata: { entityType: "photography_shoot", entityId: shootId },
+    });
+  void logAdminActivity(req, "asset_return", "product", productId, {
+    entityType: "photography_shoot",
+    entityId: shootId,
+    problem,
+  });
+  return json({ ok: true, productId, name });
+}
+
 async function photographyPendingAmount(orderId: number) {
   const [row] = await db
     .select({
@@ -37722,6 +38108,356 @@ async function handlePhotographyStaffPortal(
       );
       return json({ ok: true });
     }
+  }
+
+  // ── Field-shoot operations (lifecycle, checklist, crew, equipment) ──
+  if (resource === "shoots" || resource === "board") {
+    await ensurePhotographyShootTables();
+    const actorName = photographyStaffName(auth);
+
+    // Dashboard: stage counts + today's and upcoming work, scoped to the viewer.
+    if (resource === "board" && method === "GET") {
+      const events = own(
+        await db.query.photographyEventsTable.findMany({
+          orderBy: [desc(photographyEventsTable.eventDate)],
+          limit: 400,
+        }),
+      ).filter((row) => row.status !== "archived");
+      const shoots = await loadShootsForEvents(events.map((row) => row.id));
+      const today = new Date().toISOString().slice(0, 10);
+      const cards = events.map((event) =>
+        shootCardPayload(event, shoots.get(event.id) ?? null),
+      );
+      const stageCounts = Object.fromEntries(
+        PHOTOGRAPHY_SHOOT_STAGES.map((stage) => [
+          stage,
+          cards.filter((card) => card.stage === stage).length,
+        ]),
+      ) as Record<string, number>;
+      return json({
+        today,
+        stageCounts,
+        todayAssignments: cards.filter((card) => card.eventDate === today),
+        upcoming: cards
+          .filter((card) => card.eventDate > today && card.stage !== "completed")
+          .sort((a, b) => a.eventDate.localeCompare(b.eventDate))
+          .slice(0, 20),
+        active: cards.filter(
+          (card) =>
+            card.stage !== "assigned" &&
+            card.stage !== "completed" &&
+            card.stage !== "delivered",
+        ),
+        pendingUploads: cards.filter((card) => card.stage === "uploading").length,
+        pendingEditing: cards.filter((card) => card.stage === "editing").length,
+        completed: cards.filter((card) => card.stage === "completed").length,
+        total: cards.length,
+      });
+    }
+
+    if (resource !== "shoots") return error("الإجراء غير مدعوم", 405);
+
+    // List view — kanban/calendar/table all read from here.
+    if (method === "GET" && !ref) {
+      const params = req.nextUrl.searchParams;
+      const stageFilter = String(params.get("stage") ?? "").trim();
+      const search = String(params.get("search") ?? "").trim().toLowerCase();
+      const from = String(params.get("from") ?? "").trim();
+      const to = String(params.get("to") ?? "").trim();
+      let events = own(
+        await db.query.photographyEventsTable.findMany({
+          orderBy: [desc(photographyEventsTable.eventDate), desc(photographyEventsTable.id)],
+          limit: 400,
+        }),
+      ).filter((row) => row.status !== "archived");
+      if (from) events = events.filter((row) => row.eventDate >= from);
+      if (to) events = events.filter((row) => row.eventDate <= to);
+      if (search)
+        events = events.filter((row) =>
+          `${row.groomName} ${row.eventName ?? ""} ${row.location ?? ""}`
+            .toLowerCase()
+            .includes(search),
+        );
+      const shoots = await loadShootsForEvents(events.map((row) => row.id));
+      let cards = events.map((event) =>
+        shootCardPayload(event, shoots.get(event.id) ?? null),
+      );
+      if (stageFilter) cards = cards.filter((card) => card.stage === stageFilter);
+      return json({ data: cards });
+    }
+
+    if (!ref) return error("معرّف المناسبة مطلوب", 400);
+    const event = await getPhotographyEventByRef(ref);
+    if (!event) return error("المناسبة غير موجودة", 404);
+    if (!canAccessPhotographyEvent(auth, event))
+      return error("هذه المهمة غير مُسندة إليك", 403);
+
+    // The shoot row is created lazily so existing events keep working untouched
+    // until somebody actually starts field work on them.
+    const shoot = await ensureShootRow(event, auth.id);
+
+    if (method === "GET" && !action) {
+      const [timeline, crew, assets] = await Promise.all([
+        db.query.photographyShootEventsTable.findMany({
+          where: eq(photographyShootEventsTable.shootId, shoot.id),
+          orderBy: [desc(photographyShootEventsTable.createdAt), desc(photographyShootEventsTable.id)],
+          limit: 100,
+        }),
+        db.query.photographyShootCrewTable.findMany({
+          where: eq(photographyShootCrewTable.shootId, shoot.id),
+          orderBy: [desc(photographyShootCrewTable.isLead), asc(photographyShootCrewTable.id)],
+        }),
+        shootEquipmentPayload(shoot.id),
+      ]);
+      const orders = await db.query.photographyOrdersTable.findMany({
+        where: eq(photographyOrdersTable.eventId, event.id),
+        limit: 200,
+      });
+      const remaining = orders.reduce(
+        (sum, row) => sum + Math.max(0, Number(row.remainingAmount ?? 0)),
+        0,
+      );
+      return json({
+        ...shootCardPayload(event, shoot),
+        checklist: normalizeChecklist(shoot.checklist),
+        checklistComplete: checklistComplete(shoot.checklist),
+        checklistCompletedAt: shoot.checklistCompletedAt?.toISOString() ?? null,
+        notes: shoot.notes,
+        eventTime: shoot.eventTime,
+        milestones: {
+          departedAt: shoot.departedAt?.toISOString() ?? null,
+          arrivedAt: shoot.arrivedAt?.toISOString() ?? null,
+          shootingStartedAt: shoot.shootingStartedAt?.toISOString() ?? null,
+          shootingEndedAt: shoot.shootingEndedAt?.toISOString() ?? null,
+          deliveredAt: shoot.deliveredAt?.toISOString() ?? null,
+          completedAt: shoot.completedAt?.toISOString() ?? null,
+        },
+        remainingPayment: remaining,
+        orderCount: orders.length,
+        crew: crew.map((row) => ({
+          id: row.id,
+          staffId: row.staffId,
+          staffName: row.staffName,
+          role: row.role,
+          isLead: row.isLead,
+        })),
+        equipment: assets,
+        timeline: timeline.map((row) => ({
+          id: row.id,
+          type: row.type,
+          staffName: row.staffName,
+          fromStage: row.fromStage,
+          toStage: row.toStage,
+          note: row.note,
+          createdAt: row.createdAt.toISOString(),
+        })),
+      });
+    }
+
+    // Venue / coordinates / time / notes.
+    if (method === "PATCH" && !action) {
+      const payload = await body(req);
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (payload?.venue !== undefined) patch.venue = nullableText(payload.venue);
+      if (payload?.notes !== undefined) patch.notes = nullableText(payload.notes);
+      if (payload?.eventTime !== undefined)
+        patch.eventTime = nullableText(payload.eventTime)?.slice(0, 10) ?? null;
+      if (payload?.gpsLat !== undefined) {
+        const lat = parseCoordinate(payload.gpsLat, "lat");
+        if (payload.gpsLat !== null && payload.gpsLat !== "" && lat === null)
+          return error("خط العرض غير صالح", 400);
+        patch.gpsLat = lat === null ? null : String(lat);
+      }
+      if (payload?.gpsLng !== undefined) {
+        const lng = parseCoordinate(payload.gpsLng, "lng");
+        if (payload.gpsLng !== null && payload.gpsLng !== "" && lng === null)
+          return error("خط الطول غير صالح", 400);
+        patch.gpsLng = lng === null ? null : String(lng);
+      }
+      const [updated] = await db
+        .update(photographyShootsTable)
+        .set(patch)
+        .where(eq(photographyShootsTable.id, shoot.id))
+        .returning();
+      return json(shootCardPayload(event, updated));
+    }
+
+    if (action === "checklist" && method === "POST") {
+      const payload = await body(req);
+      const incoming = normalizeChecklist(payload?.checklist);
+      const wasComplete = checklistComplete(shoot.checklist);
+      const nowComplete = checklistComplete(incoming);
+      const [updated] = await db
+        .update(photographyShootsTable)
+        .set({
+          checklist: incoming,
+          // Completion is stamped once and cleared if an item is later unticked,
+          // so the gate always reflects the current state of the kit.
+          checklistCompletedAt: nowComplete ? (shoot.checklistCompletedAt ?? new Date()) : null,
+          checklistCompletedBy: nowComplete ? auth.id : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(photographyShootsTable.id, shoot.id))
+        .returning();
+      if (nowComplete && !wasComplete) {
+        await db.insert(photographyShootEventsTable).values({
+          shootId: shoot.id,
+          staffId: auth.id,
+          staffName: actorName,
+          type: "checklist_completed",
+          note: "اكتملت قائمة ما قبل التصوير",
+        });
+        void addEntityTimeline({
+          entityType: "photography_event",
+          entityId: event.id,
+          type: "checklist_completed",
+          title: "✅ اكتملت قائمة ما قبل التصوير",
+          body: event.groomName,
+          actor: { id: auth.id, name: actorName },
+          metadata: { shootId: shoot.id },
+        });
+      }
+      return json({
+        ok: true,
+        checklist: normalizeChecklist(updated.checklist),
+        checklistComplete: nowComplete,
+        checklistCompletedAt: updated.checklistCompletedAt?.toISOString() ?? null,
+      });
+    }
+
+    if (action === "stage" && method === "POST") {
+      const payload = await body(req);
+      const to = String(payload?.stage ?? "").trim();
+      const decision = evaluateTransition({
+        from: shoot.stage,
+        to,
+        checklist: shoot.checklist,
+        isManager: manager,
+      });
+      if (!decision.ok) return error(decision.reason, decision.status);
+      const now = new Date();
+      const note = nullableText(payload?.note);
+      const lat = parseCoordinate(payload?.lat, "lat");
+      const lng = parseCoordinate(payload?.lng, "lng");
+      const patch: Record<string, unknown> = {
+        stage: to,
+        updatedAt: now,
+        ...stageTimestamps(to as PhotographyShootStage, now),
+      };
+      // Arrival check-in records where the photographer actually was.
+      if (to === "arrived" && lat !== null && lng !== null) {
+        patch.arrivedLat = String(lat);
+        patch.arrivedLng = String(lng);
+      }
+      const [updated] = await db
+        .update(photographyShootsTable)
+        .set(patch)
+        .where(eq(photographyShootsTable.id, shoot.id))
+        .returning();
+      await db.insert(photographyShootEventsTable).values({
+        shootId: shoot.id,
+        staffId: auth.id,
+        staffName: actorName,
+        type: decision.backward ? "stage_reverted" : "stage_changed",
+        fromStage: shoot.stage,
+        toStage: to,
+        note,
+        lat: lat === null ? null : String(lat),
+        lng: lng === null ? null : String(lng),
+      });
+      void addEntityTimeline({
+        entityType: "photography_event",
+        entityId: event.id,
+        type: "shoot_stage",
+        title: `📸 ${SHOOT_STAGE_LABELS[to as PhotographyShootStage]}`,
+        body: [event.groomName, note].filter(Boolean).join(" · "),
+        actor: { id: auth.id, name: actorName },
+        metadata: { shootId: shoot.id, from: shoot.stage, to },
+      });
+      void logAdminActivity(req, "photography_shoot_stage", "photography_event", event.id, {
+        shootId: shoot.id,
+        from: shoot.stage,
+        to,
+        backward: decision.backward,
+      });
+      // Managers get told when a job lands in a state that needs their attention.
+      if (to === "ready_for_review") {
+        await createNotification({
+          type: "photography_ready_review",
+          title: "مهمة تصوير جاهزة للمراجعة",
+          body: event.groomName,
+          entityType: "photography_event",
+          entityId: event.id,
+          href: `/admin/photography-operations?event=${event.id}`,
+        });
+      }
+      return json(shootCardPayload(event, updated));
+    }
+
+    if (action === "crew" && method === "POST") {
+      if (!manager) return error("تعديل الطاقم يحتاج صلاحية مدير", 403);
+      const payload = await body(req);
+      const mode = String(payload?.mode ?? "add");
+      const staffId = optionalPositiveId(payload?.staffId);
+      if (!staffId) return error("معرّف الموظف مطلوب", 400);
+      if (mode === "remove") {
+        await db
+          .delete(photographyShootCrewTable)
+          .where(
+            and(
+              eq(photographyShootCrewTable.shootId, shoot.id),
+              eq(photographyShootCrewTable.staffId, staffId),
+            ),
+          );
+        return json({ ok: true, staffId });
+      }
+      const member = await db.query.staffTable.findFirst({
+        where: and(eq(staffTable.id, staffId), eq(staffTable.isActive, true)),
+      });
+      if (!member) return error("الموظف غير موجود أو غير نشط", 404);
+      await db
+        .insert(photographyShootCrewTable)
+        .values({
+          shootId: shoot.id,
+          staffId,
+          staffName: member.fullName || member.username,
+          role: String(payload?.role ?? "photographer").slice(0, 30),
+          isLead: payload?.isLead === true,
+        })
+        .onConflictDoNothing();
+      return json({ ok: true, staffId });
+    }
+
+    // Equipment reuses the shared asset_links + custody engine, scoped to the shoot.
+    if (action === "assets") {
+      await ensureAssetLinksTable();
+      if (method === "GET") return json({ assets: await shootEquipmentPayload(shoot.id) });
+      if (method === "POST") {
+        const payload = await body(req);
+        const mode = String(payload?.mode ?? "link");
+        let productId = optionalPositiveId(payload?.productId) ?? 0;
+        if (!productId && payload?.code)
+          productId = await resolveAssetProductId(String(payload.code));
+        if (!productId) return error("الأصل مطلوب", 400);
+        const product = await db.query.productsTable.findFirst({
+          where: eq(productsTable.id, productId),
+        });
+        if (!product) return error("الأصل غير موجود", 404);
+        const result = await runShootAssetOperation({
+          req,
+          mode,
+          productId,
+          product,
+          shootId: shoot.id,
+          eventId: event.id,
+          actor: { id: auth.id, name: actorName },
+          payload,
+        });
+        return result;
+      }
+    }
+
+    return error("الإجراء غير مدعوم", 405);
   }
 
   // Asset picker for the order's asset-linking section.
