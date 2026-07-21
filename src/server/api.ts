@@ -97,6 +97,9 @@ import {
   photographyMemoryCardsTable,
   photographyCardAssignmentsTable,
   photographyMediaBatchesTable,
+  photographyGalleriesTable,
+  photographyGalleryItemsTable,
+  photographyGalleryEventsTable,
   PHOTOGRAPHY_SHOOT_STAGES,
   PHOTOGRAPHY_EDIT_STATUSES,
   type PhotographyShootStage,
@@ -311,6 +314,13 @@ import {
   summarizeMedia,
   turnaroundHours,
 } from "@/server/photography-post";
+import {
+  deriveOperationalAlerts,
+  evaluateGalleryAccess,
+  galleryShareUrl,
+  hashGalleryPassword,
+  newGallerySlug,
+} from "@/server/photography-gallery";
 import {
   addEventBrainFeedback,
   getEventBrainDashboard,
@@ -686,6 +696,7 @@ let koshaStaffTablesPromise: Promise<void> | null = null;
 let photographyStaffTablesPromise: Promise<void> | null = null;
 let photographyShootTablesPromise: Promise<void> | null = null;
 let photographyPostTablesPromise: Promise<void> | null = null;
+let photographyGalleryTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
 let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
@@ -3037,6 +3048,93 @@ async function runSmartNotificationsSweep() {
     }
   }
 
+  // ── Photography operations ──
+  // Derived entirely from state the system already holds. Anything needing telemetry the
+  // platform does not have (battery level, weather, live position) is deliberately absent.
+  try {
+    await ensurePhotographyPostTables();
+    const shootRows = await db.query.photographyShootsTable.findMany({ limit: 300 });
+    if (shootRows.length) {
+      const eventRows = await db.query.photographyEventsTable.findMany({
+        where: inArray(
+          photographyEventsTable.id,
+          shootRows.map((row) => row.eventId),
+        ),
+      });
+      const eventById = new Map(eventRows.map((row) => [row.id, row]));
+      // One grouped query beats a per-shoot lookup for custody counts.
+      const custodyRows: any[] =
+        ((await db.execute(sql`
+          select l.entity_id as shoot_id, count(*)::int as count
+          from "asset_links" l
+          join "equipment_custody" c on c.product_id = l.product_id and c.status = 'issued'
+          where l.entity_type = 'photography_shoot'
+          group by l.entity_id
+        `)) as any).rows ?? [];
+      const custodyByShoot = new Map(
+        custodyRows.map((row) => [Number(row.shoot_id), Number(row.count)]),
+      );
+      const [cardRows, projectRows] = await Promise.all([
+        db.query.photographyMemoryCardsTable.findMany({ limit: 300 }),
+        db.query.photographyEditProjectsTable.findMany({ limit: 300 }),
+      ]);
+      const shootById = new Map(shootRows.map((row) => [row.id, row]));
+
+      const alerts = deriveOperationalAlerts({
+        now: new Date(),
+        shoots: shootRows.flatMap((shoot) => {
+          const event = eventById.get(shoot.eventId);
+          if (!event) return [];
+          return [{
+            id: shoot.id,
+            eventId: shoot.eventId,
+            stage: shoot.stage,
+            eventDate: event.eventDate,
+            eventTime: shoot.eventTime,
+            customerName: event.groomName,
+            clientToken: event.clientToken,
+            checkedOutAssets: custodyByShoot.get(shoot.id) ?? 0,
+          }];
+        }),
+        cards: cardRows.map((card) => ({
+          id: card.id,
+          label: card.label,
+          status: card.status,
+          shootId: null,
+        })),
+        editProjects: projectRows.flatMap((project) => {
+          const shoot = shootById.get(project.shootId);
+          const event = shoot ? eventById.get(shoot.eventId) : null;
+          return [{
+            id: project.id,
+            shootId: project.shootId,
+            status: project.status,
+            dueDate: project.dueDate,
+            customerName: event?.groomName ?? `#${project.id}`,
+            clientToken: event?.clientToken ?? null,
+          }];
+        }),
+      });
+
+      for (const alert of alerts) {
+        await add({
+          type: alert.type,
+          title: alert.title,
+          body: alert.body,
+          entityType: alert.entityType,
+          entityId: alert.entityId,
+          href: alert.href,
+          metadata: { severity: alert.severity },
+        });
+      }
+    }
+  } catch (err) {
+    // A photography-specific failure must not abort the rest of the sweep.
+    console.warn("[smart-notifications] photography alerts failed", {
+      error: err instanceof Error ? err.message : "unknown",
+    });
+  }
+
   // ── Expiring documents ──
   // One alert per document per threshold; createSmartAlert dedupes on
   // (type, entityType, entityId). The body deliberately carries no document
@@ -3407,6 +3505,11 @@ async function upgradeStoredMedia(
         .update(galleryItemsTable)
         .set({ mediaUrl: stored })
         .where(eq(galleryItemsTable.id, id));
+    } else if (kind === "photography-gallery" && typeof id === "number") {
+      await db
+        .update(photographyGalleryItemsTable)
+        .set({ previewImage: stored })
+        .where(eq(photographyGalleryItemsTable.id, id));
     } else if (kind === "kosha" && typeof id === "number") {
       await db
         .update(koshasTable)
@@ -7422,6 +7525,64 @@ async function ensurePhotographyPostTables(): Promise<void> {
       });
   }
   await photographyPostTablesPromise;
+}
+
+/** Client-gallery tables. Depends on photography_shoots. */
+async function ensurePhotographyGalleryTables(): Promise<void> {
+  await ensurePhotographyShootTables();
+  if (!photographyGalleryTablesPromise) {
+    photographyGalleryTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "photography_galleries" (
+        "id" serial primary key,
+        "shoot_id" integer not null unique references "photography_shoots" ("id") on delete cascade,
+        "slug" varchar(32) not null unique,
+        "title" text not null default '',
+        "password_hash" text,
+        "password_salt" text,
+        "expires_at" timestamp,
+        "is_active" boolean not null default true,
+        "view_count" integer not null default 0,
+        "download_count" integer not null default 0,
+        "last_viewed_at" timestamp,
+        "notes" text,
+        "created_by" integer references "staff" ("id") on delete set null,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "photography_gallery_items" (
+        "id" serial primary key,
+        "gallery_id" integer not null references "photography_galleries" ("id") on delete cascade,
+        "title" text,
+        "preview_image" text,
+        "download_url" text,
+        "kind" varchar(20) not null default 'photo',
+        "sort_order" integer not null default 0,
+        "favorite_count" integer not null default 0,
+        "download_count" integer not null default 0,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "photography_gallery_events" (
+        "id" serial primary key,
+        "gallery_id" integer not null references "photography_galleries" ("id") on delete cascade,
+        "item_id" integer references "photography_gallery_items" ("id") on delete cascade,
+        "type" varchar(20) not null,
+        "visitor_token" varchar(64),
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "photography_galleries_active_idx" on "photography_galleries" ("is_active", "expires_at");
+      create index if not exists "photography_gallery_items_gallery_idx" on "photography_gallery_items" ("gallery_id", "sort_order");
+      create index if not exists "photography_gallery_events_gallery_idx" on "photography_gallery_events" ("gallery_id", "type", "created_at");
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        photographyGalleryTablesPromise = null;
+        throw err;
+      });
+  }
+  await photographyGalleryTablesPromise;
 }
 
 async function ensureStoreCategoryColumns(): Promise<void> {
@@ -12037,6 +12198,19 @@ async function handleMedia(req: NextRequest, parts: string[]) {
         id,
         item?.mainImage ?? item?.main_image,
       ),
+    );
+  }
+
+  // Client-gallery previews. Public on purpose: the gallery slug guards the listing, and a
+  // preview id is useless without it.
+  if (kind === "photography-gallery") {
+    await ensurePhotographyGalleryTables();
+    const item = (await db.query.photographyGalleryItemsTable.findFirst({
+      where: eq(photographyGalleryItemsTable.id, id),
+    })) as any;
+    return mediaResponseFromValue(
+      req,
+      await upgradeStoredMedia("photography-gallery", id, item?.previewImage ?? item?.preview_image),
     );
   }
 
@@ -38773,6 +38947,158 @@ async function handlePhotographyStaffPortal(
     return error("الإجراء غير مدعوم", 405);
   }
 
+  // ── Client galleries (staff side; the public side lives at root "gallery") ──
+  if (resource === "galleries") {
+    await ensurePhotographyGalleryTables();
+    if (!ref) return error("معرّف المهمة مطلوب", 400);
+    const eventRow = await getPhotographyEventByRef(ref);
+    if (!eventRow) return error("المناسبة غير موجودة", 404);
+    if (!canAccessPhotographyEvent(auth, eventRow))
+      return error("هذه المهمة غير مُسندة إليك", 403);
+    const shootRow = await ensureShootRow(eventRow, auth.id);
+
+    const existing = await db.query.photographyGalleriesTable.findFirst({
+      where: eq(photographyGalleriesTable.shootId, shootRow.id),
+    });
+
+    if (method === "GET") {
+      if (!existing) return json({ gallery: null });
+      const [items, stats] = await Promise.all([
+        db.query.photographyGalleryItemsTable.findMany({
+          where: eq(photographyGalleryItemsTable.galleryId, existing.id),
+          orderBy: [asc(photographyGalleryItemsTable.sortOrder), asc(photographyGalleryItemsTable.id)],
+        }),
+        db.execute(
+          sql`select type, count(*)::int as count from photography_gallery_events where gallery_id = ${existing.id} group by type`,
+        ),
+      ]);
+      const counts = Object.fromEntries(
+        (((stats as any).rows ?? []) as any[]).map((row) => [String(row.type), Number(row.count)]),
+      );
+      return json({
+        gallery: {
+          id: existing.id,
+          slug: existing.slug,
+          title: existing.title,
+          shareUrl: galleryShareUrl(baseUrlFromReq(req), existing.slug),
+          hasPassword: Boolean(existing.passwordHash),
+          expiresAt: existing.expiresAt?.toISOString() ?? null,
+          isActive: existing.isActive,
+          viewCount: existing.viewCount,
+          downloadCount: existing.downloadCount,
+          lastViewedAt: existing.lastViewedAt?.toISOString() ?? null,
+          eventCounts: counts,
+          items: items.map((item) => ({
+            id: item.id,
+            title: item.title,
+            kind: item.kind,
+            previewImage: publicMediaValue("photography-gallery", item, item.previewImage),
+            downloadUrl: item.downloadUrl,
+            favoriteCount: item.favoriteCount,
+            downloadCount: item.downloadCount,
+          })),
+        },
+      });
+    }
+
+    if (method === "POST" && !action) {
+      const payload = await body(req);
+      const password = String(payload?.password ?? "").trim();
+      const credentials = password ? hashGalleryPassword(password) : null;
+      const expiresAt = payload?.expiresAt ? new Date(String(payload.expiresAt)) : null;
+      if (expiresAt && !Number.isFinite(expiresAt.getTime()))
+        return error("تاريخ انتهاء الصلاحية غير صالح", 400);
+      const title = String(payload?.title ?? eventRow.groomName).slice(0, 200);
+
+      if (existing) {
+        await db
+          .update(photographyGalleriesTable)
+          .set({
+            title,
+            // An omitted password leaves the existing one alone; an explicit empty
+            // string clears it, which is the only way to remove protection.
+            ...(payload?.password === undefined
+              ? {}
+              : { passwordHash: credentials?.hash ?? null, passwordSalt: credentials?.salt ?? null }),
+            ...(payload?.expiresAt === undefined ? {} : { expiresAt }),
+            ...(payload?.isActive === undefined ? {} : { isActive: payload.isActive === true }),
+            updatedAt: new Date(),
+          })
+          .where(eq(photographyGalleriesTable.id, existing.id));
+        return json({ ok: true, id: existing.id, slug: existing.slug });
+      }
+
+      const [created] = await db
+        .insert(photographyGalleriesTable)
+        .values({
+          shootId: shootRow.id,
+          slug: newGallerySlug(),
+          title,
+          passwordHash: credentials?.hash ?? null,
+          passwordSalt: credentials?.salt ?? null,
+          expiresAt,
+          createdBy: auth.id,
+        })
+        .returning();
+      void addEntityTimeline({
+        entityType: "photography_event",
+        entityId: eventRow.id,
+        type: "gallery_created",
+        title: "🖼️ إنشاء معرض العميل",
+        body: eventRow.groomName,
+        actor: { id: auth.id, name: photographyStaffName(auth) },
+        metadata: { galleryId: created.id, shootId: shootRow.id },
+      });
+      void logAdminActivity(req, "photography_gallery_created", "photography_event", eventRow.id, {
+        galleryId: created.id,
+      });
+      return json({
+        ok: true,
+        id: created.id,
+        slug: created.slug,
+        shareUrl: galleryShareUrl(baseUrlFromReq(req), created.slug),
+      });
+    }
+
+    if (method === "POST" && action === "items") {
+      if (!existing) return error("أنشئ المعرض أولاً", 409);
+      const payload = await body(req);
+      const rawItems = Array.isArray(payload?.items) ? payload.items : [payload];
+      const values = rawItems
+        .map((item: any, index: number) => ({
+          galleryId: existing.id,
+          title: nullableText(item?.title),
+          previewImage: cleanMediaInput(item?.previewImage) || null,
+          downloadUrl: nullableText(item?.downloadUrl),
+          kind: String(item?.kind ?? "photo").slice(0, 20),
+          sortOrder: parseCount(item?.sortOrder ?? index, 10_000),
+        }))
+        .filter((item: { previewImage: string | null; downloadUrl: string | null }) =>
+          Boolean(item.previewImage || item.downloadUrl),
+        );
+      if (!values.length) return error("أضف صورة معاينة أو رابط تحميل", 400);
+      await db.insert(photographyGalleryItemsTable).values(values);
+      return json({ ok: true, added: values.length });
+    }
+
+    if (method === "DELETE" && action === "items") {
+      if (!existing) return error("المعرض غير موجود", 404);
+      const itemId = optionalPositiveId(parts[5]);
+      if (!itemId) return error("معرّف العنصر مطلوب", 400);
+      await db
+        .delete(photographyGalleryItemsTable)
+        .where(
+          and(
+            eq(photographyGalleryItemsTable.id, itemId),
+            eq(photographyGalleryItemsTable.galleryId, existing.id),
+          ),
+        );
+      return json({ ok: true });
+    }
+
+    return error("الإجراء غير مدعوم", 405);
+  }
+
   // ── Post-production: edit room, memory cards, media ledger, reports ──
   if (resource === "editing" || resource === "cards" || resource === "media" || resource === "ops-reports") {
     await ensurePhotographyPostTables();
@@ -43799,6 +44125,144 @@ function invitationPublicView(row: any, guestName: string | null) {
   };
 }
 
+/**
+ * Public client gallery (root = "gallery"). Unauthenticated: the long random slug is the
+ * primary control, with an optional password as a second factor. A refusal never carries
+ * item data, so probing a link reveals nothing beyond its title.
+ */
+async function handleClientGallery(req: NextRequest, parts: string[]): Promise<NextResponse> {
+  await ensurePhotographyGalleryTables();
+  const slug = parts[1] ? String(parts[1]).slice(0, 32) : "";
+  const action = parts[2];
+  if (!slug) return error("رابط غير صالح", 404);
+
+  const gallery = await db.query.photographyGalleriesTable.findFirst({
+    where: eq(photographyGalleriesTable.slug, slug),
+  });
+  if (!gallery) return error("المعرض غير موجود", 404);
+
+  const payload = req.method === "POST" ? await body(req) : null;
+  const supplied =
+    String(payload?.password ?? req.nextUrl.searchParams.get("password") ?? "").trim() || null;
+  const visitorToken =
+    String(payload?.visitorToken ?? req.nextUrl.searchParams.get("v") ?? "").slice(0, 64) || null;
+
+  const access = evaluateGalleryAccess({
+    isActive: gallery.isActive,
+    expiresAt: gallery.expiresAt,
+    passwordHash: gallery.passwordHash,
+    passwordSalt: gallery.passwordSalt,
+    suppliedPassword: supplied,
+  });
+
+  if (!access.ok) {
+    // Failed unlocks are recorded so staff can see a link being probed.
+    if (supplied) {
+      await db.insert(photographyGalleryEventsTable).values({
+        galleryId: gallery.id,
+        type: "unlock_failed",
+        visitorToken,
+      });
+    }
+    return json(
+      { error: access.reason, needsPassword: access.needsPassword, title: gallery.title },
+      access.status,
+    );
+  }
+
+  if (req.method === "GET" || (req.method === "POST" && !action)) {
+    const items = await db.query.photographyGalleryItemsTable.findMany({
+      where: eq(photographyGalleryItemsTable.galleryId, gallery.id),
+      orderBy: [asc(photographyGalleryItemsTable.sortOrder), asc(photographyGalleryItemsTable.id)],
+    });
+    await db
+      .update(photographyGalleriesTable)
+      .set({ viewCount: sql`${photographyGalleriesTable.viewCount} + 1`, lastViewedAt: new Date() })
+      .where(eq(photographyGalleriesTable.id, gallery.id));
+    await db
+      .insert(photographyGalleryEventsTable)
+      .values({ galleryId: gallery.id, type: "view", visitorToken });
+    return json({
+      title: gallery.title,
+      expiresAt: gallery.expiresAt?.toISOString() ?? null,
+      items: items.map((item) => ({
+        id: item.id,
+        title: item.title,
+        kind: item.kind,
+        previewImage: publicMediaValue("photography-gallery", item, item.previewImage),
+        downloadUrl: item.downloadUrl,
+        favoriteCount: item.favoriteCount,
+      })),
+    });
+  }
+
+  if (
+    req.method === "POST" &&
+    (action === "download" || action === "favorite" || action === "unfavorite")
+  ) {
+    const itemId = optionalPositiveId(payload?.itemId);
+    if (!itemId) return error("معرّف الصورة مطلوب", 400);
+    const item = await db.query.photographyGalleryItemsTable.findFirst({
+      where: and(
+        eq(photographyGalleryItemsTable.id, itemId),
+        eq(photographyGalleryItemsTable.galleryId, gallery.id),
+      ),
+    });
+    if (!item) return error("الصورة غير موجودة", 404);
+
+    if (action === "download") {
+      await db
+        .update(photographyGalleryItemsTable)
+        .set({ downloadCount: sql`${photographyGalleryItemsTable.downloadCount} + 1` })
+        .where(eq(photographyGalleryItemsTable.id, itemId));
+      await db
+        .update(photographyGalleriesTable)
+        .set({ downloadCount: sql`${photographyGalleriesTable.downloadCount} + 1` })
+        .where(eq(photographyGalleriesTable.id, gallery.id));
+      await db
+        .insert(photographyGalleryEventsTable)
+        .values({ galleryId: gallery.id, itemId, type: "download", visitorToken });
+      return json({ ok: true });
+    }
+
+    // Favourites are per-visitor, so the counter only moves on a real state change.
+    const already = visitorToken
+      ? await db.query.photographyGalleryEventsTable.findFirst({
+          where: and(
+            eq(photographyGalleryEventsTable.galleryId, gallery.id),
+            eq(photographyGalleryEventsTable.itemId, itemId),
+            eq(photographyGalleryEventsTable.type, "favorite"),
+            eq(photographyGalleryEventsTable.visitorToken, visitorToken),
+          ),
+        })
+      : null;
+    const wantsFavorite = action === "favorite";
+    if (wantsFavorite === Boolean(already))
+      return json({ ok: true, favoriteCount: item.favoriteCount });
+
+    await db
+      .update(photographyGalleryItemsTable)
+      .set({
+        favoriteCount: wantsFavorite
+          ? sql`${photographyGalleryItemsTable.favoriteCount} + 1`
+          : sql`greatest(0, ${photographyGalleryItemsTable.favoriteCount} - 1)`,
+      })
+      .where(eq(photographyGalleryItemsTable.id, itemId));
+    if (wantsFavorite) {
+      await db
+        .insert(photographyGalleryEventsTable)
+        .values({ galleryId: gallery.id, itemId, type: "favorite", visitorToken });
+    } else if (already) {
+      await db
+        .delete(photographyGalleryEventsTable)
+        .where(eq(photographyGalleryEventsTable.id, already.id));
+    }
+    return json({ ok: true });
+  }
+
+  return error("الإجراء غير مدعوم", 405);
+}
+
 // Public invitation page + guest RSVP (root = "invite"). Secure slug only.
 async function handleInvite(req: NextRequest, parts: string[]): Promise<NextResponse> {
   await ensureInvitationTables();
@@ -43980,6 +44444,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         ? await handleAuth(req, parts)
         : root === "invite"
         ? await handleInvite(req, parts)
+        : // Distinct from root "gallery", which is the public marketing gallery.
+        root === "photo-gallery"
+        ? await handleClientGallery(req, parts)
         : root === "media"
           ? await handleMedia(req, parts)
           : root === "settings"

@@ -33,6 +33,7 @@ export * from "./kosha-staff";
 export * from "./photography-staff";
 export * from "./photography-shoots";
 export * from "./photography-post";
+export * from "./photography-gallery";
 export * from "./master-cash-box";
 export * from "./enterprise";
 export * from "./desktop";

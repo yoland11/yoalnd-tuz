@@ -11,6 +11,7 @@ import { apiErrorMessage, type AdminMe } from "@/views/admin/_lib";
 import { formatCurrency } from "@/lib/money";
 import { LiveScanner } from "../live-scanner";
 import { ShootMediaPanel } from "./post";
+import { ShootGalleryPanel } from "./gallery";
 import {
   CHECKLIST_ITEMS, SHOOT_STAGES, SHOOT_STAGE_LABEL, nextStage, readPositionOnce, shootApi,
   type PhotographyAsset, type ShootBoard, type ShootCard, type ShootDetail, type ShootStage,
@@ -368,6 +369,8 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
       <ShootEquipment shootRef={shootRef} equipment={data.equipment} onChanged={load} />
 
       <ShootMediaPanel shootRef={shootRef} />
+
+      <ShootGalleryPanel shootRef={shootRef} />
 
       {/* Crew */}
       {data.crew.length ? (

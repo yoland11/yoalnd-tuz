@@ -427,6 +427,38 @@ export const postApi = {
   },
 };
 
+// ── Client galleries ─────────────────────────────────────────────────────────
+
+export type GalleryItem = {
+  id: number; title: string | null; kind: string;
+  previewImage: string | null; downloadUrl: string | null;
+  favoriteCount: number; downloadCount?: number;
+};
+
+export type GalleryAdmin = {
+  id: number; slug: string; title: string; shareUrl: string;
+  hasPassword: boolean; expiresAt: string | null; isActive: boolean;
+  viewCount: number; downloadCount: number; lastViewedAt: string | null;
+  eventCounts: Record<string, number>;
+  items: GalleryItem[];
+};
+
+export const galleryApi = {
+  get: (shootRef: string | number) =>
+    adminFetch<{ gallery: GalleryAdmin | null }>(`${base}/galleries/${ref(shootRef)}`),
+  save: (shootRef: string | number, payload: Record<string, unknown>) =>
+    adminFetch<{ ok: boolean; id: number; slug: string; shareUrl?: string }>(
+      `${base}/galleries/${ref(shootRef)}`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  addItems: (shootRef: string | number, items: Array<Record<string, unknown>>) =>
+    adminFetch<{ ok: boolean; added: number }>(`${base}/galleries/${ref(shootRef)}/items`, {
+      method: "POST", body: JSON.stringify({ items }),
+    }),
+  removeItem: (shootRef: string | number, itemId: number) =>
+    adminFetch<{ ok: boolean }>(`${base}/galleries/${ref(shootRef)}/items/${itemId}`, { method: "DELETE" }),
+};
+
 /** Reads the device position once, for the arrival check-in. Never throws. */
 export function readPositionOnce(timeoutMs = 8000): Promise<{ lat: number; lng: number } | null> {
   if (typeof navigator === "undefined" || !navigator.geolocation) return Promise.resolve(null);

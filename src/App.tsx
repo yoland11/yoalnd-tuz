@@ -34,6 +34,7 @@ const ProductDetail = lazy(() => import("@/views/store/id"));
 const Track = lazy(() => import("@/views/track"));
 const KoshaTracking = lazy(() => import("@/views/kosha-tracking"));
 const InvitePage = lazy(() => import("@/views/invite"));
+const ClientGalleryPage = lazy(() => import("@/views/client-gallery"));
 const Checkout = lazy(() => import("@/views/checkout"));
 const Gallery = lazy(() => import("@/views/gallery"));
 const Favorites = lazy(() => import("@/views/favorites"));
@@ -247,6 +248,12 @@ function Router() {
               <Route path="/invite/:slug">
                 <Suspense fallback={<PageSpinner />}>
                   <InvitePage />
+                </Suspense>
+              </Route>
+              {/* Client delivery gallery — distinct from the marketing /gallery page. */}
+              <Route path="/gallery/:slug">
+                <Suspense fallback={<PageSpinner />}>
+                  <ClientGalleryPage />
                 </Suspense>
               </Route>
               <Route path="/gallery">
