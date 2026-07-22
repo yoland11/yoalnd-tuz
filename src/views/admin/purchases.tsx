@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useDeferredValue, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, Save, RefreshCw, X,
@@ -62,6 +62,8 @@ export default function PurchasesPage() {
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
+  const [listSearch, setListSearch] = useState("");
+  const deferredListSearch = useDeferredValue(listSearch.trim());
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
@@ -83,9 +85,9 @@ export default function PurchasesPage() {
   });
 
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo],
+    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo, deferredListSearch],
     queryFn: () => adminFetch<{ data: PurchaseInvoice[]; total: number }>(
-      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}`
+      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${deferredListSearch ? `&search=${encodeURIComponent(deferredListSearch)}` : ""}`
     ),
     enabled: listMode,
   });
@@ -276,6 +278,7 @@ export default function PurchasesPage() {
       page={listPage} onPage={setListPage}
       from={listFrom} to={listTo}
       onFrom={setListFrom} onTo={setListTo}
+      search={listSearch} onSearch={setListSearch}
       onBack={() => setListMode(false)}
       onEdit={editInvoice} onPrint={printInvoice} onDelete={deleteInvoice}
     />;
@@ -602,10 +605,11 @@ export default function PurchasesPage() {
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, onBack, onEdit, onPrint, onDelete,
+  invoices, total, page, onPage, from, to, onFrom, onTo, search, onSearch, onBack, onEdit, onPrint, onDelete,
 }: {
   invoices: PurchaseInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
+  search: string; onSearch: (v: string) => void;
   onBack: () => void; onEdit: (inv: PurchaseInvoice) => void; onPrint: (inv: PurchaseInvoice) => void; onDelete: (inv: PurchaseInvoice) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
@@ -621,6 +625,19 @@ function PurchaseListView({
         </div>
       </div>
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
+        <div className="min-w-[280px] flex-1">
+          <label className="text-xs text-muted-foreground mb-1 block">بحث</label>
+          <div className="relative">
+            <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={search}
+              onChange={e => { onSearch(e.target.value); onPage(1); }}
+              placeholder="ابحث برقم الفاتورة، اسم المورد، الهاتف..."
+              className="w-full bg-background border border-border/40 rounded-lg py-2 ps-3 pe-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+        </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
           <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
@@ -648,7 +665,7 @@ function PurchaseListView({
             </thead>
             <tbody className="divide-y divide-border/20">
               {invoices.length === 0
-                ? <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
+                ? <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}</td>

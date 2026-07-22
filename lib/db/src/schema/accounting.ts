@@ -46,6 +46,10 @@ export const receiptVoucherAllocationsTable = pgTable("receipt_voucher_allocatio
   sourceId: integer("source_id"),
   amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
   postedAt: timestamp("posted_at"),
+  reversedAt: timestamp("reversed_at"),
+  reversedBy: integer("reversed_by").references(() => staffTable.id, { onDelete: "set null" }),
+  reversalReason: text("reversal_reason"),
+  reversalTransactionId: integer("reversal_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

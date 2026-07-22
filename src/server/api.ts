@@ -33567,9 +33567,23 @@ async function ensureSalesInvoicesTables() {
         ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES staff(id),
         ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT,
         ADD COLUMN IF NOT EXISTS cancellation_reason TEXT,
+        ADD COLUMN IF NOT EXISTS cancelled_original_paid_amount NUMERIC(14,2),
+        ADD COLUMN IF NOT EXISTS cancelled_original_remaining_amount NUMERIC(14,2),
+        ADD COLUMN IF NOT EXISTS reversal_references JSONB NOT NULL DEFAULT '{}'::jsonb,
         ADD COLUMN IF NOT EXISTS reversal_completed_at TIMESTAMP,
         ADD COLUMN IF NOT EXISTS inventory_reversed BOOLEAN NOT NULL DEFAULT false,
         ADD COLUMN IF NOT EXISTS finance_reversed BOOLEAN NOT NULL DEFAULT false;
+      DO $receivable$
+      BEGIN
+        IF to_regclass('public.customer_receivable_ledger') IS NOT NULL THEN
+          ALTER TABLE customer_receivable_ledger
+            DROP CONSTRAINT IF EXISTS customer_receivable_ledger_status_chk;
+          ALTER TABLE customer_receivable_ledger
+            ADD CONSTRAINT customer_receivable_ledger_status_chk
+            CHECK (status IN ('open', 'paid', 'review', 'cancelled'));
+        END IF;
+      END
+      $receivable$;
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
       CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
       CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
@@ -33755,6 +33769,22 @@ const salesInvoiceCancellationSchema = z.object({
   password: z.string().min(1).max(500),
   confirmed: z.literal(true),
 });
+
+const invoiceRegisterQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  q: z.string().trim().max(200).optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  status: z.string().trim().max(30).optional(),
+  paymentStatus: z.enum(["paid", "partial", "unpaid"]).optional(),
+  reversed: z.enum(["true", "false"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+function invoiceRegisterSearchPattern(value: string) {
+  return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+}
 
 /**
  * Reserve stock with a conditional update while the invoice transaction is
@@ -33944,20 +33974,62 @@ async function handleSalesInvoices(
   }
 
   if (method === "GET" && !id) {
-    const from = req.nextUrl.searchParams.get("from") ?? undefined;
-    const to = req.nextUrl.searchParams.get("to") ?? undefined;
-    const status = req.nextUrl.searchParams.get("status") ?? undefined;
-    const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
-    const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
-    const reversed = req.nextUrl.searchParams.get("reversed") ?? undefined; // "true" | "false" | undefined(all)
+    const parsedQuery = invoiceRegisterQuerySchema.safeParse(
+      Object.fromEntries(req.nextUrl.searchParams.entries()),
+    );
+    if (!parsedQuery.success)
+      return validationError("sales-invoice.list", parsedQuery);
+    const {
+      from,
+      to,
+      status,
+      paymentStatus,
+      limit: limitQ,
+      offset: offsetQ,
+      reversed,
+    } = parsedQuery.data;
+    const search = (parsedQuery.data.search ?? parsedQuery.data.q ?? "").trim();
     const conds: any[] = [sql`${salesInvoicesTable.status} != 'deleted'`];
     if (from) conds.push(gte(salesInvoicesTable.date, from));
     if (to) conds.push(lte(salesInvoicesTable.date, to));
     if (status) conds.push(eq(salesInvoicesTable.status, status));
+    if (paymentStatus)
+      conds.push(eq(salesInvoicesTable.paymentStatus, paymentStatus));
     if (reversed === "true")
       conds.push(eq(salesInvoicesTable.financiallyReversed, true));
     else if (reversed === "false")
       conds.push(eq(salesInvoicesTable.financiallyReversed, false));
+    if (search) {
+      const pattern = invoiceRegisterSearchPattern(search);
+      const compactPhone = search.replace(/\D/g, "");
+      const compactPhonePattern = compactPhone
+        ? invoiceRegisterSearchPattern(compactPhone)
+        : null;
+      conds.push(sql`(
+        ${salesInvoicesTable.invoiceNo} ILIKE ${pattern}
+        OR ${salesInvoicesTable.customerName} ILIKE ${pattern}
+        OR coalesce(${salesInvoicesTable.customerPhone}, '') ILIKE ${pattern}
+        OR coalesce(${salesInvoicesTable.notes}, '') ILIKE ${pattern}
+        OR coalesce(${salesInvoicesTable.customerId}::text, '') ILIKE ${pattern}
+        OR (${salesInvoicesTable.customerId} IS NOT NULL AND
+          ('CUS-' || lpad(${salesInvoicesTable.customerId}::text, 6, '0')) ILIKE ${pattern})
+        OR (${compactPhonePattern}::text IS NOT NULL AND
+          regexp_replace(coalesce(${salesInvoicesTable.customerPhone}, ''), '[^0-9]', '', 'g') ILIKE ${compactPhonePattern})
+        OR EXISTS (
+          SELECT 1 FROM customers customer_account
+          WHERE customer_account.id = ${salesInvoicesTable.customerId}
+            AND (
+              customer_account.name ILIKE ${pattern}
+              OR coalesce(customer_account.full_name, '') ILIKE ${pattern}
+              OR customer_account.phone ILIKE ${pattern}
+              OR customer_account.id::text ILIKE ${pattern}
+              OR ('CUS-' || lpad(customer_account.id::text, 6, '0')) ILIKE ${pattern}
+              OR (${compactPhonePattern}::text IS NOT NULL AND
+                regexp_replace(customer_account.phone, '[^0-9]', '', 'g') ILIKE ${compactPhonePattern})
+            )
+        )
+      )`);
+    }
     const rows = await db
       .select()
       .from(salesInvoicesTable)
@@ -33973,6 +34045,7 @@ async function handleSalesInvoices(
   }
 
   if (method === "POST" && id && parts[3] === "cancel") {
+    await ensureAccountingVoucherTables();
     const cancellationAuth = await requirePermission(req, "sales_invoice.cancel");
     if (isResponse(cancellationAuth)) return cancellationAuth;
     const parsed = salesInvoiceCancellationSchema.safeParse(await body(req));
@@ -33988,9 +34061,6 @@ async function handleSalesInvoices(
       return json({ ok: true, alreadyCancelled: true, invoice: existing });
     }
     if (existing.status === "cancelled") return error("الفاتورة ملغاة ولا يمكن تعديلها", 409);
-    if ((existing as any).financiallyReversed)
-      return error("تم عكس الأثر المالي لهذه الفاتورة مسبقاً؛ راجع المدير", 409);
-
     const received = money(existing.paidAmount);
     const approvalLimit = money(process.env.SALES_INVOICE_CANCELLATION_APPROVAL_LIMIT ?? 0);
     if (approvalLimit > 0 && received > approvalLimit && !hasPermission(cancellationAuth, "sales_invoice.approve_cancellation"))
@@ -34006,22 +34076,42 @@ async function handleSalesInvoices(
       const [invoice] = await tx.select().from(salesInvoicesTable).where(eq(salesInvoicesTable.id, id)).limit(1);
       if (!invoice) throw new CheckoutError("الفاتورة غير موجودة", 404);
       if (invoice.status === "cancelled") return { invoice, inventoryMovementIds: [], financialMovementIds: [], alreadyCancelled: true };
-      if ((invoice as any).financiallyReversed) throw new CheckoutError("تم عكس هذه الفاتورة مسبقاً", 409);
-
       const items = await tx.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
       if (!items.length) throw new CheckoutError("لا تحتوي الفاتورة على بنود قابلة للعكس", 409);
       const productItems = items.filter((item) => Number(item.productId ?? 0) > 0 && money(item.quantity) > 0);
       const priorReturns: any = await tx.execute(sql`
         SELECT * FROM stock_movements
-        WHERE (sales_invoice_id = ${id} OR (related_type = 'sales_invoice' AND related_id = ${id}))
-          AND (movement_type = 'sales_invoice_cancellation' OR reason = 'sales_invoice_cancellation_return')
+        WHERE quantity_change::numeric > 0
+          AND coalesce(reason, '') NOT IN (
+            'sales_invoice_stock_restored_for_edit',
+            'sales_invoice_stock_restored',
+            'sales_invoice_edit_restore'
+          )
+          AND (
+            ((sales_invoice_id = ${id} OR (related_type = 'sales_invoice' AND related_id = ${id}))
+              AND (movement_type = 'sales_invoice_cancellation'
+                OR reason = 'sales_invoice_cancellation_return'))
+            OR reversed_movement_id IN (
+              SELECT original.id
+              FROM stock_movements original
+              WHERE original.quantity_change::numeric < 0
+                AND (
+                  original.sales_invoice_id = ${id}
+                  OR (original.related_type = 'sales_invoice' AND original.related_id = ${id})
+                  OR original.invoice_number = ${invoice.invoiceNo}
+                  OR original.metadata ->> 'invoiceId' = ${String(id)}
+                  OR original.metadata ->> 'sourceId' = ${String(id)}
+                  OR original.metadata ->> 'invoiceNumber' = ${invoice.invoiceNo}
+                )
+            )
+          )
         ORDER BY id FOR UPDATE
       `);
-      if ((priorReturns.rows ?? []).length)
-        throw new CheckoutError("تمت إعادة مخزون هذه الفاتورة سابقًا", 409);
-
+      const priorReturnRows = (priorReturns.rows ?? []) as any[];
       const stockWasApplied = Number((invoice as any).stockApplied ?? 1) === 1;
-      const stockAlreadyRestored = productItems.length > 0 && !stockWasApplied;
+      const stockAlreadyRestored =
+        productItems.length > 0 && (!stockWasApplied || priorReturnRows.length > 0);
+      const priorReturnMovementIds = priorReturnRows.map((row) => Number(row.id));
       const originalMovementIds: number[] = [];
       const inventoryMovementIds: number[] = [];
       const restoredProducts: Array<{ invoiceItemId: number; productId: number; stockProductId: number; quantity: number; originalMovementId: number | null; reversalMovementId: number }> = [];
@@ -34047,6 +34137,10 @@ async function handleSalesInvoices(
               OR (movement.related_type = 'sales_invoice' AND movement.related_id = ${id})
               OR movement.sales_invoice_item_id IN (${sql.join(itemIds.map((itemId) => sql`${itemId}`), sql`, `)})
               OR movement.invoice_number = ${invoice.invoiceNo}
+              OR movement.metadata ->> 'invoiceId' = ${String(id)}
+              OR movement.metadata ->> 'sourceId' = ${String(id)}
+              OR movement.metadata ->> 'invoiceNumber' = ${invoice.invoiceNo}
+              OR movement.metadata ->> 'invoiceItemId' IN (${sql.join(itemIds.map((itemId) => sql`${String(itemId)}`), sql`, `)})
               OR (
                 (movement.product_id IN (${sql.join(productIds.map((productId) => sql`${productId}`), sql`, `)})
                   OR movement.stock_source_product_id IN (${sql.join(productIds.map((productId) => sql`${productId}`), sql`, `)}))
@@ -34074,12 +34168,42 @@ async function handleSalesInvoices(
       }
 
       const usedOriginalMovements = new Set<number>();
+      const priorReturnRemaining = new Map(
+        priorReturnRows.map((movement) => [
+          Number(movement.id),
+          money(movement.quantity_change),
+        ]),
+      );
       for (const item of stockWasApplied ? productItems : []) {
         const productId = Number(item.productId);
-        const quantity = money(item.quantity);
+        const soldQuantity = money(item.quantity);
         const stockProductId = await stockOwnerProductIdInTransaction(tx, productId);
         if (!stockProductId)
           throw new CheckoutError(`المنتج ${item.productName} غير مرتبط بسجل مخزون صالح`, 409);
+        let previouslyReturnedQuantity = 0;
+        for (const movement of priorReturnRows) {
+          const movementId = Number(movement.id);
+          const availableReturn = money(priorReturnRemaining.get(movementId));
+          if (availableReturn <= 0) continue;
+          const itemMatches =
+            Number(movement.sales_invoice_item_id ?? 0) === Number(item.id);
+          const productMatches =
+            Number(movement.product_id ?? 0) === productId ||
+            Number(movement.product_id ?? 0) === stockProductId ||
+            Number(movement.stock_source_product_id ?? 0) === productId ||
+            Number(movement.stock_source_product_id ?? 0) === stockProductId;
+          if (!itemMatches && !productMatches) continue;
+          const consumed = money(
+            Math.min(availableReturn, soldQuantity - previouslyReturnedQuantity),
+          );
+          previouslyReturnedQuantity = money(previouslyReturnedQuantity + consumed);
+          priorReturnRemaining.set(movementId, money(availableReturn - consumed));
+          if (previouslyReturnedQuantity >= soldQuantity - 0.0005) break;
+        }
+        const quantity = money(
+          Math.max(soldQuantity - previouslyReturnedQuantity, 0),
+        );
+        if (quantity <= 0) continue;
         const movementMatch = selectSalesInvoiceOriginalMovement({
           invoiceItemId: Number(item.id),
           productId,
@@ -34088,8 +34212,7 @@ async function handleSalesInvoices(
           candidates: candidateRows,
           usedMovementIds: usedOriginalMovements,
         });
-        if (movementMatch.kind === "ambiguous")
-          throw new CheckoutError(`تعذر ربط المنتج ${item.productName} بحركة مخزون قديمة بصورة موثوقة`, 409);
+        if (movementMatch.kind === "ambiguous") legacyRecoveryUsed = true;
         const original = movementMatch.kind === "matched" ? movementMatch.movement : null;
         const bestPriority = movementMatch.kind === "matched" ? movementMatch.priority : 0;
         if (original) {
@@ -34120,6 +34243,22 @@ async function handleSalesInvoices(
           updatedAt: new Date(),
         } as any).where(eq(productsTable.id, stockProductId)).returning();
         if (!product) throw new CheckoutError(`تعذر إرجاع المنتج ${item.productName} إلى المخزون`, 409);
+        const warehouseId = Number(
+          original?.warehouse_id ??
+            (original?.metadata && typeof original.metadata === "object"
+              ? (original.metadata as any).warehouseId
+              : 0),
+        ) || null;
+        if (warehouseId) {
+          await tx.execute(sql`
+            INSERT INTO warehouse_stock (warehouse_id, product_id, quantity, updated_at)
+            VALUES (${warehouseId}, ${stockProductId}, ${quantity}, now())
+            ON CONFLICT (warehouse_id, product_id)
+            DO UPDATE SET
+              quantity = warehouse_stock.quantity::numeric + EXCLUDED.quantity::numeric,
+              updated_at = now()
+          `);
+        }
         const now = new Date();
         const [movement] = await tx.insert(stockMovementsTable).values({
           productId,
@@ -34131,7 +34270,7 @@ async function handleSalesInvoices(
           salesInvoiceId: id,
           salesInvoiceItemId: Number(item.id),
           invoiceNumber: invoice.invoiceNo,
-          warehouseId: original?.warehouse_id ? Number(original.warehouse_id) : null,
+          warehouseId,
           movementType: "sales_invoice_cancellation",
           reversedMovementId: original ? Number(original.id) : null,
           reversalReason: data.reason,
@@ -34145,7 +34284,7 @@ async function handleSalesInvoices(
             invoiceNumber: invoice.invoiceNo,
             invoiceItemId: Number(item.id),
             productId,
-            warehouseId: original?.warehouse_id ? Number(original.warehouse_id) : null,
+            warehouseId,
             quantity,
             movementType: "sales_invoice_cancellation",
             reversedMovementId: original ? Number(original.id) : null,
@@ -34159,24 +34298,152 @@ async function handleSalesInvoices(
       }
 
       const financialRows = await tx.select().from(financialTransactionsTable).where(and(
-        eq(financialTransactionsTable.sourceType, "sales_invoice"),
-        eq(financialTransactionsTable.sourceId, String(id)),
         eq(financialTransactionsTable.approvalStatus, "executed"),
+        or(
+          and(
+            eq(financialTransactionsTable.sourceType, "sales_invoice"),
+            eq(financialTransactionsTable.sourceId, String(id)),
+          ),
+          eq(financialTransactionsTable.referenceNo, invoice.invoiceNo),
+          ilike(financialTransactionsTable.description, `%${invoice.invoiceNo}%`),
+        ),
       ));
       const reversibleFinancialRows = financialRows.filter(
-        (row) => !row.reversalTxnId && !row.reversedAt && row.sourceEvent !== "reversal",
+        (row) =>
+          !row.reversalTxnId &&
+          !row.reversedAt &&
+          !row.reversedTransactionId &&
+          !row.transactionType.endsWith("_reversal") &&
+          row.sourceEvent !== "reversal",
       );
-      const recordedFinancialEffect = money(reversibleFinancialRows.reduce(
-        (sum, row) => sum + (row.direction === "revenue" ? money(row.amount) : -money(row.amount)),
-        0,
-      ));
-      if (received > 0 && Math.abs(recordedFinancialEffect - received) >= 0.01)
-        throw new CheckoutError("تعذر ربط كامل مبلغ الفاتورة بحركات التحصيل الأصلية. لم يتم إجراء أي تغيير.", 409);
       const financialMovementIds: number[] = [];
       for (const row of reversibleFinancialRows) {
         const result = await reverseFinancialTransaction(row.id, fActor, `إلغاء فاتورة مبيعات ${invoice.invoiceNo}: ${data.reason}`, undefined, tx);
         financialMovementIds.push(result.reverse.id);
       }
+
+      const allocationResult: any = await tx.execute(sql`
+        SELECT allocation.id, allocation.amount::numeric AS amount,
+          voucher.id AS voucher_id, voucher.voucher_no,
+          coalesce(
+            voucher.financial_transaction_id,
+            (SELECT transaction.id FROM financial_transactions transaction
+             WHERE transaction.source_type = 'receipt_voucher'
+               AND transaction.source_id = voucher.id::text
+               AND transaction.approval_status = 'executed'
+             ORDER BY transaction.id DESC LIMIT 1)
+          ) AS financial_transaction_id
+        FROM receipt_voucher_allocations allocation
+        JOIN receipt_vouchers voucher ON voucher.id = allocation.receipt_voucher_id
+        WHERE allocation.source_type = 'sales_invoice'
+          AND allocation.source_id = ${id}
+          AND allocation.posted_at IS NOT NULL
+          AND allocation.reversed_at IS NULL
+        ORDER BY allocation.id
+        FOR UPDATE OF allocation
+      `);
+      const receiptAllocations = (allocationResult.rows ?? []) as any[];
+      const receiptAllocationReversals: Array<{
+        allocationId: number;
+        voucherId: number;
+        amount: number;
+        financialTransactionId: number | null;
+        reversalTransactionId: number | null;
+      }> = [];
+      for (const allocation of receiptAllocations) {
+        const allocationAmount = money(allocation.amount);
+        const financialTransactionId = Number(allocation.financial_transaction_id) || null;
+        let reversalTransactionId: number | null = null;
+        if (financialTransactionId) {
+          const result = await reverseFinancialTransaction(
+            financialTransactionId,
+            fActor,
+            `إلغاء تخصيص سند قبض للفاتورة ${invoice.invoiceNo}: ${data.reason}`,
+            undefined,
+            tx,
+            {
+              amount: allocationAmount,
+              idempotencyKey: `sales-invoice-cancel:receipt-allocation:${id}:${allocation.id}`,
+              sourceType: "sales_invoice",
+              sourceId: id,
+              sourceEvent: "receipt_reversal",
+              description: `عكس دفعة سند ${allocation.voucher_no} عن الفاتورة ${invoice.invoiceNo}`,
+            },
+          );
+          reversalTransactionId = result.reverse.id;
+          financialMovementIds.push(result.reverse.id);
+        }
+        await tx.execute(sql`
+          UPDATE receipt_voucher_allocations
+          SET reversed_at = now(), reversed_by = ${a.id},
+            reversal_reason = ${data.reason},
+            reversal_transaction_id = ${reversalTransactionId}
+          WHERE id = ${Number(allocation.id)} AND reversed_at IS NULL
+        `);
+        receiptAllocationReversals.push({
+          allocationId: Number(allocation.id),
+          voucherId: Number(allocation.voucher_id),
+          amount: allocationAmount,
+          financialTransactionId,
+          reversalTransactionId,
+        });
+      }
+      const pendingAllocationResult: any = await tx.execute(sql`
+        SELECT allocation.id, voucher.financial_transaction_id
+        FROM receipt_voucher_allocations allocation
+        JOIN receipt_vouchers voucher ON voucher.id = allocation.receipt_voucher_id
+        WHERE allocation.source_type = 'sales_invoice'
+          AND allocation.source_id = ${id}
+          AND allocation.posted_at IS NULL
+          AND allocation.reversed_at IS NULL
+        FOR UPDATE OF allocation
+      `);
+      const pendingAllocations = (pendingAllocationResult.rows ?? []) as any[];
+      const pendingFinancialIds = pendingAllocations
+        .map((row) => Number(row.financial_transaction_id))
+        .filter((value) => Number.isInteger(value) && value > 0);
+      if (pendingFinancialIds.length) {
+        await tx.execute(sql`
+          UPDATE financial_transactions
+          SET approval_status = 'rejected', rejected_by = ${a.id},
+            rejected_by_name = ${a.name}, rejected_at = now(),
+            rejection_reason = ${`إلغاء فاتورة ${invoice.invoiceNo}: ${data.reason}`},
+            updated_at = now()
+          WHERE id IN (${sql.join(pendingFinancialIds.map((value) => sql`${value}`), sql`, `)})
+            AND approval_status IN ('draft', 'pending')
+        `);
+      }
+      if (pendingAllocations.length) {
+        const pendingAllocationIds = pendingAllocations.map((row) => Number(row.id));
+        await tx.execute(sql`
+          UPDATE receipt_voucher_allocations
+          SET reversed_at = now(), reversed_by = ${a.id}, reversal_reason = ${data.reason}
+          WHERE id IN (${sql.join(pendingAllocationIds.map((value) => sql`${value}`), sql`, `)})
+            AND reversed_at IS NULL
+        `);
+      }
+      await tx.execute(sql`
+        UPDATE financial_transactions
+        SET approval_status = 'rejected', rejected_by = ${a.id},
+          rejected_by_name = ${a.name}, rejected_at = now(),
+          rejection_reason = ${`إلغاء فاتورة ${invoice.invoiceNo}: ${data.reason}`},
+          updated_at = now()
+        WHERE source_type = 'sales_invoice' AND source_id = ${String(id)}
+          AND approval_status IN ('draft', 'pending')
+      `);
+      const reversedCashAmount = money(
+        reversibleFinancialRows.reduce(
+          (sum, row) => sum + (row.direction === "revenue" ? money(row.amount) : 0),
+          0,
+        ) +
+          receiptAllocationReversals.reduce(
+            (sum, allocation) =>
+              sum + (allocation.financialTransactionId ? allocation.amount : 0),
+            0,
+          ),
+      );
+      const unlinkedPaidAmount = money(Math.max(received - reversedCashAmount, 0));
+      const financialReversalComplete = unlinkedPaidAmount < 0.01;
 
       const now = new Date();
       const [cancelled] = await tx.update(salesInvoicesTable).set({
@@ -34184,18 +34451,47 @@ async function handleSalesInvoices(
         paidAmount: "0",
         remainingAmount: "0",
         paymentStatus: "unpaid",
-        financiallyReversed: financialMovementIds.length > 0,
+        financiallyReversed: received <= 0 || financialMovementIds.length > 0,
         cancelledAt: now,
         cancelledBy: a.id,
         cancelledByName: a.name,
         cancellationReason: data.reason,
+        cancelledOriginalPaidAmount: String(received),
+        cancelledOriginalRemainingAmount: String(money(invoice.remainingAmount)),
+        reversalReferences: {
+          originalInventoryMovementIds: originalMovementIds,
+          priorReturnMovementIds,
+          inventoryMovementIds,
+          financialMovementIds,
+          receiptAllocationReversals,
+          unlinkedPaidAmount,
+        },
         reversalCompletedAt: now,
         inventoryReversed: true,
-        financeReversed: financialMovementIds.length > 0,
+        financeReversed: financialReversalComplete,
         stockApplied: 0,
         stockRestoredAt: now,
         updatedAt: now,
       } as any).where(eq(salesInvoicesTable.id, id)).returning();
+      const receivableTable: any = await tx.execute(
+        sql`SELECT to_regclass('public.customer_receivable_ledger') AS table_name`,
+      );
+      if ((receivableTable.rows ?? [])[0]?.table_name) {
+        await tx.execute(sql`
+          UPDATE customer_receivable_ledger
+          SET status = 'cancelled', remaining_amount = 0,
+            credit_amount = greatest(credit_amount::numeric, debit_amount::numeric),
+            metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
+              'cancelledAt', ${now.toISOString()},
+              'cancelledBy', ${a.id},
+              'cancellationReason', ${data.reason},
+              'invoiceOriginalPaid', ${received},
+              'invoiceOriginalRemaining', ${money(invoice.remainingAmount)}
+            )
+          WHERE invoice_id = ${id} AND source_type = 'sales_invoice'
+            AND status <> 'cancelled'
+        `);
+      }
       await tx.insert(adminActivityLogsTable).values({
         staffId: a.id,
         userName: a.name,
@@ -34208,9 +34504,13 @@ async function handleSalesInvoices(
           reason: data.reason,
           received,
           originalMovementIds,
+          priorReturnMovementIds,
           inventoryMovementIds,
           restoredProducts,
           financialMovementIds,
+          receiptAllocationReversals,
+          unlinkedPaidAmount,
+          financialReversalComplete,
           legacyRecoveryUsed,
           stockAlreadyRestored,
           ipAddress: ip(req),
@@ -34221,8 +34521,12 @@ async function handleSalesInvoices(
         return {
         invoice: cancelled,
         originalMovementIds,
+        priorReturnMovementIds,
         inventoryMovementIds,
         financialMovementIds,
+        receiptAllocationReversals,
+        unlinkedPaidAmount,
+        financialReversalComplete,
         restoredProducts,
         legacyRecoveryUsed,
         stockAlreadyRestored,
@@ -34827,13 +35131,56 @@ async function handlePurchaseInvoices(
   const id = parts[2] ? int(parts[2]) : null;
 
   if (method === "GET" && !id) {
-    const from = req.nextUrl.searchParams.get("from") ?? undefined;
-    const to = req.nextUrl.searchParams.get("to") ?? undefined;
-    const limitQ = parseInt(req.nextUrl.searchParams.get("limit") ?? "100");
-    const offsetQ = parseInt(req.nextUrl.searchParams.get("offset") ?? "0");
+    const parsedQuery = invoiceRegisterQuerySchema.safeParse(
+      Object.fromEntries(req.nextUrl.searchParams.entries()),
+    );
+    if (!parsedQuery.success)
+      return validationError("purchase-invoice.list", parsedQuery);
+    const {
+      from,
+      to,
+      status,
+      paymentStatus,
+      limit: limitQ,
+      offset: offsetQ,
+    } = parsedQuery.data;
+    const search = (parsedQuery.data.search ?? parsedQuery.data.q ?? "").trim();
     const conds: any[] = [sql`${purchaseInvoicesTable.status} != 'deleted'`];
     if (from) conds.push(gte(purchaseInvoicesTable.date, from));
     if (to) conds.push(lte(purchaseInvoicesTable.date, to));
+    if (status) conds.push(eq(purchaseInvoicesTable.status, status));
+    if (paymentStatus)
+      conds.push(eq(purchaseInvoicesTable.paymentStatus, paymentStatus));
+    if (search) {
+      const pattern = invoiceRegisterSearchPattern(search);
+      const compactPhone = search.replace(/\D/g, "");
+      const compactPhonePattern = compactPhone
+        ? invoiceRegisterSearchPattern(compactPhone)
+        : null;
+      conds.push(sql`(
+        ${purchaseInvoicesTable.invoiceNo} ILIKE ${pattern}
+        OR ${purchaseInvoicesTable.supplierName} ILIKE ${pattern}
+        OR coalesce(${purchaseInvoicesTable.notes}, '') ILIKE ${pattern}
+        OR coalesce(${purchaseInvoicesTable.supplierId}::text, '') ILIKE ${pattern}
+        OR EXISTS (
+          SELECT 1 FROM suppliers supplier_account
+          WHERE supplier_account.id = ${purchaseInvoicesTable.supplierId}
+            AND (
+              supplier_account.name ILIKE ${pattern}
+              OR coalesce(supplier_account.company, '') ILIKE ${pattern}
+              OR coalesce(supplier_account.phone, '') ILIKE ${pattern}
+              OR coalesce(supplier_account.supplier_code, '') ILIKE ${pattern}
+              OR supplier_account.id::text ILIKE ${pattern}
+              OR coalesce(
+                supplier_account.supplier_code,
+                'SUP-' || lpad(supplier_account.id::text, 6, '0')
+              ) ILIKE ${pattern}
+              OR (${compactPhonePattern}::text IS NOT NULL AND
+                regexp_replace(coalesce(supplier_account.phone, ''), '[^0-9]', '', 'g') ILIKE ${compactPhonePattern})
+            )
+        )
+      )`);
+    }
     const rows = await db
       .select()
       .from(purchaseInvoicesTable)
@@ -36665,9 +37012,19 @@ async function ensureAccountingVoucherTables() {
           "source_id" integer,
           "amount" numeric(14,2) NOT NULL CHECK ("amount" > 0),
           "posted_at" timestamp,
+          "reversed_at" timestamp,
+          "reversed_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
+          "reversal_reason" text,
+          "reversal_transaction_id" integer,
           "created_at" timestamp NOT NULL DEFAULT now(),
           CHECK (("source_type" = 'customer_credit' AND "source_id" IS NULL) OR ("source_type" <> 'customer_credit' AND "source_id" IS NOT NULL))
         );
+
+        ALTER TABLE "receipt_voucher_allocations"
+          ADD COLUMN IF NOT EXISTS "reversed_at" timestamp,
+          ADD COLUMN IF NOT EXISTS "reversed_by" integer,
+          ADD COLUMN IF NOT EXISTS "reversal_reason" text,
+          ADD COLUMN IF NOT EXISTS "reversal_transaction_id" integer;
 
         ALTER TABLE "payment_vouchers"
           ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
@@ -44227,6 +44584,12 @@ async function handleAccounting(
             customerName: salesInvoicesTable.customerName,
             total: salesInvoicesTable.total,
             paidAmount: salesInvoicesTable.paidAmount,
+            remainingAmount: salesInvoicesTable.remainingAmount,
+            status: salesInvoicesTable.status,
+            cancelledAt: salesInvoicesTable.cancelledAt,
+            cancellationReason: salesInvoicesTable.cancellationReason,
+            cancelledOriginalPaidAmount: salesInvoicesTable.cancelledOriginalPaidAmount,
+            cancelledOriginalRemainingAmount: salesInvoicesTable.cancelledOriginalRemainingAmount,
             createdAt: salesInvoicesTable.createdAt,
           })
           .from(salesInvoicesTable)
@@ -44245,6 +44608,7 @@ async function handleAccounting(
         customer
           ? db.execute(sql`
               SELECT a.source_type, a.source_id, a.amount::float AS amount, a.posted_at,
+                a.reversed_at, a.reversal_transaction_id, a.reversal_reason,
                 rv.id AS voucher_id, rv.voucher_no, rv.date::text AS date, rv.method,
                 rv.financial_transaction_id
               FROM receipt_voucher_allocations a
@@ -44256,7 +44620,14 @@ async function handleAccounting(
       ]);
       type Entry = {
         date: string;
-        kind: "order" | "booking" | "receipt" | "invoice" | "invoice_payment";
+        kind:
+          | "order"
+          | "booking"
+          | "receipt"
+          | "invoice"
+          | "invoice_payment"
+          | "invoice_cancellation"
+          | "payment_reversal";
         ref: string;
         description: string;
         debit: number;
@@ -44269,6 +44640,16 @@ async function handleAccounting(
       const koshaAllocated = new Map<number, number>();
       for (const allocation of postedAllocations) if (allocation.source_type === "kosha_booking" && allocation.source_id != null)
         koshaAllocated.set(Number(allocation.source_id), money((koshaAllocated.get(Number(allocation.source_id)) ?? 0) + money(allocation.amount)));
+      const salesAllocated = new Map<number, number>();
+      for (const allocation of postedAllocations)
+        if (allocation.source_type === "sales_invoice" && allocation.source_id != null)
+          salesAllocated.set(
+            Number(allocation.source_id),
+            money(
+              (salesAllocated.get(Number(allocation.source_id)) ?? 0) +
+                money(allocation.amount),
+            ),
+          );
       for (const o of orders) {
         entries.push({
           date: o.createdAt.toISOString(),
@@ -44317,17 +44698,46 @@ async function handleAccounting(
           credit: 0,
           href: `/admin/sales?invoice=${si.id}`,
         });
-        const paid = Number.parseFloat(si.paidAmount);
-        if (paid > 0)
+        const paid = Number.parseFloat(
+          si.status === "cancelled"
+            ? (si.cancelledOriginalPaidAmount ?? si.paidAmount)
+            : si.paidAmount,
+        );
+        const inlinePaid = Math.max(0, paid - (salesAllocated.get(si.id) ?? 0));
+        if (inlinePaid > 0)
           entries.push({
             date: when,
             kind: "invoice_payment",
             ref: si.invoiceNo,
             description: `دفعة فاتورة ${si.invoiceNo}`,
             debit: 0,
-            credit: paid,
+            credit: inlinePaid,
             href: `/admin/sales?invoice=${si.id}`,
           });
+        if (si.status === "cancelled") {
+          const cancellationDate = si.cancelledAt
+            ? si.cancelledAt.toISOString()
+            : when;
+          entries.push({
+            date: cancellationDate,
+            kind: "invoice_cancellation",
+            ref: si.invoiceNo,
+            description: `إلغاء فاتورة مبيعات${si.cancellationReason ? ` — ${si.cancellationReason}` : ""}`,
+            debit: 0,
+            credit: Number.parseFloat(si.total),
+            href: `/admin/sales?invoice=${si.id}`,
+          });
+          if (inlinePaid > 0)
+            entries.push({
+              date: cancellationDate,
+              kind: "payment_reversal",
+              ref: si.invoiceNo,
+              description: `عكس دفعة الفاتورة ${si.invoiceNo}`,
+              debit: inlinePaid,
+              credit: 0,
+              href: `/admin/sales?invoice=${si.id}`,
+            });
+        }
       }
       for (const r of receipts) {
         if (allocatedReceiptIds.has(r.id)) continue;
@@ -44358,6 +44768,17 @@ async function handleAccounting(
           credit: Number(allocation.amount),
           href: `/admin/accounting?tab=receipts`,
         });
+        if (allocation.reversed_at) {
+          entries.push({
+            date: new Date(allocation.reversed_at).toISOString(),
+            kind: "payment_reversal",
+            ref: allocation.voucher_no,
+            description: `عكس سند قبض${allocation.reversal_reason ? ` — ${allocation.reversal_reason}` : ""}`,
+            debit: Number(allocation.amount),
+            credit: 0,
+            href: `/admin/accounting?tab=receipts`,
+          });
+        }
       }
       entries.sort((a, b) => a.date.localeCompare(b.date));
       let running = 0;

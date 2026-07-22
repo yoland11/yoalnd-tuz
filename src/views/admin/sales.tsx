@@ -41,6 +41,9 @@ type SalesInvoice = {
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   financiallyReversed?: boolean;
   cancelledAt?: string | null; cancelledByName?: string | null; cancellationReason?: string | null;
+  cancelledOriginalPaidAmount?: string | null;
+  cancelledOriginalRemainingAmount?: string | null;
+  reversalReferences?: Record<string, unknown>;
   reversalCompletedAt?: string | null; inventoryReversed?: boolean; financeReversed?: boolean;
   supplierId?: number | null; supplierName?: string | null; lastPayment?: LastPayment;
   items?: CartItem[];
@@ -190,6 +193,8 @@ export default function SalesPage() {
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
   const [listReversed, setListReversed] = useState(""); // "" all | "false" active | "true" reversed
+  const [listSearch, setListSearch] = useState("");
+  const deferredListSearch = useDeferredValue(listSearch.trim());
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -216,9 +221,9 @@ export default function SalesPage() {
 
   // Invoices list
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed],
+    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, deferredListSearch],
     queryFn: () => adminFetch<{ data: SalesInvoice[]; total: number }>(
-      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${listReversed ? `&reversed=${listReversed}` : ""}`
+      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${listReversed ? `&reversed=${listReversed}` : ""}${deferredListSearch ? `&search=${encodeURIComponent(deferredListSearch)}` : ""}`
     ),
     enabled: listMode,
   });
@@ -443,6 +448,7 @@ export default function SalesPage() {
           from={listFrom} to={listTo}
           onFrom={setListFrom} onTo={setListTo}
           reversed={listReversed} onReversed={setListReversed}
+          search={listSearch} onSearch={setListSearch}
           onBack={() => setListMode(false)}
           onOpen={setSelectedInvoiceId}
         />
@@ -865,11 +871,12 @@ export default function SalesPage() {
 
 // ── Invoice List Sub-View ──────────────────────────────────────────────────
 function InvoiceListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, reversed, onReversed, onBack, onOpen,
+  invoices, total, page, onPage, from, to, onFrom, onTo, reversed, onReversed, search, onSearch, onBack, onOpen,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
   reversed: string; onReversed: (v: string) => void;
+  search: string; onSearch: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
 }) {
   const queryClient = useQueryClient();
@@ -913,6 +920,19 @@ function InvoiceListView({
       </div>
       {/* Filters */}
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
+        <div className="min-w-[280px] flex-1">
+          <label className="text-xs text-muted-foreground mb-1 block">بحث</label>
+          <div className="relative">
+            <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={search}
+              onChange={e => { onSearch(e.target.value); onPage(1); }}
+              placeholder="ابحث برقم الفاتورة، اسم العميل، الهاتف..."
+              className="w-full bg-background border border-border/40 rounded-lg py-2 ps-3 pe-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+        </div>
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
           <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
@@ -952,7 +972,7 @@ function InvoiceListView({
             </thead>
             <tbody className="divide-y divide-border/20">
               {invoices.length === 0
-                ? <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">لا توجد فواتير</td></tr>
+                ? <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}</td>
@@ -965,7 +985,12 @@ function InvoiceListView({
                       </td>
                       <td className="px-4 py-3 text-center">
                         {inv.status === "cancelled" ? (
-                          <span className="text-xs text-status-warning">معكوس</span>
+                          <div className="text-xs text-status-warning">
+                            <span>معكوس</span>
+                            <span className="mt-1 block text-[11px] text-muted-foreground">
+                              مدفوع {formatCurrency(inv.cancelledOriginalPaidAmount ?? inv.paidAmount)} · متبقي {formatCurrency(inv.cancelledOriginalRemainingAmount ?? inv.remainingAmount)}
+                            </span>
+                          </div>
                         ) : (
                           <PayStatusBadge status={inv.paymentStatus} />
                         )}
@@ -1062,7 +1087,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       supplierName: invoice.supplierName || "",
       discountAmount: String(invoice.discountAmount ?? "0"),
       taxAmount: String(invoice.taxAmount ?? "0"),
-      paidAmount: String(invoice.paidAmount ?? "0"),
+      paidAmount: String(
+        invoice.status === "cancelled"
+          ? (invoice.cancelledOriginalPaidAmount ?? invoice.paidAmount ?? "0")
+          : (invoice.paidAmount ?? "0"),
+      ),
       paymentMethod: invoice.paymentMethod || "cash",
       notes: invoice.notes || "",
       isInternal: Number(invoice.isInternal) === 1,
@@ -1304,9 +1333,17 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
               sourceId={invoice.id}
               total={toNumber(invoice.total)}
               discount={toNumber(invoice.discountAmount) + toNumber((invoice as any).couponDiscountAmount)}
-              paid={toNumber(invoice.paidAmount)}
-              remaining={toNumber(invoice.remainingAmount)}
-              paymentStatus={invoice.paymentStatus}
+              paid={toNumber(invoice.status === "cancelled" ? invoice.cancelledOriginalPaidAmount : invoice.paidAmount)}
+              remaining={toNumber(invoice.status === "cancelled" ? invoice.cancelledOriginalRemainingAmount : invoice.remainingAmount)}
+              paymentStatus={
+                invoice.status === "cancelled"
+                  ? toNumber(invoice.cancelledOriginalRemainingAmount) <= 0
+                    ? "paid"
+                    : toNumber(invoice.cancelledOriginalPaidAmount) > 0
+                      ? "partial"
+                      : "unpaid"
+                  : invoice.paymentStatus
+              }
               lastPayment={invoice.lastPayment ?? null}
               onCollected={() => {
                 queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });

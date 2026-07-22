@@ -998,6 +998,14 @@ export async function reverseFinancialTransaction(
     result: { original: typeof financialTransactionsTable.$inferSelect; reverse: typeof financialTransactionsTable.$inferSelect },
   ) => Promise<void>,
   existingTransaction?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  options?: {
+    amount?: number;
+    idempotencyKey?: string;
+    sourceType?: string;
+    sourceId?: string | number;
+    sourceEvent?: string;
+    description?: string;
+  },
 ) {
   if (!existingTransaction) await ensureMasterCashBoxTables();
   if (!canApproveFinancialTransactions(actor))
@@ -1016,8 +1024,35 @@ export async function reverseFinancialTransaction(
       throw new Error("يمكن عكس الحركات المنفّذة فقط");
     if (original.transactionType.endsWith("_reversal"))
       throw new Error("لا يمكن عكس حركة عكسية");
+    if (options?.idempotencyKey) {
+      const [existingReverse] = await tx
+        .select()
+        .from(financialTransactionsTable)
+        .where(eq(financialTransactionsTable.idempotencyKey, options.idempotencyKey))
+        .limit(1);
+      if (existingReverse)
+        return { original, reverse: existingReverse, alreadyReversed: true };
+    }
     if (original.reversedAt || original.reversalTxnId)
       throw new Error("تم عكس هذه الحركة مسبقًا");
+
+    const [priorReversal] = await tx
+      .select({
+        amount: sql<number>`coalesce(sum(${financialTransactionsTable.amount}::numeric), 0)::float`,
+      })
+      .from(financialTransactionsTable)
+      .where(
+        and(
+          eq(financialTransactionsTable.reversedTransactionId, original.id),
+          eq(financialTransactionsTable.approvalStatus, "executed"),
+        ),
+      );
+    const originalAmount = money(original.amount);
+    const alreadyReversedAmount = money(priorReversal?.amount);
+    const remainingReversible = money(Math.max(originalAmount - alreadyReversedAmount, 0));
+    const requestedAmount = options?.amount == null ? originalAmount : money(options.amount);
+    if (requestedAmount <= 0 || requestedAmount - remainingReversible > 0.005)
+      throw new Error("مبلغ العكس يتجاوز المبلغ المتبقي القابل للعكس");
 
     const lock = await tx.execute(
       sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`,
@@ -1027,12 +1062,18 @@ export async function reverseFinancialTransaction(
 
     const reverseDir: "revenue" | "expense" =
       original.direction === "revenue" ? "expense" : "revenue";
-    const amount = money(original.amount);
+    const amount = requestedAmount;
+    const completesOriginal = alreadyReversedAmount + amount >= originalAmount - 0.005;
     const before = money(cashRaw.current_balance);
     const after = money(
       reverseDir === "revenue" ? before + amount : before - amount,
     );
     const now = new Date();
+
+    const originalLedgerEntries = await tx
+      .select()
+      .from(financialLedgerEntriesTable)
+      .where(eq(financialLedgerEntriesTable.transactionId, original.id));
 
     const [cashAccount] = await tx
       .select()
@@ -1062,12 +1103,14 @@ export async function reverseFinancialTransaction(
         amount: String(amount),
         department: original.department,
         transactionType: "manual_reversal",
-        description: `عكس الحركة ${original.transactionNo}: ${cleanReason}`,
+        description:
+          options?.description ??
+          `عكس الحركة ${original.transactionNo}: ${cleanReason}`,
         paymentMethod: original.paymentMethod,
-        sourceType: original.sourceType,
-        sourceId: original.sourceId,
-        sourceEvent: "reversal",
-        idempotencyKey: `reversal:${original.id}`,
+        sourceType: options?.sourceType ?? original.sourceType,
+        sourceId: options?.sourceId == null ? original.sourceId : String(options.sourceId),
+        sourceEvent: options?.sourceEvent ?? "reversal",
+        idempotencyKey: options?.idempotencyKey ?? `reversal:${original.id}`,
         approvalStatus: "executed",
         requestedBy: actor.id,
         requestedByName: actor.name,
@@ -1098,7 +1141,20 @@ export async function reverseFinancialTransaction(
     await tx
       .insert(financialLedgerEntriesTable)
       .values(
-        reverseDir === "revenue"
+        originalLedgerEntries.length
+          ? originalLedgerEntries.map((entry) => ({
+              transactionId: reverse.id,
+              accountId: entry.accountId,
+              entrySide: entry.entrySide === "debit" ? "credit" : "debit",
+              amount: String(
+                money(
+                  money(entry.amount) *
+                    (originalAmount > 0 ? amount / originalAmount : 1),
+                ),
+              ),
+              description: reverse.description,
+            }))
+          : reverseDir === "revenue"
           ? [
               {
                 transactionId: reverse.id,
@@ -1134,18 +1190,20 @@ export async function reverseFinancialTransaction(
       )
       .onConflictDoNothing();
 
-    // 3) Flag the original as reversed (kept forever).
-    await tx
-      .update(financialTransactionsTable)
-      .set({
-        reversalTxnId: reverse.id,
-        reversalReason: cleanReason,
-        reversedBy: actor.id,
-        reversedByName: actor.name,
-        reversedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(financialTransactionsTable.id, original.id));
+    // 3) Flag the original only after all allocated portions have been reversed.
+    if (completesOriginal) {
+      await tx
+        .update(financialTransactionsTable)
+        .set({
+          reversalTxnId: reverse.id,
+          reversalReason: cleanReason,
+          reversedBy: actor.id,
+          reversedByName: actor.name,
+          reversedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(financialTransactionsTable.id, original.id));
+    }
 
     // 4) Recompute master balance from executed entries (_reversal nets to zero).
     const [tot] = await tx
@@ -1181,7 +1239,7 @@ export async function reverseFinancialTransaction(
     // 5) Flag the linked source (order / service order / sales invoice / kosha) — never deleted, excluded from net.
     const sid = Number(original.sourceId);
     let sourceFlagged: { type: string; id: number } | null = null;
-    if (Number.isInteger(sid) && sid > 0) {
+    if (completesOriginal && Number.isInteger(sid) && sid > 0) {
       if (original.sourceType === "kosha_booking") {
         await tx.execute(
           sql`UPDATE kosha_bookings SET booking_details = jsonb_set(coalesce(booking_details, '{}'::jsonb), '{financiallyReversed}', 'true'::jsonb, true), updated_at = now() WHERE id = ${sid}`,
@@ -1226,13 +1284,16 @@ export async function reverseFinancialTransaction(
     const auditRows: Array<typeof financialAuditLogsTable.$inferInsert> = [
       {
         transactionId: original.id,
-        action: "reversed",
+        action: completesOriginal ? "reversed" : "partially_reversed",
         actorId: actor.id,
         actorName: actor.name,
         oldValues: snapshot(original as any),
         newValues: {
-          reversalTxnId: reverse.id,
+          reversalTxnId: completesOriginal ? reverse.id : null,
           reversedAt: now.toISOString(),
+          reversedAmount: amount,
+          totalReversedAmount: money(alreadyReversedAmount + amount),
+          partial: !completesOriginal,
           sourceFlagged,
         },
         reason: cleanReason,
