@@ -624,6 +624,7 @@ export function AssetsPage() {
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
+  const [editingDepreciation, setEditingDepreciation] = useState<AssetRow | null>(null);
   const [saleTarget, setSaleTarget] = useState<number | null>(null);
   const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
   const rows = data?.data ?? [];
@@ -787,11 +788,15 @@ export function AssetsPage() {
                               <BadgeDollarSign className="h-3.5 w-3.5" /> بيع الأصل
                             </Button>
                           ) : null}
-                          <Link href={`/admin/assets/new?edit=${row.productId}&returnTo=depreciation`}>
-                            <Button variant="ghost" size="sm" className="gap-1 text-primary">
-                              <Pencil className="h-3.5 w-3.5" /> تعديل
-                            </Button>
-                          </Link>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!row.depreciationRecordId}
+                            onClick={() => setEditingDepreciation(row)}
+                            className="gap-1 text-primary"
+                          >
+                            <Pencil className="h-3.5 w-3.5" /> تعديل
+                          </Button>
                           <Link href={`/admin/print-labels?productId=${row.productId}&kind=asset`}>
                             <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground">
                               <QrCode className="h-3.5 w-3.5" /> طباعة ملصق
@@ -840,6 +845,13 @@ export function AssetsPage() {
           asset={null}
           assets={rows}
           onClose={() => setAdding(false)}
+        />
+      )}
+      {editingDepreciation && (
+        <DepreciationModal
+          asset={editingDepreciation}
+          assets={rows}
+          onClose={() => setEditingDepreciation(null)}
         />
       )}
       <RemoveDepreciationDialog asset={removeTarget} busy={removeDepreciation.isPending} onClose={() => setRemoveTarget(null)} onConfirm={(reason) => removeTarget?.depreciationRecordId && removeDepreciation.mutate({ recordId: removeTarget.depreciationRecordId, reason })} />
@@ -896,7 +908,15 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
   const computedValue = Math.max(0, price - (price * Math.min(usageCount, life) / life));
 
   const save = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => adminFetch("/admin/assets", { method: "POST", body: JSON.stringify({ productId, serialNumber: serialNumber.trim(), ...payload }) }),
+    mutationFn: (payload: Record<string, unknown>) => adminFetch("/admin/assets", {
+      method: asset ? "PATCH" : "POST",
+      body: JSON.stringify({
+        productId,
+        ...(asset?.depreciationRecordId ? { depreciationRecordId: asset.depreciationRecordId } : {}),
+        ...(!asset ? { serialNumber: serialNumber.trim() } : {}),
+        ...payload,
+      }),
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
       toast({ title: "تم حفظ سجل الإهلاك" });
@@ -925,6 +945,23 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
   }
 
   const inputClass = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none";
+
+  function submit(recalculate = false) {
+    const payload: Record<string, unknown> = {};
+    if (!asset || price !== asset.purchasePrice) payload.purchasePrice = price;
+    if (!asset || life !== asset.expectedLifeUses) payload.expectedLifeUses = life;
+    const nextValue = Math.max(0, Number(currentValue) || 0);
+    if (!recalculate && (!asset || nextValue !== asset.currentValue)) payload.currentValue = nextValue;
+    const nextSerial = serialNumber.trim();
+    if (asset && nextSerial !== (asset.serialNumber ?? "")) payload.serialNumber = nextSerial;
+    if (!asset || status !== asset.status) payload.status = status;
+    if (recalculate) payload.recalculate = true;
+    if (asset && !recalculate && Object.keys(payload).length === 0) {
+      toast({ title: "لا توجد تغييرات للحفظ" });
+      return;
+    }
+    save.mutate(payload);
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl" onClick={onClose}>
@@ -1043,7 +1080,7 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
         <div className="mt-5 flex flex-wrap gap-2">
           <Button
             disabled={save.isPending || !productId}
-            onClick={() => save.mutate({ purchasePrice: price, expectedLifeUses: life, currentValue: Math.max(0, Number(currentValue) || 0), status })}
+            onClick={() => submit(false)}
             className="flex-1 gap-1"
           >
             حفظ
@@ -1051,7 +1088,7 @@ function DepreciationModal({ asset, assets, onClose }: { asset: AssetRow | null;
           <Button
             variant="outline"
             disabled={save.isPending || !productId}
-            onClick={() => save.mutate({ purchasePrice: price, expectedLifeUses: life, status, recalculate: true })}
+            onClick={() => submit(true)}
             className="flex-1 gap-1"
           >
             <RotateCcw className="h-4 w-4" /> إعادة احتساب الإهلاك

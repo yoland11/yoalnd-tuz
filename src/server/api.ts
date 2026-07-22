@@ -27685,6 +27685,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const existing = await db.query.assetProfilesTable.findFirst({
         where: eq(assetProfilesTable.productId, productId),
       });
+      const requestedDepreciationId = optionalPositiveId(payload?.depreciationRecordId);
+      if (method === "PATCH" && !existing)
+        return error("سجل الإهلاك المراد تعديله غير موجود", 404);
+      if (
+        method === "PATCH" &&
+        requestedDepreciationId &&
+        requestedDepreciationId !== existing?.id
+      )
+        return error("معرّف سجل الإهلاك لا يطابق الأصل المحدد", 409);
       const usageCount = Number(existing?.usageCount ?? 0);
       const hasValue = (v: unknown) =>
         v !== undefined && v !== null && v !== "";
@@ -27746,20 +27755,33 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const purchaseDate = hasValue(payload?.purchaseDate)
         ? new Date(payload.purchaseDate)
         : (existing?.purchaseDate ?? null);
-      const set = {
-        purchasePrice: String(purchasePrice),
-        purchaseDate,
-        expectedLifeUses,
-        currentValue: String(currentValue),
-        serialNumber,
-        status,
-        notes,
-        deletedAt: null,
-        deletedBy: null,
-        deletedReason: null,
-        valueBeforeRemoval: null,
+      const set: Partial<typeof assetProfilesTable.$inferInsert> = {
         updatedAt: new Date(),
       };
+      if (method === "POST" || hasValue(payload?.purchasePrice))
+        set.purchasePrice = String(purchasePrice);
+      if (method === "POST" || payload?.purchaseDate !== undefined)
+        set.purchaseDate = purchaseDate;
+      if (method === "POST" || hasValue(payload?.expectedLifeUses))
+        set.expectedLifeUses = expectedLifeUses;
+      if (
+        method === "POST" ||
+        hasValue(payload?.currentValue) ||
+        payload?.recalculate === true
+      )
+        set.currentValue = String(currentValue);
+      if (method === "POST" || payload?.serialNumber !== undefined)
+        set.serialNumber = serialNumber;
+      if (method === "POST" || payload?.status !== undefined)
+        set.status = status;
+      if (method === "POST" || payload?.notes !== undefined)
+        set.notes = notes;
+      if (method === "POST") {
+        set.deletedAt = null;
+        set.deletedBy = null;
+        set.deletedReason = null;
+        set.valueBeforeRemoval = null;
+      }
       if (existing) {
         await db
           .update(assetProfilesTable)
@@ -42476,6 +42498,11 @@ const receiptVoucherMutationSchema = z.object({
     .preprocess(optionalPositiveId, z.number().int().positive().nullable())
     .optional()
     .default(null),
+  accountType: z.enum(["customer", "supplier"]).optional(),
+  accountId: z
+    .preprocess(optionalPositiveId, z.number().int().positive().nullable())
+    .optional()
+    .default(null),
   orderId: z
     .preprocess(optionalPositiveId, z.number().int().positive().nullable())
     .optional()
@@ -42783,6 +42810,92 @@ async function handleAccounting(
       );
     }
     if (method === "GET") {
+      if (parts[2] === "accounts") {
+        const search = String(req.nextUrl.searchParams.get("search") ?? "").trim();
+        if (!search) return json([]);
+        const like = `%${search}%`;
+        const digits = search.replace(/\D/g, "");
+        const phoneTail = (normalizeIraqiPhone(search) ?? digits).replace(/\D/g, "").slice(-10);
+        const customerRows = await db.execute(sql`
+          SELECT c.id, 'customer'::text AS account_type, c.id AS customer_id,
+            coalesce(nullif(c.full_name, ''), nullif(c.name, ''), c.phone) AS name,
+            c.phone, 'CUS-' || lpad(c.id::text, 6, '0') AS account_number,
+            coalesce((
+              SELECT sum(record.remaining)::float FROM (
+                SELECT remaining_amount::numeric AS remaining FROM kosha_bookings
+                  WHERE customer_id = c.id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM sales_invoices
+                  WHERE customer_id = c.id AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM orders
+                  WHERE customer_id = c.id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM service_orders
+                  WHERE right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(c.phone, '[^0-9]', '', 'g'), 10)
+                    AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM graduation_orders
+                  WHERE customer_id = c.id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+              ) record
+            ), 0)::float AS current_balance
+          FROM customers c
+          WHERE coalesce(c.full_name, '') ILIKE ${like}
+            OR coalesce(c.name, '') ILIKE ${like}
+            OR coalesce(c.phone, '') ILIKE ${like}
+            OR ('CUS-' || lpad(c.id::text, 6, '0')) ILIKE ${like}
+            OR (${digits} <> '' AND regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g') LIKE ${`%${digits}%`})
+            OR (${phoneTail} <> '' AND regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g') LIKE ${`%${phoneTail}%`})
+            OR EXISTS (SELECT 1 FROM sales_invoices invoice WHERE invoice.customer_id = c.id AND invoice.invoice_no ILIKE ${like})
+          ORDER BY name ASC LIMIT 12
+        `);
+        const supplierRows = await db.execute(sql`
+          SELECT s.id, 'supplier'::text AS account_type, linked.customer_id,
+            coalesce(nullif(s.company, ''), nullif(s.name, ''), nullif(s.contact_person, ''), s.phone, 'مورد') AS name,
+            coalesce(s.phone, '') AS phone,
+            coalesce(s.supplier_code, 'SUP-' || lpad(s.id::text, 6, '0')) AS account_number,
+            coalesce((
+              SELECT sum(record.remaining)::float FROM (
+                SELECT remaining_amount::numeric AS remaining FROM kosha_bookings
+                  WHERE linked.customer_id IS NOT NULL AND customer_id = linked.customer_id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM sales_invoices
+                  WHERE linked.customer_id IS NOT NULL AND customer_id = linked.customer_id AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM orders
+                  WHERE linked.customer_id IS NOT NULL AND customer_id = linked.customer_id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM service_orders
+                  WHERE regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') <> ''
+                    AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g'), 10)
+                    AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+                UNION ALL SELECT remaining_amount::numeric FROM graduation_orders
+                  WHERE linked.customer_id IS NOT NULL AND customer_id = linked.customer_id AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+              ) record
+            ), 0)::float AS current_balance
+          FROM suppliers s
+          LEFT JOIN LATERAL (
+            SELECT customer.id AS customer_id FROM customers customer
+            WHERE regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g') <> ''
+              AND right(regexp_replace(coalesce(customer.phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g'), 10)
+            LIMIT 1
+          ) linked ON true
+          WHERE s.is_active = 1 AND (
+            coalesce(s.name, '') ILIKE ${like}
+            OR coalesce(s.company, '') ILIKE ${like}
+            OR coalesce(s.contact_person, '') ILIKE ${like}
+            OR coalesce(s.phone, '') ILIKE ${like}
+            OR coalesce(s.supplier_code, '') ILIKE ${like}
+            OR ('SUP-' || lpad(s.id::text, 6, '0')) ILIKE ${like}
+            OR (${digits} <> '' AND regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g') LIKE ${`%${digits}%`})
+            OR (${phoneTail} <> '' AND regexp_replace(coalesce(s.phone, ''), '[^0-9]', '', 'g') LIKE ${`%${phoneTail}%`})
+            OR EXISTS (SELECT 1 FROM purchase_invoices invoice WHERE invoice.supplier_id = s.id AND invoice.invoice_no ILIKE ${like})
+          )
+          ORDER BY name ASC LIMIT 12
+        `);
+        return json([...(customerRows.rows ?? []), ...(supplierRows.rows ?? [])].map((row: any) => ({
+          id: Number(row.id),
+          type: row.account_type,
+          customerId: row.customer_id ? Number(row.customer_id) : null,
+          name: row.name,
+          phone: row.phone ?? "",
+          accountNumber: row.account_number ?? null,
+          currentBalance: money(row.current_balance),
+        })));
+      }
       if (parts[2] === "reconciliation") {
         if (!(auth.role === "admin" || auth.role === "manager")) return error("مراجعة الربط متاحة للمدير فقط.", 403);
         const review = await db.execute(sql`
@@ -42828,25 +42941,40 @@ async function handleAccounting(
         })));
       }
       if (parts[2] === "open-records") {
-        const customerId = int(req.nextUrl.searchParams.get("customerId") ?? undefined);
-        if (!customerId) return error("العميل مطلوب", 400);
-        const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
-        if (!customer) return error("العميل غير موجود", 404);
+        const accountType = req.nextUrl.searchParams.get("accountType") === "supplier" ? "supplier" : "customer";
+        const accountId = int(req.nextUrl.searchParams.get("accountId") ?? undefined);
+        const requestedCustomerId = int(req.nextUrl.searchParams.get("customerId") ?? undefined);
+        let customer = null as Awaited<ReturnType<typeof findCustomerByPhone>>;
+        let accountPhone = "";
+        if (accountType === "supplier") {
+          if (!accountId) return error("المورد مطلوب", 400);
+          const supplier = await db.query.suppliersTable.findFirst({ where: eq(suppliersTable.id, accountId) });
+          if (!supplier) return error("المورد غير موجود", 404);
+          accountPhone = supplier.phone ?? "";
+          customer = accountPhone ? await findCustomerByPhone(accountPhone) : null;
+        } else {
+          const customerId = requestedCustomerId ?? accountId;
+          if (!customerId) return error("العميل مطلوب", 400);
+          customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, customerId) });
+          if (!customer) return error("العميل غير موجود", 404);
+          accountPhone = customer.phone;
+        }
+        const customerId = customer?.id ?? 0;
         const rows = await db.execute(sql`
           SELECT * FROM (
             SELECT 'kosha_booking'::text AS source_type, id AS source_id, coalesce(tracking_code, 'KB-' || id) AS reference,
               created_at::date::text AS date, total_amount::float AS total, paid_amount::float AS paid, remaining_amount::float AS remaining,
               due_date::text AS due_date, payment_status AS status
-            FROM kosha_bookings WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            FROM kosha_bookings WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'sales_invoice', id, invoice_no, date::text, total::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
             FROM sales_invoices WHERE customer_id = ${customerId} AND status = 'active' AND financially_reversed = false AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'order', id, tracking_code, created_at::date::text, total::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
-            FROM orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            FROM orders WHERE (customer_id = ${customerId} OR (${accountPhone} <> '' AND right(regexp_replace(coalesce(customer_phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10))) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'service_order', id, coalesce(tracking_code, 'SRV-' || id), created_at::date::text, total_amount::float, deposit_amount::float, remaining_amount::float, due_date::text, payment_status
-            FROM service_orders WHERE phone = ${customer.phone} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
+            FROM service_orders WHERE ${accountPhone} <> '' AND right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = right(regexp_replace(${accountPhone}, '[^0-9]', '', 'g'), 10) AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
             UNION ALL
             SELECT 'graduation_order', id, order_no, created_at::date::text, total_amount::float, paid_amount::float, remaining_amount::float, due_date::text, payment_status
             FROM graduation_orders WHERE customer_id = ${customerId} AND archived_at IS NULL AND status <> 'cancelled' AND remaining_amount::numeric > 0
@@ -42963,12 +43091,27 @@ async function handleAccounting(
       if (!parsed.success)
         return validationError("receipt-vouchers.create", parsed);
       const b = parsed.data;
-      let customer = b.customerId
+      let receiptAccountType: "customer" | "supplier" = b.accountType ?? "customer";
+      let receiptAccountId = b.accountId ?? b.customerId;
+      let receiptAccountName: string | null = null;
+      let customer = (b.customerId ?? (b.accountType === "customer" ? b.accountId : null))
         ? await db.query.customersTable.findFirst({
-            where: eq(customersTable.id, b.customerId),
+            where: eq(customersTable.id, (b.customerId ?? b.accountId)!),
           })
         : null;
-      if (b.customerId && !customer)
+      if (b.accountType === "supplier") {
+        if (!b.accountId) return error("اختيار المورد إلزامي لسند القبض", 400);
+        const supplier = await db.query.suppliersTable.findFirst({ where: eq(suppliersTable.id, b.accountId) });
+        if (!supplier) return error("المورد المختار غير موجود", 400);
+        receiptAccountName = supplier.company || supplier.name || supplier.contactPerson || null;
+        const supplierPhone = supplier.phone ? normalizeIraqiPhone(supplier.phone) : null;
+        if (!supplierPhone)
+          return error("لا يمكن استلام دفعة من هذا المورد قبل إضافة رقم هاتف عراقي صالح إلى حسابه.", 400);
+        customer = await ensureCustomerForPhone(supplierPhone, receiptAccountName ?? supplier.name);
+        receiptAccountType = "supplier";
+        receiptAccountId = supplier.id;
+      }
+      if (receiptAccountType === "customer" && (b.customerId || b.accountId) && !customer)
         return error("العميل المختار غير موجود", 400);
       if (!customer && b.customerPhone.trim()) {
         const normalizedPhone = normalizeIraqiPhone(b.customerPhone);
@@ -43026,7 +43169,7 @@ async function handleAccounting(
             voucherNo: temporaryVoucherNo(),
             date: b.date,
             amount: String(b.amount),
-            payerName: textFallback(b.payerName, customer.name, "زبون"),
+            payerName: textFallback(b.payerName, receiptAccountName, customer.name, "زبون"),
             customerId: customer.id,
             orderId: b.orderId ?? null,
             bookingId: b.bookingId ?? null,
@@ -43086,7 +43229,7 @@ async function handleAccounting(
           "receipt_voucher_created",
           "receipt_voucher",
           updated.id,
-          { voucherNo: updated.voucherNo },
+          { voucherNo: updated.voucherNo, accountType: receiptAccountType, accountId: receiptAccountId },
         );
         void notifyTelegramPayment({
           event: "paymentReceived",

@@ -48,6 +48,15 @@ type ReceiptAllocation = { sourceType: "kosha_booking" | "sales_invoice" | "orde
 type ReceiptOpenRecord = { source_type: ReceiptAllocation["sourceType"]; source_id: number; reference: string; date: string; total: number; paid: number; remaining: number; due_date: string | null; status: string };
 type ReceiptOpenRecordsResponse = { records: ReceiptOpenRecord[]; summary: { totalOutstanding: number; totalKoshaOutstanding: number; totalStoreOutstanding: number; availableCustomerCredit: number } };
 type ReceiptReconciliationRow = { voucherId: number; voucherNo: string; customer: string; customerId: number | null; amount: number; possibleBooking: { id: number; number: string } | null; currentLink: string; suggestedLink: string | null; status: string };
+type VoucherAccount = {
+  id: number;
+  type: "customer" | "supplier";
+  customerId: number | null;
+  name: string;
+  phone: string;
+  accountNumber: string | null;
+  currentBalance: number;
+};
 type PaymentVoucher = {
   id: number; voucherNo: string; date: string; amount: string; payeeName: string;
   customerId: number | null; customerPhone?: string | null;
@@ -104,7 +113,9 @@ function ReceiptsTab() {
   const { toast } = useToast();
   const [editing, setEditing] = useState<null | {
     date: string; amount: string; payerName: string; customerPhone: string; reference: string;
-    customerId: number | null; method: string; notes: string; allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
+    customerId: number | null; accountType: VoucherAccount["type"] | null; accountId: number | null;
+    accountNumber: string | null; accountBalance: number; method: string; notes: string;
+    allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
   }>(null);
   const [reconciliationOpen, setReconciliationOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -138,7 +149,7 @@ function ReceiptsTab() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">إجمالي السندات: {data?.length ?? 0}</p>
-        <div className="flex gap-2"><Button variant="outline" onClick={() => setReconciliationOpen(true)}>مراجعة السندات القديمة</Button><Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", customerId: null, reference: "", method: "cash", notes: "", allocations: [], saveRemainderAsCredit: true })}>
+        <div className="flex gap-2"><Button variant="outline" onClick={() => setReconciliationOpen(true)}>مراجعة السندات القديمة</Button><Button onClick={() => setEditing({ date: todayStr(), amount: "", payerName: "", customerPhone: "", customerId: null, accountType: null, accountId: null, accountNumber: null, accountBalance: 0, reference: "", method: "cash", notes: "", allocations: [], saveRemainderAsCredit: true })}>
           <Plus className="w-4 h-4 ml-1" />سند قبض جديد
         </Button></div>
       </div>
@@ -173,14 +184,34 @@ function ReceiptsTab() {
           <div className="grid grid-cols-2 gap-3">
             <VoucherCustomerPicker
               selectedId={editing.customerId}
-              onSelect={(customer) => setEditing({ ...editing, customerId: customer.id, payerName: customer.name, customerPhone: formatIraqiPhoneInput(customer.phone), allocations: [] })}
-              onClear={() => setEditing({ ...editing, customerId: null, allocations: [] })}
+              includeSuppliers
+              selectedAccount={editing.accountType && editing.accountId ? {
+                id: editing.accountId,
+                type: editing.accountType,
+                customerId: editing.customerId,
+                name: editing.payerName,
+                phone: editing.customerPhone,
+                accountNumber: editing.accountNumber,
+                currentBalance: editing.accountBalance,
+              } : null}
+              onSelect={(account) => setEditing({
+                ...editing,
+                customerId: account.customerId ?? (account.type === "customer" ? account.id : null),
+                accountType: account.type,
+                accountId: account.id,
+                accountNumber: account.accountNumber,
+                accountBalance: account.currentBalance,
+                payerName: account.name,
+                customerPhone: formatIraqiPhoneInput(account.phone),
+                allocations: [],
+              })}
+              onClear={() => setEditing({ ...editing, customerId: null, accountType: null, accountId: null, accountNumber: null, accountBalance: 0, allocations: [] })}
             />
-            <ReceiptAllocationPanel customerId={editing.customerId} receivedAmount={editing.amount} allocations={editing.allocations} saveRemainderAsCredit={editing.saveRemainderAsCredit} onChange={(next) => setEditing({ ...editing, ...next })} />
+            <ReceiptAllocationPanel customerId={editing.customerId} accountType={editing.accountType} accountId={editing.accountId} receivedAmount={editing.amount} allocations={editing.allocations} saveRemainderAsCredit={editing.saveRemainderAsCredit} onChange={(next) => setEditing({ ...editing, ...next })} />
             <Field label="التاريخ"><input type="date" value={editing.date} onChange={e => setEditing({ ...editing, date: e.target.value })} className={inputCls} /></Field>
             <Field label="المبلغ (د.ع)"><input type="number" value={editing.amount} onChange={e => setEditing({ ...editing, amount: e.target.value })} className={inputCls} /></Field>
             <Field label="الواصل من"><input value={editing.payerName} onChange={e => setEditing({ ...editing, payerName: e.target.value })} className={inputCls} /></Field>
-            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
+            <Field label="هاتف الزبون (لربط كشف الحساب)"><input value={editing.customerPhone} onChange={e => setEditing({ ...editing, customerId: null, accountType: null, accountId: null, accountNumber: null, accountBalance: 0, customerPhone: formatIraqiPhoneInput(e.target.value) })} className={inputCls} placeholder="07XXXXXXXXX" /></Field>
             <Field label="طريقة الدفع">
               <select value={editing.method} onChange={e => setEditing({ ...editing, method: e.target.value })} className={inputCls}>
                 {METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -191,12 +222,14 @@ function ReceiptsTab() {
           </div>
           <div className="flex justify-end gap-2 pt-3">
             <Button variant="outline" onClick={() => setEditing(null)}>إلغاء</Button>
-            <Button disabled={create.isPending || !editing.amount || !editing.customerId}
+            <Button disabled={create.isPending || !editing.amount || !editing.accountType || !editing.accountId}
               onClick={() => create.mutate({
                 date: editing.date,
                 amount: editing.amount,
                 payerName: editing.payerName,
                 customerId: editing.customerId,
+                accountType: editing.accountType,
+                accountId: editing.accountId,
                 customerPhone: editing.customerPhone ? normalizeIraqiPhone(editing.customerPhone) ?? editing.customerPhone : undefined,
                 allocations: editing.allocations.map((allocation) => ({ ...allocation, amount: Number(allocation.amount || 0) })),
                 saveRemainderAsCredit: editing.saveRemainderAsCredit,
@@ -515,14 +548,21 @@ function VoucherListSearch({ value, onChange }: { value: string; onChange: (valu
   );
 }
 
-function ReceiptAllocationPanel({ customerId, receivedAmount, allocations, saveRemainderAsCredit, onChange }: {
-  customerId: number | null; receivedAmount: string; allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
+function ReceiptAllocationPanel({ customerId, accountType, accountId, receivedAmount, allocations, saveRemainderAsCredit, onChange }: {
+  customerId: number | null; accountType: VoucherAccount["type"] | null; accountId: number | null;
+  receivedAmount: string; allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean;
   onChange: (next: { allocations: ReceiptAllocation[]; saveRemainderAsCredit: boolean }) => void;
 }) {
+  const accountKey = accountType && accountId ? `${accountType}:${accountId}` : customerId ? `customer:${customerId}` : null;
   const records = useQuery({
-    queryKey: ["admin", "receipt-voucher-open-records", customerId],
-    queryFn: () => adminFetch<ReceiptOpenRecordsResponse>(`/admin/receipt-vouchers/open-records?customerId=${customerId}`),
-    enabled: !!customerId,
+    queryKey: ["admin", "receipt-voucher-open-records", accountKey],
+    queryFn: () => {
+      const params = accountType === "supplier"
+        ? `accountType=supplier&accountId=${accountId}`
+        : `customerId=${customerId ?? accountId}`;
+      return adminFetch<ReceiptOpenRecordsResponse>(`/admin/receipt-vouchers/open-records?${params}`);
+    },
+    enabled: !!accountKey,
   });
   const received = Number(receivedAmount || 0) || 0;
   const allocated = allocations.reduce((sum, allocation) => sum + (Number(allocation.amount || 0) || 0), 0);
@@ -533,11 +573,11 @@ function ReceiptAllocationPanel({ customerId, receivedAmount, allocations, saveR
     onChange({ allocations: value > 0 ? [...rest, { sourceType: source.source_type, sourceId: source.source_id, amount: String(value) }] : rest, saveRemainderAsCredit });
   };
   const label: Record<ReceiptAllocation["sourceType"], string> = { kosha_booking: "حجز كوشة", sales_invoice: "فاتورة", order: "طلب متجر", service_order: "طلب خدمة", graduation_order: "طلب تخرج" };
-  if (!customerId) return null;
+  if (!accountKey) return null;
   return <div className="col-span-2 space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
     <div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-semibold">تطبيق سند القبض</div><div className="text-xs text-muted-foreground">وزّع المبلغ على سجل واحد أو عدة سجلات. لا يتم ترحيل التوزيع قبل الاعتماد.</div></div></div>
     {records.data && <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><MiniAccountStat label="إجمالي الذمم" value={formatCurrency(records.data.summary.totalOutstanding)} /><MiniAccountStat label="ذمم الكوشات" value={formatCurrency(records.data.summary.totalKoshaOutstanding)} /><MiniAccountStat label="ذمم المتجر" value={formatCurrency(records.data.summary.totalStoreOutstanding)} /><MiniAccountStat label="رصيد العميل" value={formatCurrency(records.data.summary.availableCustomerCredit)} /></div>}
-    {records.isLoading ? <div className="text-xs text-muted-foreground">جارٍ تحميل السجلات غير المسددة…</div> : records.data?.records.length ? <div className="max-h-64 overflow-auto rounded-lg border border-border/30 bg-card"><table className="w-full min-w-[720px] text-xs"><thead><tr className="border-b text-right text-muted-foreground"><th className="p-2">المصدر</th><th className="p-2">الرقم</th><th className="p-2">الإجمالي</th><th className="p-2">المدفوع</th><th className="p-2">المتبقي</th><th className="p-2">التوزيع</th></tr></thead><tbody>{records.data.records.map((record) => { const allocation = allocations.find((item) => item.sourceType === record.source_type && item.sourceId === record.source_id); return <tr key={`${record.source_type}-${record.source_id}`} className="border-b border-border/20"><td className="p-2">{label[record.source_type]}</td><td className="p-2 font-medium">{record.reference}</td><td className="p-2">{formatCurrency(record.total)}</td><td className="p-2">{formatCurrency(record.paid)}</td><td className="p-2 font-bold">{formatCurrency(record.remaining)}</td><td className="p-2"><input type="number" min="0" max={record.remaining} value={allocation?.amount ?? ""} onChange={(event) => update(record, event.target.value)} className="w-28 rounded border border-border/40 bg-background px-2 py-1" /></td></tr>; })}</tbody></table></div> : <div className="text-xs text-muted-foreground">لا توجد ذمم مفتوحة لهذا العميل.</div>}
+    {records.isLoading ? <div className="text-xs text-muted-foreground">جارٍ تحميل السجلات غير المسددة…</div> : records.data?.records.length ? <div className="max-h-64 overflow-auto rounded-lg border border-border/30 bg-card"><table className="w-full min-w-[720px] text-xs"><thead><tr className="border-b text-right text-muted-foreground"><th className="p-2">المصدر</th><th className="p-2">الرقم</th><th className="p-2">الإجمالي</th><th className="p-2">المدفوع</th><th className="p-2">المتبقي</th><th className="p-2">التوزيع</th></tr></thead><tbody>{records.data.records.map((record) => { const allocation = allocations.find((item) => item.sourceType === record.source_type && item.sourceId === record.source_id); return <tr key={`${record.source_type}-${record.source_id}`} className="border-b border-border/20"><td className="p-2">{label[record.source_type]}</td><td className="p-2 font-medium">{record.reference}</td><td className="p-2">{formatCurrency(record.total)}</td><td className="p-2">{formatCurrency(record.paid)}</td><td className="p-2 font-bold">{formatCurrency(record.remaining)}</td><td className="p-2"><input type="number" min="0" max={record.remaining} value={allocation?.amount ?? ""} onChange={(event) => update(record, event.target.value)} className="w-28 rounded border border-border/40 bg-background px-2 py-1" /></td></tr>; })}</tbody></table></div> : <div className="text-xs text-muted-foreground">لا توجد ذمم مفتوحة لهذا الحساب.</div>}
     <label className="flex items-center gap-2 text-xs font-medium"><input type="checkbox" checked={saveRemainderAsCredit} onChange={(event) => onChange({ allocations, saveRemainderAsCredit: event.target.checked })} />حفظ المتبقي ({formatCurrency(remainder)}) كرصيد غير مخصص للعميل</label>
     {allocated > received && <div className="text-xs text-destructive">التوزيع أكبر من المبلغ المستلم.</div>}
     {allocations.length === 1 && records.data?.records.find((record) => record.source_type === allocations[0].sourceType && record.source_id === allocations[0].sourceId) && <div className="text-xs text-muted-foreground">بعد التوزيع: {formatCurrency(Math.max(0, (records.data.records.find((record) => record.source_type === allocations[0].sourceType && record.source_id === allocations[0].sourceId)?.remaining ?? 0) - Number(allocations[0].amount || 0)))}</div>}
@@ -546,25 +586,42 @@ function ReceiptAllocationPanel({ customerId, receivedAmount, allocations, saveR
 
 function VoucherCustomerPicker({
   selectedId,
+  selectedAccount = null,
+  includeSuppliers = false,
   onSelect,
   onClear,
 }: {
   selectedId: number | null;
-  onSelect: (customer: CustomerLite) => void;
+  selectedAccount?: VoucherAccount | null;
+  includeSuppliers?: boolean;
+  onSelect: (customer: VoucherAccount) => void;
   onClear: () => void;
 }) {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
-  const customers = useQuery({
-    queryKey: ["admin", "voucher-customers", deferredSearch],
-    queryFn: () => adminFetch<CustomerLite[]>(`/admin/customers?search=${encodeURIComponent(deferredSearch)}`),
+  const accounts = useQuery({
+    queryKey: ["admin", "voucher-accounts", includeSuppliers, deferredSearch],
+    queryFn: async () => {
+      if (includeSuppliers)
+        return adminFetch<VoucherAccount[]>(`/admin/receipt-vouchers/accounts?search=${encodeURIComponent(deferredSearch)}`);
+      const customers = await adminFetch<CustomerLite[]>(`/admin/customers?search=${encodeURIComponent(deferredSearch)}`);
+      return customers.map((customer): VoucherAccount => ({
+        ...customer,
+        type: "customer",
+        customerId: customer.id,
+        accountNumber: `CUS-${String(customer.id).padStart(6, "0")}`,
+        currentBalance: 0,
+      }));
+    },
     enabled: deferredSearch.length > 0,
     staleTime: 30_000,
   });
+  const selectedCustomerId = selectedAccount?.type === "customer" ? selectedAccount.id : selectedId;
+  const hasSelection = !!selectedAccount || !!selectedId;
   const detail = useQuery({
-    queryKey: ["admin", "voucher-customer-account", selectedId],
-    queryFn: () => adminFetch<CustomerAccountDetail>(`/admin/customers/${selectedId}`),
-    enabled: !!selectedId,
+    queryKey: ["admin", "voucher-customer-account", selectedCustomerId],
+    queryFn: () => adminFetch<CustomerAccountDetail>(`/admin/customers/${selectedCustomerId}`),
+    enabled: !!selectedCustomerId,
     staleTime: 30_000,
   });
   const recent = useMemo(() => {
@@ -584,37 +641,54 @@ function VoucherCustomerPicker({
     <div className="col-span-2 rounded-xl border border-border/30 bg-background/35 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-foreground">بحث باسم العميل</div>
-          <div className="text-xs text-muted-foreground">ابحث بالاسم أو الهاتف بصيغة 077 أو 964 أو +964</div>
+          <div className="text-sm font-semibold text-foreground">{includeSuppliers ? "بحث بحساب العميل أو المورد" : "بحث باسم العميل"}</div>
+          <div className="text-xs text-muted-foreground">{includeSuppliers ? "الاسم، الهاتف، رقم الفاتورة أو رقم الحساب" : "ابحث بالاسم أو الهاتف بصيغة 077 أو 964 أو +964"}</div>
         </div>
-        {selectedId && <button type="button" onClick={onClear} className="text-xs text-destructive hover:underline">إزالة الربط</button>}
+        {hasSelection && <button type="button" onClick={onClear} className="text-xs text-destructive hover:underline">إزالة الربط</button>}
       </div>
       <div className="relative">
         <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="اسم العميل أو رقم الهاتف" className={`${inputCls} pr-10`} />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={includeSuppliers ? "اسم أو هاتف أو فاتورة أو حساب" : "اسم العميل أو رقم الهاتف"} className={`${inputCls} pr-10`} />
       </div>
-      {deferredSearch && !selectedId && (
+      {deferredSearch && !hasSelection && (
         <div className="max-h-44 overflow-y-auto rounded-lg border border-border/30 divide-y divide-border/20">
-          {customers.isLoading ? <div className="p-3 text-xs text-muted-foreground">جارٍ البحث…</div>
-          : !customers.data?.length ? <div className="p-3 text-xs text-muted-foreground">لا يوجد عميل مطابق</div>
-          : customers.data.slice(0, 12).map((customer) => (
+          {accounts.isLoading ? <div className="p-3 text-xs text-muted-foreground">جارٍ البحث…</div>
+          : !accounts.data?.length ? <div className="p-3 text-xs text-muted-foreground">لا يوجد حساب مطابق</div>
+          : accounts.data.slice(0, 20).map((account) => (
             <button
-              key={customer.id}
+              key={`${account.type}-${account.id}`}
               type="button"
-              onClick={() => { onSelect(customer); setSearch(""); }}
+              onClick={() => { onSelect(account); setSearch(""); }}
               className="flex w-full items-center justify-between gap-3 p-3 text-right hover:bg-primary/5"
             >
-              <span className="min-w-0 truncate text-sm text-foreground">{customer.name || "بدون اسم"}</span>
-              <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</span>
+              <span className="min-w-0">
+                <span className="block truncate text-sm text-foreground">{account.name || "بدون اسم"}</span>
+                <span className="block text-[11px] text-muted-foreground">{account.type === "supplier" ? "مورد" : "عميل"} · {account.accountNumber ?? "—"} · {formatCurrency(account.currentBalance)}</span>
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{account.phone ? formatIraqiPhone(account.phone) : "—"}</span>
             </button>
           ))}
         </div>
       )}
-      {selectedId && detail.isLoading && <div className="text-xs text-muted-foreground">جارٍ تحميل حساب العميل…</div>}
-      {selectedId && detail.data && summary && (
+      {selectedAccount?.type === "supplier" && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <strong className="text-primary">{selectedAccount.name || "بدون اسم"}</strong>
+            <span className="text-muted-foreground">مورد</span>
+            <span className="text-muted-foreground" dir="ltr">{selectedAccount.phone ? formatIraqiPhone(selectedAccount.phone) : "—"}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <MiniAccountStat label="رقم الحساب" value={selectedAccount.accountNumber ?? "—"} />
+            <MiniAccountStat label="الرصيد الحالي" value={formatCurrency(selectedAccount.currentBalance)} />
+          </div>
+        </div>
+      )}
+      {selectedCustomerId && detail.isLoading && <div className="text-xs text-muted-foreground">جارٍ تحميل حساب العميل…</div>}
+      {selectedCustomerId && detail.data && summary && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <strong className="text-primary">{detail.data.name || "بدون اسم"}</strong>
+            <span className="text-muted-foreground">عميل</span>
             <span className="text-muted-foreground" dir="ltr">{formatIraqiPhone(detail.data.phone)}</span>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
