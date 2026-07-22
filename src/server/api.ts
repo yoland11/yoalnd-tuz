@@ -13411,7 +13411,10 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     }
     const formatted = await formatOrder(order);
     // Store Sound orders are projected once into the existing Booking Center as
-    // a service order. Routing failures never invalidate the completed checkout.
+    // a service order. Routing failures never invalidate the completed checkout,
+    // but they must not be silent either — the caller is told, and the order is
+    // marked so the retry endpoint can pick it up.
+    let soundSyncWarning: string | null = null;
     try {
       const soundBooking = await syncStoreSoundBooking({
         order,
@@ -13423,6 +13426,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           order,
           "لم يتم العثور على خدمة صوتيات فعّالة لربط طلب المتجر",
         );
+        soundSyncWarning =
+          "تم حفظ الطلب، لكن تعذر ربطه ببوابة الكوشات. يرجى مراجعة سجل المزامنة.";
       } else if (soundBooking.created && soundBooking.booking) {
         void createNotification({
           type: "booking_new",
@@ -13444,6 +13449,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         message: err?.message,
         stack: err?.stack,
       });
+      soundSyncWarning =
+        "تم حفظ الطلب، لكن تعذر ربطه ببوابة الكوشات. يرجى مراجعة سجل المزامنة.";
       try {
         await markStoreSoundBookingSyncRequired(
           order,
@@ -13538,7 +13545,9 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     void logAdminActivity(req, "customer_order_created", "order", order.id, {
       tracking: order.trackingCode,
     });
-    return json(formatted, 201);
+    // The order itself succeeded; a routing failure surfaces as a warning beside it
+    // rather than as an error that would wrongly suggest the order was lost.
+    return json(soundSyncWarning ? { ...formatted, soundSyncWarning } : formatted, 201);
   }
 
   if (method === "GET" && parts[1]) {
@@ -24107,7 +24116,18 @@ async function handleCentralBookingCenter(
         customerName: order.customerName,
         phone: order.phone,
         bookingSource: fields.bookingSource === "store" ? "المتجر" : "الخدمات",
-        departments: selected.length ? selected : centralBookingDepartments(service?.type ?? service?.nameAr),
+        // Priority: the department list stamped at sync time (identifiers, survives
+        // renames), then the per-service breakdown, then legacy text classification.
+        // A mixed booking keeps every department it serves and is never split.
+        departments: (() => {
+          const stamped = (Array.isArray(fields.departments) ? fields.departments : [])
+            .map((value: unknown) => String(value ?? "").trim())
+            .filter(Boolean);
+          const merged = [...new Set([...stamped, ...selected])];
+          return merged.length
+            ? merged
+            : centralBookingDepartments(service?.type ?? service?.nameAr);
+        })(),
         eventDate: order.eventDate ?? "",
         eventTime: fields.eventTime ?? "",
         hall: order.eventLocation ?? "",
@@ -30528,6 +30548,85 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
      * READ ONLY, always — there is no apply mode on this endpoint. It reports what a
      * backfill would touch so the list can be reviewed before anything is written.
      */
+    /**
+     * Retries Sound-booking synchronization for store orders marked as failed.
+     *
+     * Safe to run repeatedly: syncStoreSoundBooking is idempotent on
+     * custom_fields->>'storeOrderId' under a row lock, so a retry either links the
+     * order once or updates the booking already linked to it — never a duplicate.
+     */
+    if (parts[2] === "sound-sync-retry" && method === "POST") {
+      const auth = await requireAnyPermission(req, ["orders", "bookings"]);
+      if (isResponse(auth)) return auth;
+      const payload = await body(req);
+      const onlyOrderId = optionalPositiveId(payload?.orderId);
+
+      const marker = "[sound-booking-sync-required]";
+      const pending = await db.query.ordersTable.findMany({
+        where: onlyOrderId
+          ? eq(ordersTable.id, onlyOrderId)
+          : sql`${ordersTable.internalNotes} like ${`%${marker}%`}`,
+        orderBy: [desc(ordersTable.id)],
+        limit: 200,
+      });
+      if (!pending.length) return json({ ok: true, attempted: 0, linked: 0, failed: [] });
+
+      const orderIds = pending.map((row) => row.id);
+      const items = await db.query.orderItemsTable.findMany({
+        where: inArray(orderItemsTable.orderId, orderIds),
+        limit: 20000,
+      });
+      const productIds = [
+        ...new Set(items.map((item) => Number(item.productId)).filter(Boolean)),
+      ];
+      const products = productIds.length
+        ? await db.query.productsTable.findMany({
+            where: inArray(productsTable.id, productIds),
+          })
+        : [];
+
+      let linked = 0;
+      const failed: Array<{ orderId: number; reason: string }> = [];
+      for (const order of pending) {
+        const orderItems = items.filter((item) => item.orderId === order.id);
+        try {
+          const result = await syncStoreSoundBooking({ order, items: orderItems, products });
+          if (result.requiresSync) {
+            failed.push({ orderId: order.id, reason: "لا توجد خدمة صوتيات فعّالة" });
+            continue;
+          }
+          if (result.booking) {
+            linked += 1;
+            // Clear the marker only on a confirmed link, so a still-broken order
+            // stays visible to the next retry.
+            const cleaned = String(order.internalNotes ?? "")
+              .split("\n")
+              .filter((line) => !line.includes(marker) && line.trim() !== "يتطلب مزامنة حجز الصوتيات")
+              .join("\n")
+              .trim();
+            await db
+              .update(ordersTable)
+              .set({ internalNotes: cleaned || null, updatedAt: new Date() })
+              .where(eq(ordersTable.id, order.id));
+            void logAdminActivity(req, "sound_booking_sync_retried", "service_order", result.booking.id, {
+              sourceType: "store",
+              sourceId: order.id,
+              externalReference: bookingLinkKey("store", order.id),
+              created: result.created,
+            });
+          }
+        } catch (err: any) {
+          console.error("Sound booking retry failed", {
+            orderId: order.id,
+            message: err?.message,
+            stack: err?.stack,
+          });
+          failed.push({ orderId: order.id, reason: err?.message ?? "خطأ غير معروف" });
+        }
+      }
+      return json({ ok: true, attempted: pending.length, linked, failed });
+    }
+
     if (parts[2] === "sound-backfill-report" && method === "GET") {
       const auth = await requireAnyPermission(req, ["orders", "bookings"]);
       if (isResponse(auth)) return auth;

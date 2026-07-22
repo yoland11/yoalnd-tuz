@@ -181,6 +181,7 @@ function Dashboard() {
 function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
   const [rows, setRows] = useState<CrewBooking[] | null>(null);
   const [search, setSearch] = useState("");
+  const [dept, setDept] = useState<"all" | "kosha" | "sound" | "mixed">("all");
   const [error, setError] = useState<string | null>(null);
   const requestVersion = useRef(0);
   const load = useCallback(() => {
@@ -211,10 +212,41 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
         <Search className="h-4 w-4 text-muted-foreground" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الهاتف..." className="w-full bg-transparent py-2 text-sm outline-none" />
       </div>
+      {/* Department filter. Client-side over the already-loaded rows, so no route,
+          request or permission changes — a booking missing `departments` counts as kosha. */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {([
+          { key: "all", label: "الكل" },
+          { key: "kosha", label: "كوشات" },
+          { key: "sound", label: "صوتيات" },
+          { key: "mixed", label: "كوشات + صوتيات" },
+        ] as const).map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setDept(tab.key)}
+            aria-pressed={dept === tab.key}
+            className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${dept === tab.key ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
       {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
-      {!rows ? <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>
-        : rows.length === 0 ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد حجوزات</div>
-        : <div className="space-y-2">{rows.map((b) => <BookingCard key={b.id} b={b} />)}</div>}
+      {(() => {
+        if (!rows) return <div className="p-8 text-center"><Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" /></div>;
+        const visible = rows.filter((b) => {
+          if (dept === "all") return true;
+          const list = b.departments?.length ? b.departments : ["kosha"];
+          const hasKosha = list.includes("kosha");
+          const hasSound = list.includes("sound");
+          if (dept === "mixed") return hasKosha && hasSound;
+          if (dept === "sound") return hasSound;
+          return hasKosha;
+        });
+        if (!visible.length) return <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد حجوزات</div>;
+        return <div className="space-y-2">{visible.map((b) => <BookingCard key={b.id} b={b} />)}</div>;
+      })()}
     </div>
   );
 }

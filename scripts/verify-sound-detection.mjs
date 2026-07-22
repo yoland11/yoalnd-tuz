@@ -125,5 +125,30 @@ check("kosha badge", departmentBadge(["kosha"]), "كوشات");
 check("mixed badge order is fixed", departmentBadge(["sound", "kosha"]), "كوشات + صوتيات");
 check("empty badge", departmentBadge([]), "");
 
+// ── Portal filter semantics (mirrors BookingsList in src/views/staff/index.tsx) ──
+const passesFilter = (departments, tab) => {
+  const list = departments?.length ? departments : ["kosha"];
+  const hasKosha = list.includes("kosha");
+  const hasSound = list.includes("sound");
+  if (tab === "all") return true;
+  if (tab === "mixed") return hasKosha && hasSound;
+  if (tab === "sound") return hasSound;
+  return hasKosha;
+};
+check("sound tab shows a sound booking", passesFilter(["sound"], "sound"), true);
+check("sound tab hides a kosha booking", passesFilter(["kosha"], "sound"), false);
+check("kosha tab hides a sound-only booking", passesFilter(["sound"], "kosha"), false);
+check("mixed tab needs BOTH departments", passesFilter(["sound"], "mixed"), false);
+check("mixed tab shows kosha+sound", passesFilter(["kosha", "sound"], "mixed"), true);
+check("sound tab also shows a mixed booking", passesFilter(["kosha", "sound"], "sound"), true);
+check("kosha tab also shows a mixed booking", passesFilter(["kosha", "sound"], "kosha"), true);
+// Legacy rows carry no departments at all; they must not vanish from the portal.
+check("a booking with no departments defaults to kosha", passesFilter(undefined, "kosha"), true);
+check("a booking with no departments is not sound", passesFilter([], "sound"), false);
+check("the all tab hides nothing", [passesFilter([], "all"), passesFilter(["sound"], "all")], [true, true]);
+// photography-only must not leak into either kosha or sound tabs
+check("photography-only is absent from both tabs",
+  [passesFilter(["photography"], "kosha"), passesFilter(["photography"], "sound")], [false, false]);
+
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll checks passed");
 process.exit(failures ? 1 : 0);
