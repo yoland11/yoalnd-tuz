@@ -624,7 +624,6 @@ export function AssetsPage() {
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
-  const [editingDepreciation, setEditingDepreciation] = useState<AssetRow | null>(null);
   const [saleTarget, setSaleTarget] = useState<number | null>(null);
   const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
   const rows = data?.data ?? [];
@@ -788,15 +787,15 @@ export function AssetsPage() {
                               <BadgeDollarSign className="h-3.5 w-3.5" /> بيع الأصل
                             </Button>
                           ) : null}
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={!row.depreciationRecordId}
-                            onClick={() => setEditingDepreciation(row)}
-                            className="gap-1 text-primary"
-                          >
-                            <Pencil className="h-3.5 w-3.5" /> تعديل
-                          </Button>
+                          <Link href={`/admin/assets/new?edit=${row.productId}`}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1 text-primary"
+                            >
+                              <Pencil className="h-3.5 w-3.5" /> تعديل
+                            </Button>
+                          </Link>
                           <Link href={`/admin/print-labels?productId=${row.productId}&kind=asset`}>
                             <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground">
                               <QrCode className="h-3.5 w-3.5" /> طباعة ملصق
@@ -845,13 +844,6 @@ export function AssetsPage() {
           asset={null}
           assets={rows}
           onClose={() => setAdding(false)}
-        />
-      )}
-      {editingDepreciation && (
-        <DepreciationModal
-          asset={editingDepreciation}
-          assets={rows}
-          onClose={() => setEditingDepreciation(null)}
         />
       )}
       <RemoveDepreciationDialog asset={removeTarget} busy={removeDepreciation.isPending} onClose={() => setRemoveTarget(null)} onConfirm={(reason) => removeTarget?.depreciationRecordId && removeDepreciation.mutate({ recordId: removeTarget.depreciationRecordId, reason })} />
