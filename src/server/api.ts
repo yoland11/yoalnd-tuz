@@ -18997,7 +18997,7 @@ async function handleEnterpriseAdmin(
         })),
       });
     }
-    if (method === "POST") {
+    if (method === "POST" || method === "PATCH") {
       const data = await body(req);
       const productId = optionalPositiveId(data?.productId);
       if (!productId) return error("اختر قطعة المخزون", 400);
@@ -19139,7 +19139,7 @@ async function handleEnterpriseAdmin(
             },
           });
         }
-        return json(row, 201);
+        return json(row, method === "POST" ? 201 : 200);
       } catch (err: any) {
         if (err?.code === "23505")
           return error("الرقم التسلسلي مستخدم لقطعة أخرى", 409);
@@ -26910,7 +26910,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       await ensureAssetCategoriesTables();
       const productId = int(parts[3]);
       if (!productId) return error("معرّف الأصل غير صحيح", 400);
-      const [product, profile, passport, documents, custody] = await Promise.all([
+      const [product, profile, passport, documents, custody, qrRecord] = await Promise.all([
         db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
         db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) }),
         db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) }),
@@ -26927,9 +26927,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")),
           orderBy: [desc(equipmentCustodyTable.issuedAt)],
         }),
+        db.query.qrTokensTable.findFirst({
+          where: and(
+            eq(qrTokensTable.entityType, "asset"),
+            eq(qrTokensTable.entityId, productId),
+          ),
+        }),
       ]);
       if (!product || !product.isAsset) return error("الأصل غير موجود", 404);
       const metadata = assetMetadataObject(passport?.metadata);
+      const qr = qrRecord
+        ? {
+            token: qrRecord.token,
+            scanUrl: `${baseUrlFromReq(req)}/api/qr/${qrRecord.token}`,
+            dataUrl: await QRCode.toDataURL(
+              `${baseUrlFromReq(req)}/api/qr/${qrRecord.token}`,
+              { margin: 1, width: 240 },
+            ),
+          }
+        : null;
       return json({
         productId,
         assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
@@ -26950,6 +26966,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           fileName: document.fileName,
           documentType: document.documentType,
         })),
+        qr,
       });
     }
 

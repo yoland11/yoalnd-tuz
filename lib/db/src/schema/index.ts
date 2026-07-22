@@ -36,6 +36,7 @@ export * from "./photography-shoots";
 export * from "./photography-post";
 export * from "./photography-gallery";
 export * from "./master-cash-box";
+export * from "./customer-receivables";
 export * from "./enterprise";
 export * from "./desktop";
 export * from "./graduation";

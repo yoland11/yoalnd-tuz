@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Aperture,
@@ -116,6 +116,7 @@ type AssetEditPayload = {
   profile: any;
   passport: any;
   documents: AssetDocument[];
+  qr: { token: string; scanUrl: string; dataUrl: string } | null;
 };
 
 type SavedAsset = {
@@ -167,8 +168,9 @@ function assetCodePreview(id?: number) {
 }
 
 export default function AssetNewPage() {
-  const [location, setLocation] = useLocation();
-  const routeParams = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  const [, setLocation] = useLocation();
+  const routeSearch = useSearch();
+  const routeParams = useMemo(() => new URLSearchParams(routeSearch), [routeSearch]);
   const editProductId = Number(routeParams.get("edit")) || 0;
   const isEditMode = editProductId > 0;
   const returnTo = routeParams.get("returnTo");
@@ -198,7 +200,6 @@ export default function AssetNewPage() {
   // Live QR + barcode preview (reuses the label engine; keyed off the serial).
   const [qrPreview, setQrPreview] = useState("");
   const [barcodePreview, setBarcodePreview] = useState("");
-  const previewCode = form.serialNumber.trim() || form.model.trim() || "AJN-ASSET";
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers"],
@@ -232,6 +233,12 @@ export default function AssetNewPage() {
     queryFn: () => adminFetch(`/admin/assets/edit/${editProductId}`),
     enabled: isEditMode,
   });
+  const previewCode = isEditMode
+    ? String(
+        assetEditQuery.data?.product?.barcode
+          ?? (form.serialNumber.trim() || form.model.trim() || "AJN-ASSET"),
+      )
+    : form.serialNumber.trim() || form.model.trim() || "AJN-ASSET";
 
   useEffect(() => {
     if (!isEditMode && !form.category && assetCategories.length) {
@@ -241,7 +248,7 @@ export default function AssetNewPage() {
 
   useEffect(() => {
     const asset = assetEditQuery.data;
-    if (!asset || loadedEditId === asset.productId) return;
+    if (!asset || assetCategoriesLoading || loadedEditId === asset.productId) return;
     const metadata = asset.passport?.metadata ?? {};
     const depreciation = metadata.depreciation ?? {};
     const persistedImages = Array.isArray(asset.product?.images) ? asset.product.images.filter(Boolean) : [];
@@ -252,11 +259,16 @@ export default function AssetNewPage() {
       : persistedImages.filter((image: string) => image !== mainImage && image !== invoiceImage);
     const profileStatus = String(asset.profile?.status ?? "active");
     const status = profileStatus === "active" ? "available" : profileStatus;
+    const metadataCategoryId = Number(metadata.category);
+    const categoryId = asset.product?.assetCategoryId
+      ?? (Number.isInteger(metadataCategoryId) && metadataCategoryId > 0 ? metadataCategoryId : null)
+      ?? assetCategories.find((category) => category.name === asset.product?.category)?.id
+      ?? null;
     setForm({
       ...EMPTY,
       name: asset.product?.name ?? "",
       nameAr: asset.product?.nameAr ?? "",
-      category: asset.product?.assetCategoryId ? String(asset.product.assetCategoryId) : "",
+      category: categoryId ? String(categoryId) : "",
       brand: metadata.brand ?? "",
       model: metadata.model ?? "",
       serialNumber: asset.profile?.serialNumber ?? asset.passport?.serialNumber ?? "",
@@ -271,7 +283,7 @@ export default function AssetNewPage() {
       room: metadata.room ?? "",
       shelf: metadata.shelf ?? "",
       position: metadata.position ?? "",
-      status: STATUSES.some(([value]) => value === status) ? status : "available",
+      status,
       isRental: Boolean(asset.product?.isRental),
       pricePerDay: String(asset.product?.pricePerDay ?? ""),
       depreciationEnabled: depreciation.enabled !== false,
@@ -289,20 +301,24 @@ export default function AssetNewPage() {
     setAccessories(Array.isArray(metadata.relatedProductIds) ? metadata.relatedProductIds.map(Number).filter(Number.isFinite) : []);
     setAssetDocuments(asset.documents ?? []);
     setLoadedEditId(asset.productId);
-  }, [assetEditQuery.data, loadedEditId]);
+  }, [assetCategories, assetCategoriesLoading, assetEditQuery.data, loadedEditId]);
 
   useEffect(() => {
     let alive = true;
-    generateQrDataUrl(previewCode, 240)
-      .then((d) => alive && setQrPreview(d))
-      .catch(() => alive && setQrPreview(""));
+    if (isEditMode) {
+      setQrPreview(assetEditQuery.data?.qr?.dataUrl ?? "");
+    } else {
+      generateQrDataUrl(previewCode, 240)
+        .then((d) => alive && setQrPreview(d))
+        .catch(() => alive && setQrPreview(""));
+    }
     generateBarcodeSvg(previewCode, "CODE128", { height: 48, displayValue: true })
       .then((s) => alive && setBarcodePreview(s))
       .catch(() => alive && setBarcodePreview(""));
     return () => {
       alive = false;
     };
-  }, [previewCode]);
+  }, [assetEditQuery.data?.qr?.dataUrl, isEditMode, previewCode]);
 
   function set<K extends keyof typeof EMPTY>(key: K, value: (typeof EMPTY)[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -450,7 +466,7 @@ export default function AssetNewPage() {
    *  3) POST /admin/enterprise/assets → creates Asset Passport (+ QR token)
    *  4) GET  /admin/assets/qr     → ensures QR token row + returns scannable QR image
    */
-  async function persist(): Promise<SavedAsset> {
+  async function persist(mode: "save" | "print" | "passport"): Promise<SavedAsset> {
     const selectedCategory = assetCategories.find(
       (category) => String(category.id) === form.category,
     );
@@ -506,20 +522,28 @@ export default function AssetNewPage() {
       method: isEditMode ? "PATCH" : "POST",
       body: JSON.stringify({
         productId,
+        ...(isEditMode && assetEditQuery.data?.profile?.id
+          ? { depreciationRecordId: assetEditQuery.data.profile.id }
+          : {}),
         purchasePrice: num(form.purchaseCost),
         purchaseDate: form.purchaseDate || undefined,
         expectedLifeUses: Math.max(1, Math.floor(num(form.usefulLife) || 50)),
         currentValue: num(form.currentValue) || num(form.purchaseCost),
         serialNumber: form.serialNumber.trim(),
-        status: STATUS_TO_PROFILE[form.status] ?? "active",
+        status: STATUS_TO_PROFILE[form.status] ?? form.status,
         notes: form.notes.trim() || undefined,
         recalculate: false,
       }),
     });
 
     // 3) Asset Passport (+ QR token)
+    const existingMetadata = assetEditQuery.data?.passport?.metadata ?? {};
+    const existingDepreciation = existingMetadata.depreciation ?? {};
+    const existingChecklist = Array.isArray(existingMetadata.checklist)
+      ? existingMetadata.checklist
+      : [];
     await adminFetch("/admin/enterprise/assets", {
-      method: "POST",
+      method: isEditMode ? "PATCH" : "POST",
       body: JSON.stringify({
         productId,
         serialNumber: form.serialNumber.trim(),
@@ -539,15 +563,20 @@ export default function AssetNewPage() {
           room: form.room.trim() || null,
           shelf: form.shelf.trim() || null,
           position: form.position.trim() || null,
-          checklist: checklist.map((text) => ({ text, done: false })),
+          checklist: checklist.map((text) => {
+            const current = existingChecklist.find((item: any) =>
+              (typeof item === "string" ? item : item?.text) === text,
+            );
+            return current && typeof current === "object"
+              ? { ...current, text }
+              : { text, done: false };
+          }),
           relatedProductIds: accessories,
           notes: form.notes.trim() || null,
-          healthScore: 100,
-          usageCount: 0,
-          roi: 0,
           currentEmployee: form.assignedStaffId ? Number(form.assignedStaffId) : null,
           currentLocation: form.lastLocation.trim() || "warehouse",
           depreciation: {
+            ...existingDepreciation,
             enabled: form.depreciationEnabled,
             purchaseValue: num(form.purchaseCost),
             salvageValue: num(form.salvageValue),
@@ -557,20 +586,22 @@ export default function AssetNewPage() {
           mainImageUrl: mainUrl,
           invoiceImageUrl: invoiceUrl,
           additionalImages: additionalUrls,
-          createdVia: "add-new-asset",
+          createdVia: existingMetadata.createdVia ?? "add-new-asset",
         },
       }),
     });
 
     // 4) Ensure/return scannable QR
-    let qrDataUrl = "";
-    let scanUrl = "";
-    try {
-      const qr = await adminFetch<any>(`/admin/assets/qr?productId=${productId}`);
-      qrDataUrl = qr?.dataUrl ?? "";
-      scanUrl = qr?.scanUrl ?? qr?.targetUrl ?? "";
-    } catch {
-      /* QR is best-effort; passport already holds a token */
+    let qrDataUrl = isEditMode ? assetEditQuery.data?.qr?.dataUrl ?? "" : "";
+    let scanUrl = isEditMode ? assetEditQuery.data?.qr?.scanUrl ?? "" : "";
+    if (!isEditMode || mode !== "save") {
+      try {
+        const qr = await adminFetch<any>(`/admin/assets/qr?productId=${productId}`);
+        qrDataUrl = qr?.dataUrl ?? "";
+        scanUrl = qr?.scanUrl ?? qr?.targetUrl ?? "";
+      } catch {
+        /* QR is best-effort; an ordinary edit never creates or rotates it. */
+      }
     }
 
     return {
@@ -589,12 +620,22 @@ export default function AssetNewPage() {
     setSaving(true);
     setNotice(null);
     try {
-      const result = await persist();
+      const result = await persist(mode);
       setSaved(result);
-      queryClient.invalidateQueries({ queryKey: ["admin", "assets"] });
-      queryClient.invalidateQueries({ queryKey: ["asset-depreciation-report"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["admin", "assets"] }),
+        queryClient.invalidateQueries({ queryKey: ["asset-depreciation-report"] }),
+        queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "assets"] }),
+        queryClient.invalidateQueries({ queryKey: ["admin", "asset-edit", result.productId] }),
+      ]);
       flash("ok", isEditMode ? `تم تحديث الأصل ${result.assetCode} وبيانات الإهلاك.` : `تم إنشاء الأصل ${result.assetCode} وتوليد الجواز الرقمي والباركود.`);
+
+      if (isEditMode) {
+        toast({
+          title: "تم تحديث الأصل بنجاح",
+          description: `${result.name} · ${result.assetCode}`,
+        });
+      }
 
       if (mode === "print") {
         const label: LabelData = {
@@ -627,6 +668,8 @@ export default function AssetNewPage() {
       } else if (mode === "passport") {
         if (result.scanUrl) window.open(result.scanUrl, "_blank");
         else setLocation("/admin/assets");
+      } else if (isEditMode) {
+        setLocation(`/admin/command-center?tab=assets&asset=${result.productId}`);
       }
     } catch (e) {
       flash("err", apiErrorMessage(e, "تعذّر حفظ الأصل"));
@@ -649,6 +692,18 @@ export default function AssetNewPage() {
 
   const inputCls =
     "mt-1 w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+  if (isEditMode && (assetEditQuery.isLoading || loadedEditId !== editProductId)) {
+    return (
+      <div className="grid min-h-64 place-items-center" dir="rtl">
+        {assetEditQuery.isError ? (
+          <EmptyState message={apiErrorMessage(assetEditQuery.error, "تعذّر تحميل بيانات الأصل")} />
+        ) : (
+          <Loader2 className="h-7 w-7 animate-spin text-primary" />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4" dir="rtl">
