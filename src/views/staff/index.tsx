@@ -3,6 +3,7 @@ import { Link, Route, Switch, useLocation } from "wouter";
 import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff } from "lucide-react";
 import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
+import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 
@@ -188,6 +189,7 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
   const [search, setSearch] = useState("");
   const [dept, setDept] = useState<"all" | "kosha" | "sound" | "mixed">("all");
   const [error, setError] = useState<string | null>(null);
+  const [, nav] = useLocation();
   const requestVersion = useRef(0);
   const load = useCallback(() => {
     const version = ++requestVersion.current;
@@ -216,6 +218,11 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
       <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3">
         <Search className="h-4 w-4 text-muted-foreground" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الهاتف..." className="w-full bg-transparent py-2 text-sm outline-none" />
+      </div>
+      {/* Operations surfaces sit one tap away instead of crowding the tab bar. */}
+      <div className="grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => nav("/staff/koshas/ops-board")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">اللوحة الحية</button>
+        <button type="button" onClick={() => nav("/staff/koshas/ops-reports")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">التقارير التشغيلية</button>
       </div>
       {/* Department filter. Client-side over the already-loaded rows, so no route,
           request or permission changes — a booking missing `departments` counts as kosha. */}
@@ -482,6 +489,8 @@ function StaffPortalContent() {
           <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} />}</Route>
           <Route path="/staff/koshas/list"><BookingsList bucket="all" /></Route>
           <Route path="/staff/koshas/notifications"><Notifications /></Route>
+          <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
+          <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
           <Route path="/staff/koshas"><Dashboard /></Route>
           <Route><Dashboard /></Route>

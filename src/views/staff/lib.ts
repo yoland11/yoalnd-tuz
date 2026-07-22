@@ -130,6 +130,123 @@ export const staffApi = {
   reject: (id: number) => adminFetch(`${base}/payment-requests/${id}/reject`, { method: "POST", body: "{}" }),
 };
 
+// ── Field operations (checklist, damage, item scans, board, reports) ──────────
+
+export const CHECKLIST_ITEMS: Array<{ key: string; label: string }> = [
+  { key: "backdrop", label: "الخلفية" },
+  { key: "flowers", label: "الورود" },
+  { key: "lighting", label: "الإضاءة" },
+  { key: "chairs", label: "الكراسي" },
+  { key: "tables", label: "الطاولات" },
+  { key: "carpet", label: "السجاد" },
+  { key: "frames", label: "الإطارات" },
+  { key: "accessories", label: "الإكسسوارات" },
+  { key: "audio", label: "الصوتيات" },
+  { key: "screens", label: "الشاشات" },
+  { key: "other", label: "أصول أخرى" },
+];
+
+export const CHECKLIST_CONDITIONS: Array<{ key: string; label: string }> = [
+  { key: "available", label: "متوفر" },
+  { key: "missing", label: "مفقود" },
+  { key: "damaged", label: "تالف" },
+  { key: "needs_maintenance", label: "يحتاج صيانة" },
+];
+
+export const SCAN_POINTS: Array<{ key: string; label: string }> = [
+  { key: "warehouse_out", label: "خروج من المخزن" },
+  { key: "vehicle_load", label: "تحميل بالمركبة" },
+  { key: "installation", label: "التنصيب" },
+  { key: "return", label: "الإرجاع" },
+  { key: "warehouse_in", label: "دخول المخزن" },
+];
+
+export const DAMAGE_PRIORITIES: Array<{ key: string; label: string }> = [
+  { key: "low", label: "منخفضة" },
+  { key: "medium", label: "متوسطة" },
+  { key: "high", label: "عالية" },
+  { key: "critical", label: "حرجة" },
+];
+
+export type ChecklistRow = {
+  item: string; condition: string; productId: number | null;
+  quantity: number; note: string | null; checkedByName: string; updatedAt: string;
+};
+
+export type DamageRow = {
+  id: number; productId: number | null; description: string; priority: string;
+  costEstimate: number; photoUrl: string | null; responsibleStaffId: number | null;
+  reportedByName: string; status: string; approvedAt: string | null; createdAt: string;
+};
+
+export type OperationsPayload = {
+  bookingId: number;
+  bookingSource: string;
+  checklist: ChecklistRow[];
+  checklistCovered: boolean;
+  checklistIssues: Array<{ item: string; condition: string }>;
+  stageEvents: Array<{
+    id: number; fromStage: string | null; toStage: string;
+    staffName: string; note: string | null; photoUrl: string | null;
+    lat: number | null; lng: number | null; createdAt: string;
+  }>;
+  damages: DamageRow[];
+  damageAnswered: boolean;
+  scanCounts: Record<string, number>;
+};
+
+export type KoshaOpsBoard = {
+  today: string;
+  counts: {
+    today: number; preparing: number; inProgress: number;
+    completed: number; delayed: number;
+  };
+  missingAssets: Array<{ bookingId: number; customerName: string; item: string }>;
+  damagedAssets: Array<{ bookingId: number; customerName: string; description: string; priority: string }>;
+  employeeWorkload: Array<{ staffId: number; name: string; bookings: number }>;
+};
+
+export type KoshaOpsReport = {
+  range: { from: string; to: string };
+  daily: Array<{ date: string; bookings: number; completed: number }>;
+  employees: Array<{ staffId: number; name: string; stageEvents: number; scans: number }>;
+  equipment: Array<{ productId: number; name: string; scans: number }>;
+  damages: Array<{ priority: string; count: number; cost: number }>;
+  missing: Array<{ bookingId: number; item: string; customerName: string }>;
+  lateReturns: Array<{ bookingId: number; customerName: string; eventDate: string; stage: string }>;
+  maintenance: Array<{ bookingId: number; item: string; customerName: string }>;
+};
+
+const opsBase = (id: number, source: string) =>
+  `${base}/operations/${id}${source && source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`;
+
+export const koshaOpsApi = {
+  get: (id: number, source = "kosha") => adminFetch<OperationsPayload>(opsBase(id, source)),
+  saveChecklist: (id: number, entries: Array<Record<string, unknown>>, source = "kosha") =>
+    adminFetch<{ ok: boolean; checklist: ChecklistRow[]; checklistCovered: boolean; checklistIssues: Array<{ item: string; condition: string }> }>(
+      `${base}/operations/${id}/checklist${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      { method: "POST", body: JSON.stringify({ entries }) },
+    ),
+  reportDamage: (id: number, payload: Record<string, unknown>, source = "kosha") =>
+    adminFetch<{ ok: boolean; id: number | null; status: string }>(
+      `${base}/operations/${id}/damage${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  scanItem: (id: number, payload: Record<string, unknown>, source = "kosha") =>
+    adminFetch<{ ok: boolean; productId: number; name: string; scanPoint: string; scanPointLabel: string }>(
+      `${base}/operations/${id}/scan${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  board: () => adminFetch<KoshaOpsBoard>(`${base}/ops-board`),
+  reports: (opts: { from?: string; to?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.from) params.set("from", opts.from);
+    if (opts.to) params.set("to", opts.to);
+    const query = params.toString();
+    return adminFetch<KoshaOpsReport>(`${base}/ops-reports${query ? `?${query}` : ""}`);
+  },
+};
+
 export function money(n: number | string | null | undefined) {
   return formatMoney(n);
 }

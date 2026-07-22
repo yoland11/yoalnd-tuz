@@ -6,6 +6,7 @@ import {
 } from "./lib";
 import { isQueued } from "./offline";
 import { LiveScanner } from "./live-scanner";
+import { KoshaOperationsPanel } from "./operations";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -237,6 +238,9 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
 
         {/* Booking assets — QR checkout / return */}
         <AssetsSection id={id} />
+
+        {/* Field operations — equipment checklist, scan points, damage report */}
+        <KoshaOperationsPanel bookingId={id} source={(b as any).source === "service" ? "service" : "kosha"} />
 
         {/* Checklist before warehouse exit */}
         {panel === "checklist" && <ChecklistPanel booking={b} busy={busy} onCancel={() => setPanel(null)} onConfirm={(note) => run(() => staffApi.setStage(id, "out_of_warehouse", note))} />}

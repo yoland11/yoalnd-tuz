@@ -302,6 +302,8 @@ import {
 import {
   KOSHA_CHECKLIST_ITEMS,
   KOSHA_CHECKLIST_LABELS,
+  KOSHA_STAGE_LABELS,
+  type KoshaStage,
   SCAN_POINT_LABELS,
   blockingChecklistIssues,
   checklistCovered,
@@ -3169,6 +3171,97 @@ async function runSmartNotificationsSweep() {
   } catch (err) {
     // A photography-specific failure must not abort the rest of the sweep.
     console.warn("[smart-notifications] photography alerts failed", {
+      error: err instanceof Error ? err.message : "unknown",
+    });
+  }
+
+  // ── Kosha operations ──
+  // Delays and unresolved equipment, derived from the booking's own stage and the
+  // checklist/damage tables. Deduped by createSmartAlert on (type, entityType, entityId).
+  try {
+    await ensureKoshaOperationsTables();
+    const today = new Date().toISOString().slice(0, 10);
+    const koshaRows = await db.query.koshaBookingsTable.findMany({
+      where: sql`${koshaBookingsTable.archivedAt} is null`,
+      orderBy: [desc(koshaBookingsTable.eventDate)],
+      limit: 400,
+    });
+    for (const row of koshaRows) {
+      const stage = String((row as any).executionStage ?? "preparing");
+      const eventDate = String(row.eventDate ?? "");
+      if (!eventDate) continue;
+      const href = `/staff/koshas/booking/${row.id}`;
+
+      // The event day arrived and the crew has not started preparing.
+      if (eventDate === today && ["booked", "preparing"].includes(stage)) {
+        await add({
+          type: "kosha_booking_starting",
+          title: "حجز كوشة اليوم",
+          body: `${row.customerName} — لم يبدأ التجهيز بعد`,
+          entityType: "kosha_booking",
+          entityId: row.id,
+          href,
+        });
+      }
+      // The event is over and the equipment never came back.
+      if (eventDate < today && !["returned", "delivered"].includes(stage)) {
+        await add({
+          type: "kosha_booking_delayed",
+          title: "حجز كوشة متأخر",
+          body: `${row.customerName} — انتهت المناسبة والحالة «${KOSHA_STAGE_LABELS[stage as KoshaStage] ?? stage}»`,
+          entityType: "kosha_booking",
+          entityId: row.id,
+          href,
+        });
+      }
+      if (stage === "delivered" || stage === "returned") {
+        await add({
+          type: "kosha_booking_completed",
+          title: "اكتمل حجز كوشة",
+          body: row.customerName,
+          entityType: "kosha_booking",
+          entityId: row.id,
+          href,
+        });
+      }
+    }
+
+    const bookingName = new Map(koshaRows.map((row) => [row.id, row.customerName]));
+    const missingRows: any[] =
+      ((await db.execute(sql`
+        select booking_id, item from kosha_checklist_entries where condition = 'missing' limit 100
+      `)) as any).rows ?? [];
+    for (const row of missingRows) {
+      const bookingId = Number(row.booking_id);
+      await add({
+        type: "kosha_asset_missing",
+        title: "أصل مفقود في حجز كوشة",
+        body: `${bookingName.get(bookingId) ?? `#${bookingId}`} — ${KOSHA_CHECKLIST_LABELS[String(row.item) as KoshaChecklistItem] ?? row.item}`,
+        entityType: "kosha_booking",
+        entityId: bookingId,
+        href: `/staff/koshas/booking/${bookingId}`,
+      });
+    }
+
+    const openDamages: any[] =
+      ((await db.execute(sql`
+        select booking_id, description, priority from kosha_damage_reports
+        where status in ('open', 'pending_approval') limit 100
+      `)) as any).rows ?? [];
+    for (const row of openDamages) {
+      const bookingId = Number(row.booking_id);
+      await add({
+        type: "kosha_damage_reported",
+        title: "بلاغ ضرر في حجز كوشة",
+        body: `${bookingName.get(bookingId) ?? `#${bookingId}`} — ${String(row.description).slice(0, 100)}`,
+        entityType: "kosha_booking",
+        entityId: bookingId,
+        href: `/staff/koshas/booking/${bookingId}`,
+      });
+    }
+  } catch (err) {
+    // A kosha-specific failure must not abort the rest of the sweep.
+    console.warn("[smart-notifications] kosha operations alerts failed", {
       error: err instanceof Error ? err.message : "unknown",
     });
   }
@@ -42314,6 +42407,234 @@ async function handleStaffPortal(
     }
 
     return error("الإجراء غير مدعوم", 405);
+  }
+
+  // ── Live operations board (Part 7) ──
+  if (resource === "ops-board" && method === "GET") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureKoshaOperationsTables();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const bookings = await db.query.koshaBookingsTable.findMany({
+      where: sql`${koshaBookingsTable.archivedAt} is null`,
+      orderBy: [desc(koshaBookingsTable.eventDate)],
+      limit: 500,
+    });
+    const bookingById = new Map(bookings.map((row) => [row.id, row]));
+    const stageOf = (row: any) => String(row.executionStage ?? "preparing");
+
+    const [checklistRows, damageRows] = await Promise.all([
+      db.execute(sql`
+        select booking_id, item, condition from kosha_checklist_entries
+        where condition <> 'available'
+      `),
+      db.execute(sql`
+        select booking_id, description, priority from kosha_damage_reports
+        where status <> 'none' order by created_at desc limit 200
+      `),
+    ]);
+
+    const nameFor = (bookingId: number) =>
+      bookingById.get(bookingId)?.customerName ?? `#${bookingId}`;
+
+    // A booking is delayed when its event date has passed and it never reached a
+    // terminal stage — the crew is still holding equipment that should be back.
+    const delayed = bookings.filter(
+      (row) =>
+        String(row.eventDate ?? "") < today &&
+        !["delivered", "returned"].includes(stageOf(row)),
+    );
+
+    const workload = new Map<number, { name: string; bookings: number }>();
+    for (const row of bookings) {
+      if (String(row.eventDate ?? "") !== today) continue;
+      const staffId = Number((row as any).assignedStaffId ?? 0);
+      if (!staffId) continue;
+      const entry = workload.get(staffId) ?? {
+        name: String((row as any).assignedStaffName ?? `#${staffId}`),
+        bookings: 0,
+      };
+      entry.bookings += 1;
+      workload.set(staffId, entry);
+    }
+
+    return json({
+      today,
+      counts: {
+        today: bookings.filter((row) => String(row.eventDate ?? "") === today).length,
+        preparing: bookings.filter((row) => ["booked", "preparing", "ready"].includes(stageOf(row))).length,
+        inProgress: bookings.filter((row) =>
+          ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "dismantling"].includes(stageOf(row)),
+        ).length,
+        completed: bookings.filter((row) => ["returned", "delivered"].includes(stageOf(row))).length,
+        delayed: delayed.length,
+      },
+      delayed: delayed.slice(0, 30).map((row) => ({
+        bookingId: row.id,
+        customerName: row.customerName,
+        eventDate: row.eventDate,
+        stage: stageOf(row),
+      })),
+      missingAssets: (((checklistRows as any).rows ?? []) as any[])
+        .filter((row) => String(row.condition) === "missing")
+        .slice(0, 50)
+        .map((row) => ({
+          bookingId: Number(row.booking_id),
+          customerName: nameFor(Number(row.booking_id)),
+          item: String(row.item),
+        })),
+      damagedAssets: (((damageRows as any).rows ?? []) as any[]).slice(0, 50).map((row) => ({
+        bookingId: Number(row.booking_id),
+        customerName: nameFor(Number(row.booking_id)),
+        description: String(row.description),
+        priority: String(row.priority),
+      })),
+      employeeWorkload: [...workload.entries()]
+        .map(([staffId, entry]) => ({ staffId, ...entry }))
+        .sort((a, b) => b.bookings - a.bookings),
+    });
+  }
+
+  // ── Operational reports (Part 8) ──
+  if (resource === "ops-reports" && method === "GET") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureKoshaOperationsTables();
+    const params = req.nextUrl.searchParams;
+    const today = new Date();
+    const defaultFrom = new Date(today.getTime() - 29 * 86_400_000).toISOString().slice(0, 10);
+    const from = String(params.get("from") ?? defaultFrom).slice(0, 10);
+    const to = String(params.get("to") ?? today.toISOString().slice(0, 10)).slice(0, 10);
+
+    const bookings = await db.query.koshaBookingsTable.findMany({
+      where: sql`${koshaBookingsTable.archivedAt} is null`,
+      orderBy: [desc(koshaBookingsTable.eventDate)],
+      limit: 1000,
+    });
+    const inRange = bookings.filter((row) => {
+      const date = String(row.eventDate ?? "");
+      return date >= from && date <= to;
+    });
+    const bookingById = new Map(bookings.map((row) => [row.id, row]));
+    const stageOf = (row: any) => String(row.executionStage ?? "preparing");
+
+    const [stageEvents, scans, damages, checklist] = await Promise.all([
+      db.execute(sql`
+        select staff_id, staff_name, count(*)::int as count
+        from kosha_stage_events where created_at >= ${from}::date and created_at < (${to}::date + 1)
+        group by staff_id, staff_name
+      `),
+      db.execute(sql`
+        select s.product_id, s.staff_id, s.staff_name, count(*)::int as count
+        from kosha_item_scans s
+        where s.created_at >= ${from}::date and s.created_at < (${to}::date + 1)
+        group by s.product_id, s.staff_id, s.staff_name
+      `),
+      db.execute(sql`
+        select priority, count(*)::int as count, coalesce(sum(cost_estimate), 0) as cost
+        from kosha_damage_reports
+        where status <> 'none' and created_at >= ${from}::date and created_at < (${to}::date + 1)
+        group by priority
+      `),
+      db.execute(sql`
+        select booking_id, item, condition from kosha_checklist_entries where condition <> 'available'
+      `),
+    ]);
+
+    const scanRows = ((scans as any).rows ?? []) as any[];
+    const productIds = [...new Set(scanRows.map((row) => Number(row.product_id)).filter(Boolean))];
+    const products = productIds.length
+      ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) })
+      : [];
+    const productById = new Map(products.map((row) => [row.id, row]));
+
+    // Daily volume, keyed by event date.
+    const daily = new Map<string, { bookings: number; completed: number }>();
+    for (const row of inRange) {
+      const date = String(row.eventDate ?? "");
+      const entry = daily.get(date) ?? { bookings: 0, completed: 0 };
+      entry.bookings += 1;
+      if (["returned", "delivered"].includes(stageOf(row))) entry.completed += 1;
+      daily.set(date, entry);
+    }
+
+    // Employee productivity merges stage transitions and item scans.
+    const employees = new Map<number, { name: string; stageEvents: number; scans: number }>();
+    for (const row of ((stageEvents as any).rows ?? []) as any[]) {
+      const staffId = Number(row.staff_id ?? 0);
+      if (!staffId) continue;
+      const entry = employees.get(staffId) ?? { name: String(row.staff_name ?? `#${staffId}`), stageEvents: 0, scans: 0 };
+      entry.stageEvents += Number(row.count ?? 0);
+      employees.set(staffId, entry);
+    }
+    for (const row of scanRows) {
+      const staffId = Number(row.staff_id ?? 0);
+      if (!staffId) continue;
+      const entry = employees.get(staffId) ?? { name: String(row.staff_name ?? `#${staffId}`), stageEvents: 0, scans: 0 };
+      entry.scans += Number(row.count ?? 0);
+      employees.set(staffId, entry);
+    }
+
+    const equipment = new Map<number, number>();
+    for (const row of scanRows) {
+      const productId = Number(row.product_id);
+      if (!productId) continue;
+      equipment.set(productId, (equipment.get(productId) ?? 0) + Number(row.count ?? 0));
+    }
+
+    const checklistRows = ((checklist as any).rows ?? []) as any[];
+    const nameFor = (bookingId: number) => bookingById.get(bookingId)?.customerName ?? `#${bookingId}`;
+
+    return json({
+      range: { from, to },
+      daily: [...daily.entries()]
+        .map(([date, entry]) => ({ date, ...entry }))
+        .sort((a, b) => a.date.localeCompare(b.date)),
+      employees: [...employees.entries()]
+        .map(([staffId, entry]) => ({ staffId, ...entry }))
+        .sort((a, b) => b.stageEvents + b.scans - (a.stageEvents + a.scans)),
+      equipment: [...equipment.entries()]
+        .map(([productId, count]) => ({
+          productId,
+          name: productById.get(productId)?.nameAr || productById.get(productId)?.name || `#${productId}`,
+          scans: count,
+        }))
+        .sort((a, b) => b.scans - a.scans)
+        .slice(0, 50),
+      damages: (((damages as any).rows ?? []) as any[]).map((row) => ({
+        priority: String(row.priority),
+        count: Number(row.count ?? 0),
+        cost: Number(row.cost ?? 0),
+      })),
+      missing: checklistRows
+        .filter((row) => String(row.condition) === "missing")
+        .map((row) => ({
+          bookingId: Number(row.booking_id),
+          item: String(row.item),
+          customerName: nameFor(Number(row.booking_id)),
+        })),
+      maintenance: checklistRows
+        .filter((row) => String(row.condition) === "needs_maintenance")
+        .map((row) => ({
+          bookingId: Number(row.booking_id),
+          item: String(row.item),
+          customerName: nameFor(Number(row.booking_id)),
+        })),
+      // Late = the event is over but the equipment never came back.
+      lateReturns: inRange
+        .filter(
+          (row) =>
+            String(row.eventDate ?? "") < today.toISOString().slice(0, 10) &&
+            !["returned", "delivered"].includes(stageOf(row)),
+        )
+        .map((row) => ({
+          bookingId: row.id,
+          customerName: row.customerName,
+          eventDate: String(row.eventDate ?? ""),
+          stage: stageOf(row),
+        })),
+    });
   }
 
   // Manager-only endpoints (approve/reject collections, list pending requests).
