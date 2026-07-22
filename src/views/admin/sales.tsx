@@ -891,7 +891,7 @@ function InvoiceListView({
     setCancelling(true);
     try {
       await adminFetch(`/admin/sales-invoices/${cancellingInvoice.id}/cancel`, { method: "POST", body: JSON.stringify({ reason: cancelReason.trim(), password: cancelPassword, confirmed: true }) });
-      toast({ title: "تم إلغاء الفاتورة وعكس آثارها" });
+      toast({ title: "تم إلغاء الفاتورة وإعادة الكميات إلى المخزون بنجاح" });
       setCancellingInvoice(null); setCancelReason(""); setCancelPassword(""); setCancelConfirmed(false);
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
@@ -1194,7 +1194,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         method: "POST",
         body: JSON.stringify({ reason: cancelReason.trim(), password: cancelPassword, confirmed: true }),
       });
-      toast({ title: "تم إلغاء الفاتورة وعكس آثارها" });
+      toast({ title: "تم إلغاء الفاتورة وإعادة الكميات إلى المخزون بنجاح" });
       setCancelOpen(false);
       setCancelPassword("");
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });

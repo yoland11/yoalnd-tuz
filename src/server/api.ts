@@ -218,6 +218,10 @@ import {
   calculateAssetSaleOutcome,
 } from "@/server/asset-sale-logic";
 import {
+  salesInvoiceCancellationIdempotencyKey,
+  selectSalesInvoiceOriginalMovement,
+} from "@/server/sales-invoice-cancellation-logic";
+import {
   advanceFilterSchema,
   applyPayrollAdvanceDeductions,
   approveEmployeeAdvance,
@@ -784,7 +788,7 @@ class RequestBodyTooLargeError extends Error {}
 class CheckoutError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 401 | 403 | 404 | 409 | 422 = 422,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 500 = 422,
   ) {
     super(message);
   }
@@ -4953,6 +4957,17 @@ type StockMovementMeta = {
   reason: string;
   relatedType?: string | null;
   relatedId?: number | null;
+  salesInvoiceId?: number | null;
+  salesInvoiceItemId?: number | null;
+  invoiceNumber?: string | null;
+  warehouseId?: number | null;
+  movementType?: string | null;
+  reversedMovementId?: number | null;
+  reversalReason?: string | null;
+  cancelledBy?: number | null;
+  cancelledAt?: Date | null;
+  idempotencyKey?: string | null;
+  metadata?: Record<string, unknown>;
   createdBy?: number | null;
   createdByName?: string | null;
 };
@@ -5174,6 +5189,17 @@ async function recordStockMovement(
       reason: meta.reason,
       relatedType: meta.relatedType ?? null,
       relatedId: meta.relatedId ?? null,
+      salesInvoiceId: meta.salesInvoiceId ?? null,
+      salesInvoiceItemId: meta.salesInvoiceItemId ?? null,
+      invoiceNumber: meta.invoiceNumber ?? null,
+      warehouseId: meta.warehouseId ?? null,
+      movementType: meta.movementType ?? null,
+      reversedMovementId: meta.reversedMovementId ?? null,
+      reversalReason: meta.reversalReason ?? null,
+      cancelledBy: meta.cancelledBy ?? null,
+      cancelledAt: meta.cancelledAt ?? null,
+      idempotencyKey: meta.idempotencyKey ?? null,
+      metadata: meta.metadata ?? {},
       createdBy: meta.createdBy ?? null,
       createdByName: meta.createdByName ?? "",
     } as any);
@@ -5570,10 +5596,10 @@ async function applySalesInvoiceItemsStock(
   reason: string,
   actorInfo?: { id: number | null; name: string } | null,
 ): Promise<void> {
-  const items = await db
-    .select()
-    .from(salesInvoiceItemsTable)
-    .where(eq(salesInvoiceItemsTable.invoiceId, invoiceId));
+  const [invoice, items] = await Promise.all([
+    db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invoiceId) }),
+    db.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, invoiceId)),
+  ]);
   for (const item of items) {
     const productId = Number(item.productId ?? 0);
     const quantity = Number.parseFloat(String(item.quantity ?? "0")) || 0;
@@ -5582,6 +5608,21 @@ async function applySalesInvoiceItemsStock(
         reason,
         relatedType: "sales_invoice",
         relatedId: invoiceId,
+        salesInvoiceId: invoiceId,
+        salesInvoiceItemId: item.id,
+        invoiceNumber: invoice?.invoiceNo ?? null,
+        movementType: direction < 0 ? "sale" : "sales_invoice_stock_return",
+        idempotencyKey: `sales-invoice-stock:${invoiceId}:${item.id}:${reason}`,
+        metadata: {
+          sourceType: "sales_invoice",
+          sourceId: invoiceId,
+          invoiceId,
+          invoiceNumber: invoice?.invoiceNo ?? null,
+          invoiceItemId: item.id,
+          productId,
+          quantity,
+          movementType: direction < 0 ? "sale" : "sales_invoice_stock_return",
+        },
         createdBy: actorInfo?.id ?? null,
         createdByName: actorInfo?.name ?? "",
       });
@@ -6822,10 +6863,42 @@ async function ensureStockTrackingTables(): Promise<void> {
         "created_at" timestamp not null default now()
       );
 
+      alter table "stock_movements"
+        add column if not exists "sales_invoice_id" integer,
+        add column if not exists "sales_invoice_item_id" integer,
+        add column if not exists "invoice_number" varchar(40),
+        add column if not exists "warehouse_id" integer,
+        add column if not exists "movement_type" varchar(60),
+        add column if not exists "reversed_movement_id" integer,
+        add column if not exists "reversal_reason" text,
+        add column if not exists "cancelled_by" integer,
+        add column if not exists "cancelled_at" timestamp,
+        add column if not exists "idempotency_key" varchar(180),
+        add column if not exists "metadata" jsonb not null default '{}'::jsonb;
+
+      update "stock_movements" movement
+      set "sales_invoice_id" = movement."related_id",
+          "invoice_number" = invoice."invoice_no",
+          "movement_type" = case
+            when movement."quantity_change"::numeric < 0 then 'sale'
+            when movement."reason" = 'sales_invoice_cancellation_return' then 'sales_invoice_cancellation'
+            else movement."movement_type"
+          end
+      from "sales_invoices" invoice
+      where movement."related_type" = 'sales_invoice'
+        and movement."related_id" = invoice."id"
+        and (movement."sales_invoice_id" is null or movement."invoice_number" is null or movement."movement_type" is null);
+
       create index if not exists "stock_movements_product_id_idx" on "stock_movements" ("product_id");
       create index if not exists "stock_movements_stock_source_product_id_idx" on "stock_movements" ("stock_source_product_id");
       create index if not exists "stock_movements_related_idx" on "stock_movements" ("related_type", "related_id");
       create index if not exists "stock_movements_created_at_idx" on "stock_movements" ("created_at");
+      drop index if exists "stock_movements_sales_invoice_cancel_once_idx";
+      create index if not exists "stock_movements_sales_invoice_direct_idx" on "stock_movements" ("sales_invoice_id", "sales_invoice_item_id", "movement_type", "created_at" desc);
+      create index if not exists "stock_movements_invoice_number_idx" on "stock_movements" ("invoice_number", "product_id", "created_at" desc) where "invoice_number" is not null;
+      create unique index if not exists "stock_movements_idempotency_idx" on "stock_movements" ("idempotency_key") where "idempotency_key" is not null;
+      create unique index if not exists "stock_movements_reversal_once_idx" on "stock_movements" ("reversed_movement_id") where "reversed_movement_id" is not null and "movement_type" = 'sales_invoice_cancellation';
+      create unique index if not exists "stock_movements_invoice_item_cancel_once_idx" on "stock_movements" ("sales_invoice_id", "sales_invoice_item_id") where "sales_invoice_id" is not null and "sales_invoice_item_id" is not null and "movement_type" = 'sales_invoice_cancellation';
       create index if not exists "orders_stock_applied_status_idx" on "orders" ("stock_applied", "status");
       do $$
       begin
@@ -33673,8 +33746,14 @@ const salesInvoiceCancellationSchema = z.object({
  */
 async function deductSalesInvoiceStockInTransaction(
   tx: any,
-  items: ReturnType<typeof salesInvoiceItems>,
+  items: Array<{
+    id: number;
+    productId: number | null;
+    productName: string;
+    quantity: string | number;
+  }>,
   invoiceId: number,
+  invoiceNumber: string,
   actorInfo: { id: number | null; name: string },
 ) {
   const owners = new Map<number, { id: number; name: string; quantity: number }>();
@@ -33689,7 +33768,7 @@ async function deductSalesInvoiceStockInTransaction(
     owners.set(ownerId, {
       id: ownerId,
       name: resolved.stockProduct.nameAr || resolved.stockProduct.name || item.productName,
-      quantity: (current?.quantity ?? 0) + item.quantity,
+      quantity: (current?.quantity ?? 0) + Number(item.quantity),
     });
   }
 
@@ -33706,18 +33785,53 @@ async function deductSalesInvoiceStockInTransaction(
   }
 
   const movements = items
-    .filter((item) => item.productId && item.quantity > 0)
+    .filter((item) => item.productId && Number(item.quantity) > 0)
     .map((item) => ({
       productId: item.productId,
       stockSourceProductId: itemOwners.get(item.productId!) ?? item.productId,
-      quantityChange: String(-item.quantity),
+      quantityChange: String(-Number(item.quantity)),
       reason: "sales_invoice_stock_deducted",
       relatedType: "sales_invoice",
       relatedId: invoiceId,
+      salesInvoiceId: invoiceId,
+      salesInvoiceItemId: item.id,
+      invoiceNumber,
+      movementType: "sale",
+      idempotencyKey: `sales-invoice-sale:${invoiceId}:${item.id}`,
+      metadata: {
+        sourceType: "sales_invoice",
+        sourceId: invoiceId,
+        invoiceId,
+        invoiceNumber,
+        invoiceItemId: item.id,
+        productId: item.productId,
+        warehouseId: null,
+        quantity: Number(item.quantity),
+        movementType: "sale",
+      },
       createdBy: actorInfo.id,
       createdByName: actorInfo.name,
     }));
   if (movements.length) await tx.insert(stockMovementsTable).values(movements);
+}
+
+async function stockOwnerProductIdInTransaction(tx: any, productId: number) {
+  let currentId = productId;
+  const visited = new Set<number>();
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (visited.has(currentId)) break;
+    visited.add(currentId);
+    const [product] = await tx
+      .select({ id: productsTable.id, sharedStockProductId: productsTable.sharedStockProductId })
+      .from(productsTable)
+      .where(eq(productsTable.id, currentId))
+      .limit(1);
+    if (!product) return null;
+    const nextId = Number(product.sharedStockProductId ?? 0);
+    if (!nextId) return product.id;
+    currentId = nextId;
+  }
+  return currentId;
 }
 
 async function nextSalesInvoiceNo(tx: any, date: string): Promise<string> {
@@ -33867,7 +33981,9 @@ async function handleSalesInvoices(
 
     const a = actor(cancellationAuth);
     const fActor = financialActor(cancellationAuth);
-    const cancellation = await db.transaction(async (tx) => {
+    let cancellation: any;
+    try {
+      cancellation = await db.transaction(async (tx) => {
       const locked: any = await tx.execute(sql`SELECT id FROM sales_invoices WHERE id = ${id} FOR UPDATE`);
       if (!(locked.rows ?? locked ?? []).length) throw new CheckoutError("الفاتورة غير موجودة", 404);
       const [invoice] = await tx.select().from(salesInvoicesTable).where(eq(salesInvoicesTable.id, id)).limit(1);
@@ -33877,48 +33993,152 @@ async function handleSalesInvoices(
 
       const items = await tx.select().from(salesInvoiceItemsTable).where(eq(salesInvoiceItemsTable.invoiceId, id));
       if (!items.length) throw new CheckoutError("لا تحتوي الفاتورة على بنود قابلة للعكس", 409);
-      const productItems = items.filter((item) => Number(item.productId ?? 0) > 0);
-      const originalMoves = await tx.select().from(stockMovementsTable).where(and(
-        eq(stockMovementsTable.relatedType, "sales_invoice"),
-        eq(stockMovementsTable.relatedId, id),
-        eq(stockMovementsTable.reason, "sales_invoice_stock_deducted"),
-      ));
-      if (productItems.length && !originalMoves.length)
-        throw new CheckoutError("تعذر العثور على حركات المخزون الأصلية لهذه الفاتورة", 409);
-      const alreadyReturned = await tx.select().from(stockMovementsTable).where(and(
-        eq(stockMovementsTable.relatedType, "sales_invoice"),
-        eq(stockMovementsTable.relatedId, id),
-        eq(stockMovementsTable.reason, "sales_invoice_cancellation_return"),
-      ));
-      if (alreadyReturned.length) throw new CheckoutError("تم إرجاع مخزون هذه الفاتورة مسبقاً", 409);
+      const productItems = items.filter((item) => Number(item.productId ?? 0) > 0 && money(item.quantity) > 0);
+      const priorReturns: any = await tx.execute(sql`
+        SELECT * FROM stock_movements
+        WHERE (sales_invoice_id = ${id} OR (related_type = 'sales_invoice' AND related_id = ${id}))
+          AND (movement_type = 'sales_invoice_cancellation' OR reason = 'sales_invoice_cancellation_return')
+        ORDER BY id FOR UPDATE
+      `);
+      if ((priorReturns.rows ?? []).length)
+        throw new CheckoutError("تمت إعادة مخزون هذه الفاتورة سابقًا", 409);
 
-      const grouped = new Map<number, { quantity: number; name: string; sourceId: number }>();
-      for (const item of productItems) {
-        const productId = Number(item.productId);
-        const source = originalMoves.find((move) => Number(move.productId) === productId);
-        if (!source) throw new CheckoutError(`حركة المخزون الأصلية للمنتج ${item.productName} غير موجودة`, 409);
-        const sourceId = Number(source.stockSourceProductId ?? productId);
-        const current = grouped.get(sourceId);
-        grouped.set(sourceId, { quantity: (current?.quantity ?? 0) + money(item.quantity), name: item.productName, sourceId });
-      }
+      const stockWasApplied = Number((invoice as any).stockApplied ?? 1) === 1;
+      const stockAlreadyRestored = productItems.length > 0 && !stockWasApplied;
+      const originalMovementIds: number[] = [];
       const inventoryMovementIds: number[] = [];
-      for (const group of grouped.values()) {
+      const restoredProducts: Array<{ invoiceItemId: number; productId: number; stockProductId: number; quantity: number; originalMovementId: number | null; reversalMovementId: number }> = [];
+      let legacyRecoveryUsed = false;
+
+      let candidateRows: any[] = [];
+      if (productItems.length && stockWasApplied) {
+        const itemIds = productItems.map((item) => Number(item.id));
+        const productIds = [...new Set(productItems.map((item) => Number(item.productId)))];
+        const candidates: any = await tx.execute(sql`
+          SELECT movement.*,
+            CASE
+              WHEN movement.sales_invoice_id = ${id} THEN 1
+              WHEN movement.related_type = 'sales_invoice' AND movement.related_id = ${id} THEN 2
+              WHEN movement.sales_invoice_item_id IN (${sql.join(itemIds.map((itemId) => sql`${itemId}`), sql`, `)}) THEN 3
+              WHEN movement.invoice_number = ${invoice.invoiceNo} THEN 4
+              ELSE 5
+            END AS match_priority
+          FROM stock_movements movement
+          WHERE movement.quantity_change::numeric < 0
+            AND (
+              movement.sales_invoice_id = ${id}
+              OR (movement.related_type = 'sales_invoice' AND movement.related_id = ${id})
+              OR movement.sales_invoice_item_id IN (${sql.join(itemIds.map((itemId) => sql`${itemId}`), sql`, `)})
+              OR movement.invoice_number = ${invoice.invoiceNo}
+              OR (
+                (movement.product_id IN (${sql.join(productIds.map((productId) => sql`${productId}`), sql`, `)})
+                  OR movement.stock_source_product_id IN (${sql.join(productIds.map((productId) => sql`${productId}`), sql`, `)}))
+                AND movement.created_at BETWEEN ${invoice.createdAt}::timestamp - interval '3 days' AND ${invoice.createdAt}::timestamp + interval '3 days'
+                AND (movement.movement_type = 'sale' OR movement.reason IN ('sales_invoice_stock_deducted', 'sales_invoice_stock_deducted_again', 'sale', 'invoice_sale', 'pos_sale'))
+              )
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM stock_movements reversal
+              WHERE reversal.reversed_movement_id = movement.id
+                AND reversal.movement_type = 'sales_invoice_cancellation'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM stock_movements restored
+              WHERE restored.related_type = 'sales_invoice' AND restored.related_id = ${id}
+                AND restored.quantity_change::numeric > 0
+                AND restored.created_at > movement.created_at
+                AND coalesce(restored.stock_source_product_id, restored.product_id) = coalesce(movement.stock_source_product_id, movement.product_id)
+                AND restored.reason IN ('sales_invoice_stock_restored_for_edit', 'sales_invoice_stock_restored', 'sales_invoice_cancellation_return')
+            )
+          ORDER BY match_priority, movement.created_at DESC, movement.id DESC
+          FOR UPDATE
+        `);
+        candidateRows = candidates.rows ?? [];
+      }
+
+      const usedOriginalMovements = new Set<number>();
+      for (const item of stockWasApplied ? productItems : []) {
+        const productId = Number(item.productId);
+        const quantity = money(item.quantity);
+        const stockProductId = await stockOwnerProductIdInTransaction(tx, productId);
+        if (!stockProductId)
+          throw new CheckoutError(`المنتج ${item.productName} غير مرتبط بسجل مخزون صالح`, 409);
+        const movementMatch = selectSalesInvoiceOriginalMovement({
+          invoiceItemId: Number(item.id),
+          productId,
+          stockProductId,
+          quantity,
+          candidates: candidateRows,
+          usedMovementIds: usedOriginalMovements,
+        });
+        if (movementMatch.kind === "ambiguous")
+          throw new CheckoutError(`تعذر ربط المنتج ${item.productName} بحركة مخزون قديمة بصورة موثوقة`, 409);
+        const original = movementMatch.kind === "matched" ? movementMatch.movement : null;
+        const bestPriority = movementMatch.kind === "matched" ? movementMatch.priority : 0;
+        if (original) {
+          usedOriginalMovements.add(Number(original.id));
+          originalMovementIds.push(Number(original.id));
+          if (bestPriority > 1 || !original.sales_invoice_item_id) legacyRecoveryUsed = true;
+          await tx.update(stockMovementsTable).set({
+            salesInvoiceId: id,
+            salesInvoiceItemId: Number(item.id),
+            invoiceNumber: invoice.invoiceNo,
+            movementType: "sale",
+            metadata: {
+              ...(original.metadata && typeof original.metadata === "object" ? original.metadata : {}),
+              legacyLinkedDuringCancellation: bestPriority > 1 || !original.sales_invoice_item_id,
+              invoiceId: id,
+              invoiceItemId: Number(item.id),
+            },
+          } as any).where(eq(stockMovementsTable.id, Number(original.id)));
+        } else {
+          // A legacy invoice may have changed stock before the movement ledger
+          // existed. stock_applied is the authoritative guard that permits a
+          // one-time reconstruction; the item idempotency key prevents repeats.
+          legacyRecoveryUsed = true;
+        }
+
         const [product] = await tx.update(productsTable).set({
-          stock: sql`${productsTable.stock} + ${group.quantity}`,
+          stock: sql`${productsTable.stock} + ${quantity}`,
           updatedAt: new Date(),
-        } as any).where(eq(productsTable.id, group.sourceId)).returning();
-        if (!product) throw new CheckoutError(`تعذر إرجاع المنتج ${group.name} إلى المخزون`, 409);
+        } as any).where(eq(productsTable.id, stockProductId)).returning();
+        if (!product) throw new CheckoutError(`تعذر إرجاع المنتج ${item.productName} إلى المخزون`, 409);
+        const now = new Date();
         const [movement] = await tx.insert(stockMovementsTable).values({
-          productId: group.sourceId,
-          stockSourceProductId: group.sourceId,
-          quantityChange: String(group.quantity),
+          productId,
+          stockSourceProductId: stockProductId,
+          quantityChange: String(quantity),
           reason: "sales_invoice_cancellation_return",
           relatedType: "sales_invoice",
           relatedId: id,
+          salesInvoiceId: id,
+          salesInvoiceItemId: Number(item.id),
+          invoiceNumber: invoice.invoiceNo,
+          warehouseId: original?.warehouse_id ? Number(original.warehouse_id) : null,
+          movementType: "sales_invoice_cancellation",
+          reversedMovementId: original ? Number(original.id) : null,
+          reversalReason: data.reason,
+          cancelledBy: a.id,
+          cancelledAt: now,
+          idempotencyKey: salesInvoiceCancellationIdempotencyKey(id, Number(item.id)),
+          metadata: {
+            sourceType: "sales_invoice",
+            sourceId: id,
+            invoiceId: id,
+            invoiceNumber: invoice.invoiceNo,
+            invoiceItemId: Number(item.id),
+            productId,
+            warehouseId: original?.warehouse_id ? Number(original.warehouse_id) : null,
+            quantity,
+            movementType: "sales_invoice_cancellation",
+            reversedMovementId: original ? Number(original.id) : null,
+            legacyRecovery: !original,
+          },
           createdBy: a.id,
           createdByName: a.name,
         }).returning();
         inventoryMovementIds.push(movement.id);
+        restoredProducts.push({ invoiceItemId: Number(item.id), productId, stockProductId, quantity, originalMovementId: original ? Number(original.id) : null, reversalMovementId: movement.id });
       }
 
       const financialRows = await tx.select().from(financialTransactionsTable).where(and(
@@ -33926,11 +34146,17 @@ async function handleSalesInvoices(
         eq(financialTransactionsTable.sourceId, String(id)),
         eq(financialTransactionsTable.approvalStatus, "executed"),
       ));
-      if (received > 0 && !financialRows.length)
-        throw new CheckoutError("تعذر تحديد حركة التحصيل الأصلية لهذه الفاتورة", 409);
+      const reversibleFinancialRows = financialRows.filter(
+        (row) => !row.reversalTxnId && !row.reversedAt && row.sourceEvent !== "reversal",
+      );
+      const recordedFinancialEffect = money(reversibleFinancialRows.reduce(
+        (sum, row) => sum + (row.direction === "revenue" ? money(row.amount) : -money(row.amount)),
+        0,
+      ));
+      if (received > 0 && Math.abs(recordedFinancialEffect - received) >= 0.01)
+        throw new CheckoutError("تعذر ربط كامل مبلغ الفاتورة بحركات التحصيل الأصلية. لم يتم إجراء أي تغيير.", 409);
       const financialMovementIds: number[] = [];
-      for (const row of financialRows) {
-        if (row.transactionType.endsWith("_reversal") || row.reversalTxnId || row.reversedAt) continue;
+      for (const row of reversibleFinancialRows) {
         const result = await reverseFinancialTransaction(row.id, fActor, `إلغاء فاتورة مبيعات ${invoice.invoiceNo}: ${data.reason}`, undefined, tx);
         financialMovementIds.push(result.reverse.id);
       }
@@ -33941,14 +34167,14 @@ async function handleSalesInvoices(
         paidAmount: "0",
         remainingAmount: "0",
         paymentStatus: "unpaid",
-        financiallyReversed: financialRows.length > 0,
+        financiallyReversed: financialMovementIds.length > 0,
         cancelledAt: now,
         cancelledBy: a.id,
         cancelledByName: a.name,
         cancellationReason: data.reason,
         reversalCompletedAt: now,
         inventoryReversed: true,
-        financeReversed: financialRows.length > 0,
+        financeReversed: financialMovementIds.length > 0,
         stockApplied: 0,
         stockRestoredAt: now,
         updatedAt: now,
@@ -33959,12 +34185,46 @@ async function handleSalesInvoices(
         action: "sales_invoice_cancelled",
         entityType: "sales_invoice",
         entityId: id,
-        metadata: { invoiceNo: invoice.invoiceNo, reason: data.reason, received, inventoryMovementIds, financialMovementIds, ipAddress: ip(req) },
+        metadata: {
+          invoiceId: id,
+          invoiceNo: invoice.invoiceNo,
+          reason: data.reason,
+          received,
+          originalMovementIds,
+          inventoryMovementIds,
+          restoredProducts,
+          financialMovementIds,
+          legacyRecoveryUsed,
+          stockAlreadyRestored,
+          ipAddress: ip(req),
+        },
         ipAddress: ip(req),
         userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
       });
-      return { invoice: cancelled, inventoryMovementIds, financialMovementIds, alreadyCancelled: false };
-    });
+        return {
+        invoice: cancelled,
+        originalMovementIds,
+        inventoryMovementIds,
+        financialMovementIds,
+        restoredProducts,
+        legacyRecoveryUsed,
+        stockAlreadyRestored,
+        alreadyCancelled: false,
+        };
+      });
+    } catch (err) {
+      if (err instanceof CheckoutError) throw err;
+      console.error("sales invoice cancellation failed", {
+        invoiceId: id,
+        invoiceNo: existing.invoiceNo,
+        actorId: cancellationAuth.id,
+        code: (err as any)?.code,
+        detail: (err as any)?.detail,
+        message: err instanceof Error ? err.message : "unknown",
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      throw new CheckoutError("تعذر إلغاء الفاتورة، ولم يتم إجراء أي تغيير.", 500);
+    }
 
     if (!cancellation.alreadyCancelled) {
       void createNotification({
@@ -34120,7 +34380,7 @@ async function handleSalesInvoices(
     const invoiceNo = inv.invoiceNo;
 
     if (items.length > 0) {
-      await tx.insert(salesInvoiceItemsTable).values(
+      const insertedItems = await tx.insert(salesInvoiceItemsTable).values(
         items.map((item: any) => ({
           invoiceId: inv.id,
           productId: item.productId ?? null,
@@ -34133,8 +34393,8 @@ async function handleSalesInvoices(
           total: String(item.total),
           costPrice: String(item.costPrice),
         })),
-      );
-      await deductSalesInvoiceStockInTransaction(tx, items, inv.id, a);
+      ).returning();
+      await deductSalesInvoiceStockInTransaction(tx, insertedItems, inv.id, invoiceNo, a);
     }
 
     if (couponPreview?.ok) {
