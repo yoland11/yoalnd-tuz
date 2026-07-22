@@ -300,6 +300,15 @@ import {
   LEVEL_LABEL,
 } from "@/server/employee-performance";
 import {
+  bookingLinkKey,
+  departmentBadge,
+  detectBookingDepartments,
+  filterProductsByDepartment,
+  matchesDepartment,
+  resolveDepartmentCategoryIds,
+  type Department,
+} from "@/server/sound-detection";
+import {
   SHOOT_STAGE_LABELS,
   checklistComplete,
   evaluateTransition,
@@ -4712,6 +4721,20 @@ function isKoshaOrSoundBooking(
   service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
 ) {
   const fields = (order.customFields ?? {}) as Record<string, any>;
+
+  // Priority 1: a department stamped on the booking at sync time. This is an identifier,
+  // not prose, so it survives renames and translation and is checked before any text.
+  const stamped = Array.isArray(fields.departments)
+    ? (fields.departments as unknown[])
+    : [fields.department, fields.bookingType];
+  if (
+    stamped.some(
+      (value) => matchesDepartment(value, "kosha") || matchesDepartment(value, "sound"),
+    )
+  ) {
+    return true;
+  }
+
   const selected = [
     service?.type,
     service?.name,
@@ -4778,12 +4801,41 @@ async function formatRoutedKoshaServiceBooking(
     paidAmount: order.depositAmount,
     internalNotes: order.internalNotes ?? "",
     updatedAt: order.createdAt,
-  }).then((formatted) => ({
-    // Discriminator so the client can address this record unambiguously; the id
-    // itself stays the original service-order id.
-    ...formatted,
-    source: "service" as const,
-  }));
+  }).then((formatted) => {
+    // Which departments this booking serves. A mixed job reports several and stays a
+    // single booking under its original id — it is never split per department.
+    const departments = detectBookingDepartments({
+      signals: {
+        taxonomy: [
+          ...(Array.isArray(fields.departments) ? fields.departments : []),
+          fields.department,
+          fields.bookingType,
+          fields.serviceType,
+          service?.type,
+          service?.name,
+          service?.nameAr,
+          fields.packageName,
+          ...(Array.isArray(fields.bookingCenterServices)
+            ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key)
+            : []),
+        ],
+        itemNames: Array.isArray(fields.items)
+          ? fields.items.map((item: any) => item?.name ?? item?.nameAr)
+          : [],
+      },
+    });
+    // A routed booking with no positive signal is still a kosha booking by virtue of
+    // reaching this formatter, so the badge never comes back empty.
+    const resolved = departments.length ? departments : (["kosha"] as Department[]);
+    return {
+      // Discriminator so the client can address this record unambiguously; the id
+      // itself stays the original service-order id.
+      ...formatted,
+      source: "service" as const,
+      departments: resolved,
+      departmentBadge: departmentBadge(resolved),
+    };
+  });
 }
 
 /**
@@ -9604,68 +9656,24 @@ function parseStoreItemMetadata(value: unknown): Record<string, unknown> {
   }
 }
 
+/**
+ * Category ids belonging to a department, resolved identifier-first.
+ *
+ * Replaces an exact `nameAr = 'صوتيات'` lookup that silently degraded to matching product
+ * titles the moment somebody renamed the category — "الصوتيات" alone was enough to disable
+ * identifier-based detection system-wide. Resolution now covers metadata department codes,
+ * slugs, and every normalized spelling of the name.
+ */
+async function departmentCategoryIds(department: Department): Promise<Set<number>> {
+  const categories = await db.query.categoriesTable.findMany({ limit: 1000 });
+  return resolveDepartmentCategoryIds(categories as any[], department);
+}
+
 async function getSoundStoreProducts(products: any[]) {
-  // The Store category itself is the source of truth. Product titles are never
-  // used to decide whether an order is a Sound booking.
-  const soundStoreCategory = await db.query.categoriesTable.findFirst({
-    where: eq(categoriesTable.nameAr, "صوتيات"),
-  });
-  if (soundStoreCategory) {
-    const soundCategoryId = soundStoreCategory.id;
-    return products.filter(
-      (product) =>
-        Number(product.categoryId) === soundCategoryId ||
-        Number(product.subcategoryId) === soundCategoryId ||
-        (Array.isArray(product.subcategoryIds) &&
-          product.subcategoryIds.some(
-            (categoryId: unknown) => Number(categoryId) === soundCategoryId,
-          )),
-    );
-  }
-
-  const categoryIds = [
-    ...new Set(
-      products
-        .flatMap((product) => [
-          product.categoryId,
-          product.subcategoryId,
-          ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
-        ])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0),
-    ),
-  ];
-  const categories = categoryIds.length
-    ? await db.query.categoriesTable.findMany({
-        where: inArray(categoriesTable.id, categoryIds),
-      })
-    : [];
-  const categoryById = new Map(categories.map((category) => [category.id, category]));
-
-  return products.filter((product) => {
-    const linkedCategories = [
-      product.categoryId,
-      product.subcategoryId,
-      ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
-    ]
-      .map((id) => categoryById.get(Number(id)))
-      .filter(Boolean);
-    const categoryValues = linkedCategories.flatMap((category: any) => [
-      category.slug,
-      category.name,
-      category.nameAr,
-      category.imageMetadata?.department,
-      category.imageMetadata?.serviceType,
-      category.imageMetadata?.type,
-    ]);
-    return [
-      product.category,
-      product.subcategory,
-      product.serviceType,
-      product.department,
-      ...categoryValues,
-    ].some(isSoundBookingTaxonomyValue);
-  });
+  // The category is the source of truth. A product title never promotes an order on its
+  // own — an "RCF 745" filed under Koshas stays a kosha item.
+  const soundIds = await departmentCategoryIds("sound");
+  return filterProductsByDepartment(products, soundIds, "sound");
 }
 
 function storeSoundEventDetails(order: any, items: any[]) {
@@ -9762,6 +9770,12 @@ async function syncStoreSoundBooking(input: {
       bookingSource: "store",
       bookingType: "sound",
       department: "sound",
+      // Machine-readable department list. A mixed booking carries several entries and
+      // stays ONE booking; the portals read this before falling back to text matching.
+      departments: ["sound"],
+      sourceType: "store",
+      sourceId: storeOrderId,
+      externalReference: bookingLinkKey("store", storeOrderId),
       storeOrderId,
       storeOrderReference: input.order.trackingCode,
       originalOrderReference: input.order.trackingCode,
@@ -30508,6 +30522,134 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return json(settings);
       }
     }
+    /**
+     * Dry-run scan for Sound bookings that never reached the operational portals.
+     *
+     * READ ONLY, always — there is no apply mode on this endpoint. It reports what a
+     * backfill would touch so the list can be reviewed before anything is written.
+     */
+    if (parts[2] === "sound-backfill-report" && method === "GET") {
+      const auth = await requireAnyPermission(req, ["orders", "bookings"]);
+      if (isResponse(auth)) return auth;
+
+      const soundIds = await departmentCategoryIds("sound");
+      const limit = Math.min(
+        2000,
+        Math.max(100, Number(req.nextUrl.searchParams.get("limit") ?? 800) || 800),
+      );
+
+      const [storeOrders, serviceOrders, services] = await Promise.all([
+        db.query.ordersTable.findMany({
+          where: sql`${ordersTable.archivedAt} is null`,
+          orderBy: [desc(ordersTable.id)],
+          limit,
+        }),
+        db.query.serviceOrdersTable.findMany({
+          orderBy: [desc(serviceOrdersTable.id)],
+          limit,
+        }),
+        db.query.servicesTable.findMany(),
+      ]);
+
+      const servicesById = new Map(services.map((row) => [row.id, row]));
+      // Store orders already synced carry their id in custom_fields.
+      const linkedStoreIds = new Set(
+        serviceOrders
+          .map((row) => Number((row.customFields as any)?.storeOrderId))
+          .filter((value) => Number.isInteger(value) && value > 0),
+      );
+
+      const orderIds = storeOrders.map((row) => row.id);
+      const items = orderIds.length
+        ? await db.query.orderItemsTable.findMany({
+            where: inArray(orderItemsTable.orderId, orderIds),
+            limit: 20000,
+          })
+        : [];
+      const productIds = [
+        ...new Set(items.map((item) => Number(item.productId)).filter(Boolean)),
+      ];
+      const products = productIds.length
+        ? await db.query.productsTable.findMany({
+            where: inArray(productsTable.id, productIds),
+          })
+        : [];
+      const soundProductIds = new Set(
+        filterProductsByDepartment(products as any[], soundIds, "sound").map((p: any) =>
+          Number(p.id),
+        ),
+      );
+      const itemsByOrder = new Map<number, typeof items>();
+      for (const item of items) {
+        const list = itemsByOrder.get(item.orderId) ?? [];
+        list.push(item);
+        itemsByOrder.set(item.orderId, list);
+      }
+
+      const missingStoreOrders = storeOrders
+        .filter((order) => {
+          if (linkedStoreIds.has(order.id)) return false;
+          return (itemsByOrder.get(order.id) ?? []).some((item) =>
+            soundProductIds.has(Number(item.productId)),
+          );
+        })
+        .map((order) => ({
+          sourceType: "store",
+          sourceId: order.id,
+          externalReference: bookingLinkKey("store", order.id),
+          reference: order.trackingCode ?? null,
+          customerName: order.customerName,
+          phone: order.customerPhone ?? null,
+          total: money(order.total),
+          paid: money(order.depositAmount),
+          remaining: Math.max(0, money(order.total) - money(order.depositAmount)),
+          status: order.status,
+          soundItems: (itemsByOrder.get(order.id) ?? []).filter((item) =>
+            soundProductIds.has(Number(item.productId)),
+          ).length,
+        }));
+
+      // Service orders whose stamped departments say sound but that the portal filter
+      // would still miss — i.e. rows the classifier change is meant to rescue.
+      const unroutedServiceOrders = serviceOrders
+        .filter((row) => {
+          const fields = (row.customFields ?? {}) as Record<string, any>;
+          const claimsSound = [
+            ...(Array.isArray(fields.departments) ? fields.departments : []),
+            fields.department,
+            fields.bookingType,
+          ].some((value) => matchesDepartment(value, "sound"));
+          if (!claimsSound) return false;
+          return !isKoshaOrSoundBooking(row, servicesById.get(row.serviceId));
+        })
+        .map((row) => ({
+          bookingId: row.id,
+          customerName: row.customerName,
+          eventDate: row.eventDate,
+          status: row.status,
+        }));
+
+      void logAdminActivity(req, "sound_backfill_report", "booking", 0, {
+        storeOrdersMissing: missingStoreOrders.length,
+        serviceOrdersUnrouted: unroutedServiceOrders.length,
+        scanned: storeOrders.length + serviceOrders.length,
+      });
+
+      return json({
+        dryRun: true,
+        applied: false,
+        note: "تقرير قراءة فقط — لم يُنشأ أو يُعدَّل أي حجز.",
+        soundCategoryIds: [...soundIds],
+        scanned: { storeOrders: storeOrders.length, serviceOrders: serviceOrders.length },
+        wouldCreate: missingStoreOrders,
+        wouldRoute: unroutedServiceOrders,
+        totals: {
+          wouldCreate: missingStoreOrders.length,
+          wouldRoute: unroutedServiceOrders.length,
+        },
+      });
+    }
+
     if (parts[2] === "photography-prices") {
       if (method === "GET")
         return json({ items: await getPhotographyPrices() });

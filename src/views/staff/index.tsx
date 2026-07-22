@@ -91,7 +91,7 @@ function BookingCard({ b }: { b: CrewBooking }) {
     <Link href={`/staff/koshas/booking/${b.id}`} className="block rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 font-bold"><Armchair className="h-4 w-4 text-primary" />{b.koshaName || "كوشة"}</div>
+          <div className="flex items-center gap-1.5 font-bold"><Armchair className="h-4 w-4 text-primary" />{b.koshaName || "كوشة"}{b.departmentBadge ? <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">{b.departmentBadge}</span> : null}</div>
           <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground"><Phone className="h-3 w-3" />{b.customerName} · {b.phone}</div>
           {(b.hallLocation || b.cityArea || b.area) && <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3 w-3" />{[b.area, b.cityArea, b.hallLocation].filter(Boolean).join(" — ")}</div>}
           {b.eventDate && <div className="mt-0.5 text-xs text-muted-foreground">{b.eventDate} {b.eventTime}</div>}

@@ -35,6 +35,10 @@ export const BUCKET_LABEL: Record<Bucket, string> = {
 export type CrewBooking = {
   id: number;
   koshaName: string | null;
+  /** Departments this booking serves. Absent on native kosha rows. */
+  departments?: string[];
+  /** كوشات / صوتيات / كوشات + صوتيات */
+  departmentBadge?: string;
   customerName: string;
   phone: string;
   eventDate: string;
