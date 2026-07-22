@@ -24,7 +24,8 @@
     "desktop:build": "pnpm --dir desktop run build",
     "desktop:dist": "pnpm --dir desktop run dist",
     "audit": "pnpm audit --audit-level moderate",
-    "verify:sound-routing": "node scripts/verify-sound-routing.mjs"
+    "verify:sound-routing": "node scripts/verify-sound-routing.mjs",
+    "test:scanner-formats": "node ./scripts/verify-scanner-formats.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -62,6 +63,8 @@
     "@workspace/api-client-react": "workspace:*",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "catalog:",
     "clsx": "catalog:",
