@@ -13,7 +13,7 @@ type Asset = { productId:number; assetCode:string; name:string; category:string|
 type Choice = { id:number; name:string };
 type Payload = { data:Asset[]; categories:Choice[]; warehouses:Choice[]; filters:Record<string,string> };
 const methods:Record<string,string>={straight_line:"القسط الثابت",declining_balance:"الرصيد المتناقص",usage:"حسب الاستخدام",manual:"يدوي"};
-const statuses:Record<string,string>={active:"نشط",reserved:"محجوز",maintenance:"صيانة",transferred:"منقول",lost:"مفقود",retired:"مستبعد",locked:"مقفل"};
+const statuses:Record<string,string>={active:"نشط",reserved:"محجوز",maintenance:"صيانة",transferred:"منقول",lost:"مفقود",retired:"مستبعد",locked:"مقفل",sold:"تم البيع",disposed:"تم الاستبعاد"};
 const esc=(v:unknown)=>String(v??"—").replace(/[&<>\"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]||c));
 const date=(v:string|null)=>v?new Date(v).toLocaleDateString("ar-IQ"):"—";
 const money=(v:number)=>formatCurrency(v);

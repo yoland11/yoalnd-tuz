@@ -12,6 +12,7 @@ export * from "./staff";
 export * from "./crews";
 export * from "./categories";
 export * from "./asset-categories";
+export * from "./asset-sales";
 export * from "./settings";
 export * from "./admin-sessions";
 export * from "./accounting";

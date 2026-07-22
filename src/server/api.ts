@@ -39,6 +39,7 @@ import {
   adminActivityLogsTable,
   attendanceRecordsTable,
   approvalRequestsTable,
+  assetSalesTable,
   assetProfilesTable,
   assetCategoriesTable,
   cartItemsTable,
@@ -164,6 +165,9 @@ import {
   lostTimeEntriesTable,
   assetPassportsTable,
   equipmentCustodyTable,
+  employeeCustodyGroupAssetsTable,
+  employeeCustodyGroupsTable,
+  employeeCustodyReservationsTable,
   eventCostEstimatesTable,
   warehouseCameraSnapshotsTable,
   designLibraryItemsTable,
@@ -209,6 +213,10 @@ import {
   updateFinancialTransaction,
   type FinancialActor,
 } from "@/server/master-cash-box";
+import {
+  assetSaleEligibility,
+  calculateAssetSaleOutcome,
+} from "@/server/asset-sale-logic";
 import {
   advanceFilterSchema,
   applyPayrollAdvanceDeductions,
@@ -497,6 +505,10 @@ export const ALL_PERMISSIONS = [
   "booking_return_confirm",
   "asset_damage_record",
   "asset_damage_approve",
+  "asset.sell",
+  "asset.view_sales",
+  "asset.print_sales",
+  "asset.export_sales",
   "custody_groups_view",
   "custody_groups_create",
   "custody_groups_edit",
@@ -16873,7 +16885,9 @@ async function handleAdminKoshas(
           });
           const warnings: string[] = [];
           for (const a of assets) {
-            if (a.status === "locked")
+            if (["sold", "disposed", "retired"].includes(a.status))
+              warnings.push(`${a.name}: غير متاح لأن الأصل مباع أو خارج الخدمة.`);
+            else if (a.status === "locked")
               warnings.push(
                 `${a.name}: مقفول (قفل طارئ) — استبدله قبل التأكيد.`,
               );
@@ -16960,16 +16974,8 @@ async function handleAdminKoshas(
           const prof = await db.query.assetProfilesTable.findFirst({
             where: eq(assetProfilesTable.productId, productId),
           });
-          if (prof?.status === "locked")
-            return error(
-              "هذه المعدّة مقفولة (قفل طارئ) — لا يمكن إضافتها للحجز حتى يعتمد المدير",
-              423,
-            );
-          if (prof?.status === "retired")
-            return error(
-              "هذه المعدّة خارج الخدمة — لا يمكن إضافتها للحجز",
-              423,
-            );
+          if (prof && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(prof.status))
+            return error(`حالة المعدّة (${prof.status}) تمنع إضافتها إلى الحجز`, 423);
           if (linked.some((l) => l.productId === productId))
             return error("المعدّة مضافة للحجز بالفعل", 409);
           const nextLinked = [...linked, { productId, quantity }];
@@ -18817,7 +18823,7 @@ async function handleEnterpriseAdmin(
           lastInspectionAt: lastInspection?.createdAt,
         });
         const activeCustody = custodyMap.get(product.id) ?? [];
-        const assetStatus = profile?.status ?? "active";
+        const assetStatus = profile?.status ?? removedProfile?.status ?? "active";
         const replacementRecommended =
           health.score < 40 ||
           usageCount / Math.max(1, expectedLifeUses) >= 0.85 ||
@@ -19096,13 +19102,8 @@ async function handleEnterpriseAdmin(
       const issueProfile = await db.query.assetProfilesTable.findFirst({
         where: eq(assetProfilesTable.productId, productId),
       });
-      if (issueProfile?.status === "locked")
-        return error(
-          "الأصل مقفول (قفل طارئ) — لا يمكن إخراجه حتى يعتمد المدير إلغاء القفل",
-          423,
-        );
-      if (issueProfile?.status === "retired")
-        return error("الأصل خارج الخدمة — لا يمكن إخراجه", 423);
+      if (issueProfile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(issueProfile.status))
+        return error(`حالة الأصل (${issueProfile.status}) تمنع إخراجه`, 423);
 
       // Smart Checklist gating — block checkout unless the pre-checkout checklist is confirmed, or a reason for a missing item is written.
       const checklistConfirmed = data?.checklistConfirmed === true;
@@ -19204,7 +19205,7 @@ async function handleEnterpriseAdmin(
       });
       if (
         returnedProfile &&
-        !["maintenance", "lost", "retired", "locked"].includes(
+        !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(
           returnedProfile.status,
         )
       )
@@ -23419,7 +23420,7 @@ async function custodyAvailability(productId: number, startAt: Date, endAt: Date
     from products p left join asset_profiles ap on ap.product_id=p.id left join asset_passports pass on pass.product_id=p.id where p.id=${productId}`);
   const row = result.rows?.[0];
   if (!row || !row.is_active) return { available: false, reason: "الأصل غير نشط أو مؤرشف" };
-  if (row.deleted_at || ["maintenance", "lost", "retired", "locked"].includes(String(row.asset_status ?? "active"))) return { available: false, reason: `حالة الأصل: ${row.asset_status ?? "مؤرشف"}` };
+  if (row.deleted_at || ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(String(row.asset_status ?? "active"))) return { available: false, reason: `حالة الأصل: ${row.asset_status ?? "مؤرشف"}` };
   if (row.metadata?.inspectionBlocked === true || row.metadata?.damageHold === true) return { available: false, reason: "الأصل موقوف للفحص أو بسبب تلف" };
   if (row.is_checked_out) return { available: false, reason: "الأصل خارج المستودع بعهدة تشغيلية" };
   if (row.conflict_booking) return { available: false, reason: "المعدة غير متاحة", conflictBooking: row.conflict_booking };
@@ -23503,7 +23504,7 @@ async function handleCustodyGroups(req: NextRequest, parts: string[], section: s
     if (group.status !== "active") return error("فعّل مجموعة العهدة قبل إضافة أصول إليها", 409);
     const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
     const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-    if (!product?.isAsset || !product.isActive || profile?.deletedAt || ["maintenance","lost","retired","locked"].includes(String(profile?.status ?? "active"))) return error("لا يمكن إضافة أصل غير نشط أو مفقود أو تحت الصيانة", 422);
+    if (!product?.isAsset || !product.isActive || profile?.deletedAt || ["maintenance","lost","retired","locked","sold","disposed"].includes(String(profile?.status ?? "active"))) return error("لا يمكن إضافة أصل غير نشط أو مباع أو مفقود أو تحت الصيانة", 422);
     const owner: any = await db.execute(sql`select group_id from employee_custody_group_assets a join employee_custody_groups g on g.id=a.group_id where a.product_id=${productId} and a.is_active=true and g.status='active' limit 1`);
     if (owner.rows?.[0] && Number(owner.rows[0].group_id) !== groupId) return error("الأصل مرتبط بالفعل بمجموعة عهدة موظف نشطة", 409);
     await db.execute(sql`insert into employee_custody_group_assets(group_id,product_id,is_active,added_by,notes) values(${groupId},${productId},true,${auth.id},${nullableText(data?.notes)}) on conflict(group_id,product_id) do update set is_active=true,removed_at=null,added_by=excluded.added_by,added_at=now(),notes=excluded.notes`);
@@ -23756,7 +23757,7 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
           const conflict = await assetConflictForBooking(reference, input.productId);
           if (conflict) return error(`الأصل محجوز في حجز آخر بنفس التاريخ (#${conflict.id})`, 409);
           const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
-          if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الحجز`, 423);
+          if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الحجز`, 423);
         }
         let next = { ...current, productId: input.productId, quantity: input.quantity, updatedAt: new Date().toISOString() };
         if (input.mode === "link") next.stage = current.stage ?? "linked";
@@ -23917,7 +23918,7 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
     ]);
     if (resource === "depreciation") return json({ assets });
     const productReady = products.length ? products.filter((item: any) => !["released"].includes(item.status) && item.available >= 0).length / products.length : 1;
-    const assetReady = assets.length ? assets.filter((item: any) => !["maintenance", "lost", "retired", "locked"].includes(item.status)).length / assets.length : 1;
+    const assetReady = assets.length ? assets.filter((item: any) => !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(item.status)).length / assets.length : 1;
     const taskReady = tasks.length ? tasks.filter((item) => item.status === "completed").length / tasks.length : 1;
     const financialReady = Number(reference.row.remainingAmount ?? 0) <= 0 ? 1 : Number(reference.row.totalAmount ?? 0) > 0 ? Number(reference.row.paidAmount ?? reference.row.depositAmount ?? 0) / Number(reference.row.totalAmount) : 0.5;
     const docsReady = documents.length ? 1 : 0.5;
@@ -24259,9 +24260,470 @@ async function handleAssetCategories(req: NextRequest, parts: string[]) {
   return error("طريقة غير مدعومة", 405);
 }
 
+const AssetSaleInputSchema = z.object({
+  buyerName: z.string().trim().min(2, "اسم المشتري مطلوب").max(200),
+  buyerPhone: z.string().trim().max(30).optional().nullable(),
+  saleDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ البيع غير صحيح"),
+  salePrice: z.coerce.number().positive("سعر البيع يجب أن يكون أكبر من صفر").max(999_999_999_999),
+  paymentMethod: z.enum(["cash", "bank_transfer", "partial"]),
+  collectionMethod: z.enum(["cash", "bank_transfer"]).optional().nullable(),
+  financialAccountId: z.coerce.number().int().positive("اختر الصندوق أو الحساب البنكي"),
+  paidAmount: z.coerce.number().min(0).max(999_999_999_999).optional().default(0),
+  invoiceNumber: z.string().trim().max(120).optional().nullable(),
+  reason: z.string().trim().min(3, "سبب البيع مطلوب").max(1000),
+  notes: z.string().trim().max(3000).optional().nullable(),
+});
+
+let assetSalesTablesReady: Promise<void> | null = null;
+async function ensureAssetSalesTables() {
+  if (!assetSalesTablesReady) {
+    assetSalesTablesReady = (async () => {
+      await ensureMasterCashBoxTables();
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS "asset_sales" (
+          "id" serial PRIMARY KEY,
+          "sale_no" varchar(50) NOT NULL,
+          "product_id" integer NOT NULL REFERENCES "products"("id") ON DELETE RESTRICT,
+          "customer_id" integer REFERENCES "customers"("id") ON DELETE SET NULL,
+          "buyer_name" text NOT NULL,
+          "buyer_phone" varchar(30),
+          "sale_date" date NOT NULL,
+          "purchase_cost" numeric(16,2) NOT NULL,
+          "book_value" numeric(16,2) NOT NULL,
+          "accumulated_depreciation" numeric(16,2) NOT NULL,
+          "market_value" numeric(16,2),
+          "sale_price" numeric(16,2) NOT NULL,
+          "paid_amount" numeric(16,2) NOT NULL DEFAULT 0,
+          "receivable_amount" numeric(16,2) NOT NULL DEFAULT 0,
+          "profit_amount" numeric(16,2) NOT NULL DEFAULT 0,
+          "loss_amount" numeric(16,2) NOT NULL DEFAULT 0,
+          "payment_method" varchar(20) NOT NULL,
+          "collection_method" varchar(20),
+          "financial_account_id" integer REFERENCES "financial_accounts"("id") ON DELETE RESTRICT,
+          "payment_status" varchar(20) NOT NULL DEFAULT 'paid',
+          "invoice_number" varchar(120),
+          "reason" text NOT NULL,
+          "notes" text,
+          "disposal_reference" varchar(80) NOT NULL,
+          "accounting_reference" varchar(80),
+          "financial_transaction_id" integer REFERENCES "financial_transactions"("id") ON DELETE RESTRICT,
+          "sold_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
+          "sold_by_name" text NOT NULL DEFAULT '',
+          "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
+          "created_at" timestamp NOT NULL DEFAULT now(),
+          "updated_at" timestamp NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "asset_sales_sale_no_idx" ON "asset_sales" ("sale_no");
+        CREATE UNIQUE INDEX IF NOT EXISTS "asset_sales_product_idx" ON "asset_sales" ("product_id");
+        CREATE INDEX IF NOT EXISTS "asset_sales_date_idx" ON "asset_sales" ("sale_date");
+        CREATE INDEX IF NOT EXISTS "asset_sales_buyer_idx" ON "asset_sales" ("buyer_phone");
+        CREATE INDEX IF NOT EXISTS "asset_sales_account_idx" ON "asset_sales" ("financial_account_id");
+        CREATE OR REPLACE FUNCTION ajn_prevent_asset_sale_delete() RETURNS trigger AS $immutable$
+        BEGIN
+          RAISE EXCEPTION 'Asset sale records are immutable and cannot be deleted';
+        END;
+        $immutable$ LANGUAGE plpgsql;
+        DO $triggers$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'asset_sales_no_delete') THEN
+            CREATE TRIGGER asset_sales_no_delete BEFORE DELETE ON asset_sales
+            FOR EACH ROW EXECUTE FUNCTION ajn_prevent_asset_sale_delete();
+          END IF;
+        END $triggers$;
+      `);
+      for (const [code, nameAr, accountType] of [
+        ["1010", "الحساب البنكي الرئيسي", "asset"],
+        ["1500", "الأصول الثابتة", "asset"],
+        ["1590", "مجمع إهلاك الأصول", "contra_asset"],
+        ["4200", "أرباح بيع الأصول", "revenue"],
+        ["5200", "خسائر بيع الأصول", "expense"],
+      ] as const) {
+        await db.insert(financialAccountsTable).values({ code, nameAr, accountType, department: "assets" }).onConflictDoNothing();
+      }
+    })().catch((cause) => {
+      assetSalesTablesReady = null;
+      throw cause;
+    });
+  }
+  await assetSalesTablesReady;
+}
+
+function assetSaleMoney(value: unknown) {
+  const amount = Number(value ?? 0);
+  return Number.isFinite(amount) ? Math.round(Math.max(0, amount) * 100) / 100 : 0;
+}
+
+async function assetSaleContext(productId: number) {
+  await ensureAssetSalesTables();
+  await ensureAssetLinksTable();
+  const [product, profile, passport, existingSale, assigned, groupAssignment, reservation, activeLink, accounts] = await Promise.all([
+    db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
+    db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) }),
+    db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, productId) }),
+    db.query.assetSalesTable.findFirst({ where: eq(assetSalesTable.productId, productId) }),
+    db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")) }),
+    db.select({ assetId: employeeCustodyGroupAssetsTable.id }).from(employeeCustodyGroupAssetsTable).innerJoin(employeeCustodyGroupsTable, eq(employeeCustodyGroupsTable.id, employeeCustodyGroupAssetsTable.groupId)).where(and(eq(employeeCustodyGroupAssetsTable.productId, productId), eq(employeeCustodyGroupAssetsTable.isActive, true), eq(employeeCustodyGroupsTable.status, "active"))).limit(1),
+    db.query.employeeCustodyReservationsTable.findFirst({ where: and(eq(employeeCustodyReservationsTable.productId, productId), inArray(employeeCustodyReservationsTable.status, ["reserved", "picked", "issued", "out", "checked_out"])) }),
+    db.execute(sql`
+      SELECT al.entity_type, al.entity_id FROM asset_links al
+      WHERE al.product_id = ${productId} AND (
+        (al.entity_type = 'kosha' AND EXISTS (SELECT 1 FROM kosha_bookings k WHERE k.id = al.entity_id AND k.status NOT IN ('completed','cancelled','delivered','closed'))) OR
+        (al.entity_type = 'service' AND EXISTS (SELECT 1 FROM service_orders s WHERE s.id = al.entity_id AND s.status NOT IN ('completed','cancelled','delivered','closed'))) OR
+        (al.entity_type = 'order' AND EXISTS (SELECT 1 FROM orders o WHERE o.id = al.entity_id AND o.status NOT IN ('completed','cancelled','delivered','returned'))) OR
+        (al.entity_type = 'rental' AND EXISTS (SELECT 1 FROM rental_orders r WHERE r.id = al.entity_id AND r.status NOT IN ('completed','cancelled','returned','closed')))
+      ) LIMIT 1
+    `),
+    db.query.financialAccountsTable.findMany({ where: eq(financialAccountsTable.isActive, true), orderBy: [asc(financialAccountsTable.code)] }),
+  ]);
+  if (!product || !product.isAsset) return null;
+  const metadata = assetMetadataObject(passport?.metadata);
+  const purchaseCost = assetSaleMoney(profile?.purchasePrice ?? product.costPrice);
+  const bookValue = profile?.deletedAt ? purchaseCost : assetSaleMoney(profile?.currentValue ?? purchaseCost);
+  const accumulatedDepreciation = assetSaleMoney(Math.max(0, purchaseCost - bookValue));
+  const status = existingSale ? "sold" : String(profile?.status ?? "active");
+  const { blockers } = assetSaleEligibility({
+    status,
+    isActive: product.isActive,
+    alreadySold: Boolean(existingSale),
+    assignedToEmployee: Boolean(assigned),
+    inCustodyGroup: groupAssignment.length > 0,
+    reservedInBooking: Boolean(reservation),
+    linkedToActiveBooking: Boolean((activeLink as any).rows?.length),
+  });
+  const collectionAccounts = accounts.filter((account) => account.code === "1000" || account.code === "1010" || account.accountType === "bank" || /بنك|مصرف|bank/i.test(account.nameAr));
+  return {
+    product,
+    profile,
+    passport,
+    existingSale,
+    purchaseCost,
+    bookValue,
+    accumulatedDepreciation,
+    marketValue: metadata.marketValue == null && metadata.currentMarketValue == null ? null : assetSaleMoney(metadata.marketValue ?? metadata.currentMarketValue),
+    status,
+    blockers,
+    accounts: collectionAccounts,
+  };
+}
+
+function formatAssetSale(row: any, product?: any, account?: any) {
+  return {
+    id: row.id,
+    saleNo: row.saleNo,
+    productId: row.productId,
+    asset: product?.nameAr || product?.name || `#${row.productId}`,
+    assetCode: `AJN-A${String(row.productId).padStart(6, "0")}`,
+    category: product?.category ?? product?.subcategory ?? null,
+    buyerName: row.buyerName,
+    buyerPhone: row.buyerPhone,
+    saleDate: String(row.saleDate).slice(0, 10),
+    purchaseCost: Number(row.purchaseCost),
+    bookValue: Number(row.bookValue),
+    accumulatedDepreciation: Number(row.accumulatedDepreciation),
+    marketValue: row.marketValue == null ? null : Number(row.marketValue),
+    salePrice: Number(row.salePrice),
+    paidAmount: Number(row.paidAmount),
+    receivableAmount: Number(row.receivableAmount),
+    profit: Number(row.profitAmount),
+    loss: Number(row.lossAmount),
+    paymentMethod: row.paymentMethod,
+    paymentStatus: row.paymentStatus,
+    accountId: row.financialAccountId,
+    accountName: account?.nameAr ?? null,
+    invoiceNumber: row.invoiceNumber,
+    disposalReference: row.disposalReference,
+    accountingReference: row.accountingReference,
+    soldByName: row.soldByName,
+    createdAt: iso(row.createdAt),
+  };
+}
+
+async function handleAssetSales(req: NextRequest, parts: string[], section: string): Promise<NextResponse | null> {
+  if (section !== "assets") return null;
+  const method = req.method;
+  const resource = parts[2];
+  const action = parts[3];
+  const productId = int(resource);
+  const isReport = resource === "sales";
+  const isSale = Boolean(productId && action === "sale");
+  if (!isReport && !isSale) return null;
+  await ensureAssetSalesTables();
+
+  if (isReport) {
+    const needed: Permission = action === "audit" ? "asset.view_sales" : "asset.view_sales";
+    const auth = await requirePermission(req, needed);
+    if (isResponse(auth)) return auth;
+    if (action === "audit" && method === "POST") {
+      const parsed = z.object({ action: z.enum(["print", "pdf", "excel"]), filters: z.record(z.string(), z.unknown()).default({}), rowCount: z.coerce.number().int().min(0).max(10_000) }).safeParse(await body(req));
+      if (!parsed.success) return validationError("asset-sales.report-audit", parsed);
+      const permission: Permission = parsed.data.action === "print" ? "asset.print_sales" : "asset.export_sales";
+      if (!hasPermission(auth, permission)) return error("ليس لديك صلاحية طباعة أو تصدير مبيعات الأصول", 403);
+      await logAdminActivity(req, `asset_sales_${parsed.data.action}`, "asset_sale_report", undefined, parsed.data);
+      return json({ ok: true });
+    }
+    if (method !== "GET" || action) return error("الإجراء غير مدعوم", 405);
+    const rows = await db.query.assetSalesTable.findMany({ orderBy: [desc(assetSalesTable.saleDate), desc(assetSalesTable.id)], limit: 5000 });
+    const productIds = [...new Set(rows.map((row) => row.productId))];
+    const accountIds = [...new Set(rows.map((row) => row.financialAccountId).filter((id): id is number => Boolean(id)))];
+    const [products, accounts] = await Promise.all([
+      productIds.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) }) : Promise.resolve([]),
+      accountIds.length ? db.query.financialAccountsTable.findMany({ where: inArray(financialAccountsTable.id, accountIds) }) : Promise.resolve([]),
+    ]);
+    const productMap = new Map(products.map((row) => [row.id, row]));
+    const accountMap = new Map(accounts.map((row) => [row.id, row]));
+    const q = String(req.nextUrl.searchParams.get("q") ?? "").trim().toLowerCase();
+    const from = String(req.nextUrl.searchParams.get("from") ?? "").slice(0, 10);
+    const to = String(req.nextUrl.searchParams.get("to") ?? "").slice(0, 10);
+    const category = String(req.nextUrl.searchParams.get("category") ?? "").trim();
+    const paymentStatus = String(req.nextUrl.searchParams.get("paymentStatus") ?? "").trim();
+    const data = rows.map((row) => formatAssetSale(row, productMap.get(row.productId), row.financialAccountId ? accountMap.get(row.financialAccountId) : null)).filter((row) =>
+      (!q || `${row.asset} ${row.assetCode} ${row.buyerName} ${row.buyerPhone ?? ""} ${row.invoiceNumber ?? ""}`.toLowerCase().includes(q)) &&
+      (!from || row.saleDate >= from) && (!to || row.saleDate <= to) && (!category || row.category === category) && (!paymentStatus || row.paymentStatus === paymentStatus));
+    return json({
+      data,
+      categories: [...new Set(rows.map((row) => productMap.get(row.productId)?.category).filter(Boolean))],
+      summary: {
+        count: data.length,
+        salePrice: data.reduce((sum, row) => sum + row.salePrice, 0),
+        profit: data.reduce((sum, row) => sum + row.profit, 0),
+        loss: data.reduce((sum, row) => sum + row.loss, 0),
+        receivable: data.reduce((sum, row) => sum + row.receivableAmount, 0),
+      },
+    });
+  }
+
+  const auth = await requirePermission(req, "asset.sell");
+  if (isResponse(auth)) return auth;
+  const context = await assetSaleContext(productId!);
+  if (!context) return error("الأصل غير موجود", 404);
+  if (method === "GET") {
+    return json({
+      asset: {
+        productId,
+        name: context.product.nameAr || context.product.name,
+        assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
+        category: context.product.category ?? context.product.subcategory ?? null,
+        serialNumber: context.passport?.serialNumber ?? context.profile?.serialNumber ?? null,
+        purchaseDate: context.profile?.purchaseDate ? new Date(context.profile.purchaseDate).toISOString().slice(0, 10) : null,
+        purchaseCost: context.purchaseCost,
+        bookValue: context.bookValue,
+        accumulatedDepreciation: context.accumulatedDepreciation,
+        marketValue: context.marketValue,
+        status: context.status,
+      },
+      blockers: context.blockers,
+      accounts: context.accounts.map((account) => ({ id: account.id, code: account.code, name: account.nameAr, type: account.code === "1000" ? "cash" : "bank" })),
+    });
+  }
+  if (method !== "POST") return error("الإجراء غير مدعوم", 405);
+  if (context.blockers.length) return json({ message: "لا يمكن بيع الأصل حاليًا", blockers: context.blockers }, 409);
+  const parsed = AssetSaleInputSchema.safeParse(await body(req));
+  if (!parsed.success) return validationError("asset-sale.create", parsed);
+  const input = parsed.data;
+  const normalizedPhone = input.buyerPhone ? normalizeIraqiPhone(input.buyerPhone) : null;
+  if (input.buyerPhone && !normalizedPhone) return error("رقم هاتف المشتري غير صحيح", 422);
+  const account = context.accounts.find((row) => row.id === input.financialAccountId);
+  if (!account) return error("الصندوق أو الحساب البنكي غير متاح", 422);
+  const collectionMethod = input.paymentMethod === "partial" ? input.collectionMethod : input.paymentMethod;
+  if (input.paymentMethod === "cash" && account.code !== "1000") return error("الدفع النقدي يجب أن يودع في الصندوق الرئيسي", 422);
+  if (input.paymentMethod === "bank_transfer" && account.code === "1000") return error("اختر حسابًا بنكيًا للتحويل", 422);
+  if (input.paymentMethod === "partial" && !collectionMethod) return error("حدد طريقة استلام الدفعة الجزئية", 422);
+  if (collectionMethod === "cash" && account.code !== "1000") return error("الدفعة النقدية الجزئية يجب أن تودع في الصندوق الرئيسي", 422);
+  if (collectionMethod === "bank_transfer" && account.code === "1000") return error("اختر حسابًا بنكيًا للدفعة الجزئية", 422);
+  const salePrice = assetSaleMoney(input.salePrice);
+  const paidAmount = input.paymentMethod === "partial" ? assetSaleMoney(input.paidAmount) : salePrice;
+  if (input.paymentMethod === "partial" && (paidAmount <= 0 || paidAmount >= salePrice)) return error("المبلغ المستلم جزئيًا يجب أن يكون أكبر من صفر وأقل من سعر البيع", 422);
+  const { receivableAmount, profitAmount, lossAmount } = calculateAssetSaleOutcome({
+    bookValue: context.bookValue,
+    salePrice,
+    paidAmount,
+  });
+  if (receivableAmount > 0 && !normalizedPhone) return error("رقم هاتف المشتري مطلوب عند إنشاء ذمة مدينة", 422);
+  const customer = normalizedPhone ? await db.query.customersTable.findFirst({ where: eq(customersTable.phone, normalizedPhone) }) : null;
+  const actorName = auth.fullName || auth.username;
+  const now = new Date();
+  const result = await db.transaction(async (tx) => {
+    let saleCustomer = customer;
+    if (receivableAmount > 0 && normalizedPhone && !saleCustomer) {
+      await tx.insert(customersTable).values({ phone: normalizedPhone, name: input.buyerName, fullName: input.buyerName }).onConflictDoNothing();
+      saleCustomer = await tx.query.customersTable.findFirst({ where: eq(customersTable.phone, normalizedPhone) });
+      if (!saleCustomer) throw new Error("تعذّر إنشاء حساب المشتري للذمة المدينة");
+    }
+    const disposalReference = `DSP-${input.saleDate.replaceAll("-", "")}-${productId}`;
+    const [saleDraft] = await tx.insert(assetSalesTable).values({
+      saleNo: `AST-TMP-${randomUUID()}`,
+      productId: productId!,
+      customerId: saleCustomer?.id ?? null,
+      buyerName: input.buyerName,
+      buyerPhone: normalizedPhone,
+      saleDate: input.saleDate,
+      purchaseCost: String(context.purchaseCost),
+      bookValue: String(context.bookValue),
+      accumulatedDepreciation: String(context.accumulatedDepreciation),
+      marketValue: context.marketValue == null ? null : String(context.marketValue),
+      salePrice: String(salePrice),
+      paidAmount: String(paidAmount),
+      receivableAmount: String(receivableAmount),
+      profitAmount: String(profitAmount),
+      lossAmount: String(lossAmount),
+      paymentMethod: input.paymentMethod,
+      collectionMethod,
+      financialAccountId: account.id,
+      paymentStatus: receivableAmount > 0 ? "partial" : "paid",
+      invoiceNumber: nullableText(input.invoiceNumber),
+      reason: input.reason,
+      notes: nullableText(input.notes),
+      disposalReference,
+      soldBy: auth.id,
+      soldByName: actorName,
+      metadata: { ipAddress: ip(req), userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null },
+    }).returning();
+    const saleNo = `AST-${input.saleDate.slice(0, 4)}-${String(saleDraft.id).padStart(6, "0")}`;
+    const transactionNo = `FIN-${saleNo}`;
+    const cashBoxRows = account.code === "1000" && paidAmount > 0 ? await tx.execute(sql`SELECT * FROM master_cash_box WHERE code = 'MASTER' FOR UPDATE`) : null;
+    const cashBox = (cashBoxRows?.rows?.[0] ?? null) as any;
+    if (account.code === "1000" && paidAmount > 0 && !cashBox) throw new Error("الصندوق الرئيسي غير مهيأ");
+    const balanceBefore = cashBox ? assetSaleMoney(cashBox.current_balance) : null;
+    const balanceAfter = cashBox ? assetSaleMoney(balanceBefore! + paidAmount) : null;
+    const [financial] = await tx.insert(financialTransactionsTable).values({
+      transactionNo,
+      transactionDate: input.saleDate,
+      direction: "revenue",
+      amount: String(salePrice),
+      department: "assets",
+      transactionType: "asset_sale",
+      referenceNo: saleNo,
+      description: `بيع الأصل ${context.product.nameAr || context.product.name} إلى ${input.buyerName}`,
+      paymentMethod: collectionMethod === "bank_transfer" ? "transfer" : receivableAmount > 0 ? "other" : "cash",
+      sourceType: "asset_sale",
+      sourceId: String(saleDraft.id),
+      sourceEvent: "sale",
+      idempotencyKey: `asset-sale:${productId}`,
+      approvalStatus: "executed",
+      requestedBy: auth.id,
+      requestedByName: actorName,
+      submittedAt: now,
+      approvedBy: auth.id,
+      approvedByName: actorName,
+      approvedAt: now,
+      executedBy: auth.id,
+      executedByName: actorName,
+      executedAt: now,
+      balanceBefore: balanceBefore == null ? null : String(balanceBefore),
+      balanceAfter: balanceAfter == null ? null : String(balanceAfter),
+      customerId: saleCustomer?.id ?? null,
+      customerName: input.buyerName,
+      customerPhone: normalizedPhone,
+      dueDate: receivableAmount > 0 ? input.saleDate : null,
+      inventoryItemId: productId,
+      responsibleUserId: auth.id,
+      responsibleUserName: actorName,
+      notes: input.notes || input.reason,
+      attachments: [],
+    }).returning();
+    const neededCodes = ["1200", "1500", "1590", "4200", "5200"];
+    const ledgerAccounts = await tx.select().from(financialAccountsTable).where(inArray(financialAccountsTable.code, neededCodes));
+    const accountByCode = new Map(ledgerAccounts.map((row) => [row.code, row]));
+    const fixedAsset = accountByCode.get("1500");
+    const accumulated = accountByCode.get("1590");
+    const receivable = accountByCode.get("1200");
+    const profit = accountByCode.get("4200");
+    const loss = accountByCode.get("5200");
+    if (!fixedAsset || !accumulated || !receivable || !profit || !loss) throw new Error("دليل حسابات بيع الأصول غير مكتمل");
+    const entries: Array<{ transactionId: number; accountId: number; entrySide: string; amount: string; description: string }> = [];
+    const description = `قيد بيع الأصل ${saleNo}`;
+    if (paidAmount > 0) entries.push({ transactionId: financial.id, accountId: account.id, entrySide: "debit", amount: String(paidAmount), description });
+    if (receivableAmount > 0) entries.push({ transactionId: financial.id, accountId: receivable.id, entrySide: "debit", amount: String(receivableAmount), description });
+    if (context.accumulatedDepreciation > 0) entries.push({ transactionId: financial.id, accountId: accumulated.id, entrySide: "debit", amount: String(context.accumulatedDepreciation), description });
+    if (lossAmount > 0) entries.push({ transactionId: financial.id, accountId: loss.id, entrySide: "debit", amount: String(lossAmount), description });
+    if (context.purchaseCost > 0) entries.push({ transactionId: financial.id, accountId: fixedAsset.id, entrySide: "credit", amount: String(context.purchaseCost), description });
+    if (profitAmount > 0) entries.push({ transactionId: financial.id, accountId: profit.id, entrySide: "credit", amount: String(profitAmount), description });
+    const debit = entries.filter((row) => row.entrySide === "debit").reduce((sum, row) => sum + Number(row.amount), 0);
+    const credit = entries.filter((row) => row.entrySide === "credit").reduce((sum, row) => sum + Number(row.amount), 0);
+    if (Math.abs(debit - credit) > 0.01) throw new Error("قيد بيع الأصل غير متوازن");
+    if (entries.length) await tx.insert(financialLedgerEntriesTable).values(entries);
+    await tx.insert(financialAuditLogsTable).values({
+      transactionId: financial.id,
+      action: "asset_sale_executed",
+      actorId: auth.id,
+      actorName,
+      oldValues: { assetStatus: context.status, bookValue: context.bookValue },
+      newValues: { saleNo, salePrice, paidAmount, receivableAmount, profitAmount, lossAmount, accountId: account.id },
+      reason: input.reason,
+    });
+    if (cashBox) {
+      const nextRevenue = assetSaleMoney(Number(cashBox.total_revenue ?? 0) + paidAmount);
+      const nextExpenses = assetSaleMoney(cashBox.total_expenses ?? 0);
+      await tx.update(masterCashBoxTable).set({
+        currentBalance: String(balanceAfter),
+        availableBalance: String(balanceAfter),
+        totalRevenue: String(nextRevenue),
+        totalExpenses: String(nextExpenses),
+        netProfit: String(Math.round((nextRevenue - nextExpenses) * 100) / 100),
+        version: Number(cashBox.version ?? 0) + 1,
+        updatedBy: auth.id,
+        updatedByName: actorName,
+        updatedAt: now,
+      }).where(eq(masterCashBoxTable.id, Number(cashBox.id)));
+    }
+    const profileValues = {
+      status: "sold",
+      currentValue: String(context.bookValue),
+      notes: [context.profile?.notes, `تم البيع بموجب ${saleNo} بتاريخ ${input.saleDate}`].filter(Boolean).join("\n"),
+      updatedAt: now,
+    };
+    if (context.profile) await tx.update(assetProfilesTable).set(profileValues).where(eq(assetProfilesTable.id, context.profile.id));
+    else await tx.insert(assetProfilesTable).values({ productId: productId!, purchasePrice: String(context.purchaseCost), currentValue: String(context.bookValue), status: "sold", notes: profileValues.notes });
+    const saleMetadata = {
+      ...assetMetadataObject(context.passport?.metadata),
+      depreciationPaused: true,
+      depreciationStoppedAt: now.toISOString(),
+      assetSale: { saleId: saleDraft.id, saleNo, saleDate: input.saleDate, salePrice, buyerName: input.buyerName, profitAmount, lossAmount },
+    };
+    await tx.insert(assetPassportsTable).values({ productId: productId!, lastLocation: `تم البيع إلى ${input.buyerName}`, metadata: saleMetadata }).onConflictDoUpdate({
+      target: assetPassportsTable.productId,
+      set: { lastLocation: `تم البيع إلى ${input.buyerName}`, metadata: saleMetadata, updatedAt: now },
+    });
+    const [sale] = await tx.update(assetSalesTable).set({ saleNo, accountingReference: transactionNo, financialTransactionId: financial.id, updatedAt: now }).where(eq(assetSalesTable.id, saleDraft.id)).returning();
+    return { sale, financial, saleNo, transactionNo };
+  });
+  await addEntityTimeline({
+    entityType: "asset",
+    entityId: productId!,
+    type: "asset_sold",
+    title: "تم بيع الأصل",
+    body: `${input.buyerName} · ${formatCurrency(salePrice)} · ${profitAmount ? `ربح ${formatCurrency(profitAmount)}` : lossAmount ? `خسارة ${formatCurrency(lossAmount)}` : "بدون ربح أو خسارة"}`,
+    actor: erpActorFromAdmin(auth),
+    metadata: { saleId: result.sale.id, saleNo: result.saleNo, accountingReference: result.transactionNo, bookValue: context.bookValue, salePrice, profitAmount, lossAmount },
+  });
+  await logAdminActivity(req, "asset_sold", "asset", productId!, {
+    saleId: result.sale.id,
+    saleNo: result.saleNo,
+    buyer: input.buyerName,
+    salePrice,
+    bookValue: context.bookValue,
+    profitAmount,
+    lossAmount,
+    paymentMethod: input.paymentMethod,
+    accountId: account.id,
+  });
+  await createNotification({
+    type: "asset_sold",
+    title: "تم بيع أصل",
+    body: `${context.product.nameAr || context.product.name} · ${formatCurrency(salePrice)} · ${profitAmount ? `ربح ${formatCurrency(profitAmount)}` : lossAmount ? `خسارة ${formatCurrency(lossAmount)}` : "تعادل"} · بواسطة ${actorName} · ${input.saleDate}`,
+    entityType: "asset",
+    entityId: productId!,
+    href: "/admin/assets/sales",
+    metadata: { saleId: result.sale.id, saleNo: result.saleNo, soldBy: actorName, saleDate: input.saleDate },
+  });
+  return json({ ok: true, sale: formatAssetSale(result.sale, context.product, account) }, 201);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const assetSales = await handleAssetSales(req, parts, section);
+  if (assetSales) return assetSales;
 
   if (section === "asset-categories") return handleAssetCategories(req, parts);
 
@@ -26618,6 +27080,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const current = await db.query.assetProfilesTable.findFirst({
         where: eq(assetProfilesTable.productId, productId),
       });
+      if (current && ["sold", "disposed"].includes(current.status)) {
+        return error("لا يمكن تغيير حالة أصل تم بيعه أو استبعاده من إجراءات التشغيل", 409);
+      }
       const statusByAction: Record<string, string> = {
         available: "active",
         reserved: "reserved",
@@ -26724,6 +27189,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: and(eq(assetProfilesTable.id, profileId), isNull(assetProfilesTable.deletedAt)),
       });
       if (!profile) return error("سجل الإهلاك غير موجود أو تمت إزالته مسبقاً", 404);
+      if (["sold", "disposed"].includes(profile.status)) return error("لا يمكن إزالة سجل إهلاك أصل تم بيعه أو استبعاده؛ يجب الحفاظ على القيمة الدفترية وقت التصرف", 409);
       const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, profile.productId) });
       if (!product) return error("الأصل المرتبط بسجل الإهلاك غير موجود", 404);
       const purchaseValue = Math.max(0, Number(profile.purchasePrice ?? product.costPrice ?? 0));
@@ -26750,6 +27216,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: eq(assetPassportsTable.productId, productId),
       });
       const paused = payload?.paused === true;
+      const profile = await db.query.assetProfilesTable.findFirst({
+        where: eq(assetProfilesTable.productId, productId),
+      });
+      if (!paused && ["sold", "disposed"].includes(String(profile?.status ?? ""))) {
+        return error("لا يمكن استئناف إهلاك أصل تم بيعه أو استبعاده", 409);
+      }
       const metadata = {
         ...assetMetadataObject(passport?.metadata),
         depreciationPaused: paused,
@@ -29329,7 +29801,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const tag = ` · ${entityType} #${entityId}`;
         if (mode === "checkout") {
           const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-          if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+          if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
           if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
           const staffId = optionalPositiveId(b?.staffId) ?? auth.id;
           const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity: 1, issuedBy: auth.id, notes: `إخراج${tag}` }).returning();
@@ -29360,7 +29832,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
           await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
           const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-          if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+          if (prof && !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
           void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع الأصل", body: `${entityType} #${entityId}`, actor: erpActorFromAdmin(auth), metadata: { entityType, entityId } });
           void logAdminActivity(req, "asset_return", "product", productId, { entityType, entityId });
         }
@@ -37645,7 +38117,7 @@ async function runShootAssetOperation(input: {
     const profile = await db.query.assetProfilesTable.findFirst({
       where: eq(assetProfilesTable.productId, productId),
     });
-    if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status))
+    if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status))
       return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
     if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
     const [row] = await db
@@ -39785,7 +40257,7 @@ async function handlePhotographyStaffPortal(
           const activeCustody = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
           if (mode === "checkout") {
             const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-            if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+            if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
             if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
             const staffId = auth.id;
             const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId, quantity: 1, issuedBy: auth.id, notes: `إخراج${tag}` }).returning();
@@ -39816,7 +40288,7 @@ async function handlePhotographyStaffPortal(
             if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
             await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
             const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-            if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+            if (prof && !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
             void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع الأصل", body: `${entityType} #${entityId}`, actor, metadata: { entityType, entityId } });
             void logAdminActivity(req, "asset_return", "product", productId, { entityType, entityId });
           }
@@ -40932,7 +41404,7 @@ async function handleStaffPortal(
 
       if (mode === "checkout") {
         const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-        if (profile && ["maintenance", "lost", "retired", "locked"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
+        if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
         if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
         const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId: auth.id, quantity: 1, issuedBy: auth.id, notes: `حجز كوشة #${booking.id}` }).returning();
         await db.insert(assetPassportsTable).values({ productId, lastStaffId: auth.id, lastLocation: `بعهدة ${auth.fullName || auth.username}` })
@@ -40969,7 +41441,7 @@ async function handleStaffPortal(
         if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
         await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
         const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-        if (prof && !["maintenance", "lost", "retired", "locked"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
+        if (prof && !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
         void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع أصل الحجز", actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id } });
         void logAdminActivity(req, "kosha_asset_return", "product", productId, { bookingId: booking.id });
       }

@@ -49,7 +49,7 @@ type ScanResult = {
 type CustodyRow = { id: number; productId: number; staffId: number; status: string };
 type StaffRow = { id: number; fullName?: string; username?: string };
 
-const BLOCKED_CHECKOUT = new Set(["maintenance", "lost", "retired", "locked"]);
+const BLOCKED_CHECKOUT = new Set(["maintenance", "lost", "retired", "locked", "sold", "disposed"]);
 
 export default function AssetGatePage() {
   const [mode, setMode] = useState<GateMode>("checkout");

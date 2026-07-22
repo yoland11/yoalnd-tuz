@@ -192,6 +192,21 @@ export function sheetReportCss(size: "a4" | "a5" = "a4") {
   `;
 }
 
+/** Shared A4 landscape asset-sale report used by print and PDF export. */
+export function assetSalesReportCss() {
+  return `${sheetReportCss("a4")}
+    @page { size: A4 landscape; margin: 9mm; }
+    .asset-sales-sheet { min-height: 190mm; }
+    .asset-sales-sheet .report-summary { grid-template-columns: repeat(5, 1fr); }
+    .asset-sales-sheet .report-table { font-size: 8.5px; }
+    .asset-sales-sheet .report-table thead { display: table-header-group; }
+    .asset-sales-sheet .report-table tr { break-inside: avoid; page-break-inside: avoid; }
+    .asset-sales-sheet .num { direction: ltr; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .asset-sales-sheet .profit { font-weight: 800; }
+    .asset-sales-sheet .filter-note { border: 1px solid #000; padding: 6px; margin: 8px 0; font-size: 9px; }
+  `;
+}
+
 /** A4 employee custody statement; shared so every branch prints the same form. */
 export function custodyStatementCss() {
   return `${sheetReportCss("a4")}

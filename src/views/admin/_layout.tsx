@@ -548,6 +548,12 @@ export const NAV: NavItem[] = [
     perm: "products",
   },
   {
+    href: "/admin/assets/sales",
+    label: "مبيعات الأصول",
+    icon: CircleDollarSign,
+    perm: "asset.view_sales",
+  },
+  {
     href: "/admin/assets/new",
     label: "إضافة أصل جديد",
     icon: PackageCheck,

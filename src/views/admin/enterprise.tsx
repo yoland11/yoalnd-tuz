@@ -11,6 +11,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle,
   BarChart3,
+  BadgeDollarSign,
   BatteryCharging,
   BookOpen,
   Boxes,
@@ -63,9 +64,12 @@ import {
   adminFetch,
   apiErrorMessage,
   compressImageFile,
+  fetchAdminMe,
   formatCurrency,
+  hasPerm,
 } from "./_lib";
 import { EmptyState } from "./_layout";
+import { AssetSaleDialog } from "./asset-sale-dialog";
 import {
   getLabelHistory,
   labelHistoryStats,
@@ -2175,8 +2179,15 @@ function AssetPassportModal({
   >("overview");
   const qc = useQueryClient();
   const { toast } = useToast();
+  const [saleOpen, setSaleOpen] = useState(false);
   const [lockReason, setLockReason] = useState("");
   const locked = row.assetStatus === "locked";
+  const meQuery = useQuery({
+    queryKey: ["admin", "me"],
+    queryFn: () => fetchAdminMe(),
+    staleTime: 60_000,
+  });
+  const canSell = row.assetStatus === "active" && hasPerm(meQuery.data ?? null, "asset.sell");
   const lock = useMutation({
     mutationFn: (payload: { locked: boolean; reason?: string }) =>
       adminFetch("/admin/assets/lock", {
@@ -2222,7 +2233,13 @@ function AssetPassportModal({
   const purchase = Number(row.purchasePrice ?? 0);
   const value = Number(row.currentValue ?? purchase);
   const custody = row.custody ?? [];
-  const status = custody.length
+  const status = row.assetStatus === "sold"
+    ? { label: "تم البيع", tone: "bg-muted text-muted-foreground" }
+    : row.assetStatus === "disposed" || row.assetStatus === "retired"
+      ? { label: "خارج الخدمة", tone: "bg-muted text-muted-foreground" }
+      : row.assetStatus === "maintenance"
+        ? { label: "صيانة", tone: "bg-status-warning/15 text-status-warning" }
+        : custody.length
     ? { label: "بعهدة موظف", tone: "bg-accent/15 text-accent" }
     : row.lastLocation && /صيان/.test(row.lastLocation)
       ? { label: "صيانة", tone: "bg-status-warning/15 text-status-warning" }
@@ -2261,15 +2278,24 @@ function AssetPassportModal({
               {row.productName} · {row.shelfCode || "بدون رف"}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="إغلاق"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {canSell ? (
+              <Button size="sm" variant="outline" className="gap-1.5 border-primary/35 text-primary" onClick={() => setSaleOpen(true)}>
+                <BadgeDollarSign className="h-4 w-4" /> بيع الأصل
+              </Button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="إغلاق"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
+
+        <AssetSaleDialog productId={row.productId} open={saleOpen} onOpenChange={setSaleOpen} onSold={onClose} />
 
         <div className="mb-4 flex flex-wrap gap-1.5 border-b border-border/30 pb-3">
           {tabs.map(({ key, label, icon: Icon }) => (
@@ -3660,6 +3686,8 @@ function escapeAssetPrint(value: unknown) {
 }
 
 function assetStatusLabel(row: AssetRow) {
+  if (row.assetStatus === "sold") return "تم البيع";
+  if (row.assetStatus === "disposed") return "تم الاستبعاد";
   if (row.assetStatus === "locked") return "مقفول";
   if (row.assetStatus === "lost") return "مفقود";
   if (row.assetStatus === "retired") return "خارج الخدمة";

@@ -10,6 +10,7 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "test:employee-salaries": "node ./scripts/test-employee-salary-logic.mjs",
+    "test:asset-sales": "node ./scripts/test-asset-sale-logic.mjs",
     "test:shoot-lifecycle": "node ./scripts/verify-shoot-lifecycle.mjs",
     "test:photography-post": "node ./scripts/verify-photography-post.mjs",
     "test:photography-gallery": "node ./scripts/verify-photography-gallery.mjs",

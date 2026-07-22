@@ -7,6 +7,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   BarChart3,
+  BadgeDollarSign,
   Boxes,
   Camera,
   CheckCircle2,
@@ -44,8 +45,11 @@ import {
   adminFetch,
   apiErrorMessage,
   compressImageFile,
+  fetchAdminMe,
   formatCurrency,
+  hasPerm,
 } from "./_lib";
+import { AssetSaleDialog } from "./asset-sale-dialog";
 
 type ApprovalRow = {
   id: number;
@@ -604,6 +608,8 @@ export function WarehouseTransfersPage() {
 }
 
 const ASSET_STATUS_LABEL: Record<string, string> = {
+  sold: "تم البيع",
+  disposed: "تم الاستبعاد",
   active: "نشط",
   reserved: "محجوز",
   maintenance: "صيانة",
@@ -618,6 +624,8 @@ export function AssetsPage() {
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
+  const [saleTarget, setSaleTarget] = useState<number | null>(null);
+  const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
   const rows = data?.data ?? [];
   const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
   const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
@@ -774,6 +782,11 @@ export function AssetsPage() {
                       </td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-1">
+                          {row.status === "active" && hasPerm(meQuery.data ?? null, "asset.sell") ? (
+                            <Button variant="ghost" size="sm" className="gap-1 text-primary" onClick={() => setSaleTarget(row.productId)}>
+                              <BadgeDollarSign className="h-3.5 w-3.5" /> بيع الأصل
+                            </Button>
+                          ) : null}
                           <Link href={`/admin/assets/new?edit=${row.productId}&returnTo=depreciation`}>
                             <Button variant="ghost" size="sm" className="gap-1 text-primary">
                               <Pencil className="h-3.5 w-3.5" /> تعديل
@@ -784,7 +797,7 @@ export function AssetsPage() {
                               <QrCode className="h-3.5 w-3.5" /> طباعة ملصق
                             </Button>
                           </Link>
-                          <Button
+                          {!["sold", "disposed"].includes(row.status) ? <Button
                             variant="ghost"
                             size="sm"
                             disabled={toggleDepreciation.isPending}
@@ -802,8 +815,8 @@ export function AssetsPage() {
                               <Pause className="h-3.5 w-3.5" />
                             )}
                             {row.depreciationPaused ? "استئناف" : "إيقاف"}
-                          </Button>
-                          <Button
+                          </Button> : null}
+                          {!["sold", "disposed"].includes(row.status) ? <Button
                             variant="ghost"
                             size="sm"
                             disabled={!row.hasDepreciationRecord || !row.depreciationRecordId || removeDepreciation.isPending}
@@ -812,7 +825,7 @@ export function AssetsPage() {
                             className="gap-1 text-destructive hover:text-destructive"
                           >
                             <Trash2 className="h-3.5 w-3.5" /> إزالة الإهلاك
-                          </Button>
+                          </Button> : null}
                         </div>
                     </td>
                   </tr>
@@ -830,6 +843,7 @@ export function AssetsPage() {
         />
       )}
       <RemoveDepreciationDialog asset={removeTarget} busy={removeDepreciation.isPending} onClose={() => setRemoveTarget(null)} onConfirm={(reason) => removeTarget?.depreciationRecordId && removeDepreciation.mutate({ recordId: removeTarget.depreciationRecordId, reason })} />
+      {saleTarget ? <AssetSaleDialog productId={saleTarget} open onOpenChange={(open) => !open && setSaleTarget(null)} /> : null}
     </div>
   );
 }
@@ -1127,6 +1141,8 @@ export function AssetMovementsPage() {
   const [notes, setNotes] = useState("");
   const [cost, setCost] = useState("");
   const [photoCategory, setPhotoCategory] = useState("current");
+  const [saleTarget, setSaleTarget] = useState<number | null>(null);
+  const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
 
   const assetsQuery = useQuery<{ data: MovementAsset[] }>({
     queryKey: ["admin", "enterprise", "assets"],
@@ -1495,9 +1511,16 @@ export function AssetMovementsPage() {
                       <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" /> {selected.lastLocation || selected.shelfCode || "داخل المخزن"}</p>
                     </div>
                   </div>
-                  <a href={`/admin/command-center?tab=assets&asset=${selected.productId}`} className="inline-flex h-9 items-center gap-2 rounded-md border border-border/40 px-3 text-sm text-primary hover:border-primary/50">
-                    <Fingerprint className="h-4 w-4" /> فتح جواز الأصل
-                  </a>
+                  <div className="flex flex-wrap gap-2">
+                    {selected.assetStatus === "active" && hasPerm(meQuery.data ?? null, "asset.sell") ? (
+                      <Button variant="outline" className="gap-2 border-primary/35 text-primary" onClick={() => setSaleTarget(selected.productId)}>
+                        <BadgeDollarSign className="h-4 w-4" /> بيع الأصل
+                      </Button>
+                    ) : null}
+                    <a href={`/admin/command-center?tab=assets&asset=${selected.productId}`} className="inline-flex h-9 items-center gap-2 rounded-md border border-border/40 px-3 text-sm text-primary hover:border-primary/50">
+                      <Fingerprint className="h-4 w-4" /> فتح جواز الأصل
+                    </a>
+                  </div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <div className="rounded-lg bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">الحالة</p><p className="mt-1 text-sm font-semibold">{ASSET_STATUS_LABEL[selected.assetStatus] ?? selected.assetStatus}</p></div>
@@ -1521,7 +1544,7 @@ export function AssetMovementsPage() {
                     ["lost", "مفقود", XCircle],
                     ["retired", "استبعاد", Archive],
                   ].map(([key, label, Icon]) => (
-                    <Button key={String(key)} variant="outline" size="sm" disabled={action.isPending} onClick={() => action.mutate(String(key))} className="gap-1.5">
+                    <Button key={String(key)} variant="outline" size="sm" disabled={action.isPending || ["sold", "disposed"].includes(selected.assetStatus)} onClick={() => action.mutate(String(key))} className="gap-1.5">
                       <Icon className="h-3.5 w-3.5" /> {String(label)}
                     </Button>
                   ))}
@@ -1556,7 +1579,7 @@ export function AssetMovementsPage() {
                           </label>
                         ))}
                       </div>
-                      <Button className="w-full gap-2" disabled={checkout.isPending || !staffId || !checklistComplete} onClick={() => checkout.mutate()}>
+                      <Button className="w-full gap-2" disabled={checkout.isPending || !staffId || !checklistComplete || ["sold", "disposed"].includes(selected.assetStatus)} onClick={() => checkout.mutate()}>
                         <ArrowUpFromLine className="h-4 w-4" /> Check-Out وتسجيل العهدة
                       </Button>
                     </div>
@@ -1607,6 +1630,7 @@ export function AssetMovementsPage() {
           </div>
         )}
       </Card>
+      {saleTarget ? <AssetSaleDialog productId={saleTarget} open onOpenChange={(open) => !open && setSaleTarget(null)} /> : null}
     </div>
   );
 }
