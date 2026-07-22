@@ -411,3 +411,284 @@ a:hover {
     scroll-behavior: auto !important;
   }
 }
+
+/* First-open AJN welcome layer. It sits above the existing app without affecting layout or routes. */
+.ajn-splash {
+  --ajn-splash-gold: #d4af4f;
+  --ajn-splash-gold-soft: #f1d98a;
+  --ajn-splash-ink: #050403;
+  --ajn-splash-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  overflow: hidden;
+  padding:
+    max(1.5rem, env(safe-area-inset-top))
+    max(1.25rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom))
+    max(1.25rem, env(safe-area-inset-left));
+  background: var(--ajn-splash-ink);
+  color: #f7f0dc;
+  contain: layout paint style;
+  opacity: 1;
+  transition: opacity 220ms var(--ajn-splash-ease);
+}
+
+.ajn-splash[data-phase="leaving"] {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.ajn-splash__ambient {
+  position: absolute;
+  inset: -28%;
+  z-index: -2;
+  background:
+    radial-gradient(circle at 50% 47%, rgb(197 155 50 / 16%) 0, transparent 28%),
+    radial-gradient(circle at 50% 52%, rgb(255 224 132 / 7%) 0, transparent 42%),
+    conic-gradient(from 214deg at 50% 50%, transparent 0 10%, rgb(214 176 76 / 5%) 12%, transparent 17% 54%, rgb(214 176 76 / 4%) 57%, transparent 62% 100%);
+  opacity: 0.82;
+  transform: rotate(-3deg) scale(1.08);
+  animation: ajn-splash-rays 5.2s cubic-bezier(0.77, 0, 0.175, 1) infinite alternate;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__particles {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+}
+
+.ajn-splash__particles i {
+  position: absolute;
+  top: var(--ajn-particle-y);
+  left: var(--ajn-particle-x);
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ajn-splash-gold-soft);
+  box-shadow: 0 0 7px rgb(226 190 94 / 52%);
+  opacity: 0;
+  transform: translate3d(0, 16px, 0) scale(0.9);
+  animation: ajn-splash-particle var(--ajn-particle-duration) linear var(--ajn-particle-delay) infinite;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__content {
+  display: flex;
+  width: min(88vw, 31rem);
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.ajn-splash__brand-mark {
+  position: relative;
+  display: grid;
+  width: min(48vw, 11.5rem);
+  min-width: 8.5rem;
+  aspect-ratio: 2 / 1;
+  place-items: center;
+}
+
+.ajn-splash__halo {
+  position: absolute;
+  inset: -56%;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(212 175 79 / 22%) 0, rgb(212 175 79 / 7%) 38%, transparent 69%);
+  opacity: 0;
+  transform: scale(0.94);
+  animation: ajn-splash-halo 1100ms var(--ajn-splash-ease) 180ms forwards;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__logo-frame {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  overflow: hidden;
+  opacity: 0;
+  transform: translate3d(0, 0, 0) scale(0.94);
+  animation: ajn-splash-logo 760ms var(--ajn-splash-ease) 90ms forwards;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__logo-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 0 12px rgb(212 175 79 / 24%));
+}
+
+.ajn-splash__shine {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  display: block;
+  width: 50%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 50%;
+  transform: translate3d(-50%, 0, 0);
+  mix-blend-mode: screen;
+}
+
+.ajn-splash__shine::after {
+  content: "";
+  position: absolute;
+  inset-block: -24%;
+  left: -72%;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgb(255 239 185 / 58%), transparent);
+  opacity: 0;
+  transform: translate3d(0, 0, 0) skewX(-17deg);
+  animation: ajn-splash-shine 920ms cubic-bezier(0.77, 0, 0.175, 1) 720ms forwards;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__copy {
+  margin-top: 1.8rem;
+}
+
+.ajn-splash__copy h1,
+.ajn-splash__copy p,
+.ajn-splash__copy strong {
+  color: inherit;
+  opacity: 0;
+  transform: translate3d(0, 8px, 0);
+  animation: ajn-splash-line 540ms var(--ajn-splash-ease) forwards;
+  will-change: transform, opacity;
+}
+
+.ajn-splash__copy h1 {
+  margin: 0;
+  font-size: clamp(1.5rem, 5vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
+  animation-delay: 540ms;
+}
+
+.ajn-splash__copy p {
+  margin: 0.45rem 0 0;
+  color: #d9c58b;
+  font-size: clamp(0.9rem, 2.7vw, 1.05rem);
+  font-weight: 500;
+  line-height: 1.6;
+  animation-delay: 610ms;
+}
+
+.ajn-splash__copy strong {
+  display: block;
+  margin-top: 0.8rem;
+  color: #fff8e7;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.6;
+  animation-delay: 680ms;
+}
+
+.ajn-splash__progress {
+  position: relative;
+  width: min(15rem, 62vw);
+  height: 2px;
+  margin-top: 1.9rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #2a2417;
+  opacity: 0;
+  animation: ajn-splash-progress-appear 280ms var(--ajn-splash-ease) 760ms forwards;
+}
+
+.ajn-splash__progress span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #9d7b2e, #f1d98a 52%, #c49b39);
+  box-shadow: 0 0 8px rgb(212 175 79 / 45%);
+  transform: scaleX(0);
+  transform-origin: right center;
+  animation: ajn-splash-progress 1760ms cubic-bezier(0.23, 1, 0.32, 1) 790ms forwards;
+  will-change: transform;
+}
+
+@keyframes ajn-splash-logo {
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes ajn-splash-halo {
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ajn-splash-line {
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes ajn-splash-shine {
+  0% { opacity: 0; transform: translate3d(0, 0, 0) skewX(-17deg); }
+  18% { opacity: 0.82; }
+  72% { opacity: 0.45; }
+  100% { opacity: 0; transform: translate3d(420%, 0, 0) skewX(-17deg); }
+}
+
+@keyframes ajn-splash-progress-appear {
+  to { opacity: 1; }
+}
+
+@keyframes ajn-splash-progress {
+  to { transform: scaleX(1); }
+}
+
+@keyframes ajn-splash-particle {
+  0% { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.9); }
+  18% { opacity: 0.42; }
+  74% { opacity: 0.18; }
+  100% { opacity: 0; transform: translate3d(0, -28px, 0) scale(1.08); }
+}
+
+@keyframes ajn-splash-rays {
+  from { opacity: 0.68; transform: rotate(-3deg) scale(1.08); }
+  to { opacity: 0.9; transform: rotate(2deg) scale(1.13); }
+}
+
+@media (max-width: 420px) {
+  .ajn-splash__copy { margin-top: 1.45rem; }
+  .ajn-splash__progress { margin-top: 1.55rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ajn-splash {
+    transition-duration: 90ms !important;
+  }
+
+  .ajn-splash__ambient,
+  .ajn-splash__particles,
+  .ajn-splash__shine {
+    display: none;
+  }
+
+  .ajn-splash__logo-frame,
+  .ajn-splash__halo,
+  .ajn-splash__copy h1,
+  .ajn-splash__copy p,
+  .ajn-splash__copy strong,
+  .ajn-splash__progress {
+    opacity: 1;
+    transform: none;
+  }
+
+  .ajn-splash__progress span {
+    transform: scaleX(1);
+  }
+}

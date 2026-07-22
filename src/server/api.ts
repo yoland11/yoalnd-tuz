@@ -4703,6 +4703,13 @@ async function formatKoshaBooking(row: any) {
     },
   });
   const departments = detectedDepartments.length ? detectedDepartments : (["kosha"] as Department[]);
+  const assignedEmployees = [
+    ...(Array.isArray(bookingDetails.assignedEmployees) ? bookingDetails.assignedEmployees : []),
+    ...(Array.isArray(bookingDetails.executionTeam) ? bookingDetails.executionTeam : []),
+    ...(Array.isArray(bookingDetails.team) ? bookingDetails.team : []),
+  ]
+    .map((employee: any) => typeof employee === "string" ? employee : employee?.name ?? employee?.employeeName)
+    .filter(Boolean);
   return {
     id: row.id,
     // Defaults to the native table; the routed adapter overrides it to "service".
@@ -4763,6 +4770,11 @@ async function formatKoshaBooking(row: any) {
     primaryEmployeeName: (row.bookingDetails ?? row.booking_details ?? {})?.primaryEmployeeName ?? null,
     assistantEmployeeId: (row.bookingDetails ?? row.booking_details ?? {})?.assistantEmployeeId ?? null,
     assistantEmployeeName: (row.bookingDetails ?? row.booking_details ?? {})?.assistantEmployeeName ?? null,
+    assignedEmployees: [...new Set([
+      ...assignedEmployees,
+      bookingDetails.primaryEmployeeName,
+      bookingDetails.assistantEmployeeName,
+    ].filter(Boolean))],
     notes: row.notes ?? "",
     status: row.status ?? "new",
     trackingCode: row.trackingCode ?? row.tracking_code ?? null,
@@ -10040,8 +10052,14 @@ async function syncRentalSoundBooking(rental: any) {
         name: product.nameAr || product.name,
         quantity: 1,
         unitPrice: money(rental.pricePerDay),
+        isAsset: true,
+        isRental: true,
         rental: { startDate: rental.startDate, endDate: rental.endDate, days: rental.days },
       }],
+      bookingOperations: soundBookingOperationsWithReservations(
+        linked?.custom_fields?.bookingOperations,
+        [{ productId, quantity: 1, isAsset: true, isRental: true }],
+      ),
       paymentMethod: rental.paymentMethod ?? "cash",
     };
 
@@ -10121,8 +10139,44 @@ function storeSoundBookingItems(
         unitPrice: money(item.price),
         selectedVariant: item.selectedColorData ?? item.selectedColor ?? null,
         rental: parseStoreItemMetadata(item.customization),
+        isAsset: product?.isAsset === true || Boolean(product?.assetCategoryId),
+        isRental: product?.isRental === true,
       };
     });
+}
+
+function soundBookingOperationsWithReservations(
+  current: unknown,
+  items: Array<Record<string, any>>,
+) {
+  const operations = current && typeof current === "object" && !Array.isArray(current)
+    ? { ...(current as Record<string, any>) }
+    : {};
+  const assets = Array.isArray(operations.assets) ? [...operations.assets] : [];
+  for (const item of items) {
+    if (item?.isAsset !== true && item?.isRental !== true) continue;
+    const productId = optionalPositiveId(item?.productId);
+    if (!productId) continue;
+    const index = assets.findIndex((asset: any) => Number(asset?.productId) === productId);
+    const previous = index >= 0 ? assets[index] : {};
+    const reservation = {
+      ...previous,
+      productId,
+      quantity: Math.max(1, Number(item?.quantity ?? previous.quantity ?? 1)),
+      stage: ["out", "returned", "inspection", "completed"].includes(String(previous.stage))
+        ? previous.stage
+        : "reserved",
+      reservedAt: previous.reservedAt ?? new Date().toISOString(),
+    };
+    if (index >= 0) assets[index] = reservation;
+    else assets.push(reservation);
+  }
+  return {
+    ...operations,
+    bookingStage: operations.bookingStage ?? "booked",
+    warehouseStage: operations.warehouseStage ?? "reserved",
+    assets,
+  };
 }
 
 async function findSoundBookingService() {
@@ -10189,6 +10243,10 @@ async function syncStoreSoundBooking(input: {
       eventInformationStatus: eventInfoPending ? "pending_completion" : "complete",
       bookingCenterServices: [{ type: "sound", status: "waiting", amount: soundItems.reduce((sum, item) => sum + money(item.unitPrice) * item.quantity, 0) }],
       soundItems,
+      bookingOperations: soundBookingOperationsWithReservations(
+        linked?.custom_fields?.bookingOperations,
+        soundItems,
+      ),
       paymentMethod: input.order.paymentMethod ?? "cod",
     };
     const internalNotes = eventInfoPending ? "بانتظار استكمال معلومات المناسبة" : null;
@@ -10337,6 +10395,10 @@ async function syncSalesInvoiceSoundBooking(invoice: any, items: any[]) {
       bookingCenterServices: [{ type: "sound", status: "waiting", amount: total }],
       soundItems, paymentMethod: invoice.paymentMethod ?? "cash", sourceStatus: invoice.status,
       eventInformationStatus: "pending_completion",
+      bookingOperations: soundBookingOperationsWithReservations(
+        linked?.custom_fields?.bookingOperations,
+        soundItems,
+      ),
     };
     const shared = {
       customerName: invoice.customerName || "زبون فاتورة مبيعات",
@@ -24018,6 +24080,86 @@ async function assetConflictForBooking(reference: BookingOperationsReference, pr
   }) ?? null;
 }
 
+async function executeBookingAssetAction(
+  req: NextRequest,
+  auth: AdminUser,
+  reference: BookingOperationsReference,
+  input: z.infer<typeof BookingAssetActionSchema>,
+) {
+  const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, input.productId) });
+  if (!product) return error("الأصل غير موجود", 404);
+  if (input.mode !== "unlink" && (await getSoundStoreProducts([product])).length > 0) {
+    await stampBookingSoundDepartment(reference);
+  }
+  const assets = Array.isArray(reference.operations.assets) ? [...reference.operations.assets] : [];
+  const index = assets.findIndex((item: any) => Number(item?.productId) === input.productId);
+  const current = index >= 0 ? assets[index] : { productId: input.productId, quantity: input.quantity, stage: "linked" };
+  if (input.mode === "unlink") {
+    const issued = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
+    if (issued) return error("لا يمكن إزالة أصل ما زال خارج المستودع", 409);
+    if (index >= 0) assets.splice(index, 1);
+    if (Array.isArray(reference.details.linkedAssets)) {
+      reference.details = {
+        ...reference.details,
+        linkedAssets: reference.details.linkedAssets.filter(
+          (item: any) => Number(item?.productId) !== input.productId,
+        ),
+      };
+    }
+  } else {
+    if (["reserve", "pick", "checkout"].includes(input.mode)) {
+      const conflict = await assetConflictForBooking(reference, input.productId);
+      if (conflict) return error(`الأصل محجوز في حجز آخر بنفس التاريخ (#${conflict.id})`, 409);
+      const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
+      if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الحجز`, 423);
+    }
+    let next = { ...current, productId: input.productId, quantity: input.quantity, updatedAt: new Date().toISOString() };
+    if (input.mode === "link") next.stage = current.stage ?? "linked";
+    if (input.mode === "reserve") next = { ...next, stage: "reserved", reservedAt: new Date().toISOString() };
+    if (input.mode === "pick") next = { ...next, stage: "picked", pickedAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
+    if (input.mode === "checkout") {
+      const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
+      if (active) return error("الأصل خارج المستودع مسبقاً", 409);
+      const [custody] = await db.insert(equipmentCustodyTable).values({ productId: input.productId, staffId: auth.id, quantity: input.quantity, issuedBy: auth.id, notes: `${reference.entityType} #${reference.id}` }).returning();
+      await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: auth.id, lastLocation: `حجز #${reference.id}` }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: auth.id, lastLocation: `حجز #${reference.id}`, updatedAt: new Date() } });
+      next = { ...next, stage: "out", custodyId: custody.id, checkedOutAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
+    }
+    if (input.mode === "return") {
+      const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
+      if (active) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, active.id));
+      if (input.problem !== "none" && !input.description) return error("اكتب وصف التلف أو النقص", 422);
+      if (input.problem === "missing" && !input.managerApproval) return error("تسجيل النقص يتطلب اعتماد المدير", 422);
+      if (input.problem === "damaged") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "maintenance" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
+      if (input.problem === "missing") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "lost" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
+      next = { ...next, stage: "returned", returnedAt: new Date().toISOString(), problem: input.problem, problemQuantity: input.problem === "none" ? 0 : input.quantity, description: input.description ?? null, estimatedCost: input.estimatedCost, photoUrls: input.photoUrls };
+    }
+    if (input.mode === "inspect") {
+      if (!["returned", "inspection"].includes(String(current.stage))) return error("يجب تسجيل إرجاع الأصل قبل الفحص", 409);
+      const profile: any = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
+      const passport: any = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, input.productId) });
+      const metadata = { ...(passport?.metadata ?? {}) } as Record<string, any>;
+      const alreadyRecorded = Boolean(current.usageRecordedAt);
+      const usageHours = Number(input.usageHours ?? metadata.usageHoursPerBooking ?? 0);
+      const nextUsageCount = Number(profile?.usageCount ?? 0) + (alreadyRecorded ? 0 : 1);
+      const purchase = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
+      const previousValue = Number(profile?.currentValue ?? purchase);
+      const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
+      const automatic = metadata.automaticDepreciation === true && !profile?.deletedAt && metadata.depreciationPaused !== true;
+      const nextValue = automatic && !alreadyRecorded ? Math.max(0, previousValue - perUse) : previousValue;
+      const healthPenalty = input.problem === "damaged" ? 15 : input.problem === "missing" ? 30 : 1;
+      const healthScore = Math.max(0, Number(metadata.healthScore ?? 100) - (alreadyRecorded ? 0 : healthPenalty));
+      await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(purchase), currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active", updatedAt: new Date() } });
+      await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() } }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() }, updatedAt: new Date() } });
+      next = { ...next, stage: "completed", inspectedAt: new Date().toISOString(), usageRecordedAt: current.usageRecordedAt ?? new Date().toISOString() };
+    }
+    if (index >= 0) assets[index] = next; else assets.push(next);
+  }
+  await saveBookingOperations(reference, { ...reference.operations, assets });
+  await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: `booking_asset_${input.mode}`, title: ({ link: "تمت إضافة أصل للحجز", unlink: "تمت إزالة أصل من الحجز", reserve: "تم حجز الأصل", pick: "تم تجهيز الأصل", checkout: "خرج الأصل من المستودع", return: "تم إرجاع الأصل", inspect: "اكتمل فحص الأصل" } as any)[input.mode], body: product.nameAr || product.name, actor: erpActorFromAdmin(auth), metadata: { productId: input.productId, problem: input.problem, estimatedCost: input.estimatedCost } });
+  void logAdminActivity(req, `booking_asset_${input.mode}`, reference.entityType, reference.id, { productId: input.productId, problem: input.problem });
+  return json({ ok: true, productId: input.productId, name: product.nameAr || product.name });
+}
+
 function bookingOperationStage(reference: BookingOperationsReference) {
   const saved = String(reference.operations.bookingStage ?? "");
   if ((BOOKING_OPERATION_STAGES as readonly string[]).includes(saved)) return saved;
@@ -24423,72 +24565,7 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
       if (!can(assetPermission)) return error("ليس لديك صلاحية تنفيذ إجراء الأصل", 403);
       if (["damaged", "missing"].includes(input.problem) && !can("asset_damage_record")) return error("ليس لديك صلاحية تسجيل التلف أو النقص", 403);
       if (input.managerApproval && !can("asset_damage_approve")) return error("ليس لديك صلاحية اعتماد التلف أو النقص", 403);
-      const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, input.productId) });
-      if (!product) return error("الأصل غير موجود", 404);
-      if (input.mode !== "unlink" && (await getSoundStoreProducts([product])).length > 0) {
-        await stampBookingSoundDepartment(reference);
-      }
-      const assets = Array.isArray(reference.operations.assets) ? [...reference.operations.assets] : [];
-      const index = assets.findIndex((item: any) => Number(item?.productId) === input.productId);
-      const current = index >= 0 ? assets[index] : { productId: input.productId, quantity: input.quantity, stage: "linked" };
-      if (input.mode === "unlink") {
-        const issued = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
-        if (issued) return error("لا يمكن إزالة أصل ما زال خارج المستودع", 409);
-        if (index >= 0) assets.splice(index, 1);
-      } else {
-        if (["reserve", "pick", "checkout"].includes(input.mode)) {
-          const conflict = await assetConflictForBooking(reference, input.productId);
-          if (conflict) return error(`الأصل محجوز في حجز آخر بنفس التاريخ (#${conflict.id})`, 409);
-          const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
-          if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الحجز`, 423);
-        }
-        let next = { ...current, productId: input.productId, quantity: input.quantity, updatedAt: new Date().toISOString() };
-        if (input.mode === "link") next.stage = current.stage ?? "linked";
-        if (input.mode === "reserve") next = { ...next, stage: "reserved", reservedAt: new Date().toISOString() };
-        if (input.mode === "pick") next = { ...next, stage: "picked", pickedAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
-        if (input.mode === "checkout") {
-          const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")) });
-          if (active) return error("الأصل خارج المستودع مسبقاً", 409);
-          const [custody] = await db.insert(equipmentCustodyTable).values({ productId: input.productId, staffId: auth.id, quantity: input.quantity, issuedBy: auth.id, notes: `${reference.entityType} #${reference.id}` }).returning();
-          await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: auth.id, lastLocation: `حجز #${reference.id}` }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: auth.id, lastLocation: `حجز #${reference.id}`, updatedAt: new Date() } });
-          next = { ...next, stage: "out", custodyId: custody.id, checkedOutAt: new Date().toISOString(), scannedCode: input.scannedCode ?? null };
-        }
-        if (input.mode === "return") {
-          const active = await db.query.equipmentCustodyTable.findFirst({ where: and(eq(equipmentCustodyTable.productId, input.productId), eq(equipmentCustodyTable.status, "issued")), orderBy: [desc(equipmentCustodyTable.issuedAt)] });
-          if (active) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, active.id));
-          if (input.problem !== "none" && !input.description) return error("اكتب وصف التلف أو النقص", 422);
-          if (input.problem === "missing" && !input.managerApproval) return error("تسجيل النقص يتطلب اعتماد المدير", 422);
-          if (input.problem === "damaged") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "maintenance" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
-          if (input.problem === "missing") await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(Number(product.costPrice ?? 0)), currentValue: String(Number(product.costPrice ?? 0)), status: "lost" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
-          next = { ...next, stage: "returned", returnedAt: new Date().toISOString(), problem: input.problem, problemQuantity: input.problem === "none" ? 0 : input.quantity, description: input.description ?? null, estimatedCost: input.estimatedCost, photoUrls: input.photoUrls };
-        }
-        if (input.mode === "inspect") {
-          if (!["returned", "inspection"].includes(String(current.stage))) return error("يجب تسجيل إرجاع الأصل قبل الفحص", 409);
-          const profile: any = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, input.productId) });
-          const passport: any = await db.query.assetPassportsTable.findFirst({ where: eq(assetPassportsTable.productId, input.productId) });
-          const metadata = { ...(passport?.metadata ?? {}) } as Record<string, any>;
-          const alreadyRecorded = Boolean(current.usageRecordedAt);
-          const usageHours = Number(input.usageHours ?? metadata.usageHoursPerBooking ?? 0);
-          const nextUsageCount = Number(profile?.usageCount ?? 0) + (alreadyRecorded ? 0 : 1);
-          const purchase = Number(profile?.purchasePrice ?? product.costPrice ?? 0);
-          const previousValue = Number(profile?.currentValue ?? purchase);
-          const perUse = Number(profile?.expectedLifeUses ?? 0) > 0 ? purchase / Number(profile.expectedLifeUses) : 0;
-          // Removed/paused depreciation freezes the value; usage tracking continues.
-          const automatic = metadata.automaticDepreciation === true && !profile?.deletedAt && metadata.depreciationPaused !== true;
-          const nextValue = automatic && !alreadyRecorded ? Math.max(0, previousValue - perUse) : previousValue;
-          const healthPenalty = input.problem === "damaged" ? 15 : input.problem === "missing" ? 30 : 1;
-          const healthScore = Math.max(0, Number(metadata.healthScore ?? 100) - (alreadyRecorded ? 0 : healthPenalty));
-          await db.insert(assetProfilesTable).values({ productId: input.productId, purchasePrice: String(purchase), currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active" }).onConflictDoUpdate({ target: assetProfilesTable.productId, set: { currentValue: String(nextValue), usageCount: nextUsageCount, status: input.problem === "damaged" ? "maintenance" : input.problem === "missing" ? "lost" : "active", updatedAt: new Date() } });
-          await db.insert(assetPassportsTable).values({ productId: input.productId, lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() } }).onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: null, lastLocation: "داخل المخزن", metadata: { ...metadata, usageHours: Number(metadata.usageHours ?? 0) + (alreadyRecorded ? 0 : usageHours), healthScore, lastBooking: `${reference.entityType}:${reference.id}`, lastCustomer: reference.customerName, lastInspection: new Date().toISOString() }, updatedAt: new Date() } });
-          next = { ...next, stage: "completed", inspectedAt: new Date().toISOString(), usageRecordedAt: current.usageRecordedAt ?? new Date().toISOString() };
-        }
-        if (index >= 0) assets[index] = next; else assets.push(next);
-      }
-      const operations = { ...reference.operations, assets };
-      await saveBookingOperations(reference, operations);
-      await addEntityTimeline({ entityType: reference.entityType, entityId: reference.id, type: `booking_asset_${input.mode}`, title: ({ link: "تمت إضافة أصل للحجز", unlink: "تمت إزالة أصل من الحجز", reserve: "تم حجز الأصل", pick: "تم تجهيز الأصل", checkout: "خرج الأصل من المستودع", return: "تم إرجاع الأصل", inspect: "اكتمل فحص الأصل" } as any)[input.mode], body: product.nameAr || product.name, actor: erpActorFromAdmin(auth), metadata: { productId: input.productId, problem: input.problem, estimatedCost: input.estimatedCost } });
-      void logAdminActivity(req, `booking_asset_${input.mode}`, reference.entityType, reference.id, { productId: input.productId, problem: input.problem });
-      return json({ ok: true });
+      return executeBookingAssetAction(req, auth, reference, input);
     }
   }
 
@@ -24928,6 +25005,10 @@ async function handleSoundCenter(req: NextRequest, parts: string[], section: str
         soundItems: soundItems.length ? soundItems : soundProducts.map((product: any) => ({ productId: product.id, name: product.nameAr || product.name, quantity: 1, barcode: product.barcode ?? null, isAsset: product.isAsset === true, isRental: product.isRental === true })),
         bookingCenterServices: [{ type: "sound", status: "waiting", amount: total }],
       };
+      customFields.bookingOperations = soundBookingOperationsWithReservations(
+        existing?.custom_fields?.bookingOperations,
+        customFields.soundItems,
+      );
       const values = {
         customerName: input.customerName, phone: input.phone, eventDate: input.eventDate ?? null,
         eventLocation: input.location ?? null, status: soundSourceStatus(input.status),
@@ -42711,6 +42792,47 @@ function crewBucket(row: any, today: string): CrewBucket {
   return "late";
 }
 
+function bookingOperationStageToCrew(stage: unknown): string | null {
+  const value = String(stage ?? "");
+  return ({
+    booked: "booked",
+    preparing: "preparing",
+    ready: "ready",
+    assets_out: "out_of_warehouse",
+    event_active: "event_running",
+    returned: "returned",
+    inspection: "returned",
+    completed: "delivered",
+  } as Record<string, string>)[value] ?? null;
+}
+
+function crewStageToBookingOperation(stage: unknown): string {
+  const value = String(stage ?? "preparing");
+  return ({
+    booked: "booked",
+    preparing: "preparing",
+    ready: "ready",
+    out_of_warehouse: "assets_out",
+    on_the_way: "assets_out",
+    executing: "assets_out",
+    executed: "event_active",
+    event_running: "event_active",
+    dismantling: "event_active",
+    returned: "returned",
+    delivered: "completed",
+  } as Record<string, string>)[value] ?? "preparing";
+}
+
+function bookingStatusForOperationStage(stage: string) {
+  if (stage === "completed") return "completed";
+  if (["booked", "preparing", "ready"].includes(stage)) return "processing";
+  return "in_progress";
+}
+
+function syncedCrewStage(details: Record<string, any>, fallback: unknown) {
+  return bookingOperationStageToCrew(details.bookingOperations?.bookingStage) ?? String(fallback ?? "preparing");
+}
+
 /**
  * Supervisors keep the whole board. Everyone else is scoped to their own work.
  * Admin and manager roles are the existing supervisory roles in this codebase.
@@ -42735,9 +42857,11 @@ function isKoshaBookingAssignedTo(row: any, staffId: number | null) {
 
 async function formatKoshaBookingForCrew(row: any) {
   const base = await formatKoshaBooking(row);
+  const details = (row.bookingDetails ?? row.booking_details ?? {}) as Record<string, any>;
+  const executionStage = syncedCrewStage(details, row.executionStage ?? row.execution_stage);
   return {
     ...base,
-    executionStage: row.executionStage ?? row.execution_stage ?? "preparing",
+    executionStage,
     assignedStaffId: row.assignedStaffId ?? row.assigned_staff_id ?? null,
     bucket: crewBucket(row, baghdadToday()),
   };
@@ -42981,7 +43105,7 @@ async function formatRoutedKoshaServiceBookingForCrew(
   service?: { type?: string | null; name?: string | null; nameAr?: string | null } | null,
 ) {
   const fields = routedServiceExecutionFields(order);
-  const executionStage = fields.executionStage ?? "preparing";
+  const executionStage = syncedCrewStage(fields, fields.executionStage);
   return {
     ...(await formatRoutedKoshaServiceBooking(order, service)),
     executionStage,
@@ -43799,151 +43923,96 @@ async function handleStaffPortal(
     });
   }
 
-  // ── Crew asset checkout / return for a booking (reuses custody + timeline) ──
+  // ── Crew asset reservation / checkout / return ──
+  // Uses the same canonical booking-operation executor as /admin/bookings.
   if (resource === "bookings" && id && action === "assets") {
-    const booking = await db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, id) });
-    if (!booking) return error("الحجز غير موجود", 404);
-    const details = (booking.bookingDetails ?? {}) as Record<string, any>;
-    const linked: Array<{ productId: number; quantity: number }> = Array.isArray(details.linkedAssets) ? details.linkedAssets : [];
-    const ids = linked.map((l) => l.productId).filter(Boolean);
-    const resolveCode = async (raw: string): Promise<number> => {
-      const s = decodeURIComponent(String(raw || "")).trim();
-      if (!s) return 0;
-      const m = s.match(/AJN-A0*(\d+)/i);
-      if (m) return Number(m[1]);
-      const found = await db.query.productsTable.findFirst({
-        where: or(
-          sql`lower(${productsTable.barcode}) = ${s.toLowerCase()}`,
-          sql`lower(${productsTable.nameAr}) = ${s.toLowerCase()}`,
-        ),
-      });
-      return found?.id ?? 0;
-    };
+    const source = koshaSourceHint(req) === "service" ? "service" : "kosha";
+    const reference = await loadBookingOperationsReference(source, id);
+    if (!reference) return error("الحجز غير موجود", 404);
 
-    if (method === "GET") {
-      const [products, custody, passports, profiles, warehouses] = await Promise.all([
-        ids.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, ids) }) : Promise.resolve([]),
-        ids.length ? db.query.equipmentCustodyTable.findMany({ where: and(inArray(equipmentCustodyTable.productId, ids), eq(equipmentCustodyTable.status, "issued")) }) : Promise.resolve([]),
-        ids.length ? db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, ids) }) : Promise.resolve([]),
-        ids.length ? db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, ids) }) : Promise.resolve([]),
-        db.query.warehousesTable.findMany(),
-      ]);
-      const pmap = new Map(products.map((p: any) => [p.id, p]));
-      const passMap = new Map(passports.map((p: any) => [p.productId, p]));
-      const profMap = new Map(profiles.map((p: any) => [p.productId, p]));
-      const whMap = new Map(warehouses.map((w: any) => [w.id, w.name]));
-      const outSet = new Set(custody.map((c) => c.productId));
-      return json({
-        assets: linked.map((l) => {
-          const pr: any = pmap.get(l.productId);
-          const pass: any = passMap.get(l.productId);
-          const prof: any = profMap.get(l.productId);
-          return {
-            productId: l.productId,
-            name: pr?.nameAr || pr?.name || `#${l.productId}`,
-            assetCode: `AJN-A${String(l.productId).padStart(6, "0")}`,
-            imageUrl: (publicMediaList("product", pr, pr?.images) ?? [])[0] ?? null,
-            quantity: Number(l.quantity ?? 1),
-            warehouse: pass?.warehouseId ? (whMap.get(pass.warehouseId) ?? null) : null,
-            status: outSet.has(l.productId) ? "checked_out" : (prof?.status ?? "active"),
-            checkedOut: outSet.has(l.productId),
-          };
-        }),
+    const assets = await bookingOperationAssets(reference);
+    const operationProducts = await bookingOperationProducts(reference);
+    const soundItems = Array.isArray(reference.details.soundItems) ? reference.details.soundItems : [];
+    const productsByKey = new Map<string, { productId: number | null; name: string; quantity: number; barcode: string | null }>();
+    for (const item of [...operationProducts, ...soundItems]) {
+      const productId = optionalPositiveId(item?.productId) ?? null;
+      const name = String(item?.productName ?? item?.name ?? item?.nameAr ?? (productId ? "#" + productId : "عنصر صوتيات"));
+      const key = productId ? "id:" + productId : "name:" + name.toLowerCase();
+      const previous = productsByKey.get(key);
+      productsByKey.set(key, {
+        productId,
+        name,
+        quantity: Number(previous?.quantity ?? 0) + Math.max(1, Number(item?.quantity ?? 1)),
+        barcode: item?.barcode ?? previous?.barcode ?? null,
       });
     }
 
-    if (action === "assets" && method === "POST") {
-      const b = await body(req);
-      const mode = String(b?.mode ?? "checkout"); // resolve | checkout | return | link | setqty | unlink
-      const productId = (optionalPositiveId(b?.productId) ?? 0) || (await resolveCode(String(b?.code ?? "")));
+    if (method === "GET") {
+      return json({
+        assets: assets.map((asset: any) => ({
+          ...asset,
+          checkedOut: Number(asset.out ?? 0) > 0 || asset.stage === "out",
+        })),
+        products: [...productsByKey.values()],
+      });
+    }
+
+    if (method === "POST") {
+      const payload = await body(req);
+      const mode = String(payload?.mode ?? "resolve");
+      const productId =
+        optionalPositiveId(payload?.productId) ??
+        (payload?.code ? await resolveAssetProductId(String(payload.code)) : null);
       if (!productId) return error("لم يتم التعرف على المنتج/الأصل", 404);
 
-      // Link management — writes to bookingDetails.linkedAssets (auto-syncs with the Admin Panel).
-      if (mode === "link" || mode === "setqty") {
-        const p = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
-        if (!p) return error("المنتج غير موجود", 404);
-        const qty = Math.max(1, Math.round(Number(b?.quantity ?? 1)));
-        const exists = linked.find((l) => l.productId === productId);
-        const nextLinked = exists
-          ? linked.map((l) => (l.productId === productId ? { ...l, quantity: qty } : l))
-          : [...linked, { productId, quantity: qty }];
-        await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
-        void logAdminActivity(req, exists ? "kosha_asset_qty" : "kosha_asset_linked", "product", productId, { bookingId: id, quantity: qty });
-        if (!exists) void addEntityTimeline({ entityType: "asset", entityId: productId, type: "booked", title: "📅 ربط بالحجز", body: `حجز كوشة #${id}`, actor: erpActorFromAdmin(auth), metadata: { bookingId: id } });
-        return json({ ok: true, productId, name: p.nameAr || p.name });
-      }
-      if (mode === "unlink") {
-        const nextLinked = linked.filter((l) => l.productId !== productId);
-        await db.update(koshaBookingsTable).set({ bookingDetails: { ...details, linkedAssets: nextLinked }, updatedAt: new Date() }).where(eq(koshaBookingsTable.id, id));
-        void logAdminActivity(req, "kosha_asset_unlinked", "product", productId, { bookingId: id });
-        return json({ ok: true, productId });
-      }
-
-      if (!linked.some((l) => l.productId === productId)) return error("هذا الأصل لا يخص هذا الحجز", 409);
-      const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) });
-      const activeCustody = await db.query.equipmentCustodyTable.findFirst({
-        where: and(eq(equipmentCustodyTable.productId, productId), eq(equipmentCustodyTable.status, "issued")),
-        orderBy: [desc(equipmentCustodyTable.issuedAt)],
-      });
-      const liveProfile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-
-      // Dry-run for the confirmation card — returns asset details, commits nothing.
+      const current = assets.find((asset: any) => Number(asset.productId) === productId);
       if (mode === "resolve") {
+        if (!current) return error("هذا الأصل لا يخص هذا الحجز", 409);
+        const [product, profile] = await Promise.all([
+          db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
+          db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) }),
+        ]);
         return json({
           ok: true,
           productId,
-          name: product?.nameAr || product?.name,
-          assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
-          status: liveProfile?.status ?? "active",
+          name: product?.nameAr || product?.name || current.name,
+          assetCode: current.assetCode || "AJN-A" + String(productId).padStart(6, "0"),
+          status: profile?.status ?? current.status ?? "active",
           imageUrl: (publicMediaList("product", product, product?.images) ?? [])[0] ?? null,
-          checkedOut: Boolean(activeCustody),
+          checkedOut: Number(current.out ?? 0) > 0 || current.stage === "out",
         });
       }
 
-      if (mode === "checkout") {
-        const profile = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-        if (profile && ["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(profile.status)) return error(`حالة الأصل (${profile.status}) تمنع الإخراج`, 423);
-        if (activeCustody) return error("الأصل مُخرَج مسبقاً بعهدة", 409);
-        const [row] = await db.insert(equipmentCustodyTable).values({ productId, staffId: auth.id, quantity: 1, issuedBy: auth.id, notes: `حجز كوشة #${booking.id}` }).returning();
-        await db.insert(assetPassportsTable).values({ productId, lastStaffId: auth.id, lastLocation: `بعهدة ${auth.fullName || auth.username}` })
-          .onConflictDoUpdate({ target: assetPassportsTable.productId, set: { lastStaffId: auth.id, lastLocation: `بعهدة ${auth.fullName || auth.username}`, updatedAt: new Date() } });
-        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkout", title: "📤 خروج الأصل للحجز", body: `حجز كوشة #${booking.id} · ${auth.fullName || auth.username}`, actor: erpActorFromAdmin(auth), metadata: { custodyId: row.id, bookingId: booking.id } });
-        void logAdminActivity(req, "kosha_asset_checkout", "product", productId, { bookingId: booking.id, custodyId: row.id });
-        return json({ ok: true, productId, name: product?.nameAr || product?.name });
-      }
+      if (!["link", "setqty", "unlink", "checkout", "return"].includes(mode))
+        return error("إجراء الأصل غير مدعوم", 405);
+      if (!["link", "setqty"].includes(mode) && !current)
+        return error("هذا الأصل لا يخص هذا الحجز", 409);
 
-      // return: none | broken | lost
-      const problem = String(b?.problem ?? "none");
-      const note = nullableText(b?.note);
-      const repairCost = Math.max(0, Number(b?.cost ?? 0) || 0);
-      const cost = String(Number(product?.costPrice ?? 0));
-      if (problem === "lost") {
-        if (b?.managerApproval !== true) return error("تسجيل الفقدان يتطلب اعتماد المدير", 422);
-        await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "lost" })
-          .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "lost", updatedAt: new Date() } });
-        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "lost", title: "⚠️ فقدان أصل أثناء الحجز", body: `${note ?? ""} · باعتماد المدير`, actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id, managerApproval: true } });
-        void logAdminActivity(req, "kosha_asset_lost", "product", productId, { bookingId: booking.id });
-        await createNotification({ type: "asset_lost", title: "فقدان أصل", body: product?.nameAr || product?.name || `#${productId}`, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
-      } else if (problem === "broken") {
-        await db.insert(assetProfilesTable).values({ productId, purchasePrice: cost, currentValue: cost, status: "maintenance" })
-          .onConflictDoUpdate({ target: assetProfilesTable.productId, set: { status: "maintenance", updatedAt: new Date() } });
-        if (repairCost > 0) {
-          await db.insert(assetPassportsTable).values({ productId, maintenanceCost: String(repairCost) })
-            .onConflictDoUpdate({ target: assetPassportsTable.productId, set: { maintenanceCost: sql`${assetPassportsTable.maintenanceCost} + ${repairCost}`, updatedAt: new Date() } });
-        }
-        if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
-        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "damage", title: "🛠️ كسر أثناء الحجز — صيانة", body: [note, repairCost > 0 ? `تكلفة الإصلاح: ${repairCost}` : null].filter(Boolean).join(" · ") || null, actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id, repairCost } });
-        void logAdminActivity(req, "kosha_asset_broken", "product", productId, { bookingId: booking.id, repairCost });
-        await createNotification({ type: "asset_damage", title: "كسر أصل", body: product?.nameAr || product?.name || `#${productId}`, entityType: "product", entityId: productId, href: "/admin/asset-movements" });
-      } else {
-        if (activeCustody) await db.update(equipmentCustodyTable).set({ status: "returned", returnedAt: new Date(), updatedAt: new Date() }).where(eq(equipmentCustodyTable.id, activeCustody.id));
-        await db.update(assetPassportsTable).set({ lastStaffId: null, lastLocation: "داخل المخزن", updatedAt: new Date() }).where(eq(assetPassportsTable.productId, productId));
-        const prof = await db.query.assetProfilesTable.findFirst({ where: eq(assetProfilesTable.productId, productId) });
-        if (prof && !["maintenance", "lost", "retired", "locked", "sold", "disposed"].includes(prof.status)) await db.update(assetProfilesTable).set({ status: "active", updatedAt: new Date() }).where(eq(assetProfilesTable.id, prof.id));
-        void addEntityTimeline({ entityType: "asset", entityId: productId, type: "checkin", title: "📥 إرجاع أصل الحجز", actor: erpActorFromAdmin(auth), metadata: { bookingId: booking.id } });
-        void logAdminActivity(req, "kosha_asset_return", "product", productId, { bookingId: booking.id });
-      }
-      return json({ ok: true, productId, name: product?.nameAr || product?.name });
+      const actionMode =
+        mode === "link" || mode === "setqty"
+          ? "reserve"
+          : mode === "return"
+            ? "return"
+            : mode;
+      const parsed = BookingAssetActionSchema.safeParse({
+        mode: actionMode,
+        productId,
+        quantity: Math.max(1, Number(payload?.quantity ?? current?.quantity ?? 1)),
+        problem:
+          payload?.problem === "broken"
+            ? "damaged"
+            : payload?.problem === "lost"
+              ? "missing"
+              : "none",
+        description: payload?.note,
+        estimatedCost: Math.max(0, Number(payload?.cost ?? 0)),
+        managerApproval: payload?.managerApproval === true,
+        scannedCode: payload?.code,
+        photoUrls: [],
+        confirmation: true,
+      });
+      if (!parsed.success) return validationError("staff.kosha-bookings.assets", parsed);
+      return executeBookingAssetAction(req, auth, reference, parsed.data);
     }
     return error("المسار غير موجود", 404);
   }
@@ -44033,8 +44102,9 @@ async function handleStaffPortal(
 
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
-    const detail = await loadKoshaBookingDetail(id);
-    if (detail) {
+    const sourceHint = koshaSourceHint(req);
+    const detail = sourceHint === "service" ? null : await loadKoshaBookingDetail(id);
+    if (detail && sourceHint !== "service") {
       // Direct-URL guard: the list is filtered by assignment, so the detail
       // endpoint must enforce the same rule or the filter is bypassable.
       if (!canSeeAllKoshaBookings(auth) && !isKoshaBookingAssignedTo(detail.booking, auth.id))
@@ -44043,7 +44113,7 @@ async function handleStaffPortal(
     }
     // Resolve by the explicit source when the client sends one: kosha_bookings
     // and service_orders share an id space, so id alone can select the wrong row.
-    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
+    const resolved = await resolveKoshaPortalBooking(id, sourceHint);
     if (resolved?.kind === "ambiguous")
       return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
     const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
@@ -44122,6 +44192,12 @@ async function handleStaffPortal(
         toStage,
       );
       fields.executionStage = toStage;
+      const bookingStage = crewStageToBookingOperation(toStage);
+      fields.bookingOperations = {
+        ...(fields.bookingOperations ?? {}),
+        bookingStage,
+        bookingStageUpdatedAt: new Date().toISOString(),
+      };
       fields.koshaPortalMedia = [
         ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
         ...savedMedia,
@@ -44139,7 +44215,11 @@ async function handleStaffPortal(
           createdAt: new Date().toISOString(),
         },
       ];
-      const updated = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      const updatedFields = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      const [updated] = await db.update(serviceOrdersTable)
+        .set({ status: bookingStatusForOperationStage(bookingStage) })
+        .where(eq(serviceOrdersTable.id, updatedFields.id))
+        .returning();
       return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
     }
     const booking = nativeBooking!;
@@ -44161,9 +44241,23 @@ async function handleStaffPortal(
         stage: toStage,
         purpose: "execution",
       });
+    const nativeDetails = (booking.bookingDetails ?? {}) as Record<string, any>;
+    const bookingStage = crewStageToBookingOperation(toStage);
     await db
       .update(koshaBookingsTable)
-      .set({ executionStage: toStage, updatedAt: new Date() })
+      .set({
+        executionStage: toStage,
+        status: bookingStatusForOperationStage(bookingStage),
+        bookingDetails: {
+          ...nativeDetails,
+          bookingOperations: {
+            ...(nativeDetails.bookingOperations ?? {}),
+            bookingStage,
+            bookingStageUpdatedAt: new Date().toISOString(),
+          },
+        },
+        updatedAt: new Date(),
+      })
       .where(eq(koshaBookingsTable.id, id));
     return json(await loadKoshaBookingDetail(id));
   }
@@ -44286,6 +44380,11 @@ async function handleStaffPortal(
       const remaining = money(routed.order.remainingAmount) + compensation;
       const fromStage = fields.executionStage ?? "preparing";
       fields.executionStage = "delivered";
+      fields.bookingOperations = {
+        ...(fields.bookingOperations ?? {}),
+        bookingStage: "completed",
+        bookingStageUpdatedAt: new Date().toISOString(),
+      };
       fields.koshaPortalMedia = [
         ...(Array.isArray(fields.koshaPortalMedia) ? fields.koshaPortalMedia : []),
         ...savedMedia,
@@ -44391,8 +44490,18 @@ async function handleStaffPortal(
     }
 
     // Breakage/loss compensation is added to the customer's remaining balance.
+    const bookingDetails = (booking.bookingDetails ?? {}) as Record<string, any>;
     const patch: Record<string, unknown> = {
       executionStage: "delivered",
+      status: "completed",
+      bookingDetails: {
+        ...bookingDetails,
+        bookingOperations: {
+          ...(bookingDetails.bookingOperations ?? {}),
+          bookingStage: "completed",
+          bookingStageUpdatedAt: new Date().toISOString(),
+        },
+      },
       updatedAt: new Date(),
     };
     if (compensation > 0) {

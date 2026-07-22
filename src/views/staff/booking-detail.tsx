@@ -82,7 +82,7 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string) => void }) {
   );
 }
 
-export default function StaffBookingDetail({ id, onBack }: { id: number; onBack: () => void }) {
+export default function StaffBookingDetail({ id, source, onBack }: { id: number; source: "kosha" | "service"; onBack: () => void }) {
   const [data, setData] = useState<BookingDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -92,10 +92,10 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
   const [lightbox, setLightbox] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    try { setData(await staffApi.booking(id)); setErr(null); }
+    try { setData(await staffApi.booking(id, source)); setErr(null); }
     catch (e: any) { setErr(e?.message ?? "تعذر تحميل الحجز"); }
     finally { setLoading(false); }
-  }, [id]);
+  }, [id, source]);
   useEffect(() => { reload(); }, [reload]);
 
   if (loading) return <div className="flex min-h-[60dvh] items-center justify-center"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
@@ -124,7 +124,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
     if (next === "out_of_warehouse") return setPanel("checklist");
     if (next === "executed") return setPanel("executed");
     if (next === "delivered") return setPanel("delivered");
-    run(() => staffApi.setStage(id, next));
+    run(() => staffApi.setStage(id, next, undefined, undefined, source));
   }
 
   return (
@@ -132,7 +132,7 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
         <button onClick={onBack} aria-label="رجوع"><ChevronLeft className="h-5 w-5" /></button>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-bold">{b.koshaName || "كوشة"}</div>
+          <div className="truncate font-bold">{b.departmentBadge || b.koshaName || "كوشة"}</div>
           <div className="truncate text-xs text-muted-foreground">{b.customerName} · #{b.id}</div>
         </div>
         <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-bold text-primary">{STAGE_LABEL[current]}</span>
@@ -152,8 +152,10 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
             {b.eventType && (<><div className="text-muted-foreground">نوع الحفل</div><div className="text-left font-medium">{b.eventType}</div></>)}
             {(b as any).primaryEmployeeName && (<><div className="text-muted-foreground">الموظف الأساسي</div><div className="text-left font-medium">{(b as any).primaryEmployeeName}</div></>)}
             {(b as any).assistantEmployeeName && (<><div className="text-muted-foreground">الموظف المساعد</div><div className="text-left font-medium">{(b as any).assistantEmployeeName}</div></>)}
+            {b.assignedEmployees?.length ? (<><div className="text-muted-foreground">فريق التنفيذ</div><div className="text-left font-medium">{b.assignedEmployees.join("، ")}</div></>) : null}
             <div className="text-muted-foreground">العنوان</div>
             <div className="text-left font-medium">{[b.province, b.area, b.cityArea, b.hallLocation].filter(Boolean).join(" — ") || "—"}</div>
+            {b.notes ? (<><div className="text-muted-foreground">الملاحظات</div><div className="text-left font-medium">{b.notes}</div></>) : null}
           </div>
           <a href={mapsUrl(b)} target="_blank" rel="noreferrer" className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-primary/40 py-2 text-sm font-medium text-primary">
             <MapPin className="h-4 w-4" /> فتح بالخرائط
@@ -233,29 +235,29 @@ export default function StaffBookingDetail({ id, onBack }: { id: number; onBack:
           {current === "delivered" && <Banner kind="ok">تم تسليم الكوشة بنجاح.</Banner>}
         </div>
 
-        {/* Products & Assets — link/manage (syncs with Admin via bookingDetails.linkedAssets) */}
-        <ProductsAssetsSection id={id} />
+        {/* Products & Assets — uses the canonical booking operations record shared with Admin. */}
+        <ProductsAssetsSection id={id} source={source} />
 
         {/* Booking assets — QR checkout / return */}
-        <AssetsSection id={id} />
+        <AssetsSection id={id} source={source} />
 
         {/* Field operations — equipment checklist, scan points, damage report */}
-        <KoshaOperationsPanel bookingId={id} source={(b as any).source === "service" ? "service" : "kosha"} />
+        <KoshaOperationsPanel bookingId={id} source={source} />
 
         {/* Checklist before warehouse exit */}
-        {panel === "checklist" && <ChecklistPanel booking={b} busy={busy} onCancel={() => setPanel(null)} onConfirm={(note) => run(() => staffApi.setStage(id, "out_of_warehouse", note))} />}
+        {panel === "checklist" && <ChecklistPanel booking={b} busy={busy} onCancel={() => setPanel(null)} onConfirm={(note) => run(() => staffApi.setStage(id, "out_of_warehouse", note, undefined, source))} />}
 
         {/* Mandatory media for executed */}
-        {panel === "executed" && <ExecutedPanel busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media))} />}
+        {panel === "executed" && <ExecutedPanel busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media, source))} />}
 
         {/* Delivery form */}
-        {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload))} />}
+        {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload, source))} />}
 
         {/* Collect remaining */}
-        {!pendingPricing && current === "delivered" && b.remainingAmount > 0 && (
+        {source === "kosha" && !pendingPricing && current === "delivered" && b.remainingAmount > 0 && (
           pendingPay
             ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> طلب تحصيل {money(pendingPay.amount)} د.ع بانتظار موافقة المدير.</Banner>
-            : <CollectPanel remaining={b.remainingAmount} busy={busy} onSubmit={(amount, note) => run(() => staffApi.collect(id, amount, note))} />
+            : <CollectPanel remaining={b.remainingAmount} busy={busy} onSubmit={(amount, note) => run(() => staffApi.collect(id, amount, note, source))} />
         )}
 
         {/* Payment requests history */}
@@ -474,8 +476,9 @@ function CollectPanel({ remaining, busy, onSubmit }: { remaining: number; busy: 
   );
 }
 
-function ProductsAssetsSection({ id }: { id: number }) {
+function ProductsAssetsSection({ id, source }: { id: number; source: "kosha" | "service" }) {
   const [items, setItems] = useState<Array<{ productId: number; name: string; imageUrl?: string | null; quantity?: number; warehouse?: string | null; checkedOut: boolean }>>([]);
+  const [products, setProducts] = useState<Array<{ productId?: number | null; name: string; quantity: number; barcode?: string | null }>>([]);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<Array<{ productId: number; name: string; imageUrl: string | null }>>([]);
   const [scan, setScan] = useState(false);
@@ -483,8 +486,8 @@ function ProductsAssetsSection({ id }: { id: number }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
-    try { const r = await staffApi.assets(id); setItems(r.assets ?? []); } catch { /* offline */ }
-  }, [id]);
+    try { const r = await staffApi.assets(id, source); setItems(r.assets ?? []); setProducts(r.products ?? []); } catch { /* offline */ }
+  }, [id, source]);
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
@@ -503,17 +506,17 @@ function ProductsAssetsSection({ id }: { id: number }) {
 
   async function add(productId?: number, code?: string) {
     setBusy(true);
-    try { const r = await staffApi.linkAsset(id, { mode: "link", productId, code, quantity: 1 }); flash(true, `تمت إضافة ${r.name ?? ""}`); setSearch(""); setResults([]); await load(); }
+    try { const r = await staffApi.linkAsset(id, { mode: "link", productId, code, quantity: 1 }, source); flash(true, `تمت إضافة ${r.name ?? ""}`); setSearch(""); setResults([]); await load(); }
     catch (e: any) { flash(false, String(e?.message ?? "").replace(/^HTTP\s+\d+:\s*/i, "") || "تعذّرت الإضافة"); } finally { setBusy(false); }
   }
   async function setQty(productId: number, quantity: number) {
     if (quantity < 1) return;
     setBusy(true);
-    try { await staffApi.linkAsset(id, { mode: "setqty", productId, quantity }); await load(); } catch { /* ignore */ } finally { setBusy(false); }
+    try { await staffApi.linkAsset(id, { mode: "setqty", productId, quantity }, source); await load(); } catch { /* ignore */ } finally { setBusy(false); }
   }
   async function remove(productId: number) {
     setBusy(true);
-    try { await staffApi.linkAsset(id, { mode: "unlink", productId }); await load(); } catch { /* ignore */ } finally { setBusy(false); }
+    try { await staffApi.linkAsset(id, { mode: "unlink", productId }, source); await load(); } catch { /* ignore */ } finally { setBusy(false); }
   }
 
   return (
@@ -542,7 +545,17 @@ function ProductsAssetsSection({ id }: { id: number }) {
         </div>
       )}
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
-      {items.length === 0 ? (
+      {products.length > 0 && (
+        <ul className="space-y-2">
+          {products.map((product, index) => (
+            <li key={`${product.productId ?? product.name}-${index}`} className="flex items-center justify-between rounded-lg border border-border/60 p-2 text-sm">
+              <span className="min-w-0 truncate">{product.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{product.quantity} ×{product.barcode ? ` · ${product.barcode}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {items.length === 0 && products.length === 0 ? (
         <p className="text-xs text-muted-foreground">لا توجد منتجات/أصول مرتبطة — أضِفها بالبحث أو المسح.</p>
       ) : (
         <ul className="space-y-2">
@@ -570,7 +583,7 @@ function ProductsAssetsSection({ id }: { id: number }) {
 type GateAsset = { productId: number; name: string; assetCode: string; imageUrl?: string | null; checkedOut: boolean };
 type Pending = { productId: number; name: string; assetCode: string; status: string; imageUrl?: string | null; checkedOut: boolean };
 
-export function AssetsSection({ id }: { id: number }) {
+export function AssetsSection({ id, source = "kosha" }: { id: number; source?: "kosha" | "service" }) {
   const [assets, setAssets] = useState<GateAsset[]>([]);
   const [mode, setMode] = useState<"checkout" | "return">("checkout");
   const [scanning, setScanning] = useState(false);
@@ -583,8 +596,8 @@ export function AssetsSection({ id }: { id: number }) {
   const [managerApproval, setManagerApproval] = useState(false);
 
   const load = useCallback(async () => {
-    try { const r = await staffApi.assets(id); setAssets(r.assets ?? []); } catch { /* offline / no assets */ }
-  }, [id]);
+    try { const r = await staffApi.assets(id, source); setAssets(r.assets ?? []); } catch { /* offline / no assets */ }
+  }, [id, source]);
   useEffect(() => { void load(); }, [load]);
 
   const total = assets.length;
@@ -595,7 +608,7 @@ export function AssetsSection({ id }: { id: number }) {
     if (busy || pending) return;
     setBusy(true); setMsg(null);
     try {
-      const r = await staffApi.scanAsset(id, { mode: "resolve", code });
+      const r = await staffApi.scanAsset(id, { mode: "resolve", code }, source);
       if (mode === "checkout" && r.checkedOut) { setMsg({ ok: false, text: `${r.name}: مُخرَج مسبقاً` }); return; }
       if (mode === "return" && !r.checkedOut) { setMsg({ ok: false, text: `${r.name}: غير مُخرَج` }); return; }
       setProblem("none"); setNote(""); setCost(""); setManagerApproval(false);
@@ -617,7 +630,7 @@ export function AssetsSection({ id }: { id: number }) {
       const code = pending.assetCode || `AJN-A${String(pending.productId).padStart(6, "0")}`;
       await staffApi.scanAsset(id, mode === "checkout"
         ? { mode: "checkout", code }
-        : { mode: "return", code, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined });
+        : { mode: "return", code, problem, note: note || undefined, cost: cost ? Number(cost) : undefined, managerApproval: managerApproval || undefined }, source);
       setMsg({ ok: true, text: mode === "checkout" ? `تم إخراج ${pending.name}` : problem === "lost" ? `سُجّل ${pending.name} كمفقود` : problem === "broken" ? `${pending.name} أُرسل للصيانة` : `تم استلام ${pending.name}` });
       setPending(null);
       await load();

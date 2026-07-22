@@ -116,12 +116,14 @@ export type ProductRow = {
   subcategoryIds?: unknown;
   assetCategoryId?: number | string | null;
   equipmentCategoryId?: number | string | null;
+  rentalCategoryId?: number | string | null;
   departmentId?: number | string | null;
   category?: string | null;
   subcategory?: string | null;
   productType?: string | null;
   assetCategory?: string | null;
   equipmentCategory?: string | null;
+  rentalCategory?: string | null;
   department?: string | null;
 };
 
@@ -130,6 +132,10 @@ export function productCategoryIds(product: ProductRow): number[] {
   return [
     product.categoryId,
     product.subcategoryId,
+    product.departmentId,
+    product.assetCategoryId,
+    product.equipmentCategoryId,
+    product.rentalCategoryId,
     ...(Array.isArray(product.subcategoryIds) ? product.subcategoryIds : []),
   ]
     .map((value) => Number(value))
@@ -153,6 +159,7 @@ export function isProductInDepartment(
     product.productType,
     product.assetCategory,
     product.equipmentCategory,
+    product.rentalCategory,
   ].some((value) => matchesDepartment(value, department));
 }
 

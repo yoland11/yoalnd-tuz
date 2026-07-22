@@ -45,6 +45,8 @@ export const BUCKET_LABEL: Record<Bucket, string> = {
 
 export type CrewBooking = {
   id: number;
+  /** Physical source of the canonical booking row. The numeric id is unchanged. */
+  source?: "kosha" | "service";
   koshaName: string | null;
   /** Departments this booking serves. Absent on native kosha rows. */
   departments?: string[];
@@ -68,6 +70,7 @@ export type CrewBooking = {
   paymentStatus: string;
   bucket: Bucket;
   notes: string;
+  assignedEmployees?: string[];
   selectedAccessories?: string[];
   selectedAddons?: string[];
   welcomeBoards?: string[];
@@ -102,25 +105,31 @@ export async function filesToMedia(files: FileList | File[]): Promise<MediaInput
 }
 
 const base = "/staff/koshas";
+function sourceQuery(source: "kosha" | "service" = "kosha") {
+  return source === "service" ? "?source=service" : "";
+}
 export const staffApi = {
   dashboard: () => adminFetch<{ today: string; counts: Record<Bucket, number>; todayBookings: CrewBooking[]; tomorrowBookings: CrewBooking[] }>(`${base}/dashboard`),
   bookings: (bucket: Bucket | "all", search = "") =>
     adminFetch<CrewBooking[]>(`${base}/bookings?bucket=${bucket}&search=${encodeURIComponent(search)}`),
-  booking: (id: number) => adminFetch<BookingDetail>(`${base}/bookings/${id}`),
-  setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[]): Promise<BookingDetail | QueuedResult> =>
-    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/stage`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),
-  uploadMedia: (id: number, media: MediaInput[], purpose = "execution", note?: string): Promise<BookingDetail | QueuedResult> =>
-    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/media`, { method: "POST", body: JSON.stringify({ media, purpose, note }) }),
-  delivery: (id: number, payload: { hasLoss: boolean; hasBreakage: boolean; note?: string; media?: MediaInput[]; signature?: string; compensationAmount?: number }): Promise<BookingDetail | QueuedResult> =>
-    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/delivery`, { method: "POST", body: JSON.stringify(payload) }),
-  collect: (id: number, amount: number, note?: string): Promise<{ ok: boolean } | QueuedResult> =>
-    mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect`, { method: "POST", body: JSON.stringify({ amount, note }) }),
-  assets: (id: number) => adminFetch<{ assets: Array<{ productId: number; name: string; assetCode: string; imageUrl?: string | null; quantity?: number; warehouse?: string | null; status?: string; checkedOut: boolean }> }>(`${base}/bookings/${id}/assets`),
+  booking: (id: number, source: "kosha" | "service" = "kosha") => adminFetch<BookingDetail>(`${base}/bookings/${id}${sourceQuery(source)}`),
+  setStage: (id: number, toStage: StageKey, note?: string, media?: MediaInput[], source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/stage${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ toStage, note, media }) }),
+  uploadMedia: (id: number, media: MediaInput[], purpose = "execution", note?: string, source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/media${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ media, purpose, note }) }),
+  delivery: (id: number, payload: { hasLoss: boolean; hasBreakage: boolean; note?: string; media?: MediaInput[]; signature?: string; compensationAmount?: number }, source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
+    mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/delivery${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
+  collect: (id: number, amount: number, note?: string, source: "kosha" | "service" = "kosha"): Promise<{ ok: boolean } | QueuedResult> =>
+    mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ amount, note }) }),
+  assets: (id: number, source: "kosha" | "service" = "kosha") => adminFetch<{
+    assets: Array<{ productId: number; name: string; assetCode: string; imageUrl?: string | null; quantity?: number; warehouse?: string | null; status?: string; checkedOut: boolean }>;
+    products?: Array<{ productId?: number | null; name: string; quantity: number; barcode?: string | null }>;
+  }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`),
   searchProducts: (q: string) => adminFetch<{ products: Array<{ productId: number; name: string; barcode: string | null; assetCode: string; isRental: boolean; imageUrl: string | null }> }>(`${base}/products?search=${encodeURIComponent(q)}`),
-  linkAsset: (id: number, payload: { mode: "link" | "setqty" | "unlink"; productId?: number; code?: string; quantity?: number }) =>
-    adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/bookings/${id}/assets`, { method: "POST", body: JSON.stringify(payload) }),
-  scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }) =>
-    adminFetch<{ ok: boolean; productId: number; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets`, { method: "POST", body: JSON.stringify(payload) }),
+  linkAsset: (id: number, payload: { mode: "link" | "setqty" | "unlink"; productId?: number; code?: string; quantity?: number }, source: "kosha" | "service" = "kosha") =>
+    adminFetch<{ ok: boolean; productId: number; name?: string }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
+  scanAsset: (id: number, payload: { mode: "resolve" | "checkout" | "return"; code: string; problem?: "none" | "broken" | "lost"; note?: string; cost?: number; managerApproval?: boolean }, source: "kosha" | "service" = "kosha") =>
+    adminFetch<{ ok: boolean; productId: number; name?: string; assetCode?: string; status?: string; imageUrl?: string | null; checkedOut?: boolean }>(`${base}/bookings/${id}/assets${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
   notifications: () => adminFetch<Array<{ id: number; type: string; title: string; body: string | null; href: string | null; isRead: boolean; createdAt: string }>>(`${base}/notifications`),
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),

@@ -93,8 +93,9 @@ function Login({ onDone }: { onDone: () => void }) {
 }
 
 function BookingCard({ b }: { b: CrewBooking }) {
+  const source = b.source === "service" ? "?source=service" : "";
   return (
-    <Link href={`/staff/koshas/booking/${b.id}`} className="block rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
+    <Link href={`/staff/koshas/booking/${b.id}${source}`} className="block rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 font-bold"><Armchair className="h-4 w-4 text-primary" />{b.koshaName || "كوشة"}{b.departmentBadge ? <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">{b.departmentBadge}</span> : null}</div>
@@ -168,13 +169,13 @@ function Dashboard() {
       {data.todayBookings.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-bold">حجوزات اليوم</h2>
-          <div className="space-y-2">{data.todayBookings.map((b) => <BookingCard key={b.id} b={b} />)}</div>
+          <div className="space-y-2">{data.todayBookings.map((b) => <BookingCard key={`${b.source ?? "kosha"}-${b.id}`} b={b} />)}</div>
         </section>
       )}
       {data.tomorrowBookings.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-bold">حجوزات الغد</h2>
-          <div className="space-y-2">{data.tomorrowBookings.map((b) => <BookingCard key={b.id} b={b} />)}</div>
+          <div className="space-y-2">{data.tomorrowBookings.map((b) => <BookingCard key={`${b.source ?? "kosha"}-${b.id}`} b={b} />)}</div>
         </section>
       )}
       {data.todayBookings.length === 0 && data.tomorrowBookings.length === 0 && (
@@ -257,7 +258,7 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
           return hasKosha;
         });
         if (!visible.length) return <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">لا توجد حجوزات</div>;
-        return <div className="space-y-2">{visible.map((b) => <BookingCard key={b.id} b={b} />)}</div>;
+        return <div className="space-y-2">{visible.map((b) => <BookingCard key={`${b.source ?? "kosha"}-${b.id}`} b={b} />)}</div>;
       })()}
     </div>
   );
@@ -485,7 +486,7 @@ function StaffPortalContent() {
 
       <main className="pb-20">
         <Switch>
-          <Route path="/staff/koshas/booking/:id">{(p) => <StaffBookingDetail id={Number(p.id)} onBack={() => window.history.back()} />}</Route>
+          <Route path="/staff/koshas/booking/:id">{(p) => <StaffBookingDetail id={Number(p.id)} source={new URLSearchParams(window.location.search).get("source") === "service" ? "service" : "kosha"} onBack={() => window.history.back()} />}</Route>
           <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} />}</Route>
           <Route path="/staff/koshas/list"><BookingsList bucket="all" /></Route>
           <Route path="/staff/koshas/notifications"><Notifications /></Route>

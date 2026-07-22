@@ -40,12 +40,46 @@ try {
     where archived_at is null and custom_fields->>'bookingType' = 'sound'
       and (custom_fields->>'sourceType' is null or custom_fields->>'sourceId' is null)
   `)).rows[0]?.count ?? 0;
+  const canonical = (await pool.query(`
+    select id, custom_fields
+    from service_orders
+    where archived_at is null
+      and (custom_fields->>'bookingType' = 'sound'
+        or custom_fields->'departments' ? 'sound')
+  `)).rows;
+  const missingAssetReservations = canonical.filter((row) => {
+    const fields = row.custom_fields ?? {};
+    const assetIds = (Array.isArray(fields.soundItems) ? fields.soundItems : [])
+      .filter((item) => item?.isAsset === true || item?.isRental === true)
+      .map((item) => Number(item.productId))
+      .filter(Boolean);
+    const reserved = new Set(
+      (Array.isArray(fields.bookingOperations?.assets) ? fields.bookingOperations.assets : [])
+        .filter((item) => ["reserved", "picked", "out", "returned", "inspection", "completed"].includes(String(item?.stage)))
+        .map((item) => Number(item.productId)),
+    );
+    return assetIds.some((id) => !reserved.has(id));
+  });
+  const sourceIdentity = new Set(canonical.map((row) => {
+    const fields = row.custom_fields ?? {};
+    return `${fields.sourceType ?? ""}:${fields.sourceId ?? ""}`;
+  }));
+  const portalFiles = [
+    readFileSync("src/views/staff/index.tsx", "utf8"),
+    readFileSync("src/views/staff/lib.ts", "utf8"),
+    readFileSync("src/views/staff/booking-detail.tsx", "utf8"),
+  ].join("\n");
+  const sourceSafePortal = portalFiles.includes("?source=service") && portalFiles.includes("source={source}");
   console.table(summary);
   console.log(`duplicate SourceType + SourceID references: ${duplicates.length}`);
   console.log(`sound bookings missing source identity: ${malformed}`);
-  if (duplicates.length || malformed) {
+  console.log(`canonical source identities: ${sourceIdentity.size}/${canonical.length}`);
+  console.log(`sound asset reservations missing: ${missingAssetReservations.length}`);
+  console.log(`staff portal source-safe links and actions: ${sourceSafePortal ? "yes" : "no"}`);
+  if (duplicates.length || malformed || missingAssetReservations.length || !sourceSafePortal) {
     failed = true;
     if (duplicates.length) console.table(duplicates);
+    if (missingAssetReservations.length) console.table(missingAssetReservations.map((row) => ({ bookingId: row.id })));
   }
 } finally {
   await pool.end();

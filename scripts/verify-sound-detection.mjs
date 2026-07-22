@@ -73,7 +73,11 @@ check("kosha resolves independently", [...resolveDepartmentCategoryIds(categorie
 // ── Product membership ──
 check("all linked category ids are collected",
   productCategoryIds({ categoryId: 2, subcategoryId: 3, subcategoryIds: [4, "5", null, 0, -1] }), [2, 3, 4, 5]);
+check("department, asset, equipment and rental category ids are collected",
+  productCategoryIds({ departmentId: 2, assetCategoryId: 3, equipmentCategoryId: 4, rentalCategoryId: 5 }), [2, 3, 4, 5]);
 check("product in sound by categoryId", isProductInDepartment({ id: 9, categoryId: 2 }, soundIds, "sound"), true);
+check("product in sound by asset category id", isProductInDepartment({ id: 9, assetCategoryId: 2 }, soundIds, "sound"), true);
+check("product in sound by rental category", isProductInDepartment({ id: 9, rentalCategory: "audio equipment" }, soundIds, "sound"), true);
 check("product in sound by subcategoryIds", isProductInDepartment({ id: 9, subcategoryIds: [3] }, soundIds, "sound"), true);
 check("legacy product with only a category string",
   isProductInDepartment({ id: 9, category: "صوتيات" }, soundIds, "sound"), true);

@@ -18,6 +18,7 @@ import Login from "@/views/login";
 import { registerServiceWorker } from "@/lib/pwa";
 import { ThemeVariables } from "@/components/theme-variables";
 import { DesktopRuntime } from "@/components/desktop-runtime";
+import { AjnSplashScreen } from "@/components/ajn-splash-screen";
 
 // Admin — lazy (large bundle, staff-only)
 const Admin = lazy(() => import("@/views/admin/index"));
@@ -302,6 +303,7 @@ function App() {
       <ThemeVariables />
       <TooltipProvider>
         <DesktopRuntime />
+        <AjnSplashScreen />
         <WouterRouter>
           <Router />
         </WouterRouter>
