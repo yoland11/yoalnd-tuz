@@ -41,6 +41,7 @@ import {
   CalendarDays,
   Inbox,
   Activity,
+  Camera,
   Trash2,
   QrCode,
   UserCheck,
@@ -630,6 +631,12 @@ export const NAV: NavItem[] = [
     label: "صحة النظام",
     icon: Activity,
     perm: "system_health",
+  },
+  {
+    href: "/admin/photography-operations",
+    label: "عمليات التصوير",
+    icon: Camera,
+    perm: "photography",
   },
   {
     href: "/admin/recycle-bin",
