@@ -143,6 +143,57 @@ export function filterProductsByDepartment<T extends ProductRow>(
   return products.filter((product) => isProductInDepartment(product, departmentCategoryIds, department));
 }
 
+export type BookingServiceRow = {
+  type?: string | null;
+  name?: string | null;
+  nameAr?: string | null;
+  isActive?: boolean | null;
+};
+
+const GENERIC_EVENT_SERVICE_CODES = [
+  "setup",
+  "setups",
+  "event setup",
+  "execution",
+  "event execution",
+  "تجهيز",
+  "تجهيزات",
+  "تنفيذ",
+  "تنفيذ مناسبات",
+];
+
+/**
+ * Resolves the existing active service row used to host a Store Sound booking.
+ * A dedicated Sound service wins. Older AJN databases only have the generic
+ * setup/execution service, so that row is the compatible fallback while the
+ * booking itself remains explicitly stamped with `departments: ["sound"]`.
+ */
+export function resolveSoundBookingService<T extends BookingServiceRow>(
+  services: T[],
+): T | null {
+  const active = services.filter((service) => service.isActive !== false);
+  const dedicated = active.find((service) =>
+    [service.type, service.name, service.nameAr].some((value) =>
+      matchesDepartment(value, "sound"),
+    ),
+  );
+  if (dedicated) return dedicated;
+
+  return (
+    active.find((service) =>
+      [service.type, service.name, service.nameAr].some((value) => {
+        const normalized = normalizeTaxonomy(value);
+        return GENERIC_EVENT_SERVICE_CODES.some(
+          (code) =>
+            normalized === code ||
+            normalized.startsWith(`${code} `) ||
+            normalized.endsWith(` ${code}`),
+        );
+      }),
+    ) ?? null
+  );
+}
+
 export type BookingSignals = {
   /** Product ids referenced by the booking, resolved against the department index. */
   productIds?: Array<number | string | null | undefined>;

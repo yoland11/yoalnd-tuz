@@ -168,6 +168,34 @@ const SERVICE_META: Array<{
   { key: "decorations", label: "الديكورات", short: "الديكور", icon: PartyPopper, aliases: ["decor", "decoration"], accent: "rose" },
 ];
 
+function resolveUnifiedBookingService(
+  selected: ServiceKey[],
+  services: AdminService[],
+) {
+  const activeServices = services.filter((service) => service.isActive);
+  for (const type of selected) {
+    const meta = SERVICE_META.find((item) => item.key === type);
+    if (!meta) continue;
+    const exact = activeServices.find((service) => {
+      const value = `${service.type} ${service.name} ${service.nameAr}`.toLowerCase();
+      return [meta.key, meta.short, meta.label, ...meta.aliases].some((alias) =>
+        value.includes(alias.toLowerCase()),
+      );
+    });
+    if (exact) return exact;
+  }
+  // The current database may not yet have a dedicated row for Sound, LED,
+  // Flowers or Transport. Keep one unified booking by using the existing
+  // generic execution/setup service and stamp the real departments below.
+  return (
+    activeServices.find((service) =>
+      /setup|execution|event|تجهيز|تنفيذ|مناسبات/i.test(
+        `${service.type} ${service.name} ${service.nameAr}`,
+      ),
+    ) ?? activeServices[0]
+  );
+}
+
 const STATUS_LABELS: Record<string, string> = {
   new: "جديد",
   pending: "بانتظار التأكيد",
@@ -485,8 +513,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       if (!customer) throw new Error("اختر العميل أولاً");
       if (!eventDate) throw new Error("حدد تاريخ المناسبة");
       if (!selected.length) throw new Error("اختر خدمة واحدة على الأقل");
-      const primaryMeta = SERVICE_META.find((item) => item.key === selected[0]);
-      const primary = services.find((service) => primaryMeta?.aliases.some((alias) => service.type.toLowerCase().includes(alias))) ?? services.find((service) => service.isActive);
+      const primary = resolveUnifiedBookingService(selected, services);
       if (!primary) throw new Error("لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
       return adminFetch("/admin/service-orders", {
         method: "POST",
@@ -507,6 +534,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
             hallName,
             mapUrl,
             contractNumber,
+            departments: selected,
             bookingCenterServices: selected.map((type) => ({ type, status: "waiting", amount: 0 })),
           },
         }),

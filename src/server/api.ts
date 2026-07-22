@@ -320,6 +320,7 @@ import {
   filterProductsByDepartment,
   matchesDepartment,
   resolveDepartmentCategoryIds,
+  resolveSoundBookingService,
   type Department,
 } from "@/server/sound-detection";
 import {
@@ -6182,6 +6183,67 @@ function normalizeDetailsInput(value: unknown): Record<string, any> {
   return value as Record<string, any>;
 }
 
+const UNIFIED_BOOKING_SERVICE_KEYS = new Set([
+  "kosha",
+  "photography",
+  "sound",
+  "flowers",
+  "gifts",
+  "graduation",
+  "led",
+  "transportation",
+  "decorations",
+]);
+const UNIFIED_BOOKING_SERVICE_STATUSES = new Set([
+  "waiting",
+  "preparing",
+  "ready",
+  "dispatched",
+  "installed",
+  "running",
+  "finished",
+  "returned",
+  "cancelled",
+]);
+
+function normalizeUnifiedBookingCustomFields(fields: Record<string, any>) {
+  if (
+    fields.bookingCenterVersion == null &&
+    !Array.isArray(fields.bookingCenterServices)
+  )
+    return fields;
+  const source = Array.isArray(fields.bookingCenterServices)
+    ? fields.bookingCenterServices
+    : [];
+  const seen = new Set<string>();
+  const bookingCenterServices = source.flatMap((item: any) => {
+    const type = String(item?.type ?? "").trim().toLowerCase();
+    if (!UNIFIED_BOOKING_SERVICE_KEYS.has(type) || seen.has(type)) return [];
+    seen.add(type);
+    const status = String(item?.status ?? "waiting").trim().toLowerCase();
+    return [
+      {
+        type,
+        status: UNIFIED_BOOKING_SERVICE_STATUSES.has(status)
+          ? status
+          : "waiting",
+        amount: money(Math.max(0, Number(item?.amount) || 0)),
+        ...(typeof item?.notes === "string"
+          ? { notes: item.notes.trim().slice(0, 2_000) }
+          : {}),
+      },
+    ];
+  });
+  if (!bookingCenterServices.length)
+    throw new CheckoutError("اختر خدمة صالحة واحدة على الأقل للحجز الموحد", 422);
+  return {
+    ...fields,
+    bookingCenterVersion: Math.max(1, Number(fields.bookingCenterVersion) || 1),
+    departments: bookingCenterServices.map((item) => item.type),
+    bookingCenterServices,
+  };
+}
+
 async function ensureCrewsTable(): Promise<void> {
   if (!crewsTablePromise) {
     crewsTablePromise = db
@@ -8992,8 +9054,12 @@ async function ensureCustomerForPhone(phone: string, name?: string) {
       name: cleanName || formatIraqiPhone(normalized),
       fullName: cleanName || "",
     })
+    .onConflictDoNothing({ target: customersTable.phone })
     .returning();
-  return created;
+  if (created) return created;
+  // A simultaneous booking may have created the customer after our lookup.
+  // Re-read the canonical row instead of failing the booking with a 23505.
+  return findCustomerByPhone(normalized);
 }
 
 let customerBackfillPromise: Promise<void> | null = null;
@@ -9825,11 +9891,35 @@ async function insertServiceOrderWithTracking(
   return row;
 }
 
-const SOUND_BOOKING_TAXONOMY =
-  /(^|[\s_\-/])(sound(?:[\s_\-/]*systems?)?|audio|speaker)(?=$|[\s_\-/])|صوت|سماعة|أنظمة\s*صوتية/i;
+async function createServiceOrderWithHistory(
+  values: Omit<
+    typeof serviceOrdersTable.$inferInsert,
+    "trackingCode" | "phoneLast4"
+  >,
+  historyNote: string,
+) {
+  return db.transaction(async (tx) => {
+    const order = await insertServiceOrderWithTracking(values, { executor: tx });
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: order.id,
+      status: order.status,
+      notes: historyNote,
+    });
+    return order;
+  });
+}
 
-function isSoundBookingTaxonomyValue(value: unknown) {
-  return SOUND_BOOKING_TAXONOMY.test(String(value ?? "").trim());
+function serviceBookingSaveError(err: unknown): CheckoutError {
+  const code = (err as any)?.code;
+  if (code === "23503")
+    return new CheckoutError("الخدمة أو العميل المرتبط بالحجز غير موجود", 409);
+  if (code === "23505")
+    return new CheckoutError("تم إنشاء هذا الحجز بالتزامن. حدّث القائمة وتحقق من رقم الحجز", 409);
+  if (code === "22003")
+    return new CheckoutError("مبلغ الحجز أكبر من الحد المسموح", 422);
+  if (code === "22P02" || code === "23514")
+    return new CheckoutError("بيانات الحجز المالية أو التشغيلية غير صالحة", 422);
+  return new CheckoutError("تعذر حفظ سجل الحجز الأساسي. لم يتم إنشاء حجز جزئي", 500);
 }
 
 function parseStoreItemMetadata(value: unknown): Record<string, unknown> {
@@ -10003,13 +10093,7 @@ async function findSoundBookingService() {
   const services = await db.query.servicesTable.findMany({
     where: eq(servicesTable.isActive, true),
   });
-  return (
-    services.find((service) =>
-      [service.type, service.name, service.nameAr].some(
-        isSoundBookingTaxonomyValue,
-      ),
-    ) ?? null
-  );
+  return resolveSoundBookingService(services);
 }
 
 /**
@@ -12910,9 +12994,11 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       where: eq(servicesTable.id, data.serviceId),
     });
     if (!service) return error("الخدمة غير موجودة", 404);
-    const customFields = withDerivedServiceDetails(
-      service.type,
-      normalizeDetailsInput(data.customFields),
+    const customFields = normalizeUnifiedBookingCustomFields(
+      withDerivedServiceDetails(
+        service.type,
+        normalizeDetailsInput(data.customFields),
+      ),
     );
     const eventLocation =
       data.eventLocation ??
@@ -12936,21 +13022,37 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         "يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.",
         409,
       );
-    const order = await insertServiceOrderWithTracking({
-      serviceId: data.serviceId,
-      customerName: safeCustomerName,
-      phone,
-      eventDate: data.eventDate ?? "",
-      eventLocation,
-      notes: data.notes,
-      customFields,
-    });
-    const orderQr = await ensureQrForEntity("service_order", order, req);
-    await db.insert(serviceOrderStatusHistoryTable).values({
-      serviceOrderId: order.id,
-      status: order.status,
-      notes: "تم إنشاء الحجز",
-    });
+    let order: typeof serviceOrdersTable.$inferSelect;
+    try {
+      order = await createServiceOrderWithHistory(
+        {
+          serviceId: data.serviceId,
+          customerName: safeCustomerName,
+          phone,
+          eventDate: data.eventDate ?? "",
+          eventLocation,
+          notes: data.notes,
+          customFields,
+        },
+        "تم إنشاء الحجز",
+      );
+    } catch (err) {
+      console.error("public service booking core save failed", {
+        serviceId: data.serviceId,
+        code: (err as any)?.code,
+        message: err instanceof Error ? err.message : "unknown",
+      });
+      throw serviceBookingSaveError(err);
+    }
+    const orderQr = await ensureQrForEntity("service_order", order, req).catch(
+      (err) => {
+        console.error("service booking QR creation failed", {
+          orderId: order.id,
+          message: err instanceof Error ? err.message : "unknown",
+        });
+        return null;
+      },
+    );
     void fireOrderEvent("booking_placed", {
       name: order.customerName,
       phone: order.phone,
@@ -13025,7 +13127,14 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         message: err?.message,
       }),
     );
-    await syncServiceOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR);
+    if (Number(order.depositAmount) > 0)
+      await syncServiceOrderFinancialPayment(order, SYSTEM_FINANCIAL_ACTOR).catch(
+        (err) =>
+          console.error("service booking financial sync failed", {
+            orderId: order.id,
+            message: err instanceof Error ? err.message : "unknown",
+          }),
+      );
     void notifyTelegramOrder({
       kind: "service",
       id: order.id,
@@ -13042,7 +13151,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       status: order.status,
       address: order.eventLocation,
       notes: order.notes,
-      qrDataUrl: orderQr.dataUrl,
+      qrDataUrl: orderQr?.dataUrl ?? null,
     });
     return json(
       {
@@ -32344,9 +32453,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: eq(servicesTable.id, data.serviceId),
       });
       if (!service) return error("الخدمة غير موجودة", 404);
-      const customFields = withDerivedServiceDetails(
-        service.type,
-        normalizeDetailsInput(rawBody?.customFields ?? data.customFields),
+      const customFields = normalizeUnifiedBookingCustomFields(
+        withDerivedServiceDetails(
+          service.type,
+          normalizeDetailsInput(rawBody?.customFields ?? data.customFields),
+        ),
       );
       const servicePaymentMethod = String(
         rawBody?.paymentMethod ?? (customFields as any)?.paymentMethod ?? "",
@@ -32384,30 +32495,47 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           "يوجد حجز آخر بنفس التاريخ للخدمة أو الكادر. اختر موعداً أو كادراً مختلفاً.",
           409,
         );
-      const order = await insertServiceOrderWithTracking({
-        serviceId: data.serviceId,
-        customerName: safeCustomerName,
-        phone,
-        eventDate: data.eventDate ?? "",
-        eventLocation,
-        notes: data.notes,
-        internalNotes:
-          typeof rawBody?.internalNotes === "string"
-            ? rawBody.internalNotes
-            : null,
-        totalAmount: String(money(rawBody?.totalAmount)),
-        depositAmount: String(payment.deposit),
-        remainingAmount: String(payment.remaining),
-        paymentStatus: payment.status,
-        dueDate: normalizeDateOnly(rawBody?.dueDate) ?? null,
-        customFields,
-      });
-      const orderQr = await ensureQrForEntity("service_order", order, req);
-      await db.insert(serviceOrderStatusHistoryTable).values({
-        serviceOrderId: order.id,
-        status: order.status,
-        notes: "إضافة من الإدارة",
-      });
+      let order: typeof serviceOrdersTable.$inferSelect;
+      try {
+        order = await createServiceOrderWithHistory(
+          {
+            serviceId: data.serviceId,
+            customerName: safeCustomerName,
+            phone,
+            eventDate: data.eventDate ?? "",
+            eventLocation,
+            notes: data.notes,
+            internalNotes:
+              typeof rawBody?.internalNotes === "string"
+                ? rawBody.internalNotes
+                : null,
+            totalAmount: String(money(rawBody?.totalAmount)),
+            depositAmount: String(payment.deposit),
+            remainingAmount: String(payment.remaining),
+            paymentStatus: payment.status,
+            dueDate: normalizeDateOnly(rawBody?.dueDate) ?? null,
+            customFields,
+          },
+          "إضافة من الإدارة",
+        );
+      } catch (err) {
+        console.error("admin service booking core save failed", {
+          serviceId: data.serviceId,
+          actorId: auth.id,
+          code: (err as any)?.code,
+          message: err instanceof Error ? err.message : "unknown",
+        });
+        throw serviceBookingSaveError(err);
+      }
+      const orderQr = await ensureQrForEntity("service_order", order, req).catch(
+        (err) => {
+          console.error("admin service booking QR creation failed", {
+            orderId: order.id,
+            message: err instanceof Error ? err.message : "unknown",
+          });
+          return null;
+        },
+      );
       void logAdminActivity(req, "booking_created", "service_order", order.id, {
         tracking: order.trackingCode,
       });
@@ -32487,7 +32615,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           message: err?.message,
         }),
       );
-      await syncServiceOrderFinancialPayment(order, financialActor(auth));
+      if (Number(order.depositAmount) > 0)
+        await syncServiceOrderFinancialPayment(order, financialActor(auth)).catch(
+          (err) =>
+            console.error("admin service booking financial sync failed", {
+              orderId: order.id,
+              actorId: auth.id,
+              message: err instanceof Error ? err.message : "unknown",
+            }),
+        );
       void notifyTelegramOrder({
         kind: "service",
         id: order.id,
@@ -32504,7 +32640,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         status: order.status,
         address: order.eventLocation,
         notes: order.notes,
-        qrDataUrl: orderQr.dataUrl,
+        qrDataUrl: orderQr?.dataUrl ?? null,
       });
       return json(
         {
@@ -32649,9 +32785,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         const service = await db.query.servicesTable.findFirst({
           where: eq(servicesTable.id, prev.serviceId),
         });
-        update.customFields = withDerivedServiceDetails(
-          service?.type,
-          normalizeDetailsInput(b.customFields),
+        update.customFields = normalizeUnifiedBookingCustomFields(
+          withDerivedServiceDetails(
+            service?.type,
+            normalizeDetailsInput(b.customFields),
+          ),
         );
         if (b?.eventLocation === undefined) {
           update.eventLocation =

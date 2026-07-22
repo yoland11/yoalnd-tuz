@@ -19,7 +19,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 const {
   normalizeTaxonomy, matchesDepartment, resolveDepartmentCategoryIds,
   isProductInDepartment, filterProductsByDepartment, detectBookingDepartments,
-  bookingLinkKey, departmentBadge, productCategoryIds,
+  bookingLinkKey, departmentBadge, productCategoryIds, resolveSoundBookingService,
 } = await import(pathToFileURL(outFile).href);
 
 let failures = 0;
@@ -86,6 +86,15 @@ check("filter keeps only sound products",
     [{ id: 1, categoryId: 1 }, { id: 2, categoryId: 2 }, { id: 3, subcategoryIds: [3] }],
     soundIds, "sound",
   ).map((p) => p.id), [2, 3]);
+
+// ── Service host resolution for Store → Booking Center sync ──
+const dedicatedSoundService = { id: 7, type: "sound", name: "Sound Systems", nameAr: "الصوتيات", isActive: true };
+const genericSetupService = { id: 2, type: "setup", name: "Setups", nameAr: "تجهيزات", isActive: true };
+const researchService = { id: 6, type: "research", name: "Research", nameAr: "بحوث", isActive: true };
+check("dedicated Sound service wins", resolveSoundBookingService([genericSetupService, dedicatedSoundService]), dedicatedSoundService);
+check("generic setup service supports legacy databases", resolveSoundBookingService([researchService, genericSetupService]), genericSetupService);
+check("inactive Sound service is ignored", resolveSoundBookingService([{ ...dedicatedSoundService, isActive: false }, genericSetupService]), genericSetupService);
+check("an unrelated service is never used as a Sound host", resolveSoundBookingService([researchService]), null);
 
 // ── Booking-level detection ──
 const productDepartments = new Map([
