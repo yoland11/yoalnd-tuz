@@ -61,6 +61,7 @@ import {
   Factory,
   Lock,
   SlidersHorizontal,
+  Speaker,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -192,6 +193,12 @@ export const NAV: NavItem[] = [
     href: "/admin/bookings",
     label: "مركز الحجوزات",
     icon: CalendarDays,
+    perm: "orders",
+  },
+  {
+    href: "/admin/sound-center",
+    label: "مركز حجوزات الصوتيات",
+    icon: Speaker,
     perm: "orders",
   },
   {
@@ -749,6 +756,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingBag,
     items: [
       navItem("/admin/bookings"),
+      navItem("/admin/sound-center"),
       navItem("/admin/orders"),
       navItem("/admin/calendar"),
       navItem("/admin/qr-orders"),

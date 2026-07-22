@@ -16,6 +16,7 @@ const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
 const OrdersPage = lazy(() => import("./orders"));
 const BookingCenterPage = lazy(() => import("./booking-center"));
+const SoundCenterPage = lazy(() => import("./sound-center"));
 const InvoicePage = lazy(() => import("./invoice"));
 const CalendarPage = lazy(() => import("./calendar"));
 const QrOrdersPage = lazy(() => import("./qr-orders"));
@@ -307,6 +308,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="orders">
                 <BookingCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/sound-center">
+            {() => (
+              <Guard me={me} perm="orders">
+                <SoundCenterPage />
               </Guard>
             )}
           </Route>

@@ -4686,6 +4686,23 @@ async function formatKoshaBooking(row: any) {
         where: eq(koshasTable.id, row.koshaId),
       })
     : null;
+  const bookingDetails = (row.bookingDetails ?? row.booking_details ?? {}) as Record<string, any>;
+  const detectedDepartments = detectBookingDepartments({
+    signals: {
+      taxonomy: [
+        "kosha",
+        ...(Array.isArray(bookingDetails.departments) ? bookingDetails.departments : []),
+        bookingDetails.department, bookingDetails.bookingType, bookingDetails.serviceType,
+        ...(Array.isArray(bookingDetails.bookingCenterServices)
+          ? bookingDetails.bookingCenterServices.map((item: any) => item?.type ?? item?.key)
+          : []),
+      ],
+      itemNames: Array.isArray(bookingDetails.soundItems)
+        ? bookingDetails.soundItems.map((item: any) => item?.name ?? item?.productName)
+        : [],
+    },
+  });
+  const departments = detectedDepartments.length ? detectedDepartments : (["kosha"] as Department[]);
   return {
     id: row.id,
     // Defaults to the native table; the routed adapter overrides it to "service".
@@ -4737,7 +4754,9 @@ async function formatKoshaBooking(row: any) {
           publicMediaValue("kosha-booking", row, image as string),
         )
       : [],
-    bookingDetails: row.bookingDetails ?? row.booking_details ?? {},
+    bookingDetails,
+    departments,
+    departmentBadge: departmentBadge(departments),
     // Denormalized crew (stored in bookingDetails via /:id/employees) — surfaced here so
     // every consumer (card, details, schedule, reports, print) shows the names with no extra lookup.
     primaryEmployeeId: (row.bookingDetails ?? row.booking_details ?? {})?.primaryEmployeeId ?? null,
@@ -6420,11 +6439,17 @@ async function ensureTrackingColumns(): Promise<void> {
   if (!trackingColumnsPromise) {
     trackingColumnsPromise = db
       .execute(
-        sql`alter table "orders" add column if not exists "phone_last4" varchar(4)`,
+        sql`
+          alter table "orders" add column if not exists "phone_last4" varchar(4);
+          alter table "orders" alter column "tracking_code" type varchar(40);
+        `,
       )
       .then(() =>
         db.execute(
-          sql`alter table "service_orders" add column if not exists "phone_last4" varchar(4)`,
+          sql`
+            alter table "service_orders" add column if not exists "phone_last4" varchar(4);
+            alter table "service_orders" alter column "tracking_code" type varchar(40);
+          `,
         ),
       )
       .then(() =>
@@ -9950,8 +9975,19 @@ async function departmentCategoryIds(department: Department): Promise<Set<number
 async function getSoundStoreProducts(products: any[]) {
   // The category is the source of truth. A product title never promotes an order on its
   // own — an "RCF 745" filed under Koshas stays a kosha item.
-  const soundIds = await departmentCategoryIds("sound");
-  return filterProductsByDepartment(products, soundIds, "sound");
+  const [soundIds, assetCategories] = await Promise.all([
+    departmentCategoryIds("sound"),
+    db.query.assetCategoriesTable.findMany(),
+  ]);
+  const assetCategoryMap = new Map(assetCategories.map((category) => [category.id, category.name]));
+  return filterProductsByDepartment(
+    products.map((product) => ({
+      ...product,
+      assetCategory: product.assetCategoryId ? assetCategoryMap.get(Number(product.assetCategoryId)) ?? null : null,
+    })),
+    soundIds,
+    "sound",
+  );
 }
 
 /**
@@ -10215,6 +10251,131 @@ async function syncStoreSoundBooking(input: {
       body: `طلب المتجر ${input.order.trackingCode}`,
       actorName: "المتجر الإلكتروني",
       metadata: { source: "store", storeOrderId },
+    });
+    return { booking, created: true, requiresSync: false };
+  });
+}
+
+function soundSourceStatus(status: unknown) {
+  const value = String(status ?? "").toLowerCase();
+  if (["cancelled", "canceled", "deleted", "void"].includes(value)) return "cancelled";
+  if (["completed", "delivered", "returned"].includes(value)) return "completed";
+  if (["processing", "preparing", "ready", "active"].includes(value)) return "processing";
+  return "pending";
+}
+
+function salesInvoiceSoundItems(items: any[], soundProducts: any[]) {
+  const products = new Map(soundProducts.map((product) => [Number(product.id), product]));
+  return items
+    .filter((item) => products.has(Number(item.productId)))
+    .map((item) => {
+      const product: any = products.get(Number(item.productId));
+      return {
+        productId: Number(item.productId),
+        name: item.productName || product?.nameAr || product?.name || `#${item.productId}`,
+        quantity: Number(item.quantity ?? 0),
+        unitPrice: money(item.unitPrice),
+        total: money(item.total),
+        barcode: item.barcode || product?.barcode || null,
+        isAsset: product?.isAsset === true,
+        isRental: product?.isRental === true,
+      };
+    });
+}
+
+/**
+ * Synchronises a Sales Invoice into the canonical service-order booking.
+ * The source invoice is locked and the stable external reference is protected with a
+ * transaction advisory lock, so retries and concurrent saves update one booking only.
+ */
+async function syncSalesInvoiceSoundBooking(invoice: any, items: any[]) {
+  const invoiceId = Number(invoice?.id);
+  if (!invoiceId) return { booking: null, created: false, requiresSync: false };
+  const productIds = [...new Set<number>(items.map((item) => Number(item.productId)).filter((id) => Number.isInteger(id) && id > 0))];
+  const products = productIds.length
+    ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) })
+    : [];
+  const soundProducts = await getSoundStoreProducts(products as any[]);
+  const soundItems = salesInvoiceSoundItems(items, soundProducts);
+  const externalReference = bookingLinkKey("sales_invoice", invoiceId);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${externalReference}))`);
+    await tx.execute(sql`select id from sales_invoices where id = ${invoiceId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'externalReference' = ${externalReference}
+         or custom_fields ->> 'salesInvoiceId' = ${String(invoiceId)}
+      order by id asc limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!soundItems.length) {
+      if (!linked) return { booking: null, created: false, requiresSync: false };
+      const prior = linked.custom_fields && typeof linked.custom_fields === "object" ? linked.custom_fields : {};
+      if (linked.status === "cancelled" && prior.soundSyncState === "source_has_no_sound_items") {
+        return { booking: linked, created: false, requiresSync: false };
+      }
+      const [booking] = await tx.update(serviceOrdersTable).set({
+        status: "cancelled",
+        customFields: { ...prior, soundItems: [], sourceStatus: invoice.status, soundSyncState: "source_has_no_sound_items" },
+      } as any).where(eq(serviceOrdersTable.id, Number(linked.id))).returning();
+      await tx.insert(serviceOrderStatusHistoryTable).values({
+        serviceOrderId: Number(linked.id), status: "cancelled",
+        notes: "تم إلغاء ربط الصوتيات بعد إزالة جميع عناصر الصوت من فاتورة المبيعات",
+      });
+      return { booking, created: false, requiresSync: false };
+    }
+
+    const total = soundItems.reduce((sum, item) => sum + money(item.total), 0);
+    const paidRatio = money(invoice.total) > 0 ? Math.min(1, money(invoice.paidAmount) / money(invoice.total)) : 0;
+    const soundPaid = money(total * paidRatio);
+    const commonFields = {
+      bookingSource: "sales_invoice", bookingType: "sound", department: "sound", departments: ["sound"],
+      sourceType: "sales_invoice", sourceId: invoiceId, externalReference,
+      salesInvoiceId: invoiceId, salesInvoiceReference: invoice.invoiceNo,
+      originalOrderReference: invoice.invoiceNo, customerId: invoice.customerId ?? null,
+      bookingCenterServices: [{ type: "sound", status: "waiting", amount: total }],
+      soundItems, paymentMethod: invoice.paymentMethod ?? "cash", sourceStatus: invoice.status,
+      eventInformationStatus: "pending_completion",
+    };
+    const shared = {
+      customerName: invoice.customerName || "زبون فاتورة مبيعات",
+      phone: invoice.customerPhone || "غير مسجل",
+      eventDate: invoice.date ?? null,
+      notes: invoice.notes ?? null,
+      status: soundSourceStatus(invoice.status),
+      totalAmount: String(total), depositAmount: String(soundPaid),
+      remainingAmount: String(Math.max(0, total - soundPaid)),
+      paymentStatus: soundPaid >= total && total > 0 ? "paid" : soundPaid > 0 ? "partial" : "unpaid",
+      internalNotes: "بانتظار استكمال تاريخ وموقع المناسبة",
+    };
+
+    if (linked) {
+      const previous = linked.custom_fields && typeof linked.custom_fields === "object" ? linked.custom_fields : {};
+      const [booking] = await tx.update(serviceOrdersTable).set({
+        ...shared,
+        eventDate: linked.event_date || shared.eventDate,
+        eventLocation: linked.event_location || null,
+        internalNotes: linked.internal_notes || shared.internalNotes,
+        customFields: { ...previous, ...commonFields },
+      } as any).where(eq(serviceOrdersTable.id, Number(linked.id))).returning();
+      return { booking, created: false, requiresSync: false };
+    }
+
+    const soundService = await findSoundBookingService();
+    if (!soundService) return { booking: null, created: false, requiresSync: true };
+    const booking = await insertServiceOrderWithTracking({
+      serviceId: soundService.id, ...shared, customFields: commonFields,
+    }, { executor: tx, skipCustomerSync: true });
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: booking.id, status: booking.status,
+      notes: "إنشاء تلقائي من فاتورة مبيعات تحتوي عناصر صوتيات",
+    });
+    await tx.insert(entityTimelineTable).values({
+      entityType: "service_order", entityId: booking.id, type: "created",
+      title: "حجز صوتيات جديد من فاتورة مبيعات", body: `فاتورة ${invoice.invoiceNo}`,
+      actorName: invoice.createdByName || "النظام",
+      metadata: { source: "sales_invoice", salesInvoiceId: invoiceId, externalReference },
     });
     return { booking, created: true, requiresSync: false };
   });
@@ -23685,6 +23846,33 @@ async function saveBookingOperations(
   reference.operations = operations;
 }
 
+async function stampBookingSoundDepartment(reference: BookingOperationsReference) {
+  const current = Array.isArray(reference.details.departments)
+    ? reference.details.departments.map((value: unknown) => String(value))
+    : [];
+  if (current.includes("sound")) return;
+  const departments = [...new Set([
+    ...(reference.source === "kosha" ? ["kosha"] : []),
+    ...current,
+    "sound",
+  ])];
+  const existingServices = Array.isArray(reference.details.bookingCenterServices)
+    ? reference.details.bookingCenterServices
+    : [];
+  const bookingCenterServices = existingServices.some((item: any) => item?.type === "sound")
+    ? existingServices
+    : [...existingServices, { type: "sound", status: "waiting", amount: 0 }];
+  const details = { ...reference.details, departments, bookingCenterServices };
+  if (reference.source === "kosha") {
+    await db.update(koshaBookingsTable).set({ bookingDetails: details, updatedAt: new Date() })
+      .where(eq(koshaBookingsTable.id, reference.id));
+  } else {
+    await db.update(serviceOrdersTable).set({ customFields: details })
+      .where(eq(serviceOrdersTable.id, reference.id));
+  }
+  reference.details = details;
+}
+
 async function bookingOperationProducts(reference: BookingOperationsReference) {
   await ensureVariantTables();
   const result: any = await db.execute(sql`
@@ -24067,6 +24255,12 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
       if (!parsed.success) return validationError("booking-operations.products", parsed);
       const availability = await checkAvailability(parsed.data.items, { ignoreSourceType: reference.entityType, ignoreSourceId: reference.id });
       if (!availability.ok) return json({ error: "المخزون المتاح غير كافٍ", shortages: availability.shortages }, 409);
+      const selectedProducts = await db.query.productsTable.findMany({
+        where: inArray(productsTable.id, [...new Set(parsed.data.items.map((item) => item.productId))]),
+      });
+      if ((await getSoundStoreProducts(selectedProducts as any[])).length > 0) {
+        await stampBookingSoundDepartment(reference);
+      }
       await reserveStockForSource(reference.entityType, reference.id, `${reference.customerName} · #${reference.id}`, parsed.data.items, actor(auth));
       const productMeta: Record<string, any> = {};
       let productCharges = 0;
@@ -24231,6 +24425,9 @@ async function handleBookingOperations(req: NextRequest, parts: string[], sectio
       if (input.managerApproval && !can("asset_damage_approve")) return error("ليس لديك صلاحية اعتماد التلف أو النقص", 403);
       const product: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, input.productId) });
       if (!product) return error("الأصل غير موجود", 404);
+      if (input.mode !== "unlink" && (await getSoundStoreProducts([product])).length > 0) {
+        await stampBookingSoundDepartment(reference);
+      }
       const assets = Array.isArray(reference.operations.assets) ? [...reference.operations.assets] : [];
       const index = assets.findIndex((item: any) => Number(item?.productId) === input.productId);
       const current = index >= 0 ? assets[index] : { productId: input.productId, quantity: input.quantity, stage: "linked" };
@@ -24540,7 +24737,25 @@ async function handleCentralBookingCenter(
       customerName: booking.customerName,
       phone: booking.phone,
       bookingSource: "الكوشات",
-      departments: ["kosha"],
+      departments: (() => {
+        const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+        const detected = detectBookingDepartments({
+          signals: {
+            taxonomy: [
+              "kosha",
+              ...(Array.isArray(details.departments) ? details.departments : []),
+              details.department, details.bookingType, details.serviceType,
+              ...(Array.isArray(details.bookingCenterServices)
+                ? details.bookingCenterServices.map((item: any) => item?.type ?? item?.key)
+                : []),
+            ],
+            itemNames: Array.isArray(details.soundItems)
+              ? details.soundItems.map((item: any) => item?.name ?? item?.productName)
+              : [],
+          },
+        });
+        return detected.length ? detected : ["kosha"];
+      })(),
       eventDate: booking.eventDate ?? "",
       eventTime: booking.eventTime ?? "",
       hall: booking.hallLocation ?? "",
@@ -24606,6 +24821,352 @@ async function handleCentralBookingCenter(
       })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return json(rows);
+}
+
+let soundCenterIndexesPromise: Promise<void> | null = null;
+async function ensureSoundCenterIndexes() {
+  if (!soundCenterIndexesPromise) {
+    soundCenterIndexesPromise = db.execute(sql`
+      create index if not exists service_orders_sound_source_ref_idx
+        on service_orders ((custom_fields ->> 'externalReference'))
+        where custom_fields ->> 'bookingType' = 'sound';
+      create index if not exists service_orders_sound_booking_type_idx
+        on service_orders ((custom_fields ->> 'bookingType'), created_at desc);
+      create index if not exists service_orders_tracking_phone_idx
+        on service_orders (tracking_code, phone);
+    `).then(() => undefined).catch((err) => {
+      soundCenterIndexesPromise = null;
+      throw err;
+    });
+  }
+  await soundCenterIndexesPromise;
+}
+
+function soundBookingDepartments(fields: Record<string, any>, service?: any) {
+  return detectBookingDepartments({
+    signals: {
+      taxonomy: [
+        ...(Array.isArray(fields.departments) ? fields.departments : []),
+        fields.department, fields.bookingType, fields.serviceType,
+        service?.type, service?.name, service?.nameAr,
+        ...(Array.isArray(fields.bookingCenterServices)
+          ? fields.bookingCenterServices.map((item: any) => item?.type ?? item?.key)
+          : []),
+      ],
+      itemNames: [
+        ...(Array.isArray(fields.soundItems) ? fields.soundItems : []),
+        ...(Array.isArray(fields.items) ? fields.items : []),
+      ].map((item: any) => item?.name ?? item?.nameAr ?? item?.productName),
+    },
+  });
+}
+
+function soundCenterStatus(row: any, operations: Record<string, any>) {
+  const stage = String(operations.bookingStage ?? "");
+  const warehouse = String(operations.warehouseStage ?? "");
+  if (String(row.status) === "cancelled" || stage === "cancelled") return "cancelled";
+  if (stage === "completed" || ["completed", "delivered"].includes(String(row.status))) return "completed";
+  if (stage === "returned" || ["returned", "inspection"].includes(warehouse)) return "returned";
+  if (stage === "event_active") return "installing";
+  if (stage === "assets_out") return warehouse === "loaded" ? "loaded" : "on_the_way";
+  if (stage === "ready") return "ready";
+  if (stage === "preparing" || ["processing", "preparing"].includes(String(row.status))) return "preparing";
+  return "booked";
+}
+
+async function handleSoundCenter(req: NextRequest, parts: string[], section: string | undefined) {
+  if (section !== "sound-center") return null;
+  const auth = await requirePermission(req, "orders");
+  if (isResponse(auth)) return auth;
+  await ensureSoundCenterIndexes();
+
+  if (req.method === "POST" && parts[2] === "ingest") {
+    const parsed = z.object({
+      sourceType: z.string().trim().min(2).max(50).regex(/^[a-z0-9_-]+$/i),
+      sourceId: z.union([z.string().trim().min(1).max(120), z.number().int().positive()]),
+      reference: z.string().trim().max(120).optional().nullable(),
+      customerName: z.string().trim().min(1).max(200),
+      phone: z.string().trim().min(3).max(30),
+      eventDate: z.string().trim().max(30).optional().nullable(),
+      startTime: z.string().trim().max(20).optional().nullable(),
+      endTime: z.string().trim().max(20).optional().nullable(),
+      location: z.string().trim().max(500).optional().nullable(),
+      status: z.string().trim().max(40).default("pending"),
+      total: z.coerce.number().min(0).default(0),
+      paid: z.coerce.number().min(0).default(0),
+      paymentMethod: z.string().trim().max(40).default("cash"),
+      productIds: z.array(z.coerce.number().int().positive()).max(200).default([]),
+      items: z.array(z.object({
+        productId: z.coerce.number().int().positive(), quantity: z.coerce.number().positive().default(1),
+        unitPrice: z.coerce.number().min(0).default(0), name: z.string().trim().max(200).optional(),
+      })).max(200).default([]),
+    }).safeParse(await body(req));
+    if (!parsed.success) return validationError("sound-center.ingest", parsed);
+    const input = parsed.data;
+    const productIds = [...new Set([...input.productIds, ...input.items.map((item) => item.productId)])];
+    const products = productIds.length ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) }) : [];
+    const soundProducts = await getSoundStoreProducts(products as any[]);
+    const soundIds = new Set(soundProducts.map((product) => Number(product.id)));
+    const soundItems = input.items.filter((item) => soundIds.has(item.productId)).map((item) => {
+      const product: any = soundProducts.find((candidate) => Number(candidate.id) === item.productId);
+      return { ...item, name: item.name || product?.nameAr || product?.name || `#${item.productId}`, barcode: product?.barcode ?? null, isAsset: product?.isAsset === true, isRental: product?.isRental === true };
+    });
+    if (!soundItems.length && !soundProducts.length) return error("المصدر لا يحتوي منتجاً أو معدة مصنفة ضمن الصوتيات", 422);
+    const sourceId = String(input.sourceId);
+    const externalReference = bookingLinkKey(input.sourceType, sourceId);
+    const soundService = await findSoundBookingService();
+    if (!soundService) return error("لا توجد خدمة صوتيات أو خدمة تجهيز فعالة لاستضافة الحجز", 409);
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${externalReference}))`);
+      const existingResult: any = await tx.execute(sql`select * from service_orders where custom_fields ->> 'externalReference' = ${externalReference} order by id limit 1 for update`);
+      const existing = (existingResult.rows ?? existingResult ?? [])[0] ?? null;
+      const total = money(input.total); const paid = Math.min(total, money(input.paid));
+      const customFields = {
+        ...(existing?.custom_fields ?? {}), bookingSource: input.sourceType, bookingType: "sound", department: "sound", departments: ["sound"],
+        sourceType: input.sourceType, sourceId, externalReference, originalOrderReference: input.reference ?? null,
+        eventTime: input.startTime ?? null, endTime: input.endTime ?? null, paymentMethod: input.paymentMethod,
+        soundItems: soundItems.length ? soundItems : soundProducts.map((product: any) => ({ productId: product.id, name: product.nameAr || product.name, quantity: 1, barcode: product.barcode ?? null, isAsset: product.isAsset === true, isRental: product.isRental === true })),
+        bookingCenterServices: [{ type: "sound", status: "waiting", amount: total }],
+      };
+      const values = {
+        customerName: input.customerName, phone: input.phone, eventDate: input.eventDate ?? null,
+        eventLocation: input.location ?? null, status: soundSourceStatus(input.status),
+        totalAmount: String(total), depositAmount: String(paid), remainingAmount: String(Math.max(0, total - paid)),
+        paymentStatus: paid >= total && total > 0 ? "paid" : paid > 0 ? "partial" : "unpaid", customFields,
+      };
+      if (existing) {
+        const [booking] = await tx.update(serviceOrdersTable).set(values as any).where(eq(serviceOrdersTable.id, Number(existing.id))).returning();
+        return { booking, created: false };
+      }
+      const booking = await insertServiceOrderWithTracking({ serviceId: soundService.id, ...values }, { executor: tx, skipCustomerSync: true });
+      await tx.insert(serviceOrderStatusHistoryTable).values({ serviceOrderId: booking.id, status: booking.status, notes: `إنشاء تلقائي من ${input.sourceType}:${sourceId}` });
+      return { booking, created: true };
+    });
+    await addEntityTimeline({ entityType: "service_order", entityId: result.booking.id, type: result.created ? "created" : "updated", title: result.created ? "حجز صوتيات جديد" : "تحديث حجز صوتيات", body: `${input.sourceType}:${sourceId}`, actor: erpActorFromAdmin(auth), metadata: { externalReference } });
+    void logAdminActivity(req, result.created ? "sound_booking_created" : "sound_booking_updated", "service_order", result.booking.id, { sourceType: input.sourceType, sourceId, externalReference });
+    return json({ ok: true, ...result, externalReference }, result.created ? 201 : 200);
+  }
+
+  if (req.method === "POST" && parts[2] === "sync") {
+    const invoices = await db.query.salesInvoicesTable.findMany({
+      where: sql`${salesInvoicesTable.status} != 'deleted'`,
+      orderBy: [desc(salesInvoicesTable.createdAt)], limit: 500,
+    });
+    const ids = invoices.map((invoice) => invoice.id);
+    const invoiceItems = ids.length
+      ? await db.query.salesInvoiceItemsTable.findMany({ where: inArray(salesInvoiceItemsTable.invoiceId, ids) })
+      : [];
+    const invoiceProductIds = [...new Set<number>(invoiceItems.map((item) => Number(item.productId)).filter((id) => Number.isInteger(id) && id > 0))];
+    const invoiceProducts = invoiceProductIds.length
+      ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, invoiceProductIds) })
+      : [];
+    const soundProductIds = new Set((await getSoundStoreProducts(invoiceProducts as any[])).map((product) => Number(product.id)));
+    const candidateInvoiceIds = new Set(
+      invoiceItems.filter((item) => soundProductIds.has(Number(item.productId))).map((item) => item.invoiceId),
+    );
+    // Previously-linked invoices must also be revisited so removing the final Sound
+    // line or cancelling the invoice safely cancels (never deletes) its booking.
+    const linkedSalesBookings = await db.query.serviceOrdersTable.findMany({
+      where: sql`${serviceOrdersTable.customFields} ->> 'sourceType' = 'sales_invoice'`,
+      limit: 1000,
+    });
+    for (const booking of linkedSalesBookings) {
+      const sourceId = Number((booking.customFields as any)?.sourceId ?? (booking.customFields as any)?.salesInvoiceId);
+      if (sourceId) candidateInvoiceIds.add(sourceId);
+    }
+    const targetInvoices = invoices.filter((invoice) => candidateInvoiceIds.has(invoice.id));
+    const itemsByInvoice = new Map<number, any[]>();
+    for (const item of invoiceItems) {
+      const group = itemsByInvoice.get(item.invoiceId) ?? [];
+      group.push(item); itemsByInvoice.set(item.invoiceId, group);
+    }
+    let created = 0; let updated = 0; let failed = 0;
+    for (const invoice of targetInvoices) {
+      try {
+        const result = await syncSalesInvoiceSoundBooking(invoice, itemsByInvoice.get(invoice.id) ?? []);
+        if (result.booking) result.created ? created++ : updated++;
+      } catch (err) {
+        failed++;
+        console.error("sound center invoice backfill failed", { invoiceId: invoice.id, error: err instanceof Error ? err.message : err });
+      }
+    }
+    void logAdminActivity(req, "sound_center_synchronized", "sound_center", undefined, { scanned: targetInvoices.length, created, updated, failed });
+    return json({ ok: true, scanned: targetInvoices.length, created, updated, failed });
+  }
+
+  if (req.method !== "GET") return error("المسار غير موجود", 404);
+  const params = req.nextUrl.searchParams;
+  const q = String(params.get("q") ?? "").trim().toLowerCase();
+  const statusFilter = String(params.get("status") ?? "").trim();
+  const sourceFilter = String(params.get("source") ?? "").trim();
+  const dateFilter = String(params.get("date") ?? "").trim();
+  const [orders, services, warehouses, koshaBookings] = await Promise.all([
+    db.query.serviceOrdersTable.findMany({
+      where: sql`${serviceOrdersTable.archivedAt} is null`,
+      orderBy: [desc(serviceOrdersTable.createdAt)], limit: 1000,
+    }),
+    db.query.servicesTable.findMany(),
+    db.query.warehousesTable.findMany(),
+    db.query.koshaBookingsTable.findMany({
+      where: sql`${koshaBookingsTable.archivedAt} is null`,
+      orderBy: [desc(koshaBookingsTable.createdAt)], limit: 500,
+    }),
+  ]);
+  const serviceMap = new Map(services.map((service) => [service.id, service]));
+  const soundOrders = orders.filter((order) =>
+    soundBookingDepartments((order.customFields ?? {}) as Record<string, any>, serviceMap.get(order.serviceId)).includes("sound"),
+  );
+  const nativeSoundBookings = koshaBookings.filter((booking) => {
+    const details = (booking.bookingDetails ?? {}) as Record<string, any>;
+    return soundBookingDepartments(details).includes("sound");
+  });
+  const allProductIds = [...new Set<number>([
+    ...soundOrders.map((order) => (order.customFields ?? {}) as Record<string, any>),
+    ...nativeSoundBookings.map((booking) => (booking.bookingDetails ?? {}) as Record<string, any>),
+  ].flatMap((fields) => {
+    const operations = bookingOperationsState(fields);
+    return [
+      ...(Array.isArray(fields.soundItems) ? fields.soundItems : []),
+      ...(Array.isArray(fields.linkedAssets) ? fields.linkedAssets : []),
+      ...(Array.isArray(operations.assets) ? operations.assets : []),
+    ].map((item: any) => Number(item?.productId)).filter((id) => Number.isInteger(id) && id > 0);
+  }))];
+  const [products, profiles, passports] = await Promise.all([
+    allProductIds.length ? db.query.productsTable.findMany({ where: inArray(productsTable.id, allProductIds) }) : [],
+    allProductIds.length ? db.query.assetProfilesTable.findMany({ where: inArray(assetProfilesTable.productId, allProductIds) }) : [],
+    allProductIds.length ? db.query.assetPassportsTable.findMany({ where: inArray(assetPassportsTable.productId, allProductIds) }) : [],
+  ]);
+  const productMap = new Map(products.map((row) => [row.id, row]));
+  const profileMap = new Map(profiles.map((row) => [row.productId, row]));
+  const passportMap = new Map(passports.map((row) => [row.productId, row]));
+  const warehouseMap = new Map(warehouses.map((row) => [row.id, row.name]));
+  const today = baghdadToday();
+
+  const rows = soundOrders.map((order) => {
+    const fields = (order.customFields ?? {}) as Record<string, any>;
+    const operations = bookingOperationsState(fields);
+    const productItems = (Array.isArray(fields.soundItems) ? fields.soundItems : []).map((item: any) => {
+      const product: any = productMap.get(Number(item.productId));
+      return {
+        productId: Number(item.productId), name: item.name || product?.nameAr || product?.name || `#${item.productId}`,
+        quantity: Number(item.quantity ?? 0), barcode: item.barcode || product?.barcode || null,
+        serialNumber: profileMap.get(Number(item.productId))?.serialNumber ?? null,
+        assetNumber: product?.isAsset ? `AJN-A${String(item.productId).padStart(6, "0")}` : null,
+        isAsset: product?.isAsset === true || item.isAsset === true,
+        rentalDays: Number(item?.rental?.days ?? item?.rentalDays ?? 0) || null,
+      };
+    });
+    const rawAssets = [...(Array.isArray(fields.linkedAssets) ? fields.linkedAssets : []), ...(Array.isArray(operations.assets) ? operations.assets : [])];
+    const assetMap = new Map<number, any>();
+    for (const item of rawAssets) if (Number(item?.productId)) assetMap.set(Number(item.productId), { ...(assetMap.get(Number(item.productId)) ?? {}), ...item });
+    const assets = [...assetMap.entries()].map(([productId, item]) => {
+      const product: any = productMap.get(productId); const profile: any = profileMap.get(productId); const passport: any = passportMap.get(productId);
+      return {
+        productId, name: product?.nameAr || product?.name || `#${productId}`,
+        assetNumber: `AJN-A${String(productId).padStart(6, "0")}`, barcode: product?.barcode ?? null,
+        qr: passport?.qrToken ?? null, serialNumber: profile?.serialNumber ?? null,
+        warehouse: passport?.warehouseId ? warehouseMap.get(passport.warehouseId) ?? null : null,
+        stage: item.stage ?? "linked", condition: item.problem ?? "none",
+        maintenance: profile?.status === "maintenance", usageHours: Number((passport?.metadata as any)?.usageHours ?? 0),
+        depreciationUsage: Number(profile?.usageCount ?? 0),
+      };
+    });
+    const team = [
+      ...(Array.isArray(fields.executionTeam) ? fields.executionTeam : []),
+      ...(Array.isArray(operations.team) ? operations.team : []),
+    ].map((member: any) => ({ id: member.id ?? member.staffId ?? member.employeeId ?? null, name: member.name ?? member.staffName ?? member.employeeName ?? "", role: member.role ?? member.task ?? "" }));
+    const vehicles = [fields.vehicle, ...(Array.isArray(fields.vehicles) ? fields.vehicles : []), ...(Array.isArray(operations.vehicles) ? operations.vehicles : [])]
+      .filter(Boolean).map((vehicle: any) => typeof vehicle === "string" ? vehicle : vehicle.name ?? vehicle.plateNumber ?? "").filter(Boolean);
+    const status = soundCenterStatus(order, operations);
+    const lateReturn = Boolean(order.eventDate && String(order.eventDate).slice(0, 10) < today && assets.some((asset) => ["out", "checkout", "loaded"].includes(String(asset.stage))));
+    const alerts = [
+      lateReturn ? "تأخر في الإرجاع" : null,
+      assets.some((asset) => asset.maintenance) ? "أصل يحتاج صيانة" : null,
+      assets.some((asset) => ["damaged", "missing"].includes(asset.condition)) ? "تلف أو نقص" : null,
+      fields.eventInformationStatus === "pending_completion" ? "بيانات المناسبة غير مكتملة" : null,
+    ].filter(Boolean);
+    const cost = productItems.reduce((sum, item) => sum + Number((productMap.get(item.productId) as any)?.costPrice ?? 0) * item.quantity, 0);
+    return {
+      id: order.id, bookingId: order.trackingCode ?? `SRV-${order.id}`, source: "service",
+      sourceType: fields.sourceType ?? fields.bookingSource ?? "admin_booking", sourceId: fields.sourceId ?? order.id,
+      sourceReference: fields.originalOrderReference ?? fields.salesInvoiceReference ?? fields.storeOrderReference ?? null,
+      customer: order.customerName, phone: order.phone, eventDate: order.eventDate ?? "",
+      startTime: fields.eventTime ?? fields.startTime ?? "", endTime: fields.endTime ?? "",
+      location: order.eventLocation ?? fields.customerAddress ?? "", status,
+      paid: Number(order.depositAmount ?? 0), remaining: Number(order.remainingAmount ?? 0), total: Number(order.totalAmount ?? 0),
+      paymentStatus: order.paymentStatus ?? "unpaid", products: productItems, assets, team, vehicles,
+      warehouse: operations.warehouseName ?? assets.find((asset) => asset.warehouse)?.warehouse ?? "",
+      warehouseStatus: operations.warehouseStage ?? "reserved", alerts, lateReturn,
+      profit: Math.max(0, Number(order.totalAmount ?? 0) - cost), createdAt: order.createdAt.toISOString(),
+      detailHref: `/admin/bookings/service/${order.id}`,
+    };
+  });
+  const nativeRows = nativeSoundBookings.map((booking) => {
+    const fields = (booking.bookingDetails ?? {}) as Record<string, any>;
+    const operations = bookingOperationsState(fields);
+    const products = (Array.isArray(fields.soundItems) ? fields.soundItems : []).map((item: any) => {
+      const product: any = productMap.get(Number(item.productId));
+      return {
+        productId: Number(item.productId), name: item.name || product?.nameAr || product?.name || `#${item.productId}`,
+        quantity: Number(item.quantity ?? 0), barcode: item.barcode || product?.barcode || null,
+        serialNumber: profileMap.get(Number(item.productId))?.serialNumber ?? null,
+        assetNumber: product?.isAsset ? `AJN-A${String(item.productId).padStart(6, "0")}` : null,
+        isAsset: product?.isAsset === true || item.isAsset === true,
+        rentalDays: Number(item?.rental?.days ?? item?.rentalDays ?? 0) || null,
+      };
+    });
+    const rawAssets = [...(Array.isArray(fields.linkedAssets) ? fields.linkedAssets : []), ...(Array.isArray(operations.assets) ? operations.assets : [])];
+    const uniqueAssets = new Map<number, any>();
+    for (const item of rawAssets) if (Number(item?.productId)) uniqueAssets.set(Number(item.productId), { ...(uniqueAssets.get(Number(item.productId)) ?? {}), ...item });
+    const assets = [...uniqueAssets.entries()].map(([productId, item]) => {
+      const product: any = productMap.get(productId); const profile: any = profileMap.get(productId); const passport: any = passportMap.get(productId);
+      return { productId, name: product?.nameAr || product?.name || `#${productId}`, assetNumber: `AJN-A${String(productId).padStart(6, "0")}`,
+        barcode: product?.barcode ?? null, qr: passport?.qrToken ?? null, serialNumber: profile?.serialNumber ?? null,
+        warehouse: passport?.warehouseId ? warehouseMap.get(passport.warehouseId) ?? null : null,
+        stage: item.stage ?? "linked", condition: item.problem ?? "none", maintenance: profile?.status === "maintenance",
+        usageHours: Number((passport?.metadata as any)?.usageHours ?? 0), depreciationUsage: Number(profile?.usageCount ?? 0) };
+    });
+    const status = soundCenterStatus(booking, operations);
+    const lateReturn = Boolean(booking.eventDate && String(booking.eventDate).slice(0, 10) < today && assets.some((asset) => ["out", "checkout", "loaded"].includes(String(asset.stage))));
+    const team = [fields.primaryEmployeeName, fields.assistantEmployeeName].filter(Boolean).map((name) => ({ id: null, name, role: "فريق التنفيذ" }));
+    const total = Number(booking.totalAmount ?? 0);
+    const cost = products.reduce((sum, item) => sum + Number((productMap.get(item.productId) as any)?.costPrice ?? 0) * item.quantity, 0);
+    return {
+      id: booking.id, bookingId: booking.trackingCode ?? `KB-${booking.id}`, source: "kosha",
+      sourceType: fields.sourceType ?? "admin_booking", sourceId: fields.sourceId ?? booking.id,
+      sourceReference: fields.originalOrderReference ?? null, customer: booking.customerName, phone: booking.phone,
+      eventDate: booking.eventDate ?? "", startTime: booking.eventTime ?? "", endTime: fields.endTime ?? "",
+      location: booking.hallLocation ?? "", status, paid: Number(booking.paidAmount ?? 0), remaining: Number(booking.remainingAmount ?? 0),
+      total, paymentStatus: booking.paymentStatus ?? "unpaid", products, assets, team, vehicles: [] as string[],
+      warehouse: operations.warehouseName ?? assets.find((asset) => asset.warehouse)?.warehouse ?? "",
+      warehouseStatus: operations.warehouseStage ?? "reserved",
+      alerts: [lateReturn ? "تأخر في الإرجاع" : null, assets.some((asset) => asset.maintenance) ? "أصل يحتاج صيانة" : null,
+        assets.some((asset) => ["damaged", "missing"].includes(asset.condition)) ? "تلف أو نقص" : null].filter(Boolean),
+      lateReturn, profit: Math.max(0, total - cost), createdAt: booking.createdAt.toISOString(),
+      detailHref: `/admin/bookings/kosha/${booking.id}`,
+    };
+  });
+  const combinedRows = [...rows, ...nativeRows].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const filtered = combinedRows.filter((row) => {
+    if (statusFilter && row.status !== statusFilter) return false;
+    if (sourceFilter && row.sourceType !== sourceFilter) return false;
+    if (dateFilter && String(row.eventDate).slice(0, 10) !== dateFilter) return false;
+    if (!q) return true;
+    const haystack = [row.bookingId, row.sourceReference, row.customer, row.phone, row.location, row.warehouse,
+      ...row.products.flatMap((item) => [item.name, item.barcode, item.assetNumber, item.serialNumber]),
+      ...row.assets.flatMap((item) => [item.name, item.barcode, item.qr, item.assetNumber, item.serialNumber]),
+      ...row.team.flatMap((member) => [member.name, member.role]), ...row.vehicles,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(q);
+  });
+  const summary = {
+    total: combinedRows.length, today: combinedRows.filter((row) => String(row.eventDate).slice(0, 10) === today).length,
+    pending: combinedRows.filter((row) => !["completed", "returned", "cancelled"].includes(row.status)).length,
+    equipmentOut: combinedRows.reduce((sum, row) => sum + row.assets.filter((asset) => ["out", "checkout", "loaded"].includes(String(asset.stage))).length, 0),
+    lateReturns: combinedRows.filter((row) => row.lateReturn).length,
+    revenue: combinedRows.reduce((sum, row) => sum + row.total, 0), profit: combinedRows.reduce((sum, row) => sum + row.profit, 0),
+  };
+  return json({ data: filtered, summary, sources: [...new Set(combinedRows.map((row) => row.sourceType))] });
 }
 
 type AssetCategoryInput = {
@@ -25226,6 +25787,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   const centralBookingCenter = await handleCentralBookingCenter(req, parts, section);
   if (centralBookingCenter) return centralBookingCenter;
+
+  const soundCenter = await handleSoundCenter(req, parts, section);
+  if (soundCenter) return soundCenter;
 
   const custodyGroups = await handleCustodyGroups(req, parts, section);
   if (custodyGroups) return custodyGroups;
@@ -35299,6 +35863,16 @@ async function handleSalesInvoices(
     }
 
     if (!cancellation.alreadyCancelled) {
+      const cancelledItems = await db.select().from(salesInvoiceItemsTable)
+        .where(eq(salesInvoiceItemsTable.invoiceId, id));
+      try {
+        await syncSalesInvoiceSoundBooking(cancellation.invoice, cancelledItems);
+      } catch (err) {
+        console.error("sales invoice sound booking cancellation sync failed", {
+          invoiceId: id, invoiceNo: cancellation.invoice.invoiceNo,
+          error: err instanceof Error ? err.message : err,
+        });
+      }
       void createNotification({
         audienceType: "admin",
         type: "sales_invoice_cancelled",
@@ -35532,6 +36106,24 @@ async function handleSalesInvoices(
       .select()
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, inv.id));
+    if (final) {
+      try {
+        const soundSync = await syncSalesInvoiceSoundBooking(final, finalItems);
+        if (soundSync.created) {
+          void createNotification({
+            audienceType: "admin", type: "sound_booking_created",
+            title: "حجز صوتيات جديد", body: `${final.invoiceNo} · ${final.customerName}`,
+            entityType: "service_order", entityId: soundSync.booking?.id ?? null,
+            href: soundSync.booking?.id ? `/admin/bookings/service/${soundSync.booking.id}` : "/admin/sound-center",
+          });
+        }
+      } catch (err) {
+        console.error("sales invoice sound booking sync failed", {
+          invoiceId: final.id, invoiceNo: final.invoiceNo,
+          error: err instanceof Error ? err.message : err,
+        });
+      }
+    }
     let financialTransaction: any = null;
     if (final) {
       try {
@@ -35756,6 +36348,16 @@ async function handleSalesInvoices(
       .select()
       .from(salesInvoiceItemsTable)
       .where(eq(salesInvoiceItemsTable.invoiceId, id));
+    if (final) {
+      try {
+        await syncSalesInvoiceSoundBooking(final, finalItems);
+      } catch (err) {
+        console.error("sales invoice sound booking update failed", {
+          invoiceId: final.id, invoiceNo: final.invoiceNo,
+          error: err instanceof Error ? err.message : err,
+        });
+      }
+    }
     const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
     const financialTransaction = final
       ? await syncSourcePaymentTarget(

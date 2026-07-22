@@ -46,7 +46,14 @@ export function normalizeTaxonomy(value: unknown): string {
 
 /** Canonical department tokens accepted from slugs, codes and metadata. */
 const DEPARTMENT_CODES: Record<Department, string[]> = {
-  sound: ["sound", "sounds", "audio", "sound systems", "sound system", "صوتيات", "صوت", "انظمه صوتيه"],
+  sound: [
+    "sound", "sounds", "audio", "sound systems", "sound system",
+    "speaker", "speakers", "mixer", "mixers", "amplifier", "amplifiers",
+    "microphone", "microphones", "wireless microphone", "dj", "dj equipment",
+    "lighting", "light", "projector", "projectors", "led screen", "led screens",
+    "rental equipment", "audio equipment", "صوتيات", "صوت", "انظمه صوتيه",
+    "سماعات", "مكسرات", "مكبرات", "مايكروفونات", "اضاءه", "شاشات",
+  ],
   kosha: ["kosha", "koshas", "kosha booking", "كوشات", "كوشه"],
   photography: ["photography", "photo", "photos", "تصوير", "فوتوغرافي"],
 };
@@ -107,8 +114,15 @@ export type ProductRow = {
   categoryId?: number | string | null;
   subcategoryId?: number | string | null;
   subcategoryIds?: unknown;
+  assetCategoryId?: number | string | null;
+  equipmentCategoryId?: number | string | null;
+  departmentId?: number | string | null;
   category?: string | null;
   subcategory?: string | null;
+  productType?: string | null;
+  assetCategory?: string | null;
+  equipmentCategory?: string | null;
+  department?: string | null;
 };
 
 /** Every category id a product is linked through. */
@@ -132,7 +146,14 @@ export function isProductInDepartment(
   department: Department,
 ): boolean {
   if (productCategoryIds(product).some((id) => departmentCategoryIds.has(id))) return true;
-  return [product.category, product.subcategory].some((value) => matchesDepartment(value, department));
+  return [
+    product.department,
+    product.category,
+    product.subcategory,
+    product.productType,
+    product.assetCategory,
+    product.equipmentCategory,
+  ].some((value) => matchesDepartment(value, department));
 }
 
 export function filterProductsByDepartment<T extends ProductRow>(

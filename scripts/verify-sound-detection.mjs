@@ -43,6 +43,9 @@ check("padding is trimmed", normalizeTaxonomy("  صوتيات  "), "صوتيات
 for (const value of ["صوتيات", "الصوتيات", "Sound", "SOUND", "audio", "Sound Systems", "أنظمة صوتية"]) {
   check(`"${value}" is sound`, matchesDepartment(value, "sound"), true);
 }
+for (const value of ["speakers", "mixers", "amplifiers", "wireless microphone", "dj equipment", "lighting", "projectors", "led screens"]) {
+  check(`equipment taxonomy "${value}" routes to sound center`, matchesDepartment(value, "sound"), true);
+}
 check("كوشات is not sound", matchesDepartment("كوشات", "sound"), false);
 check("تصوير is not sound", matchesDepartment("تصوير", "sound"), false);
 check("empty is nothing", matchesDepartment("", "sound"), false);
@@ -128,6 +131,8 @@ check("link key is stable", bookingLinkKey("store", 4210), "booking-link:store:4
 check("link key normalizes source type", bookingLinkKey("  Store  ", "4210"), "booking-link:store:4210");
 check("distinct sources never collide",
   bookingLinkKey("store", 1) === bookingLinkKey("rental", 1), false);
+check("sales invoice reference is stable",
+  bookingLinkKey("sales_invoice", 42), "booking-link:sales_invoice:42");
 
 check("sound badge", departmentBadge(["sound"]), "صوتيات");
 check("kosha badge", departmentBadge(["kosha"]), "كوشات");

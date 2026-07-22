@@ -27,6 +27,7 @@
     "verify:sound-routing": "node scripts/verify-sound-routing.mjs",
     "test:scanner-formats": "node ./scripts/verify-scanner-formats.mjs",
     "test:sound-detection": "node ./scripts/verify-sound-detection.mjs",
+    "test:sound-center": "node ./scripts/verify-sound-center.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs"
   },
   "dependencies": {
