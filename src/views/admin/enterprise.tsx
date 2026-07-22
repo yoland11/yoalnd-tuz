@@ -2298,16 +2298,27 @@ function AssetPassportModal({
         <AssetSaleDialog productId={row.productId} open={saleOpen} onOpenChange={setSaleOpen} onSold={onClose} />
 
         <div className="mb-4 flex flex-wrap gap-1.5 border-b border-border/30 pb-3">
-          {tabs.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setTab(key)}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-background/60"}`}
-            >
-              <Icon className="h-3.5 w-3.5" /> {label}
-            </button>
-          ))}
+          {tabs.map(({ key, label, icon: Icon }) =>
+            key === "details" ? (
+              <Link
+                key={key}
+                href={`/admin/assets/new?edit=${row.productId}`}
+                onClick={onClose}
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-background/60"
+              >
+                <Icon className="h-3.5 w-3.5" /> {label}
+              </Link>
+            ) : (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-background/60"}`}
+              >
+                <Icon className="h-3.5 w-3.5" /> {label}
+              </button>
+            ),
+          )}
         </div>
 
         {locked && (
