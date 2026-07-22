@@ -9864,6 +9864,99 @@ async function getSoundStoreProducts(products: any[]) {
   return filterProductsByDepartment(products, soundIds, "sound");
 }
 
+/**
+ * Creates or refreshes the one Booking Center service order linked to a RENTAL order.
+ *
+ * Mirrors syncStoreSoundBooking: the rental stays the source record, and the rental id in
+ * custom_fields is the idempotency key. A rental carries exactly one product, so detection
+ * is a single category lookup.
+ */
+async function syncRentalSoundBooking(rental: any) {
+  const rentalId = Number(rental?.id);
+  const productId = Number(rental?.productId);
+  if (!rentalId || !productId) return { booking: null, created: false, requiresSync: false };
+
+  const product = await db.query.productsTable.findFirst({
+    where: eq(productsTable.id, productId),
+  });
+  if (!product) return { booking: null, created: false, requiresSync: false };
+  const soundIds = await departmentCategoryIds("sound");
+  const isSound = filterProductsByDepartment([product as any], soundIds, "sound").length > 0;
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from rental_orders where id = ${rentalId} for update`);
+    const linkedResult: any = await tx.execute(sql`
+      select * from service_orders
+      where custom_fields ->> 'rentalOrderId' = ${String(rentalId)}
+      limit 1 for update
+    `);
+    const linked = (linkedResult.rows ?? linkedResult ?? [])[0] ?? null;
+    if (!isSound && !linked) return { booking: null, created: false, requiresSync: false };
+
+    const total = money(rental.totalAmount);
+    const paid = money(rental.paidAmount);
+    const commonFields = {
+      bookingSource: "rental",
+      bookingType: "sound",
+      department: "sound",
+      departments: ["sound"],
+      sourceType: "rental",
+      sourceId: rentalId,
+      externalReference: bookingLinkKey("rental", rentalId),
+      rentalOrderId: rentalId,
+      rentalOrderReference: rental.orderNo,
+      originalOrderReference: rental.orderNo,
+      customerId: rental.customerId ?? null,
+      rentalPeriod: { startDate: rental.startDate, endDate: rental.endDate, days: rental.days },
+      bookingCenterServices: [{ type: "sound", status: "waiting", amount: total }],
+      soundItems: [{
+        productId,
+        name: product.nameAr || product.name,
+        quantity: 1,
+        unitPrice: money(rental.pricePerDay),
+        rental: { startDate: rental.startDate, endDate: rental.endDate, days: rental.days },
+      }],
+      paymentMethod: rental.paymentMethod ?? "cash",
+    };
+
+    const shared = {
+      customerName: rental.customerName || "زبون إيجار",
+      phone: rental.phone,
+      eventDate: rental.startDate ?? null,
+      totalAmount: String(total),
+      depositAmount: String(paid),
+      remainingAmount: String(Math.max(0, total - paid)),
+      paymentStatus: rental.paymentStatus ?? "unpaid",
+      notes: rental.notes ?? null,
+    };
+
+    if (linked) {
+      const previousFields =
+        linked.custom_fields && typeof linked.custom_fields === "object" ? linked.custom_fields : {};
+      const [booking] = await tx
+        .update(serviceOrdersTable)
+        .set({ ...shared, customFields: { ...previousFields, ...commonFields } } as any)
+        .where(eq(serviceOrdersTable.id, Number(linked.id)))
+        .returning();
+      return { booking, created: false, requiresSync: false };
+    }
+
+    const soundService = await findSoundBookingService();
+    if (!soundService) return { booking: null, created: false, requiresSync: true };
+
+    const booking = await insertServiceOrderWithTracking(
+      { serviceId: soundService.id, ...shared, customFields: commonFields },
+      { executor: tx, skipCustomerSync: true },
+    );
+    await tx.insert(serviceOrderStatusHistoryTable).values({
+      serviceOrderId: booking.id,
+      status: booking.status,
+      notes: "إنشاء تلقائي من طلب إيجار صوتيات",
+    });
+    return { booking, created: true, requiresSync: false };
+  });
+}
+
 function storeSoundEventDetails(order: any, items: any[]) {
   const itemDetails = items.map((item) => parseStoreItemMetadata(item.customization));
   const first = (keys: string[]) =>
@@ -30812,7 +30905,49 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           failed.push({ orderId: order.id, reason: err?.message ?? "خطأ غير معروف" });
         }
       }
-      return json({ ok: true, attempted: pending.length, linked, failed });
+      // Rentals have no failure marker of their own, so an explicit id (or a sweep when
+      // none is given) re-runs them through the same idempotent path.
+      let rentalsLinked = 0;
+      const rentalIds = Array.isArray(payload?.rentalIds)
+        ? (payload.rentalIds as unknown[]).map((value) => Number(value)).filter(Boolean)
+        : [];
+      if (rentalIds.length) {
+        const rentals = await db.query.rentalOrdersTable.findMany({
+          where: inArray(rentalOrdersTable.id, rentalIds),
+        });
+        for (const rental of rentals) {
+          try {
+            const result = await syncRentalSoundBooking(rental);
+            if (result.requiresSync) {
+              failed.push({ orderId: rental.id, reason: "لا توجد خدمة صوتيات فعّالة" });
+            } else if (result.booking) {
+              rentalsLinked += 1;
+              void logAdminActivity(req, "sound_booking_sync_retried", "service_order", result.booking.id, {
+                sourceType: "rental",
+                sourceId: rental.id,
+                externalReference: bookingLinkKey("rental", rental.id),
+                created: result.created,
+              });
+            }
+          } catch (err: any) {
+            console.error("Rental sound booking retry failed", {
+              rentalId: rental.id,
+              message: err?.message,
+              stack: err?.stack,
+            });
+            failed.push({ orderId: rental.id, reason: err?.message ?? "خطأ غير معروف" });
+          }
+        }
+      }
+
+      return json({
+        ok: true,
+        attempted: pending.length + rentalIds.length,
+        linked: linked + rentalsLinked,
+        fromStore: linked,
+        fromRental: rentalsLinked,
+        failed,
+      });
     }
 
     if (parts[2] === "sound-backfill-report" && method === "GET") {
@@ -30916,10 +31051,53 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           status: row.status,
         }));
 
+      // Rental orders carrying a Sound product that were never linked.
+      const linkedRentalIds = new Set(
+        serviceOrders
+          .map((row) => Number((row.customFields as any)?.rentalOrderId))
+          .filter((value) => Number.isInteger(value) && value > 0),
+      );
+      const rentals = await db.query.rentalOrdersTable.findMany({
+        orderBy: [desc(rentalOrdersTable.id)],
+        limit,
+      });
+      const rentalProductIds = [
+        ...new Set(rentals.map((row) => Number(row.productId)).filter(Boolean)),
+      ];
+      const rentalProducts = rentalProductIds.length
+        ? await db.query.productsTable.findMany({
+            where: inArray(productsTable.id, rentalProductIds),
+          })
+        : [];
+      const soundRentalProductIds = new Set(
+        filterProductsByDepartment(rentalProducts as any[], soundIds, "sound").map((p: any) =>
+          Number(p.id),
+        ),
+      );
+      const missingRentals = rentals
+        .filter(
+          (rental) =>
+            !linkedRentalIds.has(rental.id) && soundRentalProductIds.has(Number(rental.productId)),
+        )
+        .map((rental) => ({
+          sourceType: "rental",
+          sourceId: rental.id,
+          externalReference: bookingLinkKey("rental", rental.id),
+          reference: rental.orderNo,
+          customerName: rental.customerName,
+          phone: rental.phone,
+          total: money(rental.totalAmount),
+          paid: money(rental.paidAmount),
+          remaining: money(rental.remainingAmount),
+          status: rental.status,
+          soundItems: 1,
+        }));
+
       void logAdminActivity(req, "sound_backfill_report", "booking", 0, {
         storeOrdersMissing: missingStoreOrders.length,
+        rentalsMissing: missingRentals.length,
         serviceOrdersUnrouted: unroutedServiceOrders.length,
-        scanned: storeOrders.length + serviceOrders.length,
+        scanned: storeOrders.length + serviceOrders.length + rentals.length,
       });
 
       return json({
@@ -30927,11 +31105,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         applied: false,
         note: "تقرير قراءة فقط — لم يُنشأ أو يُعدَّل أي حجز.",
         soundCategoryIds: [...soundIds],
-        scanned: { storeOrders: storeOrders.length, serviceOrders: serviceOrders.length },
-        wouldCreate: missingStoreOrders,
+        scanned: {
+          storeOrders: storeOrders.length,
+          rentals: rentals.length,
+          serviceOrders: serviceOrders.length,
+        },
+        wouldCreate: [...missingStoreOrders, ...missingRentals],
         wouldRoute: unroutedServiceOrders,
         totals: {
-          wouldCreate: missingStoreOrders.length,
+          wouldCreate: missingStoreOrders.length + missingRentals.length,
+          fromStore: missingStoreOrders.length,
+          fromRental: missingRentals.length,
           wouldRoute: unroutedServiceOrders.length,
         },
       });
@@ -38513,6 +38697,34 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
       rentalOrderId: rentalOrder.id,
       productId: product.id,
     });
+    // A rental of Sound equipment is projected into the Booking Center exactly like a
+    // Store order. Idempotent on custom_fields->>'rentalOrderId', and a routing failure
+    // never invalidates the completed rental — it is logged and left to the retry endpoint.
+    try {
+      const soundBooking = await syncRentalSoundBooking(rentalOrder);
+      if (soundBooking.created && soundBooking.booking) {
+        void createNotification({
+          type: "booking_new",
+          title: "حجز صوتيات جديد من الإيجار",
+          body: `${customerName} · ${orderNo}`,
+          entityType: "service_order",
+          entityId: soundBooking.booking.id,
+          href: `/admin/bookings/service/${soundBooking.booking.id}`,
+        });
+        void logAdminActivity(req, "rental_sound_booking_routed", "service_order", soundBooking.booking.id, {
+          sourceType: "rental",
+          sourceId: rentalOrder.id,
+          externalReference: bookingLinkKey("rental", rentalOrder.id),
+        });
+      }
+    } catch (err: any) {
+      console.error("Rental Sound booking routing failed", {
+        rentalOrderId: rentalOrder.id,
+        orderNo,
+        message: err?.message,
+        stack: err?.stack,
+      });
+    }
     void createNotification({
       type: "order_new",
       title: "حجز إيجار جديد",
