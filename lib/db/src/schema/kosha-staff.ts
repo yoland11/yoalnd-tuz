@@ -9,14 +9,27 @@ import { staffTable } from "./staff";
  * All tables are additive; they extend kosha_bookings without altering existing flows.
  */
 
-// Ordered execution stages handled by the field crew (separate from booking `status`).
+/**
+ * Ordered execution stages handled by the field crew (separate from booking `status`).
+ *
+ * The six original keys are unchanged and keep their relative order — stored rows carry
+ * them, so none may ever be removed or reordered. The five interleaved keys add
+ * resolution; they are optional, and the legacy adjacencies (preparing → out_of_warehouse
+ * and so on) remain valid transitions. `execution_stage` is varchar(30), so no migration
+ * is required for the new values.
+ */
 export const KOSHA_EXECUTION_STAGES = [
+  "booked",           // محجوزة            (new)
   "preparing",        // قيد التجهيز
-  "out_of_warehouse", // خرجت من المخزن
+  "ready",            // جاهزة              (new)
+  "out_of_warehouse", // جاري التحميل
   "on_the_way",       // في الطريق
-  "executing",        // قيد التنفيذ
-  "executed",         // تم التنفيذ
-  "delivered",        // تم التسليم
+  "executing",        // جاري التنصيب
+  "executed",         // تم التنصيب
+  "event_running",    // المناسبة جارية      (new)
+  "dismantling",      // جاري الفك           (new)
+  "returned",         // تم الإرجاع          (new)
+  "delivered",        // مكتمل
 ] as const;
 export type KoshaExecutionStage = (typeof KOSHA_EXECUTION_STAGES)[number];
 

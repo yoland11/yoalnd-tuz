@@ -7,11 +7,16 @@ import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
 
 const STAGE_BADGE: Record<string, string> = {
+  booked: "bg-muted text-muted-foreground",
   preparing: "bg-status-warning/15 text-status-warning",
+  ready: "bg-status-warning/15 text-status-warning",
   out_of_warehouse: "bg-accent/15 text-accent",
   on_the_way: "bg-accent/15 text-accent",
   executing: "bg-accent/15 text-accent",
   executed: "bg-status-success/15 text-status-success",
+  event_running: "bg-primary/15 text-primary",
+  dismantling: "bg-accent/15 text-accent",
+  returned: "bg-status-success/15 text-status-success",
   delivered: "bg-status-success/15 text-status-success dark:text-status-success",
 };
 

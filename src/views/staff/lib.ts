@@ -2,16 +2,27 @@ import { adminFetch, compressImageFile, fileToDataUrl } from "@/views/admin/_lib
 import { mutateOrQueue, type QueuedResult } from "./offline";
 import { formatMoney } from "@/lib/money";
 
+/**
+ * Execution stages. The six original keys are unchanged — stored bookings carry them —
+ * and the five new ones are interleaved. Legacy adjacencies stay valid transitions, so a
+ * crew used to the shorter flow is never blocked by the added detail.
+ */
 export type StageKey =
-  | "preparing" | "out_of_warehouse" | "on_the_way" | "executing" | "executed" | "delivered";
+  | "booked" | "preparing" | "ready" | "out_of_warehouse" | "on_the_way"
+  | "executing" | "executed" | "event_running" | "dismantling" | "returned" | "delivered";
 
 export const STAGES: { key: StageKey; label: string }[] = [
+  { key: "booked", label: "محجوزة" },
   { key: "preparing", label: "قيد التجهيز" },
-  { key: "out_of_warehouse", label: "خرجت من المخزن" },
+  { key: "ready", label: "جاهزة" },
+  { key: "out_of_warehouse", label: "جاري التحميل" },
   { key: "on_the_way", label: "في الطريق" },
-  { key: "executing", label: "قيد التنفيذ" },
-  { key: "executed", label: "تم التنفيذ" },
-  { key: "delivered", label: "تم التسليم" },
+  { key: "executing", label: "جاري التنصيب" },
+  { key: "executed", label: "تم التنصيب" },
+  { key: "event_running", label: "المناسبة جارية" },
+  { key: "dismantling", label: "جاري الفك" },
+  { key: "returned", label: "تم الإرجاع" },
+  { key: "delivered", label: "مكتمل" },
 ];
 export const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 export function stageRank(key: string): number {

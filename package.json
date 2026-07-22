@@ -26,7 +26,8 @@
     "audit": "pnpm audit --audit-level moderate",
     "verify:sound-routing": "node scripts/verify-sound-routing.mjs",
     "test:scanner-formats": "node ./scripts/verify-scanner-formats.mjs",
-    "test:sound-detection": "node ./scripts/verify-sound-detection.mjs"
+    "test:sound-detection": "node ./scripts/verify-sound-detection.mjs",
+    "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

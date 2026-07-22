@@ -300,6 +300,18 @@ import {
   LEVEL_LABEL,
 } from "@/server/employee-performance";
 import {
+  KOSHA_CHECKLIST_ITEMS,
+  KOSHA_CHECKLIST_LABELS,
+  SCAN_POINT_LABELS,
+  blockingChecklistIssues,
+  checklistCovered,
+  damageNeedsManagerApproval,
+  isChecklistCondition,
+  isScanPoint,
+  validateDamageReport,
+  type KoshaChecklistItem,
+} from "@/server/kosha-operations";
+import {
   bookingLinkKey,
   departmentBadge,
   detectBookingDepartments,
@@ -722,6 +734,7 @@ let photographyStaffTablesPromise: Promise<void> | null = null;
 let photographyShootTablesPromise: Promise<void> | null = null;
 let photographyPostTablesPromise: Promise<void> | null = null;
 let photographyGalleryTablesPromise: Promise<void> | null = null;
+let koshaOperationsTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
 let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
@@ -7665,6 +7678,88 @@ async function ensurePhotographyPostTables(): Promise<void> {
 }
 
 /** Client-gallery tables. Depends on photography_shoots. */
+/**
+ * Kosha field-operations tables. Purely additive — `kosha_bookings` is untouched, and
+ * `execution_stage` is already varchar(30), so the five new stage keys need no migration.
+ */
+async function ensureKoshaOperationsTables(): Promise<void> {
+  if (!koshaOperationsTablesPromise) {
+    koshaOperationsTablesPromise = db
+      .execute(
+        sql`
+      create table if not exists "kosha_stage_events" (
+        "id" serial primary key,
+        "booking_id" integer not null,
+        "booking_source" varchar(20) not null default 'kosha',
+        "from_stage" varchar(30),
+        "to_stage" varchar(30) not null,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "note" text,
+        "photo_url" text,
+        "lat" numeric(10,7),
+        "lng" numeric(10,7),
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "kosha_checklist_entries" (
+        "id" serial primary key,
+        "booking_id" integer not null,
+        "booking_source" varchar(20) not null default 'kosha',
+        "item" varchar(30) not null,
+        "condition" varchar(30) not null default 'available',
+        "product_id" integer references "products" ("id") on delete set null,
+        "quantity" integer not null default 1,
+        "note" text,
+        "checked_by" integer references "staff" ("id") on delete set null,
+        "checked_by_name" text not null default '',
+        "updated_at" timestamp not null default now(),
+        "created_at" timestamp not null default now(),
+        constraint "kosha_checklist_unique" unique ("booking_id", "booking_source", "item")
+      );
+      create table if not exists "kosha_damage_reports" (
+        "id" serial primary key,
+        "booking_id" integer not null,
+        "booking_source" varchar(20) not null default 'kosha',
+        "product_id" integer references "products" ("id") on delete set null,
+        "description" text not null,
+        "priority" varchar(20) not null default 'medium',
+        "cost_estimate" numeric(14,2) not null default 0,
+        "photo_url" text,
+        "responsible_staff_id" integer references "staff" ("id") on delete set null,
+        "reported_by" integer references "staff" ("id") on delete set null,
+        "reported_by_name" text not null default '',
+        "status" varchar(20) not null default 'open',
+        "approved_by" integer references "staff" ("id") on delete set null,
+        "approved_at" timestamp,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "kosha_item_scans" (
+        "id" serial primary key,
+        "booking_id" integer not null,
+        "booking_source" varchar(20) not null default 'kosha',
+        "product_id" integer not null references "products" ("id") on delete cascade,
+        "scan_point" varchar(30) not null,
+        "staff_id" integer references "staff" ("id") on delete set null,
+        "staff_name" text not null default '',
+        "note" text,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_stage_events_booking_idx" on "kosha_stage_events" ("booking_id", "booking_source", "created_at");
+      create index if not exists "kosha_checklist_booking_idx" on "kosha_checklist_entries" ("booking_id", "booking_source");
+      create index if not exists "kosha_damage_booking_idx" on "kosha_damage_reports" ("booking_id", "booking_source", "status");
+      create index if not exists "kosha_item_scans_booking_idx" on "kosha_item_scans" ("booking_id", "booking_source", "scan_point");
+      create index if not exists "kosha_item_scans_product_idx" on "kosha_item_scans" ("product_id", "created_at");
+    `,
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        koshaOperationsTablesPromise = null;
+        throw err;
+      });
+  }
+  await koshaOperationsTablesPromise;
+}
+
 async function ensurePhotographyGalleryTables(): Promise<void> {
   await ensurePhotographyShootTables();
   if (!photographyGalleryTablesPromise) {
@@ -41988,6 +42083,239 @@ async function handleStaffPortal(
   const action = parts[4];
   await ensureKoshaStaffTables();
 
+  // ── Field operations: checklist, stage log, damage reports, item scans ──
+  // Layered on top of the existing booking; `kosha_bookings.execution_stage` stays the
+  // single source of truth for status, so the portal and /admin/bookings never diverge.
+  if (resource === "operations") {
+    const auth = await requirePermission(req, "koshas");
+    if (isResponse(auth)) return auth;
+    await ensureKoshaOperationsTables();
+    const manager = auth.role === "admin" || auth.role === "manager";
+    const actorName = auth.fullName || auth.username;
+    const bookingId = id;
+    if (!bookingId) return error("معرّف الحجز مطلوب", 400);
+    const bookingSource = String(req.nextUrl.searchParams.get("source") ?? "kosha").slice(0, 20);
+
+    const loadChecklist = async () => {
+      const rows: any[] =
+        ((await db.execute(sql`
+          select item, condition, product_id, quantity, note, checked_by_name, updated_at
+          from kosha_checklist_entries
+          where booking_id = ${bookingId} and booking_source = ${bookingSource}
+          order by item
+        `)) as any).rows ?? [];
+      return rows.map((row) => ({
+        item: String(row.item),
+        condition: String(row.condition),
+        productId: row.product_id ? Number(row.product_id) : null,
+        quantity: Number(row.quantity ?? 1),
+        note: row.note ?? null,
+        checkedByName: row.checked_by_name ?? "",
+        updatedAt: row.updated_at,
+      }));
+    };
+
+    if (method === "GET" && !action) {
+      const [checklist, stageEvents, damages, scans] = await Promise.all([
+        loadChecklist(),
+        db.execute(sql`
+          select id, from_stage, to_stage, staff_name, note, photo_url, lat, lng, created_at
+          from kosha_stage_events
+          where booking_id = ${bookingId} and booking_source = ${bookingSource}
+          order by created_at desc, id desc limit 100
+        `),
+        db.execute(sql`
+          select id, product_id, description, priority, cost_estimate, photo_url,
+                 responsible_staff_id, reported_by_name, status, approved_at, created_at
+          from kosha_damage_reports
+          where booking_id = ${bookingId} and booking_source = ${bookingSource}
+          order by created_at desc
+        `),
+        db.execute(sql`
+          select scan_point, count(*)::int as count
+          from kosha_item_scans
+          where booking_id = ${bookingId} and booking_source = ${bookingSource}
+          group by scan_point
+        `),
+      ]);
+      const damageRows = ((damages as any).rows ?? []) as any[];
+      return json({
+        bookingId,
+        bookingSource,
+        checklist,
+        checklistCovered: checklistCovered(checklist),
+        checklistIssues: blockingChecklistIssues(checklist),
+        stageEvents: (((stageEvents as any).rows ?? []) as any[]).map((row) => ({
+          id: Number(row.id),
+          fromStage: row.from_stage,
+          toStage: row.to_stage,
+          staffName: row.staff_name,
+          note: row.note,
+          photoUrl: row.photo_url,
+          lat: row.lat === null ? null : Number(row.lat),
+          lng: row.lng === null ? null : Number(row.lng),
+          createdAt: row.created_at,
+        })),
+        damages: damageRows.map((row) => ({
+          id: Number(row.id),
+          productId: row.product_id ? Number(row.product_id) : null,
+          description: row.description,
+          priority: row.priority,
+          costEstimate: Number(row.cost_estimate ?? 0),
+          photoUrl: row.photo_url,
+          responsibleStaffId: row.responsible_staff_id ? Number(row.responsible_staff_id) : null,
+          reportedByName: row.reported_by_name,
+          status: row.status,
+          approvedAt: row.approved_at,
+          createdAt: row.created_at,
+        })),
+        // "Answered" means the crew either reported damage or explicitly recorded none.
+        damageAnswered: damageRows.length > 0,
+        scanCounts: Object.fromEntries(
+          (((scans as any).rows ?? []) as any[]).map((row) => [String(row.scan_point), Number(row.count)]),
+        ),
+      });
+    }
+
+    if (action === "checklist" && method === "POST") {
+      const payload = await body(req);
+      const entries = Array.isArray(payload?.entries) ? payload.entries : [payload];
+      const accepted: string[] = [];
+      for (const entry of entries) {
+        const item = String(entry?.item ?? "").trim();
+        if (!(KOSHA_CHECKLIST_ITEMS as readonly string[]).includes(item)) continue;
+        const condition = isChecklistCondition(entry?.condition) ? entry.condition : "available";
+        const productId = optionalPositiveId(entry?.productId) ?? null;
+        const quantity = Math.max(1, Math.floor(Number(entry?.quantity ?? 1)) || 1);
+        const note = nullableText(entry?.note);
+        await db.execute(sql`
+          insert into kosha_checklist_entries
+            (booking_id, booking_source, item, condition, product_id, quantity, note, checked_by, checked_by_name, updated_at)
+          values (${bookingId}, ${bookingSource}, ${item}, ${condition}, ${productId}, ${quantity}, ${note}, ${auth.id}, ${actorName}, now())
+          on conflict (booking_id, booking_source, item) do update set
+            condition = excluded.condition,
+            product_id = excluded.product_id,
+            quantity = excluded.quantity,
+            note = excluded.note,
+            checked_by = excluded.checked_by,
+            checked_by_name = excluded.checked_by_name,
+            updated_at = now()
+        `);
+        accepted.push(item);
+      }
+      if (!accepted.length) return error("لا يوجد عنصر صالح في القائمة", 400);
+      const checklist = await loadChecklist();
+      return json({
+        ok: true,
+        saved: accepted.length,
+        checklist,
+        checklistCovered: checklistCovered(checklist),
+        checklistIssues: blockingChecklistIssues(checklist),
+      });
+    }
+
+    if (action === "damage" && method === "POST") {
+      const payload = await body(req);
+      // Recording "no damage" closes the gate without inventing a report.
+      if (payload?.noDamage === true) {
+        await db.execute(sql`
+          insert into kosha_damage_reports
+            (booking_id, booking_source, product_id, description, priority, cost_estimate,
+             reported_by, reported_by_name, status)
+          values (${bookingId}, ${bookingSource}, null, ${"لا توجد أضرار"}, ${"low"}, 0,
+                  ${auth.id}, ${actorName}, ${"none"})
+        `);
+        return json({ ok: true, noDamage: true });
+      }
+      const validated = validateDamageReport(payload);
+      if (!validated.ok) return error(validated.reason, 422);
+      const value = validated.value;
+      const photoUrl = value.photoUrl ? await persistMediaValue(value.photoUrl, "kosha/damage") : null;
+      const needsApproval = damageNeedsManagerApproval(value.priority, value.costEstimate);
+      const rows: any[] =
+        ((await db.execute(sql`
+          insert into kosha_damage_reports
+            (booking_id, booking_source, product_id, description, priority, cost_estimate,
+             photo_url, responsible_staff_id, reported_by, reported_by_name, status,
+             approved_by, approved_at)
+          values (${bookingId}, ${bookingSource}, ${value.productId}, ${value.description},
+                  ${value.priority}, ${String(value.costEstimate)}, ${photoUrl},
+                  ${value.responsibleStaffId}, ${auth.id}, ${actorName},
+                  ${needsApproval && !manager ? "pending_approval" : "open"},
+                  ${needsApproval && manager ? auth.id : null},
+                  ${needsApproval && manager ? sql`now()` : null})
+          returning id, status
+        `)) as any).rows ?? [];
+      const created = rows[0];
+      void addEntityTimeline({
+        entityType: "kosha_booking",
+        entityId: bookingId,
+        type: "damage_reported",
+        title: "🛠️ بلاغ ضرر",
+        body: `${value.description} · ${value.priority}`,
+        actor: { id: auth.id, name: actorName },
+        metadata: { productId: value.productId, costEstimate: value.costEstimate },
+      });
+      void logAdminActivity(req, "kosha_damage_reported", "kosha_booking", bookingId, {
+        productId: value.productId,
+        priority: value.priority,
+        costEstimate: value.costEstimate,
+      });
+      await createNotification({
+        type: "asset_damage",
+        title: "بلاغ ضرر في حجز كوشة",
+        body: value.description.slice(0, 120),
+        entityType: "kosha_booking",
+        entityId: bookingId,
+        href: `/staff/koshas/booking/${bookingId}`,
+      });
+      return json({ ok: true, id: created ? Number(created.id) : null, status: created?.status ?? "open" });
+    }
+
+    if (action === "scan" && method === "POST") {
+      const payload = await body(req);
+      const scanPoint = String(payload?.scanPoint ?? "").trim();
+      if (!isScanPoint(scanPoint)) return error("نقطة المسح غير معروفة", 400);
+      let productId = optionalPositiveId(payload?.productId) ?? 0;
+      if (!productId && payload?.code) productId = await resolveAssetProductId(String(payload.code));
+      if (!productId) return error("لم يُعثر على الأصل بهذا الرمز", 404);
+      const product = await db.query.productsTable.findFirst({
+        where: eq(productsTable.id, productId),
+      });
+      if (!product) return error("الأصل غير موجود", 404);
+      await db.execute(sql`
+        insert into kosha_item_scans
+          (booking_id, booking_source, product_id, scan_point, staff_id, staff_name, note)
+        values (${bookingId}, ${bookingSource}, ${productId}, ${scanPoint}, ${auth.id}, ${actorName},
+                ${nullableText(payload?.note)})
+      `);
+      // Every scan lands on the asset's own timeline as well, so warehouse movement and
+      // the booking history stay in agreement.
+      void addEntityTimeline({
+        entityType: "asset",
+        entityId: productId,
+        type: `kosha_${scanPoint}`,
+        title: `📦 ${SCAN_POINT_LABELS[scanPoint]}`,
+        body: `حجز كوشة #${bookingId}`,
+        actor: { id: auth.id, name: actorName },
+        metadata: { bookingId, bookingSource, scanPoint },
+      });
+      void logAdminActivity(req, "kosha_item_scanned", "product", productId, {
+        bookingId,
+        scanPoint,
+      });
+      return json({
+        ok: true,
+        productId,
+        name: product.nameAr || product.name,
+        scanPoint,
+        scanPointLabel: SCAN_POINT_LABELS[scanPoint],
+      });
+    }
+
+    return error("الإجراء غير مدعوم", 405);
+  }
+
   // Manager-only endpoints (approve/reject collections, list pending requests).
   if (resource === "payment-requests") {
     const auth = await requireAnyPermission(req, ["accounting", "bookings"]);
@@ -42484,6 +42812,32 @@ async function handleStaffPortal(
         "يجب رفع صورة واحدة على الأقل أو فيديو قبل حفظ مرحلة (تم التنفيذ)",
         400,
       );
+    }
+
+    // Equipment checklist gate on dispatch. Evaluated before the booking is resolved to a
+    // row so it applies identically to native kosha bookings and routed service orders.
+    if (toStage === "out_of_warehouse") {
+      await ensureKoshaOperationsTables();
+      const source = koshaSourceHint(req) === "service" ? "service" : "kosha";
+      const rows: any[] =
+        ((await db.execute(sql`
+          select item, condition from kosha_checklist_entries
+          where booking_id = ${id} and booking_source = ${source}
+        `)) as any).rows ?? [];
+      const entries = rows.map((row) => ({
+        item: String(row.item),
+        condition: String(row.condition),
+      }));
+      if (!checklistCovered(entries)) {
+        return error("أكمل قائمة المعدات قبل تحميل الحجز", 422);
+      }
+      const issues = blockingChecklistIssues(entries);
+      if (issues.length) {
+        const names = issues.map(
+          (issue) => KOSHA_CHECKLIST_LABELS[issue.item as KoshaChecklistItem] ?? issue.item,
+        );
+        return error(`عناصر غير متوفرة تمنع التحميل: ${names.join("، ")}`, 422);
+      }
     }
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
