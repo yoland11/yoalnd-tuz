@@ -683,6 +683,14 @@ export const ALL_PERMISSIONS = [
   "doc_scanner_view_saved",
   "doc_scanner_delete",
   "doc_scanner_view_original",
+  // Catering Center — departmental roles can be delegated independently.
+  "catering_view",
+  "catering_manage",
+  "catering_kitchen",
+  "catering_delivery",
+  "catering_cashier",
+  "catering_supervisor",
+  "catering_warehouse",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -26312,6 +26320,79 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
   }
 
+  // 🍽 Catering Center — bookings, kitchen workflow, menus, packages and operational dashboard.
+  if (section === "catering") {
+    const auth = await requireAnyPermission(req, ["catering_view", "catering_manage", "catering_kitchen", "catering_delivery", "catering_cashier", "catering_supervisor", "catering_warehouse"]);
+    if (isResponse(auth)) return auth;
+    await ensureCateringTables();
+    const action = parts[2] ?? "dashboard";
+    const id = parts[3] ? int(parts[3]) : null;
+    const canManage = ["catering_manage", "catering_supervisor"].some((p) => hasPermission(auth, p as Permission));
+    const canKitchen = canManage || hasPermission(auth, "catering_kitchen");
+    const canDelivery = canManage || hasPermission(auth, "catering_delivery");
+    const canCashier = canManage || hasPermission(auth, "catering_cashier");
+    const canWarehouse = canManage || hasPermission(auth, "catering_warehouse");
+
+    if (method === "GET" && action === "dashboard") {
+      const today: any = await db.execute(sql`
+        select coalesce(count(*) filter (where event_date = current_date),0)::int as events,
+          coalesce(sum(total_amount) filter (where event_date = current_date),0)::numeric as revenue,
+          coalesce(sum(total_amount - estimated_cost) filter (where event_date = current_date),0)::numeric as profit,
+          coalesce(sum(balance_amount) filter (where balance_amount > 0),0)::numeric as pending,
+          coalesce(count(*) filter (where status='preparing'),0)::int as preparing,
+          coalesce(count(*) filter (where status='ready'),0)::int as ready,
+          coalesce(count(*) filter (where status='on_the_way'),0)::int as on_way,
+          coalesce(count(*) filter (where status='completed'),0)::int as completed
+        from catering_bookings`);
+      const r = (today.rows ?? [])[0] ?? {};
+      return json({ stats: { events: Number(r.events), revenue: Number(r.revenue), profit: Number(r.profit), pending: Number(r.pending), preparing: Number(r.preparing), ready: Number(r.ready), onWay: Number(r.on_way), completed: Number(r.completed) } });
+    }
+    if (action === "bookings" && method === "GET") {
+      const rows: any = await db.execute(sql`select * from catering_bookings order by event_date asc, created_at desc limit 500`);
+      return json({ bookings: (rows.rows ?? []).map(cateringBookingView) });
+    }
+    if (action === "bookings" && method === "POST") {
+      if (!canManage) return error("ليس لديك صلاحية إنشاء حجز تجهيز", 403);
+      const parsed = cateringBookingSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("catering.booking", parsed);
+      const d = parsed.data; const code = `CAT-${new Date().getFullYear()}-${randomInt(100000, 999999)}`; const qrToken = randomBytes(20).toString("base64url");
+      const res: any = await db.execute(sql`
+        insert into catering_bookings (code, customer_id, customer_name, mobile1, mobile2, address, map_url, event_type, event_date, start_time, finish_time, hall, location, gps, guest_count, male_count, female_count, children_count, vip_count, notes, package_name, total_amount, estimated_cost, balance_amount, qr_token, status, created_by)
+        values (${code}, ${d.customerId ?? null}, ${d.customerName}, ${d.mobile1 ?? null}, ${d.mobile2 ?? null}, ${d.address ?? null}, ${d.mapUrl ?? null}, ${d.eventType}, ${d.eventDate}, ${d.startTime ?? null}, ${d.finishTime ?? null}, ${d.hall ?? null}, ${d.location ?? null}, ${d.gps ?? null}, ${d.guestCount}, ${d.maleCount}, ${d.femaleCount}, ${d.childrenCount}, ${d.vipCount}, ${d.notes ?? null}, ${d.packageName ?? null}, ${d.totalAmount}, ${d.estimatedCost}, ${d.totalAmount}, ${qrToken}, 'confirmed', ${auth.id}) returning *`);
+      const booking = (res.rows ?? [])[0];
+      void logAdminActivity(req, "catering_booking_created", "catering_booking", Number(booking.id), { code, guestCount: d.guestCount, customerId: d.customerId ?? null });
+      return json(cateringBookingView(booking), 201);
+    }
+    if (action === "bookings" && id && method === "PATCH") {
+      const b = await body(req); const status = String(b?.status ?? "");
+      const allowed = ["confirmed", "preparing", "ready", "on_the_way", "completed", "cancelled"];
+      if (!allowed.includes(status)) return error("حالة غير صالحة", 400);
+      if ((["preparing", "ready"].includes(status) && !canKitchen) || (status === "on_the_way" && !canDelivery) || (status === "completed" && !canManage)) return error("ليس لديك صلاحية تغيير هذه الحالة", 403);
+      const res: any = await db.execute(sql`update catering_bookings set status=${status}, updated_at=now() where id=${id} returning *`);
+      const booking = (res.rows ?? [])[0]; if (!booking) return error("الحجز غير موجود", 404);
+      return json(cateringBookingView(booking));
+    }
+    if (action === "menu" && method === "GET") { const r: any = await db.execute(sql`select * from catering_menu_items order by category, name limit 500`); return json({ items: r.rows ?? [] }); }
+    if (action === "menu" && method === "POST") {
+      if (!canManage) return error("ليس لديك صلاحية إدارة القائمة", 403); const p = cateringMenuSchema.safeParse(await body(req)); if (!p.success) return validationError("catering.menu", p);
+      const d = p.data; const r: any = await db.execute(sql`insert into catering_menu_items (code,name,category,cost,selling_price,preparation_minutes,calories,inventory_product_id,image_url) values (${d.code},${d.name},${d.category},${d.cost},${d.sellingPrice},${d.preparationMinutes},${d.calories ?? null},${d.inventoryProductId ?? null},${d.imageUrl ?? null}) returning *`); return json((r.rows ?? [])[0], 201);
+    }
+    if (action === "packages" && method === "GET") { const r: any = await db.execute(sql`select * from catering_packages order by created_at desc`); return json({ packages: r.rows ?? [] }); }
+    if (action === "packages" && method === "POST") {
+      if (!canManage) return error("ليس لديك صلاحية إدارة الباقات", 403); const p = cateringPackageSchema.safeParse(await body(req)); if (!p.success) return validationError("catering.package", p);
+      const d = p.data; const r: any = await db.execute(sql`insert into catering_packages (name,tier,price,details) values (${d.name},${d.tier},${d.price},${JSON.stringify(d.details)}::jsonb) returning *`); return json((r.rows ?? [])[0], 201);
+    }
+    if (action === "worksheet" && id && method === "GET") {
+      const r: any = await db.execute(sql`select * from catering_bookings where id=${id} limit 1`); const booking = (r.rows ?? [])[0]; if (!booking) return error("الحجز غير موجود", 404);
+      return json({ booking: cateringBookingView(booking), kitchenSheet: { bookingNumber: booking.code, customer: booking.customer_name, event: booking.event_type, guests: Number(booking.guest_count), menu: booking.package_name ?? "قائمة مخصصة", quantityGuide: `${Math.ceil(Number(booking.guest_count) * 1.1)} حصة مقترحة`, preparationTime: booking.start_time, chef: booking.chef_name ?? null, notes: booking.notes ?? null } });
+    }
+    if (action === "qr" && id && method === "GET") {
+      const r: any = await db.execute(sql`select * from catering_bookings where id=${id} limit 1`); const booking = (r.rows ?? [])[0]; if (!booking) return error("الحجز غير موجود", 404);
+      const value = `AJN-CATERING:${booking.code}:${booking.qr_token}`; return json({ value, dataUrl: await QRCode.toDataURL(value, { margin: 1, width: 240, errorCorrectionLevel: "M" }) });
+    }
+    return error("إجراء تجهيز الطعام غير مدعوم", 405);
+  }
+
   // 💌 Invitation Studio — admin CRUD + per-card RSVP dashboard.
   if (section === "invitations") {
     const auth = await requireAnyPermission(req, ["koshas", "bookings", "customers", "dashboard"]);
@@ -47386,6 +47467,19 @@ async function handleBackup(
 
   return null;
 }
+
+// ───────────────────────── AJN Catering Center ─────────────────────────────
+const CATERING_EVENT_TYPES = ["wedding", "engagement", "henna", "graduation", "birthday", "corporate", "majlis", "funeral", "custom"] as const;
+const cateringBookingSchema = z.object({ customerId: z.number().int().positive().nullable().optional(), customerName: z.string().min(1).max(160), mobile1: z.string().max(30).nullable().optional(), mobile2: z.string().max(30).nullable().optional(), address: z.string().max(400).nullable().optional(), mapUrl: z.string().max(600).nullable().optional(), eventType: z.enum(CATERING_EVENT_TYPES), eventDate: z.string().min(8).max(20), startTime: z.string().max(20).nullable().optional(), finishTime: z.string().max(20).nullable().optional(), hall: z.string().max(160).nullable().optional(), location: z.string().max(300).nullable().optional(), gps: z.string().max(100).nullable().optional(), guestCount: z.coerce.number().int().min(1).max(100000), maleCount: z.coerce.number().int().min(0).default(0), femaleCount: z.coerce.number().int().min(0).default(0), childrenCount: z.coerce.number().int().min(0).default(0), vipCount: z.coerce.number().int().min(0).default(0), notes: z.string().max(3000).nullable().optional(), packageName: z.string().max(120).nullable().optional(), totalAmount: z.coerce.number().min(0).default(0), estimatedCost: z.coerce.number().min(0).default(0) });
+const cateringMenuSchema = z.object({ code: z.string().min(1).max(40), name: z.string().min(1).max(160), category: z.string().min(1).max(60), cost: z.coerce.number().min(0).default(0), sellingPrice: z.coerce.number().min(0).default(0), preparationMinutes: z.coerce.number().int().min(0).default(0), calories: z.coerce.number().int().min(0).nullable().optional(), inventoryProductId: z.coerce.number().int().positive().nullable().optional(), imageUrl: z.string().max(600).nullable().optional() });
+const cateringPackageSchema = z.object({ name: z.string().min(1).max(120), tier: z.enum(["royal", "vip", "gold", "silver", "economic", "custom"]), price: z.coerce.number().min(0), details: z.object({ foods: z.array(z.string()).default([]), desserts: z.array(z.string()).default([]), drinks: z.array(z.string()).default([]), fruits: z.array(z.string()).default([]), service: z.array(z.string()).default([]), equipment: z.array(z.string()).default([]), decoration: z.array(z.string()).default([]) }).default({ foods: [], desserts: [], drinks: [], fruits: [], service: [], equipment: [], decoration: [] }) });
+async function ensureCateringTables(): Promise<void> {
+  await db.execute(sql`create table if not exists catering_bookings (id serial primary key, code varchar(32) not null unique, customer_id integer, customer_name text not null, mobile1 varchar(30), mobile2 varchar(30), address text, map_url text, event_type varchar(30) not null, event_date date not null, start_time varchar(20), finish_time varchar(20), hall text, location text, gps text, guest_count integer not null, male_count integer not null default 0, female_count integer not null default 0, children_count integer not null default 0, vip_count integer not null default 0, notes text, package_name text, total_amount numeric not null default 0, estimated_cost numeric not null default 0, balance_amount numeric not null default 0, qr_token varchar(64) not null unique, status varchar(24) not null default 'confirmed', chef_name text, created_by integer, created_at timestamp not null default now(), updated_at timestamp not null default now())`);
+  await db.execute(sql`create table if not exists catering_menu_items (id serial primary key, code varchar(40) not null unique, name text not null, category varchar(60) not null, cost numeric not null default 0, selling_price numeric not null default 0, preparation_minutes integer not null default 0, calories integer, inventory_product_id integer, image_url text, created_at timestamp not null default now())`);
+  await db.execute(sql`create table if not exists catering_packages (id serial primary key, name varchar(120) not null, tier varchar(20) not null, price numeric not null default 0, details jsonb not null default '{}'::jsonb, created_at timestamp not null default now())`);
+  await db.execute(sql`create index if not exists catering_bookings_date_idx on catering_bookings(event_date, status)`);
+}
+function cateringBookingView(row: any) { return { id: Number(row.id), code: row.code, customerId: row.customer_id ?? null, customerName: row.customer_name, mobile1: row.mobile1, mobile2: row.mobile2, address: row.address, mapUrl: row.map_url, eventType: row.event_type, eventDate: row.event_date, startTime: row.start_time, finishTime: row.finish_time, hall: row.hall, location: row.location, gps: row.gps, guestCount: Number(row.guest_count), maleCount: Number(row.male_count), femaleCount: Number(row.female_count), childrenCount: Number(row.children_count), vipCount: Number(row.vip_count), notes: row.notes, packageName: row.package_name, totalAmount: Number(row.total_amount), estimatedCost: Number(row.estimated_cost), balanceAmount: Number(row.balance_amount), status: row.status, chefName: row.chef_name, createdAt: row.created_at }; }
 
 // ───────────────────────── AJN Invitation Studio ─────────────────────────────
 // Electronic invitation cards + guest RSVP. Two runtime-provisioned tables

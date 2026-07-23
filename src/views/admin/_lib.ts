@@ -165,10 +165,24 @@ export const ALL_PERMISSIONS = [
   "doc_scanner_view_saved",
   "doc_scanner_delete",
   "doc_scanner_view_original",
+  "catering_view",
+  "catering_manage",
+  "catering_kitchen",
+  "catering_delivery",
+  "catering_cashier",
+  "catering_supervisor",
+  "catering_warehouse",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
+  catering_view: "عرض مركز تجهيز حفلات الطعام",
+  catering_manage: "إدارة حجوزات وتجهيز الطعام",
+  catering_kitchen: "إدارة المطبخ والتحضير",
+  catering_delivery: "إدارة توصيل تجهيز الطعام",
+  catering_cashier: "مالية وفواتير تجهيز الطعام",
+  catering_supervisor: "إشراف تجهيز حفلات الطعام",
+  catering_warehouse: "مخزن ومشتريات تجهيز الطعام",
   "sales_invoice.cancel": "إلغاء وعكس فاتورة مبيعات",
   "sales_invoice.view_cancelled": "عرض الفواتير الملغاة",
   "sales_invoice.print_cancelled": "طباعة فاتورة ملغاة",

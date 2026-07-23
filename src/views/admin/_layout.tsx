@@ -62,6 +62,7 @@ import {
   Lock,
   SlidersHorizontal,
   Speaker,
+  ChefHat,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -465,6 +466,7 @@ export const NAV: NavItem[] = [
   { href: "/admin/staff", label: "الموظفون", icon: UserCog, perm: "staff" },
   { href: "/admin/employee-performance", label: "أداء الموظفين", icon: Trophy, perm: "staff" },
   { href: "/admin/invitations", label: "استوديو الدعوات", icon: Mail, perm: "koshas" },
+  { href: "/admin/catering", label: "تجهيز حفلات الطعام", icon: ChefHat, perm: "catering_view", anyPerm: ["catering_manage", "catering_kitchen", "catering_delivery", "catering_cashier", "catering_supervisor", "catering_warehouse"] },
   {
     href: "/admin/activity-log",
     label: "سجل النشاط",
