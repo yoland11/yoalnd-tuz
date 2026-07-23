@@ -26347,6 +26347,71 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json({ ok: true, url: dataUrl, family });
     }
 
+    // Personal guest credentials. QR values are signed opaque documents, not editable JSON.
+    if (cardId && parts[3] === "guests") {
+      const cardResult: any = await db.execute(sql`select * from invitation_cards where id = ${cardId} limit 1`);
+      const card = (cardResult.rows ?? [])[0];
+      if (!card) return error("الدعوة غير موجودة", 404);
+      if (method === "GET") {
+        const rows: any = await db.execute(sql`
+          select g.*, (select min(checked_in_at) from invitation_guest_checkins c where c.guest_id = g.id) as first_entry_at
+          from invitation_guests g where g.card_id = ${cardId} order by g.created_at desc`);
+        const guests = await Promise.all((rows.rows ?? []).map(async (g: any) => {
+          const payload = invitationQrPayload(card, g);
+          return {
+            id: Number(g.id), guestName: g.guest_name, family: g.family, guestType: g.guest_type, phone: g.phone,
+            photoUrl: g.photo_url, hall: g.hall, tableNumber: g.table_number, seatNumber: g.seat_number,
+            allowedGuests: Number(g.allowed_guests), checkedInCount: Number(g.checked_in_count), remainingEntries: Math.max(0, Number(g.allowed_guests) - Number(g.checked_in_count)),
+            expiresAt: g.expires_at, firstEntryAt: g.first_entry_at, qrPayload: payload,
+            qrDataUrl: await QRCode.toDataURL(payload, { margin: 1, width: 220, errorCorrectionLevel: "M" }),
+          };
+        }));
+        return json({ guests });
+      }
+      if (method === "POST") {
+        const parsed = invitationGuestSchema.safeParse(await body(req));
+        if (!parsed.success) return validationError("invitations.guest", parsed);
+        const d = parsed.data;
+        const token = randomBytes(24).toString("base64url");
+        const created: any = await db.execute(sql`
+          insert into invitation_guests (card_id, guest_name, family, guest_type, phone, photo_url, hall, table_number, seat_number, allowed_guests, qr_token, expires_at)
+          values (${cardId}, ${d.guestName}, ${d.family ?? null}, ${d.guestType}, ${d.phone ?? null}, ${d.photoUrl ?? null}, ${d.hall ?? null}, ${d.tableNumber ?? null}, ${d.seatNumber ?? null}, ${d.allowedGuests}, ${token}, ${d.expiresAt ? new Date(d.expiresAt) : null}) returning *`);
+        const guest = (created.rows ?? [])[0];
+        const payload = invitationQrPayload(card, guest);
+        void logAdminActivity(req, "invitation_guest_created", "invitation_card", cardId, { guestId: Number(guest.id), guestType: d.guestType });
+        return json({ id: Number(guest.id), qrPayload: payload, qrDataUrl: await QRCode.toDataURL(payload, { margin: 1, width: 220, errorCorrectionLevel: "M" }) }, 201);
+      }
+    }
+
+    // Atomic entrance validation keeps one-time / multi-entry credentials safe under concurrent scans.
+    if (cardId && method === "POST" && parts[3] === "checkin") {
+      const parsed = invitationCheckinSchema.safeParse(await body(req));
+      if (!parsed.success) return validationError("invitations.checkin", parsed);
+      const payload = verifyInvitationQr(parsed.data.qr);
+      if (!payload || Number(payload.invitationId) !== cardId || !payload.token) return error("رمز QR غير صالح أو تم تعديله", 400);
+      const result: any = await db.execute(sql`
+        update invitation_guests set checked_in_count = checked_in_count + 1, updated_at = now()
+        where id = ${Number(payload.guestId)} and card_id = ${cardId} and qr_token = ${String(payload.token)}
+          and (expires_at is null or expires_at > now()) and checked_in_count < allowed_guests
+        returning *`);
+      const guest = (result.rows ?? [])[0];
+      if (!guest) {
+        const previous: any = await db.execute(sql`
+          select g.*, (select min(checked_in_at) from invitation_guest_checkins c where c.guest_id = g.id) as first_entry_at
+          from invitation_guests g where g.id = ${Number(payload.guestId)} and g.card_id = ${cardId} and g.qr_token = ${String(payload.token)} limit 1`);
+        const p = (previous.rows ?? [])[0];
+        if (!p) return error("رمز QR غير صالح", 400);
+        if (p.expires_at && new Date(p.expires_at).getTime() <= Date.now()) return error("انتهت صلاحية هذه الدعوة", 410);
+        return json({ ok: false, duplicate: true, message: "تم استخدام هذه الدعوة مسبقاً", guest: { guestName: p.guest_name, family: p.family, guestType: p.guest_type, allowedGuests: Number(p.allowed_guests), checkedInCount: Number(p.checked_in_count), remainingEntries: 0, tableNumber: p.table_number, seatNumber: p.seat_number, hall: p.hall, photoUrl: p.photo_url, firstEntryAt: p.first_entry_at } }, 409);
+      }
+      const entryNumber = Number(guest.checked_in_count);
+      await db.execute(sql`
+        insert into invitation_guest_checkins (guest_id, card_id, entry_number, staff_id, staff_name, location, qr_fingerprint)
+        values (${Number(guest.id)}, ${cardId}, ${entryNumber}, ${auth.id ?? null}, ${auth.username ?? "موظف الاستقبال"}, ${parsed.data.location ?? null}, ${createHash("sha256").update(parsed.data.qr).digest("hex").slice(0, 64)})`);
+      void logAdminActivity(req, "invitation_guest_checked_in", "invitation_card", cardId, { guestId: Number(guest.id), entryNumber, location: parsed.data.location ?? null });
+      return json({ ok: true, message: "أهلاً وسهلاً بكم", guest: { guestName: guest.guest_name, family: guest.family, guestType: guest.guest_type, allowedGuests: Number(guest.allowed_guests), checkedInCount: entryNumber, remainingEntries: Math.max(0, Number(guest.allowed_guests) - entryNumber), tableNumber: guest.table_number, seatNumber: guest.seat_number, hall: guest.hall, photoUrl: guest.photo_url, firstEntryAt: new Date().toISOString() } });
+    }
+
     if (method === "GET" && !cardId) {
       const res: any = await db.execute(sql`
         select c.*,
@@ -26440,7 +26505,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!existing) return error("الدعوة غير موجودة", 404);
 
       if (method === "GET") {
-        const [statsRes, rsvpsRes]: any = await Promise.all([
+        const [statsRes, rsvpsRes, entranceRes, timelineRes]: any = await Promise.all([
           db.execute(sql`
             select coalesce(count(*),0)::int as total,
               coalesce(count(*) filter (where attendance_status='confirmed'),0)::int as confirmed,
@@ -26450,10 +26515,28 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
               coalesce(count(*) filter (where responded_at is null),0)::int as no_response
             from invitation_card_rsvps where card_id = ${cardId}`),
           db.execute(sql`select id, guest_name, guest_phone, guest_token, attendance_status, companions_count, guest_message, viewed_at, responded_at, created_at from invitation_card_rsvps where card_id = ${cardId} order by coalesce(responded_at, created_at) desc limit 500`),
+          db.execute(sql`
+            select
+              coalesce(count(*),0)::int as invited,
+              coalesce(sum(g.checked_in_count),0)::int as checked_in,
+              coalesce(sum(g.allowed_guests - g.checked_in_count),0)::int as remaining,
+              coalesce(count(*) filter (where g.guest_type='vip'),0)::int as vip,
+              coalesce(count(*) filter (where g.guest_type='bride_family'),0)::int as bride_family,
+              coalesce(count(*) filter (where g.guest_type='groom_family'),0)::int as groom_family,
+              coalesce(count(*) filter (where g.checked_in_count > 0 and c.checked_in_at > (to_date(nullif(${existing.event_date ?? ""}, ''), 'YYYY-MM-DD') + interval '1 day' - interval '1 hour')),0)::int as late_guests
+            from invitation_guests g left join lateral (select max(checked_in_at) as checked_in_at from invitation_guest_checkins x where x.guest_id=g.id) c on true
+            where g.card_id = ${cardId}`),
+          db.execute(sql`
+            select c.checked_in_at, c.entry_number, c.staff_name, c.location, g.guest_name
+            from invitation_guest_checkins c join invitation_guests g on g.id=c.guest_id
+            where c.card_id = ${cardId} order by c.checked_in_at desc limit 30`),
         ]);
         const s = (statsRes.rows ?? [])[0] ?? {};
+        const e = (entranceRes.rows ?? [])[0] ?? {};
         return json(adminView(existing, {
           stats: { views: Number(existing.views ?? 0), total: Number(s.total ?? 0), confirmed: Number(s.confirmed ?? 0), declined: Number(s.declined ?? 0), maybe: Number(s.maybe ?? 0), companions: Number(s.companions ?? 0), noResponse: Number(s.no_response ?? 0) },
+          entrance: { invited: Number(e.invited ?? 0), checkedIn: Number(e.checked_in ?? 0), remaining: Number(e.remaining ?? 0), vip: Number(e.vip ?? 0), brideFamily: Number(e.bride_family ?? 0), groomFamily: Number(e.groom_family ?? 0), lateGuests: Number(e.late_guests ?? 0) },
+          checkinTimeline: (timelineRes.rows ?? []).map((v: any) => ({ guestName: v.guest_name, checkedInAt: v.checked_in_at, entryNumber: Number(v.entry_number), staffName: v.staff_name, location: v.location })),
           rsvps: (rsvpsRes.rows ?? []).map((r: any) => ({ id: Number(r.id), guestName: r.guest_name, guestPhone: r.guest_phone, guestToken: r.guest_token, attendanceStatus: r.attendance_status, companionsCount: Number(r.companions_count ?? 0), guestMessage: r.guest_message, viewedAt: r.viewed_at, respondedAt: r.responded_at, createdAt: r.created_at })),
         }));
       }
@@ -47309,8 +47392,9 @@ async function handleBackup(
 // (invitation_cards, invitation_card_rsvps); reuses customers/bookings/QR/
 // notifications/Telegram/timeline. Public pages use a secure slug (never IDs).
 
-const INVITATION_TYPES = ["wedding", "engagement", "henna", "graduation", "birthday", "opening", "baby_shower", "conference", "private"] as const;
+const INVITATION_TYPES = ["wedding", "engagement", "henna", "graduation", "birthday", "opening", "baby_shower", "conference", "corporate", "custom", "private"] as const;
 const INVITATION_STATUSES = ["draft", "designing", "waiting_approval", "approved", "published", "completed", "archived"] as const;
+const INVITATION_GUEST_TYPES = ["bride_family", "groom_family", "vip", "friends", "relatives", "staff", "media", "organizer"] as const;
 
 const invitationCardSchema = z.object({
   type: z.enum(INVITATION_TYPES).optional(),
@@ -47349,6 +47433,24 @@ const invitationRsvpSchema = z.object({
   companionsCount: z.coerce.number().int().min(0).max(50).optional().default(0),
   guestMessage: z.string().max(1000).optional().nullable(),
   guestToken: z.string().max(24).optional().nullable(),
+});
+
+const invitationGuestSchema = z.object({
+  guestName: z.string().min(1).max(120),
+  family: z.string().max(120).nullable().optional(),
+  guestType: z.enum(INVITATION_GUEST_TYPES).optional().default("friends"),
+  phone: z.string().max(30).nullable().optional(),
+  photoUrl: z.string().max(600).nullable().optional(),
+  hall: z.string().max(120).nullable().optional(),
+  tableNumber: z.string().max(40).nullable().optional(),
+  seatNumber: z.string().max(40).nullable().optional(),
+  allowedGuests: z.coerce.number().int().min(1).max(50).optional().default(1),
+  expiresAt: z.string().max(40).nullable().optional(),
+});
+
+const invitationCheckinSchema = z.object({
+  qr: z.string().min(8).max(2400),
+  location: z.string().max(400).nullable().optional(),
 });
 
 async function ensureInvitationTables(): Promise<void> {
@@ -47391,11 +47493,57 @@ async function ensureInvitationTables(): Promise<void> {
   `);
   await db.execute(sql`create index if not exists "invitation_rsvps_card_idx" on "invitation_card_rsvps" ("card_id")`);
   await db.execute(sql`alter table "invitation_cards" add column if not exists "social_links" jsonb not null default '{}'::jsonb`);
+  await db.execute(sql`
+    create table if not exists "invitation_guests" (
+      "id" serial primary key, "card_id" integer not null,
+      "guest_name" text not null, "family" text, "guest_type" varchar(24) not null default 'friends',
+      "phone" varchar(30), "photo_url" text, "hall" text, "table_number" varchar(40), "seat_number" varchar(40),
+      "allowed_guests" integer not null default 1, "checked_in_count" integer not null default 0,
+      "qr_token" varchar(64) not null unique, "expires_at" timestamp, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+    )
+  `);
+  await db.execute(sql`
+    create table if not exists "invitation_guest_checkins" (
+      "id" serial primary key, "guest_id" integer not null, "card_id" integer not null,
+      "entry_number" integer not null, "staff_id" integer, "staff_name" text, "location" text,
+      "checked_in_at" timestamp not null default now(), "qr_fingerprint" varchar(96)
+    )
+  `);
+  await db.execute(sql`create index if not exists "invitation_guests_card_idx" on "invitation_guests" ("card_id")`);
+  await db.execute(sql`create index if not exists "invitation_guest_checkins_guest_idx" on "invitation_guest_checkins" ("guest_id")`);
 }
 
 /** URL-safe code; never a raw DB id. */
 function inviteSlug(): string {
   return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+}
+
+/** A signed opaque credential: guest data stays server-side and cannot be edited in a QR app. */
+function invitationQrSecret(): string {
+  const secret = process.env.INVITATION_QR_SECRET || process.env.AUTH_SECRET || process.env.SESSION_SECRET || process.env.NEXTAUTH_SECRET;
+  if (!secret || secret.length < 32) throw new Error("INVITATION_QR_SECRET أو AUTH_SECRET قوي (32 حرفاً على الأقل) مطلوب");
+  return secret;
+}
+function invitationQrPayload(card: any, guest: any) {
+  const expiration = guest.expires_at ? new Date(guest.expires_at).toISOString() : null;
+  const payload = {
+    v: 1, invitationId: Number(card.id), bookingId: card.booking_id ?? null, guestId: Number(guest.id),
+    guestName: guest.guest_name, family: guest.family ?? null, invitationType: card.type,
+    seatNumber: guest.seat_number ?? null, allowedGuests: Number(guest.allowed_guests),
+    token: guest.qr_token, expiration,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", invitationQrSecret()).update(encoded).digest("base64url");
+  return `AJN-INV1.${encoded}.${signature}`;
+}
+function verifyInvitationQr(value: string) {
+  const raw = value.trim();
+  const match = raw.match(/AJN-INV1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)/) || new URL(raw, "http://local").searchParams.get("q")?.match(/AJN-INV1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)/);
+  if (!match) return null;
+  const [, encoded, signature] = match;
+  const expected = createHmac("sha256", invitationQrSecret()).update(encoded).digest("base64url");
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try { return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")); } catch { return null; }
 }
 
 function invitationPublicView(row: any, guestName: string | null) {
@@ -47405,6 +47553,7 @@ function invitationPublicView(row: any, guestName: string | null) {
     brideName: row.bride_name, groomName: row.groom_name, eventName: row.event_name,
     eventDate: row.event_date, eventTime: row.event_time,
     venueName: row.venue_name, venueAddress: row.venue_address, mapUrl: row.map_url,
+    customerPhone: row.customer_phone,
     welcomeMessage: row.welcome_message, thankYouMessage: row.thank_you_message,
     mainImageUrl: row.main_image_url, galleryImages: row.gallery_images ?? [],
     fontFamily: row.font_family, customFontUrl: row.custom_font_url,

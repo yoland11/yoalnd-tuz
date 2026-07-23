@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowRight, Copy, Download, Eye, LayoutDashboard, Loader2, Palette, Plus, Printer, QrCode, Share2, Trash2, Users,
+  AlertTriangle, ArrowRight, CheckCircle2, Copy, Download, Eye, LayoutDashboard, Loader2, MapPin, Palette, Plus, Printer, QrCode, ScanLine, Share2, Trash2, UserPlus, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { generateQrDataUrl } from "./label-helpers";
+import { openQrPrintWindow } from "./print-helpers";
 import { InvitationCard, ANIMATION_STYLES, SOCIAL_PLATFORMS, type InvitationData } from "../invite";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
@@ -39,12 +40,15 @@ const TEMPLATES: Tpl[] = [
 
 type Card = InvitationData & { id: number; code?: string; status: string; views?: number; rsvpTotal?: number; confirmed?: number; companions?: number; customerPhone?: string | null; customerEmail?: string | null; bookingId?: number | null };
 type Rsvp = { id: number; guestName: string; guestPhone: string | null; guestToken: string | null; attendanceStatus: string; companionsCount: number; guestMessage: string | null; viewedAt: string | null; respondedAt: string | null; createdAt: string };
-type CardDetail = Card & { stats: { views: number; total: number; confirmed: number; declined: number; maybe: number; companions: number; noResponse: number }; rsvps: Rsvp[] };
+type Entrance = { invited: number; checkedIn: number; remaining: number; vip: number; brideFamily: number; groomFamily: number; lateGuests: number };
+type CheckinTimeline = { guestName: string; checkedInAt: string; entryNumber: number; staffName?: string | null; location?: string | null };
+type CardDetail = Card & { stats: { views: number; total: number; confirmed: number; declined: number; maybe: number; companions: number; noResponse: number }; entrance?: Entrance; checkinTimeline?: CheckinTimeline[]; rsvps: Rsvp[] };
+type InvitationGuest = { id: number; guestName: string; family?: string | null; guestType: string; phone?: string | null; photoUrl?: string | null; hall?: string | null; tableNumber?: string | null; seatNumber?: string | null; allowedGuests: number; checkedInCount: number; remainingEntries: number; expiresAt?: string | null; firstEntryAt?: string | null; qrPayload: string; qrDataUrl: string };
 type Widgets = { active: number; today: number; viewsTotal: number; newRsvpsToday: number; confirmedGuests: number; pendingGuests: number };
 
 const TYPE_LABELS: Record<string, string> = {
   wedding: "زواج", engagement: "خطوبة", henna: "حنّة", graduation: "تخرّج", birthday: "عيد ميلاد",
-  opening: "افتتاح", baby_shower: "استقبال مولود", conference: "مؤتمر", private: "مناسبة خاصة",
+  opening: "افتتاح", baby_shower: "استقبال مولود", conference: "مؤتمر", corporate: "شركة", custom: "قالب مخصص", private: "مناسبة خاصة",
 };
 const STATUS_LABELS: Record<string, string> = {
   draft: "مسودة", designing: "قيد التصميم", waiting_approval: "بانتظار موافقة الزبون", approved: "معتمدة",
@@ -121,7 +125,7 @@ const FIELDS_KEYS: (keyof InvitationData)[] = ["brideName", "groomName", "eventN
 function InvitationEditor({ id }: { id: number }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"design" | "dashboard">("design");
+  const [tab, setTab] = useState<"design" | "dashboard" | "guests" | "scanner">("design");
   const [form, setForm] = useState<Card | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const dirtyRef = useRef(false);
@@ -129,6 +133,7 @@ function InvitationEditor({ id }: { id: number }) {
   const { data: publicSettings } = usePublicSettings();
 
   const { data, isLoading } = useQuery<CardDetail>({ queryKey: ["admin", "invitations", id], queryFn: () => adminFetch(`/admin/invitations/${id}`) });
+  const guestsQuery = useQuery<{ guests: InvitationGuest[] }>({ queryKey: ["admin", "invitations", id, "guests"], queryFn: () => adminFetch(`/admin/invitations/${id}/guests`), enabled: tab === "guests" || tab === "scanner" });
   useEffect(() => { if (data && !form) setForm(data); }, [data, form]);
   useEffect(() => { if (form?.slug) generateQrDataUrl(publicUrl(form.slug), 220).then(setQr).catch(() => {}); }, [form?.slug]);
 
@@ -215,7 +220,7 @@ function InvitationEditor({ id }: { id: number }) {
       </div>
 
       <div className="flex gap-1 border-b border-border/40">
-        {([["design", "التصميم", Palette], ["dashboard", "لوحة الردود", LayoutDashboard]] as const).map(([k, l, Icon]) => (
+        {([["design", "التصميم", Palette], ["guests", "الضيوف و QR", UserPlus], ["scanner", "ماسح الدخول", ScanLine], ["dashboard", "اللوحة المباشرة", LayoutDashboard]] as const).map(([k, l, Icon]) => (
           <button key={k} type="button" onClick={() => setTab(k)} className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium ${tab === k ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4" /> {l}</button>
         ))}
       </div>
@@ -315,6 +320,10 @@ function InvitationEditor({ id }: { id: number }) {
             </div>
           </div>
         </div>
+      ) : tab === "guests" ? (
+        <InvitationGuests cardId={id} guests={guestsQuery.data?.guests ?? []} loading={guestsQuery.isLoading} onChanged={() => { guestsQuery.refetch(); queryClient.invalidateQueries({ queryKey: ["admin", "invitations", id] }); }} />
+      ) : tab === "scanner" ? (
+        <InvitationScanner cardId={id} />
       ) : (
         <InvitationDashboard detail={data!} />
       )}
@@ -327,9 +336,87 @@ function Fld({ label, children }: { label: string; children: ReactNode }) {
   return <label className="block text-xs text-muted-foreground">{label}<div className="mt-1">{children}</div></label>;
 }
 
+const GUEST_TYPE_LABELS: Record<string, string> = { bride_family: "عائلة العروس", groom_family: "عائلة العريس", vip: "VIP", friends: "الأصدقاء", relatives: "الأقارب", staff: "الموظفون", media: "الإعلام", organizer: "المنظّم" };
+
+function InvitationGuests({ cardId, guests, loading, onChanged }: { cardId: number; guests: InvitationGuest[]; loading: boolean; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({ guestName: "", family: "", guestType: "friends", phone: "", hall: "", tableNumber: "", seatNumber: "", allowedGuests: "1" });
+  const create = useMutation({
+    mutationFn: () => adminFetch(`/admin/invitations/${cardId}/guests`, { method: "POST", body: JSON.stringify({ ...form, allowedGuests: Number(form.allowedGuests) || 1, family: form.family || null, phone: form.phone || null, hall: form.hall || null, tableNumber: form.tableNumber || null, seatNumber: form.seatNumber || null }) }),
+    onSuccess: () => { setForm({ guestName: "", family: "", guestType: "friends", phone: "", hall: "", tableNumber: "", seatNumber: "", allowedGuests: "1" }); onChanged(); toast({ title: "تم إنشاء الدعوة الشخصية و QR الآمن" }); },
+    onError: (e: Error) => toast({ title: "تعذر إنشاء الضيف", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  function shareWhatsApp(g: InvitationGuest) {
+    if (!g.phone) { toast({ title: "أضف رقم واتساب للضيف أولاً", variant: "destructive" }); return; }
+    const message = `أهلاً ${g.guestName}، هذه دعوتك الشخصية. يرجى إبراز رمز QR عند الدخول.`;
+    window.open(`https://wa.me/${g.phone.replace(/\D/g, "")}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  }
+  return <div className="space-y-4">
+    <div className="rounded-xl border border-border/30 bg-card p-4">
+      <div className="mb-3 flex items-center gap-2"><UserPlus className="h-5 w-5 text-primary" /><div><h2 className="font-bold text-foreground">إضافة دعوة شخصية</h2><p className="text-xs text-muted-foreground">كل ضيف يحصل على QR موقّع وغير قابل للتعديل، مع مقعد وعدد دخول مستقل.</p></div></div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <input value={form.guestName} onChange={(e) => setForm({ ...form, guestName: e.target.value })} placeholder="اسم الضيف *" className={inp} />
+        <input value={form.family} onChange={(e) => setForm({ ...form, family: e.target.value })} placeholder="العائلة" className={inp} />
+        <select value={form.guestType} onChange={(e) => setForm({ ...form, guestType: e.target.value })} className={inp}>{Object.entries(GUEST_TYPE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="واتساب / هاتف" dir="ltr" className={inp} />
+        <input value={form.hall} onChange={(e) => setForm({ ...form, hall: e.target.value })} placeholder="القاعة" className={inp} />
+        <input value={form.tableNumber} onChange={(e) => setForm({ ...form, tableNumber: e.target.value })} placeholder="الطاولة" className={inp} />
+        <input value={form.seatNumber} onChange={(e) => setForm({ ...form, seatNumber: e.target.value })} placeholder="الكرسي" className={inp} />
+        <input type="number" min="1" max="50" value={form.allowedGuests} onChange={(e) => setForm({ ...form, allowedGuests: e.target.value })} placeholder="عدد المسموح" className={inp} />
+      </div>
+      <Button className="mt-3 gap-2" onClick={() => create.mutate()} disabled={!form.guestName.trim() || create.isPending}>{create.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />} إنشاء بطاقة الضيف</Button>
+    </div>
+    {loading ? <Skeleton className="h-44 rounded-xl" /> : guests.length === 0 ? <EmptyState message="أضف أول ضيف لتوليد دعوة QR شخصية." /> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {guests.map((g) => <article key={g.id} className="flex gap-3 rounded-xl border border-border/30 bg-card p-3">
+        <img src={g.qrDataUrl} alt={`QR ${g.guestName}`} className="h-24 w-24 rounded-lg bg-white p-1" />
+        <div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><div className="truncate font-bold text-foreground">{g.guestName}</div>{g.guestType === "vip" ? <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-700">VIP</span> : null}</div>
+          <p className="text-xs text-muted-foreground">{[g.family, GUEST_TYPE_LABELS[g.guestType], g.hall && `قاعة ${g.hall}`, g.tableNumber && `طاولة ${g.tableNumber}`, g.seatNumber && `كرسي ${g.seatNumber}`].filter(Boolean).join(" · ")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">الدخول: {g.checkedInCount}/{g.allowedGuests} · المتبقي {g.remainingEntries}</p>
+          <div className="mt-2 flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => shareWhatsApp(g)}>واتساب</Button><Button size="sm" variant="outline" onClick={() => { const a = document.createElement("a"); a.href = g.qrDataUrl; a.download = `ajn-guest-${g.id}.png`; a.click(); }}><Download className="h-3.5 w-3.5" /></Button><Button size="sm" variant="outline" onClick={() => openQrPrintWindow({ qrDataUrl: g.qrDataUrl, customerName: g.guestName, title: "بطاقة ضيف AJN", paperSize: "80mm" })}><Printer className="h-3.5 w-3.5" /></Button></div>
+        </div>
+      </article>)}
+    </div>}
+  </div>;
+}
+
+function InvitationScanner({ cardId }: { cardId: number }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [cameraOn, setCameraOn] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const locationRef = useRef<string | null>(null);
+  useEffect(() => () => { streamRef.current?.getTracks().forEach((t) => t.stop()); }, []);
+  async function location() { return new Promise<string | null>((resolve) => { if (!navigator.geolocation) return resolve(null); navigator.geolocation.getCurrentPosition((p) => resolve(`${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`), () => resolve(null), { maximumAge: 60_000, timeout: 4_000 }); }); }
+  async function scan(qr = value) {
+    if (!qr.trim() || busy) return;
+    setBusy(true); setResult(null); locationRef.current = await location();
+    try { const r = await adminFetch(`/admin/invitations/${cardId}/checkin`, { method: "POST", body: JSON.stringify({ qr: qr.trim(), location: locationRef.current }) }); setResult({ ...r, valid: true }); setValue(""); }
+    catch (e: any) { setResult({ ...(e?.data ?? {}), valid: false, message: e?.data?.message ?? apiErrorMessage(e) }); }
+    finally { setBusy(false); }
+  }
+  async function toggleCamera() {
+    if (cameraOn) { streamRef.current?.getTracks().forEach((t) => t.stop()); streamRef.current = null; setCameraOn(false); return; }
+    try { const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false }); streamRef.current = stream; if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); } setCameraOn(true); const Detector = (window as any).BarcodeDetector; if (Detector) { const detector = new Detector({ formats: ["qr_code"] }); const poll = async () => { if (!streamRef.current || !videoRef.current) return; try { const codes = await detector.detect(videoRef.current); if (codes[0]?.rawValue) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; setCameraOn(false); setValue(codes[0].rawValue); await scan(codes[0].rawValue); return; } } catch { /* frame not ready */ } if (streamRef.current) window.setTimeout(poll, 650); }; void poll(); } }
+    catch { setResult({ valid: false, message: "تعذر فتح الكاميرا. أدخل الرمز بالماسح أو يدوياً." }); }
+  }
+  const guest = result?.guest;
+  return <div className="mx-auto max-w-3xl space-y-4">
+    <div className="rounded-xl border border-border/30 bg-card p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="flex items-center gap-2 font-bold text-foreground"><ScanLine className="h-5 w-5 text-primary" /> بوابة الدخول الذكية</h2><p className="mt-1 text-xs text-muted-foreground">امسح QR أو ألصقه هنا. يُحفظ وقت الدخول وموظف الاستقبال والموقع عند توفره.</p></div><Button variant="outline" onClick={toggleCamera}><ScanLine className="ml-2 h-4 w-4" />{cameraOn ? "إيقاف الكاميرا" : "فتح الكاميرا"}</Button></div>
+      {cameraOn ? <video ref={videoRef} muted playsInline className="mt-3 max-h-72 w-full rounded-lg bg-black object-cover" /> : null}
+      <div className="mt-3 flex gap-2"><input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && scan()} placeholder="امسح أو ألصق رمز QR الآمن" dir="ltr" className={inp} /><Button onClick={() => scan()} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "تحقق"}</Button></div>
+    </div>
+    {result ? <div className={`rounded-xl p-5 text-center ${result.valid ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"}`} aria-live="assertive"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-white/15">{result.valid ? <CheckCircle2 className="h-7 w-7" /> : <AlertTriangle className="h-7 w-7" />}</div><h3 className="mt-2 text-xl font-extrabold">{result.valid ? "أهلاً وسهلاً بكم" : result.message || "تم استخدام هذه الدعوة مسبقاً"}</h3>
+      {guest ? <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3"><div><b>{guest.guestName}</b><br />{guest.family || "ضيف"}</div><div>المسموح: {guest.allowedGuests}<br />المتبقي: {guest.remainingEntries}</div><div>{guest.hall || ""} {guest.tableNumber ? `· طاولة ${guest.tableNumber}` : ""}<br />{guest.seatNumber ? `كرسي ${guest.seatNumber}` : ""}</div></div> : null}
+      {!result.valid && guest?.firstEntryAt ? <p className="mt-2 text-xs">أول دخول: {new Date(guest.firstEntryAt).toLocaleString("ar-IQ")}</p> : null}</div> : null}
+  </div>;
+}
+
 function InvitationDashboard({ detail }: { detail: CardDetail }) {
   const [search, setSearch] = useState("");
   const s = detail.stats;
+  const entrance = detail.entrance;
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (detail.rsvps ?? []).filter((r) => !q || [r.guestName, r.guestPhone].some((v) => String(v ?? "").toLowerCase().includes(q)));
@@ -349,6 +436,15 @@ function InvitationDashboard({ detail }: { detail: CardDetail }) {
 
   return (
     <div className="space-y-4">
+      {entrance ? <>
+        <div className="flex items-center gap-2 text-sm font-bold text-foreground"><ScanLine className="h-4 w-4 text-primary" /> الحضور المباشر</div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          {([["المدعوون", entrance.invited], ["تم الدخول", entrance.checkedIn], ["المتبقي", entrance.remaining], ["VIP", entrance.vip], ["عائلة العروس", entrance.brideFamily], ["عائلة العريس", entrance.groomFamily], ["متأخرون", entrance.lateGuests]] as const).map(([l, v]) => (
+            <div key={l} className="rounded-xl border border-border/30 bg-card p-3 text-center"><div className="text-xl font-extrabold text-foreground">{v}</div><div className="text-[11px] text-muted-foreground">{l}</div></div>
+          ))}
+        </div>
+        {detail.checkinTimeline?.length ? <div className="rounded-xl border border-border/30 bg-card p-3"><div className="mb-2 text-xs font-bold text-foreground">سجل الدخول الأخير</div><div className="space-y-2">{detail.checkinTimeline.slice(0, 6).map((item, index) => <div key={`${item.guestName}-${index}`} className="flex items-center justify-between gap-2 text-xs"><span className="font-medium text-foreground">{item.guestName} · دخول {item.entryNumber}</span><span className="text-muted-foreground">{new Date(item.checkedInAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}{item.staffName ? ` · ${item.staffName}` : ""}</span></div>)}</div></div> : null}
+      </> : null}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         {([["المشاهدات", s.views], ["تأكيدات", s.confirmed], ["اعتذارات", s.declined], ["ربما", s.maybe], ["لم يردّوا", s.noResponse], ["المرافقون", s.companions], ["إجمالي الردود", s.total]] as const).map(([l, v]) => (
           <div key={l} className="rounded-xl border border-border/30 bg-card p-3 text-center">

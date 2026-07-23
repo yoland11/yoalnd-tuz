@@ -38,7 +38,7 @@ export const SOCIAL_PLATFORMS: Array<{ key: string; label: string; icon: string 
   { key: "website", label: "Website", icon: "🌐" },
 ];
 
-export const ANIMATION_STYLES = ["fade", "zoom", "slide", "float", "glow"] as const;
+export const ANIMATION_STYLES = ["fade", "zoom", "slide", "float", "glow", "cinematic", "three_d"] as const;
 
 const ANIM_CSS = `
 @keyframes inv-fade { from { opacity: 0; transform: translateY(12px);} to { opacity: 1; transform: none; } }
@@ -51,7 +51,17 @@ const ANIM_CSS = `
 .inv-anim-slide > * { animation: inv-slide .7s ease both; }
 .inv-anim-float .inv-names { animation: inv-float 3.5s ease-in-out infinite; }
 .inv-anim-glow .inv-names { animation: inv-glow 2.8s ease-in-out infinite; }
+.inv-anim-cinematic > * { animation: inv-cinematic 1.1s cubic-bezier(.16,1,.3,1) both; }
+.inv-anim-three_d .inv-names { animation: inv-three-d 5s ease-in-out infinite; transform-style:preserve-3d; }
+.inv-atmosphere { background: radial-gradient(circle at 15% 15%, rgba(222,183,79,.22), transparent 20%), radial-gradient(circle at 85% 85%, rgba(246,197,117,.16), transparent 24%), linear-gradient(145deg, rgba(255,255,255,.05), transparent 48%); }
+.inv-particle { position:absolute; width:4px; height:4px; border-radius:99px; background:#e8c46a; box-shadow:0 0 10px #e8c46a; animation:inv-particle 7s ease-in-out infinite; opacity:.7; }
+.inv-flower { position:absolute; color:#f5d6db; font-size:22px; animation:inv-flower 9s ease-in-out infinite; opacity:.7; }
+@keyframes inv-cinematic { from { opacity:0; transform: perspective(900px) rotateX(7deg) translateY(22px); filter:blur(6px) } to { opacity:1; transform:none; filter:none } }
+@keyframes inv-three-d { 0%,100%{transform:perspective(700px) rotateY(-4deg) rotateX(1deg)}50%{transform:perspective(700px) rotateY(4deg) rotateX(-2deg)} }
+@keyframes inv-particle { 0%,100%{transform:translateY(0);opacity:.25}50%{transform:translateY(-70px) translateX(16px);opacity:.9} }
+@keyframes inv-flower { 0%,100%{transform:translate3d(0,0,0) rotate(0deg)}50%{transform:translate3d(16px,45px,0) rotate(55deg)} }
 .inv-anim-fade > *:nth-child(2){animation-delay:.1s}.inv-anim-fade > *:nth-child(3){animation-delay:.2s}.inv-anim-fade > *:nth-child(4){animation-delay:.3s}.inv-anim-fade > *:nth-child(5){animation-delay:.4s}
+@media (prefers-reduced-motion: reduce) { .inv-anim-float .inv-names,.inv-anim-glow .inv-names,.inv-anim-three_d .inv-names,.inv-particle,.inv-flower { animation:none!important; } .inv-anim-cinematic > * { animation:inv-fade .15s ease both; } }
 `;
 
 function useCountdown(dateStr?: string | null) {
@@ -96,11 +106,23 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
   const anim = ANIMATION_STYLES.includes((data.animationStyle as any) ?? "fade") ? data.animationStyle : "fade";
   const names = [data.brideName, data.groomName].filter(Boolean).join("  &  ") || data.eventName || "دعوة";
   const gold = "#c9a34a";
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  function fullScreen() { shellRef.current?.requestFullscreen?.().catch(() => {}); }
+  function addCalendar() {
+    if (!data.eventDate) return;
+    const time = (data.eventTime || "19:00").match(/\d{1,2}:\d{2}/)?.[0] ?? "19:00";
+    const start = `${data.eventDate.replaceAll("-", "")}T${time.replace(":", "")}00`;
+    const body = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nDTSTART:${start}\nSUMMARY:${names}\nLOCATION:${[data.venueName, data.venueAddress].filter(Boolean).join(" - ")}\nEND:VEVENT\nEND:VCALENDAR`;
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([body], { type: "text/calendar" })); a.download = "ajn-event.ics"; a.click(); URL.revokeObjectURL(a.href);
+  }
 
   return (
-    <div dir="rtl" className="mx-auto w-full max-w-md" style={{ fontFamily: `${font}, Cairo, Tahoma, sans-serif` }}>
+    <div ref={shellRef} dir="rtl" className="mx-auto w-full max-w-md" style={{ fontFamily: `${font}, Cairo, Tahoma, sans-serif` }}>
       <style>{ANIM_CSS}{data.customFontUrl ? `@font-face{font-family:'${font}';src:url('${data.customFontUrl}');font-display:swap;}` : ""}</style>
-      <div className={`inv-anim-${anim} overflow-hidden rounded-3xl shadow-2xl`} style={{ background: bg, color: fg, border: `1px solid ${gold}55` }}>
+      <div className={`inv-anim-${anim} relative overflow-hidden rounded-2xl shadow-2xl`} style={{ background: bg, color: fg, border: `1px solid ${gold}55` }}>
+        <div className="inv-atmosphere pointer-events-none absolute inset-0" />
+        {["12%", "28%", "56%", "74%", "88%"].map((left, i) => <span key={left} className="inv-particle" style={{ left, bottom: `${8 + (i % 3) * 15}%`, animationDelay: `${i * -1.2}s` }} />)}
+        {["❀", "✿", "❀"].map((flower, i) => <span key={`${flower}-${i}`} className="inv-flower" style={{ left: `${5 + i * 43}%`, top: `${10 + i * 22}%`, animationDelay: `${i * -2.7}s` }}>{flower}</span>)}
         <div className="relative">
           {data.mainImageUrl ? (
             <img src={data.mainImageUrl} alt="" className="h-56 w-full object-cover" />
@@ -109,6 +131,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
           )}
           <div className="pointer-events-none absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, transparent, ${gold}, transparent)` }} />
           {data.musicUrl ? <MusicButton src={data.musicUrl} gold={gold} /> : null}
+          <button type="button" onClick={fullScreen} aria-label="ملء الشاشة" className="absolute left-3 top-3 grid h-9 w-9 place-items-center rounded-full bg-black/35 text-sm text-white backdrop-blur-sm">⛶</button>
         </div>
 
         <div className="space-y-5 px-6 py-7 text-center">
@@ -147,6 +170,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
 
           <div className="flex flex-wrap items-center justify-center gap-2">
             {data.mapUrl ? <a href={data.mapUrl} target="_blank" rel="noreferrer" className="rounded-full px-4 py-1.5 text-sm font-bold text-white" style={{ background: gold }}>الموقع على الخريطة</a> : null}
+            {data.eventDate ? <button type="button" onClick={addCalendar} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>أضف للتقويم</button> : null}
             {data.customerPhone ? <a href={`https://wa.me/${String(data.customerPhone).replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>واتساب</a> : null}
             {data.customerPhone ? <a href={`tel:${data.customerPhone}`} className="rounded-full border px-4 py-1.5 text-sm font-bold" style={{ borderColor: gold, color: gold }}>اتصال</a> : null}
           </div>
