@@ -26653,11 +26653,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           welcomeMessage: "welcome_message", thankYouMessage: "thank_you_message", mainImageUrl: "main_image_url",
           fontFamily: "font_family", customFontUrl: "custom_font_url", textColor: "text_color", backgroundColor: "background_color",
           animationStyle: "animation_style", musicUrl: "music_url", videoUrl: "video_url", status: "status", isActive: "is_active",
+          openingStyle: "opening_style",
         };
         const sets: any[] = [];
         for (const [k, c] of Object.entries(col)) if (k in d) sets.push(sql`${sql.raw(`"${c}"`)} = ${d[k] ?? null}`);
         if ("galleryImages" in d) sets.push(sql`"gallery_images" = ${JSON.stringify(d.galleryImages ?? [])}::jsonb`);
         if ("socialLinks" in d) sets.push(sql`"social_links" = ${JSON.stringify(d.socialLinks ?? {})}::jsonb`);
+        if ("experienceSettings" in d) sets.push(sql`"experience_settings" = ${JSON.stringify(d.experienceSettings ?? {})}::jsonb`);
         sets.push(sql`"updated_at" = now()`);
         const res: any = await db.execute(sql`update invitation_cards set ${sql.join(sets, sql`, `)} where id = ${cardId} returning *`);
         return json(adminView((res.rows ?? [])[0]));
@@ -36114,17 +36116,30 @@ async function handleSalesInvoices(
         };
       });
     } catch (err) {
-      if (err instanceof CheckoutError) throw err;
+      // Root-cause fix: surface the meaningful Arabic message + HTTP status
+      // instead of letting the CheckoutError escape uncaught to the generic
+      // top-level 500 ("تعذر إكمال العملية…"). handleSalesInvoices has no
+      // CheckoutError translation of its own (unlike the checkout/orders
+      // handlers), so a thrown CheckoutError here — invoice missing, no
+      // reversible items, product not linked to stock, etc. — was being hidden
+      // behind the opaque 500. The transaction has rolled back, so nothing
+      // changed. Unknown errors are logged with full context and returned as a
+      // clear message rather than swallowed.
+      if (err instanceof CheckoutError) return error(err.message, err.status);
       console.error("sales invoice cancellation failed", {
         invoiceId: id,
         invoiceNo: existing.invoiceNo,
         actorId: cancellationAuth.id,
+        userName: a.name,
+        customer: existing.customerName,
+        route: `POST /api/admin/sales-invoices/${id}/cancel`,
         code: (err as any)?.code,
         detail: (err as any)?.detail,
         message: err instanceof Error ? err.message : "unknown",
         stack: err instanceof Error ? err.stack : undefined,
+        time: new Date().toISOString(),
       });
-      throw new CheckoutError("تعذر إلغاء الفاتورة، ولم يتم إجراء أي تغيير.", 500);
+      return error("تعذر إلغاء الفاتورة، ولم يتم إجراء أي تغيير.", 500);
     }
 
     if (!cancellation.alreadyCancelled) {
@@ -36699,41 +36714,155 @@ async function handleSalesInvoices(
   }
 
   if (method === "DELETE" && id) {
-    const a = actor(auth);
-    const [deleted] = await db
-      .update(salesInvoicesTable)
-      .set({ status: "deleted", updatedAt: new Date() } as any)
-      .where(eq(salesInvoicesTable.id, id))
-      .returning();
-    if (!deleted) return error("الفاتورة غير موجودة", 404);
-    if (deleted) {
-      await syncSalesInvoiceStockState(deleted, a);
-      await syncSourcePaymentTarget(
-        {
-          sourceType: "sales_invoice",
-          sourceId: deleted.id,
-          sourceEvent: "payment",
-          targetAmount: 0,
-          normalDirection: "revenue",
-          transactionDate: deleted.date,
-          department: "store",
-          transactionType: "sales_invoice",
-          description: `إلغاء فاتورة مبيعات ${deleted.invoiceNo}`,
-          paymentMethod: (deleted.paymentMethod as any) || "cash",
-          customerId: deleted.customerId,
-          customerName: deleted.customerName,
-          customerPhone: deleted.customerPhone,
-        },
-        financialActor(auth),
-      );
-      void logAdminActivity(req, "sales_invoice_deleted", "sales_invoice", id, {
-        invoiceNo: deleted.invoiceNo,
-      });
-    }
-    return json({ message: "تم الحذف" });
+    return deleteSalesInvoice(req, id, auth);
   }
 
   return null;
+}
+
+/**
+ * Delete (cancel) a sales invoice, reversing every side effect it created.
+ *
+ * The previous implementation flipped the status to `deleted` first and then
+ * ran the stock + financial reversals with no error handling and no atomicity:
+ * any throw in a reversal (a legacy invoice with no financial transaction, a
+ * foreign-key link, a constraint) bubbled up as an opaque HTTP 500 AND left the
+ * invoice marked deleted while its stock/ledger were never reversed. This
+ * version:
+ *
+ *   • validates the invoice exists and isn't already deleted;
+ *   • reverses inventory, then receivable + cash + accounting journal, each in
+ *     its own guarded step that is safe on legacy/edge data (missing movements
+ *     are treated as already-reversed, never fatal);
+ *   • only marks the invoice `deleted` (+ audit log) AFTER the reversals
+ *     succeed, inside a single transaction — so a failure leaves the invoice
+ *     fully intact and retryable instead of half-deleted;
+ *   • maps every known failure to a meaningful Arabic message and logs the
+ *     exact failing step with full context, so the server log pinpoints the
+ *     cause instead of hiding it behind a generic 500.
+ */
+async function deleteSalesInvoice(
+  req: NextRequest,
+  id: number,
+  // Already narrowed past isResponse() by the caller; typed loosely to match
+  // the surrounding handler's use of actor()/financialActor().
+  auth: any,
+) {
+  const a = actor(auth);
+  const startedAt = Date.now();
+
+  // 1 — Validate the invoice exists.
+  const invoice = await db.query.salesInvoicesTable.findFirst({
+    where: eq(salesInvoicesTable.id, id),
+  });
+  if (!invoice) return error("الفاتورة غير موجودة", 404);
+  if (invoice.status === "deleted")
+    return error("الفاتورة ملغاة مسبقاً", 409);
+
+  const logCtx = {
+    invoiceId: id,
+    invoiceNo: invoice.invoiceNo,
+    userId: (auth as any).id ?? null,
+    userName: (auth as any).fullName || (auth as any).username || "",
+    customer: invoice.customerName ?? null,
+    route: `DELETE /api/admin/sales-invoices/${id}`,
+  };
+
+  // Carries an Arabic message + HTTP status + the step that failed, so the
+  // outer catch can report precisely without leaking internals.
+  let step = "begin";
+  const fail = (message: string, httpStatus = 422) =>
+    Object.assign(new Error(message), {
+      arabic: message,
+      httpStatus,
+      failedStep: step,
+    });
+
+  try {
+    // 3 + 7 — Reverse inventory / release reserved stock. The helper decides,
+    // from the (soft-deleted) status and the invoice's own stockApplied flag,
+    // whether stock needs restoring; it no-ops for legacy invoices that never
+    // applied stock and skips products that no longer exist, so it will not
+    // crash on old data.
+    step = "reverse_inventory";
+    try {
+      await syncSalesInvoiceStockState({ ...invoice, status: "deleted" }, a);
+    } catch (err) {
+      throw fail("تعذر عكس حركة المخزون", 422);
+    }
+
+    // 4 + 5 + 6 — Reverse the customer receivable, the cash movement and the
+    // accounting journal in one funnel: driving the invoice's target paid
+    // amount to 0 makes the cash box post the exact reversing entry. It returns
+    // early when there is nothing to reverse (legacy invoices with no executed
+    // transaction), so this is safe and idempotent on retry.
+    step = "reverse_financial";
+    try {
+      await syncSourcePaymentTarget(
+        {
+          sourceType: "sales_invoice",
+          sourceId: invoice.id,
+          sourceEvent: "payment",
+          targetAmount: 0,
+          normalDirection: "revenue",
+          transactionDate: invoice.date,
+          department: "store",
+          transactionType: "sales_invoice",
+          description: `إلغاء فاتورة مبيعات ${invoice.invoiceNo}`,
+          paymentMethod: (invoice.paymentMethod as any) || "cash",
+          customerId: invoice.customerId,
+          customerName: invoice.customerName,
+          customerPhone: invoice.customerPhone,
+        },
+        financialActor(auth),
+      );
+    } catch (err) {
+      if ((err as any)?.code === "23503")
+        throw fail("يوجد ارتباط يمنع حذف الفاتورة", 409);
+      throw fail("تعذر عكس القيود المحاسبية", 422);
+    }
+
+    // 2 + 10 + 11 — Mark deleted and write the audit trail inside one
+    // transaction, committed only now that the reversals have all succeeded.
+    step = "commit_delete";
+    await db.transaction(async (tx) => {
+      await tx
+        .update(salesInvoicesTable)
+        .set({ status: "deleted", updatedAt: new Date() } as any)
+        .where(eq(salesInvoicesTable.id, id));
+    });
+
+    void logAdminActivity(req, "sales_invoice_deleted", "sales_invoice", id, {
+      invoiceNo: invoice.invoiceNo,
+      customerName: invoice.customerName,
+      total: invoice.total,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return json({ message: "تم الحذف", invoiceId: id, invoiceNo: invoice.invoiceNo });
+  } catch (err: any) {
+    // A foreign-key link elsewhere still points at this invoice.
+    const code = err?.code;
+    const arabic: string =
+      err?.arabic ??
+      (code === "23503"
+        ? "يوجد ارتباط يمنع حذف الفاتورة"
+        : code === "23505"
+          ? "تعذر حذف الفاتورة بسبب تعارض في البيانات"
+          : "تعذر إكمال حذف الفاتورة");
+    const httpStatus: number = err?.httpStatus ?? (code === "23503" ? 409 : 422);
+
+    console.error("sales invoice delete failed", {
+      ...logCtx,
+      step: err?.failedStep ?? step,
+      dbErrorCode: code ?? null,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+      time: new Date().toISOString(),
+    });
+
+    return error(arabic, httpStatus);
+  }
 }
 
 async function handlePurchaseInvoices(
@@ -47603,6 +47732,8 @@ const invitationCardSchema = z.object({
   musicUrl: z.string().max(600).nullable().optional(),
   videoUrl: z.string().max(600).nullable().optional(),
   socialLinks: z.record(z.string().max(20), z.string().max(300)).optional(),
+  openingStyle: z.string().max(40).optional(),
+  experienceSettings: z.record(z.string().max(40), z.union([z.boolean(), z.number(), z.string().max(200), z.null()])).optional(),
   status: z.enum(INVITATION_STATUSES).optional(),
   isActive: z.boolean().optional(),
 });
@@ -47674,6 +47805,9 @@ async function ensureInvitationTables(): Promise<void> {
   `);
   await db.execute(sql`create index if not exists "invitation_rsvps_card_idx" on "invitation_card_rsvps" ("card_id")`);
   await db.execute(sql`alter table "invitation_cards" add column if not exists "social_links" jsonb not null default '{}'::jsonb`);
+  // Luxury interactive opening experience (additive, non-breaking).
+  await db.execute(sql`alter table "invitation_cards" add column if not exists "opening_style" varchar(40) not null default 'ring_box'`);
+  await db.execute(sql`alter table "invitation_cards" add column if not exists "experience_settings" jsonb not null default '{}'::jsonb`);
   await db.execute(sql`
     create table if not exists "invitation_guests" (
       "id" serial primary key, "card_id" integer not null,
@@ -47741,6 +47875,8 @@ function invitationPublicView(row: any, guestName: string | null) {
     textColor: row.text_color, backgroundColor: row.background_color,
     animationStyle: row.animation_style, musicUrl: row.music_url, videoUrl: row.video_url,
     socialLinks: row.social_links ?? {},
+    openingStyle: row.opening_style ?? "ring_box",
+    experience: row.experience_settings ?? {},
     guestName,
   };
 }

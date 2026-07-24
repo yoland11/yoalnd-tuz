@@ -11,7 +11,7 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 import { EmptyState } from "./_layout";
 import { generateQrDataUrl } from "./label-helpers";
 import { openQrPrintWindow } from "./print-helpers";
-import { InvitationCard, ANIMATION_STYLES, SOCIAL_PLATFORMS, type InvitationData } from "../invite";
+import { InvitationCard, ANIMATION_STYLES, SOCIAL_PLATFORMS, OPENING_STYLES, LIVE_OPENING_STYLES, resolveExperience, type InvitationData, type ExperienceSettings } from "../invite";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import { usePublicSettings } from "@/lib/public-settings";
 
@@ -152,6 +152,12 @@ function InvitationEditor({ id }: { id: number }) {
   function applyFields(values: Partial<Card>) {
     setForm((f) => (f ? { ...f, ...values } : f));
     patch.mutate(values);
+  }
+  // Merge-update the interactive opening-experience settings (jsonb).
+  function setExp(next: Partial<ExperienceSettings>) {
+    const merged = { ...resolveExperience(form?.experience), ...next };
+    setForm((f) => (f ? { ...f, experience: merged } : f));
+    patch.mutate({ experienceSettings: merged } as any);
   }
   function applyTemplate(t: Tpl) {
     applyFields({ backgroundColor: t.bg, textColor: t.fg, fontFamily: t.font, animationStyle: t.anim });
@@ -307,6 +313,45 @@ function InvitationEditor({ id }: { id: number }) {
               {form.customFontUrl ? <span className="text-xs text-status-success">خط مخصّص مفعّل: {form.fontFamily}</span> : <span className="text-[11px] text-muted-foreground">woff/woff2/ttf/otf — حتى ~1.7MB</span>}
             </div>
             <Fld label="الحركة"><select value={form.animationStyle ?? "fade"} onChange={(e) => setField("animationStyle", e.target.value)} className={inp}>{ANIMATION_STYLES.map((a) => <option key={a} value={a}>{a}</option>)}</select></Fld>
+
+            {/* ── تجربة الفتح التفاعلية الفاخرة ── */}
+            {(() => {
+              const exp = resolveExperience(form.experience);
+              return (
+                <div className="rounded-xl border border-primary/25 bg-primary/[0.04] p-3.5">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm font-bold text-foreground">✨ تجربة الدعوة التفاعلية</div>
+                    <Tgl checked={exp.enabled} onChange={(v) => setExp({ enabled: v })} />
+                  </div>
+                  <div className={exp.enabled ? "space-y-3" : "space-y-3 opacity-50 pointer-events-none"}>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Fld label="أسلوب الفتح">
+                        <select value={form.openingStyle ?? "ring_box"} onChange={(e) => applyFields({ openingStyle: e.target.value })} className={inp}>
+                          {OPENING_STYLES.map((s) => <option key={s.key} value={s.key}>{s.label}{LIVE_OPENING_STYLES.includes(s.key) ? " ✨ متاح" : " — قريباً"}</option>)}
+                        </select>
+                      </Fld>
+                      <Fld label={`سرعة الحركة (${(exp.animationSpeed).toFixed(2)}×)`}>
+                        <input type="range" min="0.6" max="1.6" step="0.1" value={exp.animationSpeed} onChange={(e) => setExp({ animationSpeed: Number(e.target.value) })} className="h-10 w-full accent-primary" />
+                      </Fld>
+                    </div>
+                    <div className="grid gap-1.5 sm:grid-cols-2">
+                      <TglRow label="موسيقى خلفية" checked={exp.music} onChange={(v) => setExp({ music: v })} />
+                      <TglRow label="مؤثرات صوتية" checked={exp.soundEffects} onChange={(v) => setExp({ soundEffects: v })} />
+                      <TglRow label="جسيمات ذهبية عائمة" checked={exp.particles} onChange={(v) => setExp({ particles: v })} />
+                      <TglRow label="إضاءة سينمائية" checked={exp.ambientLights} onChange={(v) => setExp({ ambientLights: v })} />
+                      <TglRow label="العدّ التنازلي" checked={exp.countdown} onChange={(v) => setExp({ countdown: v })} />
+                      <TglRow label="معرض الصور" checked={exp.gallery} onChange={(v) => setExp({ gallery: v })} />
+                      <TglRow label="فيديو الترحيب" checked={exp.video} onChange={(v) => setExp({ video: v })} />
+                      <TglRow label="الزيّ المقترح" checked={exp.dressCode} onChange={(v) => setExp({ dressCode: v })} />
+                      <TglRow label="قسم القصة" checked={exp.story} onChange={(v) => setExp({ story: v })} />
+                      <TglRow label="تأكيد الحضور (RSVP)" checked={exp.rsvp} onChange={(v) => setExp({ rsvp: v })} />
+                    </div>
+                    <p className="text-[11px] leading-5 text-muted-foreground">المتاح الآن: علبة الخاتم المخملية، صندوق الألماس، صندوق الهدية — اختر أيّها من القائمة أعلاه. الأساليب المعلّمة «قريباً» ستعمل تلقائياً فور توفّرها وتعرض علبة الخاتم مؤقتاً.</p>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="pt-2">
               <Button size="sm" variant="outline" onClick={() => confirm("حذف الدعوة؟") && del.mutate()} className="gap-1 text-destructive hover:text-destructive"><Trash2 className="h-4 w-4" /> حذف الدعوة</Button>
             </div>
@@ -334,6 +379,24 @@ function InvitationEditor({ id }: { id: number }) {
 const inp = "w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm outline-none focus:border-primary/60";
 function Fld({ label, children }: { label: string; children: ReactNode }) {
   return <label className="block text-xs text-muted-foreground">{label}<div className="mt-1">{children}</div></label>;
+}
+/** Compact iOS-style switch. */
+function Tgl({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
+      className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${checked ? "bg-primary" : "bg-border/60"}`}>
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${checked ? "left-0.5" : "left-[22px]"}`} />
+    </button>
+  );
+}
+/** Labelled switch row. */
+function TglRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-1.5">
+      <span className="text-xs text-foreground">{label}</span>
+      <Tgl checked={checked} onChange={onChange} />
+    </div>
+  );
 }
 
 const GUEST_TYPE_LABELS: Record<string, string> = { bride_family: "عائلة العروس", groom_family: "عائلة العريس", vip: "VIP", friends: "الأصدقاء", relatives: "الأقارب", staff: "الموظفون", media: "الإعلام", organizer: "المنظّم" };

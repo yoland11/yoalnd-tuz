@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { InvitationExperience, ScrollReveal } from "./invite-experience";
 
 export type InvitationData = {
   slug?: string;
@@ -27,7 +28,52 @@ export type InvitationData = {
   videoUrl?: string | null;
   socialLinks?: Record<string, string> | null;
   guestName?: string | null;
+  openingStyle?: string | null;
+  experience?: ExperienceSettings | null;
 };
+
+/** Luxury interactive opening experience — admin-controlled, all optional & non-breaking. */
+export type ExperienceSettings = {
+  enabled?: boolean;         // master switch for the cinematic opening
+  animationSpeed?: number;   // 0.6 (fast) .. 1.6 (slow) multiplier
+  music?: boolean;           // background music (uses musicUrl)
+  soundEffects?: boolean;    // synthesized opening/click cues
+  particles?: boolean;       // floating gold dust
+  ambientLights?: boolean;   // candle glow / ambient lighting
+  countdown?: boolean;
+  gallery?: boolean;
+  video?: boolean;
+  dressCode?: boolean;
+  story?: boolean;
+  rsvp?: boolean;
+};
+
+/** Registry of opening styles — architected so new styles plug in without touching callers. */
+export const OPENING_STYLES = [
+  { key: "ring_box",      label: "علبة الخاتم الفاخرة" },
+  { key: "wax_envelope",  label: "مظروف الشمع الملكي" },
+  { key: "royal_scroll",  label: "المخطوطة الملكية" },
+  { key: "gift_box",      label: "صندوق الهدية الفاخر" },
+  { key: "flower_bloom",  label: "تفتّح الأزهار" },
+  { key: "diamond_box",   label: "صندوق الألماس" },
+  { key: "white_dove",    label: "الحمامة البيضاء" },
+] as const;
+
+export type OpeningStyleKey = (typeof OPENING_STYLES)[number]["key"];
+
+/** Opening styles that are live today (bespoke visual). Single source of truth. */
+export const LIVE_OPENING_STYLES: OpeningStyleKey[] = ["ring_box", "diamond_box", "gift_box"];
+
+export const DEFAULT_EXPERIENCE: Required<ExperienceSettings> = {
+  enabled: true, animationSpeed: 1, music: false, soundEffects: true,
+  particles: true, ambientLights: true, countdown: true, gallery: true,
+  video: true, dressCode: true, story: true, rsvp: true,
+};
+
+/** Merge stored (possibly partial/loose) settings over the defaults. */
+export function resolveExperience(raw?: ExperienceSettings | null): Required<ExperienceSettings> {
+  return { ...DEFAULT_EXPERIENCE, ...(raw ?? {}) };
+}
 
 export const SOCIAL_PLATFORMS: Array<{ key: string; label: string; icon: string }> = [
   { key: "instagram", label: "Instagram", icon: "📷" },
@@ -98,7 +144,8 @@ function MusicButton({ src, gold }: { src: string; gold: string }) {
 }
 
 /** Pure invitation renderer — shared by the admin live preview and the public page. */
-export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDataUrl?: string | null }) {
+export function InvitationCard({ data, qrDataUrl, experience }: { data: InvitationData; qrDataUrl?: string | null; experience?: ExperienceSettings | null }) {
+  const exp = resolveExperience(experience ?? data.experience);
   const cd = useCountdown(data.eventDate);
   const bg = data.backgroundColor || "#f7f1e8";
   const fg = data.textColor || "#2a2118";
@@ -148,7 +195,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
 
           {data.welcomeMessage ? <p className="text-sm leading-7 opacity-90">{data.welcomeMessage}</p> : null}
 
-          {data.videoUrl ? <video src={data.videoUrl} controls playsInline className="mx-auto max-h-64 w-full rounded-xl" /> : null}
+          {exp.video && data.videoUrl ? <video src={data.videoUrl} controls playsInline className="mx-auto max-h-64 w-full rounded-xl" /> : null}
 
           <div className="mx-auto h-px w-24" style={{ background: gold }} />
 
@@ -157,7 +204,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
             {data.venueName || data.venueAddress ? <div className="opacity-90">📍 {[data.venueName, data.venueAddress].filter(Boolean).join(" — ")}</div> : null}
           </div>
 
-          {cd && !cd.passed ? (
+          {exp.countdown && cd && !cd.passed ? (
             <div className="flex items-center justify-center gap-3">
               {[["يوم", cd.days], ["ساعة", cd.hours], ["دقيقة", cd.minutes]].map(([l, v]) => (
                 <div key={l as string} className="rounded-xl px-3 py-2" style={{ background: `${gold}18`, minWidth: 56 }}>
@@ -183,7 +230,7 @@ export function InvitationCard({ data, qrDataUrl }: { data: InvitationData; qrDa
             </div>
           ) : null}
 
-          {data.galleryImages && data.galleryImages.length ? (
+          {exp.gallery && data.galleryImages && data.galleryImages.length ? (
             <div className="-mx-2 flex snap-x gap-2 overflow-x-auto px-2 py-1" style={{ scrollbarWidth: "none" }}>
               {data.galleryImages.map((g, i) => (
                 <img key={i} src={g} alt="" className="h-24 w-24 flex-shrink-0 snap-center rounded-xl object-cover" style={{ border: `1px solid ${gold}44` }} />
@@ -221,13 +268,23 @@ export default function InvitePage() {
   if (isLoading) return <div className="grid min-h-dvh place-items-center bg-neutral-950 text-white">جارٍ تحميل الدعوة…</div>;
   if (error || !data) return <div className="grid min-h-dvh place-items-center bg-neutral-950 text-white">الدعوة غير موجودة أو انتهت صلاحيتها.</div>;
 
+  const exp = resolveExperience(data.experience);
+
   return (
-    <div className="min-h-dvh w-full overflow-x-hidden bg-neutral-950 px-4 py-8">
-      <InvitationCard data={data} qrDataUrl={qr} />
-      <div className="mx-auto mt-5 w-full max-w-md">
-        <RsvpForm slug={slug} guestToken={guestToken} thankYou={data.thankYouMessage} defaultName={data.guestName ?? ""} />
+    <InvitationExperience data={data}>
+      <div className="min-h-dvh w-full overflow-x-hidden bg-neutral-950 px-4 py-8">
+        <ScrollReveal>
+          <InvitationCard data={data} qrDataUrl={qr} />
+        </ScrollReveal>
+        {exp.rsvp ? (
+          <ScrollReveal delay={0.1}>
+            <div className="mx-auto mt-5 w-full max-w-md">
+              <RsvpForm slug={slug} guestToken={guestToken} thankYou={data.thankYouMessage} defaultName={data.guestName ?? ""} />
+            </div>
+          </ScrollReveal>
+        ) : null}
       </div>
-    </div>
+    </InvitationExperience>
   );
 }
 
