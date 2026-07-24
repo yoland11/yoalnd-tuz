@@ -1,0 +1,18 @@
+# Expo / RN
+node_modules/
+.expo/
+dist/
+dist-export/
+web-build/
+*.log
+
+# Native build output
+android/
+ios/
+*.apk
+*.aab
+*.keystore
+
+# Env
+.env
+.env.local

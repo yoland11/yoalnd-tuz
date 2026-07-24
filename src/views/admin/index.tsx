@@ -181,6 +181,18 @@ const ReportDesignerPage = lazy(() =>
 const SyncCenterPage = lazy(() => import("./sync-center"));
 const GraduationAdminPage = lazy(() => import("./graduation"));
 
+// Any graduation permission (module gate or a granular sub-permission) may open
+// the Graduation Management Center; sub-pages gate themselves via nav perms.
+const GRADUATION_PERMS: Permission[] = [
+  "graduation",
+  "graduation_production",
+  "graduation_printing",
+  "graduation_embroidery",
+  "graduation_cashier",
+  "graduation_manager",
+  "graduation_warehouse",
+];
+
 function Guard({
   me,
   perm,
@@ -405,14 +417,14 @@ export default function Admin() {
           </Route>
           <Route path="/admin/graduation/:section">
             {() => (
-              <Guard me={me} perm="graduation">
+              <Guard me={me} anyPerm={GRADUATION_PERMS}>
                 <GraduationAdminPage />
               </Guard>
             )}
           </Route>
           <Route path="/admin/graduation">
             {() => (
-              <Guard me={me} perm="graduation">
+              <Guard me={me} anyPerm={GRADUATION_PERMS}>
                 <GraduationAdminPage />
               </Guard>
             )}

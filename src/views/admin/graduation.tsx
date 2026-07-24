@@ -82,6 +82,7 @@ import { adminFetch, apiErrorMessage } from "./_lib";
 
 type Mode =
   | "dashboard"
+  | "bookings"
   | "orders"
   | "groups"
   | "customers"
@@ -93,11 +94,14 @@ type Mode =
   | "printing"
   | "embroidery"
   | "delivery"
+  | "warehouse"
+  | "invoices"
   | "reports"
   | "settings";
 
 const MODE_LABELS: Record<Mode, string> = {
-  dashboard: "لوحة تجهيزات التخرج",
+  dashboard: "لوحة التحكم",
+  bookings: "الحجوزات",
   orders: "طلبات التخرج",
   groups: "الطلبات الجماعية",
   customers: "عملاء التخرج",
@@ -109,6 +113,8 @@ const MODE_LABELS: Record<Mode, string> = {
   printing: "الطباعة",
   embroidery: "التطريز",
   delivery: "التسليم",
+  warehouse: "المخزن",
+  invoices: "الفواتير",
   reports: "تقارير التخرج",
   settings: "إعدادات التخرج",
 };
@@ -1996,6 +2002,298 @@ function Customers() {
   );
 }
 
+function Bookings() {
+  const [, navigate] = useLocation();
+  const orders = useQuery({
+    queryKey: ["admin", "graduation", "bookings", "orders"],
+    queryFn: () => adminFetch<any>("/admin/graduation/orders?limit=100"),
+  });
+  const groups = useQuery({
+    queryKey: ["admin", "graduation", "bookings", "groups"],
+    queryFn: () => adminFetch<any>("/admin/graduation/groups"),
+  });
+  const items: any[] = orders.data?.items ?? [];
+  const upcoming = [...items]
+    .filter((order) => order.dueDate)
+    .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  const groupItems: any[] = groups.data?.items ?? [];
+  return (
+    <div className="space-y-5">
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">حجوزات التخرج</h2>
+            <p className="text-sm text-muted-foreground">
+              يدير مركز الحجوزات الموحّد إنشاء الحجوزات (طالب فردي، مجموعة، جامعة،
+              كلية، مدرسة)؛ وهنا تتابع حجوزات التخرج القادمة والجماعية.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => navigate("/admin/graduation/orders")}>
+              <Plus className="ml-2 h-4 w-4" /> طلب فردي جديد
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => navigate("/admin/bookings")}
+            >
+              <CalendarClock className="ml-2 h-4 w-4" /> مركز الحجوزات
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h3 className="mb-3 font-bold">الحجوزات الجماعية</h3>
+        {groups.isLoading ? (
+          <Skeleton className="h-24" />
+        ) : groupItems.length ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {groupItems.map((group) => (
+              <Card key={group.id}>
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                      <Users className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0">
+                      <strong className="block truncate">{group.title}</strong>
+                      <span className="text-xs text-muted-foreground">
+                        {group.university ?? "—"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                    <Info
+                      label="الطلبات"
+                      value={group.ordersCount ?? group.orders ?? 0}
+                    />
+                    <Info label="التاريخ" value={group.eventDate ?? "—"} />
+                    <Info
+                      label="الحالة"
+                      value={STATUS_LABELS[group.status] ?? group.status ?? "—"}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <div className="py-10 text-center text-muted-foreground">
+            لا توجد حجوزات جماعية
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h3 className="mb-3 font-bold">الحجوزات القادمة</h3>
+        {orders.isLoading ? (
+          <Skeleton className="h-40" />
+        ) : upcoming.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="p-2 text-right">رقم الطلب</th>
+                  <th className="p-2 text-right">الزبون</th>
+                  <th className="p-2 text-right">تاريخ الاستحقاق</th>
+                  <th className="p-2 text-right">المرحلة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcoming.map((order) => (
+                  <tr
+                    key={order.id}
+                    className="cursor-pointer border-t border-border hover:bg-muted/40"
+                    onClick={() => navigate("/admin/graduation/orders")}
+                  >
+                    <td className="p-2">{order.orderNo}</td>
+                    <td className="p-2">{order.customerName}</td>
+                    <td className="p-2" dir="ltr">
+                      {order.dueDate}
+                    </td>
+                    <td className="p-2">{order.stageLabel}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-10 text-center text-muted-foreground">
+            لا توجد حجوزات قادمة
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Warehouse() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "graduation", "warehouse"],
+    queryFn: () => adminFetch<any>("/admin/graduation/warehouse"),
+  });
+  const items: any[] = data?.items ?? [];
+  const summary = data?.summary ?? {
+    materials: 0,
+    totalReserved: 0,
+    shortages: 0,
+  };
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric label="أصناف محجوزة" value={summary.materials} icon={Boxes} />
+        <Metric
+          label="إجمالي الكميات المحجوزة"
+          value={summary.totalReserved}
+          icon={PackageCheck}
+        />
+        <Metric
+          label="أصناف بنقص"
+          value={summary.shortages}
+          icon={Wrench}
+          tone="warning"
+        />
+      </div>
+      <section className="rounded-xl border border-border bg-card p-4">
+        <h3 className="mb-3 font-bold">المواد المحجوزة لطلبات التخرج</h3>
+        <p className="mb-3 text-xs text-muted-foreground">
+          يحجز النظام الأقمشة والقبعات والأوشحة والإكسسوارات ومواد الطباعة من
+          الطلبات النشطة تلقائياً، ويقارنها بالمتوفر في المخزن.
+        </p>
+        {isLoading ? (
+          <Skeleton className="h-40" />
+        ) : items.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="p-2 text-right">المادة</th>
+                  <th className="p-2 text-center">محجوز</th>
+                  <th className="p-2 text-center">المتوفر</th>
+                  <th className="p-2 text-center">النقص</th>
+                  <th className="p-2 text-center">طلبات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.productId} className="border-t border-border">
+                    <td className="p-2">{item.name}</td>
+                    <td className="p-2 text-center">{item.reserved}</td>
+                    <td className="p-2 text-center">{item.stock}</td>
+                    <td
+                      className={`p-2 text-center ${
+                        item.shortage > 0
+                          ? "font-bold text-status-warning"
+                          : ""
+                      }`}
+                    >
+                      {item.shortage}
+                    </td>
+                    <td className="p-2 text-center">{item.orders}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-10 text-center text-muted-foreground">
+            لا توجد مواد محجوزة حالياً
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Invoices() {
+  const [, navigate] = useLocation();
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "graduation", "invoices"],
+    queryFn: () => adminFetch<any>("/admin/graduation/invoices"),
+  });
+  const items: any[] = data?.items ?? [];
+  const summary = data?.summary ?? {
+    revenue: 0,
+    collected: 0,
+    outstanding: 0,
+    invoices: 0,
+  };
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Metric
+          label="الإيرادات"
+          value={formatCurrency(summary.revenue)}
+          icon={CircleDollarSign}
+        />
+        <Metric
+          label="المُحصّل"
+          value={formatCurrency(summary.collected)}
+          icon={CheckCircle2}
+          tone="success"
+        />
+        <Metric
+          label="المتبقي"
+          value={formatCurrency(summary.outstanding)}
+          icon={CalendarClock}
+          tone="warning"
+        />
+        <Metric label="عدد الفواتير" value={summary.invoices} icon={BarChart3} />
+      </div>
+      <section className="rounded-xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="font-bold">فواتير التخرج</h3>
+          <Button variant="outline" onClick={() => navigate("/admin/invoices")}>
+            <Eye className="ml-2 h-4 w-4" /> سجل الفواتير
+          </Button>
+        </div>
+        {isLoading ? (
+          <Skeleton className="h-40" />
+        ) : items.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="p-2 text-right">رقم الطلب</th>
+                  <th className="p-2 text-right">الزبون</th>
+                  <th className="p-2 text-center">الإجمالي</th>
+                  <th className="p-2 text-center">المدفوع</th>
+                  <th className="p-2 text-center">المتبقي</th>
+                  <th className="p-2 text-center">الحالة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.id} className="border-t border-border">
+                    <td className="p-2">{item.orderNo}</td>
+                    <td className="p-2">{item.customerName}</td>
+                    <td className="p-2 text-center">
+                      {formatCurrency(item.total)}
+                    </td>
+                    <td className="p-2 text-center">
+                      {formatCurrency(item.paid)}
+                    </td>
+                    <td className="p-2 text-center">
+                      {formatCurrency(item.remaining)}
+                    </td>
+                    <td className="p-2 text-center">
+                      {STATUS_LABELS[item.paymentStatus] ?? item.paymentStatus}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-10 text-center text-muted-foreground">
+            لا توجد فواتير
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 type ResourceType = "fabric_roll" | "sewing_machine" | "heat_press";
 function Resources({ type }: { type: ResourceType }) {
   const labels = {
@@ -2817,6 +3115,8 @@ export default function GraduationAdminPage() {
       />
       {mode === "dashboard" ? (
         <DashboardWithGroups />
+      ) : mode === "bookings" ? (
+        <Bookings />
       ) : mode === "orders" ? (
         <Orders />
       ) : mode === "groups" ? (
@@ -2860,6 +3160,10 @@ export default function GraduationAdminPage() {
         <Production focus="embroidery" />
       ) : mode === "delivery" ? (
         <Orders deliveryOnly />
+      ) : mode === "warehouse" ? (
+        <Warehouse />
+      ) : mode === "invoices" ? (
+        <Invoices />
       ) : mode === "reports" ? (
         <Reports />
       ) : mode === "settings" ? (

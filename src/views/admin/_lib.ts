@@ -89,6 +89,12 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  "graduation_production",
+  "graduation_printing",
+  "graduation_embroidery",
+  "graduation_cashier",
+  "graduation_manager",
+  "graduation_warehouse",
   "hr",
   "payroll_view",
   "payroll_edit",
@@ -332,6 +338,12 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   koshas: "بوابة كادر الكوشات",
   photography: "بوابة المصورين",
   graduation: "إدارة تجهيزات التخرج",
+  graduation_production: "تخرج: الإنتاج",
+  graduation_printing: "تخرج: الطباعة",
+  graduation_embroidery: "تخرج: التطريز",
+  graduation_cashier: "تخرج: الصندوق والفواتير",
+  graduation_manager: "تخرج: مدير المركز",
+  graduation_warehouse: "تخرج: المخزن",
   production_view: "عرض الإنتاج",
   production_create: "إنشاء أوامر الإنتاج",
   production_edit: "تعديل أوامر الإنتاج",
@@ -474,7 +486,12 @@ export function hasPerm(
   if (!user || !user.isActive) return false;
   if (user.role === "admin") return true;
   if (!perm) return true;
-  return user.permissions.includes(perm);
+  if (user.permissions.includes(perm)) return true;
+  // Mirror the server: the "graduation" module gate implies its granular
+  // sub-permissions so existing holders keep access after the split.
+  if (perm.startsWith("graduation_") && user.permissions.includes("graduation"))
+    return true;
+  return false;
 }
 
 export { fileToDataUrl };

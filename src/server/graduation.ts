@@ -2556,5 +2556,136 @@ export async function handleAdminGraduation(
       .limit(100);
     return json({ items: rows });
   }
+  // ── Warehouse (المخزن): materials reserved by active graduation orders ──
+  // Aggregates each order's `inventoryItems` (fabric, caps, sashes, accessories,
+  // printing materials) and joins live product stock so the crew can see
+  // reservations vs. availability and spot shortages. Read-only; the actual
+  // stock deduction stays owned by the order lifecycle (`inventoryApplied`).
+  if (method === "GET" && resource === "warehouse") {
+    const orders = await db
+      .select({
+        inventoryItems: graduationOrdersTable.inventoryItems,
+        inventoryApplied: graduationOrdersTable.inventoryApplied,
+      })
+      .from(graduationOrdersTable)
+      .where(
+        sql`${graduationOrdersTable.archivedAt} is null
+          and ${graduationOrdersTable.status} <> 'cancelled'
+          and ${graduationOrdersTable.productionStage} <> 'delivered'`,
+      );
+    const reserved = new Map<
+      number,
+      { productId: number; label: string; reserved: number; applied: number; orders: number }
+    >();
+    for (const order of orders) {
+      const items = Array.isArray(order.inventoryItems) ? order.inventoryItems : [];
+      for (const item of items) {
+        const productId = Number(item?.productId);
+        if (!productId) continue;
+        const quantity = Math.max(0, Number(item?.quantity ?? 0));
+        const entry =
+          reserved.get(productId) ??
+          { productId, label: String(item?.label ?? ""), reserved: 0, applied: 0, orders: 0 };
+        entry.reserved += quantity;
+        if (order.inventoryApplied) entry.applied += quantity;
+        entry.orders += 1;
+        if (!entry.label && item?.label) entry.label = String(item.label);
+        reserved.set(productId, entry);
+      }
+    }
+    const ids = [...reserved.keys()];
+    const products = ids.length
+      ? await db
+          .select({
+            id: productsTable.id,
+            name: productsTable.name,
+            nameAr: productsTable.nameAr,
+            stock: productsTable.stock,
+            minStock: productsTable.minStock,
+          })
+          .from(productsTable)
+          .where(inArray(productsTable.id, ids))
+      : [];
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const items = [...reserved.values()]
+      .map((entry) => {
+        const product = productById.get(entry.productId);
+        const stock = Number(product?.stock ?? 0);
+        return {
+          productId: entry.productId,
+          name: product?.nameAr || product?.name || entry.label || `#${entry.productId}`,
+          label: entry.label,
+          reserved: entry.reserved,
+          applied: entry.applied,
+          stock,
+          minStock: Number(product?.minStock ?? 0),
+          shortage: Math.max(0, entry.reserved - stock),
+          orders: entry.orders,
+        };
+      })
+      .sort((a, b) => b.reserved - a.reserved);
+    return json({
+      items,
+      summary: {
+        materials: items.length,
+        totalReserved: items.reduce((sum, item) => sum + item.reserved, 0),
+        shortages: items.filter((item) => item.shortage > 0).length,
+      },
+    });
+  }
+  // ── Invoices (الفواتير): financial roll-up of graduation orders ──
+  // Reuses the amounts already posted on each order (linked to sales invoices +
+  // the unified accounting ledger via invoiceId / financialTransactionId).
+  if (method === "GET" && resource === "invoices") {
+    const activeWhere = sql`${graduationOrdersTable.archivedAt} is null and ${graduationOrdersTable.status} <> 'cancelled'`;
+    const [totals, statusRows, rows] = await Promise.all([
+      db
+        .select({
+          revenue: sql<number>`coalesce(sum(${graduationOrdersTable.totalAmount}::numeric),0)::float`,
+          collected: sql<number>`coalesce(sum(${graduationOrdersTable.paidAmount}::numeric),0)::float`,
+          outstanding: sql<number>`coalesce(sum(${graduationOrdersTable.remainingAmount}::numeric),0)::float`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(graduationOrdersTable)
+        .where(activeWhere),
+      db
+        .select({
+          status: graduationOrdersTable.paymentStatus,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(graduationOrdersTable)
+        .where(activeWhere)
+        .groupBy(graduationOrdersTable.paymentStatus),
+      db
+        .select()
+        .from(graduationOrdersTable)
+        .where(activeWhere)
+        .orderBy(desc(graduationOrdersTable.createdAt))
+        .limit(200),
+    ]);
+    const total = totals[0] ?? { revenue: 0, collected: 0, outstanding: 0, count: 0 };
+    return json({
+      summary: {
+        revenue: money(total.revenue),
+        collected: money(total.collected),
+        outstanding: money(total.outstanding),
+        invoices: total.count,
+        byStatus: Object.fromEntries(statusRows.map((row) => [row.status, row.count])),
+      },
+      items: rows.map((row) => ({
+        id: row.id,
+        orderNo: row.orderNo,
+        customerName: row.customerName,
+        invoiceId: row.invoiceId,
+        total: money(row.totalAmount),
+        paid: money(row.paidAmount),
+        remaining: money(row.remainingAmount),
+        paymentStatus: row.paymentStatus,
+        paymentMethod: row.paymentMethod,
+        createdAt: row.createdAt,
+        trackingUrl: `/graduation/track/${row.qrToken}`,
+      })),
+    });
+  }
   return null;
 }

@@ -33,6 +33,7 @@ packages:
   - lib/integrations/*
   - scripts
   - desktop
+  - mobile
 
 catalog:
   '@tailwindcss/vite': ^4.1.14

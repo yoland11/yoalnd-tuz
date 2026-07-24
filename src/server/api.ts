@@ -602,6 +602,15 @@ export const ALL_PERMISSIONS = [
   "koshas",
   "photography",
   "graduation",
+  // Granular graduation permissions (kept separate from the "graduation"
+  // module gate). The module gate implies all of these — see hasPermission —
+  // so existing single-permission holders never lose access.
+  "graduation_production",
+  "graduation_printing",
+  "graduation_embroidery",
+  "graduation_cashier",
+  "graduation_manager",
+  "graduation_warehouse",
   "hr",
   // Granular payroll permissions (kept separate from the HR module gate).
   "payroll_view",
@@ -1310,7 +1319,12 @@ function hasPermission(
   if (!user || !user.isActive) return false;
   if (user.role === "admin") return true;
   if (!perm) return true;
-  return user.permissions.includes(perm);
+  if (user.permissions.includes(perm)) return true;
+  // The "graduation" module gate implies its granular sub-permissions, so
+  // staff granted the module before the split keep full access.
+  if (perm.startsWith("graduation_") && user.permissions.includes("graduation"))
+    return true;
+  return false;
 }
 
 async function requirePermission(
@@ -25918,6 +25932,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "graduation") {
     const auth = await requireAnyPermission(req, [
       "graduation",
+      "graduation_production",
+      "graduation_printing",
+      "graduation_embroidery",
+      "graduation_cashier",
+      "graduation_manager",
+      "graduation_warehouse",
       "orders",
       "products",
       "services",
@@ -43407,6 +43427,73 @@ async function handleStaffPortal(
   req: NextRequest,
   parts: string[],
 ): Promise<NextResponse | null> {
+  // ── Mobile auth (AJN Staff app) ──
+  // Bearer-token counterpart of the cookie-based /admin/auth/login. Returns the
+  // session token in the body so the Expo app can store it in SecureStore and
+  // send it as `Authorization: Bearer`. `adminToken(req)` already accepts that
+  // header for every /staff/* endpoint, so no other backend change is needed.
+  if (parts[1] === "auth") {
+    if (req.method === "POST" && parts[2] === "login") {
+      const { username, password } = await body(req);
+      if (
+        typeof username !== "string" ||
+        typeof password !== "string" ||
+        !username ||
+        !password
+      ) {
+        return error("بيانات ناقصة", 400);
+      }
+      const loginIp = ip(req);
+      const userKey = username.trim().toLowerCase();
+      if (
+        !checkRateLimit(adminLoginByIp, loginIp, 20, 15 * 60 * 1000) ||
+        !checkRateLimit(adminLoginByUsername, userKey, 8, 15 * 60 * 1000)
+      ) {
+        return error("محاولات كثيرة، حاول لاحقاً", 429);
+      }
+      const user = await db.query.staffTable.findFirst({
+        where: eq(staffTable.username, username),
+      });
+      if (!user || !user.isActive || !verifyPassword(password, user.passwordHash)) {
+        void logAdminActivity(req, "staff_mobile_login_failed", "staff", user?.id, {
+          username: userKey,
+        });
+        return error("بيانات الدخول غير صحيحة", 401);
+      }
+      const { token, expiresAt } = await createSession(user.id);
+      await ensureStaffActivityColumn();
+      await db
+        .update(staffTable)
+        .set({ lastActivityAt: new Date() })
+        .where(eq(staffTable.id, user.id));
+      void logAdminActivity(req, "staff_mobile_login_success", "staff", user.id, {
+        username: userKey,
+      });
+      return json({
+        token,
+        expiresAt: expiresAt.toISOString(),
+        user: publicUser({
+          id: user.id,
+          username: user.username,
+          fullName: user.fullName,
+          role: user.role,
+          permissions: user.permissions ?? [],
+          isActive: user.isActive,
+        }),
+      });
+    }
+    if (req.method === "GET" && parts[2] === "me") {
+      const user = await getAdminUser(req);
+      if (!user) return error("غير مخول", 401);
+      return json({ user: publicUser(user) });
+    }
+    if (req.method === "POST" && parts[2] === "logout") {
+      const token = readAdminToken(req);
+      if (token) await destroySession(token);
+      return json({ ok: true });
+    }
+    return error("المسار غير موجود", 404);
+  }
   if (parts[1] === "photography")
     return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;

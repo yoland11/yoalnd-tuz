@@ -14,7 +14,9 @@
       "Bash(screencapture -x /tmp/ajn-screenshot.png)",
       "Read(//private/tmp/**)",
       "Read(//Users/yoland/Desktop/**)",
-      "Bash(npx playwright *)"
+      "Bash(npx playwright *)",
+      "Bash(grep -noiE \"\\(GET|POST|PUT|PATCH|DELETE\\)[ ,\\\\\"']+/?\\(api/\\)?\\(kosha|photography|staff\\)[a-zA-Z0-9/_{}:.-]*\" src/server/api.ts)",
+      "Bash(pnpm typecheck *)"
     ]
   }
 }
