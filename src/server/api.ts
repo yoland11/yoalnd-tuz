@@ -582,6 +582,7 @@ export const ALL_PERMISSIONS = [
   "sales_invoice.view_cancelled",
   "sales_invoice.print_cancelled",
   "sales_invoice.approve_cancellation",
+  "sales_invoice.permanent_delete",
   "whatsapp",
   "accounting",
   // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
@@ -35516,7 +35517,11 @@ async function handleSalesInvoices(
   if (section !== "sales-invoices") return null;
   const auth = await requirePermission(
     req,
-    parts[3] === "cancel" ? "sales_invoice.cancel" : "accounting",
+    parts[3] === "cancel"
+      ? "sales_invoice.cancel"
+      : req.method === "DELETE"
+        ? "sales_invoice.permanent_delete"
+        : "accounting",
   );
   if (isResponse(auth)) return auth;
   await ensureSalesInvoicesTables();
@@ -36721,25 +36726,28 @@ async function handleSalesInvoices(
 }
 
 /**
- * Delete (cancel) a sales invoice, reversing every side effect it created.
+ * Permanently (physically) delete a sales invoice, reversing every side effect
+ * it created and then removing it from the operational tables entirely. Only the
+ * independent audit log survives — there is no soft-delete tombstone.
  *
- * The previous implementation flipped the status to `deleted` first and then
- * ran the stock + financial reversals with no error handling and no atomicity:
- * any throw in a reversal (a legacy invoice with no financial transaction, a
- * foreign-key link, a constraint) bubbled up as an opaque HTTP 500 AND left the
- * invoice marked deleted while its stock/ledger were never reversed. This
- * version:
+ * Gated by `sales_invoice.permanent_delete` (enforced at the handler entry).
+ * Requires a confirmation payload: a deletion reason + the invoice number
+ * retyped. The flow:
  *
- *   • validates the invoice exists and isn't already deleted;
+ *   • validates existence (404), the confirmation data (422), and that the
+ *     invoice is not linked to another operation — a live receipt-voucher
+ *     allocation or a sales return (409);
  *   • reverses inventory, then receivable + cash + accounting journal, each in
  *     its own guarded step that is safe on legacy/edge data (missing movements
- *     are treated as already-reversed, never fatal);
- *   • only marks the invoice `deleted` (+ audit log) AFTER the reversals
- *     succeed, inside a single transaction — so a failure leaves the invoice
- *     fully intact and retryable instead of half-deleted;
- *   • maps every known failure to a meaningful Arabic message and logs the
- *     exact failing step with full context, so the server log pinpoints the
- *     cause instead of hiding it behind a generic 500.
+ *     are treated as already-reversed, never fatal) — reusing the same
+ *     primitives as invoice creation/cancellation;
+ *   • only then, inside a single transaction, physically deletes the invoice
+ *     (items + delivery cascade) plus its financial transactions, receivable
+ *     ledger, stock movements and coupon usage so no orphan rows remain, and
+ *     writes the audit trail — so a failure leaves the invoice intact and
+ *     retryable instead of half-deleted;
+ *   • maps every known failure to a meaningful Arabic message + status code and
+ *     logs the exact failing step server-side, never a generic opaque 500.
  */
 async function deleteSalesInvoice(
   req: NextRequest,
@@ -36751,13 +36759,52 @@ async function deleteSalesInvoice(
   const a = actor(auth);
   const startedAt = Date.now();
 
+  // 0 — Confirmation payload: a required deletion reason + the invoice number
+  // retyped. Never delete silently or without a reason.
+  const payload = await body(req).catch(() => ({}) as any);
+  const reason = String((payload as any)?.reason ?? "").trim();
+  const confirmNo = String(
+    (payload as any)?.confirmInvoiceNumber ?? (payload as any)?.invoiceNumber ?? "",
+  ).trim();
+
   // 1 — Validate the invoice exists.
   const invoice = await db.query.salesInvoicesTable.findFirst({
     where: eq(salesInvoicesTable.id, id),
   });
   if (!invoice) return error("الفاتورة غير موجودة", 404);
-  if (invoice.status === "deleted")
-    return error("الفاتورة ملغاة مسبقاً", 409);
+
+  // 422 — confirmation data must be present and correct.
+  if (reason.length < 2) return error("سبب الحذف مطلوب", 422);
+  if (!confirmNo || confirmNo !== invoice.invoiceNo)
+    return error("رقم الفاتورة للتأكيد غير مطابق", 422);
+
+  // 409 — block when the invoice is linked to another operation: a still-active
+  // receipt-voucher allocation, or a recorded sales return.
+  try {
+    const linkRes: any = await db.execute(sql`
+      SELECT
+        CASE WHEN to_regclass('public.receipt_voucher_allocations') IS NULL THEN 0
+          ELSE (SELECT count(*) FROM receipt_voucher_allocations a
+            WHERE a.source_type = 'sales_invoice' AND a.source_id = ${id}
+              AND a.posted_at IS NOT NULL AND a.reversed_at IS NULL) END::int AS receipts,
+        (SELECT count(*) FROM financial_transactions t
+          WHERE t.source_type = 'sales_invoice' AND t.source_id = ${String(id)}
+            AND t.approval_status = 'executed'
+            AND (t.transaction_type ILIKE '%return%' OR coalesce(t.source_event, '') ILIKE '%return%')
+        )::int AS returns
+    `);
+    const links = (linkRes.rows ?? [])[0] ?? {};
+    if (Number(links.receipts) > 0)
+      return error("لا يمكن الحذف: الفاتورة مرتبطة بسند قبض. ألغِ التخصيص أولاً.", 409);
+    if (Number(links.returns) > 0)
+      return error("لا يمكن الحذف: الفاتورة مرتبطة بمرتجع مبيعات.", 409);
+  } catch (err) {
+    console.error("sales invoice delete link-check failed", {
+      invoiceId: id,
+      error: err instanceof Error ? err.message : err,
+    });
+    return error("تعذّر التحقق من ارتباطات الفاتورة", 500);
+  }
 
   const logCtx = {
     invoiceId: id,
@@ -36822,24 +36869,75 @@ async function deleteSalesInvoice(
       throw fail("تعذر عكس القيود المحاسبية", 422);
     }
 
-    // 2 + 10 + 11 — Mark deleted and write the audit trail inside one
-    // transaction, committed only now that the reversals have all succeeded.
+    // 2 + 7 + 14 — Physically remove the invoice and every operational row it
+    // owns, then write the independent audit trail — all in one transaction,
+    // committed only now that the reversals have succeeded. Items + delivery
+    // rows cascade via their ON DELETE foreign keys; the rest carry no FK to the
+    // invoice, so they are purged explicitly to leave no orphans (test 15).
     step = "commit_delete";
+    const stockRestored = Number((invoice as any).stockApplied ?? 1) === 1;
+    const cashReversed = money(invoice.paidAmount) > 0;
     await db.transaction(async (tx) => {
-      await tx
-        .update(salesInvoicesTable)
-        .set({ status: "deleted", updatedAt: new Date() } as any)
-        .where(eq(salesInvoicesTable.id, id));
+      const ledgerTbl: any = await tx.execute(
+        sql`SELECT to_regclass('public.customer_receivable_ledger') AS t`,
+      );
+      if ((ledgerTbl.rows ?? [])[0]?.t) {
+        await tx.execute(sql`
+          DELETE FROM customer_receivable_ledger
+          WHERE invoice_id = ${id} AND source_type = 'sales_invoice'
+        `);
+      }
+      await tx.execute(sql`
+        DELETE FROM financial_transactions
+        WHERE source_type = 'sales_invoice' AND source_id = ${String(id)}
+      `);
+      await tx.execute(sql`
+        DELETE FROM stock_movements
+        WHERE sales_invoice_id = ${id}
+          OR (related_type = 'sales_invoice' AND related_id = ${id})
+          OR invoice_number = ${invoice.invoiceNo}
+      `);
+      try {
+        await tx.execute(sql`DELETE FROM coupon_usages WHERE sales_invoice_id = ${id}`);
+      } catch {
+        /* coupon usage table/column is optional */
+      }
+      // The invoice header — sales_invoice_items + delivery rows cascade.
+      await tx.execute(sql`DELETE FROM sales_invoices WHERE id = ${id}`);
+      // Independent audit log — the only record that survives the deletion.
+      await tx.insert(adminActivityLogsTable).values({
+        staffId: a.id,
+        userName: a.name,
+        action: "sales_invoice_permanently_deleted",
+        entityType: "sales_invoice",
+        entityId: id,
+        metadata: {
+          invoiceNo: invoice.invoiceNo,
+          reason,
+          customerId: invoice.customerId,
+          customerName: invoice.customerName,
+          total: invoice.total,
+          paidAmount: invoice.paidAmount,
+          remainingAmount: invoice.remainingAmount,
+          paymentStatus: invoice.paymentStatus,
+          stockRestored,
+          cashReversed,
+          ledgerUpdated: true,
+          durationMs: Date.now() - startedAt,
+          ipAddress: ip(req),
+        },
+        ipAddress: ip(req),
+        userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
+      });
     });
 
-    void logAdminActivity(req, "sales_invoice_deleted", "sales_invoice", id, {
-      invoiceNo: invoice.invoiceNo,
-      customerName: invoice.customerName,
-      total: invoice.total,
-      durationMs: Date.now() - startedAt,
+    return json({
+      success: true,
+      deletedInvoiceNumber: invoice.invoiceNo,
+      stockRestored,
+      cashReversed,
+      ledgerUpdated: true,
     });
-
-    return json({ message: "تم الحذف", invoiceId: id, invoiceNo: invoice.invoiceNo });
   } catch (err: any) {
     // A foreign-key link elsewhere still points at this invoice.
     const code = err?.code;
