@@ -893,6 +893,24 @@ function InvoiceListView({
     enabled: !!cancellingInvoice,
   });
   const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
+  const canDelete = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("accounting"));
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  async function deleteInvoice(inv: SalesInvoice) {
+    if (deletingId) return;
+    if (!confirm(`حذف فاتورة المبيعات ${inv.invoiceNo} من السجل؟ سيُعكس المخزون والحركة المالية.`)) return;
+    setDeletingId(inv.id);
+    try {
+      await adminFetch(`/admin/sales-invoices/${inv.id}`, { method: "DELETE" });
+      toast({ title: "تم حذف الفاتورة", description: inv.invoiceNo });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+    } catch (error) {
+      toast({ title: "تعذّر حذف الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setDeletingId(null);
+    }
+  }
   async function confirmCancellation() {
     if (!cancellingInvoice || !cancelConfirmed || cancelReason.trim().length < 3 || !cancelPassword) return;
     setCancelling(true);
@@ -1004,7 +1022,7 @@ function InvoiceListView({
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-1"><Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
                           تفاصيل
-                        </Button>{inv.status === "cancelled" ? <Button variant="ghost" size="sm" disabled>ملغاة</Button> : canCancel && inv.status === "active" ? <Button variant="destructive" size="sm" onClick={() => setCancellingInvoice(inv)}>إلغاء الفاتورة</Button> : null}</div>
+                        </Button>{inv.status === "cancelled" ? <Button variant="ghost" size="sm" disabled>ملغاة</Button> : canCancel && inv.status === "active" ? <Button variant="destructive" size="sm" onClick={() => setCancellingInvoice(inv)}>إلغاء الفاتورة</Button> : null}{canDelete ? <Button variant="ghost" size="sm" onClick={() => deleteInvoice(inv)} disabled={deletingId === inv.id} title="حذف الفاتورة من السجل" className="text-destructive hover:text-destructive"><Trash2 className="w-4 h-4" /></Button> : null}</div>
                       </td>
                     </tr>
                   ))
