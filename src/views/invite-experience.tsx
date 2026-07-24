@@ -243,11 +243,15 @@ function RingBoxOpener({
 }
 
 /**
- * Opening styles that currently have a bespoke luxury visual (the admin picks one per
- * invitation). Every style shares the cinematic box mechanics but carries its own
- * materials/palette via an `ajx-v-*` class. Unimplemented styles fall back to ring_box.
+ * Which opening styles have a bespoke luxury visual (the admin picks one per invitation).
+ * Resolved at render time — never at module top level — so the invite ↔ invite-experience
+ * import cycle can't hit a temporal-dead-zone on LIVE_OPENING_STYLES.
  */
-const IMPLEMENTED_OPENINGS = new Set<OpeningStyleKey>(LIVE_OPENING_STYLES);
+function resolveOpeningStyle(style?: string | null): OpeningStyleKey {
+  return style && (LIVE_OPENING_STYLES as string[]).includes(style)
+    ? (style as OpeningStyleKey)
+    : "ring_box";
+}
 
 // ── Public orchestrator ────────────────────────────────────────────────────────
 export function InvitationExperience({
@@ -295,10 +299,7 @@ export function InvitationExperience({
   if (skip) return <>{children}</>;
 
   // The admin's chosen style drives the visual; unknown styles fall back to ring_box.
-  const styleKey: OpeningStyleKey =
-    data.openingStyle && IMPLEMENTED_OPENINGS.has(data.openingStyle as OpeningStyleKey)
-      ? (data.openingStyle as OpeningStyleKey)
-      : "ring_box";
+  const styleKey = resolveOpeningStyle(data.openingStyle);
 
   return (
     <div className="ajx">
