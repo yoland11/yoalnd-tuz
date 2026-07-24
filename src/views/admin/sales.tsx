@@ -893,23 +893,17 @@ function InvoiceListView({
     enabled: !!cancellingInvoice,
   });
   const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
-  const canDelete = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("accounting"));
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-  async function deleteInvoice(inv: SalesInvoice) {
-    if (deletingId) return;
-    if (!confirm(`حذف فاتورة المبيعات ${inv.invoiceNo} من السجل؟ سيُعكس المخزون والحركة المالية.`)) return;
-    setDeletingId(inv.id);
-    try {
-      await adminFetch(`/admin/sales-invoices/${inv.id}`, { method: "DELETE" });
-      toast({ title: "تم حذف الفاتورة", description: inv.invoiceNo });
-      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
-    } catch (error) {
-      toast({ title: "تعذّر حذف الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
-    } finally {
-      setDeletingId(null);
-    }
+  const canDelete = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.permanent_delete"));
+  const [deletingInvoice, setDeletingInvoice] = useState<SalesInvoice | null>(null);
+  // After a successful permanent deletion: refresh the register + dependent
+  // stats without a full reload, and step back a page if we just removed the
+  // last row of a non-first page.
+  function onInvoiceDeleted() {
+    queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
+    if (invoices.length === 1 && page > 1) onPage(page - 1);
   }
   async function confirmCancellation() {
     if (!cancellingInvoice || !cancelConfirmed || cancelReason.trim().length < 3 || !cancelPassword) return;
@@ -1022,7 +1016,7 @@ function InvoiceListView({
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-1"><Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
                           تفاصيل
-                        </Button>{inv.status === "cancelled" ? <Button variant="ghost" size="sm" disabled>ملغاة</Button> : canCancel && inv.status === "active" ? <Button variant="destructive" size="sm" onClick={() => setCancellingInvoice(inv)}>إلغاء الفاتورة</Button> : null}{canDelete ? <Button variant="ghost" size="sm" onClick={() => deleteInvoice(inv)} disabled={deletingId === inv.id} title="حذف الفاتورة من السجل" className="text-destructive hover:text-destructive"><Trash2 className="w-4 h-4" /></Button> : null}</div>
+                        </Button>{inv.status === "cancelled" ? <Button variant="ghost" size="sm" disabled>ملغاة</Button> : canCancel && inv.status === "active" ? <Button variant="destructive" size="sm" onClick={() => setCancellingInvoice(inv)}>إلغاء الفاتورة</Button> : null}{canDelete ? <Button variant="ghost" size="sm" onClick={() => setDeletingInvoice(inv)} title="حذف الفاتورة نهائياً" className="text-destructive hover:text-destructive"><Trash2 className="w-4 h-4" /></Button> : null}</div>
                       </td>
                     </tr>
                   ))
@@ -1031,6 +1025,7 @@ function InvoiceListView({
           </table>
         </div>
         {cancellingInvoice && <SalesInvoiceRegisterCancellationDialog invoice={cancellationDetail ?? cancellingInvoice} itemCount={cancellationDetailLoading ? null : cancellationDetail?.items?.length ?? 0} reason={cancelReason} setReason={setCancelReason} password={cancelPassword} setPassword={setCancelPassword} confirmed={cancelConfirmed} setConfirmed={setCancelConfirmed} loadingDetails={cancellationDetailLoading} busy={cancelling} onClose={() => { setCancellingInvoice(null); setCancelReason(""); setCancelPassword(""); setCancelConfirmed(false); }} onConfirm={confirmCancellation} />}
+        {deletingInvoice && <SalesInvoicePermanentDeleteDialog invoice={deletingInvoice} onClose={() => setDeletingInvoice(null)} onDeleted={onInvoiceDeleted} />}
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 p-3 border-t border-border/20">
             <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
@@ -1051,6 +1046,79 @@ function InvoiceListView({
 
 function SalesInvoiceRegisterCancellationDialog({ invoice, itemCount, reason, setReason, password, setPassword, confirmed, setConfirmed, loadingDetails, busy, onClose, onConfirm }: { invoice: SalesInvoice; itemCount: number | null; reason: string; setReason: (value: string) => void; password: string; setPassword: (value: string) => void; confirmed: boolean; setConfirmed: (value: boolean) => void; loadingDetails: boolean; busy: boolean; onClose: () => void; onConfirm: () => void }) {
   return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" dir="rtl"><div className="w-full max-w-lg rounded-xl border border-destructive/40 bg-card p-5 shadow-xl"><h3 className="text-lg font-bold text-destructive">إلغاء الفاتورة</h3><div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-3 text-xs"><span>الفاتورة: {invoice.invoiceNo}</span><span>العميل: {invoice.customerName || "—"}</span><span>المورد: {invoice.supplierName || "—"}</span><span>البنود: {itemCount ?? "جارٍ التحميل..."}</span><span>الإجمالي: {formatCurrency(invoice.total)}</span><span>المدفوع: {formatCurrency(invoice.paidAmount)}</span><span>المتبقي: {formatCurrency(invoice.remainingAmount)}</span><span>الدفع: {invoice.paymentMethod}</span></div><p className="mt-3 text-sm text-destructive">سيتم إرجاع المواد إلى المخزون وعكس المبلغ المالي.</p><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="سبب الإلغاء *" className="mt-4 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="كلمة المرور للتأكيد *" className="mt-3 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /><label className="mt-4 flex items-start gap-2 text-xs"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>أؤكد إلغاء الفاتورة وإرجاع المواد إلى المخزون وعكس المبلغ المالي</span></label><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>رجوع</Button><Button variant="destructive" disabled={busy || loadingDetails || !confirmed || reason.trim().length < 3 || !password} onClick={onConfirm}>{busy ? "جارٍ الإلغاء..." : "تأكيد إلغاء الفاتورة"}</Button></div></div></div>;
+}
+
+const DELETE_REASONS = [
+  { v: "فاتورة مكررة", l: "فاتورة مكررة" },
+  { v: "إدخال خاطئ", l: "إدخال خاطئ" },
+  { v: "فاتورة تجريبية", l: "فاتورة تجريبية" },
+  { v: "طلب الإدارة", l: "طلب الإدارة" },
+  { v: "other", l: "أخرى (حدّد السبب)" },
+];
+
+/** Permanent-deletion confirmation: required reason + retyped invoice number. */
+function SalesInvoicePermanentDeleteDialog({ invoice, onClose, onDeleted }: { invoice: SalesInvoice; onClose: () => void; onDeleted: () => void }) {
+  const { toast } = useToast();
+  const [reasonKey, setReasonKey] = useState("");
+  const [otherReason, setOtherReason] = useState("");
+  const [confirmNo, setConfirmNo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const reason = reasonKey === "other" ? otherReason.trim() : reasonKey;
+  const numberMatches = confirmNo.trim() === invoice.invoiceNo;
+  const ready = reason.length >= 2 && numberMatches && !busy;
+
+  async function submit() {
+    if (!ready || busy) return; // guards against duplicate clicks
+    setBusy(true);
+    try {
+      const res = await adminFetch<{ success: boolean; deletedInvoiceNumber: string; stockRestored: boolean; cashReversed: boolean; ledgerUpdated: boolean }>(
+        `/admin/sales-invoices/${invoice.id}`,
+        { method: "DELETE", body: JSON.stringify({ reason, confirmInvoiceNumber: confirmNo.trim() }) },
+      );
+      toast({
+        title: `تم حذف الفاتورة ${res?.deletedInvoiceNumber ?? invoice.invoiceNo} نهائياً`,
+        description: [res?.stockRestored ? "المخزون مُعاد" : null, res?.cashReversed ? "النقد معكوس" : null, res?.ledgerUpdated ? "الدفتر مُحدّث" : null].filter(Boolean).join(" · ") || undefined,
+      });
+      onDeleted();
+      onClose();
+    } catch (error) {
+      toast({ title: "تعذّر حذف الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
+      setBusy(false); // allow a corrected retry
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" dir="rtl">
+      <div className="w-full max-w-lg rounded-xl border border-destructive/40 bg-card p-5 shadow-xl">
+        <h3 className="text-lg font-bold text-destructive">حذف الفاتورة نهائياً</h3>
+        <p className="mt-1 text-xs text-muted-foreground">إجراء لا رجعة فيه — تُزال الفاتورة من السجلّات مع عكس المخزون والنقد ودفتر العميل. يبقى سجل التدقيق فقط.</p>
+        <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-3 text-xs">
+          <span>الفاتورة: {invoice.invoiceNo}</span>
+          <span>العميل: {invoice.customerName || "—"}</span>
+          <span>الإجمالي: {formatCurrency(invoice.total)}</span>
+          <span>المدفوع: {formatCurrency(invoice.paidAmount)}</span>
+          <span>المتبقي: {formatCurrency(invoice.remainingAmount)}</span>
+          <span>حالة الدفع: {invoice.paymentStatus}</span>
+        </div>
+        <label className="mt-4 block text-xs text-muted-foreground">سبب الحذف *
+          <select value={reasonKey} onChange={(e) => setReasonKey(e.target.value)} className="mt-1 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+            <option value="">اختر السبب…</option>
+            {DELETE_REASONS.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+          </select>
+        </label>
+        {reasonKey === "other" ? (
+          <input value={otherReason} onChange={(e) => setOtherReason(e.target.value)} placeholder="حدّد السبب *" className="mt-2 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+        ) : null}
+        <label className="mt-3 block text-xs text-muted-foreground">للتأكيد، اكتب رقم الفاتورة: <span className="font-mono text-foreground">{invoice.invoiceNo}</span>
+          <input value={confirmNo} onChange={(e) => setConfirmNo(e.target.value)} dir="ltr" placeholder={invoice.invoiceNo} className="mt-1 w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" disabled={busy} onClick={onClose}>رجوع</Button>
+          <Button variant="destructive" disabled={!ready} onClick={submit}>{busy ? "جارٍ الحذف…" : "حذف نهائي"}</Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function toNumber(value: unknown) {
