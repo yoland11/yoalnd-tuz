@@ -2,10 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { CalendarDays, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { adminFetch } from "./_lib";
+import { adminFetch, formatCurrency } from "./_lib";
 
 type PayrollRun = { id: number; run_no: string; period: string; status: string; totalNet: number; lines: unknown[] };
-const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+// Unified to the shared IQD formatter so amounts render the same across the app
+// (e.g. 2,750,000 د.ع) with western digits and thousands separators.
+const money = { format: (value: number | string | null | undefined) => formatCurrency(value) };
 
 export default function PayrollHistoryPage() {
   const payroll = useQuery({ queryKey: ["hr", "payroll-history"], queryFn: () => adminFetch<PayrollRun[]>("/admin/hr/payroll") });

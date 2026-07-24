@@ -36,7 +36,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { adminFetch, getCachedAdminMe, hasPerm } from "./_lib";
+import { adminFetch, getCachedAdminMe, hasPerm, formatCurrency } from "./_lib";
 import { downloadElementPdf } from "@/lib/pdf";
 import { printWhenImagesReadyScript, salarySlipCss, sheetReportCss } from "./print-helpers";
 
@@ -124,7 +124,9 @@ type SalaryManagement = {
   suggestions: Array<{ id: number; transaction_no: string; transaction_date: string; amount: number; payment_method: string; description: string; match_score: number }>;
 };
 
-const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+// Unified to the shared IQD formatter so amounts render the same across the app
+// (e.g. 2,750,000 د.ع) with western digits and thousands separators.
+const money = { format: (value: number | string | null | undefined) => formatCurrency(value) };
 const compact = new Intl.NumberFormat("ar-IQ", { notation: "compact", maximumFractionDigits: 1 });
 const periodLabel = (value: string) => value ? new Date(`${value}-01T00:00:00Z`).toLocaleDateString("ar-IQ", { month: "long", year: "numeric", timeZone: "UTC" }) : "—";
 const n = (value: unknown) => {

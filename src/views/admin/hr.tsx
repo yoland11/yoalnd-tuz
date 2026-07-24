@@ -8,7 +8,7 @@ import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, apiErrorMessage, apiErrorStatus } from "./_lib";
+import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
 import PayrollBonuses from "./payroll-bonuses";
 import { printWhenImagesReadyScript, sheetReportCss } from "./print-helpers";
 
@@ -22,7 +22,9 @@ type Staff = { id: number; fullName: string; username: string; department?: stri
 type Line = { id?: number; staff_id?: number; employeeId?: number; employeeName: string; department?: string; baseSalary: number; grossSalary: number; netSalary: number; totalDeductions?: number; advanceDeduction: number; attendanceDays: number; absenceDays: number; scheduledWorkingDays: number; overtimeHours: number; overtimeAmount: number; bonusAmount: number; penaltyAmount: number; absenceDeduction: number; totalAllowances?: number; attendanceAllowance?: number; transportationAllowance?: number; foodAllowance?: number; phoneAllowance?: number; housingAllowance?: number; otherFixedAllowances?: number; calculationDetails?: any; commissionAmount?: number; attendanceDeduction?: number; lateDeduction?: number; manualDeduction?: number; otherEarnings?: number; otherDeductions?: number; paymentMethod?: string; paymentDate?: string | null; lineNotes?: string | null; remainingSalary?: number };
 type Run = { id: number; run_no: string; period: string; status: string; notes?: string; department?: string; totalGross: number; totalDeductions: number; totalNet: number; periodStartDate?: string; periodEndDate?: string; paymentDate?: string; attendanceWarning?: string | null; lines: Line[] };
 type Dashboard = { employees: number; monthly_payroll: number; paid_salaries: number; pending_salaries: number; advances: number; bonuses: number; deductions: number; attendance: number; absence: number; late_employees: number; overtime: number; netSalary: number; departments: { department: string; employees: number; netSalary: number; lines: Line[] }[]; runs?: Run[] };
-const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+// Unified to the shared IQD formatter so amounts render the same across the app
+// (e.g. 2,750,000 د.ع) with western digits and thousands separators.
+const money = { format: (value: number | string | null | undefined) => formatCurrency(value) };
 const printSalarySlipDetailed = printSalarySlip;
 const date = () => new Date().toISOString().slice(0, 10); const period = () => date().slice(0, 7); const last = (p: string) => new Date(Date.UTC(Number(p.slice(0, 4)), Number(p.slice(5)), 0)).toISOString().slice(0, 10);
 

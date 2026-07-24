@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, apiErrorMessage } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 
 type Supplier = { id: number; supplierCode?: string; name: string; company?: string; contactPerson?: string; phone?: string; whatsapp?: string; email?: string; address?: string; category?: string; paymentTerms?: string; creditLimit?: number; openingBalance?: number; balance: number | string; notes?: string; status?: string; isActive: number };
-const money = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+// Unified to the shared IQD formatter so amounts render the same across the app
+// (e.g. 2,750,000 د.ع) with western digits and thousands separators.
+const money = { format: (value: number | string | null | undefined) => formatCurrency(value) };
 const blank = (): Partial<Supplier> => ({ name: "", company: "", contactPerson: "", phone: "", whatsapp: "", email: "", address: "", category: "", paymentTerms: "", creditLimit: 0, openingBalance: 0, notes: "", status: "active" });
 
 export default function SuppliersPage() {

@@ -4,7 +4,7 @@ import { BarChart3, Check, Download, FileSpreadsheet, Plus, Printer, Search, Set
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, apiErrorMessage } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -17,7 +17,9 @@ type Advance = {
 };
 type Dashboard = { cards: Record<string, number>; monthly: { month: string; advances: number; repayments: number }[]; departments: { department: string; count: number; outstanding: number }[] };
 
-const IQD = new Intl.NumberFormat("ar-IQ", { style: "currency", currency: "IQD", maximumFractionDigits: 0 });
+// Unified to the shared IQD formatter so amounts render the same across the app
+// (e.g. 2,750,000 د.ع) with western digits and thousands separators.
+const IQD = { format: (value: number | string | null | undefined) => formatCurrency(value) };
 const today = () => new Date().toISOString().slice(0, 10);
 const labels: Record<string, string> = { salary_advance: "سلفة راتب", cash_withdrawal: "سحب نقدي", emergency_loan: "قرض طارئ", pending: "معلّق", approved: "معتمد", rejected: "مرفوض", cancelled: "ملغي", paid: "مصروف", completed: "مكتمل" };
 const statusClass: Record<string, string> = { pending: "bg-amber-500/15 text-amber-700 dark:text-amber-300", paid: "bg-blue-500/15 text-blue-700 dark:text-blue-300", completed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", rejected: "bg-red-500/15 text-red-700 dark:text-red-300", cancelled: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-300" };
