@@ -10,8 +10,9 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   CheckCircle2, Clock, AlertCircle, QrCode, Download,
-  Printer, Ban,
+  Printer, Ban, ScanLine,
 } from "lucide-react";
+import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency } from "./_lib";
@@ -175,6 +176,7 @@ export default function SalesPage() {
   const [form, setForm] = useState(newInvoice());
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQ, setSearchQ] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const { data: invoiceSettings } = usePublicSettings();
   const [delivery, setDelivery] = useState<DeliveryOutput>({
@@ -261,6 +263,18 @@ export default function SalesPage() {
     });
     setSearchQ("");
     searchRef.current?.focus();
+  }
+
+  // Scanned product → add to cart (increment if present) with a stock warning.
+  function handleScanAdd(product: ScanProduct) {
+    const match = products.find((p) => p.id === product.id) ?? (product as unknown as Product);
+    const existing = cart.find((i) => i.productId === product.id);
+    const nextQty = (existing?.quantity ?? 0) + 1;
+    const available = Number(match.stock ?? 0);
+    if (available > 0 && nextQty > available) {
+      toast({ title: "تنبيه: المخزون غير كافٍ", description: `المتاح: ${available}`, variant: "destructive" });
+    }
+    addToCart(match);
   }
 
   function updateItem(idx: number, field: keyof CartItem, raw: string) {
@@ -465,6 +479,14 @@ export default function SalesPage() {
   // ── View: POS ────────────────────────────────────────────────────────────
   return (
     <div dir="rtl" className="space-y-4">
+      <BarcodeScanDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        products={products as unknown as ScanProduct[]}
+        context="sales"
+        onAdd={handleScanAdd}
+        onCreated={() => queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] })}
+      />
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -527,22 +549,27 @@ export default function SalesPage() {
         <div className="space-y-4">
           {/* Product Search */}
           <div className="bg-card rounded-xl border border-border/40 p-4">
-            <div className="relative">
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                ref={searchRef}
-                value={searchQ}
-                onChange={e => setSearchQ(e.target.value)}
-                onKeyDown={handleSearchKey}
-                placeholder="ابحث عن منتج أو امسح الباركود..."
-                className="w-full bg-background border border-border/40 rounded-lg px-4 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                autoFocus
-              />
-              {searchQ && (
-                <button onClick={() => setSearchQ("")} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                  <X className="w-4 h-4" />
-                </button>
-              )}
+            <div className="flex items-stretch gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
+                  ref={searchRef}
+                  value={searchQ}
+                  onChange={e => setSearchQ(e.target.value)}
+                  onKeyDown={handleSearchKey}
+                  placeholder="ابحث عن منتج أو امسح الباركود..."
+                  className="w-full bg-background border border-border/40 rounded-lg px-4 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  autoFocus
+                />
+                {searchQ && (
+                  <button onClick={() => setSearchQ("")} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              <Button type="button" variant="outline" onClick={() => setScanOpen(true)} className="shrink-0 gap-1.5 whitespace-nowrap">
+                <ScanLine className="w-4 h-4" /> مسح باركود
+              </Button>
             </div>
             {filteredProducts.length > 0 && (
               <div className="mt-2 border border-border/30 rounded-lg overflow-hidden divide-y divide-border/20">

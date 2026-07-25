@@ -2,12 +2,13 @@ import { useDeferredValue, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, Save, RefreshCw, X,
-  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip, Pencil, Printer,
+  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip, Pencil, Printer, ScanLine,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
+import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ export default function PurchasesPage() {
 
   const [form, setForm] = useState(newForm());
   const [items, setItems] = useState<PurchaseItem[]>([blankItem()]);
+  const [scanOpen, setScanOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [searchQ, setSearchQ] = useState<Record<number, string>>({});
   const [showProductSearch, setShowProductSearch] = useState<number | null>(null);
@@ -115,6 +117,39 @@ export default function PurchasesPage() {
 
   // ── Item operations ──────────────────────────────────────────────────────
   function addRow() { setItems(prev => [...prev, blankItem()]); }
+
+  // Scanned product → increment an existing row, else fill the first blank row
+  // (or append one). Purchase price is taken from the product's cost price.
+  function handleScanAdd(product: ScanProduct) {
+    const cost = parseFloat(String(product.costPrice ?? "0")) || 0;
+    const sale = parseFloat(String(product.price ?? "0")) || 0;
+    setItems(prev => {
+      const existingIdx = prev.findIndex(r => r.productId === product.id);
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        const it = { ...updated[existingIdx] };
+        it.quantity = (it.quantity || 0) + 1;
+        it.total = +(it.quantity * it.costPrice - it.discount).toFixed(2);
+        updated[existingIdx] = it;
+        return updated;
+      }
+      const blankIdx = prev.findIndex(r => !r.productId && !r.productName);
+      const rows = blankIdx >= 0 ? [...prev] : [...prev, blankItem()];
+      const idx = blankIdx >= 0 ? blankIdx : rows.length - 1;
+      const qty = rows[idx].quantity || 1;
+      rows[idx] = {
+        ...rows[idx],
+        productId: product.id,
+        productName: product.nameAr || product.name || "",
+        barcode: product.barcode || "",
+        quantity: qty,
+        costPrice: cost,
+        salePrice: sale,
+        total: +(qty * cost - (rows[idx].discount || 0)).toFixed(2),
+      };
+      return rows;
+    });
+  }
 
   function removeRow(idx: number) {
     if (items.length === 1) return;
@@ -286,6 +321,14 @@ export default function PurchasesPage() {
 
   return (
     <div dir="rtl" className="space-y-4">
+      <BarcodeScanDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        products={products as unknown as ScanProduct[]}
+        context="purchase"
+        onAdd={handleScanAdd}
+        onCreated={() => queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] })}
+      />
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -309,12 +352,18 @@ export default function PurchasesPage() {
         <div className="space-y-4">
           {/* Items */}
           <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
-            <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between gap-2">
               <span className="font-semibold text-sm">أصناف الفاتورة</span>
-              <Button variant="ghost" size="sm" onClick={addRow}>
-                <Plus className="w-4 h-4 ml-1" />
-                إضافة صنف
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" onClick={() => setScanOpen(true)} className="gap-1.5">
+                  <ScanLine className="w-4 h-4" />
+                  مسح باركود
+                </Button>
+                <Button variant="ghost" size="sm" onClick={addRow}>
+                  <Plus className="w-4 h-4 ml-1" />
+                  إضافة صنف
+                </Button>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
