@@ -724,6 +724,8 @@ const otpRequestByIp = new Map<string, Bucket>();
 const otpVerifyByPhone = new Map<string, Bucket>();
 const phoneLookupHits = new Map<string, number[]>();
 const respondHits = new Map<string, number[]>();
+// Best-effort per-IP throttle on public tracking-code lookups (anti-enumeration).
+const trackingLookupByIp = new Map<string, Bucket>();
 
 let seedPromise: Promise<void> | null = null;
 let crewsTablePromise: Promise<void> | null = null;
@@ -9818,6 +9820,175 @@ async function buildServiceTracking(so: any) {
   };
 }
 
+function trackingIso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (!value) return new Date().toISOString();
+  const d = new Date(value as any);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toISOString();
+}
+
+/**
+ * Map any non-order/non-service record (kosha booking, rental, photography,
+ * graduation, or any future service) into the same public tracking payload the
+ * tracking page's OrderCard renders. Reads columns defensively so a missing
+ * field never crashes the lookup.
+ */
+function genericTrackingPayload(
+  row: any,
+  opts: { kind: string; serviceType: string; code: string; serviceName?: string | null },
+) {
+  return {
+    trackingCode: opts.code,
+    qrToken: row.qrToken ?? null,
+    qrScanUrl: null,
+    qrDataUrl: null,
+    id: row.id,
+    kind: opts.kind,
+    serviceType: opts.serviceType,
+    serviceName: opts.serviceName ?? null,
+    status: row.status ?? "pending",
+    customerName: row.customerName ?? row.brideName ?? row.groomName ?? "",
+    customerPhone: null,
+    total: Number(row.totalAmount ?? row.total ?? 0) || 0,
+    depositAmount: Number(row.depositAmount ?? row.paidAmount ?? 0) || 0,
+    remainingAmount: Number(row.remainingAmount ?? 0) || 0,
+    paymentStatus: row.paymentStatus ?? "unpaid",
+    rewardPointsAwarded: Number(row.rewardPointsAwarded ?? 0) || 0,
+    eventDate: row.eventDate ?? row.startDate ?? null,
+    eventLocation: row.eventLocation ?? row.location ?? null,
+    items: [],
+    statusHistory: [
+      { status: row.status ?? "pending", notes: null, createdAt: trackingIso(row.createdAt) },
+    ],
+    createdAt: trackingIso(row.createdAt),
+    notes: row.notes ?? null,
+  };
+}
+
+async function koshaTrackingPayload(booking: any) {
+  const f = await formatKoshaBooking(booking);
+  return {
+    trackingCode: f.trackingCode ?? booking.trackingCode,
+    qrToken: null,
+    qrScanUrl: null,
+    qrDataUrl: null,
+    id: booking.id,
+    kind: "service",
+    serviceType: "kosha",
+    serviceName: f.koshaName ?? "كوشة",
+    status: f.trackingStatus ?? booking.status ?? "pending",
+    customerName: f.customerName ?? booking.customerName ?? "",
+    customerPhone: null,
+    total: Number(f.totalAmount ?? 0) || 0,
+    depositAmount: Number(f.paidAmount ?? 0) || 0,
+    remainingAmount: Number(f.remainingAmount ?? 0) || 0,
+    paymentStatus: f.paymentStatus ?? "unpaid",
+    eventDate: f.eventDate ?? null,
+    eventLocation: null,
+    items: [],
+    statusHistory: [
+      {
+        status: f.trackingStatus ?? booking.status ?? "pending",
+        notes: null,
+        createdAt: trackingIso(booking.createdAt),
+      },
+    ],
+    createdAt: trackingIso(booking.createdAt),
+    notes: null,
+  };
+}
+
+/**
+ * Unified public tracking resolver. Normalizes the entered code (case, spaces
+ * and dashes are all ignored) and searches EVERY supported entity by its own
+ * code column, reusing the existing builders. Returns the tracking payload for
+ * the first match, or null after all sources have been checked. Dash/space are
+ * stripped on both sides via an exact (non-wildcard) comparison, so this cannot
+ * be used to enumerate rows.
+ */
+async function resolveTrackingByCode(raw: string): Promise<any | null> {
+  const compact = String(raw ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]/g, "");
+  if (!compact) return null;
+
+  await Promise.all([
+    ensureTrackingColumns(),
+    ensureAdminExtensionsTables(),
+    ensureKoshaTables(),
+    ensureRentalProductsTables(),
+    ensurePhotographyStaffTables(),
+    ensureGraduationTables(),
+  ]);
+
+  // Exact, case/dash/space-insensitive match on a code column (no wildcards).
+  const match = (col: any) =>
+    sql`replace(replace(upper(${col}::text), '-', ''), ' ', '') = ${compact}`;
+
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(match(ordersTable.trackingCode))
+    .limit(1);
+  if (order) return await buildTracking(order);
+
+  const [so] = await db
+    .select()
+    .from(serviceOrdersTable)
+    .where(match(serviceOrdersTable.trackingCode))
+    .limit(1);
+  if (so) return await buildServiceTracking(so);
+
+  const [kosha] = await db
+    .select()
+    .from(koshaBookingsTable)
+    .where(match(koshaBookingsTable.trackingCode))
+    .limit(1);
+  if (kosha) return await koshaTrackingPayload(kosha);
+
+  const [rental] = await db
+    .select()
+    .from(rentalOrdersTable)
+    .where(match(rentalOrdersTable.orderNo))
+    .limit(1);
+  if (rental)
+    return genericTrackingPayload(rental, {
+      kind: "rental",
+      serviceType: "rental",
+      code: rental.orderNo,
+      serviceName: "طلب إيجار",
+    });
+
+  const [photo] = await db
+    .select()
+    .from(photographyOrdersTable)
+    .where(match(photographyOrdersTable.orderNo))
+    .limit(1);
+  if (photo)
+    return genericTrackingPayload(photo, {
+      kind: "service",
+      serviceType: "photography",
+      code: photo.orderNo,
+      serviceName: "تصوير",
+    });
+
+  const [grad] = await db
+    .select()
+    .from(graduationOrdersTable)
+    .where(match(graduationOrdersTable.orderNo))
+    .limit(1);
+  if (grad)
+    return genericTrackingPayload(grad, {
+      kind: "service",
+      serviceType: "graduation",
+      code: grad.orderNo,
+      serviceName: "تخرج",
+    });
+
+  return null;
+}
+
 function maskName(name: string): string {
   if (!name) return "";
   return name
@@ -13689,18 +13860,30 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   }
 
   if (method === "GET" && parts[1] === "track" && parts[2]) {
-    const code = normalizeTrackingCode(parts[2]);
-    if (!isSecureTrackingCode(code))
-      return error("رمز التتبع غير صالح. سجل الدخول للوصول إلى طلباتك.", 404);
-    const order = await db.query.ordersTable.findFirst({
-      where: eq(ordersTable.trackingCode, code),
-    });
-    if (order) return json(await buildTracking(order));
-    const so = await db.query.serviceOrdersTable.findFirst({
-      where: eq(serviceOrdersTable.trackingCode, code),
-    });
-    if (so) return json(await buildServiceTracking(so));
-    return error("لم يتم العثور على الطلب", 404);
+    const raw = decodeURIComponent(parts[2]).trim();
+    // Format guard — reject empty / oversized / illegal characters before any
+    // query (defends against injection + obviously-malformed input).
+    if (!raw || raw.length > 80 || !/^[A-Za-z0-9\s-]+$/.test(raw))
+      return error("صيغة رمز التتبع غير صحيحة", 422);
+    const normalized = raw.toUpperCase().replace(/[\s-]/g, "");
+    // Best-effort per-IP throttle: mitigates enumeration of tracking codes.
+    if (!checkRateLimit(trackingLookupByIp, ip(req), 40, 60_000))
+      return error("عدد كبير من المحاولات، حاول بعد قليل", 429);
+    try {
+      // Searches EVERY supported entity before giving up (orders, service
+      // bookings, koshat, rentals, photography, graduation…).
+      const tracking = await resolveTrackingByCode(raw);
+      if (tracking) return json(tracking);
+    } catch (err) {
+      console.error("tracking lookup failed", {
+        code: raw,
+        normalized,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return error("تعذّر تنفيذ البحث حالياً، حاول لاحقاً", 500);
+    }
+    console.warn("tracking not found", { code: raw, normalized });
+    return error("لم يتم العثور على طلب بهذا الرمز في أي خدمة", 404);
   }
 
   if (method === "GET" && parts[1] === "track-by-phone" && parts[2]) {
