@@ -7,6 +7,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
+import CustomerAccountPrompt from "./customer-account-prompt";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
@@ -185,6 +186,22 @@ export default function PurchasesPage() {
     });
     setShowProductSearch(null);
     setSearchQ(prev => ({ ...prev, [idx]: "" }));
+  }
+
+  // "Open a customer account?" prompt shown on save for a new counterparty name.
+  const [customerPrompt, setCustomerPrompt] = useState(false);
+
+  // Gate the save behind the prompt when a new name was typed but not chosen
+  // from the suppliers list.
+  function onSaveClick() {
+    if (saving) return;
+    const name = form.supplierName.trim();
+    const hasItems = items.some((i) => i.productName && i.quantity > 0);
+    if (name && !form.supplierId && hasItems) {
+      setCustomerPrompt(true);
+      return;
+    }
+    void saveInvoice();
   }
 
   // ── Save ─────────────────────────────────────────────────────────────────
@@ -636,7 +653,7 @@ export default function PurchasesPage() {
 
           {/* Save */}
           <Button
-            onClick={saveInvoice}
+            onClick={onSaveClick}
             disabled={saving}
             className="w-full bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
           >
@@ -645,6 +662,21 @@ export default function PurchasesPage() {
               : <><Save className="w-4 h-4 ml-2" />حفظ فاتورة الشراء</>
             }
           </Button>
+
+          {customerPrompt ? (
+            <CustomerAccountPrompt
+              name={form.supplierName.trim()}
+              onCancel={() => setCustomerPrompt(false)}
+              onDecline={() => {
+                setCustomerPrompt(false);
+                void saveInvoice();
+              }}
+              onConfirm={() => {
+                setCustomerPrompt(false);
+                void saveInvoice();
+              }}
+            />
+          ) : null}
         </div>
       </div>
       {quickSupplier && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" dir="rtl"><div className="w-full max-w-md space-y-3 rounded-xl border bg-card p-5 shadow-xl"><div className="flex items-center justify-between"><h3 className="font-bold">مورد جديد</h3><Button variant="ghost" size="sm" onClick={() => setQuickSupplier(false)}><X className="h-4 w-4" /></Button></div><input autoFocus value={quickSupplierForm.name} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, name: e.target.value }))} placeholder="اسم المورد *" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.company} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, company: e.target.value }))} placeholder="الشركة" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.phone} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, phone: e.target.value }))} placeholder="الهاتف" className="w-full rounded-lg border bg-background p-2 text-sm" /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setQuickSupplier(false)}>إلغاء</Button><Button onClick={createQuickSupplier}>حفظ واختيار</Button></div></div></div>}

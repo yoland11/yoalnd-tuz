@@ -15,6 +15,7 @@ import {
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import CustomerAccountPrompt from "./customer-account-prompt";
 import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency } from "./_lib";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
@@ -349,8 +350,11 @@ export default function SalesPage() {
     setShowHeld(false);
   }
 
+  // "Open a customer account?" prompt shown on save for an unregistered name.
+  const [customerPrompt, setCustomerPrompt] = useState(false);
+
   // ── Save ─────────────────────────────────────────────────────────────────
-  async function saveInvoice() {
+  async function saveInvoice(customerIdOverride?: number | null) {
     if (saving) return;
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
     if (delivery.method === "province" && !delivery.valid) {
@@ -369,7 +373,12 @@ export default function SalesPage() {
         date: form.date,
         customerName: form.customerName,
         customerPhone: form.customerPhone,
-        customerId: form.customerId ? Number(form.customerId) : null,
+        customerId:
+          customerIdOverride !== undefined
+            ? customerIdOverride
+            : form.customerId
+              ? Number(form.customerId)
+              : null,
         supplierId: form.supplierId || null,
         supplierName: form.supplierName || null,
         subtotal, discountAmount: totalDiscount, taxAmount, total: grandTotal,
@@ -416,6 +425,19 @@ export default function SalesPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Gate the save behind the "open a customer account?" prompt when a new name
+  // was typed but not chosen from the customer list.
+  function onSaveClick() {
+    if (saving) return;
+    const name = form.customerName.trim();
+    const isCashCustomer = !name || name === "عميل نقدي";
+    if (!isCashCustomer && !form.customerId && cart.length > 0) {
+      setCustomerPrompt(true);
+      return;
+    }
+    void saveInvoice();
   }
 
   async function applyCoupon() {
@@ -880,7 +902,7 @@ export default function SalesPage() {
           {/* Action Buttons */}
           <div className="grid grid-cols-1 gap-2">
             <Button
-              onClick={saveInvoice}
+              onClick={onSaveClick}
               disabled={saving || cart.length === 0}
               className="w-full bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
             >
@@ -890,6 +912,23 @@ export default function SalesPage() {
               }
             </Button>
           </div>
+
+          {customerPrompt ? (
+            <CustomerAccountPrompt
+              name={form.customerName.trim()}
+              initialPhone={form.customerPhone}
+              onCancel={() => setCustomerPrompt(false)}
+              onDecline={() => {
+                setCustomerPrompt(false);
+                void saveInvoice(null);
+              }}
+              onConfirm={(customerId, phone) => {
+                setCustomerPrompt(false);
+                setForm((f) => ({ ...f, customerId: String(customerId), customerPhone: phone }));
+                void saveInvoice(customerId);
+              }}
+            />
+          ) : null}
         </div>
       </div>
     </div>
