@@ -31,11 +31,56 @@ export type ScanProduct = {
   stock?: string | number | null;
   sku?: string | null;
   code?: string | null;
+  isAsset?: boolean | number | null;
 };
 
-/** Search order: 1) barcode, 2) QR (stored in the same barcode field), 3) internal code. */
-function resolveProduct(products: ScanProduct[], rawCode: string): ScanProduct | null {
-  const code = rawCode.trim().toLowerCase();
+type AssetInfo = {
+  productId: number;
+  name: string;
+  assetCode: string;
+  category?: string | null;
+  status?: string | null;
+  linkedProductId?: number | null;
+};
+
+type ScanLookupResponse = {
+  found: boolean;
+  entityType?: "product" | "asset" | "variant" | "inventory";
+  normalizedCode: string;
+  entity?: any;
+  state?: string;
+  message?: string;
+};
+
+/**
+ * Normalize a scanned value to its bare code. Handles plain barcodes, full asset/
+ * product URLs, URL-encoding, query strings, hashes, trailing slashes and spaces.
+ * e.g. "https://host/assets/AJN-A000325" → "AJN-A000325".
+ */
+export function normalizeScannedCode(scannedValue: string): string {
+  let v = String(scannedValue ?? "").trim();
+  if (!v) return "";
+  try {
+    v = decodeURIComponent(v);
+  } catch {
+    /* keep raw when not valid percent-encoding */
+  }
+  v = v.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) || v.includes("/")) {
+    const head = v.split(/[?#]/)[0];
+    const segments = head.split("/").filter(Boolean);
+    if (segments.length) v = segments[segments.length - 1];
+  }
+  return v.trim();
+}
+
+function isAssetProduct(p: ScanProduct): boolean {
+  return p.isAsset === true || p.isAsset === 1;
+}
+
+/** Local fast path — search order: barcode, then internal code / SKU. */
+function resolveProduct(products: ScanProduct[], normalizedCode: string): ScanProduct | null {
+  const code = normalizedCode.trim().toLowerCase();
   if (!code) return null;
   const byBarcode = products.find(
     (p) => String(p.barcode ?? "").trim().toLowerCase() === code,
@@ -67,27 +112,65 @@ export function BarcodeScanDialog({
   const { toast } = useToast();
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [asset, setAsset] = useState<AssetInfo | null>(null);
+  const [resolving, setResolving] = useState(false);
   const [lastAdded, setLastAdded] = useState("");
   const [continuous, setContinuous] = useState(true);
 
-  // The camera pauses while the "unknown / create" panel is shown so a stray
-  // frame can't fire another scan behind the dialog.
-  const scannerActive = open && !unknownCode && !creating;
+  // The camera pauses while any result / create panel is shown (or a lookup is in
+  // flight) so a stray frame can't fire another scan behind the dialog.
+  const scannerActive = open && !unknownCode && !creating && !asset && !resolving;
 
-  function handleDetect(rawCode: string) {
-    const product = resolveProduct(products, rawCode);
-    if (product) {
-      onAdd(product);
-      setLastAdded(product.nameAr || product.name || rawCode);
-      if (!continuous) onOpenChange(false);
+  function addProduct(product: ScanProduct) {
+    onAdd(product);
+    setLastAdded(product.nameAr || product.name || String(product.barcode ?? ""));
+    if (!continuous) onOpenChange(false);
+  }
+
+  async function handleDetect(rawValue: string) {
+    const code = normalizeScannedCode(rawValue);
+    if (!code) return;
+
+    // 1) Fast local path for sellable (non-asset) products already loaded.
+    const local = resolveProduct(products, code);
+    if (local && !isAssetProduct(local)) {
+      addProduct(local);
       return;
     }
-    setUnknownCode(rawCode.trim());
+
+    // 2) Server resolves assets, variants, and products not in the loaded list.
+    setResolving(true);
+    try {
+      const res = await adminFetch<ScanLookupResponse>(
+        `/admin/scan-lookup?code=${encodeURIComponent(rawValue)}`,
+      );
+      if (res?.found && res.entityType === "asset") {
+        // If the asset is explicitly linked to a sellable product, add that.
+        if (res.entity?.linkedProductId) {
+          addProduct({ ...(res.entity.linkedProduct ?? {}), id: res.entity.linkedProductId });
+          return;
+        }
+        setAsset(res.entity as AssetInfo);
+        return;
+      }
+      if (res?.found && res.entity) {
+        addProduct(res.entity as ScanProduct);
+        return;
+      }
+      setUnknownCode(code);
+    } catch {
+      // Network / permission fallback: use a local match if we have one.
+      if (local) addProduct(local);
+      else setUnknownCode(code);
+    } finally {
+      setResolving(false);
+    }
   }
 
   function reset() {
     setUnknownCode(null);
     setCreating(false);
+    setAsset(null);
   }
 
   function close() {
@@ -108,7 +191,28 @@ export function BarcodeScanDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {creating && unknownCode ? (
+        {asset ? (
+          <div className="space-y-4 py-2 text-center">
+            <p className="text-sm font-semibold text-status-warning">هذا الرمز تابع إلى أصل وليس منتج مبيعات</p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-3 text-right text-xs">
+              <span>الأصل: {asset.name}</span>
+              <span dir="ltr" className="font-mono">{asset.assetCode}</span>
+              <span>القسم: {asset.category || "—"}</span>
+              <span>الحالة: {asset.status || "—"}</span>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <a href={`/admin/assets/new?edit=${asset.productId}`} target="_blank" rel="noreferrer" className="flex-1">
+                  <Button variant="outline" className="w-full">فتح الأصل</Button>
+                </a>
+                <a href={`/admin/assets/sales?productId=${asset.productId}`} target="_blank" rel="noreferrer" className="flex-1">
+                  <Button className="w-full">بيع الأصل</Button>
+                </a>
+              </div>
+              <Button variant="ghost" onClick={reset}>إلغاء ومتابعة المسح</Button>
+            </div>
+          </div>
+        ) : creating && unknownCode ? (
           <QuickCreateProduct
             barcode={unknownCode}
             context={context}
@@ -138,6 +242,11 @@ export function BarcodeScanDialog({
         ) : (
           <div className="space-y-3">
             <LiveScanner onDetect={handleDetect} active={scannerActive} stopOnDetect={!continuous} />
+            {resolving ? (
+              <p className="flex items-center justify-center gap-2 rounded-lg border border-border/30 bg-background/50 px-3 py-2 text-center text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> جارٍ التحقق من الرمز…
+              </p>
+            ) : null}
             {lastAdded ? (
               <p className="rounded-lg border border-status-success/30 bg-status-success/10 px-3 py-2 text-center text-xs text-status-success">
                 تمت إضافة: <span className="font-semibold">{lastAdded}</span>

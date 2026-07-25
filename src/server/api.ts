@@ -26063,9 +26063,231 @@ async function handleAssetSales(req: NextRequest, parts: string[], section: stri
   return json({ ok: true, sale: formatAssetSale(result.sale, context.product, account) }, 201);
 }
 
+/**
+ * Normalize a scanned barcode / QR value to its bare code. Handles full URLs
+ * (asset/product links), URL-encoding, query strings, hashes, trailing slashes
+ * and surrounding whitespace — so "https://host/assets/AJN-A000325" → "AJN-A000325".
+ */
+function normalizeScannedServerCode(raw: string): string {
+  let v = String(raw ?? "").trim();
+  if (!v) return "";
+  try {
+    v = decodeURIComponent(v);
+  } catch {
+    /* keep the raw value if it isn't valid percent-encoding */
+  }
+  v = v.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) || v.includes("/")) {
+    const head = v.split(/[?#]/)[0]; // drop query + hash
+    const segments = head.split("/").filter(Boolean);
+    if (segments.length) v = segments[segments.length - 1];
+  }
+  return v.trim();
+}
+
+/**
+ * Unified scanner lookup for the sales & purchase invoice camera/USB scanner.
+ * Reuses the existing products, product_variants and asset tables — no new table.
+ * Returns { found, entityType, normalizedCode, entity } so the invoice UI can add
+ * a product, surface an asset (assets are `is_asset` products), or offer to create.
+ */
+async function handleScanLookup(
+  req: NextRequest,
+  _parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "scan-lookup" || req.method !== "GET") return null;
+  const auth = await requireAnyPermission(req, ["invoices", "accounting", "products"]);
+  if (isResponse(auth)) return auth;
+  await ensureAdminProductsColumns();
+
+  const raw = String(req.nextUrl.searchParams.get("code") ?? "");
+  const normalizedCode = normalizeScannedServerCode(raw);
+  const searchedTables: string[] = [];
+  const respond = (payload: any) => {
+    // Debug trail for failed/edge lookups (server-side only).
+    console.info("scan-lookup", {
+      rawScannedValue: raw,
+      normalizedCode,
+      searchedTables,
+      matchedField: payload.matchedField ?? null,
+      matchedEntityType: payload.found ? payload.entityType : null,
+      matchedRecordId: payload.matchedRecordId ?? null,
+    });
+    return json(payload);
+  };
+  if (!normalizedCode)
+    return respond({ found: false, state: "invalid", message: "الرمز غير صالح", normalizedCode: "" });
+
+  const lower = normalizedCode.toLowerCase();
+
+  const productEntity = (p: any) => ({
+    id: Number(p.id),
+    productId: Number(p.id),
+    name: p.name,
+    nameAr: p.nameAr ?? p.name,
+    barcode: p.barcode ?? null,
+    price: String(p.price ?? "0"),
+    costPrice: String(p.costPrice ?? "0"),
+    stock: Number(p.stock ?? 0),
+    isAsset: Boolean(p.isAsset),
+  });
+
+  const loadAsset = async (productId: number) => {
+    const [product, profile] = await Promise.all([
+      db.query.productsTable.findFirst({ where: eq(productsTable.id, productId) }),
+      db.query.assetProfilesTable
+        .findFirst({ where: eq(assetProfilesTable.productId, productId) })
+        .catch(() => null),
+    ]);
+    if (!product) return null;
+    let category: string | null = product.category ?? null;
+    if (product.assetCategoryId) {
+      const cat = await db.query.assetCategoriesTable
+        .findFirst({ where: eq(assetCategoriesTable.id, product.assetCategoryId) })
+        .catch(() => null);
+      category = (cat as any)?.nameAr ?? (cat as any)?.name ?? category;
+    }
+    return {
+      productId,
+      name: product.nameAr || product.name,
+      assetCode: `AJN-A${String(productId).padStart(6, "0")}`,
+      barcode: product.barcode ?? null,
+      category,
+      status: (profile as any)?.status ?? "active",
+      stock: product.stock,
+      isAsset: Boolean((product as any).isAsset),
+      linkedProductId: null,
+    };
+  };
+
+  const asAsset = async (productId: number, matchedField: string) => {
+    const asset = await loadAsset(productId);
+    if (!asset) return null;
+    return respond({
+      found: true, entityType: "asset", state: "asset", message: "تم العثور على الأصل",
+      normalizedCode, matchedField, matchedRecordId: productId, searchedTables, entity: asset,
+    });
+  };
+
+  // 1) Derived asset code: AJN-A<zero-padded product id>.
+  const assetMatch = normalizedCode.match(/AJN-?A0*(\d+)/i);
+  if (assetMatch) {
+    searchedTables.push("products(asset_code)");
+    const res = await asAsset(Number(assetMatch[1]), "asset_code");
+    if (res) return res;
+  }
+
+  // 2) Product barcode (exact, case-insensitive).
+  searchedTables.push("products.barcode");
+  const barcodeProduct = await db.query.productsTable.findFirst({
+    where: sql`lower(coalesce(${productsTable.barcode}, '')) = ${lower}`,
+  });
+  if (barcodeProduct) {
+    if ((barcodeProduct as any).isAsset) {
+      const res = await asAsset(barcodeProduct.id, "barcode");
+      if (res) return res;
+    }
+    return respond({
+      found: true, entityType: "product", state: "product", message: "تم العثور على المنتج",
+      normalizedCode, matchedField: "barcode", matchedRecordId: barcodeProduct.id, searchedTables,
+      entity: productEntity(barcodeProduct),
+    });
+  }
+
+  // 3) Product variant (barcode / SKU / QR token).
+  searchedTables.push("product_variants(barcode/sku/qr_token)");
+  const variantRes: any = await db
+    .execute(sql`
+      select v.id, v.product_id, v.barcode, v.color, v.size, v.price, v.cost, v.stock,
+        p.name as p_name, p.name_ar as p_name_ar, p.price as p_price, p.cost_price as p_cost,
+        p.is_asset as p_is_asset, p.barcode as p_barcode
+      from product_variants v join products p on p.id = v.product_id
+      where lower(coalesce(v.barcode,'')) = ${lower}
+        or lower(coalesce(v.sku,'')) = ${lower}
+        or lower(coalesce(v.qr_token,'')) = ${lower}
+      limit 1
+    `)
+    .catch(() => ({ rows: [] }));
+  const variant = (variantRes.rows ?? [])[0];
+  if (variant) {
+    return respond({
+      found: true, entityType: "variant", state: "product", message: "تم العثور على المنتج",
+      normalizedCode, matchedField: "variant_barcode", matchedRecordId: Number(variant.id), searchedTables,
+      entity: {
+        id: Number(variant.product_id),
+        productId: Number(variant.product_id),
+        variantId: Number(variant.id),
+        name: variant.p_name,
+        nameAr: variant.p_name_ar ?? variant.p_name,
+        barcode: variant.barcode ?? variant.p_barcode ?? null,
+        price: String(variant.price ?? variant.p_price ?? "0"),
+        costPrice: String(variant.cost ?? variant.p_cost ?? "0"),
+        stock: Number(variant.stock ?? 0),
+        isAsset: false,
+        color: variant.color ?? null,
+        size: variant.size ?? null,
+      },
+    });
+  }
+
+  // 4) Internal product code (bare numeric id).
+  if (/^\d+$/.test(normalizedCode)) {
+    searchedTables.push("products.id");
+    const byId = await db.query.productsTable.findFirst({
+      where: eq(productsTable.id, Number(normalizedCode)),
+    });
+    if (byId) {
+      if ((byId as any).isAsset) {
+        const res = await asAsset(byId.id, "id");
+        if (res) return res;
+      }
+      return respond({
+        found: true, entityType: "product", state: "product", message: "تم العثور على المنتج",
+        normalizedCode, matchedField: "id", matchedRecordId: byId.id, searchedTables,
+        entity: productEntity(byId),
+      });
+    }
+  }
+
+  // 5) Asset QR token / passport / profile serial number.
+  searchedTables.push("qr_tokens/asset_passports/asset_profiles");
+  let assetProductId = 0;
+  const qr = await db.query.qrTokensTable
+    .findFirst({ where: and(eq(qrTokensTable.entityType, "asset"), eq(qrTokensTable.token, normalizedCode)) })
+    .catch(() => null);
+  assetProductId = (qr as any)?.entityId ?? 0;
+  if (!assetProductId) {
+    const passport = await db.query.assetPassportsTable
+      .findFirst({
+        where: or(
+          sql`lower(${assetPassportsTable.serialNumber}) = ${lower}`,
+          eq(assetPassportsTable.qrToken, normalizedCode),
+        ),
+      })
+      .catch(() => null);
+    assetProductId = (passport as any)?.productId ?? 0;
+  }
+  if (!assetProductId) {
+    const profile = await db.query.assetProfilesTable
+      .findFirst({ where: sql`lower(${assetProfilesTable.serialNumber}) = ${lower}` })
+      .catch(() => null);
+    assetProductId = (profile as any)?.productId ?? 0;
+  }
+  if (assetProductId) {
+    const res = await asAsset(assetProductId, "asset_qr");
+    if (res) return res;
+  }
+
+  return respond({ found: false, state: "unregistered", message: "الرمز غير مسجل", normalizedCode, searchedTables });
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  const scanLookup = await handleScanLookup(req, parts, section);
+  if (scanLookup) return scanLookup;
 
   const assetSales = await handleAssetSales(req, parts, section);
   if (assetSales) return assetSales;
