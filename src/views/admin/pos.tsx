@@ -3,10 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Search, Trash2, Plus, Minus, Printer, Save, RefreshCw,
   PauseCircle, PlayCircle, X, ChevronLeft, ChevronRight,
-  FileText, Delete, User, Barcode, Tag, ShoppingCart,
+  FileText, Delete, User, UserPlus, Barcode, Tag, ShoppingCart,
   CheckCircle2, AlertCircle, Clock, Grid3X3, List,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, formatCurrency } from "./_lib";
@@ -144,6 +145,7 @@ function CustomerPanel({
   customerStats: { invoices: number; debt: number } | null;
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const filtered = name.trim().length >= 2
     ? customers.filter(c => c.name.toLowerCase().includes(name.toLowerCase()) || c.phone?.includes(name)).slice(0, 6)
     : [];
@@ -188,7 +190,21 @@ function CustomerPanel({
           dir="ltr"
           className="w-32 bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          title="إضافة عميل جديد"
+          className="flex shrink-0 items-center gap-1 rounded-lg border border-border/40 bg-background px-2.5 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
+        >
+          <UserPlus className="w-4 h-4" />
+        </button>
       </div>
+      <CustomerQuickAddDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        defaultPhone={phone || name}
+        onCreated={(c) => { onSelectCustomer({ id: c.id, name: c.fullName || c.name, phone: c.phone } as Customer); setAddOpen(false); }}
+      />
       {customerStats && (
         <div className="flex gap-3 mt-1.5 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><FileText className="w-3 h-3" />{customerStats.invoices} فاتورة</span>
