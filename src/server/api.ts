@@ -139,6 +139,7 @@ import {
   salesInvoiceItemsTable,
   purchaseInvoicesTable,
   purchaseInvoiceItemsTable,
+  researchOrdersTable,
   printTemplatesTable,
   reportTemplatesTable,
   qrTokensTable,
@@ -527,6 +528,12 @@ import {
 } from "@/server/graduation";
 import { handleAdminGraduationOperations } from "@/server/graduation-operations";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
+import {
+  handleAdminResearch,
+  handleResearchPublic,
+  RESEARCH_STATUS_LABELS,
+} from "@/server/research-center";
+import { ensureResearchCenterTables } from "@/server/research-center-schema";
 
 export const COOKIE_NAME = "ajn_admin_session";
 export const CUSTOMER_COOKIE_NAME = "ajn_customer_session";
@@ -656,6 +663,22 @@ export const ALL_PERMISSIONS = [
   "graduation.inventory.view",
   "graduation.reports.view",
   "graduation.settings.manage",
+  "research",
+  "research.view",
+  "research.create",
+  "research.edit",
+  "research.archive",
+  "research.assign",
+  "research.sources.manage",
+  "research.ai.use",
+  "research.chapters.manage",
+  "research.files.manage",
+  "research.plagiarism.manage",
+  "research.citations.manage",
+  "research.financials.view",
+  "research.payment.receive",
+  "research.reports.view",
+  "research.settings.manage",
   "graduation.group.create",
   "graduation.group.edit",
   "graduation.student.add",
@@ -26442,6 +26465,32 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (graduation) return graduation;
   }
 
+  if (section === "research") {
+    const auth = await requireAnyPermission(req, [
+      "research",
+      "research.view",
+      "research.create",
+      "research.edit",
+      "research.archive",
+      "research.assign",
+      "research.sources.manage",
+      "research.ai.use",
+      "research.chapters.manage",
+      "research.files.manage",
+      "research.plagiarism.manage",
+      "research.citations.manage",
+      "research.financials.view",
+      "research.payment.receive",
+      "research.reports.view",
+      "research.settings.manage",
+      "customers",
+      "accounting",
+    ]);
+    if (isResponse(auth)) return auth;
+    const research = await handleAdminResearch(req, parts, auth);
+    if (research) return research;
+  }
+
   const telegram = await handleTelegram(req, parts, section);
   if (telegram) return telegram;
 
@@ -27997,7 +28046,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (q.length < 2) return json({ data: [] });
     const likeQ = `%${q}%`;
     await ensureGraduationTables();
-    const [customers, orders, products, invoices, documents, graduationOrders, suppliers, koshaBookings, serviceBookings] =
+    await ensureResearchCenterTables();
+    const [customers, orders, products, invoices, documents, graduationOrders, suppliers, koshaBookings, serviceBookings, researchOrders] =
       await Promise.all([
         db.query.customersTable.findMany({
           where: or(
@@ -28075,6 +28125,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           ),
           limit: 6,
         }),
+        db.select({ id: researchOrdersTable.id, researchNo: researchOrdersTable.researchNo, title: researchOrdersTable.title, universityName: researchOrdersTable.universityName, status: researchOrdersTable.status, customerName: customersTable.fullName, phone: customersTable.phone, invoiceNo: salesInvoicesTable.invoiceNo }).from(researchOrdersTable).leftJoin(customersTable, eq(customersTable.id, researchOrdersTable.customerId)).leftJoin(salesInvoicesTable, eq(salesInvoicesTable.id, researchOrdersTable.invoiceId)).where(and(isNull(researchOrdersTable.archivedAt), or(ilike(researchOrdersTable.researchNo, likeQ), ilike(researchOrdersTable.title, likeQ), ilike(researchOrdersTable.universityName, likeQ), ilike(researchOrdersTable.department, likeQ), ilike(customersTable.fullName, likeQ), ilike(customersTable.name, likeQ), ilike(customersTable.phone, likeQ), ilike(salesInvoicesTable.invoiceNo, likeQ)))).limit(8),
       ]);
     return json({
       data: [
@@ -28140,6 +28191,13 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           title: row.trackingCode ?? row.customerName ?? `SRV-${row.id}`,
           subtitle: `${row.customerName ?? ""}${row.phone ? ` · ${row.phone}` : ""}`,
           href: "/admin/bookings",
+        })),
+        ...researchOrders.map((row) => ({
+          type: "research_order",
+          id: row.id,
+          title: `${row.researchNo} · ${row.title}`,
+          subtitle: `${row.customerName || row.phone || row.universityName || ""} · ${RESEARCH_STATUS_LABELS[row.status as keyof typeof RESEARCH_STATUS_LABELS] || row.status}`,
+          href: "/admin/research/orders",
         })),
       ],
     });
@@ -49476,6 +49534,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
                               ? await handleKoshas(req, parts)
                               : root === "graduation"
                                 ? await handleGraduationPublic(req, parts)
+                                : root === "research"
+                                  ? await handleResearchPublic(req, parts)
                                 : root === "offers"
                                   ? await handleOffers(req, parts)
                                   : root === "coupons"

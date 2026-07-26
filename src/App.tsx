@@ -43,6 +43,10 @@ const Profile = lazy(() => import("@/views/profile"));
 const Account = lazy(() => import("@/views/account"));
 const AccountKoshas = lazy(() => import("@/views/account-koshas"));
 const GraduationConfigurator = lazy(() => import("@/views/graduation"));
+const ResearchRequestPage = lazy(() => import("@/views/research"));
+const ResearchTrackingPage = lazy(() =>
+  import("@/views/research").then((module) => ({ default: module.ResearchTrackingPage })),
+);
 const FlowerDesigner = lazy(() => import("@/views/flower-designer"));
 const GraduationTracking = lazy(() =>
   import("@/views/graduation").then((module) => ({
@@ -209,6 +213,12 @@ function Router() {
                 <Suspense fallback={<PageSpinner />}>
                   <GraduationConfigurator />
                 </Suspense>
+              </Route>
+              <Route path="/research/track/:token">
+                <ResearchTrackingPage />
+              </Route>
+              <Route path="/research">
+                <ResearchRequestPage />
               </Route>
               <Route path="/design">
                 <Suspense fallback={<PageSpinner />}>

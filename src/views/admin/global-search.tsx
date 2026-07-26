@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   Search, X, Loader2, User, ShoppingBag, Package, Receipt, FileText,
-  GraduationCap, Truck, CalendarDays, Boxes,
+  GraduationCap, Truck, CalendarDays, Boxes, BookOpen,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { adminFetch } from "./_lib";
@@ -25,6 +25,7 @@ const TYPE_META: Record<string, { label: string; Icon: typeof User }> = {
   invoice: { label: "فاتورة", Icon: Receipt },
   document: { label: "مستند", Icon: FileText },
   graduation_order: { label: "تخرج", Icon: GraduationCap },
+  research_order: { label: "بحث أكاديمي", Icon: BookOpen },
   supplier: { label: "مورد", Icon: Truck },
   booking: { label: "حجز", Icon: CalendarDays },
 };
@@ -118,7 +119,7 @@ export function AdminGlobalSearch() {
               value={q}
               onChange={(event) => setQ(event.target.value)}
               onKeyDown={onInputKey}
-              placeholder="ابحث عن عميل، طلب، منتج، فاتورة، مورد…"
+              placeholder="ابحث عن عميل، طلب، بحث، منتج، فاتورة، مورد…"
               className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
             {isFetching ? (

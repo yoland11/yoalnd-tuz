@@ -530,6 +530,25 @@ export function openGraduationProductionSheet({
   popup.document.close();
 }
 
+export function openResearchReceiptPrint({
+  order,
+  chapters = [],
+  sources = [],
+}: {
+  order: Record<string, any>;
+  chapters?: Array<Record<string, any>>;
+  sources?: Array<Record<string, any>>;
+}) {
+  const safe = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+  const rows = chapters.map((chapter) => `<tr><td>${safe(chapter.title)}</td><td>${safe(chapter.status)}</td><td class="num">${safe(chapter.progress)}%</td></tr>`).join("");
+  const references = sources.slice(0, 12).map((source, index) => `<li><strong>[${index + 1}]</strong> ${safe(source.authors?.join?.(", ") || "")}. ${safe(source.title)}. ${safe(source.publicationYear || "")}${source.doi ? `. DOI: ${safe(source.doi)}` : ""}</li>`).join("");
+  const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${safe(order.researchNo)}</title><style>${sheetReportCss("a4")}.research-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:20px}.research-code{font-family:ui-monospace,Consolas,monospace}.research-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}.research-meta>div{border:1px solid #111;padding:8px}.references{font-size:10px;line-height:1.7;padding-right:18px}.num{font-variant-numeric:tabular-nums}@media(max-width:700px){.research-meta{grid-template-columns:1fr}}</style></head><body><main class="sheet"><header class="research-head"><div><div class="eyebrow">مجموعة علي جان نهاد</div><h1>ملف طلب بحث أكاديمي</h1><p>${safe(order.title)}</p></div><div><strong class="research-code">${safe(order.researchNo)}</strong><p>${new Date().toLocaleDateString("ar-IQ")}</p></div></header><section class="research-meta"><div><strong>الجامعة</strong><br>${safe(order.universityName)}</div><div><strong>الكلية والقسم</strong><br>${safe(order.college)} · ${safe(order.department)}</div><div><strong>نمط التوثيق</strong><br>${safe(order.citationStyle)}</div><div><strong>الإجمالي</strong><br>${formatCurrency(order.totalAmount)}</div><div><strong>المدفوع</strong><br>${formatCurrency(order.paidAmount)}</div><div><strong>المتبقي</strong><br>${formatCurrency(order.remainingAmount)}</div></section><h2>الفصول والتقدم</h2><table><thead><tr><th>الفصل</th><th>الحالة</th><th>الإنجاز</th></tr></thead><tbody>${rows}</tbody></table>${references ? `<h2>المراجع المختارة</h2><ol class="references">${references}</ol>` : ""}<footer><p>هذا المستند ملخص تشغيلي صادر من AJN Research Center.</p></footer></main>${printWhenImagesReadyScript()}</body></html>`;
+  const popup = window.open("", "_blank", "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة طباعة ملف البحث");
+  popup.document.write(html);
+  popup.document.close();
+}
+
 export function downloadDataUrl(dataUrl: string | undefined | null, filename: string) {
   if (!dataUrl) throw new Error("لا توجد صورة QR للتحميل");
   const a = document.createElement("a");

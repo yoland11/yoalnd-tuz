@@ -180,6 +180,7 @@ const ReportDesignerPage = lazy(() =>
 );
 const SyncCenterPage = lazy(() => import("./sync-center"));
 const GraduationAdminPage = lazy(() => import("./graduation"));
+const ResearchCenterPage = lazy(() => import("./research-center"));
 
 // Any graduation permission (module gate or a granular sub-permission) may open
 // the Graduation Management Center; sub-pages gate themselves via nav perms.
@@ -219,6 +220,14 @@ const GRADUATION_PERMS: Permission[] = [
   "graduation.production.update",
   "graduation.delivery.confirm",
   "graduation.report.view",
+];
+const RESEARCH_PERMS: Permission[] = [
+  "research", "research.view", "research.create", "research.edit",
+  "research.archive", "research.assign", "research.sources.manage",
+  "research.ai.use", "research.chapters.manage", "research.files.manage",
+  "research.plagiarism.manage", "research.citations.manage",
+  "research.financials.view", "research.payment.receive",
+  "research.reports.view", "research.settings.manage",
 ];
 
 function Guard({
@@ -454,6 +463,20 @@ export default function Admin() {
             {() => (
               <Guard me={me} anyPerm={GRADUATION_PERMS}>
                 <GraduationAdminPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/research/:section">
+            {() => (
+              <Guard me={me} anyPerm={RESEARCH_PERMS}>
+                <ResearchCenterPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/research">
+            {() => (
+              <Guard me={me} anyPerm={RESEARCH_PERMS}>
+                <ResearchCenterPage />
               </Guard>
             )}
           </Route>

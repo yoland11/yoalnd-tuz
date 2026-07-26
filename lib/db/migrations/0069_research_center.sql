@@ -1,0 +1,148 @@
+-- AJN Research Center: additive, normalized, non-destructive.
+CREATE TABLE IF NOT EXISTS research_universities (
+  id serial PRIMARY KEY, code varchar(80) NOT NULL, name_ar text NOT NULL, name_en text,
+  country text, city text, logo_url text, colleges jsonb NOT NULL DEFAULT '[]'::jsonb,
+  citation_preferences jsonb NOT NULL DEFAULT '{}'::jsonb, is_active boolean NOT NULL DEFAULT true,
+  created_by integer REFERENCES staff(id) ON DELETE SET NULL, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_universities_code_idx ON research_universities(code);
+CREATE INDEX IF NOT EXISTS research_universities_name_idx ON research_universities(name_ar);
+
+CREATE TABLE IF NOT EXISTS research_orders (
+  id serial PRIMARY KEY, research_no varchar(50) NOT NULL, qr_token varchar(96) NOT NULL,
+  customer_id integer NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+  invoice_id integer REFERENCES sales_invoices(id) ON DELETE SET NULL,
+  title text NOT NULL, research_type varchar(30) NOT NULL,
+  university_id integer REFERENCES research_universities(id) ON DELETE SET NULL,
+  university_name text NOT NULL DEFAULT '', college text NOT NULL DEFAULT '', department text NOT NULL DEFAULT '',
+  supervisor_name text, language varchar(20) NOT NULL DEFAULT 'ar', research_field text NOT NULL DEFAULT '',
+  keywords jsonb NOT NULL DEFAULT '[]'::jsonb, required_pages integer NOT NULL DEFAULT 1, deadline date,
+  citation_style varchar(20) NOT NULL DEFAULT 'APA7', urgency varchar(20) NOT NULL DEFAULT 'normal', notes text,
+  status varchar(30) NOT NULL DEFAULT 'new', progress integer NOT NULL DEFAULT 0,
+  assigned_writer_id integer REFERENCES staff(id) ON DELETE SET NULL,
+  assigned_reviewer_id integer REFERENCES staff(id) ON DELETE SET NULL,
+  assigned_proofreader_id integer REFERENCES staff(id) ON DELETE SET NULL,
+  assigned_formatter_id integer REFERENCES staff(id) ON DELETE SET NULL,
+  assigned_supervisor_id integer REFERENCES staff(id) ON DELETE SET NULL,
+  estimated_price numeric(14,2) NOT NULL DEFAULT 0, discount_amount numeric(14,2) NOT NULL DEFAULT 0,
+  total_amount numeric(14,2) NOT NULL DEFAULT 0, paid_amount numeric(14,2) NOT NULL DEFAULT 0,
+  remaining_amount numeric(14,2) NOT NULL DEFAULT 0, payment_status varchar(20) NOT NULL DEFAULT 'unpaid',
+  source_count integer NOT NULL DEFAULT 0, chapter_count integer NOT NULL DEFAULT 0,
+  submitted_at timestamp NOT NULL DEFAULT now(), accepted_at timestamp, completed_at timestamp, delivered_at timestamp,
+  archived_at timestamp, created_by integer REFERENCES staff(id) ON DELETE SET NULL, created_by_name text NOT NULL DEFAULT '',
+  created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_orders_no_idx ON research_orders(research_no);
+CREATE UNIQUE INDEX IF NOT EXISTS research_orders_qr_idx ON research_orders(qr_token);
+CREATE INDEX IF NOT EXISTS research_orders_customer_idx ON research_orders(customer_id, created_at);
+CREATE INDEX IF NOT EXISTS research_orders_status_idx ON research_orders(status, deadline);
+CREATE INDEX IF NOT EXISTS research_orders_search_idx ON research_orders(university_name, department);
+
+CREATE TABLE IF NOT EXISTS research_chapters (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  chapter_type varchar(40) NOT NULL, title text NOT NULL, sort_order integer NOT NULL DEFAULT 0,
+  status varchar(30) NOT NULL DEFAULT 'not_started', progress integer NOT NULL DEFAULT 0,
+  assigned_writer_id integer REFERENCES staff(id) ON DELETE SET NULL, deadline date, content text,
+  word_count integer NOT NULL DEFAULT 0, current_version integer NOT NULL DEFAULT 1,
+  approval_status varchar(30) NOT NULL DEFAULT 'pending', approved_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_chapters_order_type_idx ON research_chapters(research_order_id, chapter_type);
+CREATE INDEX IF NOT EXISTS research_chapters_writer_idx ON research_chapters(assigned_writer_id, status);
+
+CREATE TABLE IF NOT EXISTS research_chapter_versions (
+  id serial PRIMARY KEY, chapter_id integer NOT NULL REFERENCES research_chapters(id) ON DELETE CASCADE,
+  version integer NOT NULL, content text NOT NULL DEFAULT '', word_count integer NOT NULL DEFAULT 0, change_note text,
+  created_by integer REFERENCES staff(id) ON DELETE SET NULL, created_by_name text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_chapter_versions_unique_idx ON research_chapter_versions(chapter_id, version);
+
+CREATE TABLE IF NOT EXISTS research_sources (
+  id serial PRIMARY KEY, provider varchar(30) NOT NULL, external_id varchar(240) NOT NULL, title text NOT NULL,
+  authors jsonb NOT NULL DEFAULT '[]'::jsonb, journal text, publication_year integer, abstract text, doi varchar(240),
+  language varchar(20), category text, url text, pdf_url text, is_open_access boolean NOT NULL DEFAULT false,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_sources_provider_external_idx ON research_sources(provider, external_id);
+CREATE INDEX IF NOT EXISTS research_sources_doi_idx ON research_sources(doi);
+CREATE INDEX IF NOT EXISTS research_sources_year_idx ON research_sources(publication_year);
+
+CREATE TABLE IF NOT EXISTS research_order_sources (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  source_id integer NOT NULL REFERENCES research_sources(id) ON DELETE RESTRICT, citation_key varchar(120), notes text,
+  selected_by_customer boolean NOT NULL DEFAULT false, added_by integer REFERENCES staff(id) ON DELETE SET NULL,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_order_sources_unique_idx ON research_order_sources(research_order_id, source_id);
+
+CREATE TABLE IF NOT EXISTS research_assignments (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  staff_id integer NOT NULL REFERENCES staff(id) ON DELETE RESTRICT, role varchar(30) NOT NULL,
+  status varchar(30) NOT NULL DEFAULT 'assigned', hourly_rate numeric(14,2) NOT NULL DEFAULT 0,
+  working_minutes integer NOT NULL DEFAULT 0, rating numeric(4,2), assigned_by integer REFERENCES staff(id) ON DELETE SET NULL,
+  assigned_at timestamp NOT NULL DEFAULT now(), accepted_at timestamp, completed_at timestamp
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_assignments_unique_idx ON research_assignments(research_order_id, staff_id, role);
+
+CREATE TABLE IF NOT EXISTS research_files (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  chapter_id integer REFERENCES research_chapters(id) ON DELETE SET NULL, file_type varchar(30) NOT NULL,
+  title text NOT NULL, file_url text NOT NULL, file_name text NOT NULL, mime_type varchar(120), file_size integer,
+  version integer NOT NULL DEFAULT 1, checksum varchar(128), is_customer_visible boolean NOT NULL DEFAULT false,
+  uploaded_by integer REFERENCES staff(id) ON DELETE SET NULL, uploaded_by_name text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_files_order_idx ON research_files(research_order_id, file_type, created_at);
+
+CREATE TABLE IF NOT EXISTS research_plagiarism_reports (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  file_id integer REFERENCES research_files(id) ON DELETE SET NULL, similarity_percentage numeric(5,2) NOT NULL,
+  status varchar(30) NOT NULL, provider varchar(80), report_url text, notes text,
+  checked_by integer REFERENCES staff(id) ON DELETE SET NULL, created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_plagiarism_order_idx ON research_plagiarism_reports(research_order_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_citations (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  source_id integer REFERENCES research_sources(id) ON DELETE SET NULL, style varchar(20) NOT NULL,
+  citation_text text NOT NULL, bibliography_text text NOT NULL, created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_citations_unique_idx ON research_citations(research_order_id, source_id, style);
+
+CREATE TABLE IF NOT EXISTS research_messages (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  chapter_id integer REFERENCES research_chapters(id) ON DELETE SET NULL, sender_type varchar(20) NOT NULL,
+  sender_id integer, sender_name text NOT NULL, message text NOT NULL, attachments jsonb NOT NULL DEFAULT '[]'::jsonb,
+  is_internal boolean NOT NULL DEFAULT false, created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_messages_order_idx ON research_messages(research_order_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_templates (
+  id serial PRIMARY KEY, code varchar(80) NOT NULL, name text NOT NULL, research_type varchar(30),
+  university_id integer REFERENCES research_universities(id) ON DELETE SET NULL, language varchar(20) NOT NULL DEFAULT 'ar',
+  citation_style varchar(20) NOT NULL DEFAULT 'APA7', structure jsonb NOT NULL DEFAULT '[]'::jsonb,
+  formatting jsonb NOT NULL DEFAULT '{}'::jsonb, is_active boolean NOT NULL DEFAULT true,
+  created_by integer REFERENCES staff(id) ON DELETE SET NULL, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS research_templates_code_idx ON research_templates(code);
+
+CREATE TABLE IF NOT EXISTS research_status_events (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  from_status varchar(30), to_status varchar(30) NOT NULL, notes text,
+  changed_by integer REFERENCES staff(id) ON DELETE SET NULL, changed_by_name text NOT NULL DEFAULT '', created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_status_events_order_idx ON research_status_events(research_order_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_ai_generations (
+  id serial PRIMARY KEY, research_order_id integer NOT NULL REFERENCES research_orders(id) ON DELETE CASCADE,
+  chapter_id integer REFERENCES research_chapters(id) ON DELETE SET NULL, action varchar(50) NOT NULL,
+  prompt text NOT NULL, output text NOT NULL, source_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  model varchar(80), created_by integer REFERENCES staff(id) ON DELETE SET NULL, created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS research_ai_generations_order_idx ON research_ai_generations(research_order_id, created_at);
+
+UPDATE staff SET permissions = (
+  SELECT jsonb_agg(DISTINCT permission) FROM jsonb_array_elements_text(
+    COALESCE(permissions, '[]'::jsonb) ||
+    '["research","research.view","research.create","research.edit","research.archive","research.assign","research.sources.manage","research.ai.use","research.chapters.manage","research.files.manage","research.plagiarism.manage","research.citations.manage","research.financials.view","research.payment.receive","research.reports.view","research.settings.manage"]'::jsonb
+  ) AS permission
+) WHERE role = 'admin';

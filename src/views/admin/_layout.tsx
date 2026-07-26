@@ -64,6 +64,7 @@ import {
   SlidersHorizontal,
   Speaker,
   ChefHat,
+  Plus,
 } from "lucide-react";
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
@@ -252,6 +253,21 @@ export const NAV: NavItem[] = [
     icon: Settings,
     perm: "graduation_manager",
   },
+  { href: "/admin/research", label: "مركز الأبحاث", icon: GraduationCap, perm: "research.view" },
+  { href: "/admin/research/new", label: "طلب بحث جديد", icon: Plus, perm: "research.create" },
+  { href: "/admin/research/orders", label: "طلبات الأبحاث", icon: FileText, perm: "research.view" },
+  { href: "/admin/research/library", label: "مكتبة الأبحاث", icon: Database, perm: "research.view" },
+  { href: "/admin/research/sources", label: "مكتبة المصادر", icon: SearchIconCompat, perm: "research.sources.manage" },
+  { href: "/admin/research/ai", label: "المساعد الذكي", icon: Bot, perm: "research.ai.use" },
+  { href: "/admin/research/writers", label: "الكتّاب", icon: Users, perm: "research.assign" },
+  { href: "/admin/research/supervisors", label: "المشرفون", icon: UserCheck, perm: "research.assign" },
+  { href: "/admin/research/universities", label: "الجامعات", icon: GraduationCap, perm: "research.settings.manage" },
+  { href: "/admin/research/templates", label: "قوالب الأبحاث", icon: FileText, perm: "research.settings.manage" },
+  { href: "/admin/research/plagiarism", label: "تقارير الاستلال", icon: ShieldCheck, perm: "research.plagiarism.manage" },
+  { href: "/admin/research/citations", label: "التوثيق والمراجع", icon: Receipt, perm: "research.citations.manage" },
+  { href: "/admin/research/portal", label: "بوابة العميل", icon: UserRound, perm: "research.view" },
+  { href: "/admin/research/reports", label: "تقارير الأبحاث", icon: BarChart3, perm: "research.reports.view" },
+  { href: "/admin/research/settings", label: "إعدادات الأبحاث", icon: Settings, perm: "research.settings.manage" },
   {
     href: "/admin/bookings",
     label: "مركز الحجوزات",
@@ -819,6 +835,18 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/graduation/materials"),
       navItem("/admin/graduation/reports"),
       navItem("/admin/graduation/settings"),
+    ],
+  },
+  {
+    id: "research",
+    label: "AJN Research Center",
+    icon: GraduationCap,
+    items: [
+      navItem("/admin/research"), navItem("/admin/research/new"), navItem("/admin/research/orders"),
+      navItem("/admin/research/library"), navItem("/admin/research/sources"), navItem("/admin/research/ai"),
+      navItem("/admin/research/writers"), navItem("/admin/research/supervisors"), navItem("/admin/research/universities"),
+      navItem("/admin/research/templates"), navItem("/admin/research/plagiarism"), navItem("/admin/research/citations"),
+      navItem("/admin/research/portal"), navItem("/admin/research/reports"), navItem("/admin/research/settings"),
     ],
   },
   {
