@@ -132,6 +132,22 @@ export default function FlowerDesigner() {
 
   const luxuryScore = Math.min(5, 1 + Math.round((total / 100000) * 3 + extras.length * 0.25));
 
+  // Luxury indicators — all derived live from the configuration (no backend).
+  const distinctColors = new Set(FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => f.hex)).size;
+  const harmony = Math.max(55, Math.min(98, 94 - Math.max(0, distinctColors - 3) * 9 + ((qty.gypsophila ?? 0) > 0 ? 4 : 0)));
+  const sizeLabel = stemCount < 15 ? "صغيرة" : stemCount < 30 ? "متوسطة" : stemCount < 50 ? "كبيرة" : "ضخمة";
+  const buildMinutes = Math.round(15 + stemCount * 0.7 + extras.length * 3);
+
+  // Rule-based smart suggestions / upsell — one click applies each.
+  const suggestions: { label: string; apply: () => void }[] = [];
+  if (stemCount < 25) suggestions.push({ label: "كبّر باقتك (+١٠ ورد أحمر)", apply: () => setFlower("red_rose", 10) });
+  if (!extras.includes("chocolate")) suggestions.push({ label: "أضف شوكولاتة متناسقة 🍫", apply: () => toggleExtra("chocolate") });
+  if (wrapId !== "velvet") suggestions.push({ label: "تغليف مخمل أفخم", apply: () => setWrapId("velvet") });
+  if (ribbonId !== "gold") suggestions.push({ label: "شريط ذهبي فاخر", apply: () => setRibbonId("gold") });
+  if ((qty.peony ?? 0) === 0) suggestions.push({ label: "أضف بيوني فاخر (+٣)", apply: () => setFlower("peony", 3) });
+  if (!extras.includes("teddy")) suggestions.push({ label: "أضف دبّاً لطيفاً 🧸", apply: () => toggleExtra("teddy") });
+  const topSuggestions = suggestions.slice(0, 4);
+
   function setFlower(id: string, delta: number) {
     setQty((prev) => {
       const next = Math.max(0, (prev[id] ?? 0) + delta);
@@ -403,6 +419,32 @@ export default function FlowerDesigner() {
         {/* Summary + pricing */}
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
           <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur">
+            <h3 className="mb-3 text-sm font-semibold text-neutral-300">مؤشّرات الفخامة</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <Indicator k="الفخامة" v={"★".repeat(luxuryScore) + "☆".repeat(5 - luxuryScore)} accent />
+              <Indicator k="التناسق" v={`${harmony}%`} />
+              <Indicator k="الحجم" v={sizeLabel} />
+              <Indicator k="زمن التجهيز" v={`${buildMinutes} دقيقة`} />
+              <Indicator k="النضارة" v="طازج اليوم" />
+              <Indicator k="المخزون" v="متوفّر" />
+            </div>
+          </div>
+
+          {topSuggestions.length > 0 && (
+            <div className="rounded-3xl border border-pink-500/25 bg-pink-500/[0.06] p-5">
+              <h3 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-pink-200"><Sparkles className="h-4 w-4" /> اقتراحات ذكية</h3>
+              <div className="flex flex-col gap-2">
+                {topSuggestions.map((s, i) => (
+                  <button key={i} type="button" onClick={s.apply}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-pink-500/25 bg-white/[0.02] px-3 py-2 text-right text-xs text-neutral-200 transition-colors hover:border-pink-500/60 hover:bg-pink-500/10">
+                    <span>{s.label}</span><Plus className="h-3.5 w-3.5 shrink-0 text-pink-400" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur">
             <h3 className="mb-3 text-sm font-semibold text-neutral-300">تفاصيل السعر</h3>
             <PriceRow k="الورد" v={flowersTotal} />
             <PriceRow k="التغليف" v={wrap.price} />
@@ -518,6 +560,15 @@ function Field({ label, children, className = "" }: { label: string; children: R
 
 function SummaryRow({ k, v }: { k: string; v: string }) {
   return <li className="flex items-start justify-between gap-3 border-b border-white/5 pb-2"><span className="text-neutral-500">{k}</span><span className="text-left font-medium text-neutral-200">{v}</span></li>;
+}
+
+function Indicator({ k, v, accent }: { k: string; v: string; accent?: boolean }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+      <p className="text-[11px] text-neutral-500">{k}</p>
+      <p className={`mt-0.5 text-sm font-semibold ${accent ? "text-amber-300" : "text-neutral-100"}`}>{v}</p>
+    </div>
+  );
 }
 
 function PriceRow({ k, v, freeLabel }: { k: string; v: number; freeLabel?: boolean }) {
