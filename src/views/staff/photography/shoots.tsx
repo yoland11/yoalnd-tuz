@@ -21,16 +21,27 @@ const isManager = (me: AdminMe | null | undefined) => !!me && (me.role === "admi
 
 /** Stage → badge tone. Grouped so the pipeline reads as prep → field → post → done. */
 const STAGE_TONE: Record<ShootStage, string> = {
-  assigned: "bg-muted text-muted-foreground",
-  preparing: "bg-status-warning/15 text-status-warning",
+  new_booking: "bg-muted text-muted-foreground",
+  awaiting_assignment: "bg-status-warning/15 text-status-warning",
+  crew_assigned: "bg-accent/15 text-accent",
+  accepted: "bg-accent/15 text-accent",
+  waiting_event: "bg-status-warning/15 text-status-warning",
   on_the_way: "bg-status-warning/15 text-status-warning",
   arrived: "bg-accent/15 text-accent",
   shooting: "bg-primary/15 text-primary",
-  uploading: "bg-accent/15 text-accent",
+  shoot_ended: "bg-accent/15 text-accent",
+  files_received: "bg-accent/15 text-accent",
+  transferring: "bg-accent/15 text-accent",
+  sorting: "bg-accent/15 text-accent",
   editing: "bg-accent/15 text-accent",
-  ready_for_review: "bg-status-warning/15 text-status-warning",
+  customer_review: "bg-status-warning/15 text-status-warning",
+  revising: "bg-status-warning/15 text-status-warning",
+  ready_print: "bg-status-warning/15 text-status-warning",
+  printing: "bg-accent/15 text-accent",
+  ready_delivery: "bg-status-success/15 text-status-success",
   delivered: "bg-status-success/15 text-status-success",
   completed: "bg-status-success/15 text-status-success",
+  cancelled: "bg-status-danger/15 text-status-danger",
 };
 
 function StageBadge({ stage }: { stage: ShootStage }) {
@@ -214,6 +225,9 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
   const [data, setData] = useState<ShootDetail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [photographers, setPhotographers] = useState<Array<{ id: number; name: string }>>([]);
+  const [crewStaffId, setCrewStaffId] = useState(0);
+  const [crewRole, setCrewRole] = useState("photographer");
   const manager = isManager(me);
 
   const load = useCallback(() => {
@@ -221,6 +235,13 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
   }, [shootRef]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (manager) {
+      import("./lib")
+        .then(({ photographyApi }) => photographyApi.photographers().then(setPhotographers))
+        .catch(() => null);
+    }
+  }, [manager]);
 
   const upcoming = useMemo(() => (data ? nextStage(data.stage) : null), [data]);
 
@@ -252,11 +273,71 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
     }
   }
 
+  async function respondToAssignment(decision: "accept" | "reject") {
+    const reason = decision === "reject" ? window.prompt("اذكر سبب رفض المهمة") ?? "" : "";
+    if (decision === "reject" && !reason.trim()) return;
+    setBusy(true);
+    try {
+      await shootApi.assignment(shootRef, decision, reason);
+      toast({ title: decision === "accept" ? "تم قبول المهمة" : "تم إرسال رفض المهمة" });
+      load();
+    } catch (err: any) {
+      toast({ title: "تعذر تحديث التكليف", description: apiErrorMessage(err), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleOperationalChecklist(id: number, completed: boolean) {
+    if (!data) return;
+    setData({
+      ...data,
+      operationalChecklist: data.operationalChecklist.map((item) =>
+        item.id === id ? { ...item, completed } : item,
+      ),
+    });
+    try {
+      await shootApi.setOperationalChecklist(shootRef, id, completed);
+    } catch (err: any) {
+      toast({ title: "تعذر حفظ قائمة الفحص", description: apiErrorMessage(err), variant: "destructive" });
+      load();
+    }
+  }
+
+  async function assignCrewMember(overrideReason = "") {
+    if (!crewStaffId) return;
+    setBusy(true);
+    try {
+      await shootApi.crew(shootRef, {
+        mode: "add",
+        staffId: crewStaffId,
+        role: crewRole,
+        isLead: crewRole === "main_photographer",
+        overrideReason,
+      });
+      toast({ title: "تم توزيع عضو فريق التصوير" });
+      setCrewStaffId(0);
+      load();
+    } catch (err: any) {
+      const message = apiErrorMessage(err);
+      if (!overrideReason && message.includes("متعارض")) {
+        const reason = window.prompt("المصور لديه حجز متعارض. اذكر سبب التجاوز") ?? "";
+        if (reason.trim()) return assignCrewMember(reason.trim());
+      }
+      toast({ title: "تعذر توزيع الكادر", description: message, variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (error) return <div className="p-4"><Empty text={error} /></div>;
   if (!data) return <Spinner />;
 
   const checklistDone = CHECKLIST_ITEMS.filter((item) => data.checklist[item.key]).length;
   const blockedByChecklist = upcoming === "on_the_way" && !data.checklistComplete;
+  const myPendingAssignment = data.crew.some(
+    (member) => member.staffId === me.id && member.assignmentStatus === "assigned",
+  );
 
   return (
     <div className="space-y-4 p-4">
@@ -277,8 +358,15 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           <div><dt className="text-muted-foreground">التاريخ</dt><dd className="font-medium tabular-nums">{data.eventDate}{data.eventTime ? ` · ${data.eventTime}` : ""}</dd></div>
           <div><dt className="text-muted-foreground">المصور</dt><dd className="truncate font-medium">{data.assignedStaffName || "—"}</dd></div>
           <div><dt className="text-muted-foreground">الموقع</dt><dd className="truncate font-medium">{data.venue || "غير محدد"}</dd></div>
-          <div><dt className="text-muted-foreground">المتبقي</dt><dd className="font-medium tabular-nums">{formatCurrency(data.remainingPayment)}</dd></div>
+          <div><dt className="text-muted-foreground">المتبقي</dt><dd className="font-medium tabular-nums">{data.remainingPayment == null ? data.paymentIndicator : formatCurrency(data.remainingPayment)}</dd></div>
         </dl>
+        {data.bookingCode ? <p className="mt-2 text-xs font-bold text-primary">{data.bookingCode}</p> : null}
+        {myPendingAssignment ? (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button disabled={busy} onClick={() => respondToAssignment("accept")}>قبول المهمة</Button>
+            <Button disabled={busy} variant="outline" onClick={() => respondToAssignment("reject")}>رفض مع السبب</Button>
+          </div>
+        ) : null}
         {data.mapsUrl ? (
           <a
             href={data.mapsUrl}
@@ -288,6 +376,12 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           >
             <Navigation className="h-4 w-4" /> فتح في خرائط جوجل
           </a>
+        ) : null}
+        {data.phone ? (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <a href={`tel:${data.phone}`} className="flex min-h-11 items-center justify-center rounded-lg border border-border/40 text-sm font-bold text-primary">الاتصال بالعميل</a>
+            <a href={`https://wa.me/${data.phone.replace(/\D/g, "")}`} target="_blank" rel="noopener noreferrer" className="flex min-h-11 items-center justify-center rounded-lg border border-border/40 text-sm font-bold text-primary">فتح واتساب</a>
+          </div>
         ) : null}
       </header>
 
@@ -323,7 +417,7 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
             ) : null}
           </>
         ) : <p className="mt-4 text-center text-xs font-bold text-status-success">اكتملت المهمة</p>}
-        {manager && data.stage !== "assigned" ? (
+        {manager && data.stage !== "new_booking" ? (
           <button
             type="button"
             disabled={busy}
@@ -366,6 +460,37 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
         </ul>
       </section>
 
+      {data.operationalChecklist.length ? (
+        <section className="rounded-xl border border-border/30 bg-card p-4">
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-foreground">
+            <BadgeCheck className="h-4 w-4 text-primary" /> قوائم التنفيذ الإلزامية
+          </h2>
+          {(["before", "during", "after"] as const).map((phase) => {
+            const items = data.operationalChecklist.filter((item) => item.phase === phase);
+            if (!items.length) return null;
+            const labels = { before: "قبل المناسبة", during: "أثناء المناسبة", after: "بعد المناسبة" };
+            return (
+              <div key={phase} className="mb-3 last:mb-0">
+                <p className="mb-1 text-xs font-bold text-muted-foreground">{labels[phase]}</p>
+                {items.map((item) => (
+                  <label key={item.id} className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-1 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={item.completed}
+                      onChange={(event) => toggleOperationalChecklist(item.id, event.target.checked)}
+                      className="h-5 w-5 flex-shrink-0 accent-primary"
+                    />
+                    <span className={item.completed ? "text-muted-foreground line-through" : "text-foreground"}>
+                      {item.label}{item.required ? " *" : ""}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
+
       <ShootEquipment shootRef={shootRef} equipment={data.equipment} onChanged={load} />
 
       <ShootMediaPanel shootRef={shootRef} />
@@ -373,14 +498,35 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
       <ShootGalleryPanel shootRef={shootRef} />
 
       {/* Crew */}
-      {data.crew.length ? (
+      {data.crew.length || manager ? (
         <section className="rounded-xl border border-border/30 bg-card p-4">
           <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-foreground"><Users className="h-4 w-4 text-primary" /> الفريق</h2>
+          {manager ? (
+            <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <select value={crewStaffId} onChange={(event) => setCrewStaffId(Number(event.target.value))} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+                <option value={0}>اختر الموظف</option>
+                {photographers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+              </select>
+              <select value={crewRole} onChange={(event) => setCrewRole(event.target.value)} className="h-10 rounded-md border border-input bg-background px-3 text-sm">
+                <option value="main_photographer">المصور الرئيسي</option>
+                <option value="second_photographer">المصور الثاني</option>
+                <option value="videographer">مصور فيديو</option>
+                <option value="drone_operator">مشغل درون</option>
+                <option value="assistant">مساعد</option>
+                <option value="editor">محرر</option>
+                <option value="printing_employee">موظف طباعة</option>
+              </select>
+              <Button disabled={busy || !crewStaffId} onClick={() => assignCrewMember()}>توزيع</Button>
+            </div>
+          ) : null}
           <ul className="space-y-1.5">
             {data.crew.map((member) => (
               <li key={member.id} className="flex items-center justify-between gap-2 text-sm">
                 <span className="truncate">{member.staffName}</span>
-                {member.isLead ? <span className="flex-shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">قائد</span> : null}
+                <span className="flex items-center gap-1">
+                  <span className="text-[11px] text-muted-foreground">{member.role}</span>
+                  {member.isLead ? <span className="flex-shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">قائد</span> : null}
+                </span>
               </li>
             ))}
           </ul>

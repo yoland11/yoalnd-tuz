@@ -55,7 +55,12 @@ const DEPARTMENT_CODES: Record<Department, string[]> = {
     "سماعات", "مكسرات", "مكبرات", "مايكروفونات", "اضاءه", "شاشات",
   ],
   kosha: ["kosha", "koshas", "kosha booking", "كوشات", "كوشه"],
-  photography: ["photography", "photo", "photos", "تصوير", "فوتوغرافي"],
+  photography: [
+    "photography", "photography department", "photo", "photos", "photo session",
+    "filming", "videography", "video production", "camera", "photographer",
+    "تصوير", "التصوير", "جلسه تصوير", "جلسة تصوير", "تصوير ومونتاج",
+    "تصوير حفلات", "تصوير تخرج", "فوتوغرافي", "مونتاج",
+  ],
 };
 
 /** True when a slug / code / metadata value names the given department. */

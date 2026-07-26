@@ -136,7 +136,7 @@ export function deriveOperationalAlerts(input: AlertInputs): OperationalAlert[] 
     const href = `/staff/photography/shoots/${shoot.clientToken}`;
 
     // Upcoming: the job is tomorrow or sooner and nobody has started preparing.
-    if (shoot.stage === "assigned" && shoot.eventDate >= today) {
+    if (["new_booking", "awaiting_assignment", "crew_assigned", "accepted", "waiting_event", "assigned"].includes(shoot.stage) && shoot.eventDate >= today) {
       const eventStart = new Date(`${shoot.eventDate}T${shoot.eventTime || "00:00"}:00`);
       const hoursAway = (eventStart.getTime() - now.getTime()) / HOUR;
       if (Number.isFinite(hoursAway) && hoursAway <= 48 && hoursAway > 0) {
@@ -153,7 +153,7 @@ export function deriveOperationalAlerts(input: AlertInputs): OperationalAlert[] 
     }
 
     // Late arrival: the event has started and the photographer has not checked in.
-    if (["assigned", "preparing", "on_the_way"].includes(shoot.stage) && shoot.eventTime) {
+    if (["new_booking", "awaiting_assignment", "crew_assigned", "accepted", "waiting_event", "assigned", "preparing", "on_the_way"].includes(shoot.stage) && shoot.eventTime) {
       const eventStart = new Date(`${shoot.eventDate}T${shoot.eventTime}:00`);
       const lateBy = (now.getTime() - eventStart.getTime()) / HOUR;
       if (Number.isFinite(lateBy) && lateBy > 0.5) {

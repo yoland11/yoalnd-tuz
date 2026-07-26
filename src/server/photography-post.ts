@@ -127,7 +127,7 @@ export function editTimestamps(to: PhotographyEditStatus, now: Date): Record<str
  * This is what makes the shoot timeline update itself as the edit room progresses.
  */
 export function shootStageForEditStatus(status: PhotographyEditStatus): PhotographyShootStage | null {
-  if (status === "ready") return "ready_for_review";
+  if (status === "ready") return "customer_review";
   if (status === "delivered") return "delivered";
   return null;
 }

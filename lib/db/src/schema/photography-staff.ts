@@ -1,18 +1,33 @@
-import { date, integer, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { date, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { staffTable } from "./staff";
+import { serviceOrdersTable } from "./services";
 
 export const PHOTOGRAPHY_ORDER_STAGES = ["registered", "editing", "ready_print", "ready_pickup", "delivered"] as const;
 export type PhotographyOrderStage = (typeof PHOTOGRAPHY_ORDER_STAGES)[number];
 
 export const photographyEventsTable = pgTable("photography_events", {
   id: serial("id").primaryKey(),
+  bookingId: integer("booking_id").unique().references(() => serviceOrdersTable.id, { onDelete: "set null" }),
+  bookingCode: varchar("booking_code", { length: 80 }),
   clientToken: varchar("client_token", { length: 64 }).notNull().unique(),
   groomName: text("groom_name").notNull(),
   eventName: text("event_name"),
   eventDate: date("event_date").notNull(),
   location: text("location"),
+  mapUrl: text("map_url"),
+  phone: varchar("phone", { length: 30 }),
+  phone2: varchar("phone_2", { length: 30 }),
+  eventStartTime: varchar("event_start_time", { length: 10 }),
+  eventEndTime: varchar("event_end_time", { length: 10 }),
+  photographyItems: jsonb("photography_items").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  requiredPhotographers: integer("required_photographers").notNull().default(1),
+  customerNotes: text("customer_notes"),
+  internalNotes: text("internal_notes"),
+  syncState: varchar("sync_state", { length: 30 }).notNull().default("legacy"),
+  syncReason: text("sync_reason"),
+  lastSyncedAt: timestamp("last_synced_at"),
   assignedStaffId: integer("assigned_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   assignedStaffName: text("assigned_staff_name").notNull().default(""),
   status: varchar("status", { length: 20 }).notNull().default("active"),

@@ -2,6 +2,7 @@ import { bigint, index, integer, numeric, pgTable, serial, text, timestamp, uniq
 import { staffTable } from "./staff";
 import { productsTable } from "./products";
 import { photographyShootsTable } from "./photography-shoots";
+import { serviceOrdersTable } from "./services";
 
 /**
  * Post-production layer: what happens to the footage after the shoot ends.
@@ -42,6 +43,7 @@ export const photographyEditProjectsTable = pgTable(
   "photography_edit_projects",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").unique().references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     shootId: integer("shoot_id")
       .notNull()
       .unique()
@@ -71,6 +73,7 @@ export const photographyEditEventsTable = pgTable(
   "photography_edit_events",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     projectId: integer("project_id")
       .notNull()
       .references(() => photographyEditProjectsTable.id, { onDelete: "cascade" }),
@@ -111,6 +114,7 @@ export const photographyCardAssignmentsTable = pgTable(
   "photography_card_assignments",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     cardId: integer("card_id")
       .notNull()
       .references(() => photographyMemoryCardsTable.id, { onDelete: "cascade" }),
@@ -146,6 +150,7 @@ export const photographyMediaBatchesTable = pgTable(
   "photography_media_batches",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     shootId: integer("shoot_id")
       .notNull()
       .references(() => photographyShootsTable.id, { onDelete: "cascade" }),

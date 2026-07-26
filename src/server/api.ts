@@ -101,6 +101,9 @@ import {
   photographyGalleriesTable,
   photographyGalleryItemsTable,
   photographyGalleryEventsTable,
+  photographyChecklistItemsTable,
+  photographyUploadsTable,
+  photographyWorkflowSettingsTable,
   PHOTOGRAPHY_SHOOT_STAGES,
   PHOTOGRAPHY_EDIT_STATUSES,
   type PhotographyShootStage,
@@ -329,6 +332,7 @@ import {
   evaluateTransition,
   mapsLink,
   normalizeChecklist,
+  normalizeShootStage,
   parseCoordinate,
   stageIndex,
   stageTimestamps,
@@ -357,6 +361,15 @@ import {
   hashGalleryPassword,
   newGallerySlug,
 } from "@/server/photography-gallery";
+import { ensurePhotographyIntegrationTables } from "@/server/photography-integration-schema";
+import {
+  backfillPhotographyBookings,
+  detectPhotographyBooking,
+  ensurePhotographyPortalBackfill,
+  findPhotographerConflict,
+  syncCentralBookingToPhotography,
+  syncPhotographyStageToCentralBooking,
+} from "@/server/photography-booking-integration";
 import {
   addEventBrainFeedback,
   getEventBrainDashboard,
@@ -603,6 +616,18 @@ export const ALL_PERMISSIONS = [
   "task_approve",
   "koshas",
   "photography",
+  "photography.portal.view",
+  "photography.booking.view",
+  "photography.assignment.manage",
+  "photography.job.accept",
+  "photography.status.update",
+  "photography.checklist.update",
+  "photography.upload.create",
+  "photography.files.manage",
+  "photography.editing.manage",
+  "photography.delivery.confirm",
+  "photography.financials.view",
+  "photography.reports.view",
   "graduation",
   // Granular graduation permissions (kept separate from the "graduation"
   // module gate). The module gate implies all of these — see hasPermission —
@@ -7755,7 +7780,7 @@ async function ensurePhotographyShootTables(): Promise<void> {
       create table if not exists "photography_shoots" (
         "id" serial primary key,
         "event_id" integer not null unique references "photography_events" ("id") on delete cascade,
-        "stage" varchar(30) not null default 'assigned',
+        "stage" varchar(30) not null default 'awaiting_assignment',
         "venue" text,
         "gps_lat" numeric(10,7),
         "gps_lng" numeric(10,7),
@@ -33957,6 +33982,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         notes: order.notes,
         qrDataUrl: orderQr?.dataUrl ?? null,
       });
+      await ensurePhotographyStaffTables();
+      await ensurePhotographyPostTables();
+      const photographySync = await syncCentralBookingToPhotography(order.id, {
+        id: auth.id,
+        name: auth.fullName || auth.username,
+        ipAddress: req.headers.get("x-forwarded-for"),
+        userAgent: req.headers.get("user-agent"),
+      }).catch((err) => {
+        console.error("[photography-sync] booking create failed", {
+          bookingId: order.id,
+          message: err instanceof Error ? err.message : "unknown",
+        });
+        return null;
+      });
+      if (photographySync?.linked) {
+        await createNotification({
+          type: "photography_booking_new",
+          title: "حجز تصوير جديد",
+          body: `${order.trackingCode ?? `#${order.id}`} — ${order.customerName}`,
+          entityType: "service_order",
+          entityId: order.id,
+          href: `/staff/photography/shoots/${photographySync.event.clientToken}`,
+        });
+      }
       return json(
         {
           id: order.id,
@@ -34059,6 +34108,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           : "booking_reschedule_rejected",
         "service_order",
         id,
+      );
+      await ensurePhotographyStaffTables();
+      await ensurePhotographyPostTables();
+      const photographySync = await syncCentralBookingToPhotography(id, {
+        id: auth.id,
+        name: auth.fullName || auth.username,
+      }).catch((err) =>
+        console.error("[photography-sync] reschedule failed", {
+          bookingId: id,
+          message: err instanceof Error ? err.message : "unknown",
+        }),
       );
       return json(row);
     }
@@ -34302,6 +34362,41 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           financialDifference: serviceFinancialDifference,
         },
       );
+      await ensurePhotographyStaffTables();
+      await ensurePhotographyPostTables();
+      const photographySync = await syncCentralBookingToPhotography(row.id, {
+        id: auth.id,
+        name: auth.fullName || auth.username,
+        ipAddress: req.headers.get("x-forwarded-for"),
+        userAgent: req.headers.get("user-agent"),
+      }).catch((err) => {
+        console.error("[photography-sync] booking update failed", {
+          bookingId: row.id,
+          message: err instanceof Error ? err.message : "unknown",
+        });
+        return null;
+      });
+      if (photographySync?.linked && photographySync.scheduleChanged) {
+        const assignedCrew = await db.query.photographyShootCrewTable.findMany({
+          where: and(
+            eq(photographyShootCrewTable.shootId, photographySync.shoot.id),
+            ne(photographyShootCrewTable.assignmentStatus, "revoked"),
+          ),
+        });
+        await Promise.all(
+          assignedCrew.map((member) =>
+            createNotification({
+              staffId: member.staffId,
+              type: "photography_booking_schedule_changed",
+              title: "تم تغيير موعد حجز التصوير",
+              body: `${row.trackingCode ?? `#${row.id}`} — ${row.eventDate ?? ""}`,
+              entityType: "service_order",
+              entityId: row.id,
+              href: `/staff/photography/shoots/${photographySync.event.clientToken}`,
+            }),
+          ),
+        );
+      }
       return json(row);
     }
 
@@ -34373,6 +34468,39 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         id,
         { oldValues: existing, newValues: archived },
       );
+      await ensurePhotographyStaffTables();
+      await ensurePhotographyPostTables();
+      const photographySync = await syncCentralBookingToPhotography(id, {
+        id: auth.id,
+        name: auth.fullName || auth.username,
+      }).catch((err) => {
+        console.error("[photography-sync] booking cancellation failed", {
+          bookingId: id,
+          message: err instanceof Error ? err.message : "unknown",
+        });
+        return null;
+      });
+      if (photographySync?.linked) {
+        const assignedCrew = await db.query.photographyShootCrewTable.findMany({
+          where: and(
+            eq(photographyShootCrewTable.shootId, photographySync.shoot.id),
+            ne(photographyShootCrewTable.assignmentStatus, "revoked"),
+          ),
+        });
+        await Promise.all(
+          assignedCrew.map((member) =>
+            createNotification({
+              staffId: member.staffId,
+              type: "photography_booking_cancelled",
+              title: "تم إلغاء حجز التصوير",
+              body: archived.trackingCode ?? `#${id}`,
+              entityType: "service_order",
+              entityId: id,
+              href: "/staff/photography",
+            }),
+          ),
+        );
+      }
       return json({
         message: "تم إلغاء الحجز وأرشفته دون حذف البيانات",
         booking: archived,
@@ -40741,7 +40869,11 @@ const PhotographyCollectSchema = z.object({
 });
 
 function isPhotographyManager(user: AdminUser) {
-  return user.role === "admin" || user.role === "manager";
+  return (
+    user.role === "admin" ||
+    user.role === "manager" ||
+    user.permissions.includes("photography.assignment.manage")
+  );
 }
 
 function photographyStaffName(user: AdminUser) {
@@ -40768,8 +40900,13 @@ async function getPhotographyEventByRef(value: string) {
 function canAccessPhotographyEvent(
   user: AdminUser,
   event: typeof photographyEventsTable.$inferSelect,
+  crewEventIds?: Set<number>,
 ) {
-  return isPhotographyManager(user) || event.assignedStaffId === user.id;
+  return (
+    isPhotographyManager(user) ||
+    event.assignedStaffId === user.id ||
+    crewEventIds?.has(event.id) === true
+  );
 }
 
 // ── Field-shoot helpers ──────────────────────────────────────────────────────
@@ -40796,7 +40933,14 @@ async function ensureShootRow(
   if (existing) return existing;
   const [created] = await db
     .insert(photographyShootsTable)
-    .values({ eventId: event.id, venue: event.location ?? null, createdBy })
+    .values({
+      bookingId: event.bookingId ?? null,
+      eventId: event.id,
+      stage: event.assignedStaffId ? "crew_assigned" : "awaiting_assignment",
+      venue: event.location ?? null,
+      eventTime: event.eventStartTime ?? null,
+      createdBy,
+    })
     .onConflictDoNothing({ target: photographyShootsTable.eventId })
     .returning();
   if (created) return created;
@@ -40814,22 +40958,34 @@ function shootCardPayload(
   shoot: typeof photographyShootsTable.$inferSelect | null,
 ) {
   const venue = shoot?.venue ?? event.location ?? null;
+  const stage = normalizeShootStage(shoot?.stage);
   return {
     eventId: event.id,
+    bookingId: event.bookingId ?? shoot?.bookingId ?? null,
+    bookingCode: event.bookingCode ?? null,
     clientToken: event.clientToken,
     shootId: shoot?.id ?? null,
-    stage: (shoot?.stage ?? "assigned") as PhotographyShootStage,
-    stageLabel: SHOOT_STAGE_LABELS[(shoot?.stage ?? "assigned") as PhotographyShootStage],
+    stage,
+    stageLabel: SHOOT_STAGE_LABELS[stage],
     customerName: event.groomName,
+    phone: event.phone ?? null,
+    phone2: event.phone2 ?? null,
     eventName: event.eventName,
     eventDate: event.eventDate,
-    eventTime: shoot?.eventTime ?? null,
+    eventTime: shoot?.eventTime ?? event.eventStartTime ?? null,
+    eventEndTime: event.eventEndTime ?? null,
     venue,
     gpsLat: shoot?.gpsLat ? Number(shoot.gpsLat) : null,
     gpsLng: shoot?.gpsLng ? Number(shoot.gpsLng) : null,
     mapsUrl: mapsLink(shoot?.gpsLat, shoot?.gpsLng, venue),
     assignedStaffId: event.assignedStaffId,
     assignedStaffName: event.assignedStaffName,
+    photographyItems: event.photographyItems ?? [],
+    requiredPhotographers: event.requiredPhotographers ?? 1,
+    customerNotes: event.customerNotes ?? null,
+    internalNotes: event.internalNotes ?? null,
+    syncState: event.syncState ?? "legacy",
+    syncReason: event.syncReason ?? null,
     checklistComplete: checklistComplete(shoot?.checklist),
     arrivedAt: shoot?.arrivedAt?.toISOString() ?? null,
     updatedAt: (shoot?.updatedAt ?? event.updatedAt).toISOString(),
@@ -40844,9 +41000,12 @@ async function ensureEditProject(shootId: number) {
     where: eq(photographyEditProjectsTable.shootId, shootId),
   });
   if (existing) return existing;
+  const shoot = await db.query.photographyShootsTable.findFirst({
+    where: eq(photographyShootsTable.id, shootId),
+  });
   const [created] = await db
     .insert(photographyEditProjectsTable)
-    .values({ shootId })
+    .values({ shootId, bookingId: shoot?.bookingId ?? null })
     .onConflictDoNothing({ target: photographyEditProjectsTable.shootId })
     .returning();
   if (created) return created;
@@ -41670,28 +41829,151 @@ async function handlePhotographyStaffPortal(
 ): Promise<NextResponse | null> {
   if (parts[1] !== "photography") return null;
   await ensurePhotographyStaffTables();
+  await ensurePhotographyPostTables();
+  await ensurePhotographyIntegrationTables();
   const auth = await requirePermission(req, "photography");
   if (isResponse(auth)) return auth;
+  await ensurePhotographyPortalBackfill().catch((err) =>
+    console.error("[photography-sync] portal backfill failed", {
+      message: err instanceof Error ? err.message : "unknown",
+    }),
+  );
   const method = req.method;
   const resource = parts[2] ?? "dashboard";
   const ref = parts[3] ? decodeURIComponent(parts[3]) : null;
   const action = parts[4];
   const manager = isPhotographyManager(auth);
+  const crewAccessRows = manager
+    ? []
+    : await db
+        .select({ eventId: photographyShootsTable.eventId })
+        .from(photographyShootCrewTable)
+        .innerJoin(
+          photographyShootsTable,
+          eq(photographyShootCrewTable.shootId, photographyShootsTable.id),
+        )
+        .where(
+          and(
+            eq(photographyShootCrewTable.staffId, auth.id),
+            ne(photographyShootCrewTable.assignmentStatus, "rejected"),
+          ),
+        );
+  const crewEventIds = new Set(crewAccessRows.map((row) => row.eventId));
   const own = <T extends { assignedStaffId: number | null }>(rows: T[]) =>
-    manager ? rows : rows.filter((row) => row.assignedStaffId === auth.id);
+    manager
+      ? rows
+      : rows.filter(
+          (row: T & { id?: number }) =>
+            row.assignedStaffId === auth.id ||
+            (typeof row.id === "number" && crewEventIds.has(row.id)),
+        );
+
+  if (resource === "backfill") {
+    if (!manager) return error("هذا الإجراء يحتاج صلاحية مدير التصوير", 403);
+    if (method !== "GET" && method !== "POST") return error("الإجراء غير مدعوم", 405);
+    const report = await backfillPhotographyBookings({
+      dryRun: method === "GET",
+      limit: Math.min(Math.max(int(req.nextUrl.searchParams.get("limit") ?? "") || 1000, 1), 5000),
+      actor: { id: auth.id, name: photographyStaffName(auth) },
+    });
+    return json(report);
+  }
+
+  if (resource === "debug" && method === "GET") {
+    if (!manager) return error("هذا الإجراء يحتاج صلاحية مدير التصوير", 403);
+    const bookingId = int(ref ?? "");
+    if (!bookingId) return error("معرّف الحجز مطلوب", 400);
+    const order = await db.query.serviceOrdersTable.findFirst({
+      where: eq(serviceOrdersTable.id, bookingId),
+    });
+    if (!order) return error("الحجز غير موجود", 404);
+    const detection = await detectPhotographyBooking(order);
+    const event = await db.query.photographyEventsTable.findFirst({
+      where: eq(photographyEventsTable.bookingId, bookingId),
+    });
+    const shoot = await db.query.photographyShootsTable.findFirst({
+      where: eq(photographyShootsTable.bookingId, bookingId),
+    });
+    const visibilityReason = !detection.isPhotography
+      ? "Photography item not detected"
+      : !event
+        ? "Missing photography job relation"
+        : event.status === "archived"
+          ? "Archived booking"
+          : !manager && !canAccessPhotographyEvent(auth, event, crewEventIds)
+            ? "No assignment"
+            : "Visible";
+    return json({
+      bookingId,
+      bookingItems: detection.debug.bookingItems,
+      departmentId: (order.customFields as any)?.departmentId ?? null,
+      categoryId: (order.customFields as any)?.categoryId ?? null,
+      productDepartment: detection.debug.productDepartmentMatches,
+      photographyDetectionResult: detection.isPhotography,
+      portalVisibilityResult: visibilityReason === "Visible",
+      assignedPhotographer: event?.assignedStaffId ?? detection.debug.assignedPhotographer,
+      statusFilter: event?.status ?? order.status,
+      dateFilter: event?.eventDate ?? order.eventDate,
+      branchFilter: detection.debug.branchFilter,
+      archivedState: Boolean(order.archivedAt) || event?.status === "archived",
+      queryResult: visibilityReason,
+      reasons: detection.reasons,
+      missingCategoryMappings: detection.missingCategoryMappings,
+      eventId: event?.id ?? null,
+      shootId: shoot?.id ?? null,
+    });
+  }
+
+  if (resource === "workflow-settings") {
+    const current = await db.query.photographyWorkflowSettingsTable.findFirst({
+      where: eq(photographyWorkflowSettingsTable.code, "default"),
+    });
+    if (method === "GET") return json(current);
+    if (method === "PATCH") {
+      if (!manager) return error("تعديل مراحل التصوير يحتاج صلاحية مدير", 403);
+      const payload = await body(req);
+      const activeStages = Array.isArray(payload?.activeStages)
+        ? payload.activeStages
+            .map(String)
+            .filter((stage: string) => (PHOTOGRAPHY_SHOOT_STAGES as readonly string[]).includes(stage))
+        : current?.activeStages ?? [];
+      const [updated] = await db
+        .insert(photographyWorkflowSettingsTable)
+        .values({
+          code: "default",
+          activeStages,
+          requireReacceptOnScheduleChange: payload?.requireReacceptOnScheduleChange !== false,
+          updatedBy: auth.id,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: photographyWorkflowSettingsTable.code,
+          set: {
+            activeStages,
+            requireReacceptOnScheduleChange: payload?.requireReacceptOnScheduleChange !== false,
+            updatedBy: auth.id,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      return json(updated);
+    }
+    return error("الإجراء غير مدعوم", 405);
+  }
 
   if (resource === "photographers" && method === "GET") {
     const rows = await db.query.staffTable.findMany({
       where: eq(staffTable.isActive, true),
       orderBy: [asc(staffTable.fullName), asc(staffTable.id)],
     });
-    const photographers = rows.filter(
-      (row) =>
-        row.role === "admin" ||
-        row.role === "manager" ||
-        (Array.isArray(row.permissions) &&
-          row.permissions.includes("photography")),
-    );
+    const photographers = manager
+      ? rows
+      : rows.filter(
+          (row) =>
+            row.role === "admin" ||
+            row.role === "manager" ||
+            (Array.isArray(row.permissions) && row.permissions.includes("photography")),
+        );
     return json(
       (manager
         ? photographers
@@ -41727,7 +42009,7 @@ async function handlePhotographyStaffPortal(
       if (to) rows = rows.filter((row) => row.eventDate <= to);
       if (search)
         rows = rows.filter((row) =>
-          `${row.groomName} ${row.eventName ?? ""} ${row.location ?? ""}`
+          `${row.bookingCode ?? ""} ${row.groomName} ${row.phone ?? ""} ${row.phone2 ?? ""} ${row.eventName ?? ""} ${row.location ?? ""} ${JSON.stringify(row.photographyItems ?? [])}`
             .toLowerCase()
             .includes(search),
         );
@@ -41817,13 +42099,13 @@ async function handlePhotographyStaffPortal(
     }
     if (method === "GET" && ref && !action) {
       const event = await getPhotographyEventByRef(ref);
-      if (!event || !canAccessPhotographyEvent(auth, event))
+      if (!event || !canAccessPhotographyEvent(auth, event, crewEventIds))
         return error("المناسبة غير موجودة", 404);
       return json(await formatPhotographyEventDetail(event));
     }
     if (method === "POST" && ref && action === "orders") {
       const event = await getPhotographyEventByRef(ref);
-      if (!event || !canAccessPhotographyEvent(auth, event))
+      if (!event || !canAccessPhotographyEvent(auth, event, crewEventIds))
         return error("المناسبة غير موجودة", 404);
       if (event.status === "archived")
         return error("المناسبة مؤرشفة — لا يمكن إضافة طلبات إليها", 409);
@@ -42025,6 +42307,37 @@ async function handlePhotographyStaffPortal(
         .set(patch)
         .where(eq(photographyEventsTable.id, event.id))
         .returning();
+      if (event.bookingId) {
+        const central = await db.query.serviceOrdersTable.findFirst({
+          where: eq(serviceOrdersTable.id, event.bookingId),
+        });
+        if (central) {
+          const centralFields = (central.customFields ?? {}) as Record<string, any>;
+          await db
+            .update(serviceOrdersTable)
+            .set({
+              customerName: data.groomName ?? central.customerName,
+              eventDate: data.eventDate ?? central.eventDate,
+              eventLocation:
+                data.location !== undefined ? nullableText(data.location) : central.eventLocation,
+              customFields: {
+                ...centralFields,
+                assignedPhotographerId:
+                  data.assignedStaffId ?? centralFields.assignedPhotographerId ?? null,
+                photographyWorkflowStatus: normalizeShootStage(
+                  (await db.query.photographyShootsTable.findFirst({
+                    where: eq(photographyShootsTable.bookingId, event.bookingId),
+                  }))?.stage,
+                ),
+              },
+            })
+            .where(eq(serviceOrdersTable.id, event.bookingId));
+          await syncCentralBookingToPhotography(event.bookingId, {
+            id: auth.id,
+            name: photographyStaffName(auth),
+          });
+        }
+      }
       void logAdminActivity(
         req,
         "photography_event_updated",
@@ -42058,6 +42371,12 @@ async function handlePhotographyStaffPortal(
       if (!manager) return error("هذا الإجراء يخص المدير فقط", 403);
       const event = await getPhotographyEventByRef(ref);
       if (!event) return error("المناسبة غير موجودة", 404);
+      if (event.bookingId) {
+        return error(
+          "الحجز مرتبط بمركز الحجوزات ولا يمكن حذفه؛ استخدم إلغاء الحجز للحفاظ على السجل والملفات",
+          409,
+        );
+      }
       const [count] = await db
         .select({ total: sql<number>`count(*)::int` })
         .from(photographyOrdersTable)
@@ -42115,11 +42434,13 @@ async function handlePhotographyStaffPortal(
           .slice(0, 20),
         active: cards.filter(
           (card) =>
-            card.stage !== "assigned" &&
+            card.stage !== "new_booking" &&
+            card.stage !== "awaiting_assignment" &&
             card.stage !== "completed" &&
-            card.stage !== "delivered",
+            card.stage !== "delivered" &&
+            card.stage !== "cancelled",
         ),
-        pendingUploads: cards.filter((card) => card.stage === "uploading").length,
+        pendingUploads: cards.filter((card) => card.stage === "transferring").length,
         pendingEditing: cards.filter((card) => card.stage === "editing").length,
         completed: cards.filter((card) => card.stage === "completed").length,
         total: cards.length,
@@ -42145,7 +42466,7 @@ async function handlePhotographyStaffPortal(
       if (to) events = events.filter((row) => row.eventDate <= to);
       if (search)
         events = events.filter((row) =>
-          `${row.groomName} ${row.eventName ?? ""} ${row.location ?? ""}`
+          `${row.bookingCode ?? ""} ${row.groomName} ${row.phone ?? ""} ${row.phone2 ?? ""} ${row.eventName ?? ""} ${row.location ?? ""} ${JSON.stringify(row.photographyItems ?? [])}`
             .toLowerCase()
             .includes(search),
         );
@@ -42160,7 +42481,7 @@ async function handlePhotographyStaffPortal(
     if (!ref) return error("معرّف المناسبة مطلوب", 400);
     const event = await getPhotographyEventByRef(ref);
     if (!event) return error("المناسبة غير موجودة", 404);
-    if (!canAccessPhotographyEvent(auth, event))
+    if (!canAccessPhotographyEvent(auth, event, crewEventIds))
       return error("هذه المهمة غير مُسندة إليك", 403);
 
     // The shoot row is created lazily so existing events keep working untouched
@@ -42168,7 +42489,7 @@ async function handlePhotographyStaffPortal(
     const shoot = await ensureShootRow(event, auth.id);
 
     if (method === "GET" && !action) {
-      const [timeline, crew, assets] = await Promise.all([
+      const [timeline, crew, assets, operationalChecklist] = await Promise.all([
         db.query.photographyShootEventsTable.findMany({
           where: eq(photographyShootEventsTable.shootId, shoot.id),
           orderBy: [desc(photographyShootEventsTable.createdAt), desc(photographyShootEventsTable.id)],
@@ -42179,15 +42500,30 @@ async function handlePhotographyStaffPortal(
           orderBy: [desc(photographyShootCrewTable.isLead), asc(photographyShootCrewTable.id)],
         }),
         shootEquipmentPayload(shoot.id),
+        event.bookingId
+          ? db.query.photographyChecklistItemsTable.findMany({
+              where: eq(photographyChecklistItemsTable.bookingId, event.bookingId),
+              orderBy: [asc(photographyChecklistItemsTable.phase), asc(photographyChecklistItemsTable.id)],
+            })
+          : Promise.resolve([]),
       ]);
       const orders = await db.query.photographyOrdersTable.findMany({
         where: eq(photographyOrdersTable.eventId, event.id),
         limit: 200,
       });
-      const remaining = orders.reduce(
-        (sum, row) => sum + Math.max(0, Number(row.remainingAmount ?? 0)),
-        0,
-      );
+      const centralBooking = event.bookingId
+        ? await db.query.serviceOrdersTable.findFirst({
+            where: eq(serviceOrdersTable.id, event.bookingId),
+          })
+        : null;
+      const remaining = centralBooking
+        ? Math.max(0, Number(centralBooking.remainingAmount ?? 0))
+        : orders.reduce(
+            (sum, row) => sum + Math.max(0, Number(row.remainingAmount ?? 0)),
+            0,
+          );
+      const canViewFinancials =
+        manager || auth.permissions.includes("photography.financials.view");
       return json({
         ...shootCardPayload(event, shoot),
         checklist: normalizeChecklist(shoot.checklist),
@@ -42203,7 +42539,21 @@ async function handlePhotographyStaffPortal(
           deliveredAt: shoot.deliveredAt?.toISOString() ?? null,
           completedAt: shoot.completedAt?.toISOString() ?? null,
         },
-        remainingPayment: remaining,
+        remainingPayment: canViewFinancials ? remaining : null,
+        paymentIndicator: remaining > 0 ? "يوجد مبلغ متبقٍ" : "الدفع مكتمل",
+        financialSummary: canViewFinancials && centralBooking
+          ? {
+              total: Number(centralBooking.totalAmount ?? 0),
+              photographyValue: Number(
+                (centralBooking.customFields as any)?.bookingCenterServices?.find?.(
+                  (item: any) => item?.type === "photography",
+                )?.amount ?? centralBooking.totalAmount ?? 0,
+              ),
+              paid: Number(centralBooking.depositAmount ?? 0),
+              remaining,
+              paymentStatus: centralBooking.paymentStatus,
+            }
+          : null,
         orderCount: orders.length,
         crew: crew.map((row) => ({
           id: row.id,
@@ -42211,8 +42561,28 @@ async function handlePhotographyStaffPortal(
           staffName: row.staffName,
           role: row.role,
           isLead: row.isLead,
+          assignmentStatus: row.assignmentStatus,
+          assignedAt: row.assignedAt?.toISOString() ?? null,
+          acceptedAt: row.acceptedAt?.toISOString() ?? null,
+          rejectedAt: row.rejectedAt?.toISOString() ?? null,
+          startedAt: row.startedAt?.toISOString() ?? null,
+          completedAt: row.completedAt?.toISOString() ?? null,
+          conflictReason: row.conflictReason,
+          overrideReason: row.overrideReason,
         })),
         equipment: assets,
+        operationalChecklist: operationalChecklist.map((row) => ({
+          id: row.id,
+          phase: row.phase,
+          key: row.itemKey,
+          label: row.label,
+          required: row.isRequired,
+          completed: row.isCompleted,
+          completedBy: row.completedBy,
+          completedAt: row.completedAt?.toISOString() ?? null,
+          evidenceUrl: row.evidenceUrl,
+          note: row.note,
+        })),
         timeline: timeline.map((row) => ({
           id: row.id,
           type: row.type,
@@ -42272,6 +42642,7 @@ async function handlePhotographyStaffPortal(
         .returning();
       if (nowComplete && !wasComplete) {
         await db.insert(photographyShootEventsTable).values({
+          bookingId: event.bookingId ?? null,
           shootId: shoot.id,
           staffId: auth.id,
           staffName: actorName,
@@ -42296,9 +42667,81 @@ async function handlePhotographyStaffPortal(
       });
     }
 
+    if (action === "operational-checklist" && method === "POST") {
+      if (!event.bookingId) return error("هذه المناسبة غير مرتبطة بحجز مركزي", 409);
+      const payload = await body(req);
+      const itemId = optionalPositiveId(payload?.id);
+      if (!itemId) return error("بند قائمة الفحص مطلوب", 400);
+      const existingItem = await db.query.photographyChecklistItemsTable.findFirst({
+        where: and(
+          eq(photographyChecklistItemsTable.id, itemId),
+          eq(photographyChecklistItemsTable.bookingId, event.bookingId),
+        ),
+      });
+      if (!existingItem) return error("بند قائمة الفحص غير موجود", 404);
+      const completed = payload?.completed === true;
+      const [updatedItem] = await db
+        .update(photographyChecklistItemsTable)
+        .set({
+          isCompleted: completed,
+          completedBy: completed ? auth.id : null,
+          completedAt: completed ? new Date() : null,
+          evidenceUrl: nullableText(payload?.evidenceUrl) ?? existingItem.evidenceUrl,
+          note: nullableText(payload?.note) ?? existingItem.note,
+          updatedAt: new Date(),
+        })
+        .where(eq(photographyChecklistItemsTable.id, itemId))
+        .returning();
+      await db.insert(photographyShootEventsTable).values({
+        bookingId: event.bookingId,
+        shootId: shoot.id,
+        staffId: auth.id,
+        staffName: actorName,
+        type: completed ? "checklist_item_completed" : "checklist_item_reopened",
+        note: updatedItem.label,
+      });
+      return json({
+        ok: true,
+        item: {
+          id: updatedItem.id,
+          completed: updatedItem.isCompleted,
+          completedAt: updatedItem.completedAt?.toISOString() ?? null,
+        },
+      });
+    }
+
     if (action === "stage" && method === "POST") {
       const payload = await body(req);
       const to = String(payload?.stage ?? "").trim();
+      const workflowSettings = await db.query.photographyWorkflowSettingsTable.findFirst({
+        where: eq(photographyWorkflowSettingsTable.code, "default"),
+      });
+      if (
+        to !== "cancelled" &&
+        Array.isArray(workflowSettings?.activeStages) &&
+        workflowSettings.activeStages.length > 0 &&
+        !workflowSettings.activeStages.includes(to)
+      ) {
+        return error("هذه المرحلة معطلة في إعدادات سير عمل التصوير", 409);
+      }
+      if (to === "completed" && event.bookingId) {
+        const [remainingRequired] = await db
+          .select({ total: sql<number>`count(*)::int` })
+          .from(photographyChecklistItemsTable)
+          .where(
+            and(
+              eq(photographyChecklistItemsTable.bookingId, event.bookingId),
+              eq(photographyChecklistItemsTable.isRequired, true),
+              eq(photographyChecklistItemsTable.isCompleted, false),
+            ),
+          );
+        if (Number(remainingRequired?.total ?? 0) > 0) {
+          return error(
+            `لا يمكن إكمال المهمة — توجد ${remainingRequired.total} بنود إلزامية غير مكتملة`,
+            422,
+          );
+        }
+      }
       const decision = evaluateTransition({
         from: shoot.stage,
         to,
@@ -42326,6 +42769,7 @@ async function handlePhotographyStaffPortal(
         .where(eq(photographyShootsTable.id, shoot.id))
         .returning();
       await db.insert(photographyShootEventsTable).values({
+        bookingId: event.bookingId ?? null,
         shootId: shoot.id,
         staffId: auth.id,
         staffName: actorName,
@@ -42352,7 +42796,7 @@ async function handlePhotographyStaffPortal(
         backward: decision.backward,
       });
       // Managers get told when a job lands in a state that needs their attention.
-      if (to === "ready_for_review") {
+      if (to === "customer_review") {
         await createNotification({
           type: "photography_ready_review",
           title: "مهمة تصوير جاهزة للمراجعة",
@@ -42362,7 +42806,76 @@ async function handlePhotographyStaffPortal(
           href: `/admin/photography-operations?event=${event.id}`,
         });
       }
+      if (event.bookingId) {
+        await syncPhotographyStageToCentralBooking(event.bookingId, to, {
+          id: auth.id,
+          name: actorName,
+          ipAddress: req.headers.get("x-forwarded-for"),
+          userAgent: req.headers.get("user-agent"),
+        });
+      }
       return json(shootCardPayload(event, updated));
+    }
+
+    if (action === "assignment" && method === "POST") {
+      const payload = await body(req);
+      const decision = String(payload?.decision ?? "");
+      if (decision !== "accept" && decision !== "reject") {
+        return error("اختر قبول المهمة أو رفضها", 400);
+      }
+      const assignment = await db.query.photographyShootCrewTable.findFirst({
+        where: and(
+          eq(photographyShootCrewTable.shootId, shoot.id),
+          eq(photographyShootCrewTable.staffId, auth.id),
+          ne(photographyShootCrewTable.assignmentStatus, "revoked"),
+        ),
+      });
+      if (!assignment) return error("لا يوجد تكليف تصوير مرتبط بحسابك", 404);
+      const reason = nullableText(payload?.reason);
+      if (decision === "reject" && !reason) return error("سبب رفض المهمة مطلوب", 422);
+      const now = new Date();
+      const nextStage = decision === "accept" ? "accepted" : "awaiting_assignment";
+      await db
+        .update(photographyShootCrewTable)
+        .set({
+          assignmentStatus: decision === "accept" ? "accepted" : "rejected",
+          acceptedAt: decision === "accept" ? now : null,
+          rejectedAt: decision === "reject" ? now : null,
+          conflictReason: decision === "reject" ? reason : null,
+        })
+        .where(eq(photographyShootCrewTable.id, assignment.id));
+      await db
+        .update(photographyShootsTable)
+        .set({ stage: nextStage, updatedAt: now })
+        .where(eq(photographyShootsTable.id, shoot.id));
+      await db.insert(photographyShootEventsTable).values({
+        bookingId: event.bookingId ?? null,
+        shootId: shoot.id,
+        staffId: auth.id,
+        staffName: actorName,
+        type: decision === "accept" ? "assignment_accepted" : "assignment_rejected",
+        fromStage: normalizeShootStage(shoot.stage),
+        toStage: nextStage,
+        note: reason,
+      });
+      if (event.bookingId) {
+        await syncPhotographyStageToCentralBooking(event.bookingId, nextStage, {
+          id: auth.id,
+          name: actorName,
+        });
+      }
+      void logAdminActivity(
+        req,
+        decision === "accept" ? "photography_assignment_accepted" : "photography_assignment_rejected",
+        "service_order",
+        event.bookingId ?? event.id,
+        { shootId: shoot.id, assignmentId: assignment.id, reason },
+      );
+      return json({
+        ok: true,
+        assignmentStatus: decision === "accept" ? "accepted" : "rejected",
+        stage: nextStage,
+      });
     }
 
     if (action === "crew" && method === "POST") {
@@ -42373,7 +42886,8 @@ async function handlePhotographyStaffPortal(
       if (!staffId) return error("معرّف الموظف مطلوب", 400);
       if (mode === "remove") {
         await db
-          .delete(photographyShootCrewTable)
+          .update(photographyShootCrewTable)
+          .set({ assignmentStatus: "revoked", completedAt: new Date() })
           .where(
             and(
               eq(photographyShootCrewTable.shootId, shoot.id),
@@ -42386,17 +42900,130 @@ async function handlePhotographyStaffPortal(
         where: and(eq(staffTable.id, staffId), eq(staffTable.isActive, true)),
       });
       if (!member) return error("الموظف غير موجود أو غير نشط", 404);
+      const conflict = await findPhotographerConflict({
+        staffId,
+        eventId: event.id,
+        eventDate: event.eventDate,
+        startTime: event.eventStartTime ?? shoot.eventTime,
+        endTime: event.eventEndTime,
+      });
+      const overrideReason = nullableText(payload?.overrideReason);
+      if (conflict && !overrideReason) {
+        return error(
+          `المصور لديه حجز متعارض في هذا الوقت (${conflict.bookingCode ?? `#${conflict.eventId}`}) — يتطلب التجاوز سبباً`,
+          409,
+        );
+      }
       await db
         .insert(photographyShootCrewTable)
         .values({
+          bookingId: event.bookingId ?? null,
           shootId: shoot.id,
           staffId,
           staffName: member.fullName || member.username,
           role: String(payload?.role ?? "photographer").slice(0, 30),
           isLead: payload?.isLead === true,
+          assignmentStatus: "assigned",
+          assignedBy: auth.id,
+          assignedAt: new Date(),
+          conflictReason: conflict ? `overlap:${conflict.eventId}` : null,
+          overrideReason,
         })
-        .onConflictDoNothing();
-      return json({ ok: true, staffId });
+        .onConflictDoUpdate({
+          target: [photographyShootCrewTable.shootId, photographyShootCrewTable.staffId],
+          set: {
+            staffName: member.fullName || member.username,
+            role: String(payload?.role ?? "photographer").slice(0, 30),
+            isLead: payload?.isLead === true,
+            assignmentStatus: "assigned",
+            assignedBy: auth.id,
+            assignedAt: new Date(),
+            acceptedAt: null,
+            rejectedAt: null,
+            conflictReason: conflict ? `overlap:${conflict.eventId}` : null,
+            overrideReason,
+          },
+        });
+      if (payload?.isLead === true) {
+        await db
+          .update(photographyEventsTable)
+          .set({
+            assignedStaffId: staffId,
+            assignedStaffName: member.fullName || member.username,
+            updatedAt: new Date(),
+          })
+          .where(eq(photographyEventsTable.id, event.id));
+      }
+      if (["new_booking", "awaiting_assignment"].includes(normalizeShootStage(shoot.stage))) {
+        await db
+          .update(photographyShootsTable)
+          .set({ stage: "crew_assigned", updatedAt: new Date() })
+          .where(eq(photographyShootsTable.id, shoot.id));
+      }
+      await createNotification({
+        type: "photography_assignment",
+        title: "تم تكليفك بحجز تصوير",
+        body: `${event.bookingCode ?? event.groomName} — ${event.eventDate}`,
+        entityType: "photography_event",
+        entityId: event.id,
+        href: `/staff/photography/shoots/${event.clientToken}`,
+        staffId,
+      });
+      return json({ ok: true, staffId, conflictOverridden: Boolean(conflict) });
+    }
+
+    if (action === "uploads") {
+      if (!event.bookingId) return error("هذه المناسبة غير مرتبطة بحجز مركزي", 409);
+      if (method === "GET") {
+        const uploads = await db.query.photographyUploadsTable.findMany({
+          where: eq(photographyUploadsTable.bookingId, event.bookingId),
+          orderBy: [desc(photographyUploadsTable.createdAt)],
+          limit: 500,
+        });
+        return json({
+          data: uploads.map((row) => ({
+            ...row,
+            createdAt: row.createdAt.toISOString(),
+          })),
+        });
+      }
+      if (method === "POST") {
+        const payload = await body(req);
+        const allowedKinds = new Set([
+          "during_execution", "execution_proof", "raw_sample", "customer_selection",
+          "edited_preview", "final_gallery", "print_approval",
+        ]);
+        const kind = String(payload?.kind ?? "");
+        const fileUrl = nullableText(payload?.fileUrl);
+        if (!allowedKinds.has(kind) || !fileUrl) return error("نوع الملف ورابطه مطلوبان", 422);
+        const accessLevel = ["team", "manager", "customer"].includes(String(payload?.accessLevel))
+          ? String(payload.accessLevel)
+          : "team";
+        const [upload] = await db
+          .insert(photographyUploadsTable)
+          .values({
+            bookingId: event.bookingId,
+            shootId: shoot.id,
+            kind,
+            storagePath: nullableText(payload?.storagePath),
+            fileUrl,
+            fileName: nullableText(payload?.fileName),
+            mimeType: nullableText(payload?.mimeType),
+            accessLevel,
+            metadata: payload?.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+            uploadedBy: auth.id,
+          })
+          .returning();
+        await db.insert(photographyShootEventsTable).values({
+          bookingId: event.bookingId,
+          shootId: shoot.id,
+          staffId: auth.id,
+          staffName: actorName,
+          type: "photography_upload_created",
+          note: `${kind}: ${upload.fileName ?? upload.id}`,
+        });
+        return json({ ok: true, id: upload.id }, 201);
+      }
     }
 
     // Equipment reuses the shared asset_links + custody engine, scoped to the shoot.
@@ -42437,7 +43064,7 @@ async function handlePhotographyStaffPortal(
     if (!ref) return error("معرّف المهمة مطلوب", 400);
     const eventRow = await getPhotographyEventByRef(ref);
     if (!eventRow) return error("المناسبة غير موجودة", 404);
-    if (!canAccessPhotographyEvent(auth, eventRow))
+    if (!canAccessPhotographyEvent(auth, eventRow, crewEventIds))
       return error("هذه المهمة غير مُسندة إليك", 403);
     const shootRow = await ensureShootRow(eventRow, auth.id);
 
@@ -42719,7 +43346,7 @@ async function handlePhotographyStaffPortal(
     if (!ref) return error("معرّف المهمة مطلوب", 400);
     const eventRow = await getPhotographyEventByRef(ref);
     if (!eventRow) return error("المناسبة غير موجودة", 404);
-    if (!canAccessPhotographyEvent(auth, eventRow))
+    if (!canAccessPhotographyEvent(auth, eventRow, crewEventIds))
       return error("هذه المهمة غير مُسندة إليك", 403);
     const shootRow = await ensureShootRow(eventRow, auth.id);
 
@@ -42768,6 +43395,7 @@ async function handlePhotographyStaffPortal(
           })
           .where(eq(photographyEditProjectsTable.id, project.id));
         await db.insert(photographyEditEventsTable).values({
+          bookingId: shootRow.bookingId ?? null,
           projectId: project.id,
           staffId: auth.id,
           staffName: actorName,
@@ -42808,6 +43436,7 @@ async function handlePhotographyStaffPortal(
           })
           .where(eq(photographyEditProjectsTable.id, project.id));
         await db.insert(photographyEditEventsTable).values({
+          bookingId: shootRow.bookingId ?? null,
           projectId: project.id,
           staffId: auth.id,
           staffName: actorName,
@@ -42832,6 +43461,7 @@ async function handlePhotographyStaffPortal(
             })
             .where(eq(photographyShootsTable.id, shootRow.id));
           await db.insert(photographyShootEventsTable).values({
+            bookingId: shootRow.bookingId ?? null,
             shootId: shootRow.id,
             staffId: auth.id,
             staffName: actorName,
@@ -42840,6 +43470,12 @@ async function handlePhotographyStaffPortal(
             toStage: impliedStage,
             note: `تلقائياً من حالة المونتاج «${EDIT_STATUS_LABELS[to as PhotographyEditStatus]}»`,
           });
+          if (shootRow.bookingId) {
+            await syncPhotographyStageToCentralBooking(shootRow.bookingId, impliedStage, {
+              id: auth.id,
+              name: actorName,
+            });
+          }
         }
         void addEntityTimeline({
           entityType: "photography_event",
@@ -42877,6 +43513,7 @@ async function handlePhotographyStaffPortal(
       await db
         .insert(photographyCardAssignmentsTable)
         .values({
+          bookingId: shootRow.bookingId ?? null,
           cardId,
           shootId: shootRow.id,
           photographerStaffId: auth.id,
@@ -42955,6 +43592,7 @@ async function handlePhotographyStaffPortal(
         const [batch] = await db
           .insert(photographyMediaBatchesTable)
           .values({
+            bookingId: shootRow.bookingId ?? null,
             shootId: shootRow.id,
             kind,
             fileCount,
@@ -43018,7 +43656,7 @@ async function handlePhotographyStaffPortal(
       let eventFilterId: number | null = null;
       if (eventRefParam) {
         const ev = await getPhotographyEventByRef(eventRefParam);
-        if (ev && canAccessPhotographyEvent(auth, ev)) eventFilterId = ev.id;
+        if (ev && canAccessPhotographyEvent(auth, ev, crewEventIds)) eventFilterId = ev.id;
         else eventFilterId = -1;
       }
       let rows = own(

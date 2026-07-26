@@ -2,6 +2,7 @@ import { boolean, index, integer, jsonb, numeric, pgTable, serial, text, timesta
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { staffTable } from "./staff";
+import { serviceOrdersTable } from "./services";
 import { photographyEventsTable } from "./photography-staff";
 
 /**
@@ -14,16 +15,27 @@ import { photographyEventsTable } from "./photography-staff";
  * payment workflows keep working exactly as before.
  */
 export const PHOTOGRAPHY_SHOOT_STAGES = [
-  "assigned",
-  "preparing",
+  "new_booking",
+  "awaiting_assignment",
+  "crew_assigned",
+  "accepted",
+  "waiting_event",
   "on_the_way",
   "arrived",
   "shooting",
-  "uploading",
+  "shoot_ended",
+  "files_received",
+  "transferring",
+  "sorting",
   "editing",
-  "ready_for_review",
+  "customer_review",
+  "revising",
+  "ready_print",
+  "printing",
+  "ready_delivery",
   "delivered",
   "completed",
+  "cancelled",
 ] as const;
 export type PhotographyShootStage = (typeof PHOTOGRAPHY_SHOOT_STAGES)[number];
 
@@ -45,11 +57,12 @@ export const photographyShootsTable = pgTable(
   "photography_shoots",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").unique().references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     eventId: integer("event_id")
       .notNull()
       .unique()
       .references(() => photographyEventsTable.id, { onDelete: "cascade" }),
-    stage: varchar("stage", { length: 30 }).notNull().default("assigned"),
+    stage: varchar("stage", { length: 30 }).notNull().default("awaiting_assignment"),
 
     // Venue + coordinates drive the Google Maps deep link and the arrival check-in.
     venue: text("venue"),
@@ -88,6 +101,7 @@ export const photographyShootEventsTable = pgTable(
   "photography_shoot_events",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     shootId: integer("shoot_id")
       .notNull()
       .references(() => photographyShootsTable.id, { onDelete: "cascade" }),
@@ -111,6 +125,7 @@ export const photographyShootCrewTable = pgTable(
   "photography_shoot_crew",
   {
     id: serial("id").primaryKey(),
+    bookingId: integer("booking_id").references(() => serviceOrdersTable.id, { onDelete: "set null" }),
     shootId: integer("shoot_id")
       .notNull()
       .references(() => photographyShootsTable.id, { onDelete: "cascade" }),
@@ -120,6 +135,15 @@ export const photographyShootCrewTable = pgTable(
     staffName: text("staff_name").notNull().default(""),
     role: varchar("role", { length: 30 }).notNull().default("photographer"),
     isLead: boolean("is_lead").notNull().default(false),
+    assignmentStatus: varchar("assignment_status", { length: 30 }).notNull().default("assigned"),
+    assignedBy: integer("assigned_by").references(() => staffTable.id, { onDelete: "set null" }),
+    assignedAt: timestamp("assigned_at").notNull().defaultNow(),
+    acceptedAt: timestamp("accepted_at"),
+    rejectedAt: timestamp("rejected_at"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    conflictReason: text("conflict_reason"),
+    overrideReason: text("override_reason"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

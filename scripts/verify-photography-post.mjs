@@ -70,16 +70,17 @@ check("ready stamps readyAt", Object.keys(editTimestamps("ready", now)), ["ready
 check("editing stamps nothing", editTimestamps("editing", now), {});
 
 // ── Edit status drives the shoot stage ──
-check("ready lifts the shoot to review", shootStageForEditStatus("ready"), "ready_for_review");
+check("ready lifts the shoot to customer review", shootStageForEditStatus("ready"), "customer_review");
 check("delivered lifts the shoot to delivered", shootStageForEditStatus("delivered"), "delivered");
 check("mid-pipeline leaves the shoot alone", shootStageForEditStatus("exporting"), null);
 
 // The auto-sync must never rewind a shoot: api.ts gates it on stageIndex, so assert the
 // ordering that gate depends on.
-const SHOOT_ORDER = ["assigned","preparing","on_the_way","arrived","shooting",
-  "uploading","editing","ready_for_review","delivered","completed"];
+const SHOOT_ORDER = ["new_booking","awaiting_assignment","crew_assigned","accepted","waiting_event",
+  "on_the_way","arrived","shooting","shoot_ended","files_received","transferring","sorting",
+  "editing","customer_review","revising","ready_print","printing","ready_delivery","delivered","completed","cancelled"];
 const idx = (s) => SHOOT_ORDER.indexOf(s);
-check("ready_for_review sits before delivered", idx("ready_for_review") < idx("delivered"), true);
+check("customer_review sits before delivered", idx("customer_review") < idx("delivered"), true);
 check("a completed shoot is past ready_for_review",
   idx(shootStageForEditStatus("ready")) < idx("completed"), true);
 check("a delivered shoot is not moved by edit status 'delivered'",

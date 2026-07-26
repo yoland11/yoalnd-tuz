@@ -2,6 +2,7 @@ import { Link, useLocation } from "wouter";
 import {
   Armchair,
   Facebook,
+  Flower2,
   GraduationCap,
   Heart,
   Images,
@@ -183,6 +184,13 @@ export function Navbar() {
           >
             <GraduationCap className="h-3.5 w-3.5 shrink-0" />
             تجهيزات التخرج
+          </Link>
+          <Link
+            href="/design"
+            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/design") ? "is-active" : ""}`}
+          >
+            <Flower2 className="h-3.5 w-3.5 shrink-0" />
+            تصميم باقة
           </Link>
           <Link
             href="/gallery"

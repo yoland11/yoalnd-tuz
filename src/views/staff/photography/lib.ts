@@ -140,20 +140,34 @@ export const photographyApi = {
 // ── Field-shoot operations ───────────────────────────────────────────────────
 
 export type ShootStage =
-  | "assigned" | "preparing" | "on_the_way" | "arrived" | "shooting"
-  | "uploading" | "editing" | "ready_for_review" | "delivered" | "completed";
+  | "new_booking" | "awaiting_assignment" | "crew_assigned" | "accepted"
+  | "waiting_event" | "on_the_way" | "arrived" | "shooting" | "shoot_ended"
+  | "files_received" | "transferring" | "sorting" | "editing" | "customer_review"
+  | "revising" | "ready_print" | "printing" | "ready_delivery" | "delivered"
+  | "completed" | "cancelled";
 
 export const SHOOT_STAGES: Array<{ key: ShootStage; label: string; icon: string }> = [
-  { key: "assigned", label: "مُسند", icon: "📋" },
-  { key: "preparing", label: "قيد التحضير", icon: "🎒" },
-  { key: "on_the_way", label: "في الطريق", icon: "🚗" },
-  { key: "arrived", label: "وصل الموقع", icon: "📍" },
-  { key: "shooting", label: "قيد التصوير", icon: "📸" },
-  { key: "uploading", label: "رفع الملفات", icon: "⬆️" },
-  { key: "editing", label: "قيد المونتاج", icon: "🎬" },
-  { key: "ready_for_review", label: "جاهز للمراجعة", icon: "👁️" },
-  { key: "delivered", label: "تم التسليم", icon: "📦" },
+  { key: "new_booking", label: "حجز جديد", icon: "🆕" },
+  { key: "awaiting_assignment", label: "بانتظار توزيع المصور", icon: "👤" },
+  { key: "crew_assigned", label: "تم توزيع الكادر", icon: "👥" },
+  { key: "accepted", label: "تم قبول المهمة", icon: "✓" },
+  { key: "waiting_event", label: "بانتظار موعد التصوير", icon: "🕒" },
+  { key: "on_the_way", label: "الفريق في الطريق", icon: "🚗" },
+  { key: "arrived", label: "وصل إلى الموقع", icon: "📍" },
+  { key: "shooting", label: "بدأ التصوير", icon: "📸" },
+  { key: "shoot_ended", label: "انتهى التصوير", icon: "■" },
+  { key: "files_received", label: "تم استلام الملفات", icon: "💾" },
+  { key: "transferring", label: "جاري نقل الملفات", icon: "↥" },
+  { key: "sorting", label: "جاري الفرز", icon: "≡" },
+  { key: "editing", label: "جاري المونتاج", icon: "🎬" },
+  { key: "customer_review", label: "بانتظار مراجعة العميل", icon: "👁" },
+  { key: "revising", label: "جاري التعديل", icon: "✎" },
+  { key: "ready_print", label: "جاهز للطباعة", icon: "🖨" },
+  { key: "printing", label: "جاري الطباعة", icon: "▣" },
+  { key: "ready_delivery", label: "جاهز للتسليم", icon: "📦" },
+  { key: "delivered", label: "تم التسليم", icon: "✓" },
   { key: "completed", label: "مكتمل", icon: "✅" },
+  { key: "cancelled", label: "ملغي", icon: "×" },
 ];
 
 export const SHOOT_STAGE_LABEL: Record<string, string> = Object.fromEntries(
@@ -180,20 +194,31 @@ export function nextStage(stage: ShootStage): ShootStage | null {
 
 export type ShootCard = {
   eventId: number;
+  bookingId: number | null;
+  bookingCode: string | null;
   clientToken: string;
   shootId: number | null;
   stage: ShootStage;
   stageLabel: string;
   customerName: string;
+  phone: string | null;
+  phone2: string | null;
   eventName: string | null;
   eventDate: string;
   eventTime: string | null;
+  eventEndTime: string | null;
   venue: string | null;
   gpsLat: number | null;
   gpsLng: number | null;
   mapsUrl: string | null;
   assignedStaffId: number | null;
   assignedStaffName: string;
+  photographyItems: Array<Record<string, unknown>>;
+  requiredPhotographers: number;
+  customerNotes: string | null;
+  internalNotes: string | null;
+  syncState: string;
+  syncReason: string | null;
   checklistComplete: boolean;
   arrivedAt: string | null;
   updatedAt: string;
@@ -204,10 +229,28 @@ export type ShootDetail = ShootCard & {
   checklistCompletedAt: string | null;
   notes: string | null;
   milestones: Record<string, string | null>;
-  remainingPayment: number;
+  remainingPayment: number | null;
+  paymentIndicator: string;
+  financialSummary: null | {
+    total: number;
+    photographyValue: number;
+    paid: number;
+    remaining: number;
+    paymentStatus: string;
+  };
   orderCount: number;
-  crew: Array<{ id: number; staffId: number; staffName: string; role: string; isLead: boolean }>;
+  crew: Array<{
+    id: number; staffId: number; staffName: string; role: string; isLead: boolean;
+    assignmentStatus: string; assignedAt: string | null; acceptedAt: string | null;
+    rejectedAt: string | null; startedAt: string | null; completedAt: string | null;
+    conflictReason: string | null; overrideReason: string | null;
+  }>;
   equipment: PhotographyAsset[];
+  operationalChecklist: Array<{
+    id: number; phase: string; key: string; label: string; required: boolean;
+    completed: boolean; completedBy: number | null; completedAt: string | null;
+    evidenceUrl: string | null; note: string | null;
+  }>;
   timeline: Array<{
     id: number; type: string; staffName: string;
     fromStage: string | null; toStage: string | null;
@@ -256,6 +299,16 @@ export const shootApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  assignment: (ref: string | number, decision: "accept" | "reject", reason = "") =>
+    adminFetch<{ ok: boolean; assignmentStatus: string; stage: ShootStage }>(
+      `${base}/shoots/${encodeURIComponent(String(ref))}/assignment`,
+      { method: "POST", body: JSON.stringify({ decision, reason }) },
+    ),
+  setOperationalChecklist: (ref: string | number, id: number, completed: boolean) =>
+    adminFetch<{ ok: boolean; item: { id: number; completed: boolean; completedAt: string | null } }>(
+      `${base}/shoots/${encodeURIComponent(String(ref))}/operational-checklist`,
+      { method: "POST", body: JSON.stringify({ id, completed }) },
+    ),
   equipment: (ref: string | number) =>
     adminFetch<{ assets: PhotographyAsset[] }>(`${base}/shoots/${encodeURIComponent(String(ref))}/assets`),
   equipmentOp: (ref: string | number, payload: Record<string, unknown>) =>

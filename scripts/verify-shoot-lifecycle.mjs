@@ -31,6 +31,7 @@ const {
   mapsLink,
   parseCoordinate,
   stageTimestamps,
+  normalizeShootStage,
 } = await import(pathToFileURL(outFile).href);
 
 const FULL = Object.fromEntries(
@@ -48,13 +49,13 @@ const check = (name, actual, expected) => {
 
 // ── The checklist gate ──
 check("incomplete checklist blocks departure",
-  evaluateTransition({ from: "preparing", to: "on_the_way", checklist: PARTIAL, isManager: false }).ok, false);
+  evaluateTransition({ from: "waiting_event", to: "on_the_way", checklist: PARTIAL, isManager: false }).ok, false);
 check("gate returns 422",
-  evaluateTransition({ from: "preparing", to: "on_the_way", checklist: PARTIAL, isManager: false }).status, 422);
+  evaluateTransition({ from: "waiting_event", to: "on_the_way", checklist: PARTIAL, isManager: false }).status, 422);
 check("complete checklist allows departure",
-  evaluateTransition({ from: "preparing", to: "on_the_way", checklist: FULL, isManager: false }).ok, true);
+  evaluateTransition({ from: "waiting_event", to: "on_the_way", checklist: FULL, isManager: false }).ok, true);
 check("a manager cannot bypass the checklist either",
-  evaluateTransition({ from: "preparing", to: "on_the_way", checklist: PARTIAL, isManager: true }).ok, false);
+  evaluateTransition({ from: "waiting_event", to: "on_the_way", checklist: PARTIAL, isManager: true }).ok, false);
 check("missing items are named", missingChecklistItems(PARTIAL), ["drone_ready"]);
 check("empty checklist is incomplete", checklistComplete({}), false);
 check("non-object checklist is incomplete", checklistComplete(null), false);
@@ -62,11 +63,11 @@ check("truthy-but-not-true values do not count", checklistComplete({ ...FULL, ca
 
 // ── Forward transitions ──
 check("assigned → preparing allowed",
-  evaluateTransition({ from: "assigned", to: "preparing", checklist: {}, isManager: false }).ok, true);
+  evaluateTransition({ from: "awaiting_assignment", to: "crew_assigned", checklist: {}, isManager: false }).ok, true);
 check("cannot skip stages",
-  evaluateTransition({ from: "assigned", to: "shooting", checklist: FULL, isManager: false }).ok, false);
+  evaluateTransition({ from: "awaiting_assignment", to: "shooting", checklist: FULL, isManager: false }).ok, false);
 check("skipping returns 409",
-  evaluateTransition({ from: "assigned", to: "shooting", checklist: FULL, isManager: false }).status, 409);
+  evaluateTransition({ from: "awaiting_assignment", to: "shooting", checklist: FULL, isManager: false }).status, 409);
 check("same stage refused",
   evaluateTransition({ from: "shooting", to: "shooting", checklist: FULL, isManager: false }).ok, false);
 check("unknown stage refused",
@@ -84,13 +85,15 @@ check("manager can rewind",
 check("rewind is flagged backward",
   evaluateTransition({ from: "shooting", to: "arrived", checklist: FULL, isManager: true }).backward, true);
 check("manager rewind past the gate is allowed",
-  evaluateTransition({ from: "arrived", to: "preparing", checklist: PARTIAL, isManager: true }).ok, true);
+  evaluateTransition({ from: "arrived", to: "waiting_event", checklist: PARTIAL, isManager: true }).ok, true);
 
 // ── Milestones ──
+check("legacy assigned stage remains readable", normalizeShootStage("assigned"), "crew_assigned");
+check("legacy uploading stage remains readable", normalizeShootStage("uploading"), "transferring");
 const now = new Date("2026-07-22T10:00:00Z");
 check("arrival stamps arrivedAt", Object.keys(stageTimestamps("arrived", now)), ["arrivedAt"]);
-check("uploading closes the shooting window", Object.keys(stageTimestamps("uploading", now)), ["shootingEndedAt"]);
-check("preparing stamps nothing", stageTimestamps("preparing", now), {});
+check("shoot end closes the shooting window", Object.keys(stageTimestamps("shoot_ended", now)), ["shootingEndedAt"]);
+check("waiting stamps nothing", stageTimestamps("waiting_event", now), {});
 
 // ── Maps + coordinates ──
 check("coordinates win over venue text",
