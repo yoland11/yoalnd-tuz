@@ -450,6 +450,86 @@ export function openQrPrintWindow({
   w.document.close();
 }
 
+export function graduationLabelCss(size: "40x30" | "58mm" | "80mm" = "40x30") {
+  if (size !== "40x30") return thermalBaseCss(size, size === "58mm" ? "9px" : "10px");
+  return `
+    @page { size: 40mm 30mm; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { width: 40mm; min-height: 30mm; margin: 0; padding: 0; }
+    body { direction: rtl; background: #fff; color: #000; font-family: Cairo, Tahoma, Arial, sans-serif; }
+    .graduation-label { width: 40mm; min-height: 30mm; padding: 1.6mm; display: grid; grid-template-columns: 1fr 15mm; gap: 1.2mm; align-items: center; overflow: hidden; }
+    .graduation-label .brand { font-size: 8px; font-weight: 900; }
+    .graduation-label .name { margin-top: 1mm; font-size: 9px; line-height: 1.2; font-weight: 900; }
+    .graduation-label .meta { margin-top: .7mm; font-size: 7px; line-height: 1.35; font-weight: 700; }
+    .graduation-label .code { margin-top: .8mm; direction: ltr; font-family: ui-monospace, Consolas, monospace; font-size: 6.5px; font-weight: 900; overflow-wrap: anywhere; }
+    .graduation-label img { display: block; width: 15mm; height: 15mm; object-fit: contain; image-rendering: pixelated; }
+    @media print { body { print-color-adjust: exact; -webkit-print-color-adjust: exact; } }
+  `;
+}
+
+export function openGraduationLabelPrintWindow({
+  qrDataUrl,
+  studentName,
+  studentCode,
+  itemType,
+  size,
+  color,
+  group,
+  paperSize = "40x30",
+}: {
+  qrDataUrl: string;
+  studentName: string;
+  studentCode: string;
+  itemType: string;
+  size?: string | null;
+  color?: string | null;
+  group?: string | null;
+  paperSize?: "40x30" | "58mm" | "80mm";
+}) {
+  const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${itemType} - ${studentCode}</title><style>${graduationLabelCss(paperSize)}</style></head><body>
+    <main class="graduation-label"><section><div class="brand">AJN · مجموعة علي جان نهاد</div><div class="name">${studentName}</div><div class="meta">${itemType}${size ? ` · ${size}` : ""}${color ? ` · ${color}` : ""}${group ? `<br>${group}` : ""}</div><div class="code">${studentCode}</div></section><img src="${qrDataUrl}" alt="QR"></main>
+    ${printWhenImagesReadyScript()}
+  </body></html>`;
+  const popup = window.open("", "_blank", "width=420,height=420");
+  if (!popup) throw new Error("تعذر فتح نافذة طباعة الملصق");
+  popup.document.write(html);
+  popup.document.close();
+}
+
+export function openGraduationProductionSheet({
+  sheetType,
+  studentName,
+  studentCode,
+  orderNo,
+  snapshot,
+}: {
+  sheetType: string;
+  studentName: string;
+  studentCode: string;
+  orderNo: string;
+  snapshot?: Record<string, unknown> | null;
+}) {
+  const labels: Record<string, string> = {
+    cutting: "ملف القص",
+    sewing: "ملف الخياطة",
+    printing: "ملف الطباعة",
+    embroidery: "ملف التطريز",
+    quality_control: "قائمة فحص الجودة",
+    packaging: "قائمة التغليف",
+    delivery: "ملف التسليم",
+  };
+  const safe = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+  const details = Object.entries(snapshot || {})
+    .filter(([key]) => !["orderId", "studentName", "studentCode", "orderNo"].includes(key))
+    .map(([key, value]) => `<tr><th>${safe(key)}</th><td><pre>${safe(typeof value === "object" ? JSON.stringify(value, null, 2) : value)}</pre></td></tr>`)
+    .join("");
+  const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${safe(labels[sheetType] || sheetType)} - ${safe(studentCode)}</title><style>${sheetReportCss("a4")} pre{white-space:pre-wrap;font:inherit;margin:0}.sheet-title{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.check{height:18px;width:18px;border:1px solid #111;display:inline-block;margin-left:7px}</style></head><body><main class="sheet"><header class="sheet-title"><div><div class="eyebrow">AJN · مجموعة علي جان نهاد</div><h1>${safe(labels[sheetType] || sheetType)}</h1><p>${safe(studentName)} · ${safe(studentCode)}</p></div><div><strong>${safe(orderNo)}</strong><p>${new Date().toLocaleDateString("ar-IQ")}</p></div></header><table><tbody>${details || '<tr><td>لا توجد تفاصيل إضافية.</td></tr>'}</tbody></table><section class="signature-row"><div><span class="check"></span>تم التنفيذ</div><div>اسم الموظف: __________________</div><div>التوقيع: __________________</div></section></main>${printWhenImagesReadyScript()}</body></html>`;
+  const popup = window.open("", "_blank", "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة طباعة ملف الإنتاج");
+  popup.document.write(html);
+  popup.document.close();
+}
+
 export function downloadDataUrl(dataUrl: string | undefined | null, filename: string) {
   if (!dataUrl) throw new Error("لا توجد صورة QR للتحميل");
   const a = document.createElement("a");

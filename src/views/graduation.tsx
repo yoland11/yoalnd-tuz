@@ -69,7 +69,37 @@ import {
   GraduationOrderTypeChoice,
 } from "@/views/graduation-groups";
 
-type PublicGraduationConfig = GraduationConfig & { aiAvailable: boolean };
+type EnterpriseTemplate = {
+  id: number;
+  code: string;
+  name: string;
+  templateType: "robe" | "sash" | "cap" | "accessory" | string;
+  previewImageUrl?: string | null;
+  modelUrl?: string | null;
+  defaultPrice: number;
+  configuration?: Record<string, unknown>;
+};
+
+type EnterprisePackage = {
+  id: number;
+  name: string;
+  description?: string | null;
+  previewImageUrl?: string | null;
+  defaultPrice: number;
+  configuration?: Record<string, unknown>;
+  items?: Array<{ itemType: string; templateId?: number | null }>;
+};
+
+type PublicGraduationConfig = GraduationConfig & {
+  aiAvailable: boolean;
+  enterpriseCatalog?: {
+    robeTemplates: EnterpriseTemplate[];
+    sashTemplates: EnterpriseTemplate[];
+    capTemplates: EnterpriseTemplate[];
+    accessoryTemplates: EnterpriseTemplate[];
+    packages: EnterprisePackage[];
+  };
+};
 
 const STEPS = [
   { label: "النوع", icon: GraduationCap },
@@ -130,6 +160,13 @@ const initialForm = {
   phone: "",
   styleKey: "",
   packageKey: "",
+  customPackage: {
+    enabled: false,
+    enterprisePackageId: undefined as number | undefined,
+    robeTemplateId: undefined as number | undefined,
+    sashTemplateId: undefined as number | undefined,
+    capTemplateId: undefined as number | undefined,
+  },
   groupToken: "",
   status: "submitted" as const,
   measurements: {
@@ -240,6 +277,39 @@ function OptionCard({
             {formatCurrency(item.price)}
           </p>
         ) : null}
+      </div>
+    </button>
+  );
+}
+
+function EnterpriseTemplateCard({
+  item,
+  selected,
+  onClick,
+}: {
+  item: EnterpriseTemplate;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group overflow-hidden rounded-xl border text-right transition-colors ${selected ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
+    >
+      <div className="aspect-[4/3] overflow-hidden bg-muted">
+        {item.previewImageUrl ? (
+          <img src={item.previewImageUrl} alt={item.name} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]" loading="lazy" />
+        ) : (
+          <div className="flex h-full items-center justify-center"><Shirt className="h-9 w-9 text-primary/70" /></div>
+        )}
+      </div>
+      <div className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <strong className="text-sm">{item.name}</strong>
+          {selected ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : null}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{formatCurrency(item.defaultPrice)}</p>
       </div>
     </button>
   );
@@ -397,15 +467,50 @@ function GraduationConfigurator() {
       );
   }, [config, toast]);
 
-  const pricing = useMemo(
-    () =>
-      config
-        ? graduationPriceSummary(form as any, config)
-        : { lines: [], subtotal: 0, discount: 0, total: 0, cost: 0, profit: 0 },
-    [config, form],
-  );
+  const pricing = useMemo(() => {
+    if (!config)
+      return { lines: [], subtotal: 0, discount: 0, total: 0, cost: 0, profit: 0 };
+    const base = graduationPriceSummary(form as any, config);
+    if (!form.customPackage.enabled) return base;
+    const catalog = config.enterpriseCatalog;
+    const selectedIds = [
+      form.customPackage.robeTemplateId,
+      form.customPackage.sashTemplateId,
+      form.customPackage.capTemplateId,
+    ].filter(Boolean);
+    const templates = [
+      ...(catalog?.robeTemplates || []),
+      ...(catalog?.sashTemplates || []),
+      ...(catalog?.capTemplates || []),
+    ].filter((item) => selectedIds.includes(item.id));
+    const enterprisePackage = catalog?.packages.find(
+      (item) => item.id === form.customPackage.enterprisePackageId,
+    );
+    const customLines = enterprisePackage
+      ? [{
+          key: `enterprise-package:${enterprisePackage.id}`,
+          name: enterprisePackage.name,
+          amount: Number(enterprisePackage.defaultPrice || 0),
+          cost: 0,
+        }]
+      : templates.map((item) => ({
+          key: `template:${item.id}`,
+          name: item.name,
+          amount: Number(item.defaultPrice || 0),
+          cost: 0,
+        }));
+    const lines = [...base.lines, ...customLines];
+    const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
+    const cost = lines.reduce((sum, line) => sum + line.cost, 0);
+    const discount = Math.min(Math.max(0, Number(form.discountAmount || 0)), subtotal);
+    const total = Math.max(0, subtotal - discount);
+    return { lines, subtotal, discount, total, cost, profit: total - cost };
+  }, [config, form]);
   const selectedStyle = config?.styles.find(
     (item) => item.key === form.styleKey,
+  );
+  const selectedCustomRobe = config?.enterpriseCatalog?.robeTemplates.find(
+    (item) => item.id === form.customPackage.robeTemplateId,
   );
   const harmony = colorContrast(form.colors.robe, form.colors.sash);
 
@@ -518,6 +623,12 @@ function GraduationConfigurator() {
 
   function validateStep() {
     if (step === 0 && !form.styleKey) return "اختر نوع تجهيز التخرج";
+    if (
+      step === 0 &&
+      form.customPackage.enabled &&
+      (!form.customPackage.robeTemplateId || !form.customPackage.sashTemplateId)
+    )
+      return "يرجى اختيار الروب والوشاح قبل المتابعة";
     if (step === 1) {
       const missing = [
         "height",
@@ -561,6 +672,21 @@ function GraduationConfigurator() {
       accessories: [
         ...new Set([...(pack?.accessories || []), ...current.accessories]),
       ],
+    }));
+  }
+  function chooseEnterprisePackage(pack: EnterprisePackage) {
+    const itemId = (type: string) =>
+      pack.items?.find((item) => item.itemType === type)?.templateId ?? undefined;
+    setForm((current) => ({
+      ...current,
+      packageKey: "",
+      customPackage: {
+        enabled: true,
+        enterprisePackageId: pack.id,
+        robeTemplateId: itemId("robe"),
+        sashTemplateId: itemId("sash"),
+        capTemplateId: itemId("cap"),
+      },
     }));
   }
   async function fileData(
@@ -724,6 +850,47 @@ function GraduationConfigurator() {
                         </div>
                       </div>
                     ) : null}
+                    {config.enterpriseCatalog?.packages.length ? (
+                      <div>
+                        <h2 className="mb-3 font-bold">باقات المتجر الجاهزة</h2>
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                          {config.enterpriseCatalog.packages.map((pack) => (
+                            <button
+                              type="button"
+                              key={pack.id}
+                              onClick={() => chooseEnterprisePackage(pack)}
+                              className={`rounded-xl border p-4 text-right transition-colors ${form.customPackage.enterprisePackageId === pack.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/50"}`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div><strong>{pack.name}</strong><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{pack.description || "باقة تخرج جاهزة قابلة للتخصيص"}</p></div>
+                                {form.customPackage.enterprisePackageId === pack.id ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : <PackageCheck className="h-5 w-5 shrink-0 text-muted-foreground" />}
+                              </div>
+                              <p className="mt-3 text-sm font-bold text-primary">{formatCurrency(pack.defaultPrice)}</p>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className={`rounded-xl border p-4 ${form.customPackage.enabled ? "border-primary bg-primary/5" : "border-border"}`}>
+                      <div className="flex w-full items-start justify-between gap-4 text-right">
+                        <span className="flex gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><WandSparkles className="h-5 w-5" /></span><span><strong className="block">تجهيز باقة حسب الطلب</strong><span className="mt-1 block text-sm text-muted-foreground">اختر الروب والوشاح والقبعة كل قطعة على حدة، وسيُحدّث السعر مباشرة.</span></span></span>
+                        <Checkbox checked={form.customPackage.enabled} onCheckedChange={(checked) => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, enabled: checked === true, enterprisePackageId: undefined } }))} aria-label="تفعيل تجهيز باقة حسب الطلب" />
+                      </div>
+                      {form.customPackage.enabled ? (
+                        <div className="mt-5 space-y-6 border-t border-border pt-5">
+                          {([
+                            ["robe", "الروب (مطلوب)", config.enterpriseCatalog?.robeTemplates || [], "robeTemplateId"],
+                            ["sash", "الوشاح (مطلوب)", config.enterpriseCatalog?.sashTemplates || [], "sashTemplateId"],
+                            ["cap", "القبعة (اختياري)", config.enterpriseCatalog?.capTemplates || [], "capTemplateId"],
+                          ] as const).map(([type, label, items, field]) => (
+                            <div key={type}>
+                              <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-bold">{label}</h3>{type === "cap" && form.customPackage.capTemplateId ? <Button size="sm" variant="ghost" onClick={() => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, capTemplateId: undefined } }))}>بدون قبعة</Button> : null}</div>
+                              {items.length ? <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">{items.map((item) => <EnterpriseTemplateCard key={item.id} item={item} selected={form.customPackage[field] === item.id} onClick={() => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, [field]: item.id, enterprisePackageId: undefined } }))} />)}</div> : <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">لا توجد نماذج منشورة لهذا القسم حالياً.</p>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
 
@@ -1205,9 +1372,9 @@ function GraduationConfigurator() {
                 {step === 7 ? (
                   <div className="space-y-5">
                     <PreviewPanel config={config} form={form} />
-                    {selectedStyle?.modelUrl ? (
+                    {selectedCustomRobe?.modelUrl || selectedStyle?.modelUrl ? (
                       <ModelViewerCard
-                        modelUrl={selectedStyle.modelUrl}
+                        modelUrl={selectedCustomRobe?.modelUrl || selectedStyle?.modelUrl || ""}
                         title="معاينة ثلاثية الأبعاد - تدوير وتكبير"
                       />
                     ) : null}

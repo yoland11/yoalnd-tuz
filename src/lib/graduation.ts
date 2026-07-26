@@ -1,34 +1,50 @@
 import { z } from "zod/v4";
 
 export const GRADUATION_STAGES = [
+  "incomplete_data",
   "new",
+  "awaiting_measurements",
   "measurements",
+  "awaiting_design",
+  "awaiting_approval",
+  "approved",
   "fabric_cutting",
   "tailoring",
   "printing",
   "embroidery",
   "ironing",
   "quality_check",
+  "awaiting_packaging",
   "packaging",
   "ready",
   "delivered",
+  "completed",
+  "cancelled",
 ] as const;
 
 export const GRADUATION_STAGE_LABELS: Record<
   (typeof GRADUATION_STAGES)[number],
   string
 > = {
+  incomplete_data: "بيانات غير مكتملة",
   new: "جديد",
+  awaiting_measurements: "بانتظار المقاسات",
   measurements: "القياسات",
+  awaiting_design: "بانتظار التصميم",
+  awaiting_approval: "بانتظار الموافقة",
+  approved: "معتمد",
   fabric_cutting: "قص القماش",
   tailoring: "الخياطة",
   printing: "الطباعة",
   embroidery: "التطريز",
   ironing: "الكي",
   quality_check: "فحص الجودة",
+  awaiting_packaging: "بانتظار التغليف",
   packaging: "التغليف",
   ready: "جاهز",
   delivered: "تم التسليم",
+  completed: "مكتمل",
+  cancelled: "ملغي",
 };
 
 export type GraduationOption = {
@@ -201,6 +217,15 @@ export const graduationOrderInputSchema = z
     phone: z.string().trim().min(10, "رقم الهاتف غير مكتمل").max(30),
     styleKey: z.string().trim().min(1, "اختر نوع التخرج"),
     packageKey: optionalString,
+    customPackage: z
+      .object({
+        enabled: z.boolean().default(false),
+        enterprisePackageId: z.coerce.number().int().positive().optional(),
+        robeTemplateId: z.coerce.number().int().positive().optional(),
+        sashTemplateId: z.coerce.number().int().positive().optional(),
+        capTemplateId: z.coerce.number().int().positive().optional(),
+      })
+      .default({ enabled: false }),
     groupToken: optionalString,
     status: z.enum(["draft", "submitted"]).default("submitted"),
     measurements: graduationMeasurementsSchema,

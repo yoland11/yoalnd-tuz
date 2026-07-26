@@ -85,6 +85,13 @@ import {
   GraduationStudentsDirectory,
   GraduationTemplateLibrary,
 } from "./graduation-order-center";
+import {
+  GraduationDeliveryScanner,
+  GraduationMaterialsCenter,
+  GraduationPackagesCenter,
+  GraduationPackagingStation,
+  GraduationProductionWall,
+} from "./graduation-enterprise";
 
 type Mode =
   | "dashboard"
@@ -94,16 +101,20 @@ type Mode =
   | "groups"
   | "students"
   | "templates"
+  | "packages"
   | "customers"
   | "configurator"
   | "measurements"
   | "production"
+  | "production-wall"
   | "tailoring"
   | "tailors"
   | "printing"
   | "embroidery"
+  | "packaging"
   | "delivery"
   | "warehouse"
+  | "materials"
   | "invoices"
   | "reports"
   | "settings";
@@ -116,16 +127,20 @@ const MODE_LABELS: Record<Mode, string> = {
   groups: "الطلبات الجماعية",
   students: "الطلاب",
   templates: "مكتبة النماذج",
+  packages: "باقات التخرج",
   customers: "عملاء التخرج",
   configurator: "مُعدّ تصميم التخرج",
   measurements: "القياسات",
   production: "لوحة الإنتاج",
+  "production-wall": "حائط الإنتاج",
   tailoring: "الخياطة",
   tailors: "إدارة الخياطين",
   printing: "الطباعة",
   embroidery: "التطريز",
+  packaging: "محطة التغليف",
   delivery: "التسليم",
   warehouse: "المخزن",
+  materials: "المواد والاحتياج",
   invoices: "الفواتير",
   reports: "تقارير التخرج",
   settings: "إعدادات التخرج",
@@ -3158,6 +3173,8 @@ export default function GraduationAdminPage() {
         <GraduationStudentsDirectory />
       ) : mode === "templates" ? (
         <GraduationTemplateLibrary />
+      ) : mode === "packages" ? (
+        <GraduationPackagesCenter />
       ) : mode === "customers" ? (
         <Customers />
       ) : mode === "configurator" ? (
@@ -3184,6 +3201,8 @@ export default function GraduationAdminPage() {
         <Orders measurementOnly />
       ) : mode === "production" ? (
         <Production />
+      ) : mode === "production-wall" ? (
+        <GraduationProductionWall />
       ) : mode === "tailoring" ? (
         <Production focus="tailoring" />
       ) : mode === "tailors" ? (
@@ -3195,10 +3214,17 @@ export default function GraduationAdminPage() {
         </div>
       ) : mode === "embroidery" ? (
         <Production focus="embroidery" />
+      ) : mode === "packaging" ? (
+        <GraduationPackagingStation />
       ) : mode === "delivery" ? (
-        <Orders deliveryOnly />
+        <div className="space-y-5">
+          <GraduationDeliveryScanner />
+          <Orders deliveryOnly />
+        </div>
       ) : mode === "warehouse" ? (
         <Warehouse />
+      ) : mode === "materials" ? (
+        <GraduationMaterialsCenter />
       ) : mode === "invoices" ? (
         <Invoices />
       ) : mode === "reports" ? (

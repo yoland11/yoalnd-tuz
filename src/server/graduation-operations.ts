@@ -28,6 +28,10 @@ import { normalizeGraduationConfig, GRADUATION_STAGES } from "@/lib/graduation";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
 import {
+  handleGraduationEnterprise,
+  syncGraduationEnterpriseOrder,
+} from "@/server/graduation-enterprise";
+import {
   updateOrder,
   type GraduationAdminUser,
 } from "@/server/graduation";
@@ -42,16 +46,31 @@ const GRANULAR_PERMISSIONS = [
   "graduation.view",
   "graduation.create",
   "graduation.edit",
+  "graduation.delete",
   "graduation.group.create",
   "graduation.group.edit",
+  "graduation.group.manage",
   "graduation.student.add",
   "graduation.student.delete",
+  "graduation.student.manage",
+  "graduation.template.view",
   "graduation.template.manage",
+  "graduation.package.manage",
+  "graduation.price.edit",
+  "graduation.discount.apply",
   "graduation.payment.receive",
   "graduation.receipt.print",
+  "graduation.measurement.update",
+  "graduation.preview.manage",
+  "graduation.approval.manage",
   "graduation.production.update",
+  "graduation.packaging.scan",
+  "graduation.packaging.override",
   "graduation.delivery.confirm",
+  "graduation.inventory.view",
   "graduation.report.view",
+  "graduation.reports.view",
+  "graduation.settings.manage",
 ] as const;
 
 const studentPatchSchema = z
@@ -623,6 +642,7 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
     .where(eq(graduationOrdersTable.id, draft.id))
     .returning();
   await ensureIdentity(order, user);
+  await syncGraduationEnterpriseOrder(order.id, user);
   await db.insert(qrTokensTable).values({
     entityType: "graduation_order",
     entityId: order.id,
@@ -1147,6 +1167,8 @@ export async function handleAdminGraduationOperations(
   user: GraduationAdminUser,
 ): Promise<NextResponse | null> {
   await ensureGraduationOperationsTables();
+  const enterprise = await handleGraduationEnterprise(req, parts, user);
+  if (enterprise) return enterprise;
   const method = req.method;
   const resource = parts[0] || "dashboard";
   const viewDenied = requireOperationPermission(user, "graduation.view");

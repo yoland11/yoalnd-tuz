@@ -22,11 +22,14 @@ import {
   entityDocumentsTable,
   graduationGroupsTable,
   graduationGroupStudentsTable,
+  graduationPackagesTable,
+  graduationPackageItemsTable,
   graduationOrdersTable,
   graduationApprovalsTable,
   graduationPreviewsTable,
   graduationReceiptsTable,
   graduationResourcesTable,
+  graduationTemplatesTable,
   notificationsTable,
   productsTable,
   qrTokensTable,
@@ -59,6 +62,10 @@ import {
 } from "@/server/master-cash-box";
 import { sendTelegramMessage } from "@/server/telegram";
 import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
+import {
+  getGraduationEnterpriseCatalog,
+  syncGraduationEnterpriseOrder,
+} from "@/server/graduation-enterprise";
 
 export type GraduationAdminUser = {
   id: number;
@@ -875,6 +882,10 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       previewAssets: Object.keys(lockedPreview).length
         ? lockedPreview
         : data.previewAssets,
+      customPackage:
+        locked.customPackage && typeof locked.customPackage === "object"
+          ? ({ ...data.customPackage, ...(locked.customPackage as Record<string, unknown>) } as typeof data.customPackage)
+          : data.customPackage,
       dueDate:
         String(
           lockedMeta.deliveryDate || group.eventDate || data.dueDate || "",
@@ -901,9 +912,103 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     return { response: error("نوع التخرج المختار غير متاح", 400) };
   if (!config.fabrics.some((item) => item.key === data.fabric.key))
     return { response: error("نوع القماش المختار غير متاح", 400) };
-  const pricing = graduationPriceSummary(data, config);
+  const customPackage = data.customPackage;
+  let selectedTemplates: Array<typeof graduationTemplatesTable.$inferSelect> = [];
+  let enterprisePackage: typeof graduationPackagesTable.$inferSelect | null = null;
+  let enterprisePackageItems: Array<typeof graduationPackageItemsTable.$inferSelect> = [];
+  if (customPackage.enabled) {
+    if (!customPackage.robeTemplateId || !customPackage.sashTemplateId)
+      return { response: error("يرجى اختيار الروب والوشاح قبل المتابعة", 400) };
+    const requestedIds = [
+      customPackage.robeTemplateId,
+      customPackage.sashTemplateId,
+      customPackage.capTemplateId,
+    ].filter((value): value is number => Boolean(value));
+    selectedTemplates = await db
+      .select()
+      .from(graduationTemplatesTable)
+      .where(
+        and(
+          inArray(graduationTemplatesTable.id, requestedIds),
+          eq(graduationTemplatesTable.isActive, true),
+        ),
+      );
+    const byId = new Map(selectedTemplates.map((item) => [item.id, item]));
+    if (
+      byId.get(customPackage.robeTemplateId)?.templateType !== "robe" ||
+      byId.get(customPackage.sashTemplateId)?.templateType !== "sash" ||
+      (customPackage.capTemplateId &&
+        byId.get(customPackage.capTemplateId)?.templateType !== "cap")
+    )
+      return { response: error("أحد نماذج باقة التخرج غير متاح أو لا يطابق نوع القطعة", 400) };
+    if (customPackage.enterprisePackageId) {
+      enterprisePackage =
+        (await db.query.graduationPackagesTable.findFirst({
+          where: and(
+            eq(graduationPackagesTable.id, customPackage.enterprisePackageId),
+            eq(graduationPackagesTable.isActive, true),
+            eq(graduationPackagesTable.isArchived, false),
+          ),
+        })) ?? null;
+      if (!enterprisePackage)
+        return { response: error("باقة التخرج المختارة غير متاحة", 400) };
+      enterprisePackageItems = await db
+        .select()
+        .from(graduationPackageItemsTable)
+        .where(eq(graduationPackageItemsTable.packageId, enterprisePackage.id));
+    }
+  }
+  const basePricing = graduationPriceSummary(data, config);
+  const customLines = !customPackage.enabled
+    ? []
+    : enterprisePackage
+      ? [{
+          key: `enterprise-package:${enterprisePackage.id}`,
+          name: enterprisePackage.name,
+          amount: Number(enterprisePackage.defaultPrice || 0),
+          cost: Number(enterprisePackage.defaultCost || 0),
+        }]
+      : selectedTemplates.map((item) => ({
+          key: `template:${item.id}`,
+          name: item.name,
+          amount: Number(item.defaultPrice || 0),
+          cost: Number((item.configuration as Record<string, unknown>)?.cost || 0),
+        }));
+  const pricingLines = [...basePricing.lines, ...customLines];
+  const pricingSubtotal = pricingLines.reduce((sum, line) => sum + line.amount, 0);
+  const pricingCost = pricingLines.reduce((sum, line) => sum + line.cost, 0);
+  const pricingDiscount = Math.min(Math.max(0, Number(data.discountAmount || 0)), pricingSubtotal);
+  const pricing = {
+    lines: pricingLines,
+    subtotal: pricingSubtotal,
+    discount: pricingDiscount,
+    total: Math.max(0, pricingSubtotal - pricingDiscount),
+    cost: pricingCost,
+    profit: Math.max(0, pricingSubtotal - pricingDiscount) - pricingCost,
+  };
   const estimate = estimateGraduationProduction(data, config);
-  const inventoryItems = graduationInventoryItems(data, config);
+  const baseInventoryItems = graduationInventoryItems(data, config);
+  const enterpriseInventoryItems = [
+    ...selectedTemplates.map((item) => ({
+      productId: Number((item.configuration as Record<string, unknown>)?.productId || 0),
+      quantity: 1,
+      label: item.name,
+    })),
+    ...enterprisePackageItems.map((item) => ({
+      productId: Number(item.productId || 0),
+      quantity: Number(item.quantity || 1),
+      label: item.name,
+    })),
+  ].filter((item) => item.productId > 0);
+  const groupedInventory = new Map<number, { productId: number; quantity: number; label: string }>();
+  for (const item of [...baseInventoryItems, ...enterpriseInventoryItems]) {
+    const current = groupedInventory.get(item.productId);
+    groupedInventory.set(item.productId, {
+      ...item,
+      quantity: Number(current?.quantity || 0) + Number(item.quantity || 0),
+    });
+  }
+  const inventoryItems = [...groupedInventory.values()];
   const groupId = group?.id ?? null;
   const decoration = { ...data.decoration } as Record<string, any>;
   if (decoration.file)
@@ -932,6 +1037,25 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       accessories: data.accessories as any,
       universityTemplate: data.universityTemplate as any,
       previewAssets: data.previewAssets as any,
+      templateSnapshot: customPackage.enabled
+        ? {
+            mode: enterprisePackage ? "enterprise_package" : "custom_package",
+            selected: customPackage,
+            package: enterprisePackage,
+            items: enterprisePackageItems,
+            templates: selectedTemplates.map((item) => ({
+              id: item.id,
+              code: item.code,
+              name: item.name,
+              type: item.templateType,
+              version: item.currentVersion,
+              price: Number(item.defaultPrice || 0),
+              configuration: item.configuration,
+              previewImageUrl: item.previewImageUrl,
+              modelUrl: item.modelUrl,
+            })),
+          }
+        : {},
       inventoryItems: inventoryItems as any,
       pricing: pricing as any,
       subtotal: String(pricing.subtotal),
@@ -977,7 +1101,15 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
           data.customText.graduationYear ?? group?.graduationYear ?? "",
       },
       garmentDetails: {
-        robeType: data.styleKey,
+        robeType:
+          selectedTemplates.find((item) => item.templateType === "robe")?.name ||
+          data.styleKey,
+        sashType:
+          selectedTemplates.find((item) => item.templateType === "sash")?.name ||
+          "",
+        capType:
+          selectedTemplates.find((item) => item.templateType === "cap")?.name ||
+          "",
         packageKey: data.packageKey ?? "",
         robeColor: data.colors.robe ?? "",
         sashColor: data.colors.sash ?? "",
@@ -1741,14 +1873,20 @@ export async function handleGraduationPublic(
   const method = req.method;
   const resource = parts[1] ?? "config";
   if (method === "GET" && resource === "config") {
-    const config = await getConfig();
+    const [config, enterpriseCatalog] = await Promise.all([
+      getConfig(),
+      getGraduationEnterpriseCatalog(),
+    ]);
     return json({
       ...config,
+      enterpriseCatalog,
       aiAvailable: Boolean(process.env.OPENAI_API_KEY) && config.aiEnabled,
     });
   }
   if (method === "POST" && resource === "orders") {
     const result = await createOrder(await requestBody(req));
+    if (!result.response && result.order?.id)
+      await syncGraduationEnterpriseOrder(result.order.id);
     return result.response ?? json(result, 201);
   }
   if (method === "GET" && resource === "track" && parts[2]) {
@@ -2131,6 +2269,8 @@ export async function handleAdminGraduation(
   }
   if (method === "POST" && resource === "orders") {
     const result = await createOrder(await requestBody(req), user);
+    if (!result.response && result.order?.id)
+      await syncGraduationEnterpriseOrder(result.order.id, user);
     return result.response ?? json(result, 201);
   }
   if (method === "GET" && resource === "production") {

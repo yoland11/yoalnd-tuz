@@ -31,7 +31,8 @@
     "test:sound-detection": "node ./scripts/verify-sound-detection.mjs",
     "test:sound-center": "node ./scripts/verify-sound-center.mjs",
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
-    "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs"
+    "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
+    "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

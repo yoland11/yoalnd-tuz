@@ -41,5 +41,6 @@ export * from "./customer-receivables";
 export * from "./enterprise";
 export * from "./desktop";
 export * from "./graduation";
+export * from "./graduation-enterprise";
 export * from "./employee-advances";
 export * from "./hr";
