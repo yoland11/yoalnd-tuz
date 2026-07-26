@@ -17,6 +17,70 @@ import { customersTable } from "./customers";
 import { productsTable } from "./products";
 import { staffTable } from "./staff";
 
+export const graduationTemplatesTable = pgTable(
+  "graduation_templates",
+  {
+    id: serial("id").primaryKey(),
+    code: varchar("code", { length: 80 }).notNull(),
+    name: text("name").notNull(),
+    templateType: varchar("template_type", { length: 40 })
+      .notNull()
+      .default("package"),
+    university: text("university"),
+    college: text("college"),
+    department: text("department"),
+    previewImageUrl: text("preview_image_url"),
+    modelUrl: text("model_url"),
+    currentVersion: integer("current_version").notNull().default(1),
+    defaultPrice: numeric("default_price", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    configuration: jsonb("configuration")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    isActive: boolean("is_active").notNull().default(true),
+    isFeatured: boolean("is_featured").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdBy: integer("created_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_templates_code_idx").on(table.code),
+    index("graduation_templates_type_idx").on(table.templateType),
+    index("graduation_templates_active_idx").on(table.isActive),
+  ],
+);
+
+export const graduationTemplateVersionsTable = pgTable(
+  "graduation_template_versions",
+  {
+    id: serial("id").primaryKey(),
+    templateId: integer("template_id")
+      .notNull()
+      .references(() => graduationTemplatesTable.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    snapshot: jsonb("snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdBy: integer("created_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_template_versions_unique_idx").on(
+      table.templateId,
+      table.version,
+    ),
+    index("graduation_template_versions_template_idx").on(table.templateId),
+  ],
+);
+
 export const graduationGroupsTable = pgTable(
   "graduation_groups",
   {
@@ -38,6 +102,12 @@ export const graduationGroupsTable = pgTable(
       .notNull()
       .default({}),
     status: varchar("status", { length: 24 }).notNull().default("open"),
+    groupCreditAmount: numeric("group_credit_amount", {
+      precision: 14,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
     expiresAt: timestamp("expires_at"),
     createdBy: integer("created_by").references(() => staffTable.id, {
       onDelete: "set null",
@@ -57,7 +127,13 @@ export const graduationOrdersTable = pgTable(
   {
     id: serial("id").primaryKey(),
     orderNo: varchar("order_no", { length: 50 }).notNull(),
+    studentCode: varchar("student_code", { length: 80 }),
+    orderType: varchar("order_type", { length: 20 })
+      .notNull()
+      .default("individual"),
     qrToken: varchar("qr_token", { length: 96 }).notNull(),
+    barcodeValue: varchar("barcode_value", { length: 120 }),
+    receiptNo: varchar("receipt_no", { length: 80 }),
     customerId: integer("customer_id").references(() => customersTable.id, {
       onDelete: "set null",
     }),
@@ -66,6 +142,7 @@ export const graduationOrdersTable = pgTable(
     }),
     customerName: text("customer_name").notNull(),
     phone: varchar("phone", { length: 30 }).notNull(),
+    phone2: varchar("phone_2", { length: 30 }),
     phoneLast4: varchar("phone_last4", { length: 4 }),
     status: varchar("status", { length: 30 }).notNull().default("draft"),
     productionStage: varchar("production_stage", { length: 40 })
@@ -75,6 +152,22 @@ export const graduationOrdersTable = pgTable(
       .notNull()
       .default("standard"),
     packageKey: varchar("package_key", { length: 60 }),
+    studentProfile: jsonb("student_profile")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    garmentDetails: jsonb("garment_details")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    templateVersionId: integer("template_version_id").references(
+      () => graduationTemplateVersionsTable.id,
+      { onDelete: "set null" },
+    ),
+    templateSnapshot: jsonb("template_snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     measurements: jsonb("measurements")
       .$type<Record<string, string | number | null>>()
       .notNull()
@@ -101,7 +194,7 @@ export const graduationOrdersTable = pgTable(
       .notNull()
       .default({}),
     previewAssets: jsonb("preview_assets")
-      .$type<Record<string, string>>()
+      .$type<Record<string, unknown>>()
       .notNull()
       .default({}),
     inventoryItems: jsonb("inventory_items")
@@ -169,6 +262,8 @@ export const graduationOrdersTable = pgTable(
   },
   (table) => [
     uniqueIndex("graduation_orders_no_idx").on(table.orderNo),
+    uniqueIndex("graduation_orders_student_code_idx").on(table.studentCode),
+    uniqueIndex("graduation_orders_receipt_no_idx").on(table.receiptNo),
     uniqueIndex("graduation_orders_qr_token_idx").on(table.qrToken),
     index("graduation_orders_phone_idx").on(table.phone),
     index("graduation_orders_customer_idx").on(table.customerId),
@@ -177,6 +272,241 @@ export const graduationOrdersTable = pgTable(
     index("graduation_orders_stage_idx").on(table.productionStage),
     index("graduation_orders_due_idx").on(table.dueDate),
     index("graduation_orders_created_idx").on(table.createdAt),
+    index("graduation_orders_barcode_idx").on(table.barcodeValue),
+  ],
+);
+
+export const graduationGroupStudentsTable = pgTable(
+  "graduation_group_students",
+  {
+    id: serial("id").primaryKey(),
+    groupId: integer("group_id")
+      .notNull()
+      .references(() => graduationGroupsTable.id, { onDelete: "cascade" }),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    customerId: integer("customer_id").references(() => customersTable.id, {
+      onDelete: "set null",
+    }),
+    templateVersionId: integer("template_version_id").references(
+      () => graduationTemplateVersionsTable.id,
+      { onDelete: "set null" },
+    ),
+    studentCode: varchar("student_code", { length: 80 }).notNull(),
+    sequence: integer("sequence").notNull(),
+    isDesignLocked: boolean("is_design_locked").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_group_students_order_idx").on(
+      table.graduationOrderId,
+    ),
+    uniqueIndex("graduation_group_students_code_idx").on(table.studentCode),
+    uniqueIndex("graduation_group_students_sequence_idx").on(
+      table.groupId,
+      table.sequence,
+    ),
+    index("graduation_group_students_group_idx").on(table.groupId),
+  ],
+);
+
+export const graduationStudentPaymentsTable = pgTable(
+  "graduation_student_payments",
+  {
+    id: serial("id").primaryKey(),
+    paymentBatchId: varchar("payment_batch_id", { length: 96 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+    graduationOrderId: integer("graduation_order_id").references(
+      () => graduationOrdersTable.id,
+      { onDelete: "set null" },
+    ),
+    groupId: integer("group_id").references(() => graduationGroupsTable.id, {
+      onDelete: "set null",
+    }),
+    customerId: integer("customer_id").references(() => customersTable.id, {
+      onDelete: "set null",
+    }),
+    amount: numeric("amount", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    paymentMethod: varchar("payment_method", { length: 30 })
+      .notNull()
+      .default("cash"),
+    allocationStrategy: varchar("allocation_strategy", { length: 40 })
+      .notNull()
+      .default("individual"),
+    receiptVoucherId: integer("receipt_voucher_id"),
+    financialTransactionId: integer("financial_transaction_id"),
+    notes: text("notes"),
+    receivedBy: integer("received_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    receivedByName: text("received_by_name").notNull().default(""),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_student_payments_idempotency_idx").on(
+      table.idempotencyKey,
+    ),
+    index("graduation_student_payments_order_idx").on(table.graduationOrderId),
+    index("graduation_student_payments_group_idx").on(table.groupId),
+    index("graduation_student_payments_batch_idx").on(table.paymentBatchId),
+  ],
+);
+
+export const graduationReceiptsTable = pgTable(
+  "graduation_receipts",
+  {
+    id: serial("id").primaryKey(),
+    receiptNo: varchar("receipt_no", { length: 80 }).notNull(),
+    receiptType: varchar("receipt_type", { length: 30 })
+      .notNull()
+      .default("student"),
+    graduationOrderId: integer("graduation_order_id").references(
+      () => graduationOrdersTable.id,
+      { onDelete: "set null" },
+    ),
+    groupId: integer("group_id").references(() => graduationGroupsTable.id, {
+      onDelete: "set null",
+    }),
+    paymentId: integer("payment_id").references(
+      () => graduationStudentPaymentsTable.id,
+      { onDelete: "set null" },
+    ),
+    snapshot: jsonb("snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    reprintCount: integer("reprint_count").notNull().default(0),
+    issuedBy: integer("issued_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    issuedByName: text("issued_by_name").notNull().default(""),
+    issuedAt: timestamp("issued_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_receipts_no_idx").on(table.receiptNo),
+    index("graduation_receipts_order_idx").on(table.graduationOrderId),
+    index("graduation_receipts_group_idx").on(table.groupId),
+  ],
+);
+
+export const graduationPreviewsTable = pgTable(
+  "graduation_previews",
+  {
+    id: serial("id").primaryKey(),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("ready"),
+    assets: jsonb("assets")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    configurationSnapshot: jsonb("configuration_snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    generatedBy: integer("generated_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_previews_order_version_idx").on(
+      table.graduationOrderId,
+      table.version,
+    ),
+    index("graduation_previews_order_idx").on(table.graduationOrderId),
+  ],
+);
+
+export const graduationApprovalsTable = pgTable(
+  "graduation_approvals",
+  {
+    id: serial("id").primaryKey(),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    previewId: integer("preview_id").references(
+      () => graduationPreviewsTable.id,
+      { onDelete: "set null" },
+    ),
+    approvalToken: varchar("approval_token", { length: 96 }).notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("pending"),
+    note: text("note"),
+    signatureDataUrl: text("signature_data_url"),
+    approvedVersion: integer("approved_version"),
+    respondedAt: timestamp("responded_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("graduation_approvals_token_idx").on(table.approvalToken),
+    index("graduation_approvals_order_idx").on(table.graduationOrderId),
+  ],
+);
+
+export const graduationProductionEventsTable = pgTable(
+  "graduation_production_events",
+  {
+    id: serial("id").primaryKey(),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    stage: varchar("stage", { length: 40 }).notNull(),
+    previousStage: varchar("previous_stage", { length: 40 }),
+    scanType: varchar("scan_type", { length: 40 }),
+    evidenceUrl: text("evidence_url"),
+    notes: text("notes"),
+    employeeId: integer("employee_id").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    employeeName: text("employee_name").notNull().default(""),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("graduation_production_events_order_idx").on(
+      table.graduationOrderId,
+    ),
+    index("graduation_production_events_stage_idx").on(table.stage),
+  ],
+);
+
+export const graduationDeliveryEventsTable = pgTable(
+  "graduation_delivery_events",
+  {
+    id: serial("id").primaryKey(),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    groupId: integer("group_id").references(() => graduationGroupsTable.id, {
+      onDelete: "set null",
+    }),
+    sessionCode: varchar("session_code", { length: 80 }),
+    status: varchar("status", { length: 30 }).notNull().default("delivered"),
+    deliveredBy: integer("delivered_by").references(() => staffTable.id, {
+      onDelete: "set null",
+    }),
+    deliveredByName: text("delivered_by_name").notNull().default(""),
+    receivedBy: text("received_by"),
+    signatureDataUrl: text("signature_data_url"),
+    packageImageUrl: text("package_image_url"),
+    balanceConfirmed: boolean("balance_confirmed").notNull().default(false),
+    verification: jsonb("verification")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("graduation_delivery_events_order_idx").on(
+      table.graduationOrderId,
+    ),
+    index("graduation_delivery_events_group_idx").on(table.groupId),
   ],
 );
 
@@ -221,6 +551,9 @@ export const graduationGroupsRelations = relations(
   graduationGroupsTable,
   ({ many, one }) => ({
     orders: many(graduationOrdersTable),
+    students: many(graduationGroupStudentsTable),
+    payments: many(graduationStudentPaymentsTable),
+    receipts: many(graduationReceiptsTable),
     creator: one(staffTable, {
       fields: [graduationGroupsTable.createdBy],
       references: [staffTable.id],
@@ -230,7 +563,7 @@ export const graduationGroupsRelations = relations(
 
 export const graduationOrdersRelations = relations(
   graduationOrdersTable,
-  ({ one }) => ({
+  ({ many, one }) => ({
     customer: one(customersTable, {
       fields: [graduationOrdersTable.customerId],
       references: [customersTable.id],
@@ -246,6 +579,90 @@ export const graduationOrdersRelations = relations(
     creator: one(staffTable, {
       fields: [graduationOrdersTable.createdBy],
       references: [staffTable.id],
+    }),
+    templateVersion: one(graduationTemplateVersionsTable, {
+      fields: [graduationOrdersTable.templateVersionId],
+      references: [graduationTemplateVersionsTable.id],
+    }),
+    groupStudent: one(graduationGroupStudentsTable),
+    payments: many(graduationStudentPaymentsTable),
+    receipts: many(graduationReceiptsTable),
+    previews: many(graduationPreviewsTable),
+    approvals: many(graduationApprovalsTable),
+    productionEvents: many(graduationProductionEventsTable),
+    deliveryEvents: many(graduationDeliveryEventsTable),
+  }),
+);
+
+export const graduationTemplatesRelations = relations(
+  graduationTemplatesTable,
+  ({ many, one }) => ({
+    versions: many(graduationTemplateVersionsTable),
+    creator: one(staffTable, {
+      fields: [graduationTemplatesTable.createdBy],
+      references: [staffTable.id],
+    }),
+  }),
+);
+
+export const graduationTemplateVersionsRelations = relations(
+  graduationTemplateVersionsTable,
+  ({ many, one }) => ({
+    template: one(graduationTemplatesTable, {
+      fields: [graduationTemplateVersionsTable.templateId],
+      references: [graduationTemplatesTable.id],
+    }),
+    orders: many(graduationOrdersTable),
+    groupStudents: many(graduationGroupStudentsTable),
+  }),
+);
+
+export const graduationGroupStudentsRelations = relations(
+  graduationGroupStudentsTable,
+  ({ one }) => ({
+    group: one(graduationGroupsTable, {
+      fields: [graduationGroupStudentsTable.groupId],
+      references: [graduationGroupsTable.id],
+    }),
+    order: one(graduationOrdersTable, {
+      fields: [graduationGroupStudentsTable.graduationOrderId],
+      references: [graduationOrdersTable.id],
+    }),
+    customer: one(customersTable, {
+      fields: [graduationGroupStudentsTable.customerId],
+      references: [customersTable.id],
+    }),
+  }),
+);
+
+export const graduationStudentPaymentsRelations = relations(
+  graduationStudentPaymentsTable,
+  ({ one }) => ({
+    order: one(graduationOrdersTable, {
+      fields: [graduationStudentPaymentsTable.graduationOrderId],
+      references: [graduationOrdersTable.id],
+    }),
+    group: one(graduationGroupsTable, {
+      fields: [graduationStudentPaymentsTable.groupId],
+      references: [graduationGroupsTable.id],
+    }),
+  }),
+);
+
+export const graduationReceiptsRelations = relations(
+  graduationReceiptsTable,
+  ({ one }) => ({
+    order: one(graduationOrdersTable, {
+      fields: [graduationReceiptsTable.graduationOrderId],
+      references: [graduationOrdersTable.id],
+    }),
+    group: one(graduationGroupsTable, {
+      fields: [graduationReceiptsTable.groupId],
+      references: [graduationGroupsTable.id],
+    }),
+    payment: one(graduationStudentPaymentsTable, {
+      fields: [graduationReceiptsTable.paymentId],
+      references: [graduationStudentPaymentsTable.id],
     }),
   }),
 );
@@ -267,3 +684,11 @@ export const graduationResourcesRelations = relations(
 export type GraduationOrder = typeof graduationOrdersTable.$inferSelect;
 export type GraduationGroup = typeof graduationGroupsTable.$inferSelect;
 export type GraduationResource = typeof graduationResourcesTable.$inferSelect;
+export type GraduationTemplate = typeof graduationTemplatesTable.$inferSelect;
+export type GraduationTemplateVersion =
+  typeof graduationTemplateVersionsTable.$inferSelect;
+export type GraduationGroupStudent =
+  typeof graduationGroupStudentsTable.$inferSelect;
+export type GraduationStudentPayment =
+  typeof graduationStudentPaymentsTable.$inferSelect;
+export type GraduationReceipt = typeof graduationReceiptsTable.$inferSelect;

@@ -512,6 +512,7 @@ import {
   handleAdminGraduation,
   handleGraduationPublic,
 } from "@/server/graduation";
+import { handleAdminGraduationOperations } from "@/server/graduation-operations";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 
 export const COOKIE_NAME = "ajn_admin_session";
@@ -612,6 +613,19 @@ export const ALL_PERMISSIONS = [
   "graduation_cashier",
   "graduation_manager",
   "graduation_warehouse",
+  "graduation.view",
+  "graduation.create",
+  "graduation.edit",
+  "graduation.group.create",
+  "graduation.group.edit",
+  "graduation.student.add",
+  "graduation.student.delete",
+  "graduation.template.manage",
+  "graduation.payment.receive",
+  "graduation.receipt.print",
+  "graduation.production.update",
+  "graduation.delivery.confirm",
+  "graduation.report.view",
   "hr",
   // Granular payroll permissions (kept separate from the HR module gate).
   "payroll_view",
@@ -1325,7 +1339,7 @@ function hasPermission(
   if (user.permissions.includes(perm)) return true;
   // The "graduation" module gate implies its granular sub-permissions, so
   // staff granted the module before the split keep full access.
-  if (perm.startsWith("graduation_") && user.permissions.includes("graduation"))
+  if ((perm.startsWith("graduation_") || perm.startsWith("graduation.")) && user.permissions.includes("graduation"))
     return true;
   return false;
 }
@@ -26344,12 +26358,31 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       "graduation_cashier",
       "graduation_manager",
       "graduation_warehouse",
+      "graduation.view",
+      "graduation.create",
+      "graduation.edit",
+      "graduation.group.create",
+      "graduation.group.edit",
+      "graduation.student.add",
+      "graduation.student.delete",
+      "graduation.template.manage",
+      "graduation.payment.receive",
+      "graduation.receipt.print",
+      "graduation.production.update",
+      "graduation.delivery.confirm",
+      "graduation.report.view",
       "orders",
       "products",
       "services",
       "accounting",
     ]);
     if (isResponse(auth)) return auth;
+    const graduationOperations = await handleAdminGraduationOperations(
+      req,
+      parts.slice(2),
+      auth,
+    );
+    if (graduationOperations) return graduationOperations;
     const graduation = await handleAdminGraduation(req, parts.slice(2), auth);
     if (graduation) return graduation;
   }

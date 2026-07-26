@@ -21,7 +21,11 @@ import {
   entityTimelineTable,
   entityDocumentsTable,
   graduationGroupsTable,
+  graduationGroupStudentsTable,
   graduationOrdersTable,
+  graduationApprovalsTable,
+  graduationPreviewsTable,
+  graduationReceiptsTable,
   graduationResourcesTable,
   notificationsTable,
   productsTable,
@@ -54,6 +58,7 @@ import {
   type FinancialActor,
 } from "@/server/master-cash-box";
 import { sendTelegramMessage } from "@/server/telegram";
+import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
 
 export type GraduationAdminUser = {
   id: number;
@@ -186,6 +191,7 @@ export async function ensureGraduationTables() {
       });
   }
   await graduationTablesReady;
+  await ensureGraduationOperationsTables();
 }
 
 function json(data: unknown, status = 200) {
@@ -425,7 +431,10 @@ async function createGraduationGroup(
       createdBy: user?.id ?? null,
     })
     .returning();
-  const groupNo = `AJN-GRP-${String(row.id).padStart(5, "0")}`;
+  const groupYear = String(
+    data.graduationYear || data.graduationBatch.match(/\d{4}/)?.[0] || new Date().getFullYear(),
+  ).slice(0, 4);
+  const groupNo = `AJN-GROUP-${groupYear}-${String(row.id).padStart(4, "0")}`;
   const [saved] = await db
     .update(graduationGroupsTable)
     .set({ groupNo, updatedAt: new Date() })
@@ -707,6 +716,12 @@ function publicOrder(row: any) {
   return {
     id: row.id,
     orderNo: row.orderNo,
+    studentCode: row.studentCode ?? row.orderNo,
+    orderType: row.orderType ?? (row.groupId ? "group" : "individual"),
+    groupId: row.groupId ?? null,
+    barcodeValue: row.barcodeValue ?? row.studentCode ?? row.orderNo,
+    receiptNo: row.receiptNo ?? null,
+    qrValue: row.qrToken,
     status: row.status,
     productionStage: row.productionStage,
     stageLabel:
@@ -714,6 +729,8 @@ function publicOrder(row: any) {
         row.productionStage as keyof typeof GRADUATION_STAGE_LABELS
       ] ?? row.productionStage,
     customerName: row.customerName,
+    phone: row.phone,
+    phone2: row.phone2 ?? null,
     styleKey: row.styleKey,
     packageKey: row.packageKey,
     measurements: row.measurements,
@@ -722,6 +739,10 @@ function publicOrder(row: any) {
     decoration: row.decoration,
     customText: row.customText,
     accessories: row.accessories,
+    studentProfile: row.studentProfile ?? {},
+    garmentDetails: row.garmentDetails ?? {},
+    templateVersionId: row.templateVersionId ?? null,
+    templateSnapshot: row.templateSnapshot ?? {},
     previewAssets: row.previewAssets,
     pricing: row.pricing,
     totalAmount: money(row.totalAmount),
@@ -785,7 +806,7 @@ async function createInvoice(
   return { ...invoice, invoiceNo };
 }
 
-async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
+export async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
   await ensureGraduationTables();
   const parsed = graduationOrderInputSchema.safeParse(raw);
   if (!parsed.success)
@@ -932,12 +953,78 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
       createdByName: user ? user.fullName || user.username : "الموقع",
     })
     .returning();
-  const orderNo = `AJN-GRAD-${new Date().getFullYear()}-${String(draft.id).padStart(5, "0")}`;
+  const year = new Date().getFullYear();
+  const orderNo = `AJN-GRAD-${year}-${String(draft.id).padStart(5, "0")}`;
+  const studentCode = groupId
+    ? `AJN-GR-G${String(groupId).padStart(3, "0")}-${String(draft.id).padStart(6, "0")}`
+    : `AJN-GR-${year}-${String(draft.id).padStart(6, "0")}`;
+  const receiptNo = `AJN-GR-R-${year}-${String(draft.id).padStart(6, "0")}`;
   const [order] = await db
     .update(graduationOrdersTable)
-    .set({ orderNo, updatedAt: new Date() })
+    .set({
+      orderNo,
+      studentCode,
+      orderType: groupId ? "group" : "individual",
+      barcodeValue: studentCode,
+      receiptNo,
+      phone2: String((raw as any)?.phone2 ?? "").trim() || null,
+      studentProfile: {
+        gender: data.measurements.gender,
+        university: data.customText.university ?? group?.university ?? "",
+        college: data.customText.college ?? group?.college ?? "",
+        department: data.customText.department ?? group?.department ?? "",
+        graduationYear:
+          data.customText.graduationYear ?? group?.graduationYear ?? "",
+      },
+      garmentDetails: {
+        robeType: data.styleKey,
+        packageKey: data.packageKey ?? "",
+        robeColor: data.colors.robe ?? "",
+        sashColor: data.colors.sash ?? "",
+        capColor: data.colors.cap ?? "",
+        decorationType: data.decoration.type,
+        decorationPosition: data.decoration.position,
+      },
+      updatedAt: new Date(),
+    })
     .where(eq(graduationOrdersTable.id, draft.id))
     .returning();
+  if (groupId) {
+    const [sequenceRow] = await db
+      .select({ next: sql<number>`coalesce(max(${graduationGroupStudentsTable.sequence}), 0)::int + 1` })
+      .from(graduationGroupStudentsTable)
+      .where(eq(graduationGroupStudentsTable.groupId, groupId));
+    await db
+      .insert(graduationGroupStudentsTable)
+      .values({
+        groupId,
+        graduationOrderId: order.id,
+        customerId: order.customerId,
+        studentCode,
+        sequence: Number(sequenceRow?.next ?? 1),
+      })
+      .onConflictDoNothing();
+  }
+  await db
+    .insert(graduationReceiptsTable)
+    .values({
+      receiptNo,
+      receiptType: "student",
+      graduationOrderId: order.id,
+      groupId,
+      snapshot: {
+        orderNo,
+        studentCode,
+        studentName: order.customerName,
+        phone: order.phone,
+        total: pricing.total,
+        paid: 0,
+        remaining: pricing.total,
+      },
+      issuedBy: user?.id ?? null,
+      issuedByName: user ? user.fullName || user.username : "النظام",
+    })
+    .onConflictDoNothing();
   await db
     .insert(qrTokensTable)
     .values({
@@ -1062,7 +1149,7 @@ async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
   };
 }
 
-async function updateOrder(
+export async function updateOrder(
   order: any,
   raw: unknown,
   user: GraduationAdminUser,
@@ -1604,6 +1691,7 @@ function orderFilters(req: NextRequest) {
   const search = (sp.get("search") || "").trim();
   const status = (sp.get("status") || "").trim();
   const stage = (sp.get("stage") || "").trim();
+  const orderType = (sp.get("orderType") || "").trim();
   const conditions: any[] = [sql`${graduationOrdersTable.archivedAt} is null`];
   if (search)
     conditions.push(
@@ -1615,6 +1703,10 @@ function orderFilters(req: NextRequest) {
     );
   if (status) conditions.push(eq(graduationOrdersTable.status, status));
   if (stage) conditions.push(eq(graduationOrdersTable.productionStage, stage));
+  if (orderType === "individual")
+    conditions.push(sql`${graduationOrdersTable.groupId} is null`);
+  if (orderType === "group")
+    conditions.push(sql`${graduationOrdersTable.groupId} is not null`);
   return { page, limit, where: and(...conditions) };
 }
 
@@ -1664,16 +1756,28 @@ export async function handleGraduationPublic(
       where: eq(graduationOrdersTable.qrToken, parts[2]),
     });
     if (!order) return error("طلب التخرج غير موجود", 404);
-    const timeline = await db
-      .select()
-      .from(entityTimelineTable)
-      .where(
-        and(
-          eq(entityTimelineTable.entityType, "graduation_order"),
-          eq(entityTimelineTable.entityId, order.id),
-        ),
-      )
-      .orderBy(asc(entityTimelineTable.createdAt));
+    const [timeline, previews, approvals] = await Promise.all([
+      db
+        .select()
+        .from(entityTimelineTable)
+        .where(
+          and(
+            eq(entityTimelineTable.entityType, "graduation_order"),
+            eq(entityTimelineTable.entityId, order.id),
+          ),
+        )
+        .orderBy(asc(entityTimelineTable.createdAt)),
+      db
+        .select()
+        .from(graduationPreviewsTable)
+        .where(eq(graduationPreviewsTable.graduationOrderId, order.id))
+        .orderBy(desc(graduationPreviewsTable.version)),
+      db
+        .select()
+        .from(graduationApprovalsTable)
+        .where(eq(graduationApprovalsTable.graduationOrderId, order.id))
+        .orderBy(desc(graduationApprovalsTable.createdAt)),
+    ]);
     const qrDataUrl = await QRCode.toDataURL(
       `${req.nextUrl.origin}/graduation/track/${order.qrToken}`,
       { width: 300, margin: 1 },
@@ -1686,6 +1790,15 @@ export async function handleGraduationPublic(
         body: row.body,
         createdAt: row.createdAt,
       })),
+      preview: previews[0] ?? null,
+      approval: approvals[0]
+        ? {
+            status: approvals[0].status,
+            note: approvals[0].note,
+            approvedVersion: approvals[0].approvedVersion,
+            respondedAt: approvals[0].respondedAt,
+          }
+        : null,
       qrDataUrl,
     });
   }
@@ -1699,12 +1812,63 @@ export async function handleGraduationPublic(
       where: eq(graduationOrdersTable.qrToken, parts[2]),
     });
     if (!order) return error("طلب التخرج غير موجود", 404);
+    const payload = await requestBody(req);
+    const action = payload?.action === "correction" ? "correction" : "approve";
+    const latestPreview = await db.query.graduationPreviewsTable.findFirst({
+      where: eq(graduationPreviewsTable.graduationOrderId, order.id),
+      orderBy: [desc(graduationPreviewsTable.version)],
+    });
+    let approval = await db.query.graduationApprovalsTable.findFirst({
+      where: eq(graduationApprovalsTable.graduationOrderId, order.id),
+      orderBy: [desc(graduationApprovalsTable.createdAt)],
+    });
+    if (!approval) {
+      [approval] = await db
+        .insert(graduationApprovalsTable)
+        .values({
+          graduationOrderId: order.id,
+          previewId: latestPreview?.id ?? null,
+          approvalToken:
+            randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, ""),
+          status: "pending",
+        })
+        .returning();
+    }
+    const nextStatus =
+      action === "approve" ? "approved" : "correction_requested";
+    await db
+      .update(graduationApprovalsTable)
+      .set({
+        status: nextStatus,
+        note: String(payload?.note ?? "").trim() || null,
+        signatureDataUrl: String(payload?.signature ?? "").trim() || null,
+        approvedVersion:
+          action === "approve" ? latestPreview?.version ?? null : null,
+        respondedAt: new Date(),
+      })
+      .where(eq(graduationApprovalsTable.id, approval.id));
     const [saved] = await db
       .update(graduationOrdersTable)
-      .set({ designApprovedAt: new Date(), updatedAt: new Date() })
+      .set({
+        designApprovedAt: action === "approve" ? new Date() : null,
+        updatedAt: new Date(),
+      })
       .where(eq(graduationOrdersTable.id, order.id))
       .returning();
-    await addTimeline(order.id, "design_approved", "وافق الزبون على التصميم");
+    await addTimeline(
+      order.id,
+      action === "approve"
+        ? "design_approved"
+        : "design_correction_requested",
+      action === "approve"
+        ? "وافق الطالب على التصميم"
+        : "طلب الطالب تصحيح التصميم",
+      null,
+      {
+        note: String(payload?.note ?? ""),
+        previewVersion: latestPreview?.version ?? null,
+      },
+    );
     return json({ order: publicOrder(saved) });
   }
   if (method === "POST" && resource === "groups") {

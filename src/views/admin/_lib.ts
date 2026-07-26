@@ -95,6 +95,19 @@ export const ALL_PERMISSIONS = [
   "graduation_cashier",
   "graduation_manager",
   "graduation_warehouse",
+  "graduation.view",
+  "graduation.create",
+  "graduation.edit",
+  "graduation.group.create",
+  "graduation.group.edit",
+  "graduation.student.add",
+  "graduation.student.delete",
+  "graduation.template.manage",
+  "graduation.payment.receive",
+  "graduation.receipt.print",
+  "graduation.production.update",
+  "graduation.delivery.confirm",
+  "graduation.report.view",
   "hr",
   "payroll_view",
   "payroll_edit",
@@ -344,6 +357,19 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   graduation_cashier: "تخرج: الصندوق والفواتير",
   graduation_manager: "تخرج: مدير المركز",
   graduation_warehouse: "تخرج: المخزن",
+  "graduation.view": "التخرج: عرض المركز",
+  "graduation.create": "التخرج: إنشاء طلب",
+  "graduation.edit": "التخرج: تعديل طلب",
+  "graduation.group.create": "التخرج: إنشاء مجموعة",
+  "graduation.group.edit": "التخرج: تعديل مجموعة",
+  "graduation.student.add": "التخرج: إضافة طالب",
+  "graduation.student.delete": "التخرج: أرشفة طالب",
+  "graduation.template.manage": "التخرج: إدارة النماذج",
+  "graduation.payment.receive": "التخرج: استلام دفعة",
+  "graduation.receipt.print": "التخرج: طباعة الوصولات",
+  "graduation.production.update": "التخرج: تحديث الإنتاج",
+  "graduation.delivery.confirm": "التخرج: تأكيد التسليم",
+  "graduation.report.view": "التخرج: عرض التقارير",
   production_view: "عرض الإنتاج",
   production_create: "إنشاء أوامر الإنتاج",
   production_edit: "تعديل أوامر الإنتاج",
@@ -489,7 +515,7 @@ export function hasPerm(
   if (user.permissions.includes(perm)) return true;
   // Mirror the server: the "graduation" module gate implies its granular
   // sub-permissions so existing holders keep access after the split.
-  if (perm.startsWith("graduation_") && user.permissions.includes("graduation"))
+  if ((perm.startsWith("graduation_") || perm.startsWith("graduation.")) && user.permissions.includes("graduation"))
     return true;
   return false;
 }

@@ -79,12 +79,21 @@ import {
   type GraduationOption,
 } from "@/lib/graduation";
 import { adminFetch, apiErrorMessage } from "./_lib";
+import { openQrPrintWindow } from "./print-helpers";
+import {
+  GraduationGroupWorkspace,
+  GraduationStudentsDirectory,
+  GraduationTemplateLibrary,
+} from "./graduation-order-center";
 
 type Mode =
   | "dashboard"
   | "bookings"
   | "orders"
+  | "individual"
   | "groups"
+  | "students"
+  | "templates"
   | "customers"
   | "configurator"
   | "measurements"
@@ -103,7 +112,10 @@ const MODE_LABELS: Record<Mode, string> = {
   dashboard: "لوحة التحكم",
   bookings: "الحجوزات",
   orders: "طلبات التخرج",
+  individual: "الطلبات الفردية",
   groups: "الطلبات الجماعية",
+  students: "الطلاب",
+  templates: "مكتبة النماذج",
   customers: "عملاء التخرج",
   configurator: "مُعدّ تصميم التخرج",
   measurements: "القياسات",
@@ -311,6 +323,7 @@ function GroupOrders() {
   const { toast } = useToast();
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [form, setForm] = useState({
     title: "",
     representativeName: "",
@@ -384,6 +397,14 @@ function GroupOrders() {
     onSuccess: () =>
       client.invalidateQueries({ queryKey: ["admin", "graduation", "groups"] }),
   });
+  if (selectedGroupId) {
+    return (
+      <GraduationGroupWorkspace
+        groupId={selectedGroupId}
+        onBack={() => setSelectedGroupId(null)}
+      />
+    );
+  }
   return (
     <section className="rounded-xl border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -457,6 +478,14 @@ function GroupOrders() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="فتح جدول طلاب المجموعة"
+                        onClick={() => setSelectedGroupId(item.id)}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -726,12 +755,12 @@ function OrderDetail({ id, onClose }: { id: number; onClose: () => void }) {
   const delivery = { ...(order.delivery ?? {}), ...(draft.delivery ?? {}) };
   function printPickupLabel() {
     if (!order.qrDataUrl) return;
-    const popup = window.open("", "_blank", "width=480,height=680");
-    if (!popup) return;
-    popup.document.write(
-      `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${order.orderNo}</title><style>@page{size:80mm auto;margin:4mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#000;text-align:center;margin:0;font-weight:700}img{display:block;width:45mm;height:45mm;object-fit:contain;margin:4mm auto;image-rendering:pixelated}.no{font-size:16px}.name{font-size:14px;margin-top:2mm}.meta{font-size:11px;margin-top:2mm;border-top:1px solid #000;padding-top:2mm}</style></head><body><div class="no">${order.orderNo}</div><img src="${order.qrDataUrl}" alt="QR"><div class="name">${order.customerName}</div><div class="meta">تجهيزات التخرج · طرد رقم ${order.id}</div><script>window.onload=()=>setTimeout(()=>window.print(),250)</script></body></html>`,
-    );
-    popup.document.close();
+    openQrPrintWindow({
+      qrDataUrl: order.qrDataUrl,
+      customerName: `${order.customerName} · ${order.studentCode || order.orderNo}`,
+      title: "ملصق طرد تجهيزات التخرج",
+      paperSize: "80mm",
+    });
   }
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -1187,19 +1216,21 @@ function Info({
 function Orders({
   measurementOnly = false,
   deliveryOnly = false,
+  individualOnly = false,
 }: {
   measurementOnly?: boolean;
   deliveryOnly?: boolean;
+  individualOnly?: boolean;
 }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
   const stage = measurementOnly ? "measurements" : deliveryOnly ? "ready" : "";
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "graduation", "orders", search, status, stage],
+    queryKey: ["admin", "graduation", "orders", search, status, stage, individualOnly],
     queryFn: () =>
       adminFetch<any>(
-        `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}`,
+        `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}&orderType=${individualOnly ? "individual" : ""}`,
       ),
   });
   return (
@@ -3119,8 +3150,14 @@ export default function GraduationAdminPage() {
         <Bookings />
       ) : mode === "orders" ? (
         <Orders />
+      ) : mode === "individual" ? (
+        <Orders individualOnly />
       ) : mode === "groups" ? (
         <GroupOrders />
+      ) : mode === "students" ? (
+        <GraduationStudentsDirectory />
+      ) : mode === "templates" ? (
+        <GraduationTemplateLibrary />
       ) : mode === "customers" ? (
         <Customers />
       ) : mode === "configurator" ? (

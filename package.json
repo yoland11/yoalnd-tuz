@@ -28,7 +28,8 @@
     "test:scanner-formats": "node ./scripts/verify-scanner-formats.mjs",
     "test:sound-detection": "node ./scripts/verify-sound-detection.mjs",
     "test:sound-center": "node ./scripts/verify-sound-center.mjs",
-    "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs"
+    "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
+    "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -103,6 +104,7 @@
     "vaul": "^1.1.2",
     "web-push": "^3.6.7",
     "wouter": "catalog:",
+    "xlsx": "^0.18.5",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -191,6 +191,19 @@ const GRADUATION_PERMS: Permission[] = [
   "graduation_cashier",
   "graduation_manager",
   "graduation_warehouse",
+  "graduation.view",
+  "graduation.create",
+  "graduation.edit",
+  "graduation.group.create",
+  "graduation.group.edit",
+  "graduation.student.add",
+  "graduation.student.delete",
+  "graduation.template.manage",
+  "graduation.payment.receive",
+  "graduation.receipt.print",
+  "graduation.production.update",
+  "graduation.delivery.confirm",
+  "graduation.report.view",
 ];
 
 function Guard({

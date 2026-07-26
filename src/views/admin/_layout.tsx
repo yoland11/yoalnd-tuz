@@ -10,6 +10,7 @@ import {
   Settings,
   LogOut,
   Users,
+  UserRound,
   Tag,
   UserCog,
   Sparkles,
@@ -126,10 +127,28 @@ export const NAV: NavItem[] = [
     perm: "graduation",
   },
   {
+    href: "/admin/graduation/individual",
+    label: "الطلبات الفردية",
+    icon: UserRound,
+    perm: "graduation.view",
+  },
+  {
     href: "/admin/graduation/groups",
     label: "الطلبات الجماعية",
     icon: Users,
     perm: "graduation",
+  },
+  {
+    href: "/admin/graduation/students",
+    label: "الطلاب",
+    icon: Users,
+    perm: "graduation.view",
+  },
+  {
+    href: "/admin/graduation/templates",
+    label: "مكتبة النماذج",
+    icon: Sparkles,
+    perm: "graduation.view",
   },
   {
     href: "/admin/graduation/customers",
@@ -757,7 +776,10 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       navItem("/admin/graduation"),
       navItem("/admin/graduation/orders"),
+      navItem("/admin/graduation/individual"),
       navItem("/admin/graduation/groups"),
+      navItem("/admin/graduation/students"),
+      navItem("/admin/graduation/templates"),
       navItem("/admin/graduation/customers"),
       navItem("/admin/graduation/configurator"),
       navItem("/admin/graduation/measurements"),

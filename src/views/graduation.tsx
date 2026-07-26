@@ -34,6 +34,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -1633,20 +1634,29 @@ export default function GraduationEntry() {
 export function GraduationTracking() {
   const token = window.location.pathname.split("/").filter(Boolean).pop() || "";
   const { toast } = useToast();
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [approvalNote, setApprovalNote] = useState("");
+  const [signature, setSignature] = useState("");
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["graduation", "track", token],
     queryFn: () => graduationFetch<any>(`/track/${token}`),
     refetchInterval: 30_000,
   });
   const approve = useMutation({
-    mutationFn: () =>
+    mutationFn: (action: "approve" | "correction") =>
       graduationFetch(`/track/${token}/approve-design`, {
         method: "POST",
-        body: "{}",
+        body: JSON.stringify({ action, note: approvalNote, signature }),
       }),
-    onSuccess: () => {
+    onSuccess: (_result, action) => {
       refetch();
-      toast({ title: "تم اعتماد التصميم" });
+      setCorrectionOpen(false);
+      toast({
+        title:
+          action === "approve"
+            ? "تم اعتماد التصميم"
+            : "تم إرسال طلب التصحيح",
+      });
     },
   });
   if (isLoading)
@@ -1675,6 +1685,9 @@ export function GraduationTracking() {
             <h1 className="mt-1 text-2xl font-bold">{order.orderNo}</h1>
             <p className="mt-2 text-sm text-muted-foreground">
               {order.customerName}
+            </p>
+            <p className="mt-1 font-mono text-xs text-primary">
+              {order.studentCode}
             </p>
           </div>
           <div className="rounded-xl border border-primary/30 bg-primary/5 px-5 py-3 text-center">
@@ -1731,6 +1744,18 @@ export function GraduationTracking() {
           </div>
         </section>
         <aside className="space-y-4">
+          {data.preview?.assets?.template || order.previewAssets?.template ? (
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <img
+                src={data.preview?.assets?.template || order.previewAssets?.template}
+                alt="المعاينة المعتمدة"
+                className="aspect-[4/5] w-full object-contain"
+              />
+              <p className="p-3 text-center text-xs text-muted-foreground">
+                معاينة التصميم · النسخة {data.preview?.version || 1}
+              </p>
+            </div>
+          ) : null}
           <div className="rounded-xl border border-border bg-card p-4 text-sm">
             <p className="text-muted-foreground">الإجمالي</p>
             <strong className="mt-1 block text-lg">
@@ -1752,14 +1777,24 @@ export function GraduationTracking() {
             </div>
           ) : null}
           {!order.designApprovedAt ? (
-            <Button
-              className="w-full"
-              onClick={() => approve.mutate()}
-              disabled={approve.isPending}
-            >
-              <BadgeCheck className="ml-2 h-4 w-4" />
-              اعتماد التصميم
-            </Button>
+            <div className="space-y-2">
+              <Button
+                className="w-full"
+                onClick={() => approve.mutate("approve")}
+                disabled={approve.isPending}
+              >
+                <BadgeCheck className="ml-2 h-4 w-4" />
+                اعتماد التصميم
+              </Button>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={() => setCorrectionOpen(true)}
+                disabled={approve.isPending}
+              >
+                طلب تصحيح
+              </Button>
+            </div>
           ) : (
             <div className="flex items-center justify-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm text-primary">
               <CheckCircle2 className="h-4 w-4" />
@@ -1768,6 +1803,39 @@ export function GraduationTracking() {
           )}
         </aside>
       </div>
+      <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>
+        <DialogContent dir="rtl">
+          <DialogHeader>
+            <DialogTitle>مراجعة واعتماد بيانات التصميم</DialogTitle>
+          </DialogHeader>
+          <div>
+            <Label>ملاحظة التصحيح</Label>
+            <Textarea
+              className="mt-2"
+              value={approvalNote}
+              onChange={(event) => setApprovalNote(event.target.value)}
+              placeholder="اكتب الاسم أو التفاصيل المطلوب تصحيحها قبل الطباعة"
+            />
+          </div>
+          <div>
+            <Label>التوقيع الإلكتروني (الاسم الكامل)</Label>
+            <Input
+              className="mt-2"
+              value={signature}
+              onChange={(event) => setSignature(event.target.value)}
+            />
+          </div>
+          <DialogFooter className="sm:justify-start">
+            <Button
+              variant="destructive"
+              onClick={() => approve.mutate("correction")}
+              disabled={approve.isPending || approvalNote.trim().length < 3}
+            >
+              إرسال طلب التصحيح
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
