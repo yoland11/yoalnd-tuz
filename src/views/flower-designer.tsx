@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   CalendarHeart, Flower2, Package, Gift, Sparkles, MessageSquareText,
@@ -8,6 +8,11 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/money";
+import { usePublicSettings } from "@/lib/public-settings";
+import { buildWhatsAppLink } from "@/lib/order-stages";
+
+// Lazy — keeps three.js (~heavy) out of the initial /design bundle.
+const Bouquet3D = lazy(() => import("./bouquet-3d"));
 
 /*
  * AJN Smart Flower Studio — bouquet configurator (Phase 1).
@@ -94,7 +99,17 @@ type StepKey = (typeof STEPS)[number]["key"];
 // ── Component ────────────────────────────────────────────────────────────────
 export default function FlowerDesigner() {
   const { toast } = useToast();
+  const { data: settings } = usePublicSettings();
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [custName, setCustName] = useState("");
+  const [custPhone, setCustPhone] = useState("");
+  const [fulfil, setFulfil] = useState<"pickup" | "delivery">("pickup");
+  const [address, setAddress] = useState("");
+  const [orderNotes, setOrderNotes] = useState("");
   const [step, setStep] = useState(0);
+  const [view3d, setView3d] = useState(false);
+  const [lighting, setLighting] = useState<"day" | "night" | "studio">("day");
+  const [autoRotate, setAutoRotate] = useState(true);
   const [occasion, setOccasion] = useState<string>("زفاف");
   const [budget, setBudget] = useState(80000);
   const [style, setStyle] = useState<string>("فخم");
@@ -132,15 +147,38 @@ export default function FlowerDesigner() {
       toast({ title: "أضف زهرة واحدة على الأقل", variant: "destructive" });
       return;
     }
-    const design = {
-      occasion, style, budget,
-      flowers: FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => ({ id: f.id, name: f.name, qty: qty[f.id], price: f.price })),
-      wrap: wrap.name, ribbon: ribbon.name,
-      extras: ACCESSORIES.filter((a) => extras.includes(a.id)).map((a) => a.name),
-      card: { sender, receiver, message }, total,
-    };
-    try { localStorage.setItem("ajn_bouquet_design", JSON.stringify(design)); } catch { /* ignore */ }
-    toast({ title: "تمت إضافة الباقة إلى الحجز", description: `${stemCount} زهرة · ${formatCurrency(total)}` });
+    setCheckoutOpen(true);
+  }
+
+  // Hand the finished design to the shop as a complete WhatsApp order — reusing
+  // the app's existing settings + WhatsApp ordering pattern (no separate system).
+  function submitOrder() {
+    if (!custName.trim() || custPhone.replace(/\D/g, "").length < 7) {
+      toast({ title: "أدخل الاسم ورقم الهاتف", variant: "destructive" });
+      return;
+    }
+    const lines = FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => ` • ${f.name} ×${qty[f.id]}`).join("\n");
+    const extrasTxt = ACCESSORIES.filter((a) => extras.includes(a.id)).map((a) => a.name).join("، ") || "—";
+    const fulfilTxt = fulfil === "delivery" ? `توصيل${address.trim() ? ` — ${address.trim()}` : ""}` : "استلام من المحل";
+    const msg = [
+      "🌸 طلب باقة مخصّصة — AJN Smart Flower Studio",
+      `العميل: ${custName.trim()} — ${custPhone.trim()}`,
+      `المناسبة: ${occasion} · النمط: ${style}`,
+      `الورود:\n${lines}`,
+      `التغليف: ${wrap.name} · الشريط: ${ribbon.name}`,
+      `الإضافات: ${extrasTxt}`,
+      (receiver || message) ? `البطاقة: ${receiver || "—"} — ${message || ""}` : null,
+      `الاستلام: ${fulfilTxt}`,
+      orderNotes.trim() ? `ملاحظات: ${orderNotes.trim()}` : null,
+      `الإجمالي: ${formatCurrency(total)}`,
+    ].filter(Boolean).join("\n");
+    const shopPhone = settings?.whatsapp || settings?.phone || "07701234567";
+    try {
+      localStorage.setItem("ajn_bouquet_design", JSON.stringify({ occasion, style, total, custName: custName.trim(), custPhone: custPhone.trim() }));
+    } catch { /* ignore */ }
+    window.open(buildWhatsAppLink(shopPhone, msg), "_blank", "noopener");
+    toast({ title: "تم تجهيز طلبك", description: "أكمل الحجز مع المتجر عبر واتساب" });
+    setCheckoutOpen(false);
   }
 
   const current = STEPS[step].key as StepKey;
@@ -318,13 +356,49 @@ export default function FlowerDesigner() {
           </div>
         </div>
 
-        {/* Live preview */}
-        <BouquetPreview
-          flowers={FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => ({ hex: f.hex, qty: qty[f.id] }))}
-          wrapHex={wrap.hex} ribbonHex={ribbon.hex}
-          extras={ACCESSORIES.filter((a) => extras.includes(a.id)).map((a) => a.emoji)}
-          message={message} luxuryScore={luxuryScore}
-        />
+        {/* Live preview — 2D stylized or interactive 360° 3D */}
+        <div className="relative">
+          <div className="absolute right-4 top-4 z-20 flex flex-wrap items-center gap-1.5">
+            <button type="button" onClick={() => setView3d((v) => !v)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${view3d ? "border-pink-500 bg-pink-500 text-white" : "border-white/15 bg-black/40 text-pink-200 backdrop-blur hover:border-pink-500/50"}`}>
+              {view3d ? "معاينة عادية" : "360° ثلاثي الأبعاد"}
+            </button>
+            {view3d && (
+              <>
+                <div className="flex overflow-hidden rounded-full border border-white/15 bg-black/40 text-[11px] backdrop-blur">
+                  {([["day", "نهار"], ["night", "ليل"], ["studio", "استوديو"]] as const).map(([k, l]) => (
+                    <button key={k} type="button" onClick={() => setLighting(k)}
+                      className={`px-2.5 py-1.5 transition-colors ${lighting === k ? "bg-pink-500 text-white" : "text-neutral-300 hover:text-white"}`}>{l}</button>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setAutoRotate((r) => !r)}
+                  className="rounded-full border border-white/15 bg-black/40 px-2.5 py-1.5 text-[11px] text-neutral-300 backdrop-blur hover:text-white">
+                  {autoRotate ? "إيقاف الدوران" : "تدوير تلقائي"}
+                </button>
+              </>
+            )}
+          </div>
+
+          {view3d ? (
+            <div className="h-[520px] overflow-hidden rounded-3xl border border-white/10">
+              <Suspense fallback={<div className="grid h-full place-items-center bg-neutral-900 text-sm text-neutral-500">جارٍ تحميل المشهد ثلاثي الأبعاد…</div>}>
+                <Bouquet3D
+                  flowers={FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => ({ hex: f.hex, qty: qty[f.id] }))}
+                  wrapHex={wrap.hex} ribbonHex={ribbon.hex}
+                  lighting={lighting} autoRotate={autoRotate}
+                />
+              </Suspense>
+              <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3 py-1 text-[11px] text-neutral-300 backdrop-blur">اسحب للتدوير · مرّر للتكبير</p>
+            </div>
+          ) : (
+            <BouquetPreview
+              flowers={FLOWERS.filter((f) => (qty[f.id] ?? 0) > 0).map((f) => ({ hex: f.hex, qty: qty[f.id] }))}
+              wrapHex={wrap.hex} ribbonHex={ribbon.hex}
+              extras={ACCESSORIES.filter((a) => extras.includes(a.id)).map((a) => a.emoji)}
+              message={message} luxuryScore={luxuryScore}
+            />
+          )}
+        </div>
 
         {/* Summary + pricing */}
         <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
@@ -353,6 +427,39 @@ export default function FlowerDesigner() {
           </button>
         </div>
       </div>
+
+      {checkoutOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setCheckoutOpen(false)}>
+          <div className="w-full max-w-md rounded-3xl border border-white/10 bg-neutral-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-base font-bold text-neutral-100">إتمام الحجز</h3>
+              <span className="text-sm font-bold text-pink-400">{formatCurrency(total)}</span>
+            </div>
+            <div className="space-y-3">
+              <Field label="الاسم *"><input value={custName} onChange={(e) => setCustName(e.target.value)} className={inputCls} placeholder="اسمك الكامل" /></Field>
+              <Field label="رقم الهاتف *"><input value={custPhone} onChange={(e) => setCustPhone(e.target.value)} dir="ltr" inputMode="numeric" className={inputCls} placeholder="0770xxxxxxx" /></Field>
+              <div>
+                <span className="mb-1 block text-xs text-neutral-400">طريقة الاستلام</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <Chip active={fulfil === "pickup"} onClick={() => setFulfil("pickup")}>استلام من المحل</Chip>
+                  <Chip active={fulfil === "delivery"} onClick={() => setFulfil("delivery")}>توصيل</Chip>
+                </div>
+              </div>
+              {fulfil === "delivery" && (
+                <Field label="عنوان التوصيل"><input value={address} onChange={(e) => setAddress(e.target.value)} className={inputCls} placeholder="المنطقة وأقرب نقطة دالة" /></Field>
+              )}
+              <Field label="ملاحظات (اختياري)"><textarea value={orderNotes} onChange={(e) => setOrderNotes(e.target.value)} rows={2} className={inputCls} /></Field>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button type="button" onClick={() => setCheckoutOpen(false)} className="flex-1 rounded-2xl border border-white/10 py-2.5 text-sm text-neutral-300">رجوع</button>
+              <button type="button" onClick={submitOrder} className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-pink-500 py-2.5 text-sm font-bold text-white hover:bg-pink-400">
+                <ShoppingBag className="h-4 w-4" /> إرسال الطلب
+              </button>
+            </div>
+            <p className="mt-2 text-center text-[11px] text-neutral-500">سيتم إرسال تفاصيل باقتك كاملة إلى المتجر عبر واتساب لتأكيد الحجز.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
