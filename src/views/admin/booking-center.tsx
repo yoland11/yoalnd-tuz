@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -43,8 +43,10 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
+import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
 import "./booking-center.css";
 
@@ -496,9 +498,177 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
   );
 }
 
+/** Searchable customer selector with an inline "add new customer" dialog. */
+function BookingCustomerSelector({ value, onChange }: { value: Customer | null; onChange: (customer: Customer | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const results = useQuery({
+    queryKey: ["admin", "customers", "booking-search", query.trim()],
+    queryFn: () => adminFetch<Customer[]>(`/admin/customers?search=${encodeURIComponent(query.trim())}`),
+    enabled: open && query.trim().length >= 2,
+    staleTime: 30_000,
+  });
+
+  if (value) {
+    return (
+      <div className="space-y-2">
+        <Label>العميل *</Label>
+        <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">{value.fullName || value.name}</p>
+            <p className="text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(value.phone)}</p>
+          </div>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>تغيير</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="booking-customer-search">العميل *</Label>
+      <div className="relative">
+        <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          id="booking-customer-search"
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          placeholder="ابحث بالاسم أو رقم الهاتف"
+          autoComplete="off"
+          className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+        {open && query.trim().length >= 2 ? (
+          <div className="absolute inset-x-0 top-full z-40 mt-1 max-h-56 overflow-y-auto rounded-lg border border-border/40 bg-card shadow-xl">
+            {results.isFetching ? (
+              <div className="px-3 py-3 text-xs text-muted-foreground">جارٍ البحث…</div>
+            ) : !results.data?.length ? (
+              <div className="px-3 py-3 text-xs text-muted-foreground">لا يوجد عميل مطابق — أضِف عميلاً جديداً</div>
+            ) : (
+              results.data.map((customer) => (
+                <button
+                  key={customer.id}
+                  type="button"
+                  onMouseDown={(event) => { event.preventDefault(); onChange(customer); setOpen(false); setQuery(""); }}
+                  className="flex w-full items-center justify-between gap-3 border-b border-border/20 px-3 py-2.5 text-right transition-colors last:border-b-0 hover:bg-primary/10"
+                >
+                  <span className="min-w-0 truncate text-sm font-medium text-foreground">{customer.fullName || customer.name}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(customer.phone)}</span>
+                </button>
+              ))
+            )}
+          </div>
+        ) : null}
+      </div>
+      <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
+        <Plus className="h-4 w-4" /> إضافة عميل جديد
+      </Button>
+      <AddCustomerDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        defaultPhone={query}
+        onCreated={(customer) => { onChange(customer); setAddOpen(false); }}
+      />
+    </div>
+  );
+}
+
+/** Inline create-customer dialog: confirm → create → link → available system-wide. */
+function AddCustomerDialog({ open, onOpenChange, defaultPhone, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; defaultPhone?: string; onCreated: (customer: Customer) => void }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [address, setAddress] = useState("");
+  const [notes, setNotes] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ready = fullName.trim().length >= 2 && phone.trim().length >= 6;
+
+  // Seed the phone from the search box (the user often searches by number).
+  useEffect(() => {
+    if (open && !phone && defaultPhone && /\d/.test(defaultPhone)) {
+      setPhone(formatIraqiPhoneInput(defaultPhone));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function reset() {
+    setFullName(""); setPhone(""); setWhatsapp(""); setAddress(""); setNotes("");
+    setConfirming(false); setBusy(false);
+  }
+
+  async function create() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const created = await adminFetch<{ id: number; name: string; phone: string }>("/admin/customers", {
+        method: "POST",
+        body: JSON.stringify({
+          name: fullName.trim(),
+          fullName: fullName.trim(),
+          phone: phone.trim(),
+          address: address.trim() || undefined,
+          whatsapp: whatsapp.trim() || undefined,
+          notes: notes.trim() || undefined,
+        }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+      toast({ title: "تم إنشاء العميل وربطه بهذا الحجز بنجاح" });
+      onCreated({ id: created.id, name: created.name, fullName: fullName.trim(), phone: created.phone });
+      reset();
+    } catch (error) {
+      toast({ title: "تعذّر إنشاء العميل", description: apiErrorMessage(error), variant: "destructive" });
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) reset(); onOpenChange(next); }}>
+      <DialogContent className="max-w-md" dir="rtl">
+        <DialogHeader>
+          <DialogTitle>إضافة عميل جديد</DialogTitle>
+          <DialogDescription className="sr-only">إنشاء عميل وربطه بالحجز الحالي</DialogDescription>
+        </DialogHeader>
+        {confirming ? (
+          <div className="space-y-4 py-2 text-center">
+            <p className="text-sm font-semibold text-foreground">هل تريد إضافة هذا الشخص إلى قاعدة بيانات العملاء؟</p>
+            <div className="rounded-lg bg-muted/40 p-3 text-right text-xs">
+              <p>الاسم: {fullName.trim()}</p>
+              <p dir="ltr">الهاتف: {formatIraqiPhone(phone.trim())}</p>
+            </div>
+            <div className="flex justify-center gap-2">
+              <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>لا</Button>
+              <Button disabled={busy} onClick={create}>{busy ? "جارٍ الحفظ…" : "نعم"}</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="space-y-1"><Label>الاسم الكامل *</Label><Input value={fullName} onChange={(e) => setFullName(e.target.value)} autoFocus /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1"><Label>رقم الهاتف *</Label><Input value={phone} onChange={(e) => setPhone(formatIraqiPhoneInput(e.target.value))} dir="ltr" placeholder="0770xxxxxxx" inputMode="numeric" /></div>
+              <div className="space-y-1"><Label>واتساب (اختياري)</Label><Input value={whatsapp} onChange={(e) => setWhatsapp(formatIraqiPhoneInput(e.target.value))} dir="ltr" placeholder="0770xxxxxxx" inputMode="numeric" /></div>
+            </div>
+            <div className="space-y-1"><Label>العنوان</Label><Input value={address} onChange={(e) => setAddress(e.target.value)} /></div>
+            <div className="space-y-1"><Label>ملاحظات</Label><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }}>إلغاء</Button>
+              <Button disabled={!ready} onClick={() => setConfirming(true)}>حفظ</Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { services: AdminService[]; customers: Customer[]; onCancel: () => void; onCreated: () => void }) {
   const { toast } = useToast();
-  const [customerId, setCustomerId] = useState("");
+  const [customer, setCustomer] = useState<Customer | null>(null);
   const [eventDate, setEventDate] = useState("");
   const [eventTime, setEventTime] = useState("");
   const [hallName, setHallName] = useState("");
@@ -509,7 +679,6 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
   const mutation = useMutation({
     mutationFn: async () => {
-      const customer = customers.find((item) => String(item.id) === customerId);
       if (!customer) throw new Error("اختر العميل أولاً");
       if (!eventDate) throw new Error("حدد تاريخ المناسبة");
       if (!selected.length) throw new Error("اختر خدمة واحدة على الأقل");
@@ -550,7 +719,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       <div className="grid gap-4 p-5 lg:grid-cols-[1.15fr_.85fr]">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2"><Label htmlFor="booking-customer">العميل *</Label><select id="booking-customer" value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="ajn-native-select"><option value="">اختر العميل</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name || customer.fullName} — {customer.phone}</option>)}</select></div>
+            <BookingCustomerSelector value={customer} onChange={setCustomer} />
             <div className="space-y-2"><Label htmlFor="booking-contract">رقم العقد</Label><Input id="booking-contract" value={contractNumber} onChange={(event) => setContractNumber(event.target.value)} placeholder="يُترك فارغاً عند عدم وجود عقد" /></div>
             <div className="space-y-2"><Label htmlFor="booking-date">تاريخ المناسبة *</Label><Input id="booking-date" type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
