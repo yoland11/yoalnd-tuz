@@ -27909,7 +27909,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (q.length < 2) return json({ data: [] });
     const likeQ = `%${q}%`;
     await ensureGraduationTables();
-    const [customers, orders, products, invoices, documents, graduationOrders] =
+    const [customers, orders, products, invoices, documents, graduationOrders, suppliers, koshaBookings, serviceBookings] =
       await Promise.all([
         db.query.customersTable.findMany({
           where: or(
@@ -27963,6 +27963,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           ),
           limit: 8,
         }),
+        db.query.suppliersTable.findMany({
+          where: or(
+            ilike(suppliersTable.name, likeQ),
+            ilike(suppliersTable.phone, likeQ),
+            ilike(suppliersTable.company, likeQ),
+          ),
+          limit: 6,
+        }),
+        db.query.koshaBookingsTable.findMany({
+          where: or(
+            ilike(koshaBookingsTable.customerName, likeQ),
+            ilike(koshaBookingsTable.phone, likeQ),
+            ilike(koshaBookingsTable.trackingCode, likeQ),
+          ),
+          limit: 6,
+        }),
+        db.query.serviceOrdersTable.findMany({
+          where: or(
+            ilike(serviceOrdersTable.customerName, likeQ),
+            ilike(serviceOrdersTable.phone, likeQ),
+            ilike(serviceOrdersTable.trackingCode, likeQ),
+          ),
+          limit: 6,
+        }),
       ]);
     return json({
       data: [
@@ -28007,6 +28031,27 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           title: row.orderNo,
           subtitle: `${row.customerName} - ${GRADUATION_STAGE_LABELS[row.productionStage as keyof typeof GRADUATION_STAGE_LABELS] ?? row.productionStage}`,
           href: "/admin/graduation/orders",
+        })),
+        ...suppliers.map((row) => ({
+          type: "supplier",
+          id: row.id,
+          title: row.name,
+          subtitle: row.phone ?? row.company ?? "",
+          href: "/admin/suppliers",
+        })),
+        ...koshaBookings.map((row) => ({
+          type: "booking",
+          id: row.id,
+          title: row.trackingCode ?? row.customerName ?? `KB-${row.id}`,
+          subtitle: `${row.customerName ?? ""}${row.phone ? ` · ${row.phone}` : ""}`,
+          href: "/admin/bookings",
+        })),
+        ...serviceBookings.map((row) => ({
+          type: "booking",
+          id: row.id,
+          title: row.trackingCode ?? row.customerName ?? `SRV-${row.id}`,
+          subtitle: `${row.customerName ?? ""}${row.phone ? ` · ${row.phone}` : ""}`,
+          href: "/admin/bookings",
         })),
       ],
     });

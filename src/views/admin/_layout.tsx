@@ -67,6 +67,7 @@ import {
 import { adminFetch, hasPerm, type AdminMe, type Permission } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { AdminNotificationsBell } from "./notifications-bell";
+import { AdminGlobalSearch } from "./global-search";
 
 export type NavItem = {
   href: string;
@@ -1106,7 +1107,8 @@ export function AdminLayout({
       >
         <Menu className="w-4 h-4" />
       </button>
-      <div className="hidden md:flex fixed left-6 top-5 z-30 h-10 shrink-0 items-center">
+      <div className="hidden md:flex fixed left-6 top-5 z-30 h-10 shrink-0 items-center gap-2">
+        <AdminGlobalSearch />
         <AdminNotificationsBell />
       </div>
       <div
@@ -1142,6 +1144,7 @@ export function AdminLayout({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <AdminGlobalSearch />
             <AdminNotificationsBell />
             <button
               onClick={onLogout}
