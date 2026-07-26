@@ -43,6 +43,7 @@ const Profile = lazy(() => import("@/views/profile"));
 const Account = lazy(() => import("@/views/account"));
 const AccountKoshas = lazy(() => import("@/views/account-koshas"));
 const GraduationConfigurator = lazy(() => import("@/views/graduation"));
+const FlowerDesigner = lazy(() => import("@/views/flower-designer"));
 const GraduationTracking = lazy(() =>
   import("@/views/graduation").then((module) => ({
     default: module.GraduationTracking,
@@ -207,6 +208,11 @@ function Router() {
               <Route path="/graduation">
                 <Suspense fallback={<PageSpinner />}>
                   <GraduationConfigurator />
+                </Suspense>
+              </Route>
+              <Route path="/design">
+                <Suspense fallback={<PageSpinner />}>
+                  <FlowerDesigner />
                 </Suspense>
               </Route>
               <Route path="/store" component={Store} />
