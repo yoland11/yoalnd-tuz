@@ -35,6 +35,19 @@ export const graduationTemplatesTable = pgTable(
     defaultPrice: numeric("default_price", { precision: 14, scale: 2 })
       .notNull()
       .default("0"),
+    // Additive product economics (Hybrid model): scalar accounting/inventory
+    // fields live as real columns; per-type attributes (sizes, colors, print,
+    // tassel, size chart, production time…) stay inside `configuration`.
+    costPrice: numeric("cost_price", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    discountPrice: numeric("discount_price", { precision: 14, scale: 2 }),
+    sku: varchar("sku", { length: 80 }),
+    barcode: varchar("barcode", { length: 120 }),
+    trackStock: boolean("track_stock").notNull().default(false),
+    stock: integer("stock").notNull().default(0),
+    minStock: integer("min_stock").notNull().default(0),
+    images: jsonb("images").$type<string[]>().notNull().default([]),
     configuration: jsonb("configuration")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -42,6 +55,7 @@ export const graduationTemplatesTable = pgTable(
     isActive: boolean("is_active").notNull().default(true),
     isFeatured: boolean("is_featured").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
+    archivedAt: timestamp("archived_at"),
     createdBy: integer("created_by").references(() => staffTable.id, {
       onDelete: "set null",
     }),
@@ -273,6 +287,72 @@ export const graduationOrdersTable = pgTable(
     index("graduation_orders_due_idx").on(table.dueDate),
     index("graduation_orders_created_idx").on(table.createdAt),
     index("graduation_orders_barcode_idx").on(table.barcodeValue),
+  ],
+);
+
+// One row per selected custom-package piece (gown / sash / cap / accessory).
+// Every row is a price + customization SNAPSHOT taken at order time so future
+// product price changes never alter past orders.
+export const graduationOrderItemsTable = pgTable(
+  "graduation_order_items",
+  {
+    id: serial("id").primaryKey(),
+    graduationOrderId: integer("graduation_order_id")
+      .notNull()
+      .references(() => graduationOrdersTable.id, { onDelete: "cascade" }),
+    groupId: integer("group_id").references(() => graduationGroupsTable.id, {
+      onDelete: "set null",
+    }),
+    itemType: varchar("item_type", { length: 30 }).notNull().default("custom"),
+    templateId: integer("template_id").references(
+      () => graduationTemplatesTable.id,
+      { onDelete: "set null" },
+    ),
+    productId: integer("product_id").references(() => productsTable.id, {
+      onDelete: "set null",
+    }),
+    productName: text("product_name").notNull().default(""),
+    productSku: varchar("product_sku", { length: 80 }),
+    variantLabel: text("variant_label"),
+    size: varchar("size", { length: 60 }),
+    color: varchar("color", { length: 80 }),
+    quantity: numeric("quantity", { precision: 12, scale: 3 })
+      .notNull()
+      .default("1"),
+    originalUnitPrice: numeric("original_unit_price", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    finalUnitPrice: numeric("final_unit_price", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    customizationCharge: numeric("customization_charge", {
+      precision: 14,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
+    lineTotal: numeric("line_total", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
+    customization: jsonb("customization")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    imageUrl: text("image_url"),
+    snapshot: jsonb("snapshot")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    notes: text("notes"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("graduation_order_items_order_idx").on(
+      table.graduationOrderId,
+      table.sortOrder,
+    ),
+    index("graduation_order_items_template_idx").on(table.templateId),
   ],
 );
 
@@ -591,6 +671,25 @@ export const graduationOrdersRelations = relations(
     approvals: many(graduationApprovalsTable),
     productionEvents: many(graduationProductionEventsTable),
     deliveryEvents: many(graduationDeliveryEventsTable),
+    items: many(graduationOrderItemsTable),
+  }),
+);
+
+export const graduationOrderItemsRelations = relations(
+  graduationOrderItemsTable,
+  ({ one }) => ({
+    order: one(graduationOrdersTable, {
+      fields: [graduationOrderItemsTable.graduationOrderId],
+      references: [graduationOrdersTable.id],
+    }),
+    template: one(graduationTemplatesTable, {
+      fields: [graduationOrderItemsTable.templateId],
+      references: [graduationTemplatesTable.id],
+    }),
+    product: one(productsTable, {
+      fields: [graduationOrderItemsTable.productId],
+      references: [productsTable.id],
+    }),
   }),
 );
 
@@ -692,3 +791,5 @@ export type GraduationGroupStudent =
 export type GraduationStudentPayment =
   typeof graduationStudentPaymentsTable.$inferSelect;
 export type GraduationReceipt = typeof graduationReceiptsTable.$inferSelect;
+export type GraduationOrderItem =
+  typeof graduationOrderItemsTable.$inferSelect;

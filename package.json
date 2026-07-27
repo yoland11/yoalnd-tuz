@@ -33,6 +33,7 @@
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
+    "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs"
   },
   "dependencies": {

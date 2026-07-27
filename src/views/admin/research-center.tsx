@@ -53,20 +53,77 @@ function Dashboard() {
 }
 
 const initialOrder = { customerName: "", phone: "", title: "", researchType: "graduation", universityId: "", universityName: "", college: "", department: "", supervisorName: "", language: "ar", researchField: "", keywords: "", requiredPages: 30, deadline: "", citationStyle: "APA7", urgency: "normal", estimatedPrice: 0, deposit: 0, notes: "", files: [] as any[] };
+const ORDER_FIELD_LABELS: Record<string, string> = {
+  customerName: "اسم الزبون", phone: "رقم الهاتف", title: "عنوان البحث", researchType: "نوع البحث",
+  universityId: "الجامعة", universityName: "اسم الجامعة", college: "الكلية", department: "القسم",
+  supervisorName: "اسم المشرف", language: "اللغة", researchField: "المجال العلمي", requiredPages: "عدد الصفحات",
+  deadline: "موعد التسليم", citationStyle: "نمط التوثيق", urgency: "مستوى الاستعجال", estimatedPrice: "السعر التقديري",
+  deposit: "العربون", notes: "الملاحظات", files: "الملفات",
+};
+function normalizeOrderPayload(form: typeof initialOrder) {
+  const optional = (value: string) => (value.trim() ? value.trim() : null);
+  return {
+    customerName: form.customerName.trim(),
+    phone: form.phone.trim(),
+    title: form.title.trim(),
+    researchType: form.researchType,
+    // Manual entry ("إدخال يدوي") leaves universityId empty → send null, not "".
+    universityId: form.universityId ? Number(form.universityId) : null,
+    universityName: form.universityName.trim(),
+    college: optional(form.college),
+    department: optional(form.department),
+    supervisorName: optional(form.supervisorName),
+    language: form.language,
+    researchField: optional(form.researchField),
+    keywords: form.keywords,
+    requiredPages: Number(form.requiredPages) || 0,
+    deadline: form.deadline || null,
+    citationStyle: form.citationStyle,
+    urgency: form.urgency,
+    estimatedPrice: Number(form.estimatedPrice) || 0,
+    deposit: Number(form.deposit) || 0,
+    notes: optional(form.notes),
+    files: form.files,
+  };
+}
 function OrderForm() {
-  const { toast } = useToast(); const [form, setForm] = useState(initialOrder); const catalog = useQuery<any>({ queryKey: ["research", "catalog"], queryFn: () => researchFetch("/catalog") });
-  const save = useMutation({ mutationFn: () => researchFetch<any>("/orders", { method: "POST", body: JSON.stringify(form) }), onSuccess: (result) => { toast({ title: "تم إنشاء طلب البحث", description: result.order.researchNo }); window.location.href = "/admin/research/orders"; }, onError: (error) => toast({ title: "تعذر إنشاء الطلب", description: apiErrorMessage(error), variant: "destructive" }) });
-  function update(key: string, value: unknown) { setForm((current) => ({ ...current, [key]: value })); }
+  const { toast } = useToast(); const [form, setForm] = useState(initialOrder); const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({}); const catalog = useQuery<any>({ queryKey: ["research", "catalog"], queryFn: () => researchFetch("/catalog") });
+  const save = useMutation({
+    mutationFn: () => researchFetch<any>("/orders", { method: "POST", body: JSON.stringify(normalizeOrderPayload(form)) }),
+    onSuccess: (result) => { setFieldErrors({}); toast({ title: "تم إنشاء طلب البحث", description: result.order.researchNo }); window.location.href = "/admin/research/orders"; },
+    onError: (error: any) => {
+      const serverFields = error?.data?.fieldErrors && typeof error.data.fieldErrors === "object" ? error.data.fieldErrors as Record<string, string> : {};
+      setFieldErrors(serverFields);
+      toast({ title: "تعذر إنشاء الطلب", description: error?.data?.message || apiErrorMessage(error), variant: "destructive" });
+    },
+  });
+  function update(key: string, value: unknown) { setForm((current) => ({ ...current, [key]: value })); setFieldErrors((current) => { if (!current[key]) return current; const next = { ...current }; delete next[key]; return next; }); }
+  function submit() {
+    const errors: Record<string, string> = {};
+    if (form.customerName.trim().length < 2) errors.customerName = "اسم الزبون مطلوب (حرفان على الأقل)";
+    if (form.phone.replace(/\D/g, "").length < 10) errors.phone = "رقم الهاتف غير مكتمل";
+    if (form.title.trim().length < 5) errors.title = "عنوان البحث قصير جداً (5 أحرف على الأقل)";
+    if (form.universityName.trim().length < 2) errors.universityName = "اسم الجامعة مطلوب";
+    if (!(Number(form.requiredPages) >= 1)) errors.requiredPages = "عدد الصفحات يجب أن يكون 1 على الأقل";
+    if (Number(form.estimatedPrice) < 0) errors.estimatedPrice = "السعر التقديري غير صحيح";
+    if (Number(form.deposit) > Number(form.estimatedPrice)) errors.deposit = "العربون لا يمكن أن يتجاوز السعر التقديري";
+    setFieldErrors(errors);
+    if (Object.keys(errors).length) { toast({ title: "تحقق من الحقول المميزة", description: "يرجى تصحيح البيانات قبل الحفظ", variant: "destructive" }); return; }
+    save.mutate();
+  }
+  const errText = (key: string) => (fieldErrors[key] ? <p className="mt-1 text-xs font-medium text-destructive">{fieldErrors[key]}</p> : null);
   async function filesSelected(files: FileList | null) { if (!files) return; const rows = await Promise.all([...files].map((file) => new Promise<any>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ title: file.name, fileName: file.name, fileUrl: reader.result, mimeType: file.type, fileType: "customer_upload" }); reader.onerror = reject; reader.readAsDataURL(file); }))); setForm((current) => ({ ...current, files: [...current.files, ...rows] })); }
-  return <div className="mx-auto max-w-5xl space-y-5"><div><h2 className="text-xl font-bold">إنشاء طلب بحث جديد</h2><p className="mt-1 text-sm text-muted-foreground">ينشئ ملف عميل وفاتورة وفصولاً ورقم متابعة QR ضمن النظام المركزي.</p></div><div className="rounded-xl bg-card p-5 shadow-sm"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-    <div className="lg:col-span-2"><Label>عنوان البحث</Label><Input className="mt-2" value={form.title} onChange={(e) => update("title", e.target.value)} /></div><div><Label>نوع البحث</Label><Select value={form.researchType} onValueChange={(value) => update("researchType", value)}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
-    <div><Label>اسم الزبون</Label><Input className="mt-2" value={form.customerName} onChange={(e) => update("customerName", e.target.value)} /></div><div><Label>رقم الهاتف</Label><Input dir="ltr" className="mt-2 text-right" value={form.phone} onChange={(e) => update("phone", e.target.value)} /></div><div><Label>الجامعة</Label><Select value={form.universityId || "manual"} onValueChange={(value) => { const uni = catalog.data?.universities?.find((item: any) => String(item.id) === value); setForm((current) => ({ ...current, universityId: value === "manual" ? "" : value, universityName: uni?.nameAr || current.universityName })); }}><SelectTrigger className="mt-2"><SelectValue placeholder="اختر الجامعة" /></SelectTrigger><SelectContent><SelectItem value="manual">إدخال يدوي</SelectItem>{(catalog.data?.universities || []).map((item: any) => <SelectItem key={item.id} value={String(item.id)}>{item.nameAr}</SelectItem>)}</SelectContent></Select></div>
-    <div><Label>اسم الجامعة</Label><Input className="mt-2" value={form.universityName} onChange={(e) => update("universityName", e.target.value)} /></div><div><Label>الكلية</Label><Input className="mt-2" value={form.college} onChange={(e) => update("college", e.target.value)} /></div><div><Label>القسم</Label><Input className="mt-2" value={form.department} onChange={(e) => update("department", e.target.value)} /></div>
+  return <div className="mx-auto max-w-5xl space-y-5"><div><h2 className="text-xl font-bold">إنشاء طلب بحث جديد</h2><p className="mt-1 text-sm text-muted-foreground">ينشئ ملف عميل وفاتورة وفصولاً ورقم متابعة QR ضمن النظام المركزي.</p></div>
+    {Object.keys(fieldErrors).length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4"><p className="mb-2 flex items-center gap-2 text-sm font-bold text-destructive"><AlertTriangle className="h-4 w-4" />يرجى تصحيح الحقول التالية</p><ul className="space-y-1 pr-5 text-sm text-destructive">{Object.entries(fieldErrors).map(([key, message]) => <li key={key} className="list-disc"><strong>{ORDER_FIELD_LABELS[key] || key}:</strong> {message}</li>)}</ul></div> : null}
+    <div className="rounded-xl bg-card p-5 shadow-sm"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="lg:col-span-2"><Label>عنوان البحث</Label><Input className="mt-2" value={form.title} onChange={(e) => update("title", e.target.value)} />{errText("title")}</div><div><Label>نوع البحث</Label><Select value={form.researchType} onValueChange={(value) => update("researchType", value)}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
+    <div><Label>اسم الزبون</Label><Input className="mt-2" value={form.customerName} onChange={(e) => update("customerName", e.target.value)} />{errText("customerName")}</div><div><Label>رقم الهاتف</Label><Input dir="ltr" className="mt-2 text-right" value={form.phone} onChange={(e) => update("phone", e.target.value)} />{errText("phone")}</div><div><Label>الجامعة</Label><Select value={form.universityId || "manual"} onValueChange={(value) => { const uni = catalog.data?.universities?.find((item: any) => String(item.id) === value); setForm((current) => ({ ...current, universityId: value === "manual" ? "" : value, universityName: uni?.nameAr || current.universityName })); }}><SelectTrigger className="mt-2"><SelectValue placeholder="اختر الجامعة" /></SelectTrigger><SelectContent><SelectItem value="manual">إدخال يدوي</SelectItem>{(catalog.data?.universities || []).map((item: any) => <SelectItem key={item.id} value={String(item.id)}>{item.nameAr}</SelectItem>)}</SelectContent></Select></div>
+    <div><Label>اسم الجامعة</Label><Input className="mt-2" value={form.universityName} onChange={(e) => update("universityName", e.target.value)} />{errText("universityName")}</div><div><Label>الكلية</Label><Input className="mt-2" value={form.college} onChange={(e) => update("college", e.target.value)} /></div><div><Label>القسم</Label><Input className="mt-2" value={form.department} onChange={(e) => update("department", e.target.value)} /></div>
     <div><Label>اسم المشرف</Label><Input className="mt-2" value={form.supervisorName} onChange={(e) => update("supervisorName", e.target.value)} /></div><div><Label>المجال العلمي</Label><Input className="mt-2" value={form.researchField} onChange={(e) => update("researchField", e.target.value)} /></div><div><Label>الكلمات المفتاحية</Label><Input className="mt-2" value={form.keywords} onChange={(e) => update("keywords", e.target.value)} placeholder="افصل بينها بفاصلة" /></div>
     <div><Label>اللغة</Label><Select value={form.language} onValueChange={(value) => update("language", value)}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ar">العربية</SelectItem><SelectItem value="en">الإنجليزية</SelectItem><SelectItem value="ku">الكردية</SelectItem><SelectItem value="other">أخرى</SelectItem></SelectContent></Select></div><div><Label>نمط التوثيق</Label><Select value={form.citationStyle} onValueChange={(value) => update("citationStyle", value)}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent>{["APA7", "IEEE", "MLA", "Harvard", "Chicago"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select></div><div><Label>مستوى الاستعجال</Label><Select value={form.urgency} onValueChange={(value) => update("urgency", value)}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="normal">اعتيادي</SelectItem><SelectItem value="urgent">مستعجل</SelectItem><SelectItem value="critical">عاجل جداً</SelectItem></SelectContent></Select></div>
-    <div><Label>عدد الصفحات</Label><Input className="mt-2" type="number" value={form.requiredPages} onChange={(e) => update("requiredPages", Number(e.target.value))} /></div><div><Label>موعد التسليم</Label><Input className="mt-2" type="date" value={form.deadline} onChange={(e) => update("deadline", e.target.value)} /></div><div><Label>السعر التقديري</Label><Input className="mt-2" type="number" value={form.estimatedPrice} onChange={(e) => update("estimatedPrice", Number(e.target.value))} /></div><div><Label>العربون</Label><Input className="mt-2" type="number" value={form.deposit} onChange={(e) => update("deposit", Number(e.target.value))} /></div>
+    <div><Label>عدد الصفحات</Label><Input className="mt-2" type="number" value={form.requiredPages} onChange={(e) => update("requiredPages", Number(e.target.value))} />{errText("requiredPages")}</div><div><Label>موعد التسليم</Label><Input className="mt-2" type="date" value={form.deadline} onChange={(e) => update("deadline", e.target.value)} />{errText("deadline")}</div><div><Label>السعر التقديري</Label><Input className="mt-2" type="number" value={form.estimatedPrice} onChange={(e) => update("estimatedPrice", Number(e.target.value))} />{errText("estimatedPrice")}</div><div><Label>العربون</Label><Input className="mt-2" type="number" value={form.deposit} onChange={(e) => update("deposit", Number(e.target.value))} />{errText("deposit")}</div>
     <div className="sm:col-span-2 lg:col-span-3"><Label>الملاحظات</Label><Textarea className="mt-2" value={form.notes} onChange={(e) => update("notes", e.target.value)} /></div><div className="sm:col-span-2 lg:col-span-3"><Label htmlFor="research-files">ملفات العميل</Label><label htmlFor="research-files" className="mt-2 flex min-h-24 cursor-pointer items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-violet-500"><Upload className="ml-2 h-4 w-4" />Word، PDF، ZIP، صور أو بيانات</label><input id="research-files" type="file" multiple className="sr-only" onChange={(e) => filesSelected(e.target.files)} /><div className="mt-2 flex flex-wrap gap-2">{form.files.map((file) => <Badge key={file.fileName} variant="outline">{file.fileName}</Badge>)}</div></div>
-  </div><div className="mt-5 flex justify-end"><Button disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Plus className="ml-2 h-4 w-4" />}إنشاء الطلب والفاتورة</Button></div></div></div>;
+  </div><div className="mt-5 flex justify-end"><Button disabled={save.isPending} onClick={submit}>{save.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Plus className="ml-2 h-4 w-4" />}إنشاء الطلب والفاتورة</Button></div></div></div>;
 }
 
 function ResearchWorkspace({ id, onClose }: { id: number; onClose: () => void }) {

@@ -16,7 +16,7 @@ const checks = [
   ["safe non-destructive migration", !/drop\s+(table|column)|truncate\s+/i.test(migration) && migration.includes("CREATE TABLE IF NOT EXISTS")],
   ["unique component and kit identities", ["graduation_components_code_idx", "graduation_components_qr_idx", "graduation_kits_order_idx", "graduation_kits_code_idx"].every((name) => migration.includes(name))],
   ["same central graduation order references", schema.includes("graduationOrderId") && schema.includes("graduationOrdersTable.id")],
-  ["mandatory custom robe and sash validation", core.includes("يرجى اختيار الروب والوشاح قبل المتابعة") && publicUi.includes("تجهيز باقة حسب الطلب")],
+  ["mandatory gown + per-item custom package validation", core.includes("يجب اختيار روب واحد على الأقل ضمن الباقة") && core.includes("لا يطابق نوع القطعة المختارة") && publicUi.includes("باقات حسب الطلب") && publicUi.includes("customPackagePriceSummary")],
   ["immutable template snapshot", core.includes("templateSnapshot: customPackage.enabled") && core.includes('mode: enterprisePackage ? "enterprise_package" : "custom_package"')],
   ["component QR and barcode generation", server.includes("componentCode: code") && server.includes("qrValue: code") && server.includes("barcodeValue: code")],
   ["transaction and lock protected scans", server.includes("pg_advisory_xact_lock") && server.includes("graduationPackagingEventsTable")],

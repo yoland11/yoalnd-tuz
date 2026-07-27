@@ -16,14 +16,18 @@ import {
   GraduationCap,
   Layers3,
   Loader2,
+  Minus,
   PackageCheck,
   Palette,
+  Plus,
   QrCode,
   Ruler,
   ScanLine,
   Scissors,
   Shirt,
+  ShoppingBag,
   Sparkles,
+  Trash2,
   Upload,
   UserRound,
   WandSparkles,
@@ -57,27 +61,29 @@ import { formatCurrency } from "@/lib/money";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import {
   GRADUATION_STAGE_LABELS,
+  customPackagePriceSummary,
   graduationPriceSummary,
   recommendedGraduationSize,
+  type GraduationCatalogProduct,
   type GraduationConfig,
+  type GraduationCustomItem,
   type GraduationOption,
 } from "@/lib/graduation";
 import { ModelViewerCard } from "@/components/interactive/model-viewer";
+import { GraduationMediaGallery } from "@/components/graduation-media-gallery";
 import {
   GraduationGroupBuilder,
   GraduationGroupStudentRegistration,
   GraduationOrderTypeChoice,
 } from "@/views/graduation-groups";
 
-type EnterpriseTemplate = {
-  id: number;
-  code: string;
-  name: string;
-  templateType: "robe" | "sash" | "cap" | "accessory" | string;
-  previewImageUrl?: string | null;
-  modelUrl?: string | null;
-  defaultPrice: number;
-  configuration?: Record<string, unknown>;
+type EnterpriseTemplate = GraduationCatalogProduct & {
+  currentVersion?: number;
+  university?: string | null;
+  college?: string | null;
+  department?: string | null;
+  sku?: string | null;
+  isFeatured?: boolean;
 };
 
 type EnterprisePackage = {
@@ -100,6 +106,38 @@ type PublicGraduationConfig = GraduationConfig & {
     packages: EnterprisePackage[];
   };
 };
+
+// A selected line in the custom-package builder (client-side; `uid` is a stable
+// React key). Serialized to the server as GraduationCustomItem (uid dropped).
+type CustomBuilderItem = GraduationCustomItem & { uid: string };
+
+const CUSTOM_SECTIONS = [
+  { type: "robe" as const, label: "الروب", required: true },
+  { type: "sash" as const, label: "الوشاح", required: false },
+  { type: "cap" as const, label: "القبعة", required: false },
+];
+
+const SASH_CUSTOM_FIELDS = [
+  ["studentName", "اسم الطالب"],
+  ["university", "الجامعة"],
+  ["college", "الكلية"],
+  ["department", "القسم"],
+  ["graduationYear", "سنة التخرج"],
+] as const;
+
+function makeUid() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function productBasePrice(product: EnterpriseTemplate) {
+  return product.discountPrice != null && Number(product.discountPrice) > 0
+    ? Number(product.discountPrice)
+    : Number(product.defaultPrice || 0);
+}
+
+function productStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
 
 const STEPS = [
   { label: "النوع", icon: GraduationCap },
@@ -166,6 +204,7 @@ const initialForm = {
     robeTemplateId: undefined as number | undefined,
     sashTemplateId: undefined as number | undefined,
     capTemplateId: undefined as number | undefined,
+    items: [] as CustomBuilderItem[],
   },
   groupToken: "",
   status: "submitted" as const,
@@ -282,36 +321,262 @@ function OptionCard({
   );
 }
 
-function EnterpriseTemplateCard({
-  item,
-  selected,
-  onClick,
+function ProductPickCard({
+  product,
+  selectedCount,
+  onAdd,
 }: {
-  item: EnterpriseTemplate;
-  selected: boolean;
-  onClick: () => void;
+  product: EnterpriseTemplate;
+  selectedCount: number;
+  onAdd: () => void;
 }) {
+  const colors = productStrings(product.configuration?.colors);
+  const sizes = productStrings(product.configuration?.sizes);
+  const hasDiscount =
+    product.discountPrice != null &&
+    Number(product.discountPrice) > 0 &&
+    Number(product.discountPrice) < Number(product.defaultPrice || 0);
+  const soldOut = product.trackStock && Number(product.stock ?? 0) <= 0;
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group overflow-hidden rounded-xl border text-right transition-colors ${selected ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}
+    <div
+      className={`flex min-w-0 flex-col overflow-hidden rounded-xl border transition-colors ${selectedCount > 0 ? "border-primary bg-primary/5" : "border-border bg-card"}`}
     >
-      <div className="aspect-[4/3] overflow-hidden bg-muted">
-        {item.previewImageUrl ? (
-          <img src={item.previewImageUrl} alt={item.name} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]" loading="lazy" />
+      <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+        {product.previewImageUrl ? (
+          <img
+            src={product.previewImageUrl}
+            alt={product.name}
+            className="h-full w-full object-cover"
+            loading="lazy"
+          />
         ) : (
-          <div className="flex h-full items-center justify-center"><Shirt className="h-9 w-9 text-primary/70" /></div>
+          <div className="flex h-full items-center justify-center">
+            <Shirt className="h-9 w-9 text-primary/70" />
+          </div>
         )}
+        {hasDiscount ? (
+          <span className="absolute right-2 top-2 rounded-full bg-status-success px-2 py-0.5 text-[10px] font-bold text-white">
+            خصم
+          </span>
+        ) : null}
+        {selectedCount > 0 ? (
+          <span className="absolute left-2 top-2 flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold text-primary-foreground">
+            {selectedCount}
+          </span>
+        ) : null}
       </div>
-      <div className="p-3">
-        <div className="flex items-start justify-between gap-2">
-          <strong className="text-sm">{item.name}</strong>
-          {selected ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : null}
+      <div className="flex flex-1 flex-col gap-2 p-3">
+        <strong className="truncate text-sm">{product.name}</strong>
+        {colors.length ? (
+          <div className="flex flex-wrap items-center gap-1">
+            {colors.slice(0, 6).map((color) => (
+              <span
+                key={color}
+                title={color}
+                className="h-4 w-4 rounded-full border border-border"
+                style={{ backgroundColor: color.startsWith("#") ? color : undefined }}
+              >
+                {color.startsWith("#") ? null : (
+                  <span className="sr-only">{color}</span>
+                )}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {sizes.length ? (
+          <p className="truncate text-[11px] text-muted-foreground">
+            المقاسات: {sizes.join("، ")}
+          </p>
+        ) : null}
+        <div className="mt-auto flex items-end justify-between gap-2">
+          <div>
+            {hasDiscount ? (
+              <span className="block text-[11px] text-muted-foreground line-through">
+                {formatCurrency(Number(product.defaultPrice || 0))}
+              </span>
+            ) : null}
+            <span className="text-sm font-bold text-primary">
+              {formatCurrency(productBasePrice(product))}
+            </span>
+          </div>
+          <span
+            className={`text-[11px] ${soldOut ? "text-destructive" : "text-status-success"}`}
+          >
+            {soldOut ? "غير متوفر" : "متوفر"}
+          </span>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">{formatCurrency(item.defaultPrice)}</p>
+        <Button
+          size="sm"
+          variant={selectedCount > 0 ? "outline" : "default"}
+          disabled={soldOut}
+          onClick={onAdd}
+        >
+          <Plus className="ml-1 h-4 w-4" />
+          {selectedCount > 0 ? "إضافة أخرى" : "اختيار"}
+        </Button>
       </div>
-    </button>
+    </div>
+  );
+}
+
+function CustomItemRow({
+  item,
+  product,
+  onQty,
+  onPatch,
+  onRemove,
+}: {
+  item: CustomBuilderItem;
+  product?: EnterpriseTemplate;
+  onQty: (next: number) => void;
+  onPatch: (patch: Partial<CustomBuilderItem>) => void;
+  onRemove: () => void;
+}) {
+  const sizes = productStrings(product?.configuration?.sizes);
+  const colors = productStrings(product?.configuration?.colors);
+  const tassels = productStrings(
+    product?.configuration?.tasselColors ?? product?.configuration?.tasselOptions,
+  );
+  const unit = product ? productBasePrice(product) : 0;
+  return (
+    <div className="rounded-xl border border-border bg-card p-3">
+      <div className="flex items-start gap-3">
+        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted">
+          {product?.previewImageUrl ? (
+            <img
+              src={product.previewImageUrl}
+              alt={product.name}
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <Shirt className="h-5 w-5 text-primary/70" />
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <strong className="truncate text-sm">
+              {product?.name || `#${item.templateId}`}
+            </strong>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 shrink-0 text-destructive"
+              onClick={onRemove}
+              aria-label="حذف القطعة"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="flex items-center rounded-lg border border-border">
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                onClick={() => onQty(item.quantity - 1)}
+                aria-label="إنقاص"
+              >
+                <Minus className="h-4 w-4" />
+              </Button>
+              <span className="w-8 text-center text-sm font-bold">
+                {item.quantity}
+              </span>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                onClick={() => onQty(item.quantity + 1)}
+                aria-label="زيادة"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {formatCurrency(unit)} × {item.quantity} ={" "}
+              <strong className="text-primary">
+                {formatCurrency(unit * item.quantity)}
+              </strong>
+            </span>
+          </div>
+        </div>
+      </div>
+      {(sizes.length || colors.length || tassels.length) ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {sizes.length ? (
+            <Select
+              value={item.size || ""}
+              onValueChange={(value) => onPatch({ size: value })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="المقاس" />
+              </SelectTrigger>
+              <SelectContent>
+                {sizes.map((size) => (
+                  <SelectItem key={size} value={size}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          {colors.length ? (
+            <Select
+              value={item.color || ""}
+              onValueChange={(value) => onPatch({ color: value })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="اللون" />
+              </SelectTrigger>
+              <SelectContent>
+                {colors.map((color) => (
+                  <SelectItem key={color} value={color}>
+                    {color}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          {tassels.length ? (
+            <Select
+              value={item.tasselColor || ""}
+              onValueChange={(value) => onPatch({ tasselColor: value })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="لون الشرابة" />
+              </SelectTrigger>
+              <SelectContent>
+                {tassels.map((tassel) => (
+                  <SelectItem key={tassel} value={tassel}>
+                    {tassel}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
+      ) : null}
+      {item.itemType === "sash" ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {SASH_CUSTOM_FIELDS.map(([key, label]) => (
+            <Input
+              key={key}
+              placeholder={label}
+              value={String(item.customization?.[key] ?? "")}
+              onChange={(event) =>
+                onPatch({
+                  customization: {
+                    ...item.customization,
+                    [key]: event.target.value,
+                  },
+                })
+              }
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -467,22 +732,41 @@ function GraduationConfigurator() {
       );
   }, [config, toast]);
 
+  const catalogProducts = useMemo<EnterpriseTemplate[]>(() => {
+    const catalog = config?.enterpriseCatalog;
+    if (!catalog) return [];
+    return [
+      ...catalog.robeTemplates,
+      ...catalog.sashTemplates,
+      ...catalog.capTemplates,
+      ...catalog.accessoryTemplates,
+    ];
+  }, [config]);
+  const productById = useMemo(
+    () => new Map(catalogProducts.map((product) => [product.id, product])),
+    [catalogProducts],
+  );
+  // The dedicated custom builder is active only when the customer explicitly
+  // enabled it (not when a ready-made store package was pre-selected).
+  const customBuilderActive =
+    form.customPackage.enabled && !form.customPackage.enterprisePackageId;
+  const customSummary = useMemo(
+    () =>
+      customBuilderActive
+        ? customPackagePriceSummary(
+            form.customPackage.items as GraduationCustomItem[],
+            catalogProducts as GraduationCatalogProduct[],
+            0,
+          )
+        : { lines: [], subtotal: 0, discount: 0, total: 0 },
+    [customBuilderActive, form.customPackage.items, catalogProducts],
+  );
   const pricing = useMemo(() => {
     if (!config)
       return { lines: [], subtotal: 0, discount: 0, total: 0, cost: 0, profit: 0 };
     const base = graduationPriceSummary(form as any, config);
     if (!form.customPackage.enabled) return base;
     const catalog = config.enterpriseCatalog;
-    const selectedIds = [
-      form.customPackage.robeTemplateId,
-      form.customPackage.sashTemplateId,
-      form.customPackage.capTemplateId,
-    ].filter(Boolean);
-    const templates = [
-      ...(catalog?.robeTemplates || []),
-      ...(catalog?.sashTemplates || []),
-      ...(catalog?.capTemplates || []),
-    ].filter((item) => selectedIds.includes(item.id));
     const enterprisePackage = catalog?.packages.find(
       (item) => item.id === form.customPackage.enterprisePackageId,
     );
@@ -493,10 +777,10 @@ function GraduationConfigurator() {
           amount: Number(enterprisePackage.defaultPrice || 0),
           cost: 0,
         }]
-      : templates.map((item) => ({
-          key: `template:${item.id}`,
-          name: item.name,
-          amount: Number(item.defaultPrice || 0),
+      : customSummary.lines.map((line) => ({
+          key: line.key,
+          name: line.quantity > 1 ? `${line.name} × ${line.quantity}` : line.name,
+          amount: line.lineTotal,
           cost: 0,
         }));
     const lines = [...base.lines, ...customLines];
@@ -505,12 +789,16 @@ function GraduationConfigurator() {
     const discount = Math.min(Math.max(0, Number(form.discountAmount || 0)), subtotal);
     const total = Math.max(0, subtotal - discount);
     return { lines, subtotal, discount, total, cost, profit: total - cost };
-  }, [config, form]);
+  }, [config, form, customSummary]);
   const selectedStyle = config?.styles.find(
     (item) => item.key === form.styleKey,
   );
+  const firstRobeItem = form.customPackage.items.find(
+    (item) => item.itemType === "robe",
+  );
   const selectedCustomRobe = config?.enterpriseCatalog?.robeTemplates.find(
-    (item) => item.id === form.customPackage.robeTemplateId,
+    (item) =>
+      item.id === (firstRobeItem?.templateId ?? form.customPackage.robeTemplateId),
   );
   const harmony = colorContrast(form.colors.robe, form.colors.sash);
 
@@ -625,10 +913,10 @@ function GraduationConfigurator() {
     if (step === 0 && !form.styleKey) return "اختر نوع تجهيز التخرج";
     if (
       step === 0 &&
-      form.customPackage.enabled &&
-      (!form.customPackage.robeTemplateId || !form.customPackage.sashTemplateId)
+      customBuilderActive &&
+      !form.customPackage.items.some((item) => item.itemType === "robe")
     )
-      return "يرجى اختيار الروب والوشاح قبل المتابعة";
+      return "أضف روباً واحداً على الأقل إلى الباقة";
     if (step === 1) {
       const missing = [
         "height",
@@ -686,6 +974,65 @@ function GraduationConfigurator() {
         robeTemplateId: itemId("robe"),
         sashTemplateId: itemId("sash"),
         capTemplateId: itemId("cap"),
+        items: [],
+      },
+    }));
+  }
+  function toggleCustomBuilder(enabled: boolean) {
+    setForm((current) => ({
+      ...current,
+      packageKey: enabled ? "" : current.packageKey,
+      customPackage: {
+        ...current.customPackage,
+        enabled,
+        enterprisePackageId: undefined,
+        items: enabled ? current.customPackage.items : [],
+      },
+    }));
+  }
+  function addCustomItem(itemType: CustomBuilderItem["itemType"], templateId: number) {
+    setForm((current) => ({
+      ...current,
+      customPackage: {
+        ...current.customPackage,
+        enterprisePackageId: undefined,
+        items: [
+          ...current.customPackage.items,
+          { uid: makeUid(), itemType, templateId, quantity: 1, customization: {} },
+        ],
+      },
+    }));
+  }
+  function patchCustomItem(uid: string, patch: Partial<CustomBuilderItem>) {
+    setForm((current) => ({
+      ...current,
+      customPackage: {
+        ...current.customPackage,
+        items: current.customPackage.items.map((item) =>
+          item.uid === uid ? { ...item, ...patch } : item,
+        ),
+      },
+    }));
+  }
+  function setCustomItemQty(uid: string, quantity: number) {
+    if (quantity <= 0) {
+      setForm((current) => ({
+        ...current,
+        customPackage: {
+          ...current.customPackage,
+          items: current.customPackage.items.filter((item) => item.uid !== uid),
+        },
+      }));
+      return;
+    }
+    patchCustomItem(uid, { quantity: Math.min(50, quantity) });
+  }
+  function removeCustomItem(uid: string) {
+    setForm((current) => ({
+      ...current,
+      customPackage: {
+        ...current.customPackage,
+        items: current.customPackage.items.filter((item) => item.uid !== uid),
       },
     }));
   }
@@ -803,6 +1150,12 @@ function GraduationConfigurator() {
           ) : null}
         </div>
 
+        {step === 0 ? (
+          <div className="mb-5">
+            <GraduationMediaGallery />
+          </div>
+        ) : null}
+
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <section className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5">
             <AnimatePresence mode="wait" initial={false}>
@@ -816,78 +1169,154 @@ function GraduationConfigurator() {
               >
                 {step === 0 ? (
                   <div className="space-y-7">
-                    <div>
-                      <h2 className="mb-3 font-bold">اختر نوع التخرج</h2>
-                      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                        {config.styles.map((item) => (
-                          <OptionCard
-                            key={item.key}
-                            item={item}
-                            selected={form.styleKey === item.key}
-                            onClick={() =>
-                              setForm((current) => ({
-                                ...current,
-                                styleKey: item.key,
-                              }))
-                            }
-                          />
-                        ))}
-                      </div>
-                    </div>
-                    {config.packages.length ? (
-                      <div>
-                        <h2 className="mb-3 font-bold">الباقات الجاهزة</h2>
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                          {config.packages.map((item) => (
-                            <OptionCard
-                              key={item.key}
-                              item={item}
-                              selected={form.packageKey === item.key}
-                              onClick={() => choosePackage(item.key)}
-                              compact
-                            />
-                          ))}
+                    {!customBuilderActive ? (
+                      <>
+                        <div>
+                          <h2 className="mb-3 font-bold">اختر نوع التخرج</h2>
+                          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                            {config.styles.map((item) => (
+                              <OptionCard
+                                key={item.key}
+                                item={item}
+                                selected={form.styleKey === item.key}
+                                onClick={() =>
+                                  setForm((current) => ({
+                                    ...current,
+                                    styleKey: item.key,
+                                  }))
+                                }
+                              />
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ) : null}
-                    {config.enterpriseCatalog?.packages.length ? (
-                      <div>
-                        <h2 className="mb-3 font-bold">باقات المتجر الجاهزة</h2>
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                          {config.enterpriseCatalog.packages.map((pack) => (
-                            <button
-                              type="button"
-                              key={pack.id}
-                              onClick={() => chooseEnterprisePackage(pack)}
-                              className={`rounded-xl border p-4 text-right transition-colors ${form.customPackage.enterprisePackageId === pack.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/50"}`}
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div><strong>{pack.name}</strong><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{pack.description || "باقة تخرج جاهزة قابلة للتخصيص"}</p></div>
-                                {form.customPackage.enterprisePackageId === pack.id ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : <PackageCheck className="h-5 w-5 shrink-0 text-muted-foreground" />}
-                              </div>
-                              <p className="mt-3 text-sm font-bold text-primary">{formatCurrency(pack.defaultPrice)}</p>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className={`rounded-xl border p-4 ${form.customPackage.enabled ? "border-primary bg-primary/5" : "border-border"}`}>
-                      <div className="flex w-full items-start justify-between gap-4 text-right">
-                        <span className="flex gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><WandSparkles className="h-5 w-5" /></span><span><strong className="block">تجهيز باقة حسب الطلب</strong><span className="mt-1 block text-sm text-muted-foreground">اختر الروب والوشاح والقبعة كل قطعة على حدة، وسيُحدّث السعر مباشرة.</span></span></span>
-                        <Checkbox checked={form.customPackage.enabled} onCheckedChange={(checked) => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, enabled: checked === true, enterprisePackageId: undefined } }))} aria-label="تفعيل تجهيز باقة حسب الطلب" />
-                      </div>
-                      {form.customPackage.enabled ? (
-                        <div className="mt-5 space-y-6 border-t border-border pt-5">
-                          {([
-                            ["robe", "الروب (مطلوب)", config.enterpriseCatalog?.robeTemplates || [], "robeTemplateId"],
-                            ["sash", "الوشاح (مطلوب)", config.enterpriseCatalog?.sashTemplates || [], "sashTemplateId"],
-                            ["cap", "القبعة (اختياري)", config.enterpriseCatalog?.capTemplates || [], "capTemplateId"],
-                          ] as const).map(([type, label, items, field]) => (
-                            <div key={type}>
-                              <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-bold">{label}</h3>{type === "cap" && form.customPackage.capTemplateId ? <Button size="sm" variant="ghost" onClick={() => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, capTemplateId: undefined } }))}>بدون قبعة</Button> : null}</div>
-                              {items.length ? <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">{items.map((item) => <EnterpriseTemplateCard key={item.id} item={item} selected={form.customPackage[field] === item.id} onClick={() => setForm((current) => ({ ...current, customPackage: { ...current.customPackage, [field]: item.id, enterprisePackageId: undefined } }))} />)}</div> : <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">لا توجد نماذج منشورة لهذا القسم حالياً.</p>}
+                        {config.packages.length ? (
+                          <div>
+                            <h2 className="mb-3 font-bold">الباقات الجاهزة</h2>
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                              {config.packages.map((item) => (
+                                <OptionCard
+                                  key={item.key}
+                                  item={item}
+                                  selected={form.packageKey === item.key}
+                                  onClick={() => choosePackage(item.key)}
+                                  compact
+                                />
+                              ))}
                             </div>
-                          ))}
+                          </div>
+                        ) : null}
+                        {config.enterpriseCatalog?.packages.length ? (
+                          <div>
+                            <h2 className="mb-3 font-bold">باقات المتجر الجاهزة</h2>
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                              {config.enterpriseCatalog.packages.map((pack) => (
+                                <button
+                                  type="button"
+                                  key={pack.id}
+                                  onClick={() => chooseEnterprisePackage(pack)}
+                                  className={`rounded-xl border p-4 text-right transition-colors ${form.customPackage.enterprisePackageId === pack.id ? "border-primary bg-primary/10" : "border-border hover:border-primary/50"}`}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div><strong>{pack.name}</strong><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{pack.description || "باقة تخرج جاهزة قابلة للتخصيص"}</p></div>
+                                    {form.customPackage.enterprisePackageId === pack.id ? <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" /> : <PackageCheck className="h-5 w-5 shrink-0 text-muted-foreground" />}
+                                  </div>
+                                  <p className="mt-3 text-sm font-bold text-primary">{formatCurrency(pack.defaultPrice)}</p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {form.customPackage.enterprisePackageId ? (
+                          <GraduationMediaGallery
+                            compact
+                            title="صور وفيديوهات الباقة المختارة"
+                            target={{
+                              type: "package",
+                              id: form.customPackage.enterprisePackageId,
+                            }}
+                          />
+                        ) : null}
+                      </>
+                    ) : null}
+                    <div className={`rounded-xl border p-4 ${customBuilderActive ? "border-primary bg-primary/5" : "border-border"}`}>
+                      <div className="flex w-full items-start justify-between gap-4 text-right">
+                        <span className="flex gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><WandSparkles className="h-5 w-5" /></span><span><strong className="block">باقات حسب الطلب</strong><span className="mt-1 block text-sm text-muted-foreground">اختر الروب والوشاح والقبعة كل قطعة على حدة، مع الكمية والتخصيص، ويُحدّث السعر مباشرة.</span></span></span>
+                        <Checkbox checked={customBuilderActive} onCheckedChange={(checked) => toggleCustomBuilder(checked === true)} aria-label="تفعيل باقات حسب الطلب" />
+                      </div>
+                      {customBuilderActive ? (
+                        <div className="mt-5 space-y-7 border-t border-border pt-5">
+                          {CUSTOM_SECTIONS.map((section) => {
+                            const products =
+                              section.type === "robe"
+                                ? config.enterpriseCatalog?.robeTemplates || []
+                                : section.type === "sash"
+                                  ? config.enterpriseCatalog?.sashTemplates || []
+                                  : config.enterpriseCatalog?.capTemplates || [];
+                            const chosen = form.customPackage.items.filter(
+                              (item) => item.itemType === section.type,
+                            );
+                            const countFor = (templateId: number) =>
+                              chosen
+                                .filter((item) => item.templateId === templateId)
+                                .reduce((sum, item) => sum + item.quantity, 0);
+                            return (
+                              <div key={section.type}>
+                                <div className="mb-3 flex items-center justify-between">
+                                  <h3 className="text-sm font-bold">
+                                    {section.label}
+                                    <span className="mr-2 text-xs font-normal text-muted-foreground">
+                                      {section.required ? "(مطلوب)" : "(اختياري)"}
+                                    </span>
+                                  </h3>
+                                  {section.type === "cap" && chosen.length === 0 ? (
+                                    <span className="text-xs text-muted-foreground">بدون قبعة</span>
+                                  ) : null}
+                                </div>
+                                {chosen.length ? (
+                                  <div className="mb-3 space-y-4">
+                                    <div className="space-y-2">
+                                      {chosen.map((item) => (
+                                        <CustomItemRow
+                                          key={item.uid}
+                                          item={item}
+                                          product={productById.get(item.templateId)}
+                                          onQty={(next) => setCustomItemQty(item.uid, next)}
+                                          onPatch={(patch) => patchCustomItem(item.uid, patch)}
+                                          onRemove={() => removeCustomItem(item.uid)}
+                                        />
+                                      ))}
+                                    </div>
+                                    {Array.from(
+                                      new Set(chosen.map((item) => item.templateId)),
+                                    ).map((templateId) => (
+                                      <GraduationMediaGallery
+                                        key={`${section.type}-${templateId}`}
+                                        compact
+                                        title={`صور وفيديوهات ${productById.get(templateId)?.name || section.label}`}
+                                        target={{ type: "template", id: templateId }}
+                                      />
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {products.length ? (
+                                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                                    {products.map((product) => (
+                                      <ProductPickCard
+                                        key={product.id}
+                                        product={product}
+                                        selectedCount={countFor(product.id)}
+                                        onAdd={() => addCustomItem(section.type, product.id)}
+                                      />
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                                    لا توجد منتجات منشورة في هذا القسم حالياً.
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       ) : null}
                     </div>
@@ -1569,6 +1998,28 @@ function GraduationConfigurator() {
           <div className="space-y-4 lg:sticky lg:top-24">
             <PreviewPanel config={config} form={form} />
             <section className="rounded-xl border border-border bg-card p-4">
+              {customBuilderActive && customSummary.lines.length ? (
+                <div className="mb-3 space-y-1.5 border-b border-border pb-3 text-sm">
+                  <div className="mb-1 flex items-center gap-2 font-bold">
+                    <ShoppingBag className="h-4 w-4 text-primary" />
+                    ملخص الباقة
+                  </div>
+                  {customSummary.lines.map((line) => (
+                    <div
+                      key={line.key}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        {line.name}
+                        {line.quantity > 1 ? ` × ${line.quantity}` : ""}
+                      </span>
+                      <strong className="shrink-0">
+                        {formatCurrency(line.lineTotal)}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">
                   إجمالي الطلب
@@ -1585,6 +2036,31 @@ function GraduationConfigurator() {
           </div>
         </div>
       </div>
+
+      {customBuilderActive ? (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur lg:hidden">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-muted-foreground">
+                {form.customPackage.items.reduce(
+                  (sum, item) => sum + item.quantity,
+                  0,
+                )}{" "}
+                قطعة في الباقة
+              </p>
+              <strong className="text-lg text-primary">
+                {formatCurrency(pricing.total)}
+              </strong>
+            </div>
+            {step < 9 ? (
+              <Button onClick={next}>
+                التالي
+                <ArrowLeft className="mr-2 h-4 w-4" />
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <Dialog open={sizeOpen} onOpenChange={setSizeOpen}>
         <DialogContent dir="rtl">

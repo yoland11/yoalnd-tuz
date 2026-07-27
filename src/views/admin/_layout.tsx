@@ -152,6 +152,12 @@ export const NAV: NavItem[] = [
     perm: "graduation.view",
   },
   {
+    href: "/admin/graduation/gallery",
+    label: "معرض الصور والفيديوهات",
+    icon: ImageIcon,
+    perm: "graduation.preview.manage",
+  },
+  {
     href: "/admin/graduation/packages",
     label: "باقات التخرج",
     icon: ShoppingBag,
@@ -820,6 +826,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/graduation/groups"),
       navItem("/admin/graduation/students"),
       navItem("/admin/graduation/templates"),
+      navItem("/admin/graduation/gallery"),
       navItem("/admin/graduation/packages"),
       navItem("/admin/graduation/customers"),
       navItem("/admin/graduation/configurator"),

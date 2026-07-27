@@ -486,27 +486,39 @@ async function kitState(orderId: number) {
 export async function getGraduationEnterpriseCatalog() {
   await ensureGraduationEnterpriseTables();
   const [templates, packages, packageItems, universities, colorCombinations] = await Promise.all([
-    db.select().from(graduationTemplatesTable).where(eq(graduationTemplatesTable.isActive, true)).orderBy(desc(graduationTemplatesTable.isFeatured), asc(graduationTemplatesTable.sortOrder)),
+    db.select().from(graduationTemplatesTable).where(and(eq(graduationTemplatesTable.isActive, true), sql`${graduationTemplatesTable.archivedAt} is null`)).orderBy(desc(graduationTemplatesTable.isFeatured), asc(graduationTemplatesTable.sortOrder)),
     db.select().from(graduationPackagesTable).where(and(eq(graduationPackagesTable.isActive, true), eq(graduationPackagesTable.isArchived, false))).orderBy(desc(graduationPackagesTable.isFeatured), asc(graduationPackagesTable.sortOrder)),
     db.select().from(graduationPackageItemsTable).orderBy(asc(graduationPackageItemsTable.sortOrder)),
     db.select().from(graduationUniversityProfilesTable).where(eq(graduationUniversityProfilesTable.isActive, true)).orderBy(asc(graduationUniversityProfilesTable.sortOrder)),
     db.select().from(graduationColorCombinationsTable).where(eq(graduationColorCombinationsTable.isActive, true)).orderBy(desc(graduationColorCombinationsTable.isFeatured), asc(graduationColorCombinationsTable.sortOrder)),
   ]);
-  const publicTemplates = templates.map((item) => ({
-    id: item.id,
-    code: item.code,
-    name: item.name,
-    templateType: item.templateType,
-    university: item.university,
-    college: item.college,
-    department: item.department,
-    previewImageUrl: item.previewImageUrl,
-    modelUrl: item.modelUrl,
-    currentVersion: item.currentVersion,
-    defaultPrice: numeric(item.defaultPrice),
-    configuration: item.configuration,
-    isFeatured: item.isFeatured,
-  }));
+  const publicTemplates = templates.map((item) => {
+    // Never expose cost to the public catalog (legacy `cost` may live in config).
+    const { cost: _cost, ...publicConfig } =
+      (item.configuration as Record<string, unknown>) || {};
+    const stock = Number(item.stock ?? 0);
+    return {
+      id: item.id,
+      code: item.code,
+      name: item.name,
+      templateType: item.templateType,
+      university: item.university,
+      college: item.college,
+      department: item.department,
+      previewImageUrl: item.previewImageUrl,
+      modelUrl: item.modelUrl,
+      images: Array.isArray(item.images) ? item.images : [],
+      currentVersion: item.currentVersion,
+      defaultPrice: numeric(item.defaultPrice),
+      discountPrice: item.discountPrice != null ? numeric(item.discountPrice) : null,
+      sku: item.sku,
+      trackStock: item.trackStock,
+      stock,
+      available: !item.trackStock || stock > 0,
+      configuration: publicConfig,
+      isFeatured: item.isFeatured,
+    };
+  });
   return {
     templates: publicTemplates,
     robeTemplates: publicTemplates.filter((item) => item.templateType === "robe"),

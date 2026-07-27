@@ -10,7 +10,9 @@ import {
   gte,
   ilike,
   inArray,
+  isNull,
   lte,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -24,7 +26,10 @@ import {
   graduationGroupStudentsTable,
   graduationPackagesTable,
   graduationPackageItemsTable,
+  graduationMediaLinksTable,
   graduationOrdersTable,
+  galleryItemsTable,
+  graduationOrderItemsTable,
   graduationApprovalsTable,
   graduationPreviewsTable,
   graduationReceiptsTable,
@@ -45,6 +50,7 @@ import {
   DEFAULT_GRADUATION_CONFIG,
   GRADUATION_STAGES,
   GRADUATION_STAGE_LABELS,
+  customPackagePriceSummary,
   estimateGraduationProduction,
   graduationAdminPatchSchema,
   graduationInventoryItems,
@@ -52,7 +58,9 @@ import {
   graduationPriceSummary,
   normalizeGraduationConfig,
   recommendedGraduationSize,
+  type GraduationCatalogProduct,
   type GraduationConfig,
+  type GraduationCustomItem,
   type GraduationOrderInput,
 } from "@/lib/graduation";
 import {
@@ -62,6 +70,7 @@ import {
 } from "@/server/master-cash-box";
 import { sendTelegramMessage } from "@/server/telegram";
 import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
+import { ensureGraduationMediaTables } from "@/server/graduation-media-schema";
 import {
   getGraduationEnterpriseCatalog,
   syncGraduationEnterpriseOrder,
@@ -130,6 +139,32 @@ const graduationTailorInputSchema = z.object({
   operatorId: z.coerce.number().int().positive().nullable().optional(),
   isActive: z.boolean().optional().default(true),
 });
+
+const graduationMediaCategorySchema = z.enum([
+  "gown", "sash", "cap", "package", "custom_package", "work", "promotion",
+]);
+const graduationMediaCreateSchema = z.object({
+  mediaType: z.enum(["image", "video"]),
+  mediaUrl: z.string().trim().min(1),
+  thumbnailUrl: z.string().trim().optional().default(""),
+  title: z.string().trim().max(200).optional().default(""),
+  description: z.string().trim().max(2000).optional().default(""),
+  category: graduationMediaCategorySchema.default("work"),
+  displayLocation: z.enum(["gallery", "builder", "both"]).default("both"),
+  displayOrder: z.coerce.number().int().min(0).max(100000).default(0),
+  isActive: z.boolean().default(true),
+  isFeatured: z.boolean().default(false),
+  customerVisible: z.boolean().default(true),
+  imageMetadata: z.record(z.string(), z.unknown()).default({}),
+  templateIds: z.array(z.coerce.number().int().positive()).max(200).default([]),
+  packageIds: z.array(z.coerce.number().int().positive()).max(200).default([]),
+  isPrimary: z.boolean().default(false),
+});
+const graduationMediaPatchSchema = graduationMediaCreateSchema.partial();
+const GRADUATION_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const GRADUATION_VIDEO_MIMES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+const GRADUATION_IMAGE_BYTES = 10 * 1024 * 1024;
+const GRADUATION_VIDEO_BYTES = 18 * 1024 * 1024;
 
 let graduationTablesReady: Promise<void> | null = null;
 
@@ -319,7 +354,11 @@ function storageExtension(mime: string) {
   if (mime.includes("png")) return "png";
   if (mime.includes("webp")) return "webp";
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.includes("gif")) return "gif";
   if (mime.includes("svg")) return "svg";
+  if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("quicktime")) return "mov";
   return "bin";
 }
 
@@ -344,6 +383,136 @@ async function persistMedia(value: unknown, folder: string) {
   );
   if (!response.ok) throw new Error("تعذر رفع ملف تصميم التخرج");
   return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+}
+
+function canManageGraduationMedia(user: GraduationAdminUser) {
+  return user.role === "admin" || user.permissions.includes("graduation") || user.permissions.includes("graduation.preview.manage");
+}
+
+function graduationMediaUrl(row: typeof galleryItemsTable.$inferSelect) {
+  return row.mediaUrl.startsWith("data:")
+    ? `/api/media/gallery/${row.id}?v=${row.updatedAt.getTime()}`
+    : row.mediaUrl;
+}
+
+function videoLinkSupported(value: string) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    const host = url.hostname.toLowerCase();
+    return host.includes("youtube.com") || host === "youtu.be" || host.includes("vimeo.com") || /\.(mp4|webm|mov|m4v)(?:$|\?)/i.test(url.pathname + url.search);
+  } catch {
+    return false;
+  }
+}
+
+function validateGraduationMediaValue(value: string, mediaType: "image" | "video", label = "الملف") {
+  const data = parseDataUrl(value);
+  if (data) {
+    const allowed = mediaType === "image" ? GRADUATION_IMAGE_MIMES : GRADUATION_VIDEO_MIMES;
+    const max = mediaType === "image" ? GRADUATION_IMAGE_BYTES : GRADUATION_VIDEO_BYTES;
+    if (!allowed.has(data.mime)) throw new Error(`${label}: صيغة غير مدعومة`);
+    if (data.bytes.byteLength > max) throw new Error(`${label}: الحجم يتجاوز ${Math.round(max / 1024 / 1024)}MB`);
+    return;
+  }
+  if (mediaType === "video" ? !videoLinkSupported(value) : !/^https?:\/\//i.test(value))
+    throw new Error(`${label}: الرابط غير مدعوم`);
+}
+
+async function auditGraduationMedia(user: GraduationAdminUser, action: string, id: number, metadata: Record<string, unknown> = {}) {
+  await db.insert(adminActivityLogsTable).values({
+    staffId: user.id,
+    userName: user.fullName || user.username,
+    action,
+    entityType: "graduation_media",
+    entityId: id,
+    metadata,
+  });
+}
+
+function graduationMediaPoster(row: typeof galleryItemsTable.$inferSelect) {
+  return row.mediaType === "video" ? row.thumbnailUrl || "" : row.mediaUrl;
+}
+
+async function graduationMediaTargets() {
+  const [templates, packages] = await Promise.all([
+    db.select({ id: graduationTemplatesTable.id, name: graduationTemplatesTable.name, type: graduationTemplatesTable.templateType, active: graduationTemplatesTable.isActive }).from(graduationTemplatesTable).orderBy(asc(graduationTemplatesTable.templateType), asc(graduationTemplatesTable.name)),
+    db.select({ id: graduationPackagesTable.id, name: graduationPackagesTable.name, type: sql<string>`'package'`, active: graduationPackagesTable.isActive }).from(graduationPackagesTable).orderBy(asc(graduationPackagesTable.name)),
+  ]);
+  return { templates, packages };
+}
+
+async function listGraduationMedia(publicOnly: boolean, includeArchived = false) {
+  await ensureGraduationMediaTables();
+  const visibility = and(
+    eq(galleryItemsTable.scope, "graduation"),
+    publicOnly ? eq(galleryItemsTable.isActive, true) : undefined,
+    publicOnly ? eq(galleryItemsTable.customerVisible, true) : undefined,
+    publicOnly || !includeArchived ? isNull(galleryItemsTable.archivedAt) : undefined,
+    publicOnly || !includeArchived ? isNull(galleryItemsTable.deletedAt) : undefined,
+  );
+  const rows = await db.select().from(galleryItemsTable).where(visibility).orderBy(desc(galleryItemsTable.isFeatured), asc(galleryItemsTable.displayOrder), desc(galleryItemsTable.createdAt));
+  const links = rows.length ? await db.select().from(graduationMediaLinksTable).where(inArray(graduationMediaLinksTable.mediaId, rows.map((row) => row.id))).orderBy(asc(graduationMediaLinksTable.sortOrder)) : [];
+  const items = rows.map((row) => ({
+    ...row,
+    mediaUrl: graduationMediaUrl(row),
+    thumbnailUrl: row.thumbnailUrl || (row.mediaType === "image" ? graduationMediaUrl(row) : null),
+    links: links.filter((link) => link.mediaId === row.id),
+  }));
+  return publicOnly ? { items } : { items, targets: await graduationMediaTargets() };
+}
+
+async function repairPrimaryMediaTarget(
+  link: typeof graduationMediaLinksTable.$inferSelect,
+  affected: typeof galleryItemsTable.$inferSelect,
+  excludeMediaId?: number,
+) {
+  const current = link.targetType === "template"
+    ? await db.query.graduationTemplatesTable.findFirst({ where: eq(graduationTemplatesTable.id, Number(link.templateId)) })
+    : await db.query.graduationPackagesTable.findFirst({ where: eq(graduationPackagesTable.id, Number(link.packageId)) });
+  const currentPreview = current?.previewImageUrl || "";
+  if (![affected.mediaUrl, affected.thumbnailUrl || ""].filter(Boolean).includes(currentPreview)) return;
+  const targetCondition = link.targetType === "template"
+    ? eq(graduationMediaLinksTable.templateId, Number(link.templateId))
+    : eq(graduationMediaLinksTable.packageId, Number(link.packageId));
+  const [replacement] = await db
+    .select({ media: galleryItemsTable, link: graduationMediaLinksTable })
+    .from(graduationMediaLinksTable)
+    .innerJoin(galleryItemsTable, eq(galleryItemsTable.id, graduationMediaLinksTable.mediaId))
+    .where(and(targetCondition, eq(galleryItemsTable.scope, "graduation"), eq(galleryItemsTable.isActive, true), eq(galleryItemsTable.customerVisible, true), isNull(galleryItemsTable.archivedAt), isNull(galleryItemsTable.deletedAt), excludeMediaId ? ne(galleryItemsTable.id, excludeMediaId) : undefined))
+    .orderBy(desc(graduationMediaLinksTable.isPrimary), asc(graduationMediaLinksTable.sortOrder), asc(galleryItemsTable.displayOrder))
+    .limit(1);
+  const replacementUrl = replacement ? graduationMediaPoster(replacement.media) || null : null;
+  if (link.targetType === "template") await db.update(graduationTemplatesTable).set({ previewImageUrl: replacementUrl, updatedAt: new Date() }).where(eq(graduationTemplatesTable.id, Number(link.templateId)));
+  else await db.update(graduationPackagesTable).set({ previewImageUrl: replacementUrl, updatedAt: new Date() }).where(eq(graduationPackagesTable.id, Number(link.packageId)));
+}
+
+async function replaceGraduationMediaLinks(media: typeof galleryItemsTable.$inferSelect, templateIds: number[], packageIds: number[], isPrimary: boolean) {
+  const previous = await db.select().from(graduationMediaLinksTable).where(eq(graduationMediaLinksTable.mediaId, media.id));
+  await db.delete(graduationMediaLinksTable).where(eq(graduationMediaLinksTable.mediaId, media.id));
+  const rows = [
+    ...[...new Set(templateIds)].map((templateId, sortOrder) => ({ mediaId: media.id, targetType: "template", templateId, packageId: null, isPrimary, sortOrder })),
+    ...[...new Set(packageIds)].map((packageId, sortOrder) => ({ mediaId: media.id, targetType: "package", templateId: null, packageId, isPrimary, sortOrder })),
+  ];
+  if (isPrimary) {
+    for (const templateId of templateIds) await db.update(graduationMediaLinksTable).set({ isPrimary: false }).where(eq(graduationMediaLinksTable.templateId, templateId));
+    for (const packageId of packageIds) await db.update(graduationMediaLinksTable).set({ isPrimary: false }).where(eq(graduationMediaLinksTable.packageId, packageId));
+  }
+  if (rows.length) await db.insert(graduationMediaLinksTable).values(rows).onConflictDoNothing();
+  const primaryUrl = graduationMediaPoster(media) || null;
+  if (isPrimary) {
+    if (!primaryUrl) throw new Error("الفيديو الرئيسي يحتاج صورة مصغرة");
+    for (const templateId of templateIds) await db.update(graduationTemplatesTable).set({ previewImageUrl: primaryUrl, updatedAt: new Date() }).where(eq(graduationTemplatesTable.id, templateId));
+    for (const packageId of packageIds) await db.update(graduationPackagesTable).set({ previewImageUrl: primaryUrl, updatedAt: new Date() }).where(eq(graduationPackagesTable.id, packageId));
+  }
+  const retained = new Set(rows.map((row) => `${row.targetType}:${row.templateId || row.packageId}`));
+  for (const link of previous) if (!retained.has(`${link.targetType}:${link.templateId || link.packageId}`)) await repairPrimaryMediaTarget(link, media);
+  if (!isPrimary) {
+    for (const link of previous) {
+      if (link.isPrimary && retained.has(`${link.targetType}:${link.templateId || link.packageId}`))
+        await repairPrimaryMediaTarget(link, media, media.id);
+    }
+  }
 }
 
 async function createGraduationGroup(
@@ -916,31 +1085,36 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   let selectedTemplates: Array<typeof graduationTemplatesTable.$inferSelect> = [];
   let enterprisePackage: typeof graduationPackagesTable.$inferSelect | null = null;
   let enterprisePackageItems: Array<typeof graduationPackageItemsTable.$inferSelect> = [];
+  // Pricing lines contributed by the custom package, plus the per-item snapshot
+  // rows we persist into graduation_order_items after the order row exists.
+  let customLines: Array<{ key: string; name: string; amount: number; cost: number }> = [];
+  let orderItemsPlan: Array<
+    Omit<typeof graduationOrderItemsTable.$inferInsert, "graduationOrderId">
+  > = [];
+  // Normalize the custom-package selection to items[]: prefer the multi-item
+  // payload, otherwise reconstruct from the legacy single-id shape.
+  const customItems: GraduationCustomItem[] = customPackage.enabled
+    ? customPackage.items && customPackage.items.length
+      ? (customPackage.items as GraduationCustomItem[])
+      : ([
+          customPackage.robeTemplateId && {
+            itemType: "robe",
+            templateId: customPackage.robeTemplateId,
+            quantity: 1,
+          },
+          customPackage.sashTemplateId && {
+            itemType: "sash",
+            templateId: customPackage.sashTemplateId,
+            quantity: 1,
+          },
+          customPackage.capTemplateId && {
+            itemType: "cap",
+            templateId: customPackage.capTemplateId,
+            quantity: 1,
+          },
+        ].filter(Boolean) as GraduationCustomItem[])
+    : [];
   if (customPackage.enabled) {
-    if (!customPackage.robeTemplateId || !customPackage.sashTemplateId)
-      return { response: error("يرجى اختيار الروب والوشاح قبل المتابعة", 400) };
-    const requestedIds = [
-      customPackage.robeTemplateId,
-      customPackage.sashTemplateId,
-      customPackage.capTemplateId,
-    ].filter((value): value is number => Boolean(value));
-    selectedTemplates = await db
-      .select()
-      .from(graduationTemplatesTable)
-      .where(
-        and(
-          inArray(graduationTemplatesTable.id, requestedIds),
-          eq(graduationTemplatesTable.isActive, true),
-        ),
-      );
-    const byId = new Map(selectedTemplates.map((item) => [item.id, item]));
-    if (
-      byId.get(customPackage.robeTemplateId)?.templateType !== "robe" ||
-      byId.get(customPackage.sashTemplateId)?.templateType !== "sash" ||
-      (customPackage.capTemplateId &&
-        byId.get(customPackage.capTemplateId)?.templateType !== "cap")
-    )
-      return { response: error("أحد نماذج باقة التخرج غير متاح أو لا يطابق نوع القطعة", 400) };
     if (customPackage.enterprisePackageId) {
       enterprisePackage =
         (await db.query.graduationPackagesTable.findFirst({
@@ -957,23 +1131,124 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
         .from(graduationPackageItemsTable)
         .where(eq(graduationPackageItemsTable.packageId, enterprisePackage.id));
     }
-  }
-  const basePricing = graduationPriceSummary(data, config);
-  const customLines = !customPackage.enabled
-    ? []
-    : enterprisePackage
-      ? [{
+    const requestedIds = [...new Set(customItems.map((item) => item.templateId))];
+    selectedTemplates = requestedIds.length
+      ? await db
+          .select()
+          .from(graduationTemplatesTable)
+          .where(
+            and(
+              inArray(graduationTemplatesTable.id, requestedIds),
+              eq(graduationTemplatesTable.isActive, true),
+              sql`${graduationTemplatesTable.archivedAt} is null`,
+            ),
+          )
+      : [];
+    const byId = new Map(selectedTemplates.map((item) => [item.id, item]));
+    for (const item of customItems) {
+      const template = byId.get(item.templateId);
+      if (!template)
+        return { response: error("أحد منتجات الباقة غير متاح", 400) };
+      if (template.templateType !== item.itemType)
+        return {
+          response: error("أحد منتجات الباقة لا يطابق نوع القطعة المختارة", 400),
+        };
+    }
+    if (!enterprisePackage && !customItems.some((item) => item.itemType === "robe"))
+      return { response: error("يجب اختيار روب واحد على الأقل ضمن الباقة", 400) };
+
+    // Authoritative server-side recompute (client prices are display-only).
+    const products: GraduationCatalogProduct[] = selectedTemplates.map(
+      (template) => ({
+        id: template.id,
+        code: template.code,
+        name: template.name,
+        templateType: template.templateType,
+        previewImageUrl: template.previewImageUrl,
+        modelUrl: template.modelUrl,
+        images: template.images as string[],
+        defaultPrice: Number(template.defaultPrice || 0),
+        discountPrice:
+          template.discountPrice != null ? Number(template.discountPrice) : null,
+        trackStock: template.trackStock,
+        stock: template.stock,
+        available: template.isActive !== false && !template.archivedAt,
+        configuration: template.configuration as GraduationCatalogProduct["configuration"],
+        ...({ sku: template.sku } as Record<string, unknown>),
+      }),
+    );
+    const summary = customPackagePriceSummary(customItems, products, 0);
+    if (enterprisePackage) {
+      customLines = [
+        {
           key: `enterprise-package:${enterprisePackage.id}`,
           name: enterprisePackage.name,
           amount: Number(enterprisePackage.defaultPrice || 0),
           cost: Number(enterprisePackage.defaultCost || 0),
-        }]
-      : selectedTemplates.map((item) => ({
-          key: `template:${item.id}`,
-          name: item.name,
-          amount: Number(item.defaultPrice || 0),
-          cost: Number((item.configuration as Record<string, unknown>)?.cost || 0),
-        }));
+        },
+      ];
+      orderItemsPlan = enterprisePackageItems.map((row, index) => ({
+        groupId: group?.id ?? null,
+        itemType: row.itemType,
+        templateId: row.templateId ?? null,
+        productId: row.productId ?? null,
+        productName: row.name,
+        quantity: String(Number(row.quantity || 1)),
+        originalUnitPrice: String(Number(row.unitPrice || 0)),
+        finalUnitPrice: String(Number(row.unitPrice || 0)),
+        lineTotal: String(Number(row.unitPrice || 0) * Number(row.quantity || 1)),
+        snapshot: {
+          source: "enterprise_package",
+          packageId: enterprisePackage!.id,
+          packageName: enterprisePackage!.name,
+        },
+        sortOrder: index,
+      }));
+    } else {
+      const costById = new Map(
+        selectedTemplates.map((template) => [
+          template.id,
+          Number(template.costPrice || 0),
+        ]),
+      );
+      customLines = summary.lines.map((line) => ({
+        key: line.key,
+        name: line.quantity > 1 ? `${line.name} × ${line.quantity}` : line.name,
+        amount: line.lineTotal,
+        cost: (costById.get(line.templateId) || 0) * line.quantity,
+      }));
+      orderItemsPlan = summary.lines.map((line, index) => {
+        const template = byId.get(line.templateId);
+        return {
+          groupId: group?.id ?? null,
+          itemType: line.itemType,
+          templateId: line.templateId,
+          productId: line.productId,
+          productName: line.name,
+          productSku: line.sku ?? template?.sku ?? null,
+          variantLabel: line.variantLabel,
+          size: line.size,
+          color: line.color,
+          quantity: String(line.quantity),
+          originalUnitPrice: String(line.originalUnitPrice),
+          finalUnitPrice: String(line.finalUnitPrice),
+          customizationCharge: String(line.customizationCharge),
+          lineTotal: String(line.lineTotal),
+          customization: line.customization,
+          imageUrl: line.imageUrl,
+          snapshot: {
+            source: "custom_package",
+            templateCode: template?.code,
+            templateVersion: template?.currentVersion,
+            configuration: template?.configuration,
+          },
+          notes: line.notes,
+          sortOrder: index,
+        };
+      });
+    }
+  }
+  const basePricing = graduationPriceSummary(data, config);
   const pricingLines = [...basePricing.lines, ...customLines];
   const pricingSubtotal = pricingLines.reduce((sum, line) => sum + line.amount, 0);
   const pricingCost = pricingLines.reduce((sum, line) => sum + line.cost, 0);
@@ -988,18 +1263,13 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   };
   const estimate = estimateGraduationProduction(data, config);
   const baseInventoryItems = graduationInventoryItems(data, config);
-  const enterpriseInventoryItems = [
-    ...selectedTemplates.map((item) => ({
-      productId: Number((item.configuration as Record<string, unknown>)?.productId || 0),
-      quantity: 1,
-      label: item.name,
-    })),
-    ...enterprisePackageItems.map((item) => ({
-      productId: Number(item.productId || 0),
-      quantity: Number(item.quantity || 1),
-      label: item.name,
-    })),
-  ].filter((item) => item.productId > 0);
+  const enterpriseInventoryItems = orderItemsPlan
+    .map((row) => ({
+      productId: Number(row.productId || 0),
+      quantity: Number(row.quantity || 1),
+      label: row.productName || "",
+    }))
+    .filter((item) => item.productId > 0);
   const groupedInventory = new Map<number, { productId: number; quantity: number; label: string }>();
   for (const item of [...baseInventoryItems, ...enterpriseInventoryItems]) {
     const current = groupedInventory.get(item.productId);
@@ -1121,6 +1391,15 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
     })
     .where(eq(graduationOrdersTable.id, draft.id))
     .returning();
+  if (orderItemsPlan.length) {
+    await db.insert(graduationOrderItemsTable).values(
+      orderItemsPlan.map((row) => ({
+        ...row,
+        graduationOrderId: order.id,
+        groupId: groupId ?? row.groupId ?? null,
+      })),
+    );
+  }
   if (groupId) {
     const [sequenceRow] = await db
       .select({ next: sql<number>`coalesce(max(${graduationGroupStudentsTable.sequence}), 0)::int + 1` })
@@ -1872,6 +2151,7 @@ export async function handleGraduationPublic(
   await ensureGraduationTables();
   const method = req.method;
   const resource = parts[1] ?? "config";
+  if (method === "GET" && resource === "media") return json(await listGraduationMedia(true));
   if (method === "GET" && resource === "config") {
     const [config, enterpriseCatalog] = await Promise.all([
       getConfig(),
@@ -2146,6 +2426,104 @@ export async function handleAdminGraduation(
   await Promise.all([ensureGraduationTables(), ensureMasterCashBoxTables()]);
   const method = req.method;
   const resource = parts[0] ?? "dashboard";
+
+  if (resource === "media") {
+    await ensureGraduationMediaTables();
+    if (method !== "GET" && !canManageGraduationMedia(user)) return error("لا تملك صلاحية إدارة معرض التخرج", 403);
+    if (method === "GET" && !parts[1]) return json(await listGraduationMedia(false, req.nextUrl.searchParams.get("includeArchived") === "true"));
+    if (method === "POST" && parts[1] === "reorder") {
+      const payload = await requestBody(req);
+      const ids: number[] = Array.isArray(payload?.ids)
+        ? Array.from(
+            new Set<number>(
+              payload.ids
+                .map(Number)
+                .filter((id: number) => Number.isFinite(id) && id > 0),
+            ),
+          )
+        : [];
+      if (!ids.length) return error("لم يتم إرسال ترتيب صالح", 400);
+      await Promise.all(ids.map((id, displayOrder) => db.update(galleryItemsTable).set({ displayOrder, updatedAt: new Date() }).where(and(eq(galleryItemsTable.id, id), eq(galleryItemsTable.scope, "graduation")))));
+      await auditGraduationMedia(user, "graduation_media_reordered", ids[0], { ids });
+      return json({ items: (await listGraduationMedia(false, true)).items });
+    }
+    if (method === "POST" && !parts[1]) {
+      const payload = await requestBody(req); const values = Array.isArray(payload?.items) ? payload.items : [payload];
+      if (!values.length || values.length > 20) return error("يمكن رفع 20 ملفاً في العملية الواحدة", 400);
+      const [maxOrder] = await db.select({ value: sql<number>`coalesce(max(${galleryItemsTable.displayOrder}),-1)::int` }).from(galleryItemsTable).where(eq(galleryItemsTable.scope, "graduation"));
+      const created = [];
+      try {
+        for (let index = 0; index < values.length; index++) {
+          const parsed = graduationMediaCreateSchema.safeParse(values[index]);
+          if (!parsed.success) return error("تحقق من بيانات الوسائط", 400, parsed.error.issues);
+          const data = parsed.data;
+          validateGraduationMediaValue(data.mediaUrl, data.mediaType, "الوسيط");
+          if (data.mediaType === "video" && !data.thumbnailUrl) return error("أضف صورة مصغرة للفيديو", 400);
+          if (data.thumbnailUrl) validateGraduationMediaValue(data.thumbnailUrl, "image", "الصورة المصغرة");
+          const mediaUrl = await persistMedia(data.mediaUrl, `graduation/gallery/${data.mediaType === "video" ? "videos" : "images"}`);
+          const thumbnailUrl = data.thumbnailUrl ? await persistMedia(data.thumbnailUrl, "graduation/gallery/thumbnails") : null;
+          const [row] = await db.insert(galleryItemsTable).values({
+            mediaUrl: String(mediaUrl), mediaType: data.mediaType, imageMetadata: data.imageMetadata,
+            title: data.title || null, titleAr: data.title || null, description: data.description || null,
+            thumbnailUrl, category: data.category, scope: "graduation", displayLocation: data.displayLocation,
+            displayOrder: data.displayOrder || Number(maxOrder?.value ?? -1) + index + 1,
+            isActive: data.isActive, isFeatured: data.isFeatured, customerVisible: data.customerVisible,
+          }).returning();
+          await replaceGraduationMediaLinks(row, data.templateIds, data.packageIds, data.isPrimary);
+          await auditGraduationMedia(user, "graduation_media_uploaded", row.id, { mediaType: row.mediaType, category: row.category, templateIds: data.templateIds, packageIds: data.packageIds });
+          created.push(row);
+        }
+      } catch (err: any) { return error(err?.message || "تعذر حفظ الوسائط", 400); }
+      return json({ items: created }, 201);
+    }
+    const mediaId = Number(parts[1]);
+    if (!Number.isFinite(mediaId)) return error("معرف الوسيط غير صحيح", 400);
+    const current = await db.query.galleryItemsTable.findFirst({ where: and(eq(galleryItemsTable.id, mediaId), eq(galleryItemsTable.scope, "graduation")) });
+    if (!current) return error("الوسيط غير موجود", 404);
+    if (method === "POST" && parts[2] === "action") {
+      const payload = await requestBody(req); const action = String(payload?.action || ""); const now = new Date();
+      if (!["archive", "restore", "delete"].includes(action)) return error("الإجراء غير مدعوم", 400);
+      const restoredState = current.deletedAt
+        ? { archivedAt: null, deletedAt: null, isActive: true, customerVisible: true, updatedAt: now }
+        : { archivedAt: null, deletedAt: null, updatedAt: now };
+      const [saved] = await db.update(galleryItemsTable).set(action === "archive" ? { archivedAt: now, updatedAt: now } : action === "delete" ? { deletedAt: now, isActive: false, customerVisible: false, updatedAt: now } : restoredState).where(eq(galleryItemsTable.id, mediaId)).returning();
+      const links = await db.select().from(graduationMediaLinksTable).where(eq(graduationMediaLinksTable.mediaId, mediaId));
+      if (action !== "restore") for (const link of links) await repairPrimaryMediaTarget(link, saved);
+      await auditGraduationMedia(user, `graduation_media_${action}d`, mediaId, { linkedTargets: links.length, softDelete: action === "delete" });
+      return json({ item: saved });
+    }
+    if (method === "PATCH") {
+      const parsed = graduationMediaPatchSchema.safeParse(await requestBody(req));
+      if (!parsed.success) return error("تحقق من بيانات الوسيط", 400, parsed.error.issues);
+      const data = parsed.data; const effectiveType = data.mediaType || (current.mediaType as "image" | "video");
+      try {
+        if (data.mediaUrl) validateGraduationMediaValue(data.mediaUrl, effectiveType, "الوسيط");
+        if (data.thumbnailUrl) validateGraduationMediaValue(data.thumbnailUrl, "image", "الصورة المصغرة");
+        const mediaUrl = data.mediaUrl ? await persistMedia(data.mediaUrl, `graduation/gallery/${effectiveType === "video" ? "videos" : "images"}`) : current.mediaUrl;
+        const thumbnailUrl = data.thumbnailUrl !== undefined ? (data.thumbnailUrl ? await persistMedia(data.thumbnailUrl, "graduation/gallery/thumbnails") : null) : current.thumbnailUrl;
+        if (effectiveType === "video" && !thumbnailUrl) return error("أضف صورة مصغرة للفيديو", 400);
+        const [saved] = await db.update(galleryItemsTable).set({
+          mediaType: effectiveType, mediaUrl: String(mediaUrl), thumbnailUrl,
+          title: data.title === undefined ? current.title : data.title || null,
+          titleAr: data.title === undefined ? current.titleAr : data.title || null,
+          description: data.description === undefined ? current.description : data.description || null,
+          category: data.category ?? current.category, displayLocation: data.displayLocation ?? current.displayLocation,
+          displayOrder: data.displayOrder ?? current.displayOrder, isActive: data.isActive ?? current.isActive,
+          isFeatured: data.isFeatured ?? current.isFeatured, customerVisible: data.customerVisible ?? current.customerVisible,
+          imageMetadata: data.imageMetadata ?? current.imageMetadata, updatedAt: new Date(),
+        }).where(eq(galleryItemsTable.id, mediaId)).returning();
+        const oldLinks = await db.select().from(graduationMediaLinksTable).where(eq(graduationMediaLinksTable.mediaId, mediaId));
+        const templateIds = data.templateIds ?? oldLinks.map((link) => link.templateId).filter((id): id is number => Boolean(id));
+        const packageIds = data.packageIds ?? oldLinks.map((link) => link.packageId).filter((id): id is number => Boolean(id));
+        const isPrimary = data.isPrimary ?? oldLinks.some((link) => link.isPrimary);
+        if (data.templateIds || data.packageIds || data.isPrimary !== undefined || data.mediaUrl || data.thumbnailUrl !== undefined) await replaceGraduationMediaLinks(saved, templateIds, packageIds, isPrimary);
+        if (!saved.isActive || !saved.customerVisible) for (const link of oldLinks) await repairPrimaryMediaTarget(link, saved);
+        await auditGraduationMedia(user, "graduation_media_updated", mediaId, { changes: Object.keys(data), old: { title: current.title, category: current.category, isActive: current.isActive, customerVisible: current.customerVisible }, next: { title: saved.title, category: saved.category, isActive: saved.isActive, customerVisible: saved.customerVisible } });
+        return json({ item: saved });
+      } catch (err: any) { return error(err?.message || "تعذر تحديث الوسيط", 400); }
+    }
+    return null;
+  }
 
   if (method === "GET" && resource === "dashboard") {
     const [stageRows, totals, delayed, resources, todayCount] =

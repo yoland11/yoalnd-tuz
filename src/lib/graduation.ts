@@ -102,6 +102,169 @@ export type GraduationConfig = {
   aiEnabled: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Custom graduation package (per-piece builder) — shared client/server types
+// ---------------------------------------------------------------------------
+
+// Flexible per-type product attributes stored inside `graduation_templates.configuration`.
+// `optionPrices` maps a "<field>:<value>" key to an EXTRA charge added to the base
+// price when that option is selected (e.g. "size:XL", "fabric:velvet", "print:full").
+export type GraduationProductConfig = {
+  sizes?: string[];
+  colors?: string[];
+  fabrics?: string[];
+  printOptions?: string[];
+  embroideryOptions?: string[];
+  tasselColors?: string[];
+  tasselOptions?: string[];
+  productionDays?: number;
+  rentalOrSale?: "rental" | "sale" | string;
+  sizeChart?: string;
+  fabricType?: string;
+  gownModel?: string;
+  gownStyle?: string;
+  sashModel?: string;
+  capModel?: string;
+  material?: string;
+  optionPrices?: Record<string, number>;
+  productId?: number | null;
+  cost?: number;
+  [key: string]: unknown;
+};
+
+// Public product shape emitted by getGraduationEnterpriseCatalog (cost never exposed).
+export type GraduationCatalogProduct = {
+  id: number;
+  code: string;
+  name: string;
+  templateType: string;
+  previewImageUrl?: string | null;
+  modelUrl?: string | null;
+  images?: string[];
+  defaultPrice: number;
+  discountPrice?: number | null;
+  trackStock?: boolean;
+  stock?: number;
+  available?: boolean;
+  configuration?: GraduationProductConfig;
+};
+
+// A single selected piece in the custom-package builder (client → server payload).
+export type GraduationCustomItem = {
+  itemType: "robe" | "sash" | "cap" | "accessory";
+  templateId: number;
+  quantity: number;
+  size?: string;
+  color?: string;
+  fabric?: string;
+  printType?: string;
+  embroideryType?: string;
+  tasselColor?: string;
+  customization?: Record<string, unknown>;
+  notes?: string;
+};
+
+export type GraduationCustomLine = {
+  key: string;
+  itemType: string;
+  templateId: number;
+  productId: number | null;
+  name: string;
+  sku: string | null;
+  imageUrl: string | null;
+  quantity: number;
+  size: string | null;
+  color: string | null;
+  variantLabel: string | null;
+  originalUnitPrice: number;
+  finalUnitPrice: number;
+  customizationCharge: number;
+  lineTotal: number;
+  customization: Record<string, unknown>;
+  notes: string | null;
+  available: boolean;
+};
+
+const OPTION_FIELDS: Array<[keyof GraduationCustomItem, string]> = [
+  ["size", "size"],
+  ["color", "color"],
+  ["fabric", "fabric"],
+  ["printType", "print"],
+  ["embroideryType", "embroidery"],
+  ["tasselColor", "tassel"],
+];
+
+function optionCharge(product: GraduationCatalogProduct, item: GraduationCustomItem) {
+  const prices = product.configuration?.optionPrices ?? {};
+  let charge = 0;
+  for (const [field, prefix] of OPTION_FIELDS) {
+    const value = item[field];
+    if (!value) continue;
+    const extra = Number(prices[`${prefix}:${value}`] ?? 0);
+    if (Number.isFinite(extra)) charge += extra;
+  }
+  return Math.max(0, charge);
+}
+
+function variantLabel(item: GraduationCustomItem) {
+  return (
+    [item.size, item.color, item.fabric, item.printType, item.embroideryType, item.tasselColor]
+      .filter((value) => value && String(value).trim())
+      .join(" · ") || null
+  );
+}
+
+/**
+ * Pure, authoritative pricing for a custom package. Shared by the client (live
+ * preview) and the server (recompute — client prices are display-only).
+ * `discountAmount` is the order-level manual discount.
+ */
+export function customPackagePriceSummary(
+  items: GraduationCustomItem[],
+  products: GraduationCatalogProduct[],
+  discountAmount = 0,
+) {
+  const byId = new Map(products.map((product) => [product.id, product]));
+  const lines: GraduationCustomLine[] = [];
+  for (const item of items) {
+    const product = byId.get(item.templateId);
+    if (!product) continue;
+    const quantity = Math.max(1, Math.floor(Number(item.quantity) || 1));
+    const base =
+      product.discountPrice != null && Number(product.discountPrice) > 0
+        ? Number(product.discountPrice)
+        : Number(product.defaultPrice || 0);
+    const charge = optionCharge(product, item);
+    const finalUnitPrice = Math.max(0, base + charge);
+    lines.push({
+      key: `custom:${item.itemType}:${item.templateId}:${lines.length}`,
+      itemType: item.itemType,
+      templateId: product.id,
+      productId: Number(product.configuration?.productId || 0) || null,
+      name: product.name,
+      sku: (product as any).sku ?? null,
+      imageUrl: product.previewImageUrl ?? null,
+      quantity,
+      size: item.size ?? null,
+      color: item.color ?? null,
+      variantLabel: variantLabel(item),
+      originalUnitPrice: Number(product.defaultPrice || 0),
+      finalUnitPrice,
+      customizationCharge: charge,
+      lineTotal: finalUnitPrice * quantity,
+      customization: item.customization ?? {},
+      notes: item.notes ?? null,
+      available:
+        product.available !== false &&
+        (!product.trackStock || Number(product.stock ?? 0) >= quantity),
+    });
+  }
+  const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
+  const discount = Math.min(Math.max(0, Number(discountAmount) || 0), subtotal);
+  const total = Math.max(0, subtotal - discount);
+  return { lines, subtotal, discount, total };
+}
+
 const option = (
   key: string,
   name: string,
@@ -221,11 +384,30 @@ export const graduationOrderInputSchema = z
       .object({
         enabled: z.boolean().default(false),
         enterprisePackageId: z.coerce.number().int().positive().optional(),
+        // Legacy single-select shape — kept so old clients keep working.
         robeTemplateId: z.coerce.number().int().positive().optional(),
         sashTemplateId: z.coerce.number().int().positive().optional(),
         capTemplateId: z.coerce.number().int().positive().optional(),
+        // New multi-item builder payload.
+        items: z
+          .array(
+            z.object({
+              itemType: z.enum(["robe", "sash", "cap", "accessory"]),
+              templateId: z.coerce.number().int().positive(),
+              quantity: z.coerce.number().int().min(1).max(50).default(1),
+              size: optionalString,
+              color: optionalString,
+              fabric: optionalString,
+              printType: optionalString,
+              embroideryType: optionalString,
+              tasselColor: optionalString,
+              customization: z.record(z.string(), z.unknown()).default({}),
+              notes: optionalString,
+            }),
+          )
+          .default([]),
       })
-      .default({ enabled: false }),
+      .default({ enabled: false, items: [] }),
     groupToken: optionalString,
     status: z.enum(["draft", "submitted"]).default("submitted"),
     measurements: graduationMeasurementsSchema,

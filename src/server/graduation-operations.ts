@@ -9,10 +9,13 @@ import {
   db,
   entityTimelineTable,
   graduationApprovalsTable,
+  graduationComponentsTable,
   graduationDeliveryEventsTable,
   graduationGroupsTable,
   graduationGroupStudentsTable,
+  graduationOrderItemsTable,
   graduationOrdersTable,
+  graduationPackageItemsTable,
   graduationPreviewsTable,
   graduationProductionEventsTable,
   graduationReceiptsTable,
@@ -116,7 +119,15 @@ const templateSchema = z.object({
   department: z.string().trim().max(180).optional(),
   previewImageUrl: z.string().optional(),
   modelUrl: z.string().optional(),
+  images: z.array(z.string()).default([]),
   defaultPrice: z.coerce.number().min(0).default(0),
+  costPrice: z.coerce.number().min(0).default(0),
+  discountPrice: z.coerce.number().min(0).nullable().optional(),
+  sku: z.string().trim().max(80).optional(),
+  barcode: z.string().trim().max(120).optional(),
+  trackStock: z.boolean().default(false),
+  stock: z.coerce.number().int().min(0).default(0),
+  minStock: z.coerce.number().int().min(0).default(0),
   configuration: z.record(z.string(), z.unknown()).default({}),
   isActive: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
@@ -978,7 +989,140 @@ async function templateList() {
   const versions = ids.length
     ? await db.select().from(graduationTemplateVersionsTable).where(inArray(graduationTemplateVersionsTable.templateId, ids)).orderBy(desc(graduationTemplateVersionsTable.version))
     : [];
-  return rows.map((row) => ({ ...row, defaultPrice: amount(row.defaultPrice), versions: versions.filter((version) => version.templateId === row.id) }));
+  return rows.map((row) => ({
+    ...row,
+    defaultPrice: amount(row.defaultPrice),
+    costPrice: amount(row.costPrice),
+    discountPrice: row.discountPrice != null ? amount(row.discountPrice) : null,
+    versions: versions.filter((version) => version.templateId === row.id),
+  }));
+}
+
+async function setTemplateArchived(
+  id: number,
+  archived: boolean,
+  user: GraduationAdminUser,
+) {
+  const existing = await db.query.graduationTemplatesTable.findFirst({
+    where: eq(graduationTemplatesTable.id, id),
+  });
+  if (!existing) return { response: fail("النموذج غير موجود", 404) };
+  const [template] = await db
+    .update(graduationTemplatesTable)
+    .set({
+      archivedAt: archived ? new Date() : null,
+      isActive: !archived,
+      updatedAt: new Date(),
+    })
+    .where(eq(graduationTemplatesTable.id, id))
+    .returning();
+  await audit(
+    user,
+    archived ? "graduation_template_archived" : "graduation_template_restored",
+    "graduation_template",
+    id,
+    { code: existing.code },
+  );
+  return { template };
+}
+
+async function duplicateTemplate(id: number, user: GraduationAdminUser) {
+  const existing = await db.query.graduationTemplatesTable.findFirst({
+    where: eq(graduationTemplatesTable.id, id),
+  });
+  if (!existing) return { response: fail("النموذج غير موجود", 404) };
+  const [draft] = await db
+    .insert(graduationTemplatesTable)
+    .values({
+      code: `GR-TPL-${randomUUID()}`,
+      name: `${existing.name} (نسخة)`,
+      templateType: existing.templateType,
+      university: existing.university,
+      college: existing.college,
+      department: existing.department,
+      previewImageUrl: existing.previewImageUrl,
+      modelUrl: existing.modelUrl,
+      images: existing.images,
+      defaultPrice: existing.defaultPrice,
+      costPrice: existing.costPrice,
+      discountPrice: existing.discountPrice,
+      sku: null,
+      barcode: null,
+      trackStock: existing.trackStock,
+      stock: 0,
+      minStock: existing.minStock,
+      configuration: existing.configuration,
+      isActive: false,
+      isFeatured: false,
+      sortOrder: existing.sortOrder,
+      createdBy: user.id,
+    })
+    .returning();
+  const code = `AJN-GRT-${String(draft.id).padStart(5, "0")}-C`;
+  const [template] = await db
+    .update(graduationTemplatesTable)
+    .set({ code })
+    .where(eq(graduationTemplatesTable.id, draft.id))
+    .returning();
+  await db.insert(graduationTemplateVersionsTable).values({
+    templateId: template.id,
+    version: 1,
+    snapshot: { duplicatedFrom: existing.id, code },
+    createdBy: user.id,
+  });
+  await audit(user, "graduation_template_duplicated", "graduation_template", template.id, {
+    sourceId: existing.id,
+    code,
+  });
+  return { template };
+}
+
+async function reorderTemplates(ids: number[], user: GraduationAdminUser) {
+  await Promise.all(
+    ids.map((id, sortOrder) =>
+      db
+        .update(graduationTemplatesTable)
+        .set({ sortOrder, updatedAt: new Date() })
+        .where(eq(graduationTemplatesTable.id, id)),
+    ),
+  );
+  await audit(user, "graduation_template_reordered", "graduation_template", ids[0] ?? 0, {
+    ids,
+  });
+  return { reordered: true };
+}
+
+async function deleteTemplate(id: number, user: GraduationAdminUser) {
+  const existing = await db.query.graduationTemplatesTable.findFirst({
+    where: eq(graduationTemplatesTable.id, id),
+  });
+  if (!existing) return { response: fail("النموذج غير موجود", 404) };
+  // Hard delete is only allowed when the product has no historical links.
+  const countRefs = async (table: any, column: any) => {
+    const [row] = await db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(table)
+      .where(eq(column, id));
+    return Number(row?.value ?? 0);
+  };
+  const [orderItems, packageItems, components] = await Promise.all([
+    countRefs(graduationOrderItemsTable, graduationOrderItemsTable.templateId),
+    countRefs(graduationPackageItemsTable, graduationPackageItemsTable.templateId),
+    countRefs(graduationComponentsTable, graduationComponentsTable.templateId),
+  ]);
+  if (orderItems + packageItems + components > 0)
+    return {
+      response: fail(
+        "لا يمكن حذف المنتج نهائياً لارتباطه بطلبات أو باقات أو مكونات سابقة. يمكنك أرشفته بدلاً من ذلك.",
+        409,
+        { orderItems, packageItems, components },
+      ),
+    };
+  await db.delete(graduationTemplatesTable).where(eq(graduationTemplatesTable.id, id));
+  await audit(user, "graduation_template_deleted", "graduation_template", id, {
+    code: existing.code,
+  });
+  return { deleted: true };
 }
 
 async function saveTemplate(raw: unknown, user: GraduationAdminUser, id?: number) {
@@ -995,7 +1139,15 @@ async function saveTemplate(raw: unknown, user: GraduationAdminUser, id?: number
       department: data.department || null,
       previewImageUrl: data.previewImageUrl || null,
       modelUrl: data.modelUrl || null,
+      images: data.images,
       defaultPrice: String(data.defaultPrice),
+      costPrice: String(data.costPrice),
+      discountPrice: data.discountPrice != null ? String(data.discountPrice) : null,
+      sku: data.sku || null,
+      barcode: data.barcode || null,
+      trackStock: data.trackStock,
+      stock: data.stock,
+      minStock: data.minStock,
       configuration: data.configuration,
       isActive: data.isActive,
       isFeatured: data.isFeatured,
@@ -1020,7 +1172,15 @@ async function saveTemplate(raw: unknown, user: GraduationAdminUser, id?: number
     department: data.department || null,
     previewImageUrl: data.previewImageUrl || null,
     modelUrl: data.modelUrl || null,
+    images: data.images,
     defaultPrice: String(data.defaultPrice),
+    costPrice: String(data.costPrice),
+    discountPrice: data.discountPrice != null ? String(data.discountPrice) : null,
+    sku: data.sku || null,
+    barcode: data.barcode || null,
+    trackStock: data.trackStock,
+    stock: data.stock,
+    minStock: data.minStock,
     configuration: data.configuration,
     isActive: data.isActive,
     isFeatured: data.isFeatured,
@@ -1199,13 +1359,47 @@ export async function handleAdminGraduationOperations(
 
   if (resource === "templates") {
     if (method === "GET") return json({ items: await templateList() });
-    if (method === "POST") {
+    // Reorder must be matched before the generic create (both are POST).
+    if (method === "POST" && parts[1] === "reorder") {
+      const denied = requireOperationPermission(user, "graduation.template.manage");
+      if (denied) return denied;
+      const payload = await body(req);
+      const ids = Array.isArray(payload?.ids)
+        ? payload.ids.map(Number).filter((value: number) => Number.isFinite(value) && value > 0)
+        : [];
+      return json(await reorderTemplates(ids, user));
+    }
+    // Sub-actions on a specific template (checked before generic id routes).
+    if (parts[1] && !Number.isNaN(Number(parts[1])) && parts[2]) {
+      const denied = requireOperationPermission(user, "graduation.template.manage");
+      if (denied) return denied;
+      const id = Number(parts[1]);
+      if (parts[2] === "archive" && (method === "PATCH" || method === "POST")) {
+        const result = await setTemplateArchived(id, true, user);
+        return result.response ?? json(result);
+      }
+      if (parts[2] === "restore" && (method === "PATCH" || method === "POST")) {
+        const result = await setTemplateArchived(id, false, user);
+        return result.response ?? json(result);
+      }
+      if (parts[2] === "duplicate" && method === "POST") {
+        const result = await duplicateTemplate(id, user);
+        return result.response ?? json(result, 201);
+      }
+    }
+    if (method === "DELETE" && parts[1] && !parts[2]) {
+      const denied = requireOperationPermission(user, "graduation.template.manage");
+      if (denied) return denied;
+      const result = await deleteTemplate(Number(parts[1]), user);
+      return result.response ?? json(result);
+    }
+    if (method === "POST" && !parts[1]) {
       const denied = requireOperationPermission(user, "graduation.template.manage");
       if (denied) return denied;
       const result = await saveTemplate(await body(req), user);
       return result.response ?? json(result, 201);
     }
-    if ((method === "PATCH" || method === "PUT") && parts[1]) {
+    if ((method === "PATCH" || method === "PUT") && parts[1] && !parts[2]) {
       const denied = requireOperationPermission(user, "graduation.template.manage");
       if (denied) return denied;
       const result = await saveTemplate(await body(req), user, Number(parts[1]));

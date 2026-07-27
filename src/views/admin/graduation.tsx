@@ -92,6 +92,8 @@ import {
   GraduationPackagingStation,
   GraduationProductionWall,
 } from "./graduation-enterprise";
+import { GraduationMediaGalleryAdmin } from "./graduation-media-gallery";
+import { GraduationProductsCenter } from "./graduation-products";
 
 type Mode =
   | "dashboard"
@@ -101,6 +103,7 @@ type Mode =
   | "groups"
   | "students"
   | "templates"
+  | "gallery"
   | "packages"
   | "customers"
   | "configurator"
@@ -126,7 +129,8 @@ const MODE_LABELS: Record<Mode, string> = {
   individual: "الطلبات الفردية",
   groups: "الطلبات الجماعية",
   students: "الطلاب",
-  templates: "مكتبة النماذج",
+  templates: "المنتجات والنماذج",
+  gallery: "معرض الصور والفيديوهات",
   packages: "باقات التخرج",
   customers: "عملاء التخرج",
   configurator: "مُعدّ تصميم التخرج",
@@ -3172,7 +3176,24 @@ export default function GraduationAdminPage() {
       ) : mode === "students" ? (
         <GraduationStudentsDirectory />
       ) : mode === "templates" ? (
-        <GraduationTemplateLibrary />
+        <Tabs defaultValue="products">
+          <TabsList>
+            <TabsTrigger value="products">المنتجات</TabsTrigger>
+            <TabsTrigger value="packages">الباقات الجاهزة</TabsTrigger>
+            <TabsTrigger value="design">قوالب التصميم</TabsTrigger>
+          </TabsList>
+          <TabsContent value="products" className="mt-4">
+            <GraduationProductsCenter />
+          </TabsContent>
+          <TabsContent value="packages" className="mt-4">
+            <GraduationPackagesCenter />
+          </TabsContent>
+          <TabsContent value="design" className="mt-4">
+            <GraduationTemplateLibrary />
+          </TabsContent>
+        </Tabs>
+      ) : mode === "gallery" ? (
+        <GraduationMediaGalleryAdmin />
       ) : mode === "packages" ? (
         <GraduationPackagesCenter />
       ) : mode === "customers" ? (

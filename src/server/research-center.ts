@@ -55,11 +55,19 @@ const STORAGE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE
 const STORAGE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
 
 const optionalString = z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().optional());
+// Manual university entry sends "" (or the "manual" sentinel) — coerce those to
+// null instead of failing `.positive()` after `Number("") === 0`.
+const optionalUniversityId = z.preprocess((value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw || raw === "manual") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}, z.number().int().positive().nullable());
 const orderSchema = z.object({
   customerName: z.string().trim().min(2).max(160), phone: z.string().trim().min(10).max(30), title: z.string().trim().min(5).max(500),
   researchType: z.enum(["graduation", "diploma", "bachelor", "master", "phd", "article", "conference", "report"]),
-  universityId: z.coerce.number().int().positive().optional(), universityName: z.string().trim().min(2).max(240), college: optionalString, department: optionalString,
-  supervisorName: optionalString, language: z.enum(["ar", "en", "ku", "other"]).default("ar"), researchField: z.string().trim().min(2).max(240),
+  universityId: optionalUniversityId, universityName: z.string().trim().min(2).max(240), college: optionalString, department: optionalString,
+  supervisorName: optionalString, language: z.enum(["ar", "en", "ku", "other"]).default("ar"), researchField: z.string().trim().max(240).optional().default(""),
   keywords: z.union([z.array(z.string()), z.string()]).transform((value) => Array.isArray(value) ? value.map(String).filter(Boolean) : value.split(/[,،]/).map((item) => item.trim()).filter(Boolean)).default([]),
   requiredPages: z.coerce.number().int().min(1).max(2000), deadline: optionalString, citationStyle: z.enum(["APA7", "IEEE", "MLA", "Harvard", "Chicago"]).default("APA7"),
   urgency: z.enum(["normal", "urgent", "critical"]).default("normal"), estimatedPrice: z.coerce.number().min(0).default(0), deposit: z.coerce.number().min(0).default(0), notes: optionalString,
@@ -73,6 +81,45 @@ const patchSchema = z.object({
 
 function json(data: unknown, status = 200) { return NextResponse.json(data, { status }); }
 function error(message: string, status = 400, details?: unknown) { return NextResponse.json({ error: message, details }, { status }); }
+
+const FIELD_LABELS: Record<string, string> = {
+  customerName: "اسم الزبون", phone: "رقم الهاتف", title: "عنوان البحث", researchType: "نوع البحث",
+  universityId: "الجامعة", universityName: "اسم الجامعة", college: "الكلية", department: "القسم",
+  supervisorName: "اسم المشرف", language: "اللغة", researchField: "المجال العلمي", keywords: "الكلمات المفتاحية",
+  requiredPages: "عدد الصفحات", deadline: "موعد التسليم", citationStyle: "نمط التوثيق", urgency: "مستوى الاستعجال",
+  estimatedPrice: "السعر التقديري", deposit: "العربون", notes: "الملاحظات", files: "الملفات",
+};
+function arabicIssue(field: string, issue: { code?: string }): string {
+  const label = FIELD_LABELS[field] || "الحقل";
+  switch (issue.code) {
+    case "too_small": return `${label} مطلوب أو غير مكتمل`;
+    case "too_big": return `${label}: القيمة كبيرة جداً`;
+    case "invalid_type": return `${label} مطلوب`;
+    case "invalid_value":
+    case "invalid_format": return `${label}: قيمة غير صحيحة`;
+    default: return `${label}: تحقق من القيمة`;
+  }
+}
+function fieldErrorsFromZod(zodError: z.ZodError): Record<string, string> {
+  const fieldErrors: Record<string, string> = {};
+  for (const issue of zodError.issues) {
+    const field = String(issue.path[0] ?? "");
+    if (!field || fieldErrors[field]) continue;
+    fieldErrors[field] = arabicIssue(field, issue);
+  }
+  return fieldErrors;
+}
+// Structured API error. Keeps `error` for backward-compatible clients (apiErrorMessage)
+// while adding success/message/fieldErrors/errorCode.
+function structuredError(message: string, opts: { status?: number; fieldErrors?: Record<string, string>; errorCode?: string } = {}) {
+  return NextResponse.json(
+    { success: false, error: message, message, fieldErrors: opts.fieldErrors ?? {}, errorCode: opts.errorCode ?? "RESEARCH_ORDER_ERROR" },
+    { status: opts.status ?? 400 },
+  );
+}
+function fieldError(field: string, message: string, errorCode = "VALIDATION_ERROR") {
+  return structuredError(message, { fieldErrors: { [field]: message }, errorCode });
+}
 async function requestBody(req: NextRequest) { return req.json().catch(() => ({})); }
 function actorName(user?: ResearchAdminUser | null) { return user ? user.fullName || user.username : "الموقع"; }
 function allowed(user: ResearchAdminUser, permission: string) { return user.role === "admin" || user.permissions.includes("research") || user.permissions.includes(permission); }
@@ -90,15 +137,16 @@ async function trace(orderId: number, action: string, description: string, user?
 async function notifyCustomer(customerId: number, orderId: number, token: string, type: string, title: string, body: string) {
   await db.insert(notificationsTable).values({ audienceType: "customer", customerId, type, title, body, entityType: "research_order", entityId: orderId, href: `/research/track/${token}` });
 }
-async function ensureCustomer(phone: string, name: string) {
-  const normalized = normalizeIraqiPhone(phone);
-  if (!normalized) return null;
-  const existing = await db.query.customersTable.findFirst({ where: eq(customersTable.phone, normalized) });
+type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+// `normalized` is the already-normalized phone; reuses an existing customer to
+// avoid duplicates, otherwise creates one. Runs inside the caller's transaction.
+async function ensureCustomerTx(tx: Executor, normalized: string, name: string) {
+  const [existing] = await tx.select().from(customersTable).where(eq(customersTable.phone, normalized)).limit(1);
   if (existing) {
-    if (!existing.name && name) await db.update(customersTable).set({ name, fullName: name, updatedAt: new Date() }).where(eq(customersTable.id, existing.id));
+    if (!existing.name && name) await tx.update(customersTable).set({ name, fullName: name, updatedAt: new Date() }).where(eq(customersTable.id, existing.id));
     return existing;
   }
-  const [created] = await db.insert(customersTable).values({ phone: normalized, name, fullName: name }).returning();
+  const [created] = await tx.insert(customersTable).values({ phone: normalized, name, fullName: name }).returning();
   return created;
 }
 async function persistFile(value: string, fileName: string, orderId: number) {
@@ -113,40 +161,69 @@ async function persistFile(value: string, fileName: string, orderId: number) {
   return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
 }
 
-async function createInvoice(order: any, customer: any, user?: ResearchAdminUser | null) {
-  const [invoice] = await db.insert(salesInvoicesTable).values({ invoiceNo: `RS-TMP-${randomUUID()}`, qrToken: order.qrToken, date: today(), customerName: customer.fullName || customer.name, customerPhone: customer.phone, customerId: customer.id, subtotal: String(order.estimatedPrice), discountAmount: String(order.discountAmount), total: String(order.totalAmount), paidAmount: "0", remainingAmount: String(order.totalAmount), paymentMethod: "cash", paymentStatus: numeric(order.totalAmount) ? "unpaid" : "paid", dueDate: order.deadline, status: "active", isInternal: 0, stockApplied: 0, notes: `فاتورة خدمة بحث أكاديمي ${order.researchNo}`, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
+async function createInvoiceTx(tx: Executor, order: any, customer: any, user?: ResearchAdminUser | null) {
+  const [invoice] = await tx.insert(salesInvoicesTable).values({ invoiceNo: `RS-TMP-${randomUUID().replace(/-/g, "")}`, qrToken: order.qrToken, date: today(), customerName: customer.fullName || customer.name, customerPhone: customer.phone, customerId: customer.id, subtotal: String(order.estimatedPrice), discountAmount: String(order.discountAmount), total: String(order.totalAmount), paidAmount: "0", remainingAmount: String(order.totalAmount), paymentMethod: "cash", paymentStatus: numeric(order.totalAmount) ? "unpaid" : "paid", dueDate: order.deadline, status: "active", isInternal: 0, stockApplied: 0, notes: `فاتورة خدمة بحث أكاديمي ${order.researchNo}`, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
   const invoiceNo = `AJN-RS-INV-${String(invoice.id).padStart(6, "0")}`;
-  await db.update(salesInvoicesTable).set({ invoiceNo }).where(eq(salesInvoicesTable.id, invoice.id));
-  await db.insert(salesInvoiceItemsTable).values({ invoiceId: invoice.id, productName: `خدمة بحث أكاديمي - ${order.title}`, quantity: "1", unitPrice: String(order.estimatedPrice), discount: String(order.discountAmount), total: String(order.totalAmount), costPrice: "0" });
+  await tx.update(salesInvoicesTable).set({ invoiceNo }).where(eq(salesInvoicesTable.id, invoice.id));
+  await tx.insert(salesInvoiceItemsTable).values({ invoiceId: invoice.id, productName: `خدمة بحث أكاديمي - ${order.title}`, quantity: "1", unitPrice: String(order.estimatedPrice), discount: String(order.discountAmount), total: String(order.totalAmount), costPrice: "0" });
   return { ...invoice, invoiceNo };
 }
 
 async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null) {
   await ensureResearchCenterTables();
   const parsed = orderSchema.safeParse(raw);
-  if (!parsed.success) return { response: error("تحقق من بيانات طلب البحث", 400, parsed.error.issues) };
-  const data = parsed.data;
-  const customer = await ensureCustomer(data.phone, data.customerName);
-  if (!customer) return { response: error("رقم الهاتف غير صحيح", 400) };
-  const total = Math.max(0, data.estimatedPrice);
-  if (data.deposit > total) return { response: error("العربون لا يمكن أن يتجاوز إجمالي الطلب", 400) };
-  const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
-  const [draft] = await db.insert(researchOrdersTable).values({ researchNo: `RS-TMP-${randomUUID()}`, qrToken: token, customerId: customer.id, title: data.title, researchType: data.researchType, universityId: data.universityId ?? null, universityName: data.universityName, college: data.college || "", department: data.department || "", supervisorName: data.supervisorName || null, language: data.language, researchField: data.researchField, keywords: data.keywords, requiredPages: data.requiredPages, deadline: data.deadline || null, citationStyle: data.citationStyle, urgency: data.urgency, notes: data.notes || null, estimatedPrice: String(data.estimatedPrice), totalAmount: String(total), paidAmount: "0", remainingAmount: String(total), paymentStatus: total ? "unpaid" : "paid", chapterCount: CHAPTERS.length, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
-  const researchNo = `AJN-RS-${new Date().getFullYear()}-${String(draft.id).padStart(6, "0")}`;
-  const [order] = await db.update(researchOrdersTable).set({ researchNo, updatedAt: new Date() }).where(eq(researchOrdersTable.id, draft.id)).returning();
-  await db.insert(researchChaptersTable).values(CHAPTERS.map(([chapterType, title], sortOrder) => ({ researchOrderId: order.id, chapterType, title, sortOrder })));
-  const invoice = await createInvoice(order, customer, user);
-  await db.update(researchOrdersTable).set({ invoiceId: invoice.id }).where(eq(researchOrdersTable.id, order.id));
-  for (const file of data.files) {
-    const fileUrl = await persistFile(file.fileUrl, file.fileName, order.id);
-    await db.insert(researchFilesTable).values({ researchOrderId: order.id, fileType: file.fileType, title: file.title, fileUrl, fileName: file.fileName, mimeType: file.mimeType || null, isCustomerVisible: true, uploadedBy: user?.id ?? null, uploadedByName: actorName(user) });
+  if (!parsed.success) {
+    return { response: structuredError("تحقق من بيانات طلب البحث", { fieldErrors: fieldErrorsFromZod(parsed.error), errorCode: "VALIDATION_ERROR" }) };
   }
-  await db.insert(researchStatusEventsTable).values({ researchOrderId: order.id, toStatus: "new", changedBy: user?.id ?? null, changedByName: actorName(user) });
-  await trace(order.id, "research_created", `تم إنشاء طلب البحث ${researchNo}`, user, { invoiceId: invoice.id });
-  await db.insert(notificationsTable).values({ audienceType: "admin", type: "research_order_new", title: "طلب بحث أكاديمي جديد", body: `${researchNo} - ${order.title}`, entityType: "research_order", entityId: order.id, href: "/admin/research/orders" });
-  await notifyCustomer(customer.id, order.id, token, "research_created", "تم استلام طلب البحث", `${researchNo} قيد المراجعة`);
-  if (data.deposit > 0 && user) await applyPayment(order.id, data.deposit, "cash", user);
-  return { order: { ...order, invoiceId: invoice.id, trackingUrl: `/research/track/${token}` }, invoice };
+  const data = parsed.data;
+  const normalizedPhone = normalizeIraqiPhone(data.phone);
+  if (!normalizedPhone) return { response: fieldError("phone", "رقم الهاتف غير صحيح") };
+  const total = Math.max(0, data.estimatedPrice);
+  if (data.deposit > total) return { response: fieldError("deposit", "العربون لا يمكن أن يتجاوز إجمالي الطلب") };
+  // 32-char token (128-bit) — unique enough and fits every qr_token column
+  // (research_orders varchar(96) and the shared sales_invoices qr_token).
+  const token = randomUUID().replace(/-/g, "");
+  try {
+    // Customer, order, chapters, invoice and attachments are created atomically:
+    // any failure rolls the whole thing back (no orphan orders/invoices/customers).
+    const { customer, order, invoice } = await db.transaction(async (tx) => {
+      const customer = await ensureCustomerTx(tx, normalizedPhone, data.customerName);
+      const [draft] = await tx.insert(researchOrdersTable).values({ researchNo: `RS-TMP-${randomUUID()}`, qrToken: token, customerId: customer.id, title: data.title, researchType: data.researchType, universityId: data.universityId ?? null, universityName: data.universityName, college: data.college || "", department: data.department || "", supervisorName: data.supervisorName || null, language: data.language, researchField: data.researchField, keywords: data.keywords, requiredPages: data.requiredPages, deadline: data.deadline || null, citationStyle: data.citationStyle, urgency: data.urgency, notes: data.notes || null, estimatedPrice: String(data.estimatedPrice), totalAmount: String(total), paidAmount: "0", remainingAmount: String(total), paymentStatus: total ? "unpaid" : "paid", chapterCount: CHAPTERS.length, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
+      const researchNo = `AJN-RS-${new Date().getFullYear()}-${String(draft.id).padStart(6, "0")}`;
+      const [order] = await tx.update(researchOrdersTable).set({ researchNo, updatedAt: new Date() }).where(eq(researchOrdersTable.id, draft.id)).returning();
+      await tx.insert(researchChaptersTable).values(CHAPTERS.map(([chapterType, title], sortOrder) => ({ researchOrderId: order.id, chapterType, title, sortOrder })));
+      const invoice = await createInvoiceTx(tx, order, customer, user);
+      await tx.update(researchOrdersTable).set({ invoiceId: invoice.id }).where(eq(researchOrdersTable.id, order.id));
+      for (const file of data.files) {
+        const fileUrl = await persistFile(file.fileUrl, file.fileName, order.id);
+        await tx.insert(researchFilesTable).values({ researchOrderId: order.id, fileType: file.fileType, title: file.title, fileUrl, fileName: file.fileName, mimeType: file.mimeType || null, isCustomerVisible: true, uploadedBy: user?.id ?? null, uploadedByName: actorName(user) });
+      }
+      await tx.insert(researchStatusEventsTable).values({ researchOrderId: order.id, toStatus: "new", changedBy: user?.id ?? null, changedByName: actorName(user) });
+      return { customer, order: { ...order, invoiceId: invoice.id }, invoice };
+    });
+    // Post-commit side effects (activity log, notifications). Failures here must
+    // not roll back a committed order, so they are best-effort.
+    await Promise.allSettled([
+      trace(order.id, "research_created", `تم إنشاء طلب البحث ${order.researchNo}`, user, { invoiceId: invoice.id }),
+      db.insert(notificationsTable).values({ audienceType: "admin", type: "research_order_new", title: "طلب بحث أكاديمي جديد", body: `${order.researchNo} - ${order.title}`, entityType: "research_order", entityId: order.id, href: "/admin/research/orders" }),
+      notifyCustomer(customer.id, order.id, token, "research_created", "تم استلام طلب البحث", `${order.researchNo} قيد المراجعة`),
+    ]);
+    // The deposit posts to the cash box via its own idempotent, locked flow —
+    // kept out of the creation transaction to avoid nested/duplicate cash entries.
+    if (data.deposit > 0 && user) {
+      try {
+        await applyPayment(order.id, data.deposit, "cash", user);
+      } catch (paymentError) {
+        console.error("[research.createOrder] deposit payment failed", { orderId: order.id, error: paymentError });
+      }
+    }
+    return { order: { ...order, trackingUrl: `/research/track/${token}` }, invoice };
+  } catch (err: any) {
+    // Log the full technical error server-side; never leak internals to the client.
+    console.error("[research.createOrder] failed", err);
+    if (err?.code === "23505") return { response: structuredError("تعذر إنشاء طلب مكرر، حدّث الصفحة ثم حاول مجدداً", { status: 409, errorCode: "DUPLICATE_ORDER" }) };
+    return { response: structuredError("تعذر إنشاء طلب البحث بسبب خطأ غير متوقع", { status: 500, errorCode: "RESEARCH_ORDER_CREATE_FAILED" }) };
+  }
 }
 
 async function applyPayment(orderId: number, amount: number, paymentMethod: string, user: ResearchAdminUser) {
