@@ -108,6 +108,7 @@ export const ListProductsResponseItem = zod.object({
   imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(ColorValue).optional(),
   isFeatured: zod.boolean().optional(),
+  availableInBouquetDesigner: zod.boolean().optional(),
   isActive: zod.boolean().optional(),
   sortOrder: zod.number().optional(),
   rating: zod.number().nullish(),
@@ -146,6 +147,7 @@ export const CreateProductBody = zod.object({
   imageMetadata: zod.array(zod.object({}).passthrough()).optional(),
   colors: zod.array(ColorValue).optional(),
   isFeatured: zod.boolean().optional(),
+  availableInBouquetDesigner: zod.boolean().optional(),
   isActive: zod.boolean().optional(),
   sortOrder: zod.number().optional(),
 });

@@ -75,6 +75,12 @@ export const productsTable = pgTable("products", {
 
   isFeatured: boolean("is_featured").notNull().default(false),
 
+  // Products outside the flower taxonomy stay out of the bouquet designer
+  // unless an administrator explicitly enables this channel.
+  availableInBouquetDesigner: boolean("available_in_bouquet_designer")
+    .notNull()
+    .default(false),
+
   isActive: boolean("is_active").notNull().default(true),
 
   sortOrder: integer("sort_order").notNull().default(0),

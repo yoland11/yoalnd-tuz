@@ -37,7 +37,7 @@ type ProductForm = {
   category?: string; subcategory?: string;
   images: string[]; videos: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
-  isFeatured: boolean; isActive?: boolean;
+  isFeatured: boolean; availableInBouquetDesigner?: boolean; isActive?: boolean;
 };
 
 type RentalBookingRow = {
@@ -56,7 +56,7 @@ const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
   isRental: false, pricePerDay: "0", isAsset: false,
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
-  images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, isActive: true,
+  images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, availableInBouquetDesigner: false, isActive: true,
 };
 
 const DEFAULT_LOW_STOCK_THRESHOLD = 5;
@@ -255,6 +255,7 @@ export default function ProductsPage() {
       imageMetadata: form.imageMetadata ?? [],
       colors: normalizeColors(form.colors ?? []),
       isFeatured: form.isFeatured,
+      availableInBouquetDesigner: form.availableInBouquetDesigner === true,
       ...(form.isActive !== undefined ? { isActive: form.isActive } : {}),
     } as any;
 
@@ -565,7 +566,7 @@ export default function ProductsPage() {
                             categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null, subcategoryIds: Array.isArray((p as any).subcategoryIds) ? (p as any).subcategoryIds : ((p as any).subcategoryId ? [(p as any).subcategoryId] : []),
                             category: p.category ?? "", subcategory: p.subcategory ?? "",
                             images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
-                            isFeatured: !!p.isFeatured, isActive: p.isActive !== false,
+                            isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, isActive: p.isActive !== false,
                           })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                             <Edit2 className="w-4 h-4" />
                           </button>
@@ -1379,6 +1380,10 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.isFeatured} onChange={e => onChange({ ...form, isFeatured: e.target.checked })} className="accent-primary" />
             منتج مميز
+          </label>
+          <label className="flex items-center gap-2 text-sm" title="مطلوب للتغليف والأشرطة وإضافات الباقة خارج قسم الورود">
+            <input type="checkbox" checked={form.availableInBouquetDesigner === true} onChange={e => onChange({ ...form, availableInBouquetDesigner: e.target.checked })} className="accent-primary" />
+            يظهر في مصمم الباقات
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.isActive ?? true} onChange={e => onChange({ ...form, isActive: e.target.checked })} className="accent-primary" />

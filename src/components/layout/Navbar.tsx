@@ -32,6 +32,7 @@ import { LanguageSwitcher } from "@/components/language-switcher";
 
 export function Navbar() {
   const [location] = useLocation();
+  const isFlowerStudio = location.startsWith("/design");
   const { data: cart } = useGetCart();
   const { data: settings } = usePublicSettings();
   const { data: customer } = useQuery({
@@ -64,13 +65,13 @@ export function Navbar() {
 
   return (
     <header
-      className="sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
-      style={{ backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}
+      className={`sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
+      style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}
     >
       <div
-        className="hidden border-b border-border/30 bg-card/80 md:block"
+        className={`hidden border-b border-border/30 bg-card/80 md:block ${isFlowerStudio ? "flower-design-navbar__top" : ""}`}
         dir="rtl"
-        style={{ backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}
+        style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.82)" }}
       >
         <div className="container mx-auto flex h-9 items-center justify-between gap-4 px-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-4">

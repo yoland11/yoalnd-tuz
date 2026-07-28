@@ -3889,6 +3889,9 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     colors: normalizeColors(p.colors ?? []),
     subcategory: p.subcategory ?? null,
     isFeatured: p.isFeatured,
+    availableInBouquetDesigner: Boolean(
+      p.availableInBouquetDesigner ?? p.available_in_bouquet_designer ?? false,
+    ),
     isActive: p.isActive ?? true,
     sortOrder: p.sortOrder ?? 0,
     rating: avgRating ?? null,
@@ -8174,6 +8177,7 @@ async function ensureStoreCategoryColumns(): Promise<void> {
       alter table "categories" add column if not exists "updated_at" timestamp not null default now();
       alter table "products" add column if not exists "category_id" integer references "categories" ("id");
       alter table "products" add column if not exists "subcategory_id" integer references "categories" ("id");
+      alter table "products" add column if not exists "available_in_bouquet_designer" boolean not null default false;
       update "products" p
       set "category_id" = c."id"
       from "categories" c
@@ -8191,6 +8195,7 @@ async function ensureStoreCategoryColumns(): Promise<void> {
       create index if not exists "categories_parent_active_sort_idx" on "categories" ("parent_id", "is_active", "sort_order");
       create index if not exists "products_category_id_active_idx" on "products" ("category_id", "is_active");
       create index if not exists "products_subcategory_id_active_idx" on "products" ("subcategory_id", "is_active");
+      create index if not exists "products_bouquet_designer_active_idx" on "products" ("available_in_bouquet_designer", "is_active");
     `,
       )
       .then(() => undefined)
@@ -12051,6 +12056,100 @@ async function handleProductVariants(
   return null;
 }
 
+type BouquetDesignerSection =
+  | "flowers"
+  | "bridal_bouquets"
+  | "ready_bouquets"
+  | "wrapping"
+  | "ribbons"
+  | "extras";
+
+const normalizeBouquetCategoryKey = (value: unknown) =>
+  String(value ?? "")
+    .normalize("NFKD")
+    .toLocaleLowerCase()
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    .replace(/[^a-z0-9\u0621-\u064A]+/g, "");
+
+function bouquetCategoryText(category: any) {
+  return [category?.slug, category?.name, category?.nameAr, category?.name_ar]
+    .map(normalizeBouquetCategoryKey)
+    .join(" ");
+}
+
+function isBouquetRootCategory(category: any) {
+  const value = bouquetCategoryText(category);
+  return [
+    "flower",
+    "flowers",
+    "bouquet",
+    "bouquets",
+    "bridal bouquet",
+    "bridal bouquets",
+    "ورود",
+    "باقات",
+    "باقة",
+    "مسكات",
+    "مسكة",
+    "ورود ومسكات وباقة",
+    "ورود ومسكات وباقات",
+  ].some((key) => value.includes(normalizeBouquetCategoryKey(key)));
+}
+
+function bouquetDesignerSection(categoryIds: number[], categoriesById: Map<number, any>, allowedCategoryIds: Set<number>, explicitlyEnabled: boolean): BouquetDesignerSection {
+  const specificCategoryIds = categoryIds.filter((id) =>
+    !categoryIds.some((candidateId) => categoriesById.get(candidateId)?.parentId === id),
+  );
+  const specificCategories = specificCategoryIds.map((id) => categoriesById.get(id));
+  const categoryText = specificCategories
+    .map((category) => bouquetCategoryText(category))
+    .join(" ");
+  if (/(wrapp|تغليف|ورق)/.test(categoryText)) return "wrapping";
+  if (/(ribbon|شريط)/.test(categoryText)) return "ribbons";
+  // A shared root such as "ورود ومسكات وباقة" is the flowers section until
+  // its Admin taxonomy has explicit child categories for the other sections.
+  if (/(flowers|flower|ورود)/.test(categoryText)) return "flowers";
+  if (/(bridal|مسكات|مسكة)/.test(categoryText)) return "bridal_bouquets";
+  if (/(bouquet|باقات|باقة)/.test(categoryText) && !/(flowers|flower|ورود)/.test(categoryText)) return "ready_bouquets";
+  if (categoryIds.some((id) => allowedCategoryIds.has(id))) return "flowers";
+  return explicitlyEnabled ? "extras" : "flowers";
+}
+
+function productBouquetCategoryIds(product: any) {
+  return [...new Set([
+    Number(product.categoryId ?? product.category_id),
+    Number(product.subcategoryId ?? product.subcategory_id),
+    ...(Array.isArray(product.subcategoryIds ?? product.subcategory_ids)
+      ? (product.subcategoryIds ?? product.subcategory_ids).map(Number)
+      : []),
+  ].filter(Number.isInteger).filter((id) => id > 0))];
+}
+
+async function resolveBouquetDesignerScope() {
+  const categories = await db.query.categoriesTable.findMany({
+    where: eq(categoriesTable.isActive, true),
+  });
+  const byParent = new Map<number | null, number[]>();
+  for (const category of categories) {
+    const parentId = category.parentId ?? null;
+    byParent.set(parentId, [...(byParent.get(parentId) ?? []), category.id]);
+  }
+  const allowedCategoryIds = new Set<number>(
+    categories.filter(isBouquetRootCategory).map((category) => category.id),
+  );
+  const queue = [...allowedCategoryIds];
+  while (queue.length) {
+    const parentId = queue.shift()!;
+    for (const childId of byParent.get(parentId) ?? []) {
+      if (!allowedCategoryIds.has(childId)) {
+        allowedCategoryIds.add(childId);
+        queue.push(childId);
+      }
+    }
+  }
+  return { categoriesById: new Map(categories.map((category) => [category.id, category])), allowedCategoryIds };
+}
+
 async function handleProducts(req: NextRequest, parts: string[]) {
   const method = req.method;
   await ensureAdminProductsColumns();
@@ -12063,12 +12162,28 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   // template and its recipe remains the source of component quantities/cost.
   if (method === "GET" && parts[1] === "designer-catalog") {
     await Promise.all([ensureVariantTables(), ensureProductionTables()]);
+    const { categoriesById, allowedCategoryIds } = await resolveBouquetDesignerScope();
+    const allowedIds = [...allowedCategoryIds];
+    const allowedIdSql = allowedIds.length
+      ? sql.join(allowedIds.map((id) => sql`${id}`), sql`, `)
+      : null;
+    const categoryScope = allowedIdSql
+      ? or(
+          inArray(productsTable.categoryId, allowedIds),
+          inArray(productsTable.subcategoryId, allowedIds),
+          sql`exists (select 1 from jsonb_array_elements_text(coalesce(${productsTable.subcategoryIds}, '[]'::jsonb)) as designer_category_id(value) where value::integer in (${allowedIdSql}))`,
+          eq(productsTable.availableInBouquetDesigner, true),
+        )
+      : eq(productsTable.availableInBouquetDesigner, true);
     const products = await db.query.productsTable.findMany({
-      where: eq(productsTable.isActive, true),
+      where: and(eq(productsTable.isActive, true), categoryScope),
       orderBy: (p, { asc, desc }) => [asc(p.sortOrder), desc(p.updatedAt)],
       limit: 240,
     });
-    const hydrated = await hydrateSharedStockProducts(products);
+    const hydrated = (await hydrateSharedStockProducts(products)).filter((product: any) => {
+      const categoryIds = productBouquetCategoryIds(product);
+      return categoryIds.some((id) => allowedCategoryIds.has(id)) || Boolean(product.availableInBouquetDesigner);
+    });
     const productIds = hydrated.map((product) => Number(product.id));
     const [variantResult, recipeResult] = await Promise.all([
       db.execute(sql`select * from product_variants where is_active = true order by sort_order asc, id asc`),
@@ -12102,8 +12217,17 @@ async function handleProducts(req: NextRequest, parts: string[]) {
     }, 0);
     return json({
       version: String(version),
+      catalogScope: "flower-only-v2",
+      allowedCategoryIds: allowedIds,
       products: hydrated.map((product: any) => ({
         ...formatProduct(product),
+        designerCategoryIds: productBouquetCategoryIds(product),
+        designerSection: bouquetDesignerSection(
+          productBouquetCategoryIds(product),
+          categoriesById,
+          allowedCategoryIds,
+          Boolean(product.availableInBouquetDesigner),
+        ),
         variants: variantsByProduct.get(Number(product.id)) ?? [],
         recipe: recipesByProduct.get(Number(product.id)) ?? [],
         isBouquetTemplate: (recipesByProduct.get(Number(product.id))?.length ?? 0) > 0,
@@ -12466,6 +12590,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           : [],
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
+        availableInBouquetDesigner: data.availableInBouquetDesigner ?? false,
         subcategory: productCategories.subcategory,
         isActive: data.isActive ?? true,
         sortOrder: data.sortOrder ?? 0,
@@ -12553,6 +12678,7 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "imageMetadata",
       "colors",
       "isFeatured",
+      "availableInBouquetDesigner",
       "descriptionAr",
       "subcategory",
       "isActive",
