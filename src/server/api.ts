@@ -44475,6 +44475,32 @@ function isKoshaBookingAssignedTo(row: any, staffId: number | null) {
   return candidates.some((value) => Number(value) === Number(staffId));
 }
 
+/**
+ * A booking with no assignee at all. These are pending work any kosha crew member
+ * can pick up, and they must stay visible (the "Unassigned Kosha bookings" rule) —
+ * never silently dropped just because dispatch hasn't happened yet.
+ */
+function isKoshaBookingUnassigned(row: any) {
+  return (
+    !Number(row?.assignedStaffId) &&
+    !Number(row?.primaryEmployeeId) &&
+    !Number(row?.assistantEmployeeId)
+  );
+}
+
+/**
+ * The direct-URL access guard for a single kosha booking. It MUST mirror the list
+ * visibility rule (getVisibleKoshaBookingsForStaff) exactly, otherwise a booking a
+ * crew member can see in the list would 403 when they open it.
+ */
+function canStaffOpenKoshaBooking(auth: AdminUser, row: any) {
+  return (
+    canSeeAllKoshaBookings(auth) ||
+    isKoshaBookingAssignedTo(row, auth.id) ||
+    isKoshaBookingUnassigned(row)
+  );
+}
+
 async function formatKoshaBookingForCrew(row: any) {
   const base = await formatKoshaBooking(row);
   const details = (row.bookingDetails ?? row.booking_details ?? {}) as Record<string, any>;
@@ -44483,8 +44509,56 @@ async function formatKoshaBookingForCrew(row: any) {
     ...base,
     executionStage,
     assignedStaffId: row.assignedStaffId ?? row.assigned_staff_id ?? null,
+    // Carry the raw assignment ids onto the crew row so the visibility predicate
+    // (isKoshaBookingAssignedTo) works identically for the counter, the list and
+    // the detail guard — they must all scope on the same fields.
+    primaryEmployeeId: row.primaryEmployeeId ?? row.primary_employee_id ?? null,
+    assistantEmployeeId: row.assistantEmployeeId ?? row.assistant_employee_id ?? null,
+    assignedTeamId: row.assignedTeamId ?? row.assigned_team_id ?? null,
     bucket: crewBucket(row, baghdadToday()),
   };
+}
+
+/**
+ * The single source of truth for "which kosha bookings can this staff member see".
+ *
+ * Both the dashboard counter and the bookings list build from this, so the two can
+ * never disagree (the previous bug: the counter counted every active booking while
+ * the list was scoped to the crew member's own assignments, so a crew member saw
+ * "10" in the counter but an empty list).
+ *
+ * Supervisors (admin/manager) get the whole active board — they dispatch and
+ * supervise. Crew get the bookings assigned to them PLUS the unassigned ones
+ * (pending work to pick up); they never see another crew member's assigned jobs.
+ * Cancelled bookings are excluded for both. This is the single set the counter and
+ * the list both build from, so they can never disagree.
+ */
+async function getVisibleKoshaBookingsForStaff(
+  auth: AdminUser,
+): Promise<{ visible: any[]; supervisor: boolean }> {
+  const [rows, routedOrders] = await Promise.all([
+    db.query.koshaBookingsTable.findMany({
+      orderBy: [desc(koshaBookingsTable.createdAt)],
+      limit: 500,
+    }),
+    loadRoutedKoshaServiceOrders(),
+  ]);
+  const crewRows = [
+    ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
+    ...(await Promise.all(
+      routedOrders.map(({ order, service }) =>
+        formatRoutedKoshaServiceBookingForCrew(order, service),
+      ),
+    )),
+  ].filter((r: any) => String(r.status ?? "") !== "cancelled");
+  const supervisor = canSeeAllKoshaBookings(auth);
+  const visible = supervisor
+    ? crewRows
+    : crewRows.filter(
+        (r: any) =>
+          isKoshaBookingAssignedTo(r, auth.id) || isKoshaBookingUnassigned(r),
+      );
+  return { visible, supervisor };
 }
 
 async function addKoshaEvent(input: {
@@ -45705,22 +45779,11 @@ async function handleStaffPortal(
   }
 
   // ── Dashboard ──
+  // Counts are computed from the SAME scoped set the list uses, so the counter and
+  // the list always agree (see getVisibleKoshaBookingsForStaff).
   if (resource === "dashboard" && method === "GET") {
     const today = baghdadToday();
-    const rows = await db.query.koshaBookingsTable.findMany({
-      orderBy: [desc(koshaBookingsTable.createdAt)],
-      limit: 500,
-    });
-    const routedOrders = await loadRoutedKoshaServiceOrders();
-    const crewRows = [
-      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
-      ...(await Promise.all(routedOrders.map(({ order, service }) =>
-        formatRoutedKoshaServiceBookingForCrew(order, service),
-      ))),
-    ];
-    const active = crewRows.filter(
-      (r: any) => String(r.status ?? "") !== "cancelled",
-    );
+    const { visible } = await getVisibleKoshaBookingsForStaff(auth);
     const counts: Record<CrewBucket, number> = {
       today: 0,
       tomorrow: 0,
@@ -45730,7 +45793,7 @@ async function handleStaffPortal(
     };
     const todayList: any[] = [];
     const tomorrowList: any[] = [];
-    for (const r of active) {
+    for (const r of visible) {
       const b = crewBucket(r, today);
       counts[b] += 1;
       if (b === "today") todayList.push(r);
@@ -45741,33 +45804,21 @@ async function handleStaffPortal(
 
   // ── Bookings list ──
   if (resource === "bookings" && !id && method === "GET") {
-    const bucket = req.nextUrl.searchParams.get("bucket") as
-      | CrewBucket
-      | "all"
-      | null;
+    const bucketParam = req.nextUrl.searchParams.get("bucket");
+    const bucket = bucketParam as CrewBucket | "all" | "unassigned" | null;
     const search = (req.nextUrl.searchParams.get("search") || "").trim();
-    const today = baghdadToday();
-    let rows = await db.query.koshaBookingsTable.findMany({
-      orderBy: [desc(koshaBookingsTable.createdAt)],
-      limit: 500,
-    });
-    const routedOrders = await loadRoutedKoshaServiceOrders();
-    let crewRows = [
-      ...(await Promise.all(rows.map(formatKoshaBookingForCrew))),
-      ...(await Promise.all(routedOrders.map(({ order, service }) =>
-        formatRoutedKoshaServiceBookingForCrew(order, service),
-      ))),
-    ].filter((r: any) => String(r.status ?? "") !== "cancelled");
+    // Same scoped set as the counter — crew see their assignments + unassigned,
+    // supervisors see the whole active board. No duplicated filter logic.
+    const { visible } = await getVisibleKoshaBookingsForStaff(auth);
+    let crewRows = visible;
 
-    // Crew see only their own work; managers and admins keep the full view so
-    // they can dispatch and supervise. Previously every holder of the "koshas"
-    // permission saw — and could open — every booking.
-    if (!canSeeAllKoshaBookings(auth)) {
-      crewRows = crewRows.filter((r: any) => isKoshaBookingAssignedTo(r, auth.id));
-    }
-
-    if (bucket && bucket !== "all")
+    // "Unassigned" triage filter: active bookings with no assignee yet, drawn from
+    // the same visible set so it stays consistent for crew and supervisors alike.
+    if (bucket === "unassigned") {
+      crewRows = crewRows.filter(isKoshaBookingUnassigned);
+    } else if (bucket && bucket !== "all") {
       crewRows = crewRows.filter((r: any) => r.bucket === bucket);
+    }
     if (search) {
       const q = search.toLowerCase();
       crewRows = crewRows.filter(
@@ -45794,7 +45845,7 @@ async function handleStaffPortal(
     if (detail && sourceHint !== "service") {
       // Direct-URL guard: the list is filtered by assignment, so the detail
       // endpoint must enforce the same rule or the filter is bypassable.
-      if (!canSeeAllKoshaBookings(auth) && !isKoshaBookingAssignedTo(detail.booking, auth.id))
+      if (!canStaffOpenKoshaBooking(auth, detail.booking))
         return error("هذا الحجز غير مُسند إليك", 403);
       return json(detail);
     }

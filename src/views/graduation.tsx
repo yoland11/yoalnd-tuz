@@ -30,6 +30,7 @@ import {
   Trash2,
   Upload,
   UserRound,
+  Users,
   WandSparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -1150,12 +1151,6 @@ function GraduationConfigurator() {
           ) : null}
         </div>
 
-        {step === 0 ? (
-          <div className="mb-5">
-            <GraduationMediaGallery />
-          </div>
-        ) : null}
-
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <section className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5">
             <AnimatePresence mode="wait" initial={false}>
@@ -2228,6 +2223,30 @@ function GraduationConfigurator() {
 
 type GraduationEntryMode = "choice" | "individual" | "group" | "student";
 
+function GraduationBookingTypeSwitcher({
+  mode,
+  onIndividual,
+  onGroup,
+}: {
+  mode: Exclude<GraduationEntryMode, "choice" | "student">;
+  onIndividual: () => void;
+  onGroup: () => void;
+}) {
+  return (
+    <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 sm:px-4" aria-label="نوع الحجز">
+      <p className="text-sm font-semibold text-foreground">نوع الحجز</p>
+      <div className="flex w-full gap-2 sm:w-auto">
+        <Button type="button" variant={mode === "individual" ? "default" : "outline"} className="flex-1 sm:flex-none" onClick={onIndividual}>
+          <UserRound className="ml-2 h-4 w-4" /> حجز فردي
+        </Button>
+        <Button type="button" variant={mode === "group" ? "default" : "outline"} className="flex-1 sm:flex-none" onClick={onGroup}>
+          <Users className="ml-2 h-4 w-4" /> حجز جماعي
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 export default function GraduationEntry() {
   const [mode, setMode] = useState<GraduationEntryMode>("choice");
   const [groupToken, setGroupToken] = useState("");
@@ -2259,18 +2278,40 @@ export default function GraduationEntry() {
     window.history.replaceState({}, "", url);
   }
 
-  if (mode === "individual") return <GraduationConfigurator />;
-  if (mode === "group") return <GraduationGroupBuilder onBack={reset} />;
-  if (mode === "student")
-    return (
-      <GraduationGroupStudentRegistration token={groupToken} onBack={reset} />
-    );
   return (
-    <GraduationOrderTypeChoice
-      onIndividual={() => setMode("individual")}
-      onGroup={() => setMode("group")}
-      onJoin={openStudent}
-    />
+    <div className="min-h-dvh bg-background px-4 py-6 sm:py-10" dir="rtl">
+      <div className="mx-auto max-w-5xl space-y-5">
+        <header className="text-center">
+          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/30 bg-primary/10 text-primary">
+            <GraduationCap className="h-6 w-6" />
+          </span>
+          <h1 className="mt-4 text-2xl font-bold text-foreground sm:text-3xl">تجهيزات التخرج</h1>
+          <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">استعرض نماذج التجهيزات ثم اختر نوع الحجز المناسب.</p>
+        </header>
+
+        <GraduationMediaGallery />
+
+        {mode === "choice" ? (
+          <GraduationOrderTypeChoice
+            embedded
+            onIndividual={() => setMode("individual")}
+            onGroup={() => setMode("group")}
+            onJoin={openStudent}
+          />
+        ) : mode === "student" ? (
+          <GraduationGroupStudentRegistration token={groupToken} onBack={reset} />
+        ) : (
+          <>
+            <GraduationBookingTypeSwitcher
+              mode={mode}
+              onIndividual={() => setMode("individual")}
+              onGroup={() => setMode("group")}
+            />
+            {mode === "individual" ? <GraduationConfigurator /> : <GraduationGroupBuilder onBack={reset} />}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -54,15 +54,19 @@ export function GraduationOrderTypeChoice({
   onIndividual,
   onGroup,
   onJoin,
+  embedded = false,
 }: {
   onIndividual: () => void;
   onGroup: () => void;
   onJoin: (token: string) => void;
+  embedded?: boolean;
 }) {
   const [code, setCode] = useState("");
+  const Root = embedded ? "section" : "main";
   return (
-    <main className="min-h-dvh bg-background px-4 py-10" dir="rtl">
-      <div className="mx-auto max-w-5xl">
+    <Root className={embedded ? "" : "min-h-dvh bg-background px-4 py-10"} dir="rtl">
+      <div className={embedded ? "" : "mx-auto max-w-5xl"}>
+        {!embedded && (
         <header className="mb-8 text-center">
           <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/30 bg-primary/10 text-primary">
             <GraduationCap className="h-6 w-6" />
@@ -75,6 +79,7 @@ export function GraduationOrderTypeChoice({
             التخرج.
           </p>
         </header>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2">
           <button
@@ -140,7 +145,7 @@ export function GraduationOrderTypeChoice({
           </div>
         </section>
       </div>
-    </main>
+    </Root>
   );
 }
 
