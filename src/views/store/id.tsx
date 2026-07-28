@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { CalendarDays, Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart, Loader2 } from "lucide-react";
+import { CalendarDays, Check, Star, ShoppingCart, ChevronRight, ChevronLeft, X, Minus, Plus, Heart, Loader2, Package } from "lucide-react";
 import { ColorDot } from "@/components/product-colors";
 import { useWishlist } from "@/lib/wishlist";
 import { useT } from "@/lib/i18n";
@@ -40,6 +40,7 @@ export default function ProductDetail() {
   const rentalPricePerDay = Number((product as any)?.pricePerDay ?? product?.price ?? 0);
 
   const [selectedImage, setSelectedImage] = useState(0);
+  const [primaryImageFailed, setPrimaryImageFailed] = useState(false);
   const [selectedColor, setSelectedColor] = useState<ProductColor | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -58,9 +59,7 @@ export default function ProductDetail() {
 
   const createReview = useCreateReview();
 
-  const images = product?.images?.length
-    ? product.images
-    : ["/placeholder-product.jpg"];
+  const images = product?.images?.filter(Boolean) ?? [];
   const videos = product?.videos?.filter(Boolean) ?? [];
   const imageMetadata = product?.imageMetadata ?? [];
   const colors = useMemo(() => normalizeColors(product?.colors ?? []), [product?.colors]);
@@ -79,6 +78,8 @@ export default function ProductDetail() {
 
   useEffect(() => {
     if (!product) return;
+    setSelectedImage(0);
+    setPrimaryImageFailed(false);
     logCustomerActivity({
       action: "product_open",
       entityType: "product",
@@ -206,14 +207,15 @@ export default function ProductDetail() {
           <div className="space-y-4">
             <div
               className="relative aspect-[4/3] max-h-72 rounded-xl overflow-hidden bg-card cursor-zoom-in border border-border/40"
-              onClick={() => setPreviewOpen(true)}
+              onClick={() => images.length > 0 && setPreviewOpen(true)}
             >
-              <img
+              {images.length && !primaryImageFailed ? <img
                 src={images[selectedImage]}
                 alt={productName}
                 className="w-full h-full transition-transform duration-300 hover:scale-105"
                 style={{ objectFit: String(imageMetadata[selectedImage]?.objectFit ?? "contain") as any }}
-              />
+                onError={() => setPrimaryImageFailed(true)}
+              /> : <div className="grid h-full w-full place-items-center text-muted-foreground"><Package className="h-8 w-8" /></div>}
               <span className="absolute bottom-3 left-3 text-xs text-white/70 bg-black/40 px-2 py-1 rounded">{t("معاينة")}</span>
             </div>
             {images.length > 1 && (
@@ -221,7 +223,7 @@ export default function ProductDetail() {
                 {images.map((img, i) => (
                   <button
                     key={i}
-                    onClick={() => setSelectedImage(i)}
+                    onClick={() => { setPrimaryImageFailed(false); setSelectedImage(i); }}
                     aria-label={`${t("صورة")} ${i + 1}`}
                     aria-pressed={i === selectedImage}
                     className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${i === selectedImage ? "border-primary" : "border-transparent hover:border-border/60"}`}
@@ -517,7 +519,7 @@ export default function ProductDetail() {
       </div>
 
       {/* Fullscreen Preview Modal */}
-      {previewOpen && (
+      {previewOpen && images.length > 0 && (
         <div
           className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4"
           onClick={() => setPreviewOpen(false)}

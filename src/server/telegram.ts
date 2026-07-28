@@ -1,4 +1,6 @@
 import PDFDocument from "pdfkit";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db, settingsTable } from "@workspace/db";
@@ -393,10 +395,25 @@ function sanitizeFilename(value: string) {
   return safe || "ajn-document.pdf";
 }
 
-function pdfFontPaths() {
+function publicAssetPath(relativePath: string) {
+  const candidates = [
+    process.env.AJN_PUBLIC_DIR,
+    path.resolve(process.cwd(), "public"),
+    path.resolve(process.cwd(), ".next", "standalone", "public"),
+  ].filter((value): value is string => Boolean(value));
+  return candidates
+    .map((directory) => path.join(directory, relativePath))
+    .find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function pdfFontAssets() {
+  const regularPath = publicAssetPath("fonts/Cairo-Regular.ttf");
+  const boldPath = publicAssetPath("fonts/Cairo-Bold.ttf");
+  if (!regularPath || !boldPath)
+    throw new Error("PDF fonts are unavailable in the application bundle");
   return {
-    regular: "public/fonts/Cairo-Regular.ttf",
-    bold: "public/fonts/Cairo-Bold.ttf",
+    regular: regularPath,
+    bold: boldPath,
   };
 }
 
@@ -422,28 +439,32 @@ function createPdf(
   qrDataUrl?: string | null,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    // Supplying an embedded font at construction prevents PDFKit from looking
+    // for its bundled Helvetica.afm in serverless/standalone deployments.
+    const fonts = pdfFontAssets();
     const doc = new PDFDocument({
       size: "A4",
       margin: 42,
+      font: fonts.regular,
       info: { Title: title, Author: "AJN" },
     });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    const fonts = pdfFontPaths();
     doc.registerFont("Cairo", fonts.regular).font("Cairo");
     doc.registerFont("CairoBold", fonts.bold);
     const rtlOptions: PDFKit.Mixins.TextOptions = {
       align: "right",
       features: ["rtla"],
     };
-    const logo = "public/icons/icon-192.png";
-    doc.image(logo, 507, 36, {
-      fit: [46, 46],
-      align: "center",
-      valign: "center",
-    });
+    const logo = publicAssetPath("icons/icon-192.png");
+    if (logo)
+      doc.image(logo, 507, 36, {
+        fit: [46, 46],
+        align: "center",
+        valign: "center",
+      });
     doc.font("CairoBold");
     doc
       .fillColor("#111111")

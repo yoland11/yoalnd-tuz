@@ -163,6 +163,10 @@ export function getProviderStatus(): Record<string, { configured: boolean; envVa
   return out;
 }
 
+export function isWhatsAppProviderConfigured(provider: string): boolean {
+  return getProviderStatus()[provider]?.configured === true;
+}
+
 export function renderTemplate(
   tpl: string,
   vars: Record<string, string | number | null | undefined>,
@@ -343,6 +347,12 @@ export async function whatsappSend(
   if (!to) {
     await logEntry(to, event, message, "failed", "phone empty", s.provider);
     return result;
+  }
+  if (!isWhatsAppProviderConfigured(s.provider)) {
+    const error = "Pending Configuration: provider credentials are missing";
+    await logEntry(to, event, message, "pending_config", error, s.provider);
+    logger.warn({ event, to, provider: s.provider }, "WhatsApp notification pending configuration");
+    return { ok: false, error };
   }
   try {
     result = await dispatch(s.provider, to, message);

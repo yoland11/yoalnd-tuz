@@ -449,6 +449,7 @@ export const GetCartResponse = zod.object({
     zod.object({
       id: zod.number(),
       productId: zod.number(),
+      variantId: zod.number().nullish(),
       product: zod
         .object({
           id: zod.number(),
@@ -486,6 +487,7 @@ export const GetCartResponse = zod.object({
  */
 export const AddToCartBody = zod.object({
   productId: zod.number(),
+  variantId: zod.number().int().positive().optional(),
   quantity: zod.number(),
   selectedColor: zod.string().optional(),
   selectedColorData: ColorObject.optional(),
@@ -497,6 +499,7 @@ export const AddToCartResponse = zod.object({
     zod.object({
       id: zod.number(),
       productId: zod.number(),
+      variantId: zod.number().nullish(),
       product: zod
         .object({
           id: zod.number(),

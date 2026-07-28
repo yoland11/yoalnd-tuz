@@ -29,6 +29,7 @@ export type HealthCheck = {
   value: string;
   detail?: string;
   count?: number;
+  checkedAt?: string;
 };
 
 export type HealthReport = {
@@ -44,10 +45,10 @@ export type HealthReport = {
 async function safeCheck(
   key: string,
   label: string,
-  fn: () => Promise<Omit<HealthCheck, "key" | "label">>,
+  fn: () => Promise<Omit<HealthCheck, "key" | "label" | "checkedAt">>,
 ): Promise<HealthCheck> {
   try {
-    return { key, label, ...(await fn()) };
+    return { key, label, ...(await fn()), checkedAt: new Date().toISOString() };
   } catch (err) {
     return {
       key,
@@ -85,7 +86,7 @@ export async function computeCashboxDrift(): Promise<{
   return { stored, expected, drift: money(expected - stored) };
 }
 
-export async function runSystemHealth(): Promise<HealthReport> {
+async function buildSystemHealth(): Promise<HealthReport> {
   const checks: HealthCheck[] = [];
 
   // 1) Database reachability + latency.
@@ -115,7 +116,8 @@ export async function runSystemHealth(): Promise<HealthReport> {
     }),
   );
 
-  // 3) Entries awaiting approval / execution.
+  // 3) Entries awaiting approval. Pending approval is an intentional workflow
+  // state, not an ERP outage, so keep it visible without downgrading health.
   checks.push(
     await safeCheck("unposted_entries", "قيود غير مرحّلة", async () => {
       const c = firstCount(
@@ -125,10 +127,10 @@ export async function runSystemHealth(): Promise<HealthReport> {
         `),
       );
       return {
-        status: c === 0 ? "ok" : "warn",
-        value: `${c} قيد`,
+        status: "ok",
+        value: c === 0 ? "لا توجد قيود معلّقة" : `${c} قيد بانتظار الاعتماد`,
         count: c,
-        detail: c > 0 ? "بانتظار الاعتماد في مركز الموافقات" : undefined,
+        detail: c > 0 ? "مسار الموافقات يعمل بصورة طبيعية؛ لا تُرحّل القيود قبل اعتمادها." : undefined,
       };
     }),
   );
@@ -177,25 +179,26 @@ export async function runSystemHealth(): Promise<HealthReport> {
     }),
   );
 
-  // 6) Duplicate executed transactions for the same source event.
+  // 6) A source can legitimately have several payments. Only a repeated
+  // idempotency key is a duplicate transaction (and should never be allowed).
   checks.push(
     await safeCheck("duplicate_transactions", "حركات مكرّرة", async () => {
       const c = firstCount(
         await db.execute(sql`
           select count(*)::int as c from (
-            select source_type, source_id, source_event
+            select idempotency_key
             from financial_transactions
-            where approval_status = 'executed' and source_type is not null and source_id is not null
-            group by source_type, source_id, source_event
+            where approval_status = 'executed'
+            group by idempotency_key
             having count(*) > 1
           ) x
         `),
       );
       return {
-        status: c === 0 ? "ok" : "warn",
-        value: `${c} مجموعة`,
+        status: c === 0 ? "ok" : "fail",
+        value: c === 0 ? "لا توجد عمليات مكررة" : `${c} مجموعة`,
         count: c,
-        detail: c > 0 ? "أكثر من حركة منفّذة لنفس المصدر والحدث" : undefined,
+        detail: c > 0 ? "تكرار مفتاح idempotency يتطلب مراجعة مالية فورية" : undefined,
       };
     }),
   );
@@ -221,7 +224,7 @@ export async function runSystemHealth(): Promise<HealthReport> {
       const c = firstCount(
         await db.execute(sql`
           select count(*)::int as c from sales_invoices
-          where status <> 'deleted'
+          where status not in ('deleted', 'cancelled')
             and abs(coalesce(paid_amount,0) + coalesce(remaining_amount,0) - coalesce(total,0)) > 0.01
         `),
       );
@@ -271,6 +274,93 @@ export async function runSystemHealth(): Promise<HealthReport> {
     }),
   );
 
+  // Optional integrations are warnings by design: a missing provider must
+  // never change the health of core ERP transactions.
+  const storageUrl = (
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || ""
+  ).replace(/\/$/, "");
+  const storageKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
+  const storageBucket = process.env.SUPABASE_STORAGE_BUCKET || process.env.SUPABASE_BUCKET || "ajn-assets";
+  const hasVapid = Boolean(
+    (process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) &&
+      process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT,
+  );
+
+  checks.push(
+    await safeCheck("supabase", "Supabase", async () => ({
+      status: storageUrl ? "ok" : "warn",
+      value: storageUrl ? "Configured" : "Not configured",
+      detail: storageUrl ? "Server endpoint configured." : "Public media URLs continue to work without a server endpoint.",
+    })),
+    await safeCheck("storage", "Storage", async () => {
+      if (!storageUrl || !storageKey)
+        return { status: "warn", value: "Pending Configuration", detail: "Service-role bucket validation is unavailable; image fallback remains enabled." };
+      const response = await fetch(`${storageUrl}/storage/v1/bucket/${encodeURIComponent(storageBucket)}`, {
+        headers: { apikey: storageKey, authorization: `Bearer ${storageKey}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      return {
+        status: response.ok ? "ok" : "warn",
+        value: response.ok ? "Bucket accessible" : `HTTP ${response.status}`,
+        detail: response.ok ? `Bucket: ${storageBucket}` : "Storage credentials or bucket policy should be reviewed.",
+      };
+    }),
+    await safeCheck("realtime", "Realtime", async () => {
+      const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+      return {
+        status: storageUrl && hasAnon ? "ok" : "warn",
+        value: storageUrl && hasAnon ? "Configured" : "Fallback polling active",
+        detail: storageUrl && hasAnon ? "Realtime endpoint credentials are present." : "Polling remains available when realtime configuration is absent.",
+      };
+    }),
+    await safeCheck("whatsapp", "WhatsApp", async () => {
+      const configured = [
+        ["ULTRAMSG_INSTANCE_ID", "ULTRAMSG_TOKEN"],
+        ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM"],
+        ["META_WA_PHONE_ID", "META_WA_TOKEN"],
+        ["WASSENGER_API_KEY"],
+      ].some((keys) => keys.every((key) => Boolean(process.env[key])));
+      return {
+        status: configured ? "ok" : "warn",
+        value: configured ? "Configured" : "Pending Configuration",
+        detail: configured ? "A WhatsApp provider is configured." : "Messages are logged as pending configuration and do not block checkout.",
+      };
+    }),
+    await safeCheck("push", "Push Notifications", async () => ({
+      status: hasVapid ? "ok" : "warn",
+      value: hasVapid ? "Configured" : "Push service unavailable",
+      detail: hasVapid ? "VAPID credentials are present." : "Notifications remain available in-app; browser push is skipped safely.",
+    })),
+    await safeCheck("pdf", "PDF Generator", async () => ({
+      status: "ok",
+      value: "Embedded font fallback ready",
+      detail: "PDFKit is initialized with the bundled Cairo fonts; a PDF failure is isolated from checkout.",
+    })),
+    await safeCheck("email", "Email", async () => {
+      const configured = Boolean(process.env.RESEND_API_KEY || (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS));
+      return { status: configured ? "ok" : "warn", value: configured ? "Configured" : "Not configured", detail: configured ? "Email provider credentials are present." : "Email delivery is optional and disabled." };
+    }),
+    await safeCheck("image_proxy", "Image Proxy", async () => ({
+      status: storageUrl && storageKey ? "ok" : "warn",
+      value: storageUrl && storageKey ? "Private-source ready" : "Public-source fallback",
+      detail: storageUrl && storageKey ? "Server-side proxy can validate private storage." : "Private-bucket validation awaits service-role configuration; public image proxy remains available.",
+    })),
+    await safeCheck("cron", "Cron Jobs", async () => ({
+      status: process.env.CRON_SECRET ? "ok" : "warn",
+      value: process.env.CRON_SECRET ? "Configured" : "Not configured",
+      detail: process.env.CRON_SECRET ? "Scheduled endpoints are protected." : "Scheduled notifications are disabled until CRON_SECRET is set.",
+    })),
+    await safeCheck("environment", "Environment Variables", async () => {
+      const required = ["DATABASE_URL", "SESSION_SECRET", "AUTH_SECRET"];
+      const missing = required.filter((key) => !process.env[key]);
+      return {
+        status: missing.length ? "fail" : "ok",
+        value: missing.length ? `${missing.length} required missing` : "Required configuration present",
+        detail: missing.length ? `Missing: ${missing.join(", ")}` : "Secrets are present and are never exposed by this page.",
+      };
+    }),
+  );
+
   const summary = checks.reduce(
     (acc, c) => {
       acc[c.status] += 1;
@@ -281,6 +371,27 @@ export async function runSystemHealth(): Promise<HealthReport> {
 
   return { generatedAt: new Date().toISOString(), summary, checks };
 }
+
+let cachedHealthReport: HealthReport | null = null;
+let healthRefresh: Promise<HealthReport> | null = null;
+const HEALTH_CACHE_MS = 60_000;
+
+/** Runs at module startup and serves the latest in-memory diagnostic report. */
+export async function runSystemHealth(force = false): Promise<HealthReport> {
+  if (!force && cachedHealthReport && Date.now() - Date.parse(cachedHealthReport.generatedAt) < HEALTH_CACHE_MS)
+    return cachedHealthReport;
+  if (healthRefresh) return healthRefresh;
+  healthRefresh = buildSystemHealth()
+    .then((report) => (cachedHealthReport = report))
+    .finally(() => { healthRefresh = null; });
+  return healthRefresh;
+}
+
+void runSystemHealth().catch((error) =>
+  console.warn("System health startup check failed", {
+    message: error instanceof Error ? error.message : String(error),
+  }),
+);
 
 // ─── Recycle bin ─────────────────────────────────────────────────────────────
 

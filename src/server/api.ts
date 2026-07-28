@@ -1836,6 +1836,7 @@ async function ensureAssetQr(productId: number, req: NextRequest) {
 }
 
 let webPushConfigured = false;
+let webPushUnavailableReason: string | null = null;
 
 function boolFromDb(value: unknown, fallback = true) {
   if (value === null || value === undefined) return fallback;
@@ -1899,14 +1900,24 @@ function getVapidPublicKey() {
 function configureWebPush() {
   const publicKey = getVapidPublicKey();
   const privateKey = process.env.VAPID_PRIVATE_KEY || "";
-  if (!publicKey || !privateKey) return false;
+  if (!publicKey || !privateKey) {
+    webPushUnavailableReason = "VAPID credentials are not configured";
+    return false;
+  }
   if (!webPushConfigured) {
-    const subject =
-      process.env.VAPID_SUBJECT ||
-      process.env.APP_BASE_URL ||
-      "mailto:admin@ajn.local";
-    webpush.setVapidDetails(subject, publicKey, privateKey);
-    webPushConfigured = true;
+    try {
+      const subject =
+        process.env.VAPID_SUBJECT ||
+        process.env.APP_BASE_URL ||
+        "mailto:admin@ajn.local";
+      webpush.setVapidDetails(subject, publicKey, privateKey);
+      webPushConfigured = true;
+      webPushUnavailableReason = null;
+    } catch (err: any) {
+      webPushUnavailableReason = String(err?.message ?? "invalid VAPID configuration").slice(0, 180);
+      console.warn({ service: "push", reason: webPushUnavailableReason }, "Push service unavailable");
+      return false;
+    }
   }
   return true;
 }
@@ -1915,7 +1926,9 @@ async function sendPushToSubscriptions(
   subscriptions: any[],
   payload: Record<string, unknown>,
 ) {
-  if (!configureWebPush() || subscriptions.length === 0) return;
+  if (!configureWebPush()) return "unavailable" as const;
+  if (subscriptions.length === 0) return "no_subscriptions" as const;
+  let unavailable = false;
   await Promise.allSettled(
     subscriptions.map(async (sub) => {
       try {
@@ -1934,14 +1947,16 @@ async function sendPushToSubscriptions(
             .set({ isActive: 0, updatedAt: new Date() })
             .where(eq(notificationSubscriptionsTable.id, sub.id));
         } else {
-          console.error("push notification failed", {
+          unavailable = true;
+          console.warn("Push service unavailable", {
             status,
-            message: err?.message,
+            message: String(err?.message ?? "unknown").slice(0, 180),
           });
         }
       }
     }),
   );
+  return unavailable ? ("unavailable" as const) : ("sent" as const);
 }
 
 async function createNotification(input: {
@@ -2004,7 +2019,7 @@ async function createNotification(input: {
           })
         : [];
     }
-    await sendPushToSubscriptions(subscriptions, {
+    const pushStatus = await sendPushToSubscriptions(subscriptions, {
       id: row.id,
       title: row.title,
       body: row.body,
@@ -2014,6 +2029,18 @@ async function createNotification(input: {
       badge: "/icons/icon-192.png",
       tag: `${row.type}-${row.entityType ?? "item"}-${row.entityId ?? row.id}`,
     });
+    if (pushStatus === "unavailable") {
+      await db
+        .update(notificationsTable)
+        .set({
+          metadata: {
+            ...(row.metadata ?? {}),
+            pushStatus: "unavailable",
+            pushDetail: webPushUnavailableReason ?? "Push service unavailable",
+          },
+        })
+        .where(eq(notificationsTable.id, row.id));
+    }
   }
   return row;
 }
@@ -3520,6 +3547,12 @@ function publicMediaValue(
   index?: number,
 ) {
   if (!value || typeof value !== "string") return null;
+  // Product media is always served through our media endpoint.  Besides keeping
+  // legacy data-URLs working, this prevents a browser from trying to read a
+  // private Supabase bucket directly (which was the reason product cards could
+  // have a record but no visible image).
+  if (kind === "product" || kind === "product-video")
+    return mediaRoute(kind, row.id, index, mediaVersion(row));
   if (isDataUrl(value))
     return mediaRoute(kind, row.id, index, mediaVersion(row));
   return value;
@@ -5247,6 +5280,7 @@ function productStockAmount(row: any): number {
 
 type StockMovementMeta = {
   reason: string;
+  variantId?: number | null;
   relatedType?: string | null;
   relatedId?: number | null;
   salesInvoiceId?: number | null;
@@ -5477,6 +5511,7 @@ async function recordStockMovement(
     await db.insert(stockMovementsTable).values({
       productId: resolved.product?.id ?? null,
       stockSourceProductId: resolved.stockProduct?.id ?? null,
+      variantId: meta.variantId ?? null,
       quantityChange: String(delta),
       reason: meta.reason,
       relatedType: meta.relatedType ?? null,
@@ -5810,9 +5845,18 @@ async function applyOrderItemsStock(
     .where(eq(orderItemsTable.orderId, orderId));
   for (const item of items) {
     const productId = Number(item.productId ?? 0);
+    const variantId = Number((item as any).variantId ?? 0) || null;
     const quantity = Number(item.quantity ?? 0);
     if (productId > 0 && quantity > 0) {
-      await adjustSaleStock(productId, direction * quantity, {
+      const movement = {
+        reason,
+        sourceType: "order",
+        sourceId: orderId,
+        who: { id: actorInfo?.id ?? null, name: actorInfo?.name ?? "" },
+      };
+      if (variantId)
+        await adjustVariantStock(variantId, direction * quantity, movement);
+      else await adjustSaleStock(productId, direction * quantity, {
         reason,
         relatedType: "order",
         relatedId: orderId,
@@ -6011,6 +6055,7 @@ function selectedColorName(
 
 function cartMergeKey(item: {
   productId: number;
+  variantId?: number | null;
   selectedColor?: string | null;
   selectedColorData?: unknown;
   customization?: string | null;
@@ -6021,6 +6066,7 @@ function cartMergeKey(item: {
   );
   return [
     item.productId,
+    item.variantId ?? "",
     color ? colorKey(color) : "",
     (item.customization ?? "").trim(),
   ].join("|");
@@ -6200,6 +6246,7 @@ function orderSnapshot(order: any, items: any[]) {
     items: items.map((item) => ({
       id: item.id,
       productId: item.productId,
+      variantId: item.variantId ?? null,
       productName: item.productName,
       productNameAr: item.productNameAr,
       quantity: Number(item.quantity),
@@ -7029,6 +7076,10 @@ async function ensureProductColorColumns(): Promise<void> {
         sql`
       alter table cart_items add column if not exists selected_color_data jsonb;
       alter table order_items add column if not exists selected_color_data jsonb;
+      alter table cart_items add column if not exists variant_id integer;
+      alter table order_items add column if not exists variant_id integer;
+      create index if not exists cart_items_variant_idx on cart_items (variant_id);
+      create index if not exists order_items_variant_idx on order_items (variant_id);
     `,
       )
       .then(() => undefined);
@@ -7223,6 +7274,7 @@ async function ensureStockTrackingTables(): Promise<void> {
       );
 
       alter table "stock_movements"
+        add column if not exists "variant_id" integer,
         add column if not exists "sales_invoice_id" integer,
         add column if not exists "sales_invoice_item_id" integer,
         add column if not exists "invoice_number" varchar(40),
@@ -7250,6 +7302,7 @@ async function ensureStockTrackingTables(): Promise<void> {
 
       create index if not exists "stock_movements_product_id_idx" on "stock_movements" ("product_id");
       create index if not exists "stock_movements_stock_source_product_id_idx" on "stock_movements" ("stock_source_product_id");
+      create index if not exists "stock_movements_variant_idx" on "stock_movements" ("variant_id");
       create index if not exists "stock_movements_related_idx" on "stock_movements" ("related_type", "related_id");
       create index if not exists "stock_movements_created_at_idx" on "stock_movements" ("created_at");
       drop index if exists "stock_movements_sales_invoice_cancel_once_idx";
@@ -9592,6 +9645,7 @@ async function buildCart(sessionId: string) {
     return {
       id: item.id,
       productId: item.productId,
+      variantId: item.variantId ?? null,
       product: product
         ? {
             id: product.id,
@@ -11257,11 +11311,15 @@ async function adjustVariantStock(
     where id = ${variantId} returning product_id
   `);
   const row = (res.rows ?? res ?? [])[0];
+  const productId = Number(row?.product_id ?? 0);
+  if (productId) await syncProductStockFromVariants(productId);
   // Mirror into stock_movements for a unified inventory ledger.
   try {
     await ensureStockTrackingTables();
     await db.insert(stockMovementsTable).values({
-      productId: row?.product_id ?? null,
+      productId: productId || null,
+      stockSourceProductId: productId || null,
+      variantId,
       quantityChange: String(delta),
       reason: meta.reason,
       relatedType: meta.sourceType ?? "variant",
@@ -11998,6 +12056,97 @@ async function handleProducts(req: NextRequest, parts: string[]) {
   await ensureAdminProductsColumns();
   await ensureStoreCategoryColumns();
   await ensureAssetCategoriesTables();
+
+  // Public, designer-specific projection.  It uses the same product, variant
+  // and BOM records that Admin manages; nothing is copied into a flower-only
+  // catalog.  A product with a recipe is exposed as a ready-made bouquet
+  // template and its recipe remains the source of component quantities/cost.
+  if (method === "GET" && parts[1] === "designer-catalog") {
+    await Promise.all([ensureVariantTables(), ensureProductionTables()]);
+    const products = await db.query.productsTable.findMany({
+      where: eq(productsTable.isActive, true),
+      orderBy: (p, { asc, desc }) => [asc(p.sortOrder), desc(p.updatedAt)],
+      limit: 240,
+    });
+    const hydrated = await hydrateSharedStockProducts(products);
+    const productIds = hydrated.map((product) => Number(product.id));
+    const [variantResult, recipeResult] = await Promise.all([
+      db.execute(sql`select * from product_variants where is_active = true order by sort_order asc, id asc`),
+      db.execute(sql`select product_id, component_product_id, quantity, unit, unit_cost, notes, sort_order from product_recipes order by product_id asc, sort_order asc, id asc`),
+    ]);
+    const variantsByProduct = new Map<number, any[]>();
+    for (const row of (variantResult as any).rows ?? variantResult ?? []) {
+      const productId = Number(row.product_id ?? row.productId);
+      if (!productIds.includes(productId)) continue;
+      const rows = variantsByProduct.get(productId) ?? [];
+      rows.push(formatVariant(row));
+      variantsByProduct.set(productId, rows);
+    }
+    const recipesByProduct = new Map<number, any[]>();
+    for (const row of (recipeResult as any).rows ?? recipeResult ?? []) {
+      const productId = Number(row.product_id ?? row.productId);
+      if (!productIds.includes(productId)) continue;
+      const rows = recipesByProduct.get(productId) ?? [];
+      rows.push({
+        productId: Number(row.component_product_id ?? row.componentProductId),
+        quantity: Number(row.quantity ?? 0),
+        unit: row.unit ?? "قطعة",
+        unitCost: Number(row.unit_cost ?? row.unitCost ?? 0),
+        notes: row.notes ?? null,
+      });
+      recipesByProduct.set(productId, rows);
+    }
+    const version = hydrated.reduce((latest, product: any) => {
+      const current = new Date(product.updatedAt ?? product.createdAt ?? 0).getTime();
+      return Math.max(latest, Number.isFinite(current) ? current : 0);
+    }, 0);
+    return json({
+      version: String(version),
+      products: hydrated.map((product: any) => ({
+        ...formatProduct(product),
+        variants: variantsByProduct.get(Number(product.id)) ?? [],
+        recipe: recipesByProduct.get(Number(product.id)) ?? [],
+        isBouquetTemplate: (recipesByProduct.get(Number(product.id))?.length ?? 0) > 0,
+      })),
+    });
+  }
+
+  // EventSource consumes this lightweight database-backed version feed.  It
+  // works across app instances and falls back to query polling in the client.
+  if (method === "GET" && parts[1] === "designer-stream") {
+    const encoder = new TextEncoder();
+    let latest = "";
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = async () => {
+          try {
+            const result: any = await db.execute(sql`select coalesce(max(updated_at)::text, '') as version from products`);
+            const version = String((result.rows ?? result ?? [])[0]?.version ?? "");
+            if (version && version !== latest) {
+              latest = version;
+              controller.enqueue(encoder.encode(`event: products\ndata: ${JSON.stringify({ version })}\n\n`));
+            }
+          } catch {
+            // A dropped client/database poll is retried by the next tick.
+          }
+        };
+        void send();
+        timer = setInterval(() => void send(), 4_000);
+      },
+      cancel() { if (timer) clearInterval(timer); },
+    });
+    return new NextResponse(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" } });
+  }
+
+  // Pre-check immediately before entering Checkout.  The order transaction
+  // performs the same check again before deduction, preventing overselling.
+  if (method === "POST" && parts[1] === "designer-inventory" && parts[2] === "validate") {
+    await ensureVariantTables();
+    const data = await body(req);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    return json(await checkAvailability(items.map((item: any) => ({ productId: Number(item?.productId), variantId: item?.variantId ? Number(item.variantId) : null, quantity: Number(item?.quantity) }))));
+  }
 
   // ── Recipe stock verification (POST /products/recipe/check-stock) ──
   // Body: { items: [{ productId, quantity }] } → { ok, shortages, requirements }.
@@ -13029,6 +13178,40 @@ async function mediaResponseFromValue(req: NextRequest, value: unknown) {
     });
   }
   if (mediaValue.startsWith("http://") || mediaValue.startsWith("https://")) {
+    // Supabase's `/public/` URL only works while the bucket is public.  Fetch
+    // files belonging to the configured bucket server-side instead, so product
+    // images remain readable when Storage policies/bucket visibility change.
+    try {
+      const remote = new URL(mediaValue);
+      const storage = STORAGE_URL ? new URL(STORAGE_URL) : null;
+      const publicPrefix = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+      if (
+        storage &&
+        STORAGE_SERVICE_KEY &&
+        remote.origin === storage.origin &&
+        remote.pathname.startsWith(publicPrefix)
+      ) {
+        const path = remote.pathname.slice(publicPrefix.length);
+        const upstream = await fetch(
+          `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`,
+          {
+            headers: {
+              apikey: STORAGE_SERVICE_KEY,
+              authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+            },
+          },
+        );
+        if (!upstream.ok) return error("ØªØ¹Ø°Ø± ØªØ­Ù…ÙŠÙ„ Ø§Ù„ØµÙˆØ±Ø©", upstream.status === 404 ? 404 : 502);
+        return new NextResponse(await upstream.arrayBuffer(), {
+          headers: {
+            "Content-Type": upstream.headers.get("content-type") ?? "application/octet-stream",
+            "Cache-Control": MEDIA_CACHE_HEADER,
+          },
+        });
+      }
+    } catch {
+      // A malformed external URL is handled by the normal not-found response.
+    }
     return NextResponse.redirect(mediaValue, 302);
   }
   if (mediaValue.startsWith("/")) {
@@ -13744,6 +13927,7 @@ async function handleCart(req: NextRequest, parts: string[]) {
     if (!parsed.success) return validationError("cart.add", parsed);
     const {
       productId,
+      variantId,
       quantity,
       selectedColor,
       customization,
@@ -13753,9 +13937,16 @@ async function handleCart(req: NextRequest, parts: string[]) {
       where: eq(productsTable.id, productId),
     });
     if (!product) return error("المنتج غير موجود", 404);
+    await ensureVariantTables();
+    const selectedVariantId = variantId ? Number(variantId) : null;
+    const variantResult: any = selectedVariantId
+      ? await db.execute(sql`select * from product_variants where id = ${selectedVariantId} and product_id = ${productId} and is_active = true limit 1`)
+      : null;
+    const selectedVariant = variantResult ? (variantResult.rows ?? variantResult ?? [])[0] : null;
+    if (selectedVariantId && !selectedVariant) return error("خيار المنتج المحدد غير متاح", 409);
     const pickedColor = selectedColorPayload(selectedColorData, selectedColor);
     const existingItems = (await normalizeCartRows(sessionId)).filter(
-      (item) => item.productId === productId,
+      (item) => item.productId === productId && (item.variantId ?? null) === selectedVariantId,
     );
     const pickedKey = pickedColor ? colorKey(pickedColor) : "";
     const existing = existingItems.find((item) => {
@@ -13769,6 +13960,8 @@ async function handleCart(req: NextRequest, parts: string[]) {
         (item.customization ?? "") === (customization ?? "")
       );
     });
+    if (selectedVariant && Number(selectedVariant.stock ?? 0) < (existing?.quantity ?? 0) + quantity)
+      return error("كمية خيار المنتج المحدد غير كافية", 409);
     if (existing) {
       await db
         .update(cartItemsTable)
@@ -13778,8 +13971,9 @@ async function handleCart(req: NextRequest, parts: string[]) {
       await db.insert(cartItemsTable).values({
         sessionId,
         productId,
+        variantId: selectedVariantId,
         quantity,
-        price: product.price,
+        price: selectedVariant?.price != null ? String(selectedVariant.price) : product.price,
         selectedColor: pickedColor?.name ?? selectedColor ?? null,
         selectedColorData: pickedColor,
         customization,
@@ -14076,9 +14270,24 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (products.some((product) => product.isActive === false))
       return error("أحد المنتجات لم يعد متاحاً", 409);
 
+    await ensureVariantTables();
+    const variantIds = [...new Set(cartItems.map((item: any) => Number(item.variantId)).filter(Boolean))];
+    const variantRows: any[] = variantIds.length
+      ? ((await db.execute(sql`select * from product_variants where id in (${sql.join(variantIds.map((id) => sql`${id}`), sql`, `)})`)) as any).rows ?? []
+      : [];
+    const variantMap = new Map(variantRows.map((variant) => [Number(variant.id), variant]));
+    const variantRequirements = new Map<number, number>();
     const stockRequirements = new Map<number, number>();
     const productStockOwners = new Map<number, any>();
     for (const item of cartItems) {
+      const variantId = Number((item as any).variantId ?? 0) || null;
+      if (variantId) {
+        const variant = variantMap.get(variantId);
+        if (!variant || Number(variant.product_id ?? variant.productId) !== item.productId || variant.is_active === false)
+          return error("خيار المنتج المحدد غير متاح", 409);
+        variantRequirements.set(variantId, (variantRequirements.get(variantId) ?? 0) + item.quantity);
+        continue;
+      }
       const resolved = await getStockOwnerProduct(item.productId);
       const product = productMap.get(item.productId);
       if (!product || !resolved)
@@ -14090,6 +14299,11 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         (stockRequirements.get(stockProductId) ?? 0) + item.quantity,
       );
     }
+    for (const [variantId, quantity] of variantRequirements) {
+      const variant = variantMap.get(variantId);
+      if (!variant || Number(variant.stock ?? 0) < quantity)
+        return error("كمية خيار المنتج المحدد غير كافية", 409);
+    }
     for (const [stockProductId, quantity] of stockRequirements) {
       const stockProduct = [...productStockOwners.values()].find(
         (resolved) => Number(resolved.stockProduct.id) === stockProductId,
@@ -14098,9 +14312,21 @@ async function handleOrders(req: NextRequest, parts: string[]) {
         return error("المخزون غير كافٍ لأحد المنتجات", 409);
     }
 
+    // Reprice every line from the authoritative product/variant record at
+    // checkout. A browser (or an old cart row) can never set a sale price.
+    const currentUnitPrices = new Map<number, string>();
+    for (const item of cartItems) {
+      const variantId = Number((item as any).variantId ?? 0) || null;
+      const product = productMap.get(item.productId)!;
+      const variant = variantId ? variantMap.get(variantId) : null;
+      const price = Number(variant?.price ?? product.price ?? 0);
+      if (!Number.isFinite(price) || price <= 0)
+        return error("سعر أحد المنتجات غير صالح حالياً", 409);
+      currentUnitPrices.set(item.id, String(price));
+    }
     const deliveryFee = money(zone.price);
     const subtotal = cartItems.reduce(
-      (sum, i) => sum + Number.parseFloat(i.price) * i.quantity,
+      (sum, item) => sum + Number(currentUnitPrices.get(item.id) ?? 0) * item.quantity,
       0,
     );
     if (!Number.isFinite(subtotal) || subtotal <= 0)
@@ -14186,6 +14412,22 @@ async function handleOrders(req: NextRequest, parts: string[]) {
             throw new CheckoutError("المخزون غير كافٍ لأحد المنتجات", 409);
         }
 
+        for (const [variantId, quantity] of variantRequirements) {
+          const updated = await tx.execute(sql`
+            UPDATE product_variants SET stock = stock - ${quantity}, updated_at = now()
+            WHERE id = ${variantId} AND stock >= ${quantity} AND is_active = true RETURNING product_id
+          `);
+          if ((updated.rows?.length ?? 0) !== 1)
+            throw new CheckoutError("كمية خيار المنتج المحدد غير كافية", 409);
+        }
+        if (variantRequirements.size) {
+          const affectedProductIds = [...new Set([...variantRequirements.keys()].map((variantId) => Number(variantMap.get(variantId)?.product_id ?? variantMap.get(variantId)?.productId)).filter(Boolean))];
+          if (affectedProductIds.length) await tx.execute(sql`
+            UPDATE products p SET stock = coalesce((select sum(v.stock) from product_variants v where v.product_id = p.id and v.is_active = true), 0)::int, updated_at = now()
+            WHERE p.id in (${sql.join(affectedProductIds.map((id) => sql`${id}`), sql`, `)})
+          `);
+        }
+
         const [created] = await tx
           .insert(ordersTable)
           .values({
@@ -14220,10 +14462,11 @@ async function handleOrders(req: NextRequest, parts: string[]) {
             return {
               orderId: created.id,
               productId: item.productId,
+              variantId: (item as any).variantId ?? null,
               productName: product.name ?? product.nameAr ?? "",
               productNameAr: product.nameAr ?? product.name ?? "",
               quantity: item.quantity,
-              price: item.price,
+              price: currentUnitPrices.get(item.id) ?? item.price,
               selectedColor: selectedColorName(item.selectedColorData, item.selectedColor),
               selectedColorData: selectedColorPayload(item.selectedColorData, item.selectedColor),
               customization: item.customization,
@@ -14235,6 +14478,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
           cartItems.map((item) => ({
             productId: item.productId,
             stockSourceProductId: productStockOwners.get(item.productId)?.stockProduct.id ?? item.productId,
+            variantId: (item as any).variantId ?? null,
             quantityChange: String(-item.quantity),
             reason: "order_stock_deducted",
             relatedType: "order",
@@ -23263,7 +23507,7 @@ async function handleIntegrationOversight(
     const auth = await requireAnyPermission(req, ["system_health", "executive"]);
     if (isResponse(auth)) return auth;
     if (method !== "GET") return error("طريقة غير مدعومة", 405);
-    return json(await runSystemHealth());
+    return json(await runSystemHealth(req.nextUrl.searchParams.get("refresh") === "1"));
   }
 
   if (section === "reconciliation") {
@@ -28206,7 +28450,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   if (section === "business-analytics") {
     const auth = await requireAnyPermission(req, ["dashboard", "accounting"]);
     if (isResponse(auth)) return auth;
-    const [serviceRows, productRows, customerRows, staffRows, monthRows] =
+    const [serviceRows, productRows, customerRows, staffRows, monthRows, bouquetRows] =
       await Promise.all([
         db.execute(
           sql`select coalesce(s.type, 'store') as label, coalesce(sum(so.total_amount::numeric),0) as total, count(*)::int as count from service_orders so left join services s on s.id=so.service_id group by coalesce(s.type, 'store') order by total desc limit 8`,
@@ -28223,6 +28467,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.execute(
           sql`select to_char(created_at, 'YYYY-MM') as label, count(*)::int as count from orders group by to_char(created_at, 'YYYY-MM') order by label desc limit 12`,
         ),
+        db.execute(
+          sql`select oi.customization, oi.quantity, oi.price, o.created_at from order_items oi join orders o on o.id = oi.order_id where oi.customization like '%bouquet_designer%' order by o.created_at desc limit 5000`,
+        ),
       ]);
     const rows = (result: any) =>
       (result.rows ?? []).map((row: any) => ({
@@ -28230,12 +28477,48 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         total: Number(row.total ?? 0),
         count: Number(row.count ?? 0),
       }));
+    const bouquet = {
+      flowers: new Map<string, { count: number; total: number }>(),
+      categories: new Map<string, number>(),
+      daily: new Map<string, number>(),
+      templates: new Map<string, { count: number; profit: number }>(),
+      consumption: new Map<string, number>(),
+    };
+    for (const row of (bouquetRows as any).rows ?? bouquetRows ?? []) {
+      let snapshot: any = null;
+      try { snapshot = JSON.parse(String(row.customization ?? "")); } catch { continue; }
+      if (snapshot?.source !== "bouquet_designer") continue;
+      const date = new Date(row.created_at ?? Date.now()).toISOString().slice(0, 10);
+      const quantity = Number(row.quantity ?? 0);
+      const sale = Number(row.price ?? 0) * quantity;
+      bouquet.daily.set(date, (bouquet.daily.get(date) ?? 0) + sale);
+      const template = String(snapshot.templateName ?? "باقة مخصصة");
+      const templateRow = bouquet.templates.get(template) ?? { count: 0, profit: 0 };
+      templateRow.count += quantity;
+      for (const item of Array.isArray(snapshot.items) ? snapshot.items : []) {
+        const name = String(item?.name ?? "منتج"); const itemQty = Number(item?.quantity ?? quantity);
+        const flower = bouquet.flowers.get(name) ?? { count: 0, total: 0 };
+        flower.count += itemQty; flower.total += Number(item?.price ?? 0) * itemQty; bouquet.flowers.set(name, flower);
+        const category = String(item?.category ?? "غير مصنف"); bouquet.categories.set(category, (bouquet.categories.get(category) ?? 0) + itemQty);
+        bouquet.consumption.set(name, (bouquet.consumption.get(name) ?? 0) + itemQty);
+        templateRow.profit += (Number(item?.price ?? 0) - Number(item?.cost ?? 0)) * itemQty;
+      }
+      bouquet.templates.set(template, templateRow);
+    }
+    const top = <T,>(map: Map<string, T>, value: (row: T) => number, total?: (row: T) => number) => Array.from(map.entries()).sort((a, b) => value(b[1]) - value(a[1])).slice(0, 8).map(([label, row]) => ({ label, count: value(row), total: total ? total(row) : 0 }));
     return json({
       profitableServices: rows(serviceRows),
       usedProducts: rows(productRows),
       frequentCustomers: rows(customerRows),
       activeStaff: rows(staffRows),
       busyMonths: rows(monthRows),
+      bouquetAnalytics: {
+        mostOrderedFlower: top(bouquet.flowers, (row) => row.count, (row) => row.total),
+        mostProfitableBouquet: top(bouquet.templates, (row) => row.profit, (row) => row.profit),
+        mostUsedCategory: top(bouquet.categories, (row) => row),
+        dailySales: top(bouquet.daily, (row) => row, (row) => row),
+        inventoryConsumption: top(bouquet.consumption, (row) => row),
+      },
     });
   }
 

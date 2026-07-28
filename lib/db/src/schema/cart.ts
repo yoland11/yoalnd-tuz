@@ -6,6 +6,7 @@ export const cartItemsTable = pgTable("cart_items", {
   id: serial("id").primaryKey(),
   sessionId: text("session_id").notNull(),
   productId: integer("product_id").notNull().references(() => productsTable.id),
+  variantId: integer("variant_id"),
   quantity: integer("quantity").notNull().default(1),
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   selectedColor: text("selected_color"),

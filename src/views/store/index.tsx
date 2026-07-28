@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Filter, Grid3X3, ChevronLeft, Heart, Star } from "lucide-react";
+import { Search, Filter, Grid3X3, ChevronLeft, Heart, ImageOff, Star } from "lucide-react";
 import { ProductColorDots } from "@/components/product-colors";
 import { logCustomerActivity } from "@/lib/customer-activity";
 import { useWishlist } from "@/lib/wishlist";
@@ -28,7 +28,6 @@ type StoreCategory = {
 };
 
 const fallbackCategoryImage = "https://placehold.co/400x400/1a1a1a/c9a84c?text=AJN";
-const fallbackProductImage = "https://placehold.co/400x400/1a1a1a/c9a84c?text=AJN";
 
 async function fetchStoreCategories(parent?: string): Promise<StoreCategory[]> {
   const suffix = parent ? `?parent=${encodeURIComponent(parent)}` : "";
@@ -293,13 +292,7 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
     <Link href={`/store/${product.id}`} className="animate-fade-up block" style={{ animationDelay: `${Math.min(index * 45, 360)}ms` }}>
       <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-[colors,shadow] duration-200 hover:shadow-lg hover:shadow-black/10 h-full flex flex-col">
         <div className="relative aspect-square overflow-hidden bg-muted">
-          <img
-            src={product.images[0] || fallbackProductImage}
-            alt={productName}
-            className="w-full h-full transition-transform duration-500 group-hover:scale-110"
-            style={{ objectFit: String(product.imageMetadata?.[0]?.objectFit ?? "cover") as any }}
-            loading="lazy"
-          />
+          <StoreProductImage product={product} alt={productName} />
           {isRental && (
             <div className="absolute top-2 right-2 bg-primary/90 text-primary-foreground text-xs font-bold px-2 py-1 rounded backdrop-blur-sm">
               {t("للإيجار")}
@@ -369,6 +362,15 @@ export function ProductCard({ product, index = 0 }: { product: Product; index?: 
       </Card>
     </Link>
   );
+}
+
+function StoreProductImage({ product, alt }: { product: Product; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = Array.isArray(product.images) ? product.images[0] : undefined;
+  if (!src || failed) {
+    return <div className="grid h-full w-full place-items-center bg-muted text-muted-foreground"><ImageOff className="h-8 w-8" /><span className="sr-only">لا توجد صورة للمنتج</span></div>;
+  }
+  return <img src={src} alt={alt} className="h-full w-full transition-transform duration-500 group-hover:scale-110" style={{ objectFit: String(product.imageMetadata?.[0]?.objectFit ?? "cover") as any }} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
 }
 
 type ProductSort = "newest" | "price-asc" | "price-desc" | "rating" | "name";

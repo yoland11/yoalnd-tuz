@@ -13,7 +13,7 @@ import { EmptyState } from "./_layout";
 type HealthStatus = "ok" | "warn" | "fail";
 type HealthCheck = {
   key: string; label: string; status: HealthStatus;
-  value: string; detail?: string; count?: number;
+  value: string; detail?: string; count?: number; checkedAt?: string;
 };
 type HealthReport = {
   generatedAt: string;
@@ -106,6 +106,7 @@ function HealthTab() {
               </div>
               <p className={`text-lg font-bold tabular-nums ${TONE_TEXT[c.status]}`}>{c.value}</p>
               {c.detail && <p className="text-xs text-muted-foreground">{c.detail}</p>}
+              <p className="text-[11px] text-muted-foreground">آخر فحص: {new Date(c.checkedAt ?? data.generatedAt).toLocaleString("ar-IQ")}</p>
             </div>
           ))}
         </div>

@@ -500,11 +500,13 @@ export function BusinessAnalyticsPage() {
     queryFn: () => adminFetch("/admin/business-analytics"),
     staleTime: 60_000,
   });
+  const bouquet = data?.bouquetAnalytics;
   return (
     <div className="space-y-4" dir="rtl">
       <PageHeader icon={BarChart3} title="تحليلات الأعمال" description="الخدمات الأكثر ربحاً، المواد الأكثر استخداماً، العملاء المتكررون، ونشاط الموظفين." />
       {isLoading ? <LoadingRows /> : (
         <div className="grid gap-4 lg:grid-cols-2">
+          <BouquetAnalyticsCards data={bouquet} />
           <AnalyticsList title="أكثر الخدمات طلباً" rows={data?.profitableServices ?? []} amount />
           <AnalyticsList title="أكثر المواد استخداماً" rows={data?.usedProducts ?? []} amount />
           <AnalyticsList title="أكثر العملاء تكراراً" rows={data?.frequentCustomers ?? []} amount />
@@ -514,6 +516,17 @@ export function BusinessAnalyticsPage() {
       )}
     </div>
   );
+}
+
+function BouquetAnalyticsCards({ data }: { data: any }) {
+  const cards = [
+    ["أكثر الورد طلباً", data?.mostOrderedFlower?.[0]?.label, data?.mostOrderedFlower?.[0]?.count],
+    ["أعلى باقة ربحاً", data?.mostProfitableBouquet?.[0]?.label, data?.mostProfitableBouquet?.[0]?.total],
+    ["الأكثر استخداماً", data?.mostUsedCategory?.[0]?.label, data?.mostUsedCategory?.[0]?.count],
+    ["مبيعات اليوم", data?.dailySales?.[0]?.label, data?.dailySales?.[0]?.total],
+    ["استهلاك المخزون", data?.inventoryConsumption?.[0]?.label, data?.inventoryConsumption?.[0]?.count],
+  ];
+  return <div className="col-span-full grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{cards.map(([label, value, amount]) => <Card key={String(label)} className="p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 truncate text-sm font-semibold">{value || "—"}</p><p className="mt-1 text-xs text-primary">{typeof amount === "number" ? amount.toLocaleString("ar-IQ") : "لا توجد بيانات"}</p></Card>)}</div>;
 }
 
 function AnalyticsList({ title, rows, amount = false }: { title: string; rows: any[]; amount?: boolean }) {

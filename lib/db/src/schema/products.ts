@@ -127,6 +127,7 @@ export const stockMovementsTable = pgTable("stock_movements", {
   id: serial("id").primaryKey(),
   productId: integer("product_id").references(() => productsTable.id),
   stockSourceProductId: integer("stock_source_product_id").references(() => productsTable.id),
+  variantId: integer("variant_id"),
   quantityChange: numeric("quantity_change", { precision: 12, scale: 3 }).notNull(),
   reason: varchar("reason", { length: 80 }).notNull(),
   relatedType: varchar("related_type", { length: 40 }),
