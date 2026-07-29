@@ -778,6 +778,16 @@ export const ALL_PERMISSIONS = [
   "catering_cashier",
   "catering_supervisor",
   "catering_warehouse",
+  "catering_items_manage",
+  "catering_categories_manage",
+  "catering_orders_manage",
+  "catering_payments_receive",
+  "catering_cost_view",
+  "catering_profit_view",
+  "catering_suppliers_manage",
+  "catering_inventory_manage",
+  "catering_reports_view",
+  "catering_settings_manage",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -27393,6 +27403,54 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const canDelivery = canManage || hasPermission(auth, "catering_delivery");
     const canCashier = canManage || hasPermission(auth, "catering_cashier");
     const canWarehouse = canManage || hasPermission(auth, "catering_warehouse");
+    const canCategories = canManage || hasPermission(auth, "catering_categories_manage");
+    const canItems = canManage || hasPermission(auth, "catering_items_manage");
+    const canOrders = canManage || hasPermission(auth, "catering_orders_manage");
+    const canReceivePayments = canCashier || hasPermission(auth, "catering_payments_receive");
+    const canViewCost = canManage || hasPermission(auth, "catering_cost_view");
+    const canViewProfit = canManage || hasPermission(auth, "catering_profit_view");
+
+    if (action === "categories") {
+      const categoryId = id;
+      if (method === "GET") {
+        const search = new URL(req.url).searchParams.get("search")?.trim() ?? "";
+        const rows: any = await db.execute(sql`select * from catering_categories where archived_at is null and (${search} = '' or name ilike ${`%${search}%`}) order by sort_order, name`);
+        return json({ categories: rows.rows ?? [] });
+      }
+      if (!canCategories) return error("ليس لديك صلاحية إدارة أقسام الطعام", 403);
+      if (method === "POST") {
+        const parsed = cateringCategorySchema.safeParse(await body(req)); if (!parsed.success) return validationError("catering.category", parsed);
+        const d = parsed.data; const found: any = await db.execute(sql`select id from catering_categories where lower(name)=lower(${d.name}) and archived_at is null limit 1`); if ((found.rows ?? []).length) return error("اسم القسم مستخدم مسبقاً", 409);
+        const saved: any = await db.execute(sql`insert into catering_categories(name,description,image_url,sort_order,is_active,created_by,updated_by) values(${d.name},${d.description ?? null},${d.imageUrl ?? null},${d.sortOrder},${d.isActive},${auth.id},${auth.id}) returning *`);
+        void logAdminActivity(req,"catering_category_created","catering_category",Number(saved.rows[0].id),{name:d.name}); return json(saved.rows[0],201);
+      }
+      if (!categoryId) return error("معرف القسم مطلوب",400);
+      if (method === "PATCH") {
+        const parsed = cateringCategorySchema.partial().safeParse(await body(req)); if (!parsed.success) return validationError("catering.category", parsed); const d=parsed.data;
+        const saved:any=await db.execute(sql`update catering_categories set name=coalesce(${d.name ?? null},name),description=coalesce(${d.description ?? null},description),image_url=coalesce(${d.imageUrl ?? null},image_url),sort_order=coalesce(${d.sortOrder ?? null},sort_order),is_active=coalesce(${d.isActive ?? null},is_active),updated_by=${auth.id},updated_at=now() where id=${categoryId} and archived_at is null returning *`); if (!(saved.rows??[]).length) return error("القسم غير موجود",404); void logAdminActivity(req,"catering_category_updated","catering_category",categoryId,d); return json(saved.rows[0]);
+      }
+      if (method === "DELETE") {
+        const usage:any=await db.execute(sql`select count(*)::int as count from catering_order_items where category_id=${categoryId}`); const used=Number(usage.rows?.[0]?.count??0)>0;
+        const saved:any=await db.execute(sql`update catering_categories set archived_at=now(),is_active=false,updated_by=${auth.id},updated_at=now() where id=${categoryId} and archived_at is null returning *`); if (!(saved.rows??[]).length) return error("القسم غير موجود",404); void logAdminActivity(req,used?"catering_category_archived":"catering_category_deleted","catering_category",categoryId,{used}); return json({ok:true,archived:used});
+      }
+    }
+
+    if (action === "items") {
+      const itemId = id;
+      if (method === "GET") {
+        const u=new URL(req.url); const search=u.searchParams.get("search")?.trim()??""; const categoryId=Number(u.searchParams.get("categoryId")??0);
+        const rows:any=await db.execute(sql`select mi.*,c.name as category_name,coalesce(mi.selling_price::numeric-mi.cost::numeric,0)::float as profit,case when mi.selling_price::numeric>0 then round((mi.selling_price::numeric-mi.cost::numeric)/mi.selling_price::numeric*100,2) else 0 end as profit_margin from catering_menu_items mi left join catering_categories c on c.id=mi.category_id where mi.archived_at is null and (${search}='' or mi.name ilike ${`%${search}%`} or mi.code ilike ${`%${search}%`} or mi.barcode=${search}) and (${categoryId}=0 or mi.category_id=${categoryId}) order by mi.name limit 500`);
+        return json({items:(rows.rows??[]).map((r:any)=>canViewCost?{...r,cost:Number(r.cost),profit:Number(r.profit),profitMargin:Number(r.profit_margin)}:{...r,cost:undefined,profit:undefined,profit_margin:undefined})});
+      }
+      if (!canItems) return error("ليس لديك صلاحية إدارة أصناف الطعام",403);
+      if (method === "POST") {
+        const parsed=cateringItemSchema.safeParse(await body(req)); if(!parsed.success)return validationError("catering.item",parsed); const d=parsed.data;
+        const saved:any=await db.execute(sql`insert into catering_menu_items(code,name,category,category_id,barcode,unit,cost,selling_price,stock_quantity,min_stock,supplier_id,inventory_product_id,image_url,preparation_minutes,packaging_cost,preparation_labor_cost,notes,track_inventory,available_for_sale,is_active,updated_by) values(${d.code},${d.name},${d.categoryLabel ?? "general"},${d.categoryId},${d.barcode ?? null},${d.unit},${d.cost},${d.sellingPrice},${d.stockQuantity},${d.minStock},${d.supplierId ?? null},${d.inventoryProductId ?? null},${d.imageUrl ?? null},${d.preparationMinutes},${d.packagingCost},${d.preparationLaborCost},${d.notes ?? null},${d.trackInventory},${d.availableForSale},${d.isActive},${auth.id}) returning *`); void logAdminActivity(req,"catering_item_created","catering_menu_item",Number(saved.rows[0].id),{name:d.name,cost:d.cost,sellingPrice:d.sellingPrice}); return json(saved.rows[0],201);
+      }
+      if (!itemId) return error("معرف الصنف مطلوب",400);
+      if (method === "PATCH") { const parsed=cateringItemSchema.partial().safeParse(await body(req)); if(!parsed.success)return validationError("catering.item",parsed); const d=parsed.data; const saved:any=await db.execute(sql`update catering_menu_items set name=coalesce(${d.name ?? null},name),category_id=coalesce(${d.categoryId ?? null},category_id),barcode=coalesce(${d.barcode ?? null},barcode),unit=coalesce(${d.unit ?? null},unit),cost=coalesce(${d.cost ?? null},cost),selling_price=coalesce(${d.sellingPrice ?? null},selling_price),stock_quantity=coalesce(${d.stockQuantity ?? null},stock_quantity),min_stock=coalesce(${d.minStock ?? null},min_stock),supplier_id=coalesce(${d.supplierId ?? null},supplier_id),inventory_product_id=coalesce(${d.inventoryProductId ?? null},inventory_product_id),image_url=coalesce(${d.imageUrl ?? null},image_url),preparation_minutes=coalesce(${d.preparationMinutes ?? null},preparation_minutes),packaging_cost=coalesce(${d.packagingCost ?? null},packaging_cost),preparation_labor_cost=coalesce(${d.preparationLaborCost ?? null},preparation_labor_cost),notes=coalesce(${d.notes ?? null},notes),track_inventory=coalesce(${d.trackInventory ?? null},track_inventory),available_for_sale=coalesce(${d.availableForSale ?? null},available_for_sale),is_active=coalesce(${d.isActive ?? null},is_active),updated_by=${auth.id},updated_at=now() where id=${itemId} and archived_at is null returning *`); if(!(saved.rows??[]).length)return error("الصنف غير موجود",404); void logAdminActivity(req,"catering_item_updated","catering_menu_item",itemId,d); return json(saved.rows[0]); }
+      if (method === "DELETE") { const saved:any=await db.execute(sql`update catering_menu_items set archived_at=now(),is_active=false,available_for_sale=false,updated_by=${auth.id},updated_at=now() where id=${itemId} and archived_at is null returning *`); if(!(saved.rows??[]).length)return error("الصنف غير موجود",404); void logAdminActivity(req,"catering_item_archived","catering_menu_item",itemId,{}); return json({ok:true}); }
+    }
 
     if (method === "GET" && action === "dashboard") {
       const today: any = await db.execute(sql`
@@ -49581,6 +49639,8 @@ async function handleBackup(
 
 // ───────────────────────── AJN Catering Center ─────────────────────────────
 const CATERING_EVENT_TYPES = ["wedding", "engagement", "henna", "graduation", "birthday", "corporate", "majlis", "funeral", "custom"] as const;
+const cateringCategorySchema = z.object({ name: z.string().trim().min(1).max(160), description: z.string().max(2000).nullable().optional(), imageUrl: z.string().max(800).nullable().optional(), sortOrder: z.coerce.number().int().min(0).default(0), isActive: z.boolean().default(true) });
+const cateringItemSchema = z.object({ code: z.string().trim().min(1).max(40), name: z.string().trim().min(1).max(160), categoryId: z.coerce.number().int().positive(), categoryLabel: z.string().max(60).optional(), barcode: z.string().max(100).nullable().optional(), unit: z.string().trim().min(1).max(40).default("حبة"), cost: z.coerce.number().min(0).default(0), sellingPrice: z.coerce.number().min(0).default(0), stockQuantity: z.coerce.number().min(0).default(0), minStock: z.coerce.number().min(0).default(0), supplierId: z.coerce.number().int().positive().nullable().optional(), inventoryProductId: z.coerce.number().int().positive().nullable().optional(), imageUrl: z.string().max(800).nullable().optional(), preparationMinutes: z.coerce.number().int().min(0).default(0), packagingCost: z.coerce.number().min(0).default(0), preparationLaborCost: z.coerce.number().min(0).default(0), notes: z.string().max(3000).nullable().optional(), trackInventory: z.boolean().default(false), availableForSale: z.boolean().default(true), isActive: z.boolean().default(true) });
 const cateringBookingSchema = z.object({ customerId: z.number().int().positive().nullable().optional(), customerName: z.string().min(1).max(160), mobile1: z.string().max(30).nullable().optional(), mobile2: z.string().max(30).nullable().optional(), address: z.string().max(400).nullable().optional(), mapUrl: z.string().max(600).nullable().optional(), eventType: z.enum(CATERING_EVENT_TYPES), eventDate: z.string().min(8).max(20), startTime: z.string().max(20).nullable().optional(), finishTime: z.string().max(20).nullable().optional(), hall: z.string().max(160).nullable().optional(), location: z.string().max(300).nullable().optional(), gps: z.string().max(100).nullable().optional(), guestCount: z.coerce.number().int().min(1).max(100000), maleCount: z.coerce.number().int().min(0).default(0), femaleCount: z.coerce.number().int().min(0).default(0), childrenCount: z.coerce.number().int().min(0).default(0), vipCount: z.coerce.number().int().min(0).default(0), notes: z.string().max(3000).nullable().optional(), packageName: z.string().max(120).nullable().optional(), totalAmount: z.coerce.number().min(0).default(0), estimatedCost: z.coerce.number().min(0).default(0) });
 const cateringMenuSchema = z.object({ code: z.string().min(1).max(40), name: z.string().min(1).max(160), category: z.string().min(1).max(60), cost: z.coerce.number().min(0).default(0), sellingPrice: z.coerce.number().min(0).default(0), preparationMinutes: z.coerce.number().int().min(0).default(0), calories: z.coerce.number().int().min(0).nullable().optional(), inventoryProductId: z.coerce.number().int().positive().nullable().optional(), imageUrl: z.string().max(600).nullable().optional() });
 const cateringPackageSchema = z.object({ name: z.string().min(1).max(120), tier: z.enum(["royal", "vip", "gold", "silver", "economic", "custom"]), price: z.coerce.number().min(0), details: z.object({ foods: z.array(z.string()).default([]), desserts: z.array(z.string()).default([]), drinks: z.array(z.string()).default([]), fruits: z.array(z.string()).default([]), service: z.array(z.string()).default([]), equipment: z.array(z.string()).default([]), decoration: z.array(z.string()).default([]) }).default({ foods: [], desserts: [], drinks: [], fruits: [], service: [], equipment: [], decoration: [] }) });

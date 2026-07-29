@@ -46,3 +46,4 @@ export * from "./graduation-media";
 export * from "./research-center";
 export * from "./employee-advances";
 export * from "./hr";
+export * from "./catering";

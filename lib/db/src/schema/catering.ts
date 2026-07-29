@@ -1,0 +1,107 @@
+import { boolean, date, index, integer, numeric, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { customersTable } from "./customers";
+import { financialTransactionsTable } from "./master-cash-box";
+import { productsTable } from "./products";
+import { suppliersTable } from "./suppliers";
+
+export const cateringCategoriesTable = pgTable("catering_categories", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 160 }).notNull(),
+  description: text("description"),
+  imageUrl: text("image_url"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  archivedAt: timestamp("archived_at"),
+  createdBy: integer("created_by"),
+  updatedBy: integer("updated_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({ activeIdx: index("catering_categories_active_idx").on(table.isActive, table.sortOrder) }));
+
+export const cateringMenuItemsTable = pgTable("catering_menu_items", {
+  id: serial("id").primaryKey(),
+  code: varchar("code", { length: 40 }).notNull(),
+  name: text("name").notNull(),
+  categoryId: integer("category_id").references(() => cateringCategoriesTable.id, { onDelete: "restrict" }),
+  barcode: varchar("barcode", { length: 100 }),
+  unit: varchar("unit", { length: 40 }).notNull().default("حبة"),
+  cost: numeric("cost", { precision: 14, scale: 2 }).notNull().default("0"),
+  sellingPrice: numeric("selling_price", { precision: 14, scale: 2 }).notNull().default("0"),
+  stockQuantity: numeric("stock_quantity", { precision: 14, scale: 3 }).notNull().default("0"),
+  minStock: numeric("min_stock", { precision: 14, scale: 3 }).notNull().default("0"),
+  supplierId: integer("supplier_id").references(() => suppliersTable.id, { onDelete: "set null" }),
+  inventoryProductId: integer("inventory_product_id").references(() => productsTable.id, { onDelete: "set null" }),
+  imageUrl: text("image_url"),
+  preparationMinutes: integer("preparation_minutes").notNull().default(0),
+  packagingCost: numeric("packaging_cost", { precision: 14, scale: 2 }).notNull().default("0"),
+  preparationLaborCost: numeric("preparation_labor_cost", { precision: 14, scale: 2 }).notNull().default("0"),
+  notes: text("notes"),
+  trackInventory: boolean("track_inventory").notNull().default(false),
+  availableForSale: boolean("available_for_sale").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true),
+  archivedAt: timestamp("archived_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({ codeIdx: uniqueIndex("catering_menu_items_code_schema_idx").on(table.code), categoryIdx: index("catering_menu_items_category_schema_idx").on(table.categoryId, table.isActive) }));
+
+export const cateringOrdersTable = pgTable("catering_orders", {
+  id: serial("id").primaryKey(),
+  orderNo: varchar("order_no", { length: 48 }).notNull(),
+  customerId: integer("customer_id").references(() => customersTable.id, { onDelete: "set null" }),
+  customerName: text("customer_name").notNull().default(""),
+  customerPhone: varchar("customer_phone", { length: 30 }),
+  customerAddress: text("customer_address"),
+  occasion: varchar("occasion", { length: 100 }),
+  eventDate: date("event_date"),
+  status: varchar("status", { length: 32 }).notNull().default("draft"),
+  paymentStatus: varchar("payment_status", { length: 32 }).notNull().default("unpaid"),
+  paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
+  costSettlementMode: varchar("cost_settlement_mode", { length: 32 }).notNull().default("immediate"),
+  supplierId: integer("supplier_id").references(() => suppliersTable.id, { onDelete: "set null" }),
+  subtotal: numeric("subtotal", { precision: 14, scale: 2 }).notNull().default("0"),
+  discountAmount: numeric("discount_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  deliveryFee: numeric("delivery_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+  serviceFee: numeric("service_fee", { precision: 14, scale: 2 }).notNull().default("0"),
+  totalAmount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  paidAmount: numeric("paid_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  remainingAmount: numeric("remaining_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  foodCost: numeric("food_cost", { precision: 14, scale: 2 }).notNull().default("0"),
+  expenseAmount: numeric("expense_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  refundAmount: numeric("refund_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  finalProfit: numeric("final_profit", { precision: 14, scale: 2 }).notNull().default("0"),
+  notes: text("notes"),
+  stockApplied: boolean("stock_applied").notNull().default(false),
+  stockRestoredAt: timestamp("stock_restored_at"),
+  createdBy: integer("created_by"),
+  createdByName: text("created_by_name").notNull().default(""),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({ noIdx: uniqueIndex("catering_orders_no_schema_idx").on(table.orderNo), statusIdx: index("catering_orders_status_schema_idx").on(table.status, table.eventDate) }));
+
+export const cateringOrderItemsTable = pgTable("catering_order_items", {
+  id: serial("id").primaryKey(),
+  orderId: integer("order_id").notNull().references(() => cateringOrdersTable.id, { onDelete: "restrict" }),
+  menuItemId: integer("menu_item_id").references(() => cateringMenuItemsTable.id, { onDelete: "set null" }),
+  inventoryProductId: integer("inventory_product_id").references(() => productsTable.id, { onDelete: "set null" }),
+  itemName: text("item_name").notNull(),
+  quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
+  unitSellingPrice: numeric("unit_selling_price", { precision: 14, scale: 2 }).notNull(),
+  unitCostPrice: numeric("unit_cost_price", { precision: 14, scale: 2 }).notNull(),
+  lineTotal: numeric("line_total", { precision: 14, scale: 2 }).notNull(),
+  lineCost: numeric("line_cost", { precision: 14, scale: 2 }).notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const cateringPaymentsTable = pgTable("catering_payments", {
+  id: serial("id").primaryKey(),
+  orderId: integer("order_id").notNull().references(() => cateringOrdersTable.id, { onDelete: "restrict" }),
+  amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
+  paymentDate: timestamp("payment_date").notNull().defaultNow(),
+  reference: varchar("reference", { length: 160 }),
+  notes: text("notes"),
+  status: varchar("status", { length: 20 }).notNull().default("confirmed"),
+  financialTransactionId: integer("financial_transaction_id").references(() => financialTransactionsTable.id, { onDelete: "restrict" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
