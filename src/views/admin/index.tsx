@@ -103,6 +103,7 @@ const EventBrainPage = lazy(() => import("./event-brain"));
 const WorkspacePage = lazy(() => import("./workspace"));
 const InvitationStudioPage = lazy(() => import("./invitations"));
 const CateringCenterPage = lazy(() => import("./catering"));
+const CateringPOSPage = lazy(() => import("./catering").then((module) => ({ default: module.CateringPOSPage })));
 const CustomerHubPage = lazy(() => import("./smart-customer-search"));
 const FinancialRequestPage = lazy(() =>
   import("./master-cash").then((module) => ({
@@ -639,6 +640,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="koshas">
                 <InvitationStudioPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/catering/pos">
+            {() => (
+              <Guard me={me} anyPerm={["catering_view", "catering_manage", "catering_cashier", "catering_supervisor", "catering_orders_manage"]}>
+                <CateringPOSPage />
               </Guard>
             )}
           </Route>
