@@ -80,12 +80,19 @@ export const productsTable = pgTable("products", {
   availableInBouquetDesigner: boolean("available_in_bouquet_designer")
     .notNull()
     .default(false),
+  // Explicit photorealistic-preview fields. Product card media above remains
+  // separate and must never be used as a composition layer.
+  showInBouquetBuilder: boolean("show_in_bouquet_builder").notNull().default(false),
   bouquetElementType: varchar("bouquet_element_type", { length: 24 }),
+  previewCutoutUrl: text("preview_cutout_url"),
+  readyMadePreviewUrl: text("ready_made_preview_url"),
   previewAssetUrl: text("preview_asset_url"),
   previewColor: varchar("preview_color", { length: 32 }),
   previewScale: numeric("preview_scale", { precision: 6, scale: 3 }),
+  previewRotation: numeric("preview_rotation", { precision: 7, scale: 2 }),
   previewLayer: integer("preview_layer"),
   bouquetRecipe: jsonb("bouquet_recipe").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  isReadyMadeBouquet: boolean("is_ready_made_bouquet").notNull().default(false),
   isBouquetTemplate: boolean("is_bouquet_template").notNull().default(false),
 
   isActive: boolean("is_active").notNull().default(true),

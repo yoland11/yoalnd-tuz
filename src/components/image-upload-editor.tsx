@@ -19,7 +19,7 @@ export type ImageEditResult = {
   metadata: ImageMetadata;
 };
 
-type ImageKind = "product" | "service" | "gallery" | "logo" | "avatar" | "attachment";
+type ImageKind = "product" | "product-preview-cutout" | "product-ready-made-preview" | "service" | "gallery" | "logo" | "avatar" | "attachment";
 
 type Preset = {
   id: string;
@@ -43,6 +43,8 @@ const PRESETS: Preset[] = [
 
 const DEFAULT_PRESET: Record<ImageKind, string> = {
   product: "product",
+  "product-preview-cutout": "custom",
+  "product-ready-made-preview": "custom",
   service: "wide",
   gallery: "custom",
   logo: "logo",

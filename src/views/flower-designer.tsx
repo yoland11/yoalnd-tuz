@@ -15,7 +15,7 @@ import { BouquetPreviewCanvas, type BouquetElementType, type BouquetPreviewItem 
 type Variant = { id: number; color: string | null; colorHex: string | null; sku: string | null; image: string | null; price: number | null; cost?: number | null; stock: number; available: number; isActive: boolean };
 type RecipeLine = { productId: number; quantity: number; unit: string; unitCost: number; notes: string | null };
 type DesignerSection = "flowers" | "bridal_bouquets" | "ready_bouquets" | "wrapping" | "ribbons" | "extras";
-type CatalogProduct = { id: number; name: string; nameAr: string; price: number; costPrice?: number; originalPrice: number | null; stock: number; category: string | null; categoryName: string | null; subcategory: string | null; subcategoryName: string | null; categoryId: number | null; subcategoryId: number | null; subcategoryIds: number[]; designerCategoryIds: number[]; designerSection: DesignerSection; availableInBouquetDesigner: boolean; bouquetElementType: BouquetElementType | null; previewAssetUrl: string | null; previewColor: string | null; previewScale: number | null; previewLayer: number | null; bouquetRecipe: RecipeLine[]; images: string[]; imageMetadata?: Array<{ objectFit?: string }>; variants: Variant[]; recipe: RecipeLine[]; isBouquetTemplate: boolean };
+type CatalogProduct = { id: number; name: string; nameAr: string; price: number; costPrice?: number; originalPrice: number | null; stock: number; category: string | null; categoryName: string | null; subcategory: string | null; subcategoryName: string | null; categoryId: number | null; subcategoryId: number | null; subcategoryIds: number[]; designerCategoryIds: number[]; designerSection: DesignerSection; availableInBouquetDesigner: boolean; showInBouquetBuilder: boolean; bouquetElementType: BouquetElementType | null; previewCutoutUrl: string | null; readyMadePreviewUrl: string | null; previewAssetUrl: string | null; previewColor: string | null; previewScale: number | null; previewRotation: number | null; previewLayer: number | null; bouquetRecipe: RecipeLine[]; images: string[]; imageMetadata?: Array<{ objectFit?: string }>; variants: Variant[]; recipe: RecipeLine[]; isReadyMadeBouquet: boolean; isBouquetTemplate: boolean };
 type CatalogResponse = { version: string; catalogScope: "flower-only-v2"; allowedCategoryIds: number[]; products: CatalogProduct[] };
 type Selection = { key: string; product: CatalogProduct; variant: Variant | null; quantity: number };
 
@@ -43,7 +43,7 @@ function previewElementType(product: CatalogProduct): BouquetElementType {
   if (product.designerSection === "wrapping") return "WRAPPING";
   if (product.designerSection === "ribbons") return "RIBBON";
   if (product.designerSection === "extras") return "ACCESSORY";
-  if (product.designerSection === "ready_bouquets" || product.isBouquetTemplate) return "TEMPLATE";
+  if (product.designerSection === "ready_bouquets" || product.isReadyMadeBouquet || product.isBouquetTemplate) return "TEMPLATE";
   return "FLOWER";
 }
 
@@ -56,6 +56,7 @@ export default function FlowerDesigner() {
   const [order, setOrder] = useState<string[]>([]);
   const [note, setNote] = useState("");
   const [templateName, setTemplateName] = useState("");
+  const [readyMadePreview, setReadyMadePreview] = useState<CatalogProduct | null>(null);
   const [search, setSearch] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(36);
@@ -67,7 +68,7 @@ export default function FlowerDesigner() {
     return response.products.filter((product) => (
       Boolean(product.designerSection) &&
       (product.designerCategoryIds.some((id) => allowed.has(Number(id))) ||
-        (product.availableInBouquetDesigner === true && product.designerCategoryIds.length > 0))
+        ((product.showInBouquetBuilder === true || product.availableInBouquetDesigner === true) && product.designerCategoryIds.length > 0))
     ));
   }, [catalog.data]);
 
@@ -84,26 +85,37 @@ export default function FlowerDesigner() {
   const ribbonOptions = useMemo(() => products.filter((product) => product.designerSection === "ribbons"), [products]);
   const accessoryOptions = useMemo(() => products.filter((product) => product.designerSection === "extras"), [products]);
   const selected = useMemo<Selection[]>(() => { const rows: Selection[] = []; products.forEach((product) => { if (!product.variants.length) { const key = selectionKey(product.id); if (quantities[key] > 0) rows.push({ key, product, variant: null, quantity: quantities[key] }); } product.variants.forEach((variant) => { const key = selectionKey(product.id, variant.id); if (quantities[key] > 0) rows.push({ key, product, variant, quantity: quantities[key] }); }); }); const rank = new Map(order.map((key, index) => [key, index])); return rows.sort((a, b) => (rank.get(a.key) ?? 9999) - (rank.get(b.key) ?? 9999)); }, [order, products, quantities]);
-  const previewItems = useMemo<BouquetPreviewItem[]>(() => selected.map((line) => ({
+  const previewItems = useMemo<BouquetPreviewItem[]>(() => {
+    const selectedItems = selected.map((line) => ({
     productId: String(line.product.id),
     elementType: previewElementType(line.product),
     quantity: line.quantity,
     color: line.variant?.colorHex || line.product.previewColor,
-    previewAssetUrl: line.product.previewAssetUrl,
+    previewCutoutUrl: line.product.previewCutoutUrl,
     previewScale: line.product.previewScale,
+    previewRotation: line.product.previewRotation,
     previewLayer: line.product.previewLayer,
-  })).filter((item) => item.elementType !== "EXCLUDED"), [selected]);
+    readyMadePreviewUrl: line.product.readyMadePreviewUrl,
+    isReadyMadeBouquet: line.product.isReadyMadeBouquet,
+    })).filter((item) => item.elementType !== "EXCLUDED");
+    if (!readyMadePreview) return selectedItems;
+    return [...selectedItems, {
+      productId: String(readyMadePreview.id), elementType: "TEMPLATE", quantity: 1,
+      readyMadePreviewUrl: readyMadePreview.readyMadePreviewUrl,
+      isReadyMadeBouquet: true,
+    }];
+  }, [readyMadePreview, selected]);
   const subtotal = selected.reduce((sum, line) => sum + unitPrice(line) * line.quantity, 0);
   const discount = selected.reduce((sum, line) => sum + Math.max(0, (line.product.originalPrice ?? unitPrice(line)) - unitPrice(line)) * line.quantity, 0);
-  const templates = products.filter((product) => product.isBouquetTemplate);
+  const templates = products.filter((product) => product.isReadyMadeBouquet || product.isBouquetTemplate);
   const unavailable = selected.filter((line) => available(line) <= 0);
   const replacements = useMemo(() => unavailable.flatMap((line) => products.filter((candidate) => candidate.id !== line.product.id && categoryOf(candidate).key === categoryOf(line.product).key && candidate.stock > 0).slice(0, 3).map((candidate) => ({ line, candidate }))), [products, unavailable]);
   const suggestions = useMemo(() => products.filter((product) => product.stock > 0 && !selected.some((line) => line.product.id === product.id)).slice(0, 4), [products, selected]);
 
-  function changeQuantity(product: CatalogProduct, variant: Variant | null, delta: number) { const key = selectionKey(product.id, variant?.id); const max = variant ? Math.max(0, variant.available ?? variant.stock) : product.variants.length ? 0 : product.stock; setQuantities((current) => ({ ...current, [key]: Math.max(0, Math.min(max, (current[key] ?? 0) + delta)) })); if (delta > 0) setOrder((current) => current.includes(key) ? current : [...current, key]); }
+  function changeQuantity(product: CatalogProduct, variant: Variant | null, delta: number) { const key = selectionKey(product.id, variant?.id); const max = variant ? Math.max(0, variant.available ?? variant.stock) : product.variants.length ? 0 : product.stock; if (delta > 0 && !product.isReadyMadeBouquet && !product.isBouquetTemplate) setReadyMadePreview(null); setQuantities((current) => ({ ...current, [key]: Math.max(0, Math.min(max, (current[key] ?? 0) + delta)) })); if (delta > 0) setOrder((current) => current.includes(key) ? current : [...current, key]); }
   function removeLine(line: Selection) { setQuantities((current) => ({ ...current, [line.key]: 0 })); }
   function duplicateLine(line: Selection) { changeQuantity(line.product, line.variant, line.quantity); }
-  function applyTemplate(template: CatalogProduct) { const components = template.recipe.map((recipe) => ({ product: products.find((product) => product.id === recipe.productId), quantity: recipe.quantity })).filter((entry): entry is { product: CatalogProduct; quantity: number } => Boolean(entry.product)); if (!components.length) { toast({ title: "هذا النموذج لا يحتوي مكونات صالحة", variant: "destructive" }); return; } setQuantities((current) => { const next = { ...current }; components.forEach(({ product, quantity }) => { if (!product.variants.length) next[selectionKey(product.id)] = Math.min(product.stock, Math.max(0, quantity)); }); return next; }); setOrder(components.map(({ product }) => selectionKey(product.id))); setTemplateName(productName(template)); toast({ title: `تم تطبيق نموذج ${productName(template)}` }); }
+  function applyTemplate(template: CatalogProduct) { const components = template.recipe.map((recipe) => ({ product: products.find((product) => product.id === recipe.productId), quantity: recipe.quantity })).filter((entry): entry is { product: CatalogProduct; quantity: number } => Boolean(entry.product)); if (!components.length) { toast({ title: "هذا النموذج لا يحتوي مكونات صالحة", variant: "destructive" }); return; } setQuantities((current) => { const next = { ...current }; components.forEach(({ product, quantity }) => { if (!product.variants.length) next[selectionKey(product.id)] = Math.min(product.stock, Math.max(0, quantity)); }); return next; }); setOrder(components.map(({ product }) => selectionKey(product.id))); setReadyMadePreview(template); setTemplateName(productName(template)); toast({ title: `تم تطبيق نموذج ${productName(template)}` }); }
   async function addDesignToCart() {
     if (!selected.length) { toast({ title: "اختر منتجاً واحداً على الأقل", variant: "destructive" }); return; }
     setIsAdding(true);
@@ -111,7 +123,7 @@ export default function FlowerDesigner() {
       const validation = await fetch("/api/products/designer-inventory/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: selected.map((line) => ({ productId: line.product.id, variantId: line.variant?.id ?? null, quantity: line.quantity })) }) });
       const availability = await validation.json().catch(() => ({}));
       if (!validation.ok || !availability.ok) { await catalog.refetch(); throw new Error(availability?.shortages?.map((row: any) => `${row.name}: المتاح ${row.available}`).join("، ") || "تغيّر المخزون، راجع اختياراتك."); }
-      const snapshot = { source: "bouquet_designer", templateName: templateName || undefined, giftCard: note.trim() || undefined, createdAt: new Date().toISOString(), preview: previewItems.map(({ productId, elementType, quantity, color, previewAssetUrl, previewScale, previewLayer }) => ({ productId, elementType, quantity, color, previewAssetUrl, previewScale, previewLayer })), items: selected.map((line) => ({ productId: line.product.id, variantId: line.variant?.id ?? null, sku: line.variant?.sku ?? line.product.id, image: line.variant?.image || line.product.images?.[0] || null, name: productName(line.product), price: unitPrice(line), cost: Number(line.variant?.cost ?? line.product.costPrice ?? 0), quantity: line.quantity, flowerColor: line.variant?.color ?? null, category: categoryOf(line.product).label })) };
+      const snapshot = { source: "bouquet_designer", templateName: templateName || undefined, giftCard: note.trim() || undefined, createdAt: new Date().toISOString(), preview: previewItems.map(({ productId, elementType, quantity, color, previewCutoutUrl, readyMadePreviewUrl, previewScale, previewRotation, previewLayer, isReadyMadeBouquet }) => ({ productId, elementType, quantity, color, previewCutoutUrl, readyMadePreviewUrl, previewScale, previewRotation, previewLayer, isReadyMadeBouquet })), items: selected.map((line) => ({ productId: line.product.id, variantId: line.variant?.id ?? null, sku: line.variant?.sku ?? line.product.id, image: line.variant?.image || line.product.images?.[0] || null, name: productName(line.product), price: unitPrice(line), cost: Number(line.variant?.cost ?? line.product.costPrice ?? 0), quantity: line.quantity, flowerColor: line.variant?.color ?? null, category: categoryOf(line.product).label })) };
       for (const line of selected) { const response = await fetch("/api/cart", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ productId: line.product.id, variantId: line.variant?.id, quantity: line.quantity, selectedColor: line.variant?.color || undefined, selectedColorData: line.variant?.color ? { name: line.variant.color, hex: line.variant.colorHex || "", image: line.variant.image } : undefined, customization: JSON.stringify(snapshot) }) }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload?.error || "تعذّر إضافة المنتج إلى السلة"); }
       await client.invalidateQueries({ queryKey: ["/api/cart"] }); toast({ title: "أضيف تصميم الباقة إلى السلة", description: "سيُعاد التحقق من المخزون ويُخصم عند تأكيد الدفع." }); navigate("/checkout");
     } catch (error: any) { toast({ title: "لا يمكن متابعة الطلب", description: error?.message || "حاول مرة أخرى.", variant: "destructive" }); } finally { setIsAdding(false); }

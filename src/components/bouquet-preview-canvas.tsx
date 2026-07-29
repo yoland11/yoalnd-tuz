@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Flower2 } from "lucide-react";
+import { AlertTriangle, Flower2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type BouquetElementType = "FLOWER" | "GREENERY" | "FILLER" | "WRAPPING" | "RIBBON" | "ACCESSORY" | "TEMPLATE" | "EXCLUDED";
@@ -11,74 +11,122 @@ export type BouquetPreviewItem = {
   elementType: BouquetElementType;
   quantity: number;
   color?: string | null;
-  previewAssetUrl?: string | null;
+  previewCutoutUrl?: string | null;
+  readyMadePreviewUrl?: string | null;
   previewScale?: number | null;
+  previewRotation?: number | null;
   previewLayer?: number | null;
+  isReadyMadeBouquet?: boolean;
 };
 
-type Placement = BouquetPreviewItem & { key: string; x: number; y: number; rotate: number; scale: number; layer: number };
+type Placement = BouquetPreviewItem & { key: string; x: number; y: number; rotate: number; scale: number; depth: number };
 
-const flowerSlots = [[50, 39], [35, 44], [65, 44], [43, 28], [57, 28], [24, 53], [76, 53], [49, 57], [34, 61], [66, 61], [26, 32], [74, 32]];
-const fillerSlots = [[18, 31], [82, 32], [28, 21], [72, 22], [17, 52], [83, 52], [39, 35], [61, 35]];
-const greenerySlots = [[22, 52], [78, 52], [31, 25], [69, 25], [15, 42], [85, 42], [49, 18]];
+const COMPACT_FLOWER_SLOTS = [
+  [50, 35, 1.15], [43, 40, 1.08], [57, 40, 1.08], [50, 46, 1.04],
+  [35, 39, .98], [65, 39, .98], [41, 29, .92], [59, 29, .92],
+  [28, 47, .86], [72, 47, .86], [37, 52, .9], [63, 52, .9],
+  [23, 38, .76], [77, 38, .76], [30, 57, .8], [70, 57, .8],
+] as const;
+const COMPACT_FILLER_SLOTS = [[29, 31], [71, 31], [22, 45], [78, 45], [36, 24], [64, 24], [41, 49], [59, 49], [48, 27], [52, 53]] as const;
+const COMPACT_GREENERY_SLOTS = [[21, 49], [79, 49], [27, 30], [73, 30], [16, 39], [84, 39], [35, 20], [65, 20]] as const;
 
-function seed(input: string) { return [...input].reduce((value, char) => ((value * 31 + char.charCodeAt(0)) >>> 0), 17); }
-function typeSlots(type: BouquetElementType) { return type === "GREENERY" ? greenerySlots : type === "FILLER" ? fillerSlots : flowerSlots; }
-function defaultColor(type: BouquetElementType) { return type === "GREENERY" ? "#4c7a58" : type === "FILLER" ? "#fff7f2" : type === "RIBBON" ? "#b33a55" : type === "WRAPPING" ? "#d7b0ae" : "#d55b73"; }
+const FALLBACK_ASSETS: Record<string, string> = {
+  FLOWER: "/bouquet-preview-assets/rose-red-cutout.png",
+  GREENERY: "/bouquet-preview-assets/greenery-cutout.png",
+  FILLER: "/bouquet-preview-assets/baby-breath-cutout.png",
+  WRAPPING: "/bouquet-preview-assets/wrapping-ribbon-cutout.png",
+  RIBBON: "/bouquet-preview-assets/wrapping-ribbon-cutout.png",
+  ACCESSORY: "/bouquet-preview-assets/baby-breath-cutout.png",
+};
 
-function buildPlacements(items: BouquetPreviewItem[]) {
+function stableSeed(input: string) {
+  return [...input].reduce((value, char) => ((value * 31 + char.charCodeAt(0)) >>> 0), 23);
+}
+
+export function getPhotorealisticFallbackAsset(type: BouquetElementType, _color?: string | null) {
+  return FALLBACK_ASSETS[type] ?? null;
+}
+
+function slotsFor(type: BouquetElementType) {
+  if (type === "GREENERY") return COMPACT_GREENERY_SLOTS;
+  if (type === "FILLER" || type === "ACCESSORY") return COMPACT_FILLER_SLOTS;
+  return COMPACT_FLOWER_SLOTS;
+}
+
+function buildCompactPlacements(items: BouquetPreviewItem[]) {
+  const visual = items.filter((item) => !["WRAPPING", "RIBBON", "TEMPLATE", "EXCLUDED"].includes(item.elementType));
   const placements: Placement[] = [];
-  const visualItems = items.filter((item) => !["WRAPPING", "RIBBON", "TEMPLATE", "EXCLUDED"].includes(item.elementType));
   let count = 0;
-  for (const item of visualItems) {
-    const cap = item.elementType === "ACCESSORY" ? 3 : item.elementType === "GREENERY" ? 8 : item.elementType === "FILLER" ? 12 : 16;
-    const copies = Math.min(Math.max(1, Math.round(item.quantity)), cap, 36 - count);
-    const slots = typeSlots(item.elementType);
-    const base = seed(item.productId);
+  for (const item of visual) {
+    const cap = item.elementType === "GREENERY" ? 8 : item.elementType === "FILLER" ? 12 : item.elementType === "ACCESSORY" ? 3 : 18;
+    const copies = Math.min(Math.max(1, Math.round(item.quantity)), cap, 40 - count);
+    const seed = stableSeed(`${item.productId}:${item.quantity}:${item.elementType}`);
+    const slots = slotsFor(item.elementType);
     for (let index = 0; index < copies; index += 1) {
-      const slot = slots[(base + index) % slots.length];
-      const spread = ((base >> (index % 12)) % 7) - 3;
-      placements.push({ ...item, key: `${item.productId}-${index}`, x: slot[0] + spread, y: slot[1] + (index % 2 ? 2 : -1), rotate: ((base + index * 17) % 24) - 12, scale: (item.previewScale ?? 1) * (0.78 + ((base + index) % 12) / 50), layer: (item.previewLayer ?? 0) + (item.elementType === "GREENERY" ? 12 : item.elementType === "FILLER" ? 34 : item.elementType === "ACCESSORY" ? 72 : 46) + index });
+      // These anchors deliberately start at the centre then fill the compact oval;
+      // they never use angle/radius maths and remain stable across React renders.
+      const slot = slots[(seed + index) % slots.length];
+      const jitterX = ((seed >>> ((index % 7) * 3)) % 5) - 2;
+      const jitterY = ((seed >>> ((index % 5) * 4)) % 5) - 2;
+      placements.push({
+        ...item,
+        key: `${item.productId}-${index}`,
+        x: slot[0] + jitterX,
+        y: slot[1] + jitterY,
+        rotate: (item.previewRotation ?? 0) + (((seed + index * 19) % 18) - 9),
+        scale: (item.previewScale ?? 1) * (slot[2] ?? 1) * (.94 + ((seed + index) % 5) / 40),
+        depth: (item.previewLayer ?? 0) + (item.elementType === "GREENERY" ? 10 : item.elementType === "FILLER" ? 45 : item.elementType === "ACCESSORY" ? 82 : 58) + index,
+      });
       count += 1;
-      if (count >= 36) return placements;
+      if (count >= 40) return placements;
     }
   }
   return placements;
 }
 
-function GenericElement({ type, color }: { type: BouquetElementType; color: string }) {
-  if (type === "GREENERY") return <g fill="none" stroke={color} strokeWidth="5" strokeLinecap="round"><path d="M50 105C47 74 51 40 61 13" /><path fill={color} stroke="none" d="M57 50C22 42 18 18 23 12c28 3 37 18 34 38Zm0 22C82 61 91 38 86 30c-28 6-37 22-29 42Zm-4 10C25 86 13 107 18 117c27-5 37-18 35-35Zm7-4c26 6 39 25 35 36-24 1-35-11-35-36Z" /></g>;
-  if (type === "FILLER") return <g fill={color}><path d="M51 57c-18-22-26-38-21-44 10 0 17 10 21 22C55 23 64 13 74 15c2 10-5 21-18 27 16-3 29 1 31 10-8 8-22 7-33 2 10 10 12 23 4 29-10-4-13-15-9-26-5 12-16 18-27 14-1-10 8-18 29-14Z" /><path fill="#e6b14c" d="M51 44c8 0 12 6 9 13-3 6-13 6-17 0-4-7 0-13 8-13Z" /></g>;
-  if (type === "ACCESSORY") return <g fill="none" stroke={color} strokeWidth="4" strokeLinecap="round"><path d="M24 63c10-26 39-37 56-13 16-24 44-13 54 13-21 7-38 21-54 42-16-21-33-35-56-42Z" /><path d="M80 46v57" /></g>;
-  return <g><path fill={color} d="M80 13c12 20 9 35 0 43 18-11 33-6 39 7-14 15-29 17-43 11 12 16 9 32-7 40-18-8-23-24-17-40-16 12-33 8-40-7 9-17 25-21 40-12-10-17-6-34 8-43 8 13 10 28 3 43 14-14 29-16 40-5-5 15-18 23-35 22 16 6 24 20 18 34-18 5-32-4-37-19-3 18-16 29-32 26-10-16-2-31 14-38-19 2-32-8-33-24 15-10 30-5 42 7-6-18 0-33 14-40Z" /><path fill="#f4c65a" d="M79 54c15 0 22 11 17 24-5 13-25 14-32 1-7-13 1-25 15-25Z" /></g>;
-}
-
-function PreviewNode({ item, placement }: { item: BouquetPreviewItem; placement: Placement }) {
+function AssetLayer({ item, placement, className }: { item: BouquetPreviewItem; placement: Placement; className?: string }) {
   const [failed, setFailed] = useState(false);
-  const color = item.color || defaultColor(item.elementType);
-  return <g transform={`translate(${placement.x * 6 - 45} ${placement.y * 5 - 50}) rotate(${placement.rotate} 50 58) scale(${placement.scale})`} style={{ transition: "transform 200ms cubic-bezier(.16,1,.3,1)" }}>
-    {item.previewAssetUrl && !failed ? <image href={item.previewAssetUrl} x="0" y="0" width="110" height="118" preserveAspectRatio="xMidYMid meet" onError={() => setFailed(true)} /> : <GenericElement type={item.elementType} color={color} />}
-  </g>;
+  const src = item.previewCutoutUrl || getPhotorealisticFallbackAsset(item.elementType, item.color);
+  if (!src || failed) return null;
+  return <img src={src} alt="" aria-hidden="true" draggable={false} loading="eager" decoding="async" onError={() => setFailed(true)} className={cn("bouquet-preview-canvas__layer", className)} style={{ left: `${placement.x}%`, top: `${placement.y}%`, zIndex: placement.depth, transform: `translate(-50%, -50%) rotate(${placement.rotate}deg) scale(${placement.scale})` }} />;
 }
 
-export function BouquetPreviewCanvas({ items, note, className }: { items: BouquetPreviewItem[]; note?: string; className?: string }) {
-  const placements = useMemo(() => buildPlacements(items), [items]);
+function CompleteBouquet({ item }: { item: BouquetPreviewItem }) {
+  const [failed, setFailed] = useState(false);
+  if (!item.readyMadePreviewUrl || failed) return <div className="bouquet-preview-canvas__missing" role="status"><AlertTriangle /><strong>لا توجد صورة معاينة مفرغة لهذه الباقة</strong><span>أضف صورة معاينة الباقة الجاهزة من إعدادات المنتج.</span></div>;
+  return <div className="bouquet-preview-canvas__ready"><img src={item.readyMadePreviewUrl} alt="معاينة الباقة الجاهزة" loading="eager" decoding="async" onError={() => setFailed(true)} /></div>;
+}
+
+export function PhotorealisticBouquetPreview({ items, note, className }: { items: BouquetPreviewItem[]; note?: string; className?: string }) {
+  const [mode, setMode] = useState<"instant" | "realistic">("instant");
+  // There is no configured server-side generation provider in this project.
+  // Keep this mode unavailable rather than pretending to generate an image or
+  // exposing a client-side key. It can be enabled only with a secured endpoint.
+  const realisticEnabled = false;
+  const placements = useMemo(() => buildCompactPlacements(items), [items]);
+  const readyMade = items.find((item) => item.isReadyMadeBouquet || item.elementType === "TEMPLATE");
   const wrapping = items.filter((item) => item.elementType === "WRAPPING").at(-1);
   const ribbon = items.filter((item) => item.elementType === "RIBBON").at(-1);
-  const accessories = items.filter((item) => item.elementType === "ACCESSORY");
-  if (!items.length) return <div className={cn("bouquet-preview-canvas bouquet-preview-canvas--empty", className)}><Flower2 /><p>ابدأ باختيار الورد لتظهر معاينة الباقة هنا</p></div>;
-  return <div className={cn("bouquet-preview-canvas", className)} aria-live="polite" aria-label="معاينة الباقة">
-    <div className="bouquet-preview-canvas__header"><strong>معاينة الباقة</strong><span>معاينة فورية</span></div>
-    <svg viewBox="0 0 600 580" role="img" aria-label="تكوين تقريبي للباقة" className="bouquet-preview-canvas__art">
-      <defs><filter id="bouquet-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="10" stdDeviation="9" floodOpacity=".22" /></filter></defs>
-      <ellipse cx="300" cy="526" rx="166" ry="25" fill="rgba(0,0,0,.18)" />
-      {wrapping ? <path d="M112 470C145 294 204 184 300 177c96 7 155 117 188 293l-108 49H220l-108-49Z" fill={wrapping.color || defaultColor("WRAPPING")} opacity=".9" filter="url(#bouquet-shadow)" /> : null}
-      {placements.filter((p) => p.elementType === "GREENERY").map((placement) => <PreviewNode key={placement.key} item={placement} placement={placement} />)}
-      {placements.filter((p) => p.elementType !== "GREENERY" && p.elementType !== "ACCESSORY").sort((a, b) => a.layer - b.layer).map((placement) => <PreviewNode key={placement.key} item={placement} placement={placement} />)}
-      {wrapping ? <path d="M164 439c37 56 78 76 136 77 58-1 99-21 136-77l-35 62H199l-35-62Z" fill={wrapping.color || defaultColor("WRAPPING")} opacity=".75" /> : null}
-      {ribbon ? <g transform="translate(246 457)" fill={ribbon.color || defaultColor("RIBBON")} filter="url(#bouquet-shadow)"><path d="M54 24C15-11-19 0 3 36c19 18 36 11 51-4-2 30-2 50-16 75l27-19 26 19c-14-25-14-45-16-75 15 15 32 22 51 4C148 0 114-11 76 24l-11 8-11-8Z" /></g> : null}
-      {accessories.slice(0, 3).map((item, index) => <g key={`${item.productId}-${index}`} transform={`translate(${110 + index * 180} ${300 + (index % 2) * 55}) scale(.48)`}><GenericElement type="ACCESSORY" color={item.color || defaultColor("ACCESSORY")} /></g>)}
-    </svg>
-    <p className="bouquet-preview-canvas__note">{note ? `بطاقة الإهداء: ${note}` : "الصورة تقريبية وقد يختلف التنفيذ النهائي حسب توفر الورد وطريقة التنسيق."}</p>
-  </div>;
+  const accessories = placements.filter((item) => item.elementType === "ACCESSORY");
+
+  if (!items.length) return <div className={cn("bouquet-preview-canvas bouquet-preview-canvas--empty", className)}><Flower2 /><p>اختر الورد والتغليف لتظهر الباقة هنا</p></div>;
+
+  return <section className={cn("bouquet-preview-canvas", className)} aria-live="polite" aria-label="معاينة الباقة">
+    <header className="bouquet-preview-canvas__header"><strong>معاينة الباقة</strong><div className="bouquet-preview-canvas__tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === "instant"} className={mode === "instant" ? "is-active" : ""} onClick={() => setMode("instant")}>معاينة فورية</button><button type="button" role="tab" aria-selected={mode === "realistic"} disabled={!realisticEnabled} className={mode === "realistic" ? "is-active" : ""} onClick={() => setMode("realistic")}>معاينة واقعية</button></div></header>
+    {mode === "realistic" && realisticEnabled ? <div className="bouquet-preview-canvas__generation"><Sparkles /><strong>المعاينة الواقعية تستخدم خدمة التوليد الآمنة المفعّلة.</strong><button type="button" onClick={() => setMode("instant")}>العودة للمعاينة الفورية</button></div> : <div className="bouquet-preview-canvas__studio">
+      <div className="bouquet-preview-canvas__floor-shadow" />
+      {readyMade ? <CompleteBouquet item={readyMade} /> : <>
+        {wrapping ? <img src={wrapping.previewCutoutUrl || getPhotorealisticFallbackAsset("WRAPPING")} alt="" aria-hidden="true" className="bouquet-preview-canvas__wrapping bouquet-preview-canvas__wrapping--back" /> : null}
+        {placements.filter((item) => item.elementType === "GREENERY").map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} className="is-greenery" />)}
+        {placements.filter((item) => item.elementType !== "GREENERY" && item.elementType !== "ACCESSORY").sort((a, b) => a.depth - b.depth).map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} />)}
+        {wrapping ? <img src={wrapping.previewCutoutUrl || getPhotorealisticFallbackAsset("WRAPPING")} alt="" aria-hidden="true" className="bouquet-preview-canvas__wrapping bouquet-preview-canvas__wrapping--front" /> : null}
+        {ribbon ? <img src={ribbon.previewCutoutUrl || getPhotorealisticFallbackAsset("RIBBON")} alt="" aria-hidden="true" className="bouquet-preview-canvas__ribbon" /> : null}
+        {accessories.map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} className="is-accessory" />)}
+      </>}
+    </div>}
+    <p className="bouquet-preview-canvas__note">{note ? `بطاقة الإهداء: ${note}` : "المعاينة تقريبية وقد يختلف التنفيذ النهائي حسب توفر الورد وطريقة التنسيق."}</p>
+  </section>;
 }
+
+/** Compatibility export for callers during the component migration. */
+export const BouquetPreviewCanvas = PhotorealisticBouquetPreview;

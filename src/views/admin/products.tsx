@@ -37,7 +37,7 @@ type ProductForm = {
   category?: string; subcategory?: string;
   images: string[]; videos: string[]; colors: ProductColor[];
   imageMetadata: ImageMetadata[];
-  isFeatured: boolean; availableInBouquetDesigner?: boolean; bouquetElementType?: string | null; previewAssetUrl?: string | null; previewColor?: string | null; previewScale?: string; previewLayer?: string; bouquetRecipe?: Array<Record<string, unknown>>; isBouquetTemplate?: boolean; isActive?: boolean;
+  isFeatured: boolean; availableInBouquetDesigner?: boolean; showInBouquetBuilder?: boolean; bouquetElementType?: string | null; previewCutoutUrl?: string | null; readyMadePreviewUrl?: string | null; previewAssetUrl?: string | null; previewColor?: string | null; previewScale?: string; previewRotation?: string; previewLayer?: string; bouquetRecipe?: Array<Record<string, unknown>>; isReadyMadeBouquet?: boolean; isBouquetTemplate?: boolean; isActive?: boolean;
 };
 
 type RentalBookingRow = {
@@ -56,7 +56,7 @@ const blank: ProductForm = {
   name: "", nameAr: "", price: "0", costPrice: "0", stock: "0", minStock: "0", barcode: "",
   isRental: false, pricePerDay: "0", isAsset: false,
   sharedStockProductId: null, sharedStockLinkedProductIds: [],
-  images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, availableInBouquetDesigner: false, bouquetElementType: "FLOWER", previewAssetUrl: null, previewColor: "#d55b73", previewScale: "1", previewLayer: "0", bouquetRecipe: [], isBouquetTemplate: false, isActive: true,
+  images: [], videos: [], imageMetadata: [], colors: [], isFeatured: false, availableInBouquetDesigner: false, showInBouquetBuilder: false, bouquetElementType: "FLOWER", previewCutoutUrl: null, readyMadePreviewUrl: null, previewAssetUrl: null, previewColor: "#d55b73", previewScale: "1", previewRotation: "0", previewLayer: "0", bouquetRecipe: [], isReadyMadeBouquet: false, isBouquetTemplate: false, isActive: true,
 };
 
 const DEFAULT_LOW_STOCK_THRESHOLD = 5;
@@ -256,12 +256,17 @@ export default function ProductsPage() {
       colors: normalizeColors(form.colors ?? []),
       isFeatured: form.isFeatured,
       availableInBouquetDesigner: form.availableInBouquetDesigner === true,
+      showInBouquetBuilder: form.showInBouquetBuilder === true || form.availableInBouquetDesigner === true,
       bouquetElementType: form.bouquetElementType || "FLOWER",
+      previewCutoutUrl: form.previewCutoutUrl || form.previewAssetUrl || null,
+      readyMadePreviewUrl: form.readyMadePreviewUrl || null,
       previewAssetUrl: form.previewAssetUrl || null,
       previewColor: form.previewColor || null,
       previewScale: form.previewScale ? parseFloat(form.previewScale) : null,
+      previewRotation: form.previewRotation ? parseFloat(form.previewRotation) : null,
       previewLayer: form.previewLayer ? parseInt(form.previewLayer, 10) : null,
       bouquetRecipe: form.bouquetRecipe ?? [],
+      isReadyMadeBouquet: form.isReadyMadeBouquet === true,
       isBouquetTemplate: form.isBouquetTemplate === true,
       ...(form.isActive !== undefined ? { isActive: form.isActive } : {}),
     } as any;
@@ -573,7 +578,7 @@ export default function ProductsPage() {
                             categoryId: (p as any).categoryId ?? null, subcategoryId: (p as any).subcategoryId ?? null, subcategoryIds: Array.isArray((p as any).subcategoryIds) ? (p as any).subcategoryIds : ((p as any).subcategoryId ? [(p as any).subcategoryId] : []),
                             category: p.category ?? "", subcategory: p.subcategory ?? "",
                             images: p.images ?? [], videos: (p as any).videos ?? [], imageMetadata: (p as any).imageMetadata ?? [], colors: normalizeColors(p.colors ?? []),
-                            isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, bouquetElementType: (p as any).bouquetElementType ?? "FLOWER", previewAssetUrl: (p as any).previewAssetUrl ?? null, previewColor: (p as any).previewColor ?? "#d55b73", previewScale: (p as any).previewScale == null ? "1" : String((p as any).previewScale), previewLayer: (p as any).previewLayer == null ? "0" : String((p as any).previewLayer), bouquetRecipe: Array.isArray((p as any).bouquetRecipe) ? (p as any).bouquetRecipe : [], isBouquetTemplate: !!(p as any).isBouquetTemplate, isActive: p.isActive !== false,
+                            isFeatured: !!p.isFeatured, availableInBouquetDesigner: !!(p as any).availableInBouquetDesigner, showInBouquetBuilder: !!((p as any).showInBouquetBuilder ?? (p as any).availableInBouquetDesigner), bouquetElementType: (p as any).bouquetElementType ?? "FLOWER", previewCutoutUrl: (p as any).previewCutoutUrl ?? (p as any).previewAssetUrl ?? null, readyMadePreviewUrl: (p as any).readyMadePreviewUrl ?? null, previewAssetUrl: (p as any).previewAssetUrl ?? null, previewColor: (p as any).previewColor ?? "#d55b73", previewScale: (p as any).previewScale == null ? "1" : String((p as any).previewScale), previewRotation: (p as any).previewRotation == null ? "0" : String((p as any).previewRotation), previewLayer: (p as any).previewLayer == null ? "0" : String((p as any).previewLayer), bouquetRecipe: Array.isArray((p as any).bouquetRecipe) ? (p as any).bouquetRecipe : [], isReadyMadeBouquet: !!((p as any).isReadyMadeBouquet ?? (p as any).isBouquetTemplate), isBouquetTemplate: !!(p as any).isBouquetTemplate, isActive: p.isActive !== false,
                           })} className="text-primary hover:bg-primary/10 p-2 rounded-lg">
                             <Edit2 className="w-4 h-4" />
                           </button>
@@ -1385,14 +1390,16 @@ function ProductFormModal({ form, onChange, onClose, onSave, parentCats, subCats
 
         <section className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-4">
           <div><h4 className="text-sm font-semibold text-foreground">إعدادات مصمم الباقات</h4><p className="mt-1 text-xs text-muted-foreground">تُستخدم عناصر المعاينة هنا فقط؛ لا تستبدل صورة المنتج في المتجر أو الطلبات.</p></div>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.availableInBouquetDesigner === true} onChange={(event) => onChange({ ...form, availableInBouquetDesigner: event.target.checked })} className="accent-primary" />إظهار في مصمم الباقات</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.showInBouquetBuilder === true || form.availableInBouquetDesigner === true} onChange={(event) => onChange({ ...form, showInBouquetBuilder: event.target.checked, availableInBouquetDesigner: event.target.checked })} className="accent-primary" />إظهار في مصمم الباقات</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isReadyMadeBouquet === true} onChange={(event) => onChange({ ...form, isReadyMadeBouquet: event.target.checked, isBouquetTemplate: event.target.checked, bouquetElementType: event.target.checked ? "TEMPLATE" : form.bouquetElementType })} className="accent-primary" />باقة جاهزة</label>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-xs text-muted-foreground">نوع العنصر داخل الباقة<select value={form.bouquetElementType ?? "FLOWER"} onChange={(event) => onChange({ ...form, bouquetElementType: event.target.value, isBouquetTemplate: event.target.value === "TEMPLATE" })} className="h-9 w-full rounded-lg border border-border/50 bg-background px-2 text-sm text-foreground"><option value="FLOWER">وردة</option><option value="GREENERY">خضار وأوراق</option><option value="FILLER">ورد حشو صغير</option><option value="WRAPPING">تغليف</option><option value="RIBBON">شريط</option><option value="ACCESSORY">إكسسوار</option><option value="TEMPLATE">قالب باقة جاهز</option><option value="EXCLUDED">غير مستخدم في المعاينة</option></select></label>
             <label className="space-y-1 text-xs text-muted-foreground">لون العنصر الافتراضي<input type="color" value={form.previewColor || "#d55b73"} onChange={(event) => onChange({ ...form, previewColor: event.target.value })} className="h-9 w-full rounded-lg border border-border/50 bg-background p-1" /></label>
             <Inp label="حجم العنصر داخل المعاينة" type="number" value={form.previewScale ?? "1"} onChange={(value) => onChange({ ...form, previewScale: value })} />
+            <Inp label="زاوية الدوران" type="number" value={form.previewRotation ?? "0"} onChange={(value) => onChange({ ...form, previewRotation: value })} />
             <Inp label="ترتيب العنصر داخل الباقة" type="number" value={form.previewLayer ?? "0"} onChange={(value) => onChange({ ...form, previewLayer: value })} />
           </div>
-          <div className="grid gap-3 sm:grid-cols-[10rem_1fr] sm:items-center"><div className="grid h-28 place-items-center overflow-hidden rounded-lg border border-dashed border-border/60 bg-background">{form.previewAssetUrl ? <img src={form.previewAssetUrl} alt="معاينة عنصر الباقة" className="h-full w-full object-contain" /> : <span className="text-xs text-muted-foreground">أصل معاينة شفاف</span>}</div><div><ImageUploadEditor kind="product" label="صورة العنصر للمعاينة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(results) => { const result = results[0]; if (result) onChange({ ...form, previewAssetUrl: result.dataUrl }); }} onRemove={() => onChange({ ...form, previewAssetUrl: null })} /><p className="mt-2 text-xs text-muted-foreground">ارفع PNG أو WebP بخلفية مفرغة. تُستخدم داخل معاينة الباقة فقط، ولا تستبدل صورة المنتج الرئيسية.</p></div></div>
+          {form.isReadyMadeBouquet ? <div className="grid gap-3 sm:grid-cols-[10rem_1fr] sm:items-center"><div className="bouquet-preview-checker grid h-28 place-items-center overflow-hidden rounded-lg border border-dashed border-border/60">{form.readyMadePreviewUrl ? <img src={form.readyMadePreviewUrl} alt="معاينة الباقة الجاهزة" className="h-full w-full object-contain" /> : <span className="text-xs text-muted-foreground">صورة باقة مفرغة</span>}</div><div><ImageUploadEditor kind="product-ready-made-preview" label="صورة معاينة الباقة الجاهزة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(results) => { const result = results[0]; if (result) onChange({ ...form, readyMadePreviewUrl: result.dataUrl }); }} onRemove={() => onChange({ ...form, readyMadePreviewUrl: null })} /><p className="mt-2 text-xs text-muted-foreground">ارفع صورة كاملة للباقة بخلفية مفرغة PNG أو WebP، وتُستخدم هذه الصورة في المعاينة فقط.</p></div></div> : <div className="grid gap-3 sm:grid-cols-[10rem_1fr] sm:items-center"><div className="bouquet-preview-checker grid h-28 place-items-center overflow-hidden rounded-lg border border-dashed border-border/60">{form.previewCutoutUrl ? <img src={form.previewCutoutUrl} alt="معاينة عنصر الباقة" className="h-full w-full object-contain" /> : <span className="text-xs text-muted-foreground">أصل معاينة شفاف</span>}</div><div><ImageUploadEditor kind="product-preview-cutout" label="صورة العنصر المفرغة" settings={publicSettings?.image_settings} watermarkText={publicSettings?.site_name} onComplete={(results) => { const result = results[0]; if (result) onChange({ ...form, previewCutoutUrl: result.dataUrl, previewAssetUrl: result.dataUrl }); }} onRemove={() => onChange({ ...form, previewCutoutUrl: null, previewAssetUrl: null })} /><p className="mt-2 text-xs text-muted-foreground">ارفع PNG أو WebP بخلفية مفرغة. تُستخدم داخل معاينة الباقة فقط، ولا تستبدل صورة المنتج الرئيسية.</p></div></div>}
         </section>
 
         <div className="flex items-center gap-4">
