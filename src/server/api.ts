@@ -3551,7 +3551,7 @@ function publicMediaValue(
   // legacy data-URLs working, this prevents a browser from trying to read a
   // private Supabase bucket directly (which was the reason product cards could
   // have a record but no visible image).
-  if (kind === "product" || kind === "product-video")
+  if (kind === "product" || kind === "product-video" || kind === "product-preview")
     return mediaRoute(kind, row.id, index, mediaVersion(row));
   if (isDataUrl(value))
     return mediaRoute(kind, row.id, index, mediaVersion(row));
@@ -3715,6 +3715,17 @@ async function resolveProductVideoInputs(
   return persistMediaList(resolved, "products/videos");
 }
 
+async function resolveProductPreviewAssetInput(productId: number, value: unknown) {
+  const ref = localMediaReference(value);
+  if (ref?.kind === "product-preview" && ref.id === productId) {
+    const current = (await db.query.productsTable.findFirst({
+      where: eq(productsTable.id, productId),
+    })) as any;
+    return current?.previewAssetUrl ?? current?.preview_asset_url ?? null;
+  }
+  return persistMediaValue(value, "products/preview-assets");
+}
+
 async function upgradeStoredMedia(
   kind: string,
   id: number | string,
@@ -3755,6 +3766,11 @@ async function upgradeStoredMedia(
       await db
         .update(productsTable)
         .set({ videos, updatedAt: new Date() })
+        .where(eq(productsTable.id, id));
+    } else if (kind === "product-preview" && typeof id === "number") {
+      await db
+        .update(productsTable)
+        .set({ previewAssetUrl: stored, updatedAt: new Date() })
         .where(eq(productsTable.id, id));
     } else if (kind === "category" && typeof id === "number") {
       await db
@@ -3892,6 +3908,13 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     availableInBouquetDesigner: Boolean(
       p.availableInBouquetDesigner ?? p.available_in_bouquet_designer ?? false,
     ),
+    bouquetElementType: p.bouquetElementType ?? p.bouquet_element_type ?? null,
+    previewAssetUrl: publicMediaValue("product-preview", p, p.previewAssetUrl ?? p.preview_asset_url ?? null),
+    previewColor: p.previewColor ?? p.preview_color ?? null,
+    previewScale: p.previewScale == null && p.preview_scale == null ? null : Number(p.previewScale ?? p.preview_scale),
+    previewLayer: p.previewLayer ?? p.preview_layer ?? null,
+    bouquetRecipe: Array.isArray(p.bouquetRecipe ?? p.bouquet_recipe) ? (p.bouquetRecipe ?? p.bouquet_recipe) : [],
+    isBouquetTemplate: Boolean(p.isBouquetTemplate ?? p.is_bouquet_template ?? false),
     isActive: p.isActive ?? true,
     sortOrder: p.sortOrder ?? 0,
     rating: avgRating ?? null,
@@ -8178,6 +8201,13 @@ async function ensureStoreCategoryColumns(): Promise<void> {
       alter table "products" add column if not exists "category_id" integer references "categories" ("id");
       alter table "products" add column if not exists "subcategory_id" integer references "categories" ("id");
       alter table "products" add column if not exists "available_in_bouquet_designer" boolean not null default false;
+      alter table "products" add column if not exists "bouquet_element_type" varchar(24);
+      alter table "products" add column if not exists "preview_asset_url" text;
+      alter table "products" add column if not exists "preview_color" varchar(32);
+      alter table "products" add column if not exists "preview_scale" numeric(6,3);
+      alter table "products" add column if not exists "preview_layer" integer;
+      alter table "products" add column if not exists "bouquet_recipe" jsonb not null default '[]'::jsonb;
+      alter table "products" add column if not exists "is_bouquet_template" boolean not null default false;
       update "products" p
       set "category_id" = c."id"
       from "categories" c
@@ -8196,6 +8226,7 @@ async function ensureStoreCategoryColumns(): Promise<void> {
       create index if not exists "products_category_id_active_idx" on "products" ("category_id", "is_active");
       create index if not exists "products_subcategory_id_active_idx" on "products" ("subcategory_id", "is_active");
       create index if not exists "products_bouquet_designer_active_idx" on "products" ("available_in_bouquet_designer", "is_active");
+      create index if not exists "products_bouquet_preview_type_idx" on "products" ("available_in_bouquet_designer", "bouquet_element_type", "is_active");
     `,
       )
       .then(() => undefined)
@@ -12229,8 +12260,10 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           Boolean(product.availableInBouquetDesigner),
         ),
         variants: variantsByProduct.get(Number(product.id)) ?? [],
-        recipe: recipesByProduct.get(Number(product.id)) ?? [],
-        isBouquetTemplate: (recipesByProduct.get(Number(product.id))?.length ?? 0) > 0,
+        recipe: Array.isArray(product.bouquetRecipe) && product.bouquetRecipe.length
+          ? product.bouquetRecipe
+          : recipesByProduct.get(Number(product.id)) ?? [],
+        isBouquetTemplate: Boolean(product.isBouquetTemplate) || (recipesByProduct.get(Number(product.id))?.length ?? 0) > 0,
       })),
     });
   }
@@ -12549,6 +12582,10 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       data.videos ?? [],
       "products/videos",
     );
+    const storedPreviewAsset = await persistMediaValue(
+      data.previewAssetUrl,
+      "products/preview-assets",
+    );
     let [product] = await db
       .insert(productsTable)
       .values({
@@ -12591,6 +12628,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         colors: normalizeColors(data.colors ?? []),
         isFeatured: data.isFeatured ?? false,
         availableInBouquetDesigner: data.availableInBouquetDesigner ?? false,
+        bouquetElementType: data.bouquetElementType ?? null,
+        previewAssetUrl: storedPreviewAsset,
+        previewColor: nullableText(data.previewColor),
+        previewScale: data.previewScale == null ? null : String(Math.max(0.25, Math.min(3, Number(data.previewScale) || 1))),
+        previewLayer: data.previewLayer == null ? null : Math.max(-50, Math.min(200, Math.trunc(Number(data.previewLayer) || 0))),
+        bouquetRecipe: Array.isArray(data.bouquetRecipe) ? data.bouquetRecipe : [],
+        isBouquetTemplate: data.isBouquetTemplate === true || data.bouquetElementType === "TEMPLATE",
         subcategory: productCategories.subcategory,
         isActive: data.isActive ?? true,
         sortOrder: data.sortOrder ?? 0,
@@ -12666,6 +12710,8 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       data.images = await resolveProductImageInputs(id, data.images);
     if (data.videos !== undefined)
       data.videos = await resolveProductVideoInputs(id, data.videos);
+    if (data.previewAssetUrl !== undefined)
+      data.previewAssetUrl = await resolveProductPreviewAssetInput(id, data.previewAssetUrl);
     const update: any = { updatedAt: new Date() };
     let directStockMovementDelta: number | null = null;
     for (const k of [
@@ -12679,6 +12725,13 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "colors",
       "isFeatured",
       "availableInBouquetDesigner",
+      "bouquetElementType",
+      "previewAssetUrl",
+      "previewColor",
+      "previewScale",
+      "previewLayer",
+      "bouquetRecipe",
+      "isBouquetTemplate",
       "descriptionAr",
       "subcategory",
       "isActive",
@@ -12713,6 +12766,14 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           update[k] = assetCategoryId;
         } else if (k === "subcategoryIds") {
           update[k] = Array.isArray(data[k]) ? [...new Set(data[k].map(numberId).filter(Boolean))] : [];
+        } else if (k === "previewScale") {
+          update[k] = data[k] == null ? null : String(Math.max(0.25, Math.min(3, Number(data[k]) || 1)));
+        } else if (k === "previewLayer") {
+          update[k] = data[k] == null ? null : Math.max(-50, Math.min(200, Math.trunc(Number(data[k]) || 0)));
+        } else if (k === "previewColor") {
+          update[k] = nullableText(data[k]);
+        } else if (k === "bouquetRecipe") {
+          update[k] = Array.isArray(data[k]) ? data[k] : [];
         } else {
           update[k] =
             k === "colors"
@@ -13384,6 +13445,20 @@ async function handleMedia(req: NextRequest, parts: string[]) {
         id,
         videos[index ?? 0],
         index ?? 0,
+      ),
+    );
+  }
+
+  if (kind === "product-preview") {
+    const product = (await db.query.productsTable.findFirst({
+      where: eq(productsTable.id, id),
+    })) as any;
+    return mediaResponseFromValue(
+      req,
+      await upgradeStoredMedia(
+        "product-preview",
+        id,
+        product?.previewAssetUrl ?? product?.preview_asset_url,
       ),
     );
   }

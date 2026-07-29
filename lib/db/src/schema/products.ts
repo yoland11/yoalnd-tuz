@@ -80,6 +80,13 @@ export const productsTable = pgTable("products", {
   availableInBouquetDesigner: boolean("available_in_bouquet_designer")
     .notNull()
     .default(false),
+  bouquetElementType: varchar("bouquet_element_type", { length: 24 }),
+  previewAssetUrl: text("preview_asset_url"),
+  previewColor: varchar("preview_color", { length: 32 }),
+  previewScale: numeric("preview_scale", { precision: 6, scale: 3 }),
+  previewLayer: integer("preview_layer"),
+  bouquetRecipe: jsonb("bouquet_recipe").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  isBouquetTemplate: boolean("is_bouquet_template").notNull().default(false),
 
   isActive: boolean("is_active").notNull().default(true),
 

@@ -926,6 +926,15 @@ a:hover {
 .flower-design-studio__preview-empty svg { width: 3rem; height: 3rem; margin: 0 auto; color: #d59a2c; }
 .flower-design-studio__preview-empty p { margin: 0; font-size: .9rem; }
 .flower-design-studio__preview-note { position: absolute; right: 1rem; bottom: 6.2rem; z-index: 120; max-width: 65%; margin: 0; padding: .35rem .55rem; border: 1px solid rgb(255 255 255 / 14%); border-radius: .35rem; background: rgb(11 13 14 / 76%); color: #e7eaec; font-size: .72rem; }
+.bouquet-preview-canvas { position: relative; display: grid; min-height: 42rem; height: 100%; overflow: hidden; background: radial-gradient(circle at 50% 33%, rgb(255 249 242 / 11%), transparent 44%), linear-gradient(145deg, #24211d, #141719 72%); }
+.bouquet-preview-canvas__header { position: absolute; top: .85rem; right: .85rem; z-index: 2; display: inline-flex; align-items: center; gap: .55rem; padding: .36rem .5rem .36rem .65rem; border: 1px solid rgb(255 255 255 / 13%); border-radius: .45rem; background: rgb(11 13 14 / 76%); color: #f1f3f4; font-size: .72rem; }
+.bouquet-preview-canvas__header span { padding: .16rem .4rem; border-radius: .3rem; background: rgb(213 154 44 / 19%); color: #f2c76e; font-size: .65rem; }
+.bouquet-preview-canvas__art { width: min(100%, 43rem); height: min(100%, 42rem); margin: auto; filter: saturate(1.06); }
+.bouquet-preview-canvas__art image { transform-box: fill-box; transform-origin: center; }
+.bouquet-preview-canvas__note { position: absolute; right: 1rem; bottom: 1rem; left: 1rem; max-width: 38rem; margin: 0 auto; color: #c9d0d4; font-size: .71rem; line-height: 1.65; text-align: center; }
+.bouquet-preview-canvas--empty { place-content: center; gap: .7rem; color: #c3c9cd; text-align: center; }
+.bouquet-preview-canvas--empty svg { width: 3rem; height: 3rem; margin: 0 auto; color: #d59a2c; }
+.bouquet-preview-canvas--empty p { margin: 0; font-size: .9rem; }
 .flower-design-studio__option-shelf { padding-bottom: .75rem; border-bottom: 1px solid rgb(255 255 255 / 9%); }
 .flower-design-studio__option-shelf > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; }
 .flower-design-studio__option-shelf > p { margin: 0; padding: .8rem; border: 1px dashed rgb(255 255 255 / 14%); border-radius: .45rem; color: #8d969c; font-size: .7rem; text-align: center; }
@@ -972,6 +981,7 @@ a:hover {
 
 @media (max-width: 1320px) { .flower-design-studio__grid { grid-template-areas: "preview preview" "flowers options"; grid-template-columns: minmax(18rem, 1fr) minmax(19rem, 23rem); } .flower-design-studio__preview, .flower-design-studio__preview-frame, .flower-design-studio .bouquet-studio { min-height: 35rem; } .flower-design-studio__flower-list { max-height: 43rem; } }
 @media (max-width: 780px) { .flower-design-studio { padding: .65rem; } .flower-design-studio__header { align-items: flex-start; padding: .25rem 0 .7rem; } .flower-design-studio__title p, .flower-design-studio__header-actions .button:last-child { display: none; } .flower-design-studio__grid { grid-template-areas: "preview" "flowers" "options"; grid-template-columns: minmax(0, 1fr); gap: .65rem; } .flower-design-studio__preview, .flower-design-studio__preview-frame, .flower-design-studio .bouquet-studio { min-height: 29rem; } .flower-design-studio .bouquet-studio__layer { width: 8.8rem; height: 8.8rem; } .flower-design-studio__flowers { min-height: 0; } .flower-design-studio__flower-list { max-height: 36rem; } .flower-design-studio__option-shelf > div { grid-template-columns: repeat(3, minmax(0, 1fr)); } .flower-design-studio__templates { align-items: flex-start; flex-direction: column; gap: .35rem; } }
+@media (max-width: 780px) { .bouquet-preview-canvas { min-height: 29rem; } .bouquet-preview-canvas__art { height: 29rem; } }
 @media (prefers-reduced-motion: reduce) { .flower-design-studio * { transition-duration: .01ms !important; } }
 
 /* Keep the public shell intact everywhere else; only /design receives the
