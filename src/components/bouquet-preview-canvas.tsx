@@ -22,13 +22,13 @@ export type BouquetPreviewItem = {
 type Placement = BouquetPreviewItem & { key: string; x: number; y: number; rotate: number; scale: number; depth: number };
 
 const COMPACT_FLOWER_SLOTS = [
-  [50, 35, 1.15], [43, 40, 1.08], [57, 40, 1.08], [50, 46, 1.04],
-  [35, 39, .98], [65, 39, .98], [41, 29, .92], [59, 29, .92],
-  [28, 47, .86], [72, 47, .86], [37, 52, .9], [63, 52, .9],
-  [23, 38, .76], [77, 38, .76], [30, 57, .8], [70, 57, .8],
+  [50, 34, 1.16], [43, 38, 1.1], [57, 38, 1.1], [50, 43, 1.06],
+  [37, 40, 1.0], [63, 40, 1.0], [43, 29, .96], [57, 29, .96],
+  [31, 44, .9], [69, 44, .9], [39, 48, .94], [61, 48, .94],
+  [34, 33, .84], [66, 33, .84], [46, 51, .86], [54, 51, .86],
 ] as const;
-const COMPACT_FILLER_SLOTS = [[29, 31], [71, 31], [22, 45], [78, 45], [36, 24], [64, 24], [41, 49], [59, 49], [48, 27], [52, 53]] as const;
-const COMPACT_GREENERY_SLOTS = [[21, 49], [79, 49], [27, 30], [73, 30], [16, 39], [84, 39], [35, 20], [65, 20]] as const;
+const COMPACT_FILLER_SLOTS = [[32, 30], [68, 30], [27, 42], [73, 42], [39, 25], [61, 25], [42, 47], [58, 47], [48, 28], [52, 51]] as const;
+const COMPACT_GREENERY_SLOTS = [[24, 45], [76, 45], [30, 29], [70, 29], [21, 38], [79, 38], [38, 21], [62, 21]] as const;
 
 const FALLBACK_ASSETS: Record<string, string> = {
   FLOWER: "/bouquet-preview-assets/rose-red-cutout.png",
@@ -108,6 +108,10 @@ export function PhotorealisticBouquetPreview({ items, note, className }: { items
   const wrapping = items.filter((item) => item.elementType === "WRAPPING").at(-1);
   const ribbon = items.filter((item) => item.elementType === "RIBBON").at(-1);
   const accessories = placements.filter((item) => item.elementType === "ACCESSORY");
+  const hasBouquetContents = placements.some((item) => ["FLOWER", "GREENERY", "FILLER"].includes(item.elementType));
+  // A default physical wrap turns any selected botanical products into one
+  // coherent bouquet. It is visual-only and never becomes a cart line.
+  const wrappingSrc = wrapping?.previewCutoutUrl || (hasBouquetContents ? getPhotorealisticFallbackAsset("WRAPPING") : null);
 
   if (!items.length) return <div className={cn("bouquet-preview-canvas bouquet-preview-canvas--empty", className)}><Flower2 /><p>اختر الورد والتغليف لتظهر الباقة هنا</p></div>;
 
@@ -116,15 +120,17 @@ export function PhotorealisticBouquetPreview({ items, note, className }: { items
     {mode === "realistic" && realisticEnabled ? <div id="bouquet-preview-stage" className="bouquet-preview-canvas__generation"><Sparkles /><strong>المعاينة الواقعية تستخدم خدمة التوليد الآمنة المفعّلة.</strong><button type="button" onClick={() => setMode("instant")}>العودة للمعاينة الفورية</button></div> : <div id="bouquet-preview-stage" className="bouquet-preview-canvas__studio">
       <div className="bouquet-preview-canvas__floor-shadow" />
       {readyMade ? <CompleteBouquet item={readyMade} /> : <>
-        {wrapping ? <img src={wrapping.previewCutoutUrl || getPhotorealisticFallbackAsset("WRAPPING")} alt="" aria-hidden="true" className="bouquet-preview-canvas__wrapping bouquet-preview-canvas__wrapping--back" /> : null}
-        {placements.filter((item) => item.elementType === "GREENERY").map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} className="is-greenery" />)}
-        {placements.filter((item) => item.elementType !== "GREENERY" && item.elementType !== "ACCESSORY").sort((a, b) => a.depth - b.depth).map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} />)}
-        {wrapping ? <img src={wrapping.previewCutoutUrl || getPhotorealisticFallbackAsset("WRAPPING")} alt="" aria-hidden="true" className="bouquet-preview-canvas__wrapping bouquet-preview-canvas__wrapping--front" /> : null}
+        {wrappingSrc ? <img src={wrappingSrc} alt="" aria-hidden="true" className={cn("bouquet-preview-canvas__wrapping", "bouquet-preview-canvas__wrapping--back", !wrapping && "is-preview-default")} /> : null}
+        <div className="bouquet-preview-canvas__bouquet">
+          {placements.filter((item) => item.elementType === "GREENERY").map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} className="is-greenery" />)}
+          {placements.filter((item) => item.elementType !== "GREENERY" && item.elementType !== "ACCESSORY").sort((a, b) => a.depth - b.depth).map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} />)}
+        </div>
+        {wrappingSrc ? <img src={wrappingSrc} alt="" aria-hidden="true" className={cn("bouquet-preview-canvas__wrapping", "bouquet-preview-canvas__wrapping--front", !wrapping && "is-preview-default")} /> : null}
         {ribbon ? <img src={ribbon.previewCutoutUrl || getPhotorealisticFallbackAsset("RIBBON")} alt="" aria-hidden="true" className="bouquet-preview-canvas__ribbon" /> : null}
         {accessories.map((placement) => <AssetLayer key={placement.key} item={placement} placement={placement} className="is-accessory" />)}
       </>}
     </div>}
-    <p className="bouquet-preview-canvas__note">{note ? `بطاقة الإهداء: ${note}` : "المعاينة تقريبية وقد يختلف التنفيذ النهائي حسب توفر الورد وطريقة التنسيق."}</p>
+    <p className="bouquet-preview-canvas__note">{note ? `بطاقة الإهداء: ${note}` : !wrapping && hasBouquetContents ? "تغليف افتراضي للمعاينة فقط؛ يُحتسب التغليف المختار عند إضافته." : "المعاينة تقريبية وقد يختلف التنفيذ النهائي حسب توفر الورد وطريقة التنسيق."}</p>
   </section>;
 }
 
