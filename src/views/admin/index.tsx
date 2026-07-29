@@ -31,6 +31,7 @@ const AdminKoshaBookingsPage = lazy(() =>
 );
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
+const BouquetDesignerAdminPage = lazy(() => import("./bouquet-designer"));
 const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
 const PrintLabelsPage = lazy(() => import("./print-labels"));
@@ -484,6 +485,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <ProductsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/bouquet-designer">
+            {() => (
+              <Guard me={me} anyPerm={["bouquet.admin.view", "bouquet.components.create", "bouquet.components.edit", "bouquet.accessories.manage", "bouquet.templates.manage", "products"]}>
+                <BouquetDesignerAdminPage />
               </Guard>
             )}
           </Route>

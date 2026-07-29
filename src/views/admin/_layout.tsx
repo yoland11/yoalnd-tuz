@@ -59,6 +59,7 @@ import {
   GraduationCap,
   Ruler,
   Scissors,
+  Flower2,
   Factory,
   Lock,
   SlidersHorizontal,
@@ -330,6 +331,7 @@ export const NAV: NavItem[] = [
     perm: "accounting",
   },
   { href: "/admin/products", label: "المتجر", icon: Package, perm: "products" },
+  { href: "/admin/bouquet-designer", label: "إدارة مصمم الباقات", icon: Flower2, perm: "bouquet.admin.view", anyPerm: ["bouquet.components.create", "bouquet.components.edit", "bouquet.accessories.manage", "bouquet.templates.manage", "products"] },
   {
     href: "/admin/categories",
     label: "التصنيفات",
@@ -874,6 +876,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/invitations"),
       navItem("/admin/catering"),
       navItem("/admin/products"),
+      navItem("/admin/bouquet-designer"),
       navItem("/admin/categories"),
       navItem("/admin/gallery"),
       navItem("/admin/delivery"),

@@ -788,6 +788,18 @@ export const ALL_PERMISSIONS = [
   "catering_inventory_manage",
   "catering_reports_view",
   "catering_settings_manage",
+  // Bouquet designer administration. These are separate from the broad store
+  // permission so access can be delegated without exposing all products.
+  "bouquet.admin.view",
+  "bouquet.components.create",
+  "bouquet.components.edit",
+  "bouquet.components.delete",
+  "bouquet.accessories.manage",
+  "bouquet.templates.manage",
+  "bouquet.ready_made.manage",
+  "bouquet.preview.manage",
+  "bouquet.prices.manage",
+  "bouquet.stock.manage",
 ] as const;
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
@@ -3893,11 +3905,11 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
   return {
     id: p.id,
     name: p.name,
-    nameAr: p.nameAr,
+    nameAr: p.nameAr ?? p.name_ar ?? p.name,
     nameKu: p.nameKu ?? p.name_ku ?? null,
     nameTr: p.nameTr ?? p.name_tr ?? null,
     description: p.description ?? null,
-    descriptionAr: p.descriptionAr ?? null,
+    descriptionAr: p.descriptionAr ?? p.description_ar ?? null,
     descriptionKu: p.descriptionKu ?? p.description_ku ?? null,
     descriptionTr: p.descriptionTr ?? p.description_tr ?? null,
     price: Number.parseFloat(p.price),
@@ -3943,14 +3955,19 @@ function formatProduct(p: any, avgRating?: number, reviewCount?: number) {
     previewScale: p.previewScale == null && p.preview_scale == null ? null : Number(p.previewScale ?? p.preview_scale),
     previewRotation: p.previewRotation == null && p.preview_rotation == null ? null : Number(p.previewRotation ?? p.preview_rotation),
     previewLayer: p.previewLayer ?? p.preview_layer ?? null,
+    previewPosition: p.previewPosition ?? p.preview_position ?? null,
+    accessoryType: p.accessoryType ?? p.accessory_type ?? null,
+    maximumQuantityPerBouquet: p.maximumQuantityPerBouquet ?? p.maximum_quantity_per_bouquet ?? null,
     bouquetRecipe: Array.isArray(p.bouquetRecipe ?? p.bouquet_recipe) ? (p.bouquetRecipe ?? p.bouquet_recipe) : [],
     isReadyMadeBouquet: Boolean(p.isReadyMadeBouquet ?? p.is_ready_made_bouquet ?? p.isBouquetTemplate ?? p.is_bouquet_template ?? false),
     isBouquetTemplate: Boolean(p.isBouquetTemplate ?? p.is_bouquet_template ?? false),
-    isActive: p.isActive ?? true,
-    sortOrder: p.sortOrder ?? 0,
+    isActive: p.isActive ?? p.is_active ?? true,
+    sortOrder: p.sortOrder ?? p.sort_order ?? 0,
     rating: avgRating ?? null,
     reviewCount: reviewCount ?? 0,
-    createdAt: p.createdAt.toISOString(),
+    createdAt: (p.createdAt ?? p.created_at) instanceof Date
+      ? (p.createdAt ?? p.created_at).toISOString()
+      : String(p.createdAt ?? p.created_at ?? new Date().toISOString()),
   };
 }
 
@@ -12684,6 +12701,9 @@ async function handleProducts(req: NextRequest, parts: string[]) {
         previewScale: data.previewScale == null ? null : String(Math.max(0.25, Math.min(3, Number(data.previewScale) || 1))),
         previewRotation: data.previewRotation == null ? null : String(Math.max(-180, Math.min(180, Number(data.previewRotation) || 0))),
         previewLayer: data.previewLayer == null ? null : Math.max(-50, Math.min(200, Math.trunc(Number(data.previewLayer) || 0))),
+        previewPosition: data.previewPosition ?? null,
+        accessoryType: nullableText(data.accessoryType),
+        maximumQuantityPerBouquet: data.maximumQuantityPerBouquet == null ? null : Math.max(1, Math.trunc(Number(data.maximumQuantityPerBouquet) || 1)),
         bouquetRecipe: Array.isArray(data.bouquetRecipe) ? data.bouquetRecipe : [],
         isReadyMadeBouquet: data.isReadyMadeBouquet === true || data.isBouquetTemplate === true || data.bouquetElementType === "TEMPLATE",
         isBouquetTemplate: data.isBouquetTemplate === true || data.bouquetElementType === "TEMPLATE",
@@ -12790,6 +12810,9 @@ async function handleProducts(req: NextRequest, parts: string[]) {
       "previewScale",
       "previewRotation",
       "previewLayer",
+      "previewPosition",
+      "accessoryType",
+      "maximumQuantityPerBouquet",
       "bouquetRecipe",
       "isReadyMadeBouquet",
       "isBouquetTemplate",
@@ -12831,6 +12854,12 @@ async function handleProducts(req: NextRequest, parts: string[]) {
           update[k] = data[k] == null ? null : String(Math.max(0.25, Math.min(3, Number(data[k]) || 1)));
         } else if (k === "previewLayer") {
           update[k] = data[k] == null ? null : Math.max(-50, Math.min(200, Math.trunc(Number(data[k]) || 0)));
+        } else if (k === "previewPosition") {
+          update[k] = data[k] && typeof data[k] === "object" ? data[k] : null;
+        } else if (k === "accessoryType") {
+          update[k] = nullableText(data[k]);
+        } else if (k === "maximumQuantityPerBouquet") {
+          update[k] = data[k] == null ? null : Math.max(1, Math.trunc(Number(data[k]) || 1));
         } else if (k === "previewColor") {
           update[k] = nullableText(data[k]);
         } else if (k === "bouquetRecipe") {
@@ -26867,9 +26896,174 @@ async function handleScanLookup(
   return respond({ found: false, state: "unregistered", message: "الرمز غير مسجل", normalizedCode, searchedTables });
 }
 
+let bouquetDesignerTablesPromise: Promise<void> | null = null;
+
+async function ensureBouquetDesignerTables() {
+  if (!bouquetDesignerTablesPromise) {
+    bouquetDesignerTablesPromise = db.execute(sql`
+      alter table products add column if not exists preview_position jsonb;
+      alter table products add column if not exists accessory_type varchar(60);
+      alter table products add column if not exists maximum_quantity_per_bouquet integer;
+      create table if not exists bouquet_templates (
+        id serial primary key, name text not null, description text, product_id integer references products(id) on delete set null,
+        preview_asset_url text, configuration jsonb not null default '{}'::jsonb, default_colors jsonb not null default '{}'::jsonb,
+        is_default boolean not null default false, is_active boolean not null default true, archived_at timestamp,
+        display_order integer not null default 0, created_at timestamp not null default now(), updated_at timestamp not null default now()
+      );
+      create table if not exists bouquet_template_items (
+        id serial primary key, template_id integer not null references bouquet_templates(id) on delete cascade,
+        product_id integer not null references products(id) on delete restrict, quantity integer not null default 1,
+        role varchar(32) not null default 'FLOWER', position jsonb not null default '{}'::jsonb,
+        display_order integer not null default 0, created_at timestamp not null default now()
+      );
+      create table if not exists bouquet_preview_settings (
+        id serial primary key, default_template_id integer references bouquet_templates(id) on delete set null,
+        background_url text, settings jsonb not null default '{}'::jsonb, updated_by integer, updated_at timestamp not null default now()
+      );
+    `).then(() => undefined).catch((err) => { bouquetDesignerTablesPromise = null; throw err; });
+  }
+  await bouquetDesignerTablesPromise;
+}
+
+const BOUQUET_PERMISSIONS: Permission[] = [
+  "bouquet.admin.view", "bouquet.components.create", "bouquet.components.edit", "bouquet.components.delete",
+  "bouquet.accessories.manage", "bouquet.templates.manage", "bouquet.ready_made.manage",
+  "bouquet.preview.manage", "bouquet.prices.manage", "bouquet.stock.manage", "products",
+];
+
+function bouquetPosition(value: any) {
+  const x = Math.min(100, Math.max(0, Number(value?.x ?? 50)));
+  const y = Math.min(100, Math.max(0, Number(value?.y ?? 50)));
+  return { x, y, anchor: String(value?.anchor ?? "center").slice(0, 40) };
+}
+
+async function handleBouquetDesignerAdmin(req: NextRequest, parts: string[]) {
+  const auth = await requireAnyPermission(req, BOUQUET_PERMISSIONS);
+  if (isResponse(auth)) return auth;
+  await ensureBouquetDesignerTables();
+  const method = req.method;
+  const resource = parts[0] ?? "overview";
+  const id = int(parts[1]);
+  const requires = (permission: Permission) => hasPermission(auth, permission) || hasPermission(auth, "products");
+  const canManageComponent = (payload: any, mode: "create" | "edit" | "delete") => {
+    const type = String(payload?.elementType ?? payload?.bouquetElementType ?? "");
+    if (type === "ACCESSORY" && !requires("bouquet.accessories.manage")) return false;
+    if (["TEMPLATE", "READY_MADE_BOUQUET"].includes(type) && !requires("bouquet.ready_made.manage")) return false;
+    return requires(mode === "create" ? "bouquet.components.create" : mode === "delete" ? "bouquet.components.delete" : "bouquet.components.edit");
+  };
+
+  if (resource === "overview" && method === "GET") {
+    const [components, templates, settings] = await Promise.all([
+      db.execute(sql`select bouquet_element_type as type, count(*)::int as count, count(*) filter (where is_active)::int as active,
+        count(*) filter (where preview_cutout_url is null and preview_asset_url is null)::int as missing_preview
+        from products where show_in_bouquet_builder = true or available_in_bouquet_designer = true group by bouquet_element_type`),
+      db.execute(sql`select count(*)::int as count from bouquet_templates where archived_at is null`),
+      db.execute(sql`select * from bouquet_preview_settings order by id asc limit 1`),
+    ]);
+    return json({ components: (components as any).rows ?? [], templates: Number((templates as any).rows?.[0]?.count ?? 0), settings: (settings as any).rows?.[0] ?? null });
+  }
+
+  if (resource === "components") {
+    if (method === "GET") {
+      const p = req.nextUrl.searchParams;
+      const type = String(p.get("type") ?? "").trim(); const search = String(p.get("search") ?? "").trim();
+      const state = String(p.get("state") ?? "all"); const issue = String(p.get("issue") ?? "");
+      const rows: any = await db.execute(sql`
+        select * from products where archived_at is null
+          and (show_in_bouquet_builder = true or available_in_bouquet_designer = true or bouquet_element_type in ('READY_MADE_BOUQUET','TEMPLATE'))
+          and (${type} = '' or bouquet_element_type = ${type})
+          and (${search} = '' or name_ar ilike ${`%${search}%`} or name ilike ${`%${search}%`} or barcode ilike ${`%${search}%`})
+          and (${state} = 'all' or (${state} = 'active' and is_active = true) or (${state} = 'inactive' and is_active = false))
+          and (${issue} <> 'missing-preview' or (preview_cutout_url is null and preview_asset_url is null))
+          and (${issue} <> 'low-stock' or stock <= min_stock)
+        order by sort_order asc, updated_at desc limit 1000`);
+      return json({ components: ((rows.rows ?? []) as any[]).map((row) => formatProduct(row)) });
+    }
+    const payload = await body(req) as any;
+    if (method === "POST") {
+      if (!canManageComponent(payload, "create")) return error("ليس لديك صلاحية إضافة عناصر مصمم الباقات", 403);
+      const name = String(payload?.nameAr ?? payload?.name ?? "").trim();
+      if (!name) return error("اسم العنصر مطلوب", 422);
+      const elementType = String(payload?.elementType ?? "FLOWER");
+      const images = await persistMediaList(Array.isArray(payload.images) ? payload.images : payload.productImageUrl ? [payload.productImageUrl] : [], "products");
+      const preview = await persistMediaValue(payload.previewAssetUrl ?? payload.previewCutoutUrl, "products/preview-cutouts");
+      const [created]: any = await db.insert(productsTable).values({
+        name, nameAr: name, description: nullableText(payload.description), descriptionAr: nullableText(payload.description),
+        price: String(money(payload.sellingPrice ?? payload.price)), costPrice: String(money(payload.costPrice)),
+        stock: Math.max(0, Math.floor(Number(payload.stock ?? 0))), minStock: Math.max(0, Math.floor(Number(payload.minimumStock ?? payload.minStock ?? 0))),
+        barcode: nullableText(payload.code), category: nullableText(payload.category), images, colors: normalizeColors(payload.availableColors ?? payload.colors ?? []),
+        availableInBouquetDesigner: true, showInBouquetBuilder: payload.showInBouquetBuilder !== false,
+        bouquetElementType: elementType, previewCutoutUrl: preview, previewAssetUrl: preview, previewColor: nullableText(payload.color),
+        previewScale: String(Math.max(.25, Math.min(3, Number(payload.previewScale ?? 1)))), previewRotation: String(Number(payload.previewRotation ?? 0)),
+        previewLayer: Math.trunc(Number(payload.previewLayer ?? 0)), previewPosition: bouquetPosition(payload.previewPosition),
+        accessoryType: nullableText(payload.accessoryType), maximumQuantityPerBouquet: payload.maximumQuantityPerBouquet ? Math.max(1, Math.trunc(Number(payload.maximumQuantityPerBouquet))) : null,
+        isReadyMadeBouquet: elementType === "READY_MADE_BOUQUET", isBouquetTemplate: elementType === "TEMPLATE",
+        bouquetRecipe: Array.isArray(payload.bouquetRecipe) ? payload.bouquetRecipe : [], isActive: payload.isActive !== false, sortOrder: Math.trunc(Number(payload.displayOrder ?? 0)),
+      } as any).returning();
+      void logAdminActivity(req, elementType === "ACCESSORY" ? "bouquet_accessory_created" : "bouquet_component_created", "product", created.id, { elementType, name });
+      return json(formatProduct(created), 201);
+    }
+    if (!id) return error("معرّف العنصر مطلوب", 400);
+    const current: any = await db.query.productsTable.findFirst({ where: eq(productsTable.id, id) });
+    if (!current) return error("العنصر غير موجود", 404);
+    if (method === "PATCH") {
+      if (!canManageComponent({ ...current, ...payload }, "edit")) return error("ليس لديك صلاحية تعديل عنصر الباقة", 403);
+      const update: any = { updatedAt: new Date() };
+      const scalar: Record<string, string> = { name: "name", nameAr: "nameAr", description: "description", category: "category", color: "previewColor", elementType: "bouquetElementType", accessoryType: "accessoryType" };
+      for (const [input, column] of Object.entries(scalar)) if (payload[input] !== undefined) update[column] = nullableText(payload[input]);
+      if (payload.sellingPrice !== undefined || payload.price !== undefined) update.price = String(money(payload.sellingPrice ?? payload.price));
+      if (payload.costPrice !== undefined) update.costPrice = String(money(payload.costPrice));
+      if (payload.minimumStock !== undefined || payload.minStock !== undefined) update.minStock = Math.max(0, Math.floor(Number(payload.minimumStock ?? payload.minStock)));
+      if (payload.displayOrder !== undefined || payload.sortOrder !== undefined) update.sortOrder = Math.trunc(Number(payload.displayOrder ?? payload.sortOrder));
+      if (payload.isActive !== undefined) update.isActive = Boolean(payload.isActive);
+      if (payload.showInBouquetBuilder !== undefined) { update.showInBouquetBuilder = Boolean(payload.showInBouquetBuilder); update.availableInBouquetDesigner = Boolean(payload.showInBouquetBuilder); }
+      if (payload.availableColors !== undefined || payload.colors !== undefined) update.colors = normalizeColors(payload.availableColors ?? payload.colors);
+      if (payload.previewPosition !== undefined) update.previewPosition = bouquetPosition(payload.previewPosition);
+      for (const key of ["previewScale", "previewRotation", "previewLayer", "maximumQuantityPerBouquet"] as const) if (payload[key] !== undefined) update[key] = payload[key] == null ? null : key === "previewLayer" || key === "maximumQuantityPerBouquet" ? Math.trunc(Number(payload[key])) : String(Number(payload[key]));
+      if (payload.bouquetRecipe !== undefined) update.bouquetRecipe = Array.isArray(payload.bouquetRecipe) ? payload.bouquetRecipe : [];
+      if (payload.images !== undefined || payload.productImageUrl !== undefined) update.images = await persistMediaList(Array.isArray(payload.images) ? payload.images : payload.productImageUrl ? [payload.productImageUrl] : [], "products");
+      if (payload.previewAssetUrl !== undefined || payload.previewCutoutUrl !== undefined) { const asset = await persistMediaValue(payload.previewAssetUrl ?? payload.previewCutoutUrl, "products/preview-cutouts"); update.previewCutoutUrl = asset; update.previewAssetUrl = asset; }
+      if (payload.stock !== undefined) {
+        if (!requires("bouquet.stock.manage")) return error("ليس لديك صلاحية تعديل المخزون", 403);
+        await setProductStock(id, Number(payload.stock), { reason: "bouquet_admin_adjustment", relatedType: "product", relatedId: id, createdBy: auth.id, createdByName: auth.fullName || auth.username });
+      }
+      const [saved]: any = await db.update(productsTable).set(update).where(eq(productsTable.id, id)).returning();
+      void logAdminActivity(req, "bouquet_component_edited", "product", id, { changed: Object.keys(update), priceChanged: payload.sellingPrice !== undefined, costChanged: payload.costPrice !== undefined, previewChanged: payload.previewAssetUrl !== undefined });
+      return json(formatProduct(await hydrateSharedStockProduct(saved)));
+    }
+    if (method === "DELETE") {
+      if (!canManageComponent(current, "delete")) return error("ليس لديك صلاحية حذف عنصر الباقة", 403);
+      const [saved]: any = await db.update(productsTable).set({ archivedAt: new Date(), isActive: false, showInBouquetBuilder: false, availableInBouquetDesigner: false, updatedAt: new Date() }).where(eq(productsTable.id, id)).returning();
+      void logAdminActivity(req, "bouquet_component_archived", "product", id, { name: saved?.nameAr });
+      return json({ ok: true, archived: true });
+    }
+  }
+
+  if (resource === "templates") {
+    if (!requires("bouquet.templates.manage")) return error("ليس لديك صلاحية إدارة القوالب", 403);
+    if (method === "GET") { const r: any = await db.execute(sql`select t.*, coalesce(json_agg(i order by i.display_order) filter (where i.id is not null), '[]'::json) as items from bouquet_templates t left join bouquet_template_items i on i.template_id=t.id where t.archived_at is null group by t.id order by t.display_order, t.updated_at desc`); return json({ templates: r.rows ?? [] }); }
+    const data: any = await body(req); const items = Array.isArray(data?.items) ? data.items : [];
+    if (method === "POST") {
+      const r: any = await db.execute(sql`insert into bouquet_templates(name,description,product_id,preview_asset_url,configuration,default_colors,is_default,is_active,display_order) values(${String(data.name ?? "قالب جديد")},${nullableText(data.description)},${Number(data.productId) || null},${nullableText(data.previewAssetUrl)},${JSON.stringify(data.configuration ?? {})}::jsonb,${JSON.stringify(data.defaultColors ?? {})}::jsonb,${Boolean(data.isDefault)},${data.isActive !== false},${Math.trunc(Number(data.displayOrder ?? 0))}) returning *`); const template=(r.rows??[])[0]; for (let i=0;i<items.length;i++) await db.execute(sql`insert into bouquet_template_items(template_id,product_id,quantity,role,position,display_order) values(${template.id},${Number(items[i].productId)},${Math.max(1,Math.trunc(Number(items[i].quantity??1)))},${String(items[i].role??"FLOWER")},${JSON.stringify(bouquetPosition(items[i].position))}::jsonb,${i})`); if (data.isDefault) await db.execute(sql`update bouquet_templates set is_default=(id=${template.id}) where archived_at is null`); void logAdminActivity(req,"bouquet_template_created","bouquet_template",template.id,{name:template.name}); return json(template,201);
+    }
+    if (!id) return error("معرّف القالب مطلوب", 400);
+    if (method === "PATCH") { const r:any=await db.execute(sql`update bouquet_templates set name=coalesce(${nullableText(data.name)},name),description=coalesce(${nullableText(data.description)},description),preview_asset_url=coalesce(${nullableText(data.previewAssetUrl)},preview_asset_url),configuration=coalesce(${data.configuration===undefined?null:JSON.stringify(data.configuration)}::jsonb,configuration),default_colors=coalesce(${data.defaultColors===undefined?null:JSON.stringify(data.defaultColors)}::jsonb,default_colors),is_active=coalesce(${data.isActive ?? null},is_active),display_order=coalesce(${data.displayOrder ?? null},display_order),updated_at=now() where id=${id} and archived_at is null returning *`); if(!(r.rows??[]).length)return error("القالب غير موجود",404); if(data.items){await db.execute(sql`delete from bouquet_template_items where template_id=${id}`);for(let i=0;i<items.length;i++)await db.execute(sql`insert into bouquet_template_items(template_id,product_id,quantity,role,position,display_order) values(${id},${Number(items[i].productId)},${Math.max(1,Math.trunc(Number(items[i].quantity??1)))},${String(items[i].role??"FLOWER")},${JSON.stringify(bouquetPosition(items[i].position))}::jsonb,${i})`)} if(data.isDefault)await db.execute(sql`update bouquet_templates set is_default=(id=${id}) where archived_at is null`); void logAdminActivity(req,"bouquet_template_edited","bouquet_template",id,{});return json(r.rows[0]); }
+    if (method === "DELETE") { await db.execute(sql`update bouquet_templates set archived_at=now(),is_active=false,updated_at=now() where id=${id}`); void logAdminActivity(req,"bouquet_template_archived","bouquet_template",id,{});return json({ok:true,archived:true}); }
+  }
+
+  if (resource === "settings") {
+    if (!requires("bouquet.preview.manage")) return error("ليس لديك صلاحية إعدادات المعاينة", 403);
+    if (method === "GET") { const r:any=await db.execute(sql`select * from bouquet_preview_settings order by id asc limit 1`); return json({ settings:(r.rows??[])[0]??null }); }
+    if (method === "PATCH") { const data:any=await body(req); const first:any=await db.execute(sql`select id from bouquet_preview_settings order by id asc limit 1`); const existingId=Number((first.rows??[])[0]?.id??0); const saved:any=existingId ? await db.execute(sql`update bouquet_preview_settings set default_template_id=${Number(data.defaultTemplateId)||null},background_url=${nullableText(data.backgroundUrl)},settings=${JSON.stringify(data.settings??{})}::jsonb,updated_by=${auth.id},updated_at=now() where id=${existingId} returning *`) : await db.execute(sql`insert into bouquet_preview_settings(default_template_id,background_url,settings,updated_by) values(${Number(data.defaultTemplateId)||null},${nullableText(data.backgroundUrl)},${JSON.stringify(data.settings??{})}::jsonb,${auth.id}) returning *`); const row=(saved.rows??[])[0]; void logAdminActivity(req,"bouquet_preview_settings_updated","bouquet_preview_settings",row?.id,{});return json(row); }
+  }
+  return error("إجراء مصمم الباقات غير مدعوم", 405);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "bouquet-designer") return handleBouquetDesignerAdmin(req, parts.slice(2));
 
   const scanLookup = await handleScanLookup(req, parts, section);
   if (scanLookup) return scanLookup;

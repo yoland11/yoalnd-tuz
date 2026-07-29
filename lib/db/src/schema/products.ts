@@ -91,6 +91,11 @@ export const productsTable = pgTable("products", {
   previewScale: numeric("preview_scale", { precision: 6, scale: 3 }),
   previewRotation: numeric("preview_rotation", { precision: 7, scale: 2 }),
   previewLayer: integer("preview_layer"),
+  // Structured coordinates keep the preview portable across web, mobile and
+  // future renderers instead of persisting arbitrary CSS text.
+  previewPosition: jsonb("preview_position").$type<{ x?: number; y?: number; anchor?: string } | null>(),
+  accessoryType: varchar("accessory_type", { length: 60 }),
+  maximumQuantityPerBouquet: integer("maximum_quantity_per_bouquet"),
   bouquetRecipe: jsonb("bouquet_recipe").$type<Array<Record<string, unknown>>>().notNull().default([]),
   isReadyMadeBouquet: boolean("is_ready_made_bouquet").notNull().default(false),
   isBouquetTemplate: boolean("is_bouquet_template").notNull().default(false),
