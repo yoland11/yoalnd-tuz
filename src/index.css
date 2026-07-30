@@ -1058,3 +1058,225 @@ a:hover {
 @media (max-width:900px) { .flower-design-studio__layout { grid-template-columns:minmax(0,1fr) 17rem; }.flower-design-studio__product-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }.flower-design-studio__toolbar { align-items:stretch; flex-direction:column; }.flower-design-studio__filters { overflow-x:auto; padding-bottom:.15rem; }.flower-design-studio__filters select { max-width:none; flex:0 0 auto; } }
 @media (max-width:780px) { .flower-design-studio { padding-bottom:5.6rem; }.flower-design-studio__layout { display:block; }.flower-design-studio__catalog { padding:.75rem; }.flower-design-studio__summary { position:fixed; right:0; bottom:0; left:0; z-index:170; display:none; max-height:min(82dvh,44rem); overflow:auto; border-radius:.85rem .85rem 0 0; box-shadow:0 -.5rem 1.4rem rgb(0 0 0 / 32%); }.flower-design-studio__summary.is-open { display:block; }.flower-design-studio__summary-close { display:grid; place-items:center; }.flower-design-studio__summary-lines { max-height:29dvh; }.flower-design-studio__mobile-cart { position:fixed; right:max(.65rem,env(safe-area-inset-right)); bottom:max(.65rem,env(safe-area-inset-bottom)); left:max(.65rem,env(safe-area-inset-left)); z-index:160; display:grid; grid-template-columns:1fr auto; align-items:center; gap:0 .5rem; border:1px solid rgb(255 255 255 / 14%); border-radius:.65rem; background:#c9912d; color:#1c160d; padding:.65rem .9rem; text-align:right; box-shadow:0 .35rem .8rem rgb(0 0 0 / 26%); }.flower-design-studio__mobile-cart span { font-weight:800; }.flower-design-studio__mobile-cart b { font-size:1rem; }.flower-design-studio__mobile-cart small { grid-column:1; opacity:.72; font-size:.65rem; }.flower-design-studio__filters select { font-size:.67rem; } }
 @media (max-width:460px) { .flower-design-studio__product-grid { grid-template-columns:1fr; }.flower-design-studio__header-actions .button:last-child { display:none; }.flower-design-studio__product-image { aspect-ratio:1.5/1; } }
+
+/* Luxury florist treatment for /design. Decorative art is intentionally scoped
+   to frames and never touches the product pixels or any transactional state. */
+.flower-design-studio {
+  --florist-green: #4e6e45;
+  --florist-pink: #f6c9d6;
+  --florist-ivory: #fffdf8;
+  --florist-mint: #e8f3e5;
+  --florist-gold: #c9a86a;
+  position: relative;
+  isolation: isolate;
+  min-height: 100dvh;
+  background: var(--florist-ivory);
+  color: #2f3d2e;
+}
+.flower-design-studio::before,
+.flower-design-studio::after,
+.flower-design-studio__shell::before,
+.flower-design-studio__shell::after {
+  position: absolute;
+  z-index: -1;
+  width: 18rem;
+  height: 18rem;
+  content: "";
+  background: url("/floral-ui/watercolor-floral-corner.webp") center / contain no-repeat;
+  opacity: .14;
+  pointer-events: none;
+}
+.flower-design-studio::before { top: -4.5rem; left: -4.75rem; }
+.flower-design-studio::after { right: -4.75rem; bottom: -4.75rem; transform: rotate(180deg); }
+.flower-design-studio__shell { position: relative; z-index: 1; }
+.flower-design-studio__shell::before { top: 5.5rem; right: -6.5rem; transform: rotate(180deg); opacity: .09; }
+.flower-design-studio__shell::after { bottom: 1rem; left: -6rem; transform: scaleY(-1); opacity: .09; }
+.flower-design-studio__header {
+  border-bottom-color: rgb(78 110 69 / 13%);
+  background: rgb(255 253 248 / 72%);
+}
+.flower-design-studio__title > span { border: 1px solid rgb(201 168 106 / 34%); background: var(--florist-mint); color: var(--florist-green); }
+.flower-design-studio__title h1 { color: var(--florist-green); }
+.flower-design-studio__title p { color: #667462; }
+.flower-design-studio__header .button,
+.flower-design-studio__header button { color: var(--florist-green); }
+.flower-design-studio__catalog,
+.flower-design-studio__summary {
+  border-color: rgb(78 110 69 / 15%);
+  background: rgb(255 253 248 / 92%);
+  box-shadow: 0 .3rem .8rem rgb(78 110 69 / 8%);
+  backdrop-filter: blur(8px);
+}
+.flower-design-studio__catalog { border-radius: 1rem; }
+.flower-design-studio__toolbar .flower-design-studio__search input,
+.flower-design-studio__filters select,
+.flower-design-studio__gift-note input {
+  border-color: rgb(78 110 69 / 18%);
+  background: #fff;
+  color: #31402f;
+}
+.flower-design-studio__search svg { color: var(--florist-green); }
+.flower-design-studio__search input::placeholder { color: #778473; }
+.flower-design-studio__filters { color: var(--florist-green); }
+.flower-design-studio__categories { gap: .6rem; border-bottom-color: rgb(78 110 69 / 12%); }
+.flower-design-studio__category {
+  position: relative;
+  display: inline-flex;
+  min-height: 3.1rem;
+  align-items: center;
+  gap: .42rem;
+  overflow: hidden;
+  border-color: rgb(78 110 69 / 13%);
+  border-radius: .75rem;
+  background: rgb(255 255 255 / 70%);
+  color: #536550;
+  font-weight: 650;
+  transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+.flower-design-studio__category::after {
+  position: absolute;
+  inset: auto -.65rem -.85rem auto;
+  width: 3.75rem;
+  height: 3.75rem;
+  content: "";
+  background: url("/floral-ui/watercolor-floral-corner.webp") left bottom / contain no-repeat;
+  opacity: .13;
+  pointer-events: none;
+}
+.flower-design-studio__category:hover,
+.flower-design-studio__category.is-active { border-color: rgb(78 110 69 / 44%); background: var(--florist-mint); color: #314d2b; transform: translateY(-1px); }
+.flower-design-studio__category-icon { position: relative; z-index: 1; font-size: 1rem; line-height: 1; }
+.flower-design-studio__category > span:last-child { position: relative; z-index: 1; }
+.flower-design-studio__catalog-title h2 { color: var(--florist-green); }
+.flower-design-studio__catalog-title p { color: #6d7a6a; }
+.flower-design-studio__product-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-color: rgb(78 110 69 / 14%);
+  border-radius: 1rem;
+  background: rgb(255 253 248 / 88%);
+  box-shadow: 0 .25rem .6rem rgb(78 110 69 / 7%);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+.flower-design-studio__product-card::before,
+.flower-design-studio__product-card::after {
+  position: absolute;
+  z-index: 0;
+  width: 5.4rem;
+  height: 5.4rem;
+  content: "";
+  background: url("/floral-ui/watercolor-floral-corner.webp") left bottom / contain no-repeat;
+  opacity: .2;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(.16, 1, .3, 1);
+}
+.flower-design-studio__product-card::before { top: -.8rem; left: -.9rem; transform: rotate(90deg); }
+.flower-design-studio__product-card::after { right: -.95rem; bottom: -.95rem; transform: rotate(270deg); opacity: .12; }
+.flower-design-studio__product-card:hover { border-color: rgb(201 168 106 / 62%); box-shadow: 0 .45rem .8rem rgb(78 110 69 / 12%); transform: translateY(-2px); }
+.flower-design-studio__product-card:hover::before { opacity: .29; transform: rotate(96deg) translateY(-.1rem); }
+.flower-design-studio__product-card:hover::after { opacity: .2; transform: rotate(264deg) translateY(-.1rem); }
+.flower-design-studio__product-card.is-unavailable { filter: grayscale(.7); }
+.flower-design-studio__product-image {
+  position: relative;
+  z-index: 1;
+  width: calc(100% - .9rem);
+  margin: .45rem .45rem 0;
+  border-radius: .72rem;
+  background: #fff;
+}
+.flower-design-studio__product-body { position: relative; z-index: 1; gap: .5rem; padding: .75rem; }
+.flower-design-studio__product-meta { color: #71806d; }
+.flower-design-studio__product-meta em { color: #a15b64; }
+.flower-design-studio__product-meta small { color: #4b7b43; }
+.flower-design-studio__product-card h3 { color: #31402f; }
+.flower-design-studio__price b { color: var(--florist-green); }
+.flower-design-studio__price del { color: #927a71; }
+.flower-design-studio__price mark { background: rgb(246 201 214 / 48%); color: #8e4657; }
+.flower-design-studio__colors > button:not(.flower-design-studio__color-label) { border-color: rgb(78 110 69 / 34%); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 72%); }
+.flower-design-studio__colors > button.is-selected { outline-color: var(--florist-gold); }
+.flower-design-studio__color-label,
+.flower-design-studio__details { color: var(--florist-green); }
+.flower-design-studio__quantity { border-color: rgb(78 110 69 / 18%); background: #fff; }
+.flower-design-studio__quantity button { color: var(--florist-green); }
+.flower-design-studio__quantity button:disabled { color: #bbc3b7; }
+.flower-design-studio__quantity span { color: #374936; }
+.flower-design-studio__card-actions .button,
+.flower-design-studio__card-actions button[data-slot="button"],
+.flower-design-studio__checkout,
+.flower-design-studio__mobile-cart {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgb(78 110 69 / 18%);
+  background: var(--florist-green);
+  color: #fff;
+  box-shadow: 0 .25rem .55rem rgb(78 110 69 / 16%);
+}
+.flower-design-studio__card-actions .button::after,
+.flower-design-studio__card-actions button[data-slot="button"]::after,
+.flower-design-studio__checkout::after,
+.flower-design-studio__mobile-cart::after {
+  position: absolute;
+  top: -1rem;
+  right: -.8rem;
+  width: 3.3rem;
+  height: 3.3rem;
+  content: "";
+  background: url("/floral-ui/watercolor-floral-corner.webp") left bottom / contain no-repeat;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(.16, 1, .3, 1);
+}
+.flower-design-studio__card-actions .button:hover::after,
+.flower-design-studio__card-actions button[data-slot="button"]:hover::after,
+.flower-design-studio__checkout:hover::after,
+.flower-design-studio__mobile-cart:hover::after { opacity: .22; transform: translate3d(-.25rem, .25rem, 0) rotate(9deg); }
+.flower-design-studio__card-actions .button:hover,
+.flower-design-studio__card-actions button[data-slot="button"]:hover,
+.flower-design-studio__checkout:hover { background: #3f6339; }
+.flower-design-studio__summary { position: sticky; isolation: isolate; overflow: hidden; border-radius: 1rem; }
+.flower-design-studio__summary::before,
+.flower-design-studio__summary::after {
+  position: absolute;
+  z-index: 0;
+  width: 8.5rem;
+  height: 8.5rem;
+  content: "";
+  background: url("/floral-ui/watercolor-floral-corner.webp") left bottom / contain no-repeat;
+  opacity: .16;
+  pointer-events: none;
+}
+.flower-design-studio__summary::before { top: -3rem; right: -2.6rem; transform: rotate(180deg); }
+.flower-design-studio__summary::after { bottom: -3.4rem; left: -2.8rem; }
+.flower-design-studio__summary > *,
+.flower-design-studio__summary-head { position: relative; z-index: 1; }
+.flower-design-studio__summary-head { border-bottom-color: rgb(78 110 69 / 12%); }
+.flower-design-studio__summary-head svg,
+.flower-design-studio__summary-lines h3 { color: var(--florist-green); }
+.flower-design-studio__summary-head h2,
+.flower-design-studio__summary-row b,
+.flower-design-studio__grand { color: #31402f; }
+.flower-design-studio__summary-row small { color: #788675; }
+.flower-design-studio__summary-row span { color: #86714c; }
+.flower-design-studio__summary-row > button { color: #597254; }
+.flower-design-studio__gift-note { color: #536550; }
+.flower-design-studio__gift-note small { color: #788675; }
+.flower-design-studio__totals { border-top-color: rgb(78 110 69 / 12%); }
+.flower-design-studio__totals p,
+.flower-design-studio__totals > div { color: #647360; }
+.flower-design-studio__totals p b { color: #374936; }
+.flower-design-studio__grand { border-top-color: rgb(201 168 106 / 28%); }
+.flower-design-studio__grand b { color: var(--florist-gold); }
+.flower-design-studio__empty { color: #70806d; }
+.flower-design-studio button:focus-visible,
+.flower-design-studio input:focus-visible,
+.flower-design-studio select:focus-visible { outline-color: var(--florist-gold); }
+@media (max-width: 780px) {
+  .flower-design-studio::before,
+  .flower-design-studio::after,
+  .flower-design-studio__shell::before,
+  .flower-design-studio__shell::after { width: 12rem; height: 12rem; opacity: .08; }
+  .flower-design-studio__category { min-height: 2.7rem; }
+  .flower-design-studio__summary { background: var(--florist-ivory); box-shadow: 0 -.35rem .8rem rgb(78 110 69 / 14%); }
+  .flower-design-studio__mobile-cart { background: var(--florist-green); }
+}
