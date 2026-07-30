@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { adminFetch, apiErrorMessage } from "./_lib";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
+import CateringItems from "./catering-items";
 
 type Category = { id:number; name:string; description?:string|null; is_active:boolean; item_count?:number };
 type Item = { id:number; code:string; name:string; category_id:number; category_name?:string; unit:string; selling_price:number; cost:number; stock_quantity:number; min_stock:number; image_url?:string|null; track_inventory:boolean; is_active:boolean; available_for_sale:boolean };
@@ -26,7 +27,7 @@ export default function CateringCenterPage() {
   return <div dir="rtl" className="space-y-4">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="flex items-center gap-2 text-2xl font-bold"><UtensilsCrossed className="h-6 w-6 text-primary"/>تموين الطعام</h1><p className="mt-1 text-sm text-muted-foreground">مبيعات، مطبخ، مخزون، ذمم وصندوق رئيسي من مصدر واحد.</p></div><Button onClick={()=>navigate("/admin/catering/pos")}><ShoppingCart className="ml-1 h-4 w-4"/>نقطة بيع تموين</Button></header>
     <nav className="flex gap-1 overflow-x-auto border-b border-border/40">{tabs.map(([key,label,Icon])=><button key={key} onClick={()=>setTab(key)} className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm ${tab===key?"border-primary text-primary":"border-transparent text-muted-foreground"}`}><Icon className="h-4 w-4"/>{label}</button>)}</nav>
-    {tab==="dashboard"&&<Dashboard stats={stats.data?.stats} orders={orders.data?.orders??[]} loading={stats.isLoading}/>} {tab==="categories"&&<Categories/>} {tab==="items"&&<Items/>} {tab==="orders"&&<Orders/>} {tab==="payables"&&<Payables/>} {tab==="reports"&&<Reports/>}
+    {tab==="dashboard"&&<Dashboard stats={stats.data?.stats} orders={orders.data?.orders??[]} loading={stats.isLoading}/>} {tab==="categories"&&<Categories/>} {tab==="items"&&<CateringItems/>} {tab==="orders"&&<Orders/>} {tab==="payables"&&<Payables/>} {tab==="reports"&&<Reports/>}
   </div>;
 }
 
