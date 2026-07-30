@@ -33,7 +33,10 @@ export default function FlowerDesigner(){
  const [active,setActive]=useState<DesignerSection>("flowers"); const [search,setSearch]=useState(""); const [sort,setSort]=useState("popular"); const [availability,setAvailability]=useState("all"); const [color,setColor]=useState("all"); const [price,setPrice]=useState("all");
  const [quantities,setQuantities]=useState<Record<string,number>>({}); const [order,setOrder]=useState<string[]>([]); const [chosen,setChosen]=useState<Record<number,number|undefined>>({}); const [draftQty,setDraftQty]=useState<Record<number,number>>({}); const [note,setNote]=useState(""); const [templateName,setTemplateName]=useState(""); const [details,setDetails]=useState<CatalogProduct|null>(null); const [summaryOpen,setSummaryOpen]=useState(false); const [adding,setAdding]=useState(false); const [limit,setLimit]=useState(24);
  const catalog=useQuery({queryKey:catalogKey,queryFn:fetchCatalog,staleTime:30_000,refetchInterval:30_000,refetchOnWindowFocus:true});
- const products=useMemo(()=>{const data=catalog.data;if(!data||data.catalogScope!=="flower-only-v2")return[];return data.products.filter(p=>p.showInBouquetBuilder||p.availableInBouquetDesigner).filter(p=>SECTIONS.includes(p.designerSection));},[catalog.data]);
+ // The designer API already resolves the active Flowers / Bouquets store root
+ // and every active child category.  Filtering again by the optional Admin
+ // toggle hid valid store bouquets from this page.
+ const products=useMemo(()=>{const data=catalog.data;if(!data||data.catalogScope!=="flower-only-v2")return[];return data.products.filter(p=>SECTIONS.includes(p.designerSection));},[catalog.data]);
  useEffect(()=>{if(typeof EventSource==="undefined")return;const stream=new EventSource("/api/products/designer-stream");const refresh=()=>void client.invalidateQueries({queryKey:catalogKey});stream.addEventListener("products",refresh);return()=>stream.close();},[client]);
  useEffect(()=>{products.slice(0,20).forEach(product=>{const src=product.images[0];if(src){const image=new Image();image.src=src;}});},[products]);
  const enabled=useMemo(()=>SECTIONS.filter(section=>products.some(product=>product.designerSection===section)),[products]);
