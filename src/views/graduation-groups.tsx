@@ -888,34 +888,51 @@ export function GraduationGroupStudentRegistration({
               <h3 className="font-semibold">القياسات</h3>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[
-                ["height", "الطول (سم)"],
-                ["weight", "الوزن (كغم)"],
-                ["shoulder", "عرض الكتف"],
-                ["chest", "محيط الصدر"],
-                ["waist", "محيط الخصر"],
-                ["hip", "محيط الورك"],
-                ["sleeveLength", "طول الكم"],
-                ["neck", "محيط الرقبة"],
-              ].map(([key, label]) => (
-                <div key={key}>
-                  <Label>{label}</Label>
-                  <Input
-                    className="mt-2"
-                    inputMode="decimal"
-                    value={(form.measurements as any)[key]}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        measurements: {
-                          ...current.measurements,
-                          [key]: event.target.value,
-                        },
-                      }))
-                    }
-                  />
-                </div>
-              ))}
+              {(
+                [
+                  ["height", "الطول (سم)", 80, 250],
+                  ["weight", "الوزن (كغم)", 20, 300],
+                  ["shoulder", "عرض الكتف", 20, 100],
+                  ["chest", "محيط الصدر", 40, 220],
+                  ["waist", "محيط الخصر", 35, 220],
+                  ["hip", "محيط الورك", 35, 240],
+                  ["sleeveLength", "طول الكم", 20, 120],
+                  ["neck", "محيط الرقبة", 20, 80],
+                ] as [string, string, number, number][]
+              ).map(([key, label, min, max]) => {
+                const raw = (form.measurements as any)[key];
+                const num = Number(raw);
+                const invalid =
+                  String(raw).trim() !== "" && (Number.isNaN(num) || num < min || num > max);
+                return (
+                  <div key={key}>
+                    <Label>{label}</Label>
+                    <Input
+                      className={`mt-2 ${invalid ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+                      type="number"
+                      inputMode="decimal"
+                      min={min}
+                      max={max}
+                      placeholder={`${min} - ${max}`}
+                      value={raw}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          measurements: {
+                            ...current.measurements,
+                            [key]: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    {invalid ? (
+                      <p className="mt-1 text-xs text-red-500">
+                        القيمة يجب أن تكون بين {min} و{max}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
               <div>
                 <Label>الجنس</Label>
                 <Select

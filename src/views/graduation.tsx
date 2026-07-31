@@ -814,7 +814,9 @@ function GraduationConfigurator() {
               key,
               key === "gender" || key === "suggestedSize"
                 ? value
-                : Number(value),
+                : // Omit blank measurements (→ undefined) instead of sending 0,
+                  // which would fail the schema's min even for optional fields.
+                  Number(value) || undefined,
             ]),
           ),
         }),

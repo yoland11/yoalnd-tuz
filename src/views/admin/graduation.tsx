@@ -17,6 +17,7 @@ import {
   GripVertical,
   Layers3,
   Loader2,
+  MessageCircle,
   PackageCheck,
   Plus,
   Printer,
@@ -71,6 +72,7 @@ import { ProductionProgressPanel } from "./production-progress";
 import { useToast } from "@/hooks/use-toast";
 import { downloadElementPdf } from "@/lib/pdf";
 import { formatCurrency } from "@/lib/money";
+import { buildWhatsAppLink } from "@/lib/order-stages";
 import { processImageFile } from "@/lib/image-tools";
 import {
   GRADUATION_STAGES,
@@ -2009,6 +2011,16 @@ function Production({
   );
 }
 
+// Friendly Arabic payment reminder sent to a graduation student over WhatsApp.
+function graduationReminderMessage(name: string, remaining: number): string {
+  return [
+    `مرحباً ${name?.trim() || "عزيزنا الطالب"} 🎓`,
+    `تذكير ودّي من مجموعة علي جان بخصوص طلب التخرج الخاص بك.`,
+    `المبلغ المتبقّي: ${formatCurrency(remaining)}`,
+    `نرجو إكمال الدفعة في أقرب وقت ممكن. شكراً لتعاونك 🌸`,
+  ].join("\n");
+}
+
 function Customers() {
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "graduation", "customers"],
@@ -2040,6 +2052,20 @@ function Customers() {
                 <Info label="الإجمالي" value={formatCurrency(item.total)} />
                 <Info label="المتبقي" value={formatCurrency(item.remaining)} />
               </div>
+              {Number(item.remaining) > 0 && item.phone ? (
+                <a
+                  href={buildWhatsAppLink(
+                    item.phone,
+                    graduationReminderMessage(item.name, Number(item.remaining)),
+                  )}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-emerald-600/30 bg-emerald-600/10 px-3 py-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-600/20 dark:text-emerald-400"
+                >
+                  <MessageCircle className="h-3.5 w-3.5" />
+                  إرسال تذكير واتساب
+                </a>
+              ) : null}
             </CardContent>
           </Card>
         ))

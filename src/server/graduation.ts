@@ -982,13 +982,51 @@ async function createInvoice(
   return { ...invoice, invoiceNo };
 }
 
+// Valid measurement ranges (cm), mirrored from graduationMeasurementsSchema, so
+// a rejected submission tells the student exactly which field is out of range
+// instead of the opaque "تحقق من بيانات طلب التخرج".
+const GRADUATION_MEASUREMENT_RANGES: Record<string, [number, number, string]> = {
+  height: [80, 250, "الطول"],
+  weight: [20, 300, "الوزن"],
+  shoulder: [20, 100, "عرض الكتف"],
+  chest: [40, 220, "محيط الصدر"],
+  waist: [35, 220, "محيط الخصر"],
+  hip: [35, 240, "محيط الورك"],
+  sleeveLength: [20, 120, "طول الكم"],
+  neck: [20, 80, "محيط الرقبة"],
+};
+const GRADUATION_FIELD_LABELS: Record<string, string> = {
+  customerName: "اسم الزبون",
+  phone: "رقم الهاتف",
+  styleKey: "نوع التخرج",
+  "fabric.key": "القماش",
+  "measurements.gender": "الجنس",
+};
+
+function describeGraduationIssues(
+  issues: readonly { path: PropertyKey[]; message: string }[],
+): string {
+  const messages = issues.map((issue) => {
+    const path = issue.path.map(String);
+    const range = path[0] === "measurements" ? GRADUATION_MEASUREMENT_RANGES[path[1]] : undefined;
+    if (range) return `${range[2]}: القيمة يجب أن تكون بين ${range[0]} و${range[1]} سم`;
+    const key = path.join(".");
+    const label = GRADUATION_FIELD_LABELS[key] ?? GRADUATION_FIELD_LABELS[path[0]] ?? key;
+    return `${label} غير صحيح`;
+  });
+  const unique = Array.from(new Set(messages)).slice(0, 5);
+  return unique.length
+    ? `تحقق من البيانات: ${unique.join(" • ")}`
+    : "تحقق من بيانات طلب التخرج";
+}
+
 export async function createOrder(raw: unknown, user?: GraduationAdminUser | null) {
   await ensureGraduationTables();
   const parsed = graduationOrderInputSchema.safeParse(raw);
   if (!parsed.success)
     return {
       response: error(
-        "تحقق من بيانات طلب التخرج",
+        describeGraduationIssues(parsed.error.issues),
         400,
         parsed.error.issues.map((issue) => ({
           field: issue.path.join("."),
