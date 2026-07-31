@@ -1,7 +1,8 @@
 import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
-import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff } from "lucide-react";
-import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, type AdminMe } from "@/views/admin/_lib";
+import { Armchair, Bell, Home, LogOut, MapPin, Phone, ClipboardList, BarChart3, CheckCircle2, XCircle, Loader2, Search, ShieldCheck, CloudOff, User } from "lucide-react";
+import { apiErrorMessage, fetchAdminMe, loginAdmin, logoutAdmin, hasPerm, isSessionDecision, type AdminMe } from "@/views/admin/_lib";
+import { SessionDevicesPanel } from "@/components/session-devices";
 import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type Bucket, type CrewBooking } from "./lib";
 import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
@@ -70,7 +71,16 @@ function Login({ onDone }: { onDone: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setErr(null);
     try { await loginAdmin(u.trim(), p); onDone(); }
-    catch (e: any) { setErr(e?.message ?? "بيانات الدخول غير صحيحة"); }
+    catch (e: any) {
+      if (isSessionDecision(e)) {
+        if (typeof window !== "undefined" && window.confirm(e.message)) {
+          try { await loginAdmin(u.trim(), p, { forceReplace: true }); onDone(); }
+          catch (retryErr: any) { setErr(retryErr?.message ?? "بيانات الدخول غير صحيحة"); }
+        }
+      } else {
+        setErr(e?.message ?? "بيانات الدخول غير صحيحة");
+      }
+    }
     finally { setBusy(false); }
   }
   return (
@@ -480,6 +490,7 @@ function StaffPortalContent() {
           {pendingOps > 0 && (
             <span className="flex items-center gap-1 rounded-full bg-status-warning/15 px-2 py-1 text-[11px] font-bold text-status-warning"><CloudOff className="h-3.5 w-3.5" /> {pendingOps} بانتظار الرفع</span>
           )}
+          <button onClick={() => nav("/staff/koshas/account")} aria-label="الحساب والأجهزة" className="text-muted-foreground"><User className="h-5 w-5" /></button>
           <button onClick={() => logoutAdmin().then(refreshMe)} aria-label="خروج" className="text-muted-foreground"><LogOut className="h-5 w-5" /></button>
         </div>
       </header>
@@ -493,6 +504,7 @@ function StaffPortalContent() {
           <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
           <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>
           <Route path="/staff/koshas/reports"><Reports /></Route>
+          <Route path="/staff/koshas/account"><div className="p-4"><div className="mb-4"><div className="text-sm font-bold text-foreground">{me.fullName || me.username}</div><div className="text-[11px] text-muted-foreground">كادر الكوشات</div></div><SessionDevicesPanel portal="kosha" onSwitched={refreshMe} /></div></Route>
           <Route path="/staff/koshas"><Dashboard /></Route>
           <Route><Dashboard /></Route>
         </Switch>

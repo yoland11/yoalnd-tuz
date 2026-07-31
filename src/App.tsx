@@ -2,7 +2,8 @@
 
 import { Component, lazy, Suspense, useEffect, type ReactNode } from "react";
 import { Switch, Route, Router as WouterRouter } from "wouter";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "@/lib/query-client";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/views/not-found";
@@ -53,17 +54,6 @@ const GraduationTracking = lazy(() =>
     default: module.GraduationTracking,
   })),
 );
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 2 * 60_000,
-      gcTime: 10 * 60_000,
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
 
 // Minimal spinner shown while lazy chunks load
 const PageSpinner = () => (

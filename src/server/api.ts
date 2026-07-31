@@ -837,6 +837,7 @@ let archiveColumnsPromise: Promise<void> | null = null;
 let activityTablesPromise: Promise<void> | null = null;
 let orderReviewsTablePromise: Promise<void> | null = null;
 let staffActivityColumnPromise: Promise<void> | null = null;
+let adminSessionsShapePromise: Promise<void> | null = null;
 let staffTableShapePromise: Promise<void> | null = null;
 let imageMetadataColumnsPromise: Promise<void> | null = null;
 let productColorColumnsPromise: Promise<void> | null = null;
@@ -1285,29 +1286,161 @@ export function verifyPassword(plain: string, hash: string): boolean {
   }
 }
 
-async function createSession(
-  userId: number,
-): Promise<{ token: string; expiresAt: Date }> {
-  const token = randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await db.insert(adminSessionsTable).values({ token, userId, expiresAt });
-  return { token, expiresAt };
+// Client-supplied, non-secret device identifier (a uuid kept in localStorage).
+// Lets the Active Devices list group a phone vs a laptop; never used for auth.
+function deviceIdHeader(req: NextRequest): string | null {
+  return req.headers.get("x-device-id")?.slice(0, 120) || null;
 }
 
+// The portal a session was opened from, so the device list can label it. The
+// client sends `x-portal` from its current route; callers may also pass a hint.
+function portalHeader(req: NextRequest): string | null {
+  const value = req.headers.get("x-portal")?.slice(0, 24)?.trim();
+  return value || null;
+}
+
+async function createSession(
+  userId: number,
+  req?: NextRequest,
+  portalHint?: string | null,
+): Promise<{ token: string; expiresAt: Date; sessionId: string | null }> {
+  await ensureAdminSessionsShape();
+  const token = randomBytes(32).toString("hex");
+  const sessionId = randomUUID();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const now = new Date();
+  await db.insert(adminSessionsTable).values({
+    token,
+    userId,
+    expiresAt,
+    sessionId,
+    portal: portalHint ?? (req ? portalHeader(req) : null),
+    deviceId: req ? deviceIdHeader(req) : null,
+    userAgent: req ? req.headers.get("user-agent")?.slice(0, 500) ?? null : null,
+    ipAddress: req ? ip(req) : null,
+    lastActiveAt: now,
+  });
+  return { token, expiresAt, sessionId };
+}
+
+// Ordinary logout: current session only. Soft-revoke (never a hard delete) so
+// the device list keeps a record and the audit trail stays intact.
 async function destroySession(token: string): Promise<void> {
+  await ensureAdminSessionsShape();
   await db
-    .delete(adminSessionsTable)
-    .where(eq(adminSessionsTable.token, token));
+    .update(adminSessionsTable)
+    .set({ revokedAt: new Date(), revokeReason: "logout" })
+    .where(
+      and(
+        eq(adminSessionsTable.token, token),
+        isNull(adminSessionsTable.revokedAt),
+      ),
+    );
+}
+
+// Revoke a single session by its opaque session_id. Returns affected rows so the
+// caller can distinguish "revoked" from "already gone / not found".
+async function revokeSession(
+  sessionId: string,
+  revokedBy: number | null,
+  reason: string,
+): Promise<number> {
+  await ensureAdminSessionsShape();
+  const rows = await db
+    .update(adminSessionsTable)
+    .set({ revokedAt: new Date(), revokedBy, revokeReason: reason.slice(0, 200) })
+    .where(
+      and(
+        eq(adminSessionsTable.sessionId, sessionId),
+        isNull(adminSessionsTable.revokedAt),
+      ),
+    )
+    .returning({ id: adminSessionsTable.id });
+  return rows.length;
+}
+
+// Revoke every active session for ONE user only (logout-all / manager action).
+// `exceptSessionId` keeps the initiating session alive when desired.
+async function revokeAllUserSessions(
+  userId: number,
+  revokedBy: number | null,
+  reason: string,
+  exceptSessionId?: string | null,
+): Promise<number> {
+  await ensureAdminSessionsShape();
+  const conditions = [
+    eq(adminSessionsTable.userId, userId),
+    isNull(adminSessionsTable.revokedAt),
+  ];
+  if (exceptSessionId)
+    conditions.push(ne(adminSessionsTable.sessionId, exceptSessionId));
+  const rows = await db
+    .update(adminSessionsTable)
+    .set({ revokedAt: new Date(), revokedBy, revokeReason: reason.slice(0, 200) })
+    .where(and(...conditions))
+    .returning({ id: adminSessionsTable.id });
+  return rows.length;
 }
 
 async function pruneExpiredSessions(): Promise<void> {
   try {
+    // Only hard-delete long-dead sessions (expired AND older than the TTL grace
+    // window). Revoked-but-unexpired sessions stay so the device list can show
+    // their status.
     await db
       .delete(adminSessionsTable)
       .where(lt(adminSessionsTable.expiresAt, new Date()));
   } catch {
     // Session cleanup is best-effort.
   }
+}
+
+// ── Login policy (System Settings) ──────────────────────────────────────────
+// singleSession=false (default): an account may hold many concurrent sessions.
+// singleSession=true: logging in when an active session exists prompts the user
+// to revoke the previous one before continuing.
+type AuthPolicy = { singleSession: boolean };
+const DEFAULT_AUTH_POLICY: AuthPolicy = { singleSession: false };
+
+async function getAuthPolicy(): Promise<AuthPolicy> {
+  try {
+    const row = await db.query.settingsTable.findFirst({
+      where: eq(settingsTable.key, "authPolicy"),
+    });
+    const value = row?.value as { singleSession?: unknown } | undefined;
+    return { singleSession: Boolean(value?.singleSession) };
+  } catch {
+    return DEFAULT_AUTH_POLICY;
+  }
+}
+
+async function saveAuthPolicy(input: unknown): Promise<AuthPolicy> {
+  const value: AuthPolicy = {
+    singleSession: Boolean((input as { singleSession?: unknown })?.singleSession),
+  };
+  await db
+    .insert(settingsTable)
+    .values({ key: "authPolicy", value: value as unknown as Json })
+    .onConflictDoUpdate({
+      target: settingsTable.key,
+      set: { value: value as unknown as Json, updatedAt: new Date() },
+    });
+  return value;
+}
+
+// Count a user's live sessions (unexpired AND not revoked) — used to decide
+// whether the single-session prompt is needed at login time.
+async function countActiveUserSessions(userId: number): Promise<number> {
+  await ensureAdminSessionsShape();
+  const rows = await db.query.adminSessionsTable.findMany({
+    where: and(
+      eq(adminSessionsTable.userId, userId),
+      gt(adminSessionsTable.expiresAt, new Date()),
+      isNull(adminSessionsTable.revokedAt),
+    ),
+    columns: { id: true },
+  });
+  return rows.length;
 }
 
 async function seedAdminUser(): Promise<void> {
@@ -1378,7 +1511,9 @@ async function seedAdminUser(): Promise<void> {
 }
 
 async function ensureAdminSeeded(): Promise<void> {
-  seedPromise ??= seedAdminUser().then(() => pruneExpiredSessions());
+  seedPromise ??= seedAdminUser()
+    .then(() => ensureAdminSessionsShape())
+    .then(() => pruneExpiredSessions());
   return seedPromise;
 }
 
@@ -1388,13 +1523,41 @@ function readAdminToken(req: NextRequest): string | null {
   return bearer(req);
 }
 
-async function getAdminUser(req: NextRequest): Promise<AdminUser | null> {
+export type AdminSessionContext = {
+  id: number;
+  sessionId: string | null;
+  portal: string | null;
+  userId: number;
+};
+
+// Fire-and-forget, throttled activity touch. Uses the row we already loaded to
+// avoid an extra read; only writes when the last touch is stale (> 60s).
+function touchSessionActivity(id: number, last: Date | null): void {
+  const now = Date.now();
+  if (last && now - new Date(last).getTime() < 60_000) return;
+  void db
+    .update(adminSessionsTable)
+    .set({ lastActiveAt: new Date() })
+    .where(eq(adminSessionsTable.id, id))
+    .catch(() => {
+      /* activity tracking is best-effort */
+    });
+}
+
+// Single source of truth for "who is this request". Rejects expired OR revoked
+// sessions and returns the session context (never the secret token) for callers
+// that need session_id / portal (the /me and device-management endpoints).
+async function resolveAdminSession(
+  req: NextRequest,
+): Promise<{ user: AdminUser; session: AdminSessionContext } | null> {
+  await ensureAdminSessionsShape();
   const token = readAdminToken(req);
   if (!token) return null;
   const session = await db.query.adminSessionsTable.findFirst({
     where: and(
       eq(adminSessionsTable.token, token),
       gt(adminSessionsTable.expiresAt, new Date()),
+      isNull(adminSessionsTable.revokedAt),
     ),
   });
   if (!session) return null;
@@ -1402,14 +1565,42 @@ async function getAdminUser(req: NextRequest): Promise<AdminUser | null> {
     where: eq(staffTable.id, session.userId),
   });
   if (!user || !user.isActive) return null;
+  touchSessionActivity(session.id, session.lastActiveAt ?? null);
   return {
-    id: user.id,
-    username: user.username,
-    fullName: user.fullName,
-    role: user.role,
-    permissions: user.permissions ?? [],
-    isActive: user.isActive,
+    user: {
+      id: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      role: user.role,
+      permissions: user.permissions ?? [],
+      isActive: user.isActive,
+    },
+    session: {
+      id: session.id,
+      sessionId: session.sessionId ?? null,
+      portal: session.portal ?? null,
+      userId: session.userId,
+    },
   };
+}
+
+async function getAdminUser(req: NextRequest): Promise<AdminUser | null> {
+  return (await resolveAdminSession(req))?.user ?? null;
+}
+
+// Advisory list of portals a user may enter, derived from permissions. Used to
+// populate /me and the device list; it does NOT newly gate admin routes (that
+// would change existing behavior) — portal endpoints keep their own guards.
+export type PortalKey = "admin" | "photography" | "kosha" | "staff";
+function portalAccess(user: AdminUser | null): PortalKey[] {
+  if (!user || !user.isActive) return [];
+  const portals: PortalKey[] = [];
+  if (user.role === "admin" || hasPermission(user, "dashboard"))
+    portals.push("admin");
+  if (hasPermission(user, "photography")) portals.push("photography");
+  if (hasPermission(user, "koshas")) portals.push("kosha");
+  if (hasPermission(user, "staff")) portals.push("staff");
+  return portals;
 }
 
 function hasPermission(
@@ -1450,6 +1641,162 @@ async function requireAnyPermission(
 
 function isResponse(value: unknown): value is NextResponse {
   return value instanceof NextResponse;
+}
+
+// Portal entry guard: like requirePermission but tags denials as a portal-access
+// event in the audit log and returns the standardized portal-denied message.
+// Used at the top of each staff portal so cross-portal access is both blocked
+// server-side and recorded.
+async function requirePortalAccess(
+  req: NextRequest,
+  perm: Permission,
+  portal: string,
+): Promise<AdminUser | NextResponse> {
+  const user = await getAdminUser(req);
+  if (!user) return error("غير مخول", 401);
+  if (!hasPermission(user, perm)) {
+    void logAdminActivity(req, "portal_access_denied", "staff", user.id, {
+      portal,
+      perm,
+    });
+    return error("لا تملك صلاحية الدخول إلى هذه البوابة", 403);
+  }
+  return user;
+}
+
+// Best-effort, human-readable browser/OS label from a user-agent for the device
+// list. Intentionally coarse — it is display-only, never a security signal.
+function describeUserAgent(ua: string | null): { browser: string; device: string } {
+  if (!ua) return { browser: "غير معروف", device: "جهاز غير معروف" };
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /OPR\/|Opera/.test(ua)
+      ? "Opera"
+      : /Chrome\//.test(ua) && !/Chromium/.test(ua)
+        ? "Chrome"
+        : /Firefox\//.test(ua)
+          ? "Firefox"
+          : /Safari\//.test(ua) && /Version\//.test(ua)
+            ? "Safari"
+            : "متصفح";
+  const device = /iPhone/.test(ua)
+    ? "iPhone"
+    : /iPad/.test(ua)
+      ? "iPad"
+      : /Android/.test(ua)
+        ? "Android"
+        : /Windows/.test(ua)
+          ? "Windows"
+          : /Macintosh|Mac OS X/.test(ua)
+            ? "Mac"
+            : /Linux/.test(ua)
+              ? "Linux"
+              : "جهاز";
+  return { browser, device };
+}
+
+// Shared device-session routes reused by the cookie (web) and bearer (mobile)
+// auth blocks. `subPath` is the path AFTER `.../auth`. Returns a NextResponse
+// when it handled the route, else null so the caller can fall through.
+// Every branch is scoped to the current user unless the caller holds the
+// `staff` permission — one employee can never touch another's sessions.
+async function handleSessionManagement(
+  req: NextRequest,
+  subPath: string[],
+  ctx: { user: AdminUser; session: AdminSessionContext },
+): Promise<NextResponse | null> {
+  const method = req.method;
+
+  // GET /auth/sessions[?staffId=] — list the current user's sessions (or a
+  // target employee's, managers only).
+  if (method === "GET" && subPath[0] === "sessions" && !subPath[1]) {
+    let targetUserId = ctx.user.id;
+    const staffIdParam = req.nextUrl.searchParams.get("staffId");
+    if (staffIdParam) {
+      const requested = Number.parseInt(staffIdParam, 10);
+      if (Number.isFinite(requested) && requested !== ctx.user.id) {
+        if (!hasPermission(ctx.user, "staff"))
+          return error("لا تملك صلاحية عرض جلسات موظف آخر", 403);
+        targetUserId = requested;
+      }
+    }
+    const rows = await db.query.adminSessionsTable.findMany({
+      where: eq(adminSessionsTable.userId, targetUserId),
+      orderBy: (t, { desc }) => [desc(t.lastActiveAt), desc(t.createdAt)],
+      limit: 100,
+    });
+    const now = Date.now();
+    const sessions = rows.map((r) => {
+      const revoked = !!r.revokedAt;
+      const expired = new Date(r.expiresAt).getTime() <= now;
+      const ua = describeUserAgent(r.userAgent ?? null);
+      return {
+        sessionId: r.sessionId,
+        portal: r.portal,
+        deviceId: r.deviceId,
+        browser: ua.browser,
+        device: ua.device,
+        ipAddress: r.ipAddress,
+        createdAt: r.createdAt,
+        lastActiveAt: r.lastActiveAt,
+        expiresAt: r.expiresAt,
+        current: r.sessionId != null && r.sessionId === ctx.session.sessionId,
+        status: revoked ? "revoked" : expired ? "expired" : "active",
+        revokedAt: r.revokedAt,
+      };
+    });
+    return json({ sessions });
+  }
+
+  // POST /auth/sessions/:sessionId/revoke — revoke one session (own, or a
+  // target's with the `staff` permission).
+  if (
+    method === "POST" &&
+    subPath[0] === "sessions" &&
+    subPath[1] &&
+    subPath[2] === "revoke"
+  ) {
+    const sessionId = subPath[1];
+    const target = await db.query.adminSessionsTable.findFirst({
+      where: eq(adminSessionsTable.sessionId, sessionId),
+    });
+    if (!target) return error("الجلسة غير موجودة", 404);
+    const isOwn = target.userId === ctx.user.id;
+    if (!isOwn && !hasPermission(ctx.user, "staff"))
+      return error("لا تملك صلاحية إلغاء هذه الجلسة", 403);
+    const reason = isOwn ? "user_revoked_device" : "manager_revoked_device";
+    const revoked = await revokeSession(sessionId, ctx.user.id, reason);
+    void logAdminActivity(req, "session_revoked", "staff", target.userId, {
+      sessionId,
+      own: isOwn,
+    });
+    return json({ ok: true, revoked, message: "تم إلغاء الجلسة" });
+  }
+
+  // POST /auth/logout-all — revoke ALL of the current user's sessions only.
+  if (method === "POST" && subPath[0] === "logout-all") {
+    const payload = await body(req).catch(() => ({}));
+    const reason =
+      typeof payload?.reason === "string" && payload.reason.trim()
+        ? payload.reason.trim()
+        : "logout_all_devices";
+    const revoked = await revokeAllUserSessions(
+      ctx.user.id,
+      ctx.user.id,
+      reason,
+    );
+    void logAdminActivity(req, "logout_all_devices", "staff", ctx.user.id, {
+      reason,
+      revoked,
+    });
+    return json({
+      ok: true,
+      revoked,
+      message: "تم تسجيل الخروج من جميع أجهزتك.",
+    });
+  }
+
+  return null;
 }
 
 function publicUser(u: AdminUser) {
@@ -7013,6 +7360,56 @@ async function ensureActivityTables(): Promise<void> {
       .then(() => undefined);
   }
   await activityTablesPromise;
+}
+
+// Additive migration for the device-session columns. Memoized so the hot auth
+// path (getAdminUser runs on every guarded request) pays the cost once, then
+// awaits an already-resolved promise. Never drops or rewrites the secret
+// `token` column — existing live sessions keep working.
+async function ensureAdminSessionsShape(): Promise<void> {
+  if (!adminSessionsShapePromise) {
+    adminSessionsShapePromise = db
+      .execute(
+        sql`
+        alter table "admin_sessions"
+          add column if not exists "session_id" uuid,
+          add column if not exists "portal" varchar(24),
+          add column if not exists "device_id" text,
+          add column if not exists "user_agent" text,
+          add column if not exists "ip_address" varchar(80),
+          add column if not exists "last_active_at" timestamp,
+          add column if not exists "revoked_at" timestamp,
+          add column if not exists "revoked_by" integer references "staff" ("id") on delete set null,
+          add column if not exists "revoke_reason" text
+      `,
+      )
+      // Set the DB-side default so new rows auto-populate session_id (the
+      // ensure-shape migration is raw SQL, so drizzle's .defaultRandom() alone
+      // would not create the default and createSession's RETURNING would be null).
+      .then(() =>
+        db.execute(
+          sql`alter table "admin_sessions" alter column "session_id" set default gen_random_uuid()`,
+        ),
+      )
+      .then(() =>
+        db.execute(
+          sql`update "admin_sessions" set "session_id" = gen_random_uuid() where "session_id" is null`,
+        ),
+      )
+      .then(() =>
+        db.execute(
+          sql`create index if not exists "admin_sessions_session_id_idx" on "admin_sessions" ("session_id")`,
+        ),
+      )
+      .then(() => undefined)
+      .catch((err) => {
+        // Reset so a transient failure retries on the next call rather than
+        // permanently poisoning every session lookup.
+        adminSessionsShapePromise = null;
+        console.warn("ensureAdminSessionsShape failed", err);
+      });
+  }
+  await adminSessionsShapePromise;
 }
 
 async function ensureOrderReviewsTable(): Promise<void> {
@@ -27233,7 +27630,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     await ensureAdminSeeded();
 
     if (method === "POST" && parts[2] === "login") {
-      const { username, password } = await body(req);
+      const loginBody = await body(req);
+      const { username, password } = loginBody;
+      const forceReplace = loginBody?.forceReplace === true;
       if (
         typeof username !== "string" ||
         typeof password !== "string" ||
@@ -27270,7 +27669,41 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         return error("بيانات الدخول غير صحيحة", 401);
       }
-      const { token } = await createSession(user.id);
+      // Single-session policy: if enabled and the account already has a live
+      // session, ask before evicting it. Only this user's own sessions are ever
+      // touched — never another employee's.
+      const policy = await getAuthPolicy();
+      if (policy.singleSession) {
+        const activeCount = await countActiveUserSessions(user.id);
+        if (activeCount > 0 && !forceReplace) {
+          void logAdminActivity(
+            req,
+            "admin_login_blocked_single_session",
+            "staff",
+            user.id,
+            { username: userKey },
+          );
+          return json(
+            {
+              requiresSessionDecision: true,
+              message:
+                "يوجد جلسة نشطة لهذا الحساب، هل تريد تسجيل الخروج من الجهاز السابق؟",
+            },
+            409,
+          );
+        }
+        if (activeCount > 0 && forceReplace) {
+          await revokeAllUserSessions(user.id, user.id, "single_session_replace");
+          void logAdminActivity(
+            req,
+            "session_revoked_single_session",
+            "staff",
+            user.id,
+            { username: userKey, revoked: activeCount },
+          );
+        }
+      }
+      const { token } = await createSession(user.id, req);
       await ensureStaffActivityColumn();
       await db
         .update(staffTable)
@@ -27278,6 +27711,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .where(eq(staffTable.id, user.id));
       void logAdminActivity(req, "admin_login_success", "staff", user.id, {
         username: userKey,
+        portal: portalHeader(req),
       });
       void notifyTelegramLogin({
         id: user.id,
@@ -27302,15 +27736,43 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
     if (method === "POST" && parts[2] === "logout") {
       const token = readAdminToken(req);
-      void logAdminActivity(req, "admin_logout", "staff");
+      const intent = req.nextUrl.searchParams.get("intent");
+      void logAdminActivity(
+        req,
+        intent === "switch" ? "employee_switch" : "admin_logout",
+        "staff",
+      );
       if (token) await destroySession(token);
-      return clearSessionCookie(json({ message: "تم الخروج" }));
+      return clearSessionCookie(
+        json({ message: "تم تسجيل خروجك من هذا الجهاز فقط." }),
+      );
+    }
+
+    // Device-session management (list / revoke one / logout-all). Scoped to the
+    // authenticated user; logout-all also clears this browser's cookie.
+    if (
+      parts[2] === "sessions" ||
+      parts[2] === "logout-all"
+    ) {
+      const resolved = await resolveAdminSession(req);
+      if (!resolved) return error("غير مخول", 401);
+      const handled = await handleSessionManagement(req, parts.slice(2), resolved);
+      if (handled) {
+        return method === "POST" && parts[2] === "logout-all"
+          ? clearSessionCookie(handled)
+          : handled;
+      }
     }
 
     if (method === "GET" && parts[2] === "me") {
-      const user = await getAdminUser(req);
-      if (!user) return error("غير مخول", 401);
-      return json({ user: publicUser(user), allPermissions: ALL_PERMISSIONS });
+      const resolved = await resolveAdminSession(req);
+      if (!resolved) return error("غير مخول", 401);
+      return json({
+        user: publicUser(resolved.user),
+        allPermissions: ALL_PERMISSIONS,
+        portals: portalAccess(resolved.user),
+        sessionId: resolved.session.sessionId,
+      });
     }
   }
 
@@ -33465,6 +33927,22 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return json({ items });
       }
     }
+    // Login policy: multiple concurrent sessions (default) vs single active
+    // session per account. Read/managed by System Settings; enforced at login.
+    if (parts[2] === "auth-policy") {
+      if (method === "GET") return json(await getAuthPolicy());
+      if (method === "PATCH" || method === "PUT") {
+        const policy = await saveAuthPolicy(await body(req));
+        void logAdminActivity(
+          req,
+          "auth_policy_updated",
+          "settings",
+          undefined,
+          policy,
+        );
+        return json(policy);
+      }
+    }
     if (method === "GET") {
       return json(await loadSiteSettings());
     }
@@ -33534,6 +34012,35 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const auth = await requirePermission(req, "staff");
     if (isResponse(auth)) return auth;
     await ensureStaffTableShape();
+
+    // Manager action: revoke ALL sessions for one employee (requires a reason;
+    // audited). Only that employee's sessions are touched — never anyone else's.
+    if (method === "POST" && parts[2] && parts[3] === "sessions" && parts[4] === "logout-all") {
+      const targetId = int(parts[2]);
+      if (!targetId) return error("معرف الموظف غير صحيح", 400);
+      const employee = await db.query.staffTable.findFirst({
+        where: eq(staffTable.id, targetId),
+      });
+      if (!employee) return error("الموظف غير موجود", 404);
+      const payload = await body(req).catch(() => ({}));
+      const reason =
+        typeof payload?.reason === "string" && payload.reason.trim()
+          ? payload.reason.trim()
+          : "";
+      if (!reason) return error("يجب إدخال سبب تسجيل الخروج", 400);
+      const revoked = await revokeAllUserSessions(targetId, auth.id, reason);
+      void logAdminActivity(req, "logout_all_devices", "staff", targetId, {
+        reason,
+        revoked,
+        by: auth.id,
+      });
+      return json({
+        ok: true,
+        revoked,
+        message: "تم تسجيل الخروج من جميع أجهزة الموظف.",
+      });
+    }
+
     if (parts[2] && parts[3] === "salary-settings") {
       const id = int(parts[2]);
       if (!id) return error("معرف الموظف غير صحيح", 400);
@@ -42710,7 +43217,7 @@ async function handlePhotographyStaffPortal(
   await ensurePhotographyStaffTables();
   await ensurePhotographyPostTables();
   await ensurePhotographyIntegrationTables();
-  const auth = await requirePermission(req, "photography");
+  const auth = await requirePortalAccess(req, "photography", "photography");
   if (isResponse(auth)) return auth;
   await ensurePhotographyPortalBackfill().catch((err) =>
     console.error("[photography-sync] portal backfill failed", {
@@ -45735,7 +46242,9 @@ async function handleStaffPortal(
   // header for every /staff/* endpoint, so no other backend change is needed.
   if (parts[1] === "auth") {
     if (req.method === "POST" && parts[2] === "login") {
-      const { username, password } = await body(req);
+      const loginBody = await body(req);
+      const { username, password } = loginBody;
+      const forceReplace = loginBody?.forceReplace === true;
       if (
         typeof username !== "string" ||
         typeof password !== "string" ||
@@ -45761,7 +46270,38 @@ async function handleStaffPortal(
         });
         return error("بيانات الدخول غير صحيحة", 401);
       }
-      const { token, expiresAt } = await createSession(user.id);
+      const policy = await getAuthPolicy();
+      if (policy.singleSession) {
+        const activeCount = await countActiveUserSessions(user.id);
+        if (activeCount > 0 && !forceReplace) {
+          void logAdminActivity(
+            req,
+            "staff_mobile_login_blocked_single_session",
+            "staff",
+            user.id,
+            { username: userKey },
+          );
+          return json(
+            {
+              requiresSessionDecision: true,
+              message:
+                "يوجد جلسة نشطة لهذا الحساب، هل تريد تسجيل الخروج من الجهاز السابق؟",
+            },
+            409,
+          );
+        }
+        if (activeCount > 0 && forceReplace) {
+          await revokeAllUserSessions(user.id, user.id, "single_session_replace");
+          void logAdminActivity(
+            req,
+            "session_revoked_single_session",
+            "staff",
+            user.id,
+            { username: userKey, revoked: activeCount },
+          );
+        }
+      }
+      const { token, expiresAt } = await createSession(user.id, req);
       await ensureStaffActivityColumn();
       await db
         .update(staffTable)
@@ -45769,6 +46309,7 @@ async function handleStaffPortal(
         .where(eq(staffTable.id, user.id));
       void logAdminActivity(req, "staff_mobile_login_success", "staff", user.id, {
         username: userKey,
+        portal: portalHeader(req),
       });
       return json({
         token,
@@ -45784,20 +46325,41 @@ async function handleStaffPortal(
       });
     }
     if (req.method === "GET" && parts[2] === "me") {
-      const user = await getAdminUser(req);
-      if (!user) return error("غير مخول", 401);
-      return json({ user: publicUser(user) });
+      const resolved = await resolveAdminSession(req);
+      if (!resolved) return error("غير مخول", 401);
+      return json({
+        user: publicUser(resolved.user),
+        portals: portalAccess(resolved.user),
+        sessionId: resolved.session.sessionId,
+      });
     }
     if (req.method === "POST" && parts[2] === "logout") {
       const token = readAdminToken(req);
+      void logAdminActivity(req, "staff_mobile_logout", "staff");
       if (token) await destroySession(token);
-      return json({ ok: true });
+      return json({ ok: true, message: "تم تسجيل خروجك من هذا الجهاز فقط." });
+    }
+    // Device-session management, shared with the web auth block.
+    if (parts[2] === "sessions" || parts[2] === "logout-all") {
+      const resolved = await resolveAdminSession(req);
+      if (!resolved) return error("غير مخول", 401);
+      const handled = await handleSessionManagement(
+        req,
+        parts.slice(2),
+        resolved,
+      );
+      if (handled) return handled;
     }
     return error("المسار غير موجود", 404);
   }
   if (parts[1] === "photography")
     return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;
+  // Portal entry guard — every /staff/koshas endpoint already requires the
+  // "koshas" permission per-resource; this records cross-portal access denials
+  // and returns the standardized portal message without changing who is allowed.
+  const koshaPortalAuth = await requirePortalAccess(req, "koshas", "kosha");
+  if (isResponse(koshaPortalAuth)) return koshaPortalAuth;
   const method = req.method;
   const resource = parts[2]; // dashboard | bookings | notifications | reports | payment-requests
   const id = parts[3] ? int(parts[3]) : null;
@@ -49887,12 +50449,12 @@ async function cateringOrderDetail(orderId: number): Promise<any> {
 async function syncCateringFinancials(orderId: number, user: AdminUser) {
   const detail = await cateringOrderDetail(orderId); if (!detail) return;
   const actorValue = financialActor(user); const orderDate=String(detail.createdAt??new Date().toISOString()).slice(0,10);
-  const payment = await syncSourcePaymentTarget({ sourceType:"catering_order", sourceId:orderId, sourceEvent:"payment", targetAmount:detail.status==="cancelled"?0:detail.paidAmount, normalDirection:"revenue", transactionDate:orderDate, department:"catering", transactionType:"catering_sale", description:`دفعة طلب تموين ${detail.orderNo}`, paymentMethod:detail.paymentMethod as any, customerId:detail.customerId, customerName:detail.customerName, customerPhone:detail.customerPhone, notes:detail.notes }, actorValue);
-  if (payment?.approvalStatus === "pending" && canApproveFinancialTransactions(actorValue)) await approveAndExecuteFinancialTransaction(payment.id, actorValue, "اعتماد حركة تموين تلقائياً");
+  const payment = await syncSourcePaymentTarget({ sourceType:"catering_order", sourceId:orderId, sourceEvent:"payment", targetAmount:detail.status==="cancelled"?0:detail.paidAmount, normalDirection:"revenue", transactionDate:orderDate, department:"catering", transactionType:"catering_sale", description:`دفعة طلب تجهيزات ${detail.orderNo}`, paymentMethod:detail.paymentMethod as any, customerId:detail.customerId, customerName:detail.customerName, customerPhone:detail.customerPhone, notes:detail.notes }, actorValue);
+  if (payment?.approvalStatus === "pending" && canApproveFinancialTransactions(actorValue)) await approveAndExecuteFinancialTransaction(payment.id, actorValue, "اعتماد حركة تجهيزات تلقائياً");
   const financiallyActive = ["confirmed", "preparing", "ready", "out_for_delivery", "delivered", "completed"].includes(detail.status);
   const costTarget = !financiallyActive || detail.costSettlementMode !== "immediate" ? 0 : detail.foodCost + detail.expenseAmount;
-  const cost = await syncSourcePaymentTarget({ sourceType:"catering_order", sourceId:orderId, sourceEvent:"food_cost", targetAmount:costTarget, normalDirection:"expense", transactionDate:orderDate, department:"catering", transactionType:"catering_food_cost", description:`كلفة طلب تموين ${detail.orderNo}`, paymentMethod:"cash", customerId:detail.customerId, customerName:detail.customerName, notes:detail.notes }, actorValue);
-  if (cost?.approvalStatus === "pending" && canApproveFinancialTransactions(actorValue)) await approveAndExecuteFinancialTransaction(cost.id, actorValue, "اعتماد كلفة التموين تلقائياً");
+  const cost = await syncSourcePaymentTarget({ sourceType:"catering_order", sourceId:orderId, sourceEvent:"food_cost", targetAmount:costTarget, normalDirection:"expense", transactionDate:orderDate, department:"catering", transactionType:"catering_food_cost", description:`كلفة طلب تجهيزات ${detail.orderNo}`, paymentMethod:"cash", customerId:detail.customerId, customerName:detail.customerName, notes:detail.notes }, actorValue);
+  if (cost?.approvalStatus === "pending" && canApproveFinancialTransactions(actorValue)) await approveAndExecuteFinancialTransaction(cost.id, actorValue, "اعتماد كلفة التجهيزات تلقائياً");
 }
 
 async function applyCateringStock(orderId: number, restoring: boolean, user: AdminUser) {
@@ -49945,12 +50507,12 @@ async function handleCateringErp(req: NextRequest, parts: string[]) {
     return reverseCateringPayment(id, paymentId, req, auth);
   }
   if (resource === "items" && id && action === "image" && method === "POST") {
-    if (!can("catering_items_manage")) return error("لا تملك صلاحية إدارة أصناف التموين", 403);
+    if (!can("catering_items_manage")) return error("لا تملك صلاحية إدارة أصناف التجهيزات", 403);
     const payload = await body(req);
     const imageUrl = await persistMediaValue(payload?.imageUrl, "catering/items");
     if (!imageUrl) return error("صورة الطبق مطلوبة", 422);
     const updated: any = await db.execute(sql`update catering_menu_items set image_url=${imageUrl}, updated_by=${auth.id}, updated_at=now() where id=${id} and archived_at is null returning id, image_url`);
-    if (!(updated.rows ?? []).length) return error("صنف التموين غير موجود", 404);
+    if (!(updated.rows ?? []).length) return error("صنف التجهيزات غير موجود", 404);
     void logAdminActivity(req, "catering_item_image_uploaded", "catering_menu_item", id, {});
     return json({ id, imageUrl: updated.rows[0].image_url });
   }
@@ -49963,9 +50525,9 @@ async function handleCateringErp(req: NextRequest, parts: string[]) {
     if(action==="expenses"&&method==="POST"){if(!can("catering_manage"))return error("ليس لديك صلاحية تسجيل المصروفات",403);const p=cateringExpenseSchema.safeParse(await body(req));if(!p.success)return validationError("catering.expense",p);const d=p.data;const r:any=await db.execute(sql`insert into catering_order_expenses(order_id,expense_type,amount,supplier_id,notes,created_by) values(${id},${d.expenseType},${d.amount},${d.supplierId??null},${d.notes??null},${auth.id}) returning id`);await db.execute(sql`update catering_orders set expense_amount=expense_amount+${d.amount},final_profit=total_amount-food_cost-expense_amount-${d.amount}-refund_amount,updated_at=now() where id=${id}`);if(d.settlementMode==="supplier_payable"&&d.supplierId)await db.execute(sql`insert into catering_supplier_payables(order_id,supplier_id,amount,notes) values(${id},${d.supplierId},${d.amount},${d.notes??null})`);await syncCateringFinancials(id,auth);void logAdminActivity(req,"catering_expense_added","catering_order",id,{expenseId:r.rows?.[0]?.id,amount:d.amount});return json(await cateringOrderDetail(id));}
     if(method==="PATCH"){if(!can("catering_orders_manage"))return error("ليس لديك صلاحية تعديل الطلب",403);const b:any=await body(req);const status=String(b.status??"");if(!CATERING_ORDER_STATUSES.includes(status as any))return error("حالة الطلب غير صالحة",422);const before=await cateringOrderDetail(id);if(!before)return error("الطلب غير موجود",404);if(status==="cancelled"&&before.status!=="cancelled"&&before.stockApplied)await applyCateringStock(id,true,auth);if(status!=="cancelled"&&before.status!=="cancelled"&&!before.stockApplied&&["confirmed","preparing","ready","out_for_delivery","delivered","completed"].includes(status))await applyCateringStock(id,false,auth);await db.execute(sql`update catering_orders set status=${status},cancelled_at=${status==="cancelled"?new Date():null},cancelled_by=${status==="cancelled"?auth.id:null},cancellation_reason=${status==="cancelled"?String(b.reason??"إلغاء الطلب"):null},updated_at=now() where id=${id}`);await syncCateringFinancials(id,auth);void logAdminActivity(req,status==="cancelled"?"catering_order_cancelled":"catering_order_status_changed","catering_order",id,{from:before.status,to:status});return json(await cateringOrderDetail(id));}
   }
-  if(resource==="payables"){if(!can("catering_suppliers_manage"))return error("ليس لديك صلاحية ذمم المجهزين",403);if(method==="GET"){const r:any=await db.execute(sql`select p.*,s.name supplier_name,o.order_no from catering_supplier_payables p join suppliers s on s.id=p.supplier_id join catering_orders o on o.id=p.order_id order by p.created_at desc`);return json({payables:(r.rows??[]).map((x:any)=>({...x,amount:Number(x.amount),paidAmount:Number(x.paid_amount),remaining:Number(x.amount)-Number(x.paid_amount)}))});}if(method==="POST"&&id){const p=cateringSupplierPaymentSchema.safeParse(await body(req));if(!p.success)return validationError("catering.supplierPayment",p);const d=p.data;const r:any=await db.execute(sql`select * from catering_supplier_payables where id=${id} limit 1`);const payable=(r.rows??[])[0];if(!payable)return error("ذمة المجهز غير موجودة",404);const remaining=Number(payable.amount)-Number(payable.paid_amount);if(d.amount>remaining+.005)return error("المبلغ أكبر من الذمة المتبقية",422);const paid=Number(payable.paid_amount)+d.amount;await db.execute(sql`update catering_supplier_payables set paid_amount=${paid},status=${paid>=Number(payable.amount)-.005?"settled":"partial"},settled_at=${paid>=Number(payable.amount)-.005?new Date():null} where id=${id}`);const tx=await syncSourcePaymentTarget({sourceType:"catering_supplier_payable",sourceId:id,sourceEvent:"payment",targetAmount:paid,normalDirection:"expense",department:"catering",transactionType:"catering_supplier_payment",description:`دفع ذمة مجهز تموين #${id}`,paymentMethod:d.paymentMethod,notes:d.notes??null},financialActor(auth));if(tx?.approvalStatus==="pending"&&canApproveFinancialTransactions(financialActor(auth)))await approveAndExecuteFinancialTransaction(tx.id,financialActor(auth),"اعتماد دفع مجهز تموين");void logAdminActivity(req,"catering_supplier_paid","catering_supplier_payable",id,{amount:d.amount});return json({ok:true});}}
+  if(resource==="payables"){if(!can("catering_suppliers_manage"))return error("ليس لديك صلاحية ذمم المجهزين",403);if(method==="GET"){const r:any=await db.execute(sql`select p.*,s.name supplier_name,o.order_no from catering_supplier_payables p join suppliers s on s.id=p.supplier_id join catering_orders o on o.id=p.order_id order by p.created_at desc`);return json({payables:(r.rows??[]).map((x:any)=>({...x,amount:Number(x.amount),paidAmount:Number(x.paid_amount),remaining:Number(x.amount)-Number(x.paid_amount)}))});}if(method==="POST"&&id){const p=cateringSupplierPaymentSchema.safeParse(await body(req));if(!p.success)return validationError("catering.supplierPayment",p);const d=p.data;const r:any=await db.execute(sql`select * from catering_supplier_payables where id=${id} limit 1`);const payable=(r.rows??[])[0];if(!payable)return error("ذمة المجهز غير موجودة",404);const remaining=Number(payable.amount)-Number(payable.paid_amount);if(d.amount>remaining+.005)return error("المبلغ أكبر من الذمة المتبقية",422);const paid=Number(payable.paid_amount)+d.amount;await db.execute(sql`update catering_supplier_payables set paid_amount=${paid},status=${paid>=Number(payable.amount)-.005?"settled":"partial"},settled_at=${paid>=Number(payable.amount)-.005?new Date():null} where id=${id}`);const tx=await syncSourcePaymentTarget({sourceType:"catering_supplier_payable",sourceId:id,sourceEvent:"payment",targetAmount:paid,normalDirection:"expense",department:"catering",transactionType:"catering_supplier_payment",description:`دفع ذمة مجهز تجهيزات #${id}`,paymentMethod:d.paymentMethod,notes:d.notes??null},financialActor(auth));if(tx?.approvalStatus==="pending"&&canApproveFinancialTransactions(financialActor(auth)))await approveAndExecuteFinancialTransaction(tx.id,financialActor(auth),"اعتماد دفع مجهز تجهيزات");void logAdminActivity(req,"catering_supplier_paid","catering_supplier_payable",id,{amount:d.amount});return json({ok:true});}}
   if(resource==="reports"&&method==="GET"){if(!can("catering_reports_view"))return error("ليس لديك صلاحية التقارير",403);const from=String(req.nextUrl.searchParams.get("from")??new Date().toISOString().slice(0,10)),to=String(req.nextUrl.searchParams.get("to")??from);const [summary,items,payments]:any[]=await Promise.all([db.execute(sql`select count(*)::int orders,coalesce(sum(total_amount),0)::float sales,coalesce(sum(food_cost),0)::float cost,coalesce(sum(expense_amount),0)::float expenses,coalesce(sum(final_profit),0)::float profit,coalesce(sum(remaining_amount),0)::float remaining from catering_orders where coalesce(event_date,created_at::date) between ${from}::date and ${to}::date and status<>'cancelled'`),db.execute(sql`select item_name,sum(quantity)::float quantity,sum(line_total)::float sales,sum(line_cost)::float cost from catering_order_items oi join catering_orders o on o.id=oi.order_id where coalesce(o.event_date,o.created_at::date) between ${from}::date and ${to}::date and o.status<>'cancelled' group by item_name order by sales desc`),db.execute(sql`select payment_method,count(*)::int count,sum(amount)::float amount from catering_payments p join catering_orders o on o.id=p.order_id where p.status='confirmed' and coalesce(o.event_date,o.created_at::date) between ${from}::date and ${to}::date group by payment_method`)]);return json({from,to,summary:(summary.rows??[])[0]??{},items:items.rows??[],payments:payments.rows??[]});}
-  return error("إجراء التموين غير مدعوم",405);
+  return error("إجراء التجهيزات غير مدعوم",405);
 }
 
 async function ensureCateringTables(): Promise<void> {

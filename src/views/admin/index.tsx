@@ -11,6 +11,7 @@ import {
 } from "./_lib";
 import { AdminLayout, NoPermission, ADMIN_NAV } from "./_layout";
 import AdminLogin from "./login";
+import { SessionDevicesPanel } from "@/components/session-devices";
 
 const DashboardPage = lazy(() => import("./dashboard"));
 const NotificationsPage = lazy(() => import("./notifications"));
@@ -321,6 +322,25 @@ export default function Admin() {
     <AdminLayout me={me} onLogout={handleLogout}>
       <Suspense fallback={<AdminPageLoader />}>
         <Switch>
+          <Route path="/admin/account">
+            {() => (
+              <div className="mx-auto max-w-2xl p-4" dir="rtl">
+                <h1 className="mb-1 text-lg font-bold text-foreground">
+                  حسابي والأجهزة
+                </h1>
+                <p className="mb-4 text-sm text-muted-foreground">
+                  {me.fullName || me.username}
+                </p>
+                <SessionDevicesPanel
+                  portal="admin"
+                  onSwitched={() => {
+                    setMe(null);
+                    setLocation("/admin/login");
+                  }}
+                />
+              </div>
+            )}
+          </Route>
           <Route path="/admin/dashboard">
             {() => (
               <Guard me={me} perm="dashboard">

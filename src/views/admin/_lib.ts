@@ -3,6 +3,7 @@ import {
   processImageFile,
   type ImageProcessOptions,
 } from "@/lib/image-tools";
+import { queryClient } from "@/lib/query-client";
 export { formatCurrency, formatMoney } from "@/lib/money";
 
 // ───── Cookie-based admin auth client ─────
@@ -293,14 +294,14 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   catering_warehouse: "مخزن ومشتريات تجهيز الطعام",
   catering_items_manage: "إدارة أصناف الطعام",
   catering_categories_manage: "إدارة أقسام الطعام",
-  catering_orders_manage: "إنشاء وتعديل طلبات التموين",
-  catering_payments_receive: "استلام دفعات التموين",
-  catering_cost_view: "عرض كلف التموين",
-  catering_profit_view: "عرض أرباح التموين",
-  catering_suppliers_manage: "إدارة مجهزي التموين",
-  catering_inventory_manage: "إدارة مخزون التموين",
-  catering_reports_view: "عرض تقارير التموين",
-  catering_settings_manage: "إدارة إعدادات التموين",
+  catering_orders_manage: "إنشاء وتعديل طلبات التجهيزات",
+  catering_payments_receive: "استلام دفعات التجهيزات",
+  catering_cost_view: "عرض كلف التجهيزات",
+  catering_profit_view: "عرض أرباح التجهيزات",
+  catering_suppliers_manage: "إدارة مجهزي التجهيزات",
+  catering_inventory_manage: "إدارة مخزون التجهيزات",
+  catering_reports_view: "عرض تقارير التجهيزات",
+  catering_settings_manage: "إدارة إعدادات التجهيزات",
   "sales_invoice.cancel": "إلغاء وعكس فاتورة مبيعات",
   "sales_invoice.view_cancelled": "عرض الفواتير الملغاة",
   "sales_invoice.print_cancelled": "طباعة فاتورة ملغاة",
@@ -519,6 +520,38 @@ function apiPath(path: string): string {
   return `/api${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+const DEVICE_ID_KEY = "ajn_device_id";
+
+// Stable, NON-SECRET per-browser identifier. Lets the Active Devices list group
+// "this phone" vs "that laptop". It is not used for authentication, so storing
+// it in localStorage is safe.
+export function getDeviceId(): string {
+  if (typeof window === "undefined" || !window.localStorage) return "";
+  let id = window.localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+// Which portal the current route belongs to, sent as x-portal so a session row
+// records where it was opened from (shown in the device list). Display-only.
+export function currentPortal(): string {
+  if (typeof window === "undefined") return "";
+  const path = window.location.pathname;
+  if (path.startsWith("/staff/photography")) return "photography";
+  // Sound operations live under the kosha portal today; a future dedicated
+  // /staff/sound route is detected here so device rows label it correctly.
+  if (path.startsWith("/staff/sound")) return "sound";
+  if (path.startsWith("/staff/koshas") || path.startsWith("/staff")) return "kosha";
+  if (path.startsWith("/admin")) return "admin";
+  return "";
+}
+
 export async function adminFetch<T = any>(
   path: string,
   init: RequestInit = {},
@@ -526,6 +559,14 @@ export async function adminFetch<T = any>(
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type"))
     headers.set("content-type", "application/json");
+  if (!headers.has("x-device-id")) {
+    const deviceId = getDeviceId();
+    if (deviceId) headers.set("x-device-id", deviceId);
+  }
+  if (!headers.has("x-portal")) {
+    const portal = currentPortal();
+    if (portal) headers.set("x-portal", portal);
+  }
   const res = await fetch(apiPath(path), {
     ...init,
     headers,
@@ -580,27 +621,200 @@ export function apiErrorStatus(err: unknown): number | undefined {
   return typeof status === "number" ? status : undefined;
 }
 
+// Thrown when the single-session login policy detects an existing active
+// session. The login UIs catch this, confirm with the Arabic prompt, then retry
+// with { forceReplace: true }.
+export class SessionDecisionRequired extends Error {
+  readonly requiresSessionDecision = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionDecisionRequired";
+  }
+}
+
+export function isSessionDecision(
+  err: unknown,
+): err is { requiresSessionDecision: true; message: string } {
+  return Boolean(
+    err && (err as { requiresSessionDecision?: unknown }).requiresSessionDecision,
+  );
+}
+
 export async function loginAdmin(
   username: string,
   password: string,
+  opts: { forceReplace?: boolean } = {},
 ): Promise<AdminMe> {
-  const r = await adminFetch<{ user: AdminMe }>("/admin/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
-  adminMeCache = r.user;
-  adminMePromise = null;
-  return r.user;
+  try {
+    const r = await adminFetch<{ user: AdminMe }>("/admin/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        password,
+        forceReplace: opts.forceReplace === true,
+      }),
+    });
+    adminMeCache = r.user;
+    adminMePromise = null;
+    return r.user;
+  } catch (err) {
+    const data = (err as { data?: { requiresSessionDecision?: boolean; message?: string } })?.data;
+    if (apiErrorStatus(err) === 409 && data?.requiresSessionDecision) {
+      throw new SessionDecisionRequired(
+        data.message ||
+          "يوجد جلسة نشطة لهذا الحساب، هل تريد تسجيل الخروج من الجهاز السابق؟",
+      );
+    }
+    throw err;
+  }
 }
 
-export async function logoutAdmin(): Promise<void> {
+// Login policy (System Settings): multiple concurrent sessions vs a single
+// active session per account.
+export type AuthPolicy = { singleSession: boolean };
+export async function fetchAuthPolicy(): Promise<AuthPolicy> {
+  return adminFetch<AuthPolicy>("/admin/settings/auth-policy");
+}
+export async function saveAuthPolicy(policy: AuthPolicy): Promise<AuthPolicy> {
+  return adminFetch<AuthPolicy>("/admin/settings/auth-policy", {
+    method: "PATCH",
+    body: JSON.stringify(policy),
+  });
+}
+
+// Wipe all client-side private state tied to the signed-out identity. This is
+// the core isolation fix: without clearing the React Query cache, the previous
+// employee's cached bookings/dashboards would still render after a switch.
+// The offline write-queue is cleared too so their unsynced ops never replay
+// under the next employee. Dynamic import avoids a static import cycle
+// (offline.ts imports adminFetch from this module).
+// localStorage/sessionStorage keys that hold PRIVATE, session-scoped data and
+// must be cleared on logout. Public/device keys (theme, device id, cart id,
+// public settings) are deliberately preserved so unrelated state and other
+// browser profiles are never disturbed.
+const PRIVATE_STORAGE_PREFIXES = ["ajn:", "ajn-draft", "ajn-portal", "ajn-photography", "ajn-kosha"];
+const PRIVATE_STORAGE_EXACT = ["ajn_auth_token"];
+
+function clearPrivateStorage(): void {
+  if (typeof window === "undefined") return;
+  for (const store of [window.localStorage, window.sessionStorage]) {
+    if (!store) continue;
+    try {
+      const remove: string[] = [];
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
+        if (!key) continue;
+        if (
+          PRIVATE_STORAGE_EXACT.includes(key) ||
+          PRIVATE_STORAGE_PREFIXES.some((p) => key.startsWith(p))
+        )
+          remove.push(key);
+      }
+      remove.forEach((k) => store.removeItem(k));
+    } catch {
+      /* storage access is best-effort */
+    }
+  }
+}
+
+async function clearPrivateClientState(): Promise<void> {
+  adminMeCache = null;
+  adminMePromise = null;
   try {
-    await adminFetch("/admin/auth/logout", { method: "POST" });
+    queryClient.clear();
+  } catch {
+    /* cache clear is best-effort */
+  }
+  clearPrivateStorage();
+  try {
+    const offline = await import("@/views/staff/offline");
+    await offline.clearQueue();
+  } catch {
+    /* offline queue may not exist in this bundle */
+  }
+}
+
+// Ordinary logout — current session only. Server soft-revokes just this token;
+// other devices and other employees are untouched.
+export async function logoutAdmin(
+  opts: { intent?: "switch" } = {},
+): Promise<void> {
+  const qs = opts.intent === "switch" ? "?intent=switch" : "";
+  try {
+    await adminFetch(`/admin/auth/logout${qs}`, { method: "POST" });
   } catch {
     /* swallow */
   }
-  adminMeCache = null;
-  adminMePromise = null;
+  await clearPrivateClientState();
+}
+
+// "تبديل الموظف" — save any pending offline drafts first, then perform a normal
+// current-session logout and clear this session's private cache so the next
+// employee starts clean. The portal then re-renders its own inline login.
+// Audited server-side as employee_switch via the intent flag.
+export async function switchEmployee(): Promise<void> {
+  try {
+    const offline = await import("@/views/staff/offline");
+    await offline.flushQueue();
+  } catch {
+    /* draft flush is best-effort */
+  }
+  await logoutAdmin({ intent: "switch" });
+}
+
+export type DeviceSession = {
+  sessionId: string | null;
+  portal: string | null;
+  deviceId: string | null;
+  browser: string;
+  device: string;
+  ipAddress: string | null;
+  createdAt: string;
+  lastActiveAt: string | null;
+  expiresAt: string;
+  current: boolean;
+  status: "active" | "revoked" | "expired";
+  revokedAt: string | null;
+};
+
+// List sessions for the current user, or (managers only) a target employee.
+export async function fetchSessions(staffId?: number): Promise<DeviceSession[]> {
+  const qs = staffId ? `?staffId=${staffId}` : "";
+  const r = await adminFetch<{ sessions: DeviceSession[] }>(
+    `/admin/auth/sessions${qs}`,
+  );
+  return r.sessions ?? [];
+}
+
+// Revoke one specific session (own device, or an employee's for managers).
+export async function revokeDeviceSession(sessionId: string): Promise<void> {
+  await adminFetch(`/admin/auth/sessions/${encodeURIComponent(sessionId)}/revoke`, {
+    method: "POST",
+  });
+}
+
+// "تسجيل الخروج من جميع الأجهزة" for the current user. Revokes every one of the
+// current user's sessions (including this one), then clears local private state.
+export async function logoutAllDevices(reason: string): Promise<number> {
+  const r = await adminFetch<{ revoked: number }>("/admin/auth/logout-all", {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  await clearPrivateClientState();
+  return r.revoked ?? 0;
+}
+
+// Manager action: revoke all sessions for ONE employee. Requires the `staff`
+// permission server-side and a reason (audited). Does not affect the manager.
+export async function managerLogoutEmployee(
+  staffId: number,
+  reason: string,
+): Promise<number> {
+  const r = await adminFetch<{ revoked: number }>(
+    `/admin/staff/${staffId}/sessions/logout-all`,
+    { method: "POST", body: JSON.stringify({ reason }) },
+  );
+  return r.revoked ?? 0;
 }
 
 export async function fetchAdminMe(

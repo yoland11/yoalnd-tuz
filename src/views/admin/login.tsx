@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation, Link } from "wouter";
 import { Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchAdminMe, loginAdmin, hasPerm, type AdminMe } from "./_lib";
+import { fetchAdminMe, loginAdmin, hasPerm, isSessionDecision, type AdminMe } from "./_lib";
 import { ADMIN_NAV } from "./_layout";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 
@@ -31,13 +31,27 @@ export default function AdminLogin({ onAuthed }: { onAuthed?: (me: AdminMe) => v
     e.preventDefault();
     setLoginError(null);
     setSubmitting(true);
-    try {
-      const user = await loginAdmin(username.trim(), password);
+    async function attempt(forceReplace: boolean) {
+      const user = await loginAdmin(username.trim(), password, { forceReplace });
       onAuthed?.(user);
       const first = ADMIN_NAV.find(n => hasPerm(user, n.perm));
       setLocation(first?.href ?? "/admin/dashboard");
+    }
+    try {
+      await attempt(false);
     } catch (err: any) {
-      setLoginError(err?.message?.includes("401") ? "بيانات الدخول غير صحيحة" : "تعذر تسجيل الدخول");
+      // Single-session policy: confirm evicting the previous device, then retry.
+      if (isSessionDecision(err)) {
+        if (typeof window !== "undefined" && window.confirm(err.message)) {
+          try {
+            await attempt(true);
+          } catch (retryErr: any) {
+            setLoginError(retryErr?.message?.includes("401") ? "بيانات الدخول غير صحيحة" : "تعذر تسجيل الدخول");
+          }
+        }
+      } else {
+        setLoginError(err?.message?.includes("401") ? "بيانات الدخول غير صحيحة" : "تعذر تسجيل الدخول");
+      }
     } finally {
       setSubmitting(false);
     }

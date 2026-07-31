@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Save, Upload, X, Plus, Palette, RotateCcw, Check, CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { adminFetch, fileToDataUrl } from "./_lib";
+import { adminFetch, fileToDataUrl, fetchAuthPolicy, saveAuthPolicy, type AuthPolicy } from "./_lib";
 import { ImageUploadEditor, type ImageEditResult } from "@/components/image-upload-editor";
 import type { ImageMetadata } from "@/lib/image-tools";
 import { useToast } from "@/hooks/use-toast";
@@ -581,7 +581,70 @@ export default function SettingsPage() {
       />
 
       <PhotographyPricesSection />
+      <LoginPolicySection />
     </form>
+  );
+}
+
+function LoginPolicySection() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin", "auth-policy"],
+    queryFn: () => fetchAuthPolicy(),
+  });
+  const save = useMutation({
+    mutationFn: (policy: AuthPolicy) => saveAuthPolicy(policy),
+    onSuccess: (res) => {
+      qc.setQueryData(["admin", "auth-policy"], res);
+      toast({ title: "تم حفظ سياسة تسجيل الدخول" });
+    },
+    onError: (err: any) =>
+      toast({ title: "تعذر حفظ السياسة", description: err?.message, variant: "destructive" }),
+  });
+  const single = Boolean(data?.singleSession);
+  return (
+    <Section title="سياسة تسجيل الدخول">
+      {isLoading ? (
+        <Skeleton className="h-20 rounded-lg" />
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            تحدد كم جلسة نشطة يُسمح بها لكل حساب موظف عبر كل الأجهزة والبوابات.
+          </p>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/30 bg-background p-3">
+            <input
+              type="radio"
+              name="auth-policy"
+              className="mt-1 h-4 w-4"
+              checked={!single}
+              disabled={save.isPending}
+              onChange={() => save.mutate({ singleSession: false })}
+            />
+            <span>
+              <span className="block text-sm font-semibold text-foreground">السماح بعدة جلسات نشطة (الافتراضي)</span>
+              <span className="block text-xs text-muted-foreground">يمكن للموظف تسجيل الدخول من عدة أجهزة في نفس الوقت.</span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/30 bg-background p-3">
+            <input
+              type="radio"
+              name="auth-policy"
+              className="mt-1 h-4 w-4"
+              checked={single}
+              disabled={save.isPending}
+              onChange={() => save.mutate({ singleSession: true })}
+            />
+            <span>
+              <span className="block text-sm font-semibold text-foreground">السماح بجلسة واحدة فقط</span>
+              <span className="block text-xs text-muted-foreground">
+                عند تسجيل الدخول ووجود جلسة نشطة يُسأل الموظف: «يوجد جلسة نشطة لهذا الحساب، هل تريد تسجيل الخروج من الجهاز السابق؟»
+              </span>
+            </span>
+          </label>
+        </div>
+      )}
+    </Section>
   );
 }
 

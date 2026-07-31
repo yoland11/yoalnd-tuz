@@ -8,6 +8,7 @@ import { EmptyState } from "./_layout";
 import ScanDocumentButton from "./scan-document-button";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { EmployeeSessionsManager } from "@/components/session-devices";
 import { SalarySettingsTab } from "./salary-settings-tab";
 
 type Staff = {
@@ -153,7 +154,7 @@ export default function StaffPage() {
     queryFn: () => adminFetch<Staff[]>("/admin/staff"),
   });
   const [editing, setEditing] = useState<Editing | null>(null);
-  const [editorTab, setEditorTab] = useState<"profile" | "salary">("profile");
+  const [editorTab, setEditorTab] = useState<"profile" | "salary" | "devices">("profile");
 
   const save = useMutation({
     mutationFn: (e: Editing) => {
@@ -382,8 +383,8 @@ export default function StaffPage() {
                 <X className="w-5 h-5 text-muted-foreground" />
               </button>
             </div>
-            {editing.id && <div className="grid grid-cols-2 rounded-lg bg-muted p-1 text-sm"><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button><button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button></div>}
-            {editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
+            {editing.id && <div className="grid grid-cols-3 rounded-lg bg-muted p-1 text-sm"><button type="button" onClick={() => setEditorTab("profile")} className={`rounded-md px-3 py-2 ${editorTab === "profile" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>بيانات الموظف</button><button type="button" onClick={() => setEditorTab("salary")} className={`rounded-md px-3 py-2 ${editorTab === "salary" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>💰 إعدادات الراتب</button><button type="button" onClick={() => setEditorTab("devices")} className={`rounded-md px-3 py-2 ${editorTab === "devices" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>الأجهزة</button></div>}
+            {editorTab === "devices" && editing.id ? <EmployeeSessionsManager staffId={editing.id} employeeName={editing.fullName} /> : editorTab === "salary" && editing.id ? <SalarySettingsTab employee={{ ...editing, id: editing.id }} onSaved={() => qc.invalidateQueries({ queryKey: ["admin", "staff"] })} /> : <>
             <Field
               label="الاسم الكامل"
               value={editing.fullName}

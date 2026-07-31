@@ -1168,12 +1168,16 @@ export function AdminLayout({
           <h2 className="truncate text-lg font-bold text-foreground">
             {settings?.site_name ?? "مجموعة علي جان"}
           </h2>
-          <p className="truncate text-[11px] text-primary mt-2">
+          <Link
+            href="/admin/account"
+            className="mt-2 block truncate text-[11px] text-primary hover:underline"
+            title="الحساب والأجهزة"
+          >
             {me.fullName || me.username}
             {me.role === "admin" && (
               <span className="text-muted-foreground"> · مدير رئيسي</span>
             )}
-          </p>
+          </Link>
         </div>
         <AdminSidebarNav
           groups={NAV_GROUPS}
@@ -1234,6 +1238,13 @@ export function AdminLayout({
           <div className="flex shrink-0 items-center gap-2">
             <AdminGlobalSearch />
             <AdminNotificationsBell />
+            <Link
+              href="/admin/account"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground"
+              aria-label="الحساب والأجهزة"
+            >
+              <UserRound className="w-4 h-4" />
+            </Link>
             <button
               onClick={onLogout}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-destructive"

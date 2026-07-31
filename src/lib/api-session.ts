@@ -5,6 +5,7 @@ import {
 
 const AUTH_TOKEN_KEY = "ajn_auth_token";
 const CART_SESSION_KEY = "ajn_cart_session_id";
+const DEVICE_ID_KEY = "ajn_device_id";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -42,9 +43,27 @@ export function getCartSessionId(): string {
   return sessionId;
 }
 
+// Stable, non-secret device identifier shared with adminFetch (see
+// src/views/admin/_lib.ts). Kept here too so generated-client requests carry the
+// same x-device-id for session/device tracking.
+function getDeviceId(): string {
+  if (!canUseStorage()) return "";
+  let id = window.localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = newSessionId();
+    window.localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
 export function configureApiSession(): void {
   setAuthTokenGetter(() => getAuthToken());
-  setExtraHeadersGetter(() => ({
-    "x-session-id": getCartSessionId(),
-  }));
+  setExtraHeadersGetter(() => {
+    const headers: Record<string, string> = {
+      "x-session-id": getCartSessionId(),
+    };
+    const deviceId = getDeviceId();
+    if (deviceId) headers["x-device-id"] = deviceId;
+    return headers;
+  });
 }

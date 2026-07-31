@@ -73,6 +73,26 @@ async function removeOp(id: number): Promise<void> {
   emitChange();
 }
 
+/**
+ * Clear every queued offline op. Called on logout / employee switch so a
+ * previous employee's unsynced writes can never replay under the next
+ * employee's session. Best-effort — never throws.
+ */
+export async function clearQueue(): Promise<void> {
+  if (!hasIDB()) return;
+  try {
+    const db = await openDb();
+    await new Promise<void>((res, rej) => {
+      const r = db.transaction(STORE, "readwrite").objectStore(STORE).clear();
+      r.onsuccess = () => res(); r.onerror = () => rej(r.error);
+    });
+    db.close();
+    emitChange();
+  } catch {
+    /* clearing the offline queue is best-effort */
+  }
+}
+
 function isOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
 }
