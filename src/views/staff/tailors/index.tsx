@@ -258,6 +258,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [altForm, setAltForm] = useState<any>({ type: "shorten_robe", problem: "", requiredChange: "", expectedDate: "", notes: "" });
+  const [notes, setNotes] = useState<any>({ internal: "", admin: "", rep: "", warning: "" });
 
   const load = useCallback(() => {
     setLoading(true); setErr(null);
@@ -267,6 +268,7 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
         const m = r.order?.measurements ?? {};
         setForm({ ...m });
         setMethod(m.method === "ready" ? "ready" : "custom");
+        setNotes({ internal: "", admin: "", rep: "", warning: "", ...(r.order?.notesTiers ?? {}) });
       })
       .catch((e: any) => setErr(e?.message ?? "تعذر فتح الطلب"))
       .finally(() => setLoading(false));
@@ -321,36 +323,74 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       setReviewNote(""); load();
     } catch (e: any) { setMsg(e?.message ?? "تعذر تنفيذ القرار"); }
   }
-  async function printA4() {
-    let qr = "";
-    try { const QR: any = await import("qrcode"); qr = await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 150 }); } catch { /* QR optional */ }
-    const m = order.measurements || {};
-    const rows = [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["المقاس", m.standardSize || m.readySize || m.customSize]]
-      .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
+  async function getQr() {
+    try { const QR: any = await import("qrcode"); return await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 150 }); }
+    catch { return ""; }
+  }
+  function openPrint(html: string) {
     const w = window.open("", "_blank", "width=820,height=1040");
     if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
-    w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة قياسات</title>
-      <style>*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:32px;color:#111}
-      .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #C9F24A;padding-bottom:14px}
-      .brand{font-size:26px;font-weight:800}.brand span{color:#7a9b1a}
-      h1{font-size:20px;margin:18px 0 6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:14px}
-      .grid div{padding:5px 0;border-bottom:1px dashed #ddd}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
-      td{border:1px solid #ccc;padding:7px 10px}td:first-child{background:#f6f6f6;font-weight:700;width:45%}
-      .foot{margin-top:24px;display:flex;justify-content:space-between;font-size:13px;color:#444}
-      @media print{@page{size:A4;margin:14mm}}</style></head><body>
+    w.document.write(html); w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
+  }
+  const A4_STYLE = `*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:32px;color:#111}
+    .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #C9F24A;padding-bottom:14px}
+    .brand{font-size:26px;font-weight:800}.brand span{color:#7a9b1a}
+    h1{font-size:20px;margin:18px 0 6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:14px}
+    .grid div{padding:5px 0;border-bottom:1px dashed #ddd}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
+    td{border:1px solid #ccc;padding:7px 10px}td:first-child{background:#f6f6f6;font-weight:700;width:45%}
+    .foot{margin-top:24px;display:flex;justify-content:space-between;font-size:13px;color:#444}
+    @media print{@page{size:A4;margin:14mm}}`;
+  function measureRows() {
+    const m = order.measurements || {};
+    return [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["المقاس", m.standardSize || m.readySize || m.customSize]]
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
+  }
+  const infoGrid = () => `<div class="grid">
+    <div><b>رمز الطالب:</b> ${order.studentCode || "—"}</div><div><b>سنة التخرج:</b> ${order.graduationYear || "—"}</div>
+    <div><b>الجامعة:</b> ${order.university || "—"}</div><div><b>الكلية:</b> ${order.college || "—"}</div>
+    <div><b>القسم:</b> ${order.department || "—"}</div><div><b>المجموعة:</b> ${order.groupName || "—"}</div>
+    <div><b>الروب/الموديل:</b> ${[order.robe, order.robeModel].filter(Boolean).join(" — ") || "—"}</div><div><b>الخياط:</b> ${order.tailorName || "—"}</div></div>`;
+
+  async function printA4() {
+    const qr = await getQr(); const m = order.measurements || {};
+    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة قياسات</title><style>${A4_STYLE}</style></head><body>
       <div class="head"><div class="brand">AJN <span>مجموعة علي جان</span><div style="font-size:13px;color:#666;font-weight:400">تجهيزات التخرج — ورقة قياسات الخياط</div></div>
       ${qr ? `<img src="${qr}" width="110" height="110" alt="QR"/>` : ""}</div>
-      <h1>${order.name || ""}</h1>
-      <div class="grid">
-        <div><b>رمز الطالب:</b> ${order.studentCode || "—"}</div><div><b>سنة التخرج:</b> ${order.graduationYear || "—"}</div>
-        <div><b>الجامعة:</b> ${order.university || "—"}</div><div><b>الكلية:</b> ${order.college || "—"}</div>
-        <div><b>القسم:</b> ${order.department || "—"}</div><div><b>المجموعة:</b> ${order.groupName || "—"}</div>
-        <div><b>الروب/الموديل:</b> ${[order.robe, order.robeModel].filter(Boolean).join(" — ") || "—"}</div><div><b>الخياط:</b> ${order.tailorName || "—"}</div>
-      </div>
-      <h1>القياسات</h1><table>${rows}</table>
+      <h1>${order.name || ""}</h1>${infoGrid()}
+      <h1>القياسات</h1><table>${measureRows()}</table>
       <div class="foot"><span>ملاحظات: ${(m.tailorNotes || order.productionNotes || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar")}</span></div>
       </body></html>`);
-    w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
+  }
+  async function printLabel() {
+    const qr = await getQr();
+    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ملصق</title>
+      <style>*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:0}
+      .lbl{width:70mm;height:40mm;padding:6mm;box-sizing:border-box;display:flex;gap:6mm;align-items:center}
+      .t b{font-size:15px;display:block}.t span{font-size:12px;color:#444;display:block}
+      @media print{@page{size:70mm 40mm;margin:0}}</style></head><body>
+      <div class="lbl">${qr ? `<img src="${qr}" width="90" height="90"/>` : ""}
+      <div class="t"><b>${order.name || ""}</b><span>${order.studentCode || ""}</span><span>${order.groupName || ""}</span>
+      <span>المقاس: ${(order.measurements?.standardSize || order.measurements?.readySize || order.measurements?.customSize || "—")}</span></div></div>
+      </body></html>`);
+  }
+  async function printProductionSheet() {
+    const stageLabel = PROD_STAGES.find((s) => s.key === order.productionStage)?.label ?? order.productionStage;
+    const alts = (order.alterations || []).map((a: any) => `<tr><td>${alterLabel(a.type)}</td><td>${a.requiredChange || a.problem || "—"}</td></tr>`).join("") || `<tr><td colspan="2">لا يوجد</td></tr>`;
+    openPrint(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة إنتاج</title><style>${A4_STYLE}</style></head><body>
+      <div class="head"><div class="brand">AJN <span>مجموعة علي جان</span><div style="font-size:13px;color:#666;font-weight:400">ورقة إنتاج الخياطة</div></div></div>
+      <h1>${order.name || ""} — <span style="color:#7a9b1a">${stageLabel}</span></h1>${infoGrid()}
+      <h1>القياسات</h1><table>${measureRows()}</table>
+      <h1>التعديلات المطلوبة</h1><table>${alts}</table>
+      <div class="foot"><span>تحذيرات: ${(order.notesTiers?.warning || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar")}</span></div>
+      </body></html>`);
+  }
+  async function saveNotes() {
+    try { const r = await tailorApi(`/order/${id}/notes`, { method: "POST", body: JSON.stringify({ notes }) }); setOrder((o: any) => ({ ...o, notesTiers: r.notesTiers })); setMsg("حُفظت الملاحظات"); }
+    catch (e: any) { setMsg(e?.message ?? "تعذر الحفظ"); }
+  }
+  async function pickAltPhoto(which: "beforePhoto" | "afterPhoto", file: File) {
+    try { const dataUrl = await compressImageFile(file, 1000, 0.75); setAltForm((f: any) => ({ ...f, [which]: dataUrl })); }
+    catch { setMsg("تعذر تجهيز الصورة"); }
   }
 
   if (loading) return <Spinner />;
@@ -366,10 +406,12 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> طباعة A4</button>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> A4</button>
+          <button type="button" onClick={printLabel} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ملصق</button>
+          <button type="button" onClick={printProductionSheet} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs">ورقة إنتاج</button>
           {order.groupId ? (
-            <button type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> جدول المجموعة</button>
+            <button type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> المجموعة</button>
           ) : null}
         </div>
       </div>
@@ -539,6 +581,14 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
           <input placeholder="المشكلة" value={altForm.problem} onChange={(e) => setAltForm((f: any) => ({ ...f, problem: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
           <input placeholder="التعديل المطلوب" value={altForm.requiredChange} onChange={(e) => setAltForm((f: any) => ({ ...f, requiredChange: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {([["beforePhoto", "صورة قبل"], ["afterPhoto", "صورة بعد"]] as const).map(([k, l]) => (
+            <label key={k} className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground hover:border-primary">
+              <Camera className="h-3.5 w-3.5" /> {l}{altForm[k] ? " ✓" : ""}
+              <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => e.target.files?.[0] && pickAltPhoto(k, e.target.files[0])} />
+            </label>
+          ))}
+        </div>
         <button type="button" onClick={addAlteration} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Plus className="h-4 w-4" /> إضافة تعديل</button>
         {(order.alterations ?? []).length > 0 && (
           <ul className="mt-3 space-y-2">
@@ -546,10 +596,32 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
               <li key={a.id} className="rounded-lg border border-border bg-background p-2 text-xs">
                 <b>{alterLabel(a.type)}</b>{a.problem ? ` — ${a.problem}` : ""}{a.requiredChange ? ` → ${a.requiredChange}` : ""}
                 {a.expectedDate ? <span className="text-muted-foreground"> · الموعد: {a.expectedDate}</span> : null}
+                {(a.beforePhoto || a.afterPhoto) ? (
+                  <span className="mt-1 flex gap-2">
+                    {a.beforePhoto ? <a href={a.beforePhoto} target="_blank" rel="noopener noreferrer"><img src={a.beforePhoto} alt="قبل" className="h-12 w-12 rounded border border-border object-cover" /></a> : null}
+                    {a.afterPhoto ? <a href={a.afterPhoto} target="_blank" rel="noopener noreferrer"><img src={a.afterPhoto} alt="بعد" className="h-12 w-12 rounded border border-border object-cover" /></a> : null}
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
         )}
+      </section>
+
+      {/* Tiered notes — internal note never reaches the student. */}
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center gap-2"><ClipboardList className="h-4 w-4 text-primary" /><h3 className="font-bold">الملاحظات</h3></div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div><label className="text-xs text-muted-foreground">ملاحظة داخلية (خاصة — لا تظهر للطالب)</label>
+            <textarea value={notes.internal ?? ""} onChange={(e) => setNotes((n: any) => ({ ...n, internal: e.target.value }))} rows={2} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" /></div>
+          <div><label className="text-xs text-muted-foreground">ملاحظة للإدارة</label>
+            <textarea value={notes.admin ?? ""} onChange={(e) => setNotes((n: any) => ({ ...n, admin: e.target.value }))} rows={2} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" /></div>
+          <div><label className="text-xs text-muted-foreground">ملاحظة للمندوب</label>
+            <textarea value={notes.rep ?? ""} onChange={(e) => setNotes((n: any) => ({ ...n, rep: e.target.value }))} rows={2} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm" /></div>
+          <div><label className="text-xs text-status-warning">⚠ تحذير إنتاج</label>
+            <textarea value={notes.warning ?? ""} onChange={(e) => setNotes((n: any) => ({ ...n, warning: e.target.value }))} rows={2} className="mt-1 w-full rounded-lg border border-status-warning/40 bg-background p-2 text-sm" /></div>
+        </div>
+        <button type="button" onClick={saveNotes} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Save className="h-4 w-4" /> حفظ الملاحظات</button>
       </section>
 
       {/* Measurement history — never overwritten. */}

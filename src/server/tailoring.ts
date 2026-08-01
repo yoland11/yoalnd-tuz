@@ -178,6 +178,7 @@ function serializeDetail(order: OrderRow, group: GroupRow | null, history: unkno
     measurements: rec(order.measurements),
     photos: Array.isArray(garment.tailorPhotos) ? garment.tailorPhotos : [],
     alterations: Array.isArray(garment.alterations) ? garment.alterations : [],
+    notesTiers: rec(garment.notesTiers),
     history,
   };
 }
@@ -282,6 +283,19 @@ function serializeGroupRow(order: OrderRow) {
   };
 }
 
+// Injected notifier (createNotification from api.ts) — avoids an import cycle.
+export type TailorNotifier = (input: {
+  audienceType?: "admin" | "customer";
+  staffId?: number | null;
+  type: string;
+  title: string;
+  body?: string;
+  entityType?: string | null;
+  entityId?: number | null;
+  href?: string | null;
+  metadata?: Record<string, unknown>;
+}) => Promise<unknown>;
+
 // ---------------------------------------------------------------------------
 // Route handler.
 // ---------------------------------------------------------------------------
@@ -289,6 +303,7 @@ export async function handleTailorPortal(
   req: NextRequest,
   parts: string[],
   user: TailorUser,
+  notify?: TailorNotifier,
 ): Promise<NextResponse | null> {
   await ensureTailoringTables();
   const method = req.method;
@@ -402,6 +417,13 @@ export async function handleTailorPortal(
     };
     await persistMeasurements(id, next);
     await recordHistory(id, previous, next, "submit", user, "إرسال القياسات للاعتماد");
+    // Notify management that measurements are waiting for approval.
+    await notify?.({
+      audienceType: "admin", type: "graduation_measurements",
+      title: "قياسات بانتظار الاعتماد",
+      body: `${order.customerName}${order.studentCode ? ` — ${order.studentCode}` : ""}`,
+      entityType: "graduation_order", entityId: id, href: "/admin/graduation",
+    });
     return json({ ok: true, status: "needs_review" });
   }
 
@@ -558,7 +580,38 @@ export async function handleTailorPortal(
       VALUES (${id}, ${nextStage}, ${previous}, ${"tailor_" + (action || "update")}, ${body.notes ? String(body.notes) : null},
               ${user.id}, ${user.fullName || user.username})
     `);
+    // Escalate issues / material requests / readiness to management.
+    if (["issue", "material", "mark_ready"].includes(action)) {
+      const titles: Record<string, string> = {
+        issue: "الخياط أبلغ عن مشكلة", material: "طلب مواد من الخياط", mark_ready: "قطعة جاهزة",
+      };
+      await notify?.({
+        audienceType: "admin", type: "graduation_production",
+        title: titles[action] ?? "تحديث إنتاج",
+        body: `${order.customerName}${body.notes ? ` — ${body.notes}` : ""}`,
+        entityType: "graduation_order", entityId: id, href: "/admin/graduation",
+      });
+    }
     return json({ ok: true, productionStage: nextStage });
+  }
+
+  // POST /admin/tailoring/order/:id/notes  — tiered tailor notes (internal never
+  // reaches the student; the student portal simply doesn't read these fields).
+  if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "notes") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
+    const order = await fetchAssignedOrder(id, user);
+    if (!order) return error("هذا الطلب غير مخصص لك", 403);
+    const tiers = rec(rec(await req.json().catch(() => ({}))).notes);
+    const garment = rec(order.garmentDetails);
+    const notesTiers = {
+      internal: String(tiers.internal ?? ""), admin: String(tiers.admin ?? ""),
+      rep: String(tiers.rep ?? ""), warning: String(tiers.warning ?? ""),
+    };
+    await db.update(graduationOrdersTable)
+      .set({ garmentDetails: { ...garment, notesTiers } as OrderRow["garmentDetails"], updatedAt: new Date() })
+      .where(eq(graduationOrdersTable.id, id));
+    return json({ ok: true, notesTiers });
   }
 
   // POST /admin/tailoring/order/:id/review  — manager approves / returns for correction.
@@ -580,6 +633,15 @@ export async function handleTailorPortal(
     };
     await persistMeasurements(id, next);
     await recordHistory(id, previous, next, "review", user, decision === "approve" ? "اعتماد القياسات" : "إعادة للتصحيح", body.note ? String(body.note) : null);
+    // Notify the assigned tailor of the decision.
+    if (order.assignedStaffId) {
+      await notify?.({
+        staffId: order.assignedStaffId, type: "graduation_measurements",
+        title: decision === "approve" ? "اعتُمدت قياساتك" : "أُعيدت قياساتك للتصحيح",
+        body: `${order.customerName}${body.note ? ` — ${body.note}` : ""}`,
+        entityType: "graduation_order", entityId: id, href: `/staff/tailors/order/${id}`,
+      });
+    }
     return json({ ok: true, status });
   }
 

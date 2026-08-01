@@ -27604,7 +27604,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       "graduation",
     ]);
     if (isResponse(auth)) return auth;
-    const tailoring = await handleTailorPortal(req, parts.slice(2), auth);
+    const tailoring = await handleTailorPortal(req, parts.slice(2), auth, createNotification);
     if (tailoring) return tailoring;
   }
 
