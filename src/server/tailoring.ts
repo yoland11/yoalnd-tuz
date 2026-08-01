@@ -629,15 +629,25 @@ export async function handleTailorPortal(
     const alt = rec(body.alteration);
     const garment = rec(order.garmentDetails);
     const list: any[] = Array.isArray(garment.alterations) ? garment.alterations : [];
+    let justCompleted = false;
     if (alt.id && list.some((a) => a.id === alt.id)) {
       const idx = list.findIndex((a) => a.id === alt.id);
-      list[idx] = { ...list[idx], ...alt };
+      const before = list[idx];
+      list[idx] = { ...before, ...alt };
+      if (!before.completedDate && list[idx].completedDate) justCompleted = true;
     } else {
       list.push({ id: alt.id || Date.now(), type: alt.type ?? "other", problem: alt.problem ?? "", requiredChange: alt.requiredChange ?? "", expectedDate: alt.expectedDate ?? null, completedDate: alt.completedDate ?? null, notes: alt.notes ?? "", beforePhoto: alt.beforePhoto ?? null, afterPhoto: alt.afterPhoto ?? null, byName: user.fullName || user.username, createdAt: new Date().toISOString() });
     }
     await db.update(graduationOrdersTable)
       .set({ garmentDetails: { ...garment, alterations: list } as OrderRow["garmentDetails"], updatedAt: new Date() })
       .where(eq(graduationOrdersTable.id, id));
+    if (justCompleted) {
+      await notify?.({
+        audienceType: "admin", type: "graduation_production", title: "تم إكمال تعديل",
+        body: `${order.customerName}${order.studentCode ? ` — ${order.studentCode}` : ""}`,
+        entityType: "graduation_order", entityId: id, href: "/admin/graduation",
+      });
+    }
     return json({ ok: true, alterations: list });
   }
 

@@ -311,6 +311,12 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
       setMsg("تمت إضافة التعديل");
     } catch (e: any) { setMsg(e?.message ?? "تعذر الحفظ"); }
   }
+  async function completeAlteration(a: any) {
+    try {
+      const r = await tailorApi(`/order/${id}/alterations`, { method: "POST", body: JSON.stringify({ alteration: { id: a.id, completedDate: new Date().toISOString().slice(0, 10) } }) });
+      setOrder((o: any) => ({ ...o, alterations: r.alterations })); setMsg("تم إكمال التعديل");
+    } catch (e: any) { setMsg(e?.message ?? "تعذر التحديث"); }
+  }
   async function doProduction(action: string, stage?: string) {
     try {
       const r = await tailorApi(`/order/${id}/production`, { method: "POST", body: JSON.stringify({ action, stage }) });
@@ -596,6 +602,13 @@ function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
               <li key={a.id} className="rounded-lg border border-border bg-background p-2 text-xs">
                 <b>{alterLabel(a.type)}</b>{a.problem ? ` — ${a.problem}` : ""}{a.requiredChange ? ` → ${a.requiredChange}` : ""}
                 {a.expectedDate ? <span className="text-muted-foreground"> · الموعد: {a.expectedDate}</span> : null}
+                <span className="mt-1 flex items-center gap-2">
+                  {a.completedDate ? (
+                    <span className="inline-flex items-center gap-1 text-status-success"><CheckCircle2 className="h-3.5 w-3.5" /> مكتمل {a.completedDate}</span>
+                  ) : (
+                    <button type="button" onClick={() => completeAlteration(a)} className="inline-flex items-center gap-1 rounded-md border border-status-success/40 px-2 py-0.5 text-status-success hover:bg-status-success/10"><CheckCircle2 className="h-3.5 w-3.5" /> إكمال</button>
+                  )}
+                </span>
                 {(a.beforePhoto || a.afterPhoto) ? (
                   <span className="mt-1 flex gap-2">
                     {a.beforePhoto ? <a href={a.beforePhoto} target="_blank" rel="noopener noreferrer"><img src={a.beforePhoto} alt="قبل" className="h-12 w-12 rounded border border-border object-cover" /></a> : null}
@@ -719,6 +732,23 @@ function GroupPage({ id }: { id: string }) {
     setMsg("نُسخت قياسات أول صف محدد إلى البقية (اضغط حفظ)");
   }
 
+  function printGroup() {
+    const head = ["رمز الطالب", "الاسم", "الطول", "الوزن", "الكتف", "الكم", "طول الروب", "القبعة", "المقاس", "الحالة"];
+    const rowsHtml = rows.map((r) => `<tr><td>${r.studentCode || ""}</td><td>${r.name || ""}</td><td>${r.height || ""}</td><td>${r.weight || ""}</td><td>${r.shoulder || ""}</td><td>${r.sleeveLength || ""}</td><td>${r.robeLength || ""}</td><td>${r.capSize || ""}</td><td>${r.finalSize || ""}</td><td>${STATUS_LABEL[r.measurementStatus] || r.measurementStatus}</td></tr>`).join("");
+    const w = window.open("", "_blank", "width=1000,height=1000");
+    if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
+    w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>قياسات المجموعة</title>
+      <style>*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:24px;color:#111}
+      h1{font-size:20px;border-bottom:3px solid #C9F24A;padding-bottom:8px;margin:0}
+      .sub{color:#666;font-size:13px;margin:6px 0 14px}
+      table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ccc;padding:6px 8px;text-align:center}th{background:#f2f2f2}
+      @media print{@page{size:A4 landscape;margin:10mm}}</style></head><body>
+      <h1>قياسات المجموعة — ${group?.title || ""}</h1>
+      <div class="sub">${[group?.groupNo, group?.university, group?.department].filter(Boolean).join(" — ")} · ${rows.length} طالب · ${new Date().toLocaleDateString("ar")}</div>
+      <table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rowsHtml}</tbody></table>
+      </body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
+  }
   function exportCSV() {
     const lines = [CSV_HEAD.join(",")];
     rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
@@ -818,7 +848,7 @@ function GroupPage({ id }: { id: string }) {
         <button type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</button>
         <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden onChange={(e) => e.target.files?.[0] && void importWorkbook(e.target.files[0])} /></label>
         <button type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</button>
-        <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</button>
+        <button type="button" onClick={printGroup} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</button>
       </div>
       {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
 
