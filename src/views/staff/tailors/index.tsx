@@ -18,7 +18,7 @@ function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
 
 const BUCKETS: { key: string; label: string }[] = [
   { key: "today", label: "طلبات اليوم" },
-  { key: "awaiting_measurements", label: "بانتظار القياسات" },
+  { key: "awaiting_measurements", label: "بانتظار إدخال القياسات" },
   { key: "measurements_partial", label: "قياسات غير مكتملة" },
   { key: "measurements_complete", label: "قياسات مكتملة" },
   { key: "awaiting_approval", label: "بانتظار اعتماد الإدارة" },
@@ -29,7 +29,7 @@ const BUCKETS: { key: string; label: string }[] = [
 ];
 
 const STATUS_LABEL: Record<string, string> = {
-  not_started: "لم تبدأ القياسات",
+  not_started: "القياسات غير مدخلة",
   partial: "قياسات جزئية",
   complete: "القياسات مكتملة",
   needs_review: "تحتاج مراجعة",
@@ -656,6 +656,7 @@ const EDIT_COLS: { key: string; label: string }[] = [
 ];
 const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize", "status"];
 const csvCell = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+const EXCEL_COLUMNS = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize", "status"] as const;
 
 function GroupPage({ id }: { id: string }) {
   const [, navigate] = useLocation();
@@ -752,6 +753,41 @@ function GroupPage({ id }: { id: string }) {
     };
     reader.readAsText(file);
   }
+  async function exportWorkbook() {
+    const XLSX = await import("xlsx");
+    const sheetRows = rows.map((r) => ({
+      studentCode: r.studentCode ?? "", name: r.name ?? "", height: r.height ?? "", weight: r.weight ?? "",
+      shoulder: r.shoulder ?? "", sleeveLength: r.sleeveLength ?? "", robeLength: r.robeLength ?? "",
+      capSize: r.capSize ?? "", finalSize: r.finalSize ?? "", status: r.measurementStatus ?? "",
+    }));
+    const sheet = XLSX.utils.json_to_sheet(sheetRows, { header: [...EXCEL_COLUMNS] });
+    sheet["!cols"] = [14, 24, 10, 10, 11, 14, 13, 11, 12, 16].map((wch) => ({ wch }));
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, "Measurements");
+    XLSX.writeFile(book, `group-${group?.groupNo || id}-measurements.xlsx`, { compression: true });
+  }
+  async function importWorkbook(file: File) {
+    try {
+      const XLSX = await import("xlsx");
+      const book = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const firstSheet = book.SheetNames[0];
+      if (!firstSheet) throw new Error("الملف لا يحتوي على ورقة عمل");
+      const imported = XLSX.utils.sheet_to_json<Record<string, unknown>>(book.Sheets[firstSheet], { defval: "" });
+      const byCode = new Map(rows.map((r) => [String(r.studentCode), r]));
+      const updates = new Map<number, any>();
+      let hit = 0;
+      for (const item of imported) {
+        const row = byCode.get(String(item.studentCode ?? "").trim());
+        if (!row) continue;
+        const patch: any = { ...row, _dirty: true };
+        for (const key of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize"])
+          if (item[key] !== undefined && item[key] !== "") patch[key] = String(item[key]);
+        updates.set(row.id, patch); hit += 1;
+      }
+      setRows((cur) => cur.map((row) => updates.get(row.id) ?? row));
+      setMsg(`استورد ${hit} صفاً من ملف Excel. راجع البيانات ثم احفظ.`);
+    } catch (error: any) { setMsg(error?.message ?? "تعذر استيراد ملف Excel"); }
+  }
 
   if (loading) return <Spinner />;
   if (err) return (
@@ -780,8 +816,8 @@ function GroupPage({ id }: { id: string }) {
         <button type="button" onClick={copyToSelected} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Copy className="h-3.5 w-3.5" /> نسخ للمحدد</button>
         <span className="mx-1 h-4 w-px bg-border" />
         <button type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</button>
-        <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد<input type="file" accept=".csv,text/csv" hidden onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} /></label>
-        <button type="button" onClick={exportCSV} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</button>
+        <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد Excel<input type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden onChange={(e) => e.target.files?.[0] && void importWorkbook(e.target.files[0])} /></label>
+        <button type="button" onClick={() => void exportWorkbook()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</button>
         <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</button>
       </div>
       {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}

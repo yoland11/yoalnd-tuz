@@ -61,6 +61,7 @@ export type GraduationOption = {
   textureUrl?: string;
   isActive?: boolean;
   sortOrder?: number;
+  requiresMeasurements?: boolean;
 };
 
 export type GraduationPackage = GraduationOption & {
@@ -129,6 +130,7 @@ export type GraduationProductConfig = {
   optionPrices?: Record<string, number>;
   productId?: number | null;
   cost?: number;
+  requiresMeasurements?: boolean;
   [key: string]: unknown;
 };
 
@@ -354,17 +356,24 @@ export const DEFAULT_GRADUATION_CONFIG: GraduationConfig = {
   aiEnabled: true,
 };
 
+const optionalMeasurementNumber = (minimum: number, maximum: number) =>
+  z.preprocess(
+    (value) =>
+      value === "" || value === null || value === undefined ? undefined : value,
+    z.coerce.number().min(minimum).max(maximum).optional(),
+  );
+
 export const graduationMeasurementsSchema = z
   .object({
-    height: z.coerce.number().min(80).max(250),
-    weight: z.coerce.number().min(20).max(300).optional(),
-    shoulder: z.coerce.number().min(20).max(100),
-    chest: z.coerce.number().min(40).max(220),
-    waist: z.coerce.number().min(35).max(220),
-    hip: z.coerce.number().min(35).max(240).optional(),
-    sleeveLength: z.coerce.number().min(20).max(120),
-    neck: z.coerce.number().min(20).max(80).optional(),
-    gender: z.enum(["male", "female"]),
+    height: optionalMeasurementNumber(80, 250),
+    weight: optionalMeasurementNumber(20, 300),
+    shoulder: optionalMeasurementNumber(20, 100),
+    chest: optionalMeasurementNumber(40, 220),
+    waist: optionalMeasurementNumber(35, 220),
+    hip: optionalMeasurementNumber(35, 240),
+    sleeveLength: optionalMeasurementNumber(20, 120),
+    neck: optionalMeasurementNumber(20, 80),
+    gender: z.enum(["male", "female"]).optional(),
     suggestedSize: z.string().max(20).optional(),
   })
   .passthrough();
@@ -410,7 +419,7 @@ export const graduationOrderInputSchema = z
       .default({ enabled: false, items: [] }),
     groupToken: optionalString,
     status: z.enum(["draft", "submitted"]).default("submitted"),
-    measurements: graduationMeasurementsSchema,
+    measurements: graduationMeasurementsSchema.default({}),
     colors: z.record(z.string(), z.string()).default({}),
     fabric: z.object({ key: z.string().min(1) }).passthrough(),
     decoration: z

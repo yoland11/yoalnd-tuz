@@ -38,6 +38,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -171,6 +172,26 @@ const STATUS_LABELS: Record<string, string> = {
   unpaid: "غير مدفوع",
 };
 
+const MEASUREMENT_STATUS_LABELS: Record<string, string> = {
+  none: "القياسات غير مدخلة",
+  partial: "قياسات جزئية",
+  complete: "القياسات مكتملة",
+};
+
+function MeasurementStatusBadge({ status }: { status: string }) {
+  const tone =
+    status === "complete"
+      ? "border-status-success/30 bg-status-success/10 text-status-success"
+      : status === "partial"
+        ? "border-status-warning/30 bg-status-warning/10 text-status-warning"
+        : "border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-400";
+  return (
+    <Badge variant="outline" className={tone}>
+      {MEASUREMENT_STATUS_LABELS[status] || MEASUREMENT_STATUS_LABELS.none}
+    </Badge>
+  );
+}
+
 function currentMode(path: string): Mode {
   const value = path.split("/")[3] as Mode | undefined;
   return value && value in MODE_LABELS ? value : "dashboard";
@@ -296,6 +317,24 @@ function Dashboard() {
           label="إجمالي الطلبات"
           value={cards.orders ?? 0}
           icon={GraduationCap}
+        />
+        <Metric
+          label="عدد الطلبات بدون قياسات"
+          value={cards.measurementsNone ?? 0}
+          icon={Ruler}
+          tone="warning"
+        />
+        <Metric
+          label="عدد الطلبات بقياسات جزئية"
+          value={cards.measurementsPartial ?? 0}
+          icon={Ruler}
+          tone="warning"
+        />
+        <Metric
+          label="عدد الطلبات بقياسات مكتملة"
+          value={cards.measurementsComplete ?? 0}
+          icon={ClipboardCheck}
+          tone="success"
         />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
@@ -1245,13 +1284,14 @@ function Orders({
 }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [measurementStatus, setMeasurementStatus] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
-  const stage = measurementOnly ? "measurements" : deliveryOnly ? "ready" : "";
+  const stage = deliveryOnly ? "ready" : "";
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "graduation", "orders", search, status, stage, individualOnly],
+    queryKey: ["admin", "graduation", "orders", search, status, stage, individualOnly, measurementStatus],
     queryFn: () =>
       adminFetch<any>(
-        `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}&orderType=${individualOnly ? "individual" : ""}`,
+        `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}&orderType=${individualOnly ? "individual" : ""}&measurementStatus=${encodeURIComponent(measurementStatus)}`,
       ),
   });
   return (
@@ -1282,6 +1322,22 @@ function Orders({
                   {label}
                 </SelectItem>
               ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={measurementStatus || "all"}
+          onValueChange={(value) =>
+            setMeasurementStatus(value === "all" ? "" : value)
+          }
+        >
+          <SelectTrigger className="sm:w-52">
+            <SelectValue placeholder="حالة القياسات" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">كل حالات القياسات</SelectItem>
+            <SelectItem value="none">غير مدخلة</SelectItem>
+            <SelectItem value="partial">جزئية</SelectItem>
+            <SelectItem value="complete">مكتملة</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -1323,7 +1379,10 @@ function Orders({
                   <TableCell>{item.dueDate || "—"}</TableCell>
                   <TableCell>{formatCurrency(item.totalAmount)}</TableCell>
                   <TableCell>
-                    {STATUS_LABELS[item.status] || item.status}
+                    <div className="space-y-1">
+                      <div>{STATUS_LABELS[item.status] || item.status}</div>
+                      <MeasurementStatusBadge status={item.measurementStatus} />
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Button

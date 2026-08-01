@@ -64,6 +64,11 @@ import {
   type GraduationOrderInput,
 } from "@/lib/graduation";
 import {
+  getGraduationMeasurementFilter,
+  getGraduationMeasurementStatus,
+  withGraduationMeasurementStatus,
+} from "@/lib/graduation-measurements";
+import {
   ensureMasterCashBoxTables,
   syncSourcePaymentTarget,
   type FinancialActor,
@@ -75,6 +80,7 @@ import {
   getGraduationEnterpriseCatalog,
   syncGraduationEnterpriseOrder,
 } from "@/server/graduation-enterprise";
+import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 
 export type GraduationAdminUser = {
   id: number;
@@ -755,6 +761,52 @@ async function notify(input: {
   });
 }
 
+export async function notifyTailorsMeasurementsPending(order: {
+  id: number;
+  orderNo: string;
+  customerName: string;
+}) {
+  const tailors = await db
+    .select({ staffId: graduationResourcesTable.operatorId })
+    .from(graduationResourcesTable)
+    .where(
+      and(
+        eq(graduationResourcesTable.resourceType, "tailor"),
+        eq(graduationResourcesTable.isActive, true),
+      ),
+    );
+  const staffIds = [
+    ...new Set(
+      tailors
+        .map((tailor) => Number(tailor.staffId))
+        .filter((staffId) => Number.isFinite(staffId) && staffId > 0),
+    ),
+  ];
+  if (!staffIds.length) {
+    await notify({
+      type: "graduation_measurements_pending",
+      title: "طلب تخرج بانتظار إدخال القياسات",
+      body: `${order.orderNo} - ${order.customerName}`,
+      entityId: order.id,
+      href: "/admin/graduation/measurements",
+    });
+    return;
+  }
+  await Promise.all(
+    staffIds.map((staffId) =>
+      notify({
+        audienceType: "staff",
+        staffId,
+        type: "graduation_measurements_pending",
+        title: "طلب جديد بانتظار إدخال القياسات",
+        body: `${order.orderNo} - ${order.customerName}`,
+        entityId: order.id,
+        href: "/staff/tailors",
+      }),
+    ),
+  );
+}
+
 async function stockOwner(productId: number) {
   const origin = await db.query.productsTable.findFirst({
     where: eq(productsTable.id, productId),
@@ -910,6 +962,7 @@ function publicOrder(row: any) {
     styleKey: row.styleKey,
     packageKey: row.packageKey,
     measurements: row.measurements,
+    measurementStatus: getGraduationMeasurementFilter(row.measurements),
     colors: row.colors,
     fabric: row.fabric,
     decoration: row.decoration,
@@ -1319,6 +1372,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
   const inventoryItems = [...groupedInventory.values()];
   const groupId = group?.id ?? null;
   const decoration = { ...data.decoration } as Record<string, any>;
+  const orderMeasurements = withGraduationMeasurementStatus(data.measurements);
   if (decoration.file)
     decoration.file = await persistMedia(decoration.file, "graduation/designs");
   const qrToken =
@@ -1337,7 +1391,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       productionStage: "new",
       styleKey: data.styleKey,
       packageKey: data.packageKey ?? null,
-      measurements: data.measurements as any,
+      measurements: orderMeasurements as any,
       colors: data.colors as any,
       fabric: data.fabric as any,
       decoration: decoration as any,
@@ -1401,7 +1455,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       receiptNo,
       phone2: String((raw as any)?.phone2 ?? "").trim() || null,
       studentProfile: {
-        gender: data.measurements.gender,
+        gender: data.measurements.gender ?? "unspecified",
         university: data.customText.university ?? group?.university ?? "",
         college: data.customText.college ?? group?.college ?? "",
         department: data.customText.department ?? group?.department ?? "",
@@ -1524,6 +1578,8 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       entityId: order.id,
       href: "/admin/graduation/orders",
     });
+    if (getGraduationMeasurementStatus(order.measurements) === "not_started")
+      await notifyTailorsMeasurementsPending(order);
     await notify({
       audienceType: "customer",
       customerId: customer.id,
@@ -1609,6 +1665,36 @@ export async function updateOrder(
       response: error("تحقق من بيانات التعديل", 400, parsed.error.issues),
     };
   const data = parsed.data;
+  if (data.productionStage) {
+    const measurementBlock = await getGraduationProductionMeasurementBlock(
+      order,
+      data.productionStage,
+    );
+    if (measurementBlock) {
+      await notify({
+        type: "graduation_production_measurements_blocked",
+        title: "تعذر بدء الإنتاج قبل استكمال القياسات",
+        body: `${order.orderNo} - ${order.customerName}`,
+        entityId: order.id,
+        href: `/admin/graduation/orders`,
+        metadata: {
+          attemptedStage: data.productionStage,
+          measurementStatus: measurementBlock.measurementStatus,
+          attemptedBy: user.id,
+        },
+      });
+      await addActivity(user, "graduation_production_measurements_blocked", order.id, {
+        attemptedStage: data.productionStage,
+        measurementStatus: measurementBlock.measurementStatus,
+      });
+      return {
+        response: error(
+          "يجب إكمال القياسات قبل بدء مرحلة القص والخياطة.",
+          409,
+        ),
+      };
+    }
+  }
   const oldStatus = order.status;
   const oldStage = order.productionStage;
   const total = data.totalAmount ?? money(order.totalAmount);
@@ -2133,6 +2219,48 @@ async function orderDetail(id: number, origin = "") {
   };
 }
 
+function graduationMeasurementCompleteCondition() {
+  return sql<boolean>`(
+    coalesce(${graduationOrdersTable.measurements}->>'status', '') in ('complete', 'needs_review', 'approved')
+    or (
+      coalesce(nullif(${graduationOrdersTable.measurements}->>'height', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'chest', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'waist', ''), '') <> ''
+      and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
+    )
+    or (
+      ${graduationOrdersTable.measurements}->>'method' = 'ready'
+      and coalesce(
+        nullif(${graduationOrdersTable.measurements}->>'readySize', ''),
+        nullif(${graduationOrdersTable.measurements}->>'standardSize', ''),
+        ''
+      ) <> ''
+    )
+  )`;
+}
+
+function graduationMeasurementNoneCondition() {
+  return sql<boolean>`(
+    coalesce(nullif(${graduationOrdersTable.measurements}->>'height', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'chest', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'waist', ''), '') = ''
+    and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') = ''
+    and not (
+      coalesce(${graduationOrdersTable.measurements}->>'status', '') in ('complete', 'needs_review', 'approved')
+      or (
+        ${graduationOrdersTable.measurements}->>'method' = 'ready'
+        and coalesce(
+          nullif(${graduationOrdersTable.measurements}->>'readySize', ''),
+          nullif(${graduationOrdersTable.measurements}->>'standardSize', ''),
+          ''
+        ) <> ''
+      )
+    )
+  )`;
+}
+
 function orderFilters(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const page = Math.max(1, Number(sp.get("page") || 1));
@@ -2141,6 +2269,7 @@ function orderFilters(req: NextRequest) {
   const status = (sp.get("status") || "").trim();
   const stage = (sp.get("stage") || "").trim();
   const orderType = (sp.get("orderType") || "").trim();
+  const measurementStatus = (sp.get("measurementStatus") || "").trim();
   const conditions: any[] = [sql`${graduationOrdersTable.archivedAt} is null`];
   if (search)
     conditions.push(
@@ -2156,6 +2285,17 @@ function orderFilters(req: NextRequest) {
     conditions.push(sql`${graduationOrdersTable.groupId} is null`);
   if (orderType === "group")
     conditions.push(sql`${graduationOrdersTable.groupId} is not null`);
+  if (measurementStatus === "none")
+    conditions.push(graduationMeasurementNoneCondition());
+  if (measurementStatus === "partial")
+    conditions.push(
+      and(
+        sql`not (${graduationMeasurementCompleteCondition()})`,
+        sql`not (${graduationMeasurementNoneCondition()})`,
+      ),
+    );
+  if (measurementStatus === "complete")
+    conditions.push(graduationMeasurementCompleteCondition());
   return { page, limit, where: and(...conditions) };
 }
 
@@ -2564,7 +2704,7 @@ export async function handleAdminGraduation(
   }
 
   if (method === "GET" && resource === "dashboard") {
-    const [stageRows, totals, delayed, resources, todayCount] =
+    const [stageRows, totals, delayed, resources, todayCount, measurementRows] =
       await Promise.all([
         db
           .select({
@@ -2609,6 +2749,16 @@ export async function handleAdminGraduation(
           .select({ count: sql<number>`count(*)::int` })
           .from(graduationOrdersTable)
           .where(sql`date(${graduationOrdersTable.createdAt}) = current_date`),
+        db
+          .select({
+            none: sql<number>`count(*) filter (where ${graduationMeasurementNoneCondition()})::int`,
+            partial: sql<number>`count(*) filter (where not (${graduationMeasurementCompleteCondition()}) and not (${graduationMeasurementNoneCondition()}))::int`,
+            complete: sql<number>`count(*) filter (where ${graduationMeasurementCompleteCondition()})::int`,
+          })
+          .from(graduationOrdersTable)
+          .where(
+            sql`${graduationOrdersTable.archivedAt} is null and ${graduationOrdersTable.status} <> 'cancelled'`,
+          ),
       ]);
     const total = totals[0] ?? { revenue: 0, paid: 0, profit: 0, orders: 0 };
     const stages = Object.fromEntries(
@@ -2637,6 +2787,9 @@ export async function handleAdminGraduation(
         paid: money(total.paid),
         profit: money(total.profit),
         orders: total.orders,
+        measurementsNone: measurementRows[0]?.none ?? 0,
+        measurementsPartial: measurementRows[0]?.partial ?? 0,
+        measurementsComplete: measurementRows[0]?.complete ?? 0,
       },
       stages,
       resources,

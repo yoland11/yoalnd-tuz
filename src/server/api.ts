@@ -215,6 +215,7 @@ import {
   getMasterCashDashboard,
   listFinancialTransactions,
   recalculateMasterCashBox,
+  recalculateSalesInvoicePaymentFromAllocations,
   rejectFinancialTransaction,
   reverseFinancialTransaction,
   submitFinancialTransaction,
@@ -37627,6 +37628,44 @@ async function handleSalesInvoices(
   const id = parts[2] ? int(parts[2]) : null;
   const resultRows = (result: any) => result?.rows ?? result ?? [];
 
+  // Repair one invoice from the immutable receipt-allocation ledger. This deliberately
+  // ignores any client-supplied status or cached paid amount.
+  if (method === "POST" && id && parts[3] === "sync-payment") {
+    await ensureAccountingVoucherTables();
+    const repaired = await db.transaction((tx) => recalculateSalesInvoicePaymentFromAllocations(tx, id));
+    if (!repaired) return error("الفاتورة غير موجودة", 404);
+    void logAdminActivity(req, "sales_invoice_payment_status_repaired", "sales_invoice", id, repaired);
+    return json({ ok: true, invoice: repaired });
+  }
+
+  // Safe historical backfill. A single set-based statement guarantees every invoice
+  // uses the same definition of a valid payment as new receipt allocations.
+  if (method === "POST" && parts[2] === "repair-payment-statuses") {
+    if (!(auth.role === "admin" || auth.role === "manager"))
+      return error("إصلاح أرصدة الفواتير التاريخية متاح للمدير فقط.", 403);
+    await ensureAccountingVoucherTables();
+    const result: any = await db.transaction((tx) => tx.execute(sql`
+      UPDATE sales_invoices invoice SET
+        paid_amount = totals.paid,
+        remaining_amount = greatest(invoice.total::numeric - totals.paid, 0),
+        payment_status = CASE WHEN totals.paid <= 0 THEN 'unpaid' WHEN totals.paid < invoice.total::numeric THEN 'partial' WHEN totals.paid = invoice.total::numeric THEN 'paid' ELSE 'overpaid' END,
+        updated_at = now()
+      FROM LATERAL (
+        SELECT coalesce(sum(greatest(allocation.amount::numeric - CASE WHEN allocation.reversed_at IS NOT NULL THEN allocation.amount::numeric ELSE coalesce(allocation.reversed_amount::numeric, 0) END, 0)), 0)::numeric AS paid
+        FROM receipt_voucher_allocations allocation
+        JOIN receipt_vouchers voucher ON voucher.id = allocation.receipt_voucher_id
+        WHERE allocation.source_type = 'sales_invoice' AND allocation.source_id = invoice.id
+          AND allocation.posted_at IS NOT NULL
+          AND coalesce(voucher.approval_status, 'executed') = 'executed'
+      ) totals
+      WHERE invoice.status NOT IN ('deleted', 'cancelled')
+      RETURNING invoice.id
+    `));
+    const repaired = (result.rows ?? []).length;
+    void logAdminActivity(req, "sales_invoice_payment_status_backfill", "sales_invoice", undefined, { repaired });
+    return json({ ok: true, repaired });
+  }
+
   if (method === "GET" && parts[2] === "dashboard") {
     const [summary, top] = await Promise.all([
       db.execute(sql`select count(*)::int as total, count(*) filter(where status='active' and is_active=1)::int as active, coalesce(sum(balance::numeric),0)::float as outstanding, coalesce((select sum(total::numeric) from purchase_invoices where date >= date_trunc('month',current_date) and status='active'),0)::float as monthly_purchases from suppliers`),
@@ -38047,7 +38086,8 @@ async function handleSalesInvoices(
       }
 
       const allocationResult: any = await tx.execute(sql`
-        SELECT allocation.id, allocation.amount::numeric AS amount,
+        SELECT allocation.id,
+          greatest(allocation.amount::numeric - coalesce(allocation.reversed_amount::numeric, 0), 0) AS amount,
           voucher.id AS voucher_id, voucher.voucher_no,
           coalesce(
             voucher.financial_transaction_id,
@@ -38063,6 +38103,7 @@ async function handleSalesInvoices(
           AND allocation.source_id = ${id}
           AND allocation.posted_at IS NOT NULL
           AND allocation.reversed_at IS NULL
+          AND allocation.amount::numeric - coalesce(allocation.reversed_amount::numeric, 0) > 0.005
         ORDER BY allocation.id
         FOR UPDATE OF allocation
       `);
@@ -38387,12 +38428,9 @@ async function handleSalesInvoices(
       0,
     );
     const paymentMethod = b.paymentMethod ?? "cash";
-    const payment = paymentSummary(
-      total,
-      b.paidAmount ?? 0,
-      b.paymentStatus,
-      paymentMethod,
-    );
+    // A sales invoice never becomes paid from browser fields. Initial or later
+    // payments are recorded through a receipt voucher + allocation instead.
+    const payment = paymentSummary(total, 0, undefined, paymentMethod);
     const paidAmount = payment.deposit;
     const remainingAmount = payment.remaining;
     const paymentStatus = payment.status;
@@ -38658,8 +38696,8 @@ async function handleSalesInvoices(
     const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
     const payment = paymentSummary(
       total,
-      b.paidAmount ?? existing.paidAmount,
-      b.paymentStatus ?? existing.paymentStatus,
+      existing.paidAmount,
+      existing.paymentStatus,
       paymentMethod,
     );
     const paidAmount = payment.deposit;
@@ -38721,6 +38759,9 @@ async function handleSalesInvoices(
         updatedAt: new Date(),
       } as any)
       .where(eq(salesInvoicesTable.id, id));
+    // Editing an invoice must never overwrite its payment status from the browser.
+    await ensureAccountingVoucherTables();
+    await db.transaction((tx) => recalculateSalesInvoicePaymentFromAllocations(tx, id));
 
     if (parsedItems) {
       if (hasAppliedStock(existing)) {
@@ -41186,6 +41227,7 @@ async function ensureAccountingVoucherTables() {
           "source_type" varchar(40) NOT NULL,
           "source_id" integer,
           "amount" numeric(14,2) NOT NULL CHECK ("amount" > 0),
+          "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0,
           "posted_at" timestamp,
           "reversed_at" timestamp,
           "reversed_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
@@ -41196,6 +41238,7 @@ async function ensureAccountingVoucherTables() {
         );
 
         ALTER TABLE "receipt_voucher_allocations"
+          ADD COLUMN IF NOT EXISTS "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0,
           ADD COLUMN IF NOT EXISTS "reversed_at" timestamp,
           ADD COLUMN IF NOT EXISTS "reversed_by" integer,
           ADD COLUMN IF NOT EXISTS "reversal_reason" text,
@@ -41799,15 +41842,17 @@ async function handleCollections(
     return error("لا يمكن تحصيل دفعة لمعاملة ملغية", 409);
   if ((before.source as any).financiallyReversed)
     return error("تم عكس الأثر المالي لهذه المعاملة", 409);
+  if (data.sourceType === "sales_invoice" && !before.customerId)
+    return error("يجب ربط الفاتورة بعميل قبل تسجيل دفعة وتخصيصها.", 409);
   if (before.total <= 0) return error("يجب تحديد المبلغ الكلي أولاً", 409);
-  if (before.remaining <= 0) return error("الحساب مدفوع بالكامل", 409);
+  if (before.remaining <= 0 && data.sourceType !== "sales_invoice") return error("الحساب مدفوع بالكامل", 409);
   const amount = money(data.amount);
-  if (amount > before.remaining)
+  if (amount > before.remaining && data.sourceType !== "sales_invoice")
     return error(`المبلغ أكبر من المتبقي (${formatCurrency(before.remaining)})`, 400);
 
   const paid = money(before.paid + amount);
   const remaining = money(Math.max(before.total - paid, 0));
-  const paymentStatus = remaining <= 0 ? "paid" : "partial";
+  const paymentStatus = paid <= 0 ? "unpaid" : paid < before.total ? "partial" : paid === before.total ? "paid" : "overpaid";
   const a = actor(currentUser);
   const sourceMethod = data.paymentMethod === "transfer" ? "transfer" : data.paymentMethod === "card" || data.paymentMethod === "pos" ? "pos" : "cash";
   let createdVoucherId: number | null = null;
@@ -41837,13 +41882,8 @@ async function handleCollections(
         },
       }).where(eq(serviceOrdersTable.id, data.sourceId));
     } else if (data.sourceType === "sales_invoice") {
-      await db.update(salesInvoicesTable).set({
-        paidAmount: String(paid),
-        remainingAmount: String(remaining),
-        paymentStatus,
-        paymentMethod: sourceMethod,
-        updatedAt: new Date(),
-      }).where(eq(salesInvoicesTable.id, data.sourceId));
+      // The receipt allocation is the source of truth; its posting transaction
+      // recalculates paid/remaining/status atomically after approval.
     } else {
       // Kosha collection is posted by the receipt-voucher allocation when the
       // financial request is executed.  Do not mutate the booking while the
@@ -41873,11 +41913,11 @@ async function handleCollections(
     const [savedVoucher] = await db.update(receiptVouchersTable).set({
       voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt),
     }).where(eq(receiptVouchersTable.id, voucher.id)).returning();
-    if (data.sourceType === "kosha_booking" && before.customerId) {
+    if ((data.sourceType === "kosha_booking" || data.sourceType === "sales_invoice") && before.customerId) {
       await db.insert(receiptVoucherAllocationsTable).values({
         receiptVoucherId: savedVoucher.id,
         customerId: before.customerId,
-        sourceType: "kosha_booking",
+        sourceType: data.sourceType,
         sourceId: data.sourceId,
         amount: String(amount),
       });
@@ -41898,6 +41938,25 @@ async function handleCollections(
           department: "koshas",
           transactionType: "receipt_voucher",
           description: `سند قبض لحجز كوشة ${before.reference}`,
+          paymentMethod: sourceMethod,
+          sourceType: "receipt_voucher",
+          sourceId: savedVoucher.id,
+          sourceEvent: "payment",
+          idempotencyKey: `receipt_voucher:${savedVoucher.id}:payment`,
+          customerId: before.customerId,
+          customerName: before.customerName,
+          customerPhone: before.customerPhone,
+          notes: data.notes,
+          attachments: [],
+        }, financialActor(currentUser));
+      else if (data.sourceType === "sales_invoice")
+        financialTransaction = await createSourceFinancialRequest({
+          transactionDate: savedVoucher.date,
+          direction: "revenue",
+          amount,
+          department: "store",
+          transactionType: "receipt_voucher",
+          description: `سند قبض لفاتورة مبيعات ${before.reference}`,
           paymentMethod: sourceMethod,
           sourceType: "receipt_voucher",
           sourceId: savedVoucher.id,
@@ -49177,7 +49236,9 @@ async function handleAccounting(
             return error(`مبلغ حجز الكوشة أكبر من المتبقي (${formatCurrency(booking.remainingAmount)}).`, 400);
         } else if (allocation.sourceType === "sales_invoice") {
           const row = await db.query.salesInvoicesTable.findFirst({ where: and(eq(salesInvoicesTable.id, allocation.sourceId), eq(salesInvoicesTable.customerId, customer.id)) });
-          if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الفاتورة المحددة لا تتبع للعميل أو أن مبلغها أكبر من المتبقي.", 400);
+          // Overpayments are valid and shown explicitly on the invoice. Ownership
+          // is still enforced server-side; only the amount cap is removed.
+          if (!row) return error("الفاتورة المحددة لا تتبع للعميل.", 400);
         } else if (allocation.sourceType === "order") {
           const row = await db.query.ordersTable.findFirst({ where: and(eq(ordersTable.id, allocation.sourceId), eq(ordersTable.customerId, customer.id)) });
           if (!row || money(allocation.amount) > money(row.remainingAmount)) return error("الطلب المحدد لا يتبع للعميل أو أن مبلغه أكبر من المتبقي.", 400);

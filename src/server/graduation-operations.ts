@@ -28,6 +28,11 @@ import {
   salesInvoicesTable,
 } from "@workspace/db";
 import { normalizeGraduationConfig, GRADUATION_STAGES } from "@/lib/graduation";
+import {
+  getGraduationMeasurementFilter,
+  getGraduationMeasurementStatus,
+  withGraduationMeasurementStatus,
+} from "@/lib/graduation-measurements";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import { ensureGraduationOperationsTables } from "@/server/graduation-schema";
 import {
@@ -35,6 +40,7 @@ import {
   syncGraduationEnterpriseOrder,
 } from "@/server/graduation-enterprise";
 import {
+  notifyTailorsMeasurementsPending,
   updateOrder,
   type GraduationAdminUser,
 } from "@/server/graduation";
@@ -368,6 +374,7 @@ function formatStudent(order: any, sequence?: number) {
     shoulder: measurements.shoulder || "",
     sleeveLength: measurements.sleeveLength || "",
     chest: measurements.chest || "",
+    measurementStatus: getGraduationMeasurementFilter(measurements),
     university: profile.university || custom.university || "",
     college: profile.college || custom.college || "",
     department: profile.department || custom.department || "",
@@ -523,6 +530,9 @@ async function groupDetail(groupId: number, user: GraduationAdminUser) {
     inProduction: active.filter((row) => !["new", "ready", "delivered"].includes(row.productionStage)).length,
     ready: active.filter((row) => row.productionStage === "ready").length,
     delivered: active.filter((row) => row.productionStage === "delivered").length,
+    measurementsNone: active.filter((row) => row.measurementStatus === "none").length,
+    measurementsPartial: active.filter((row) => row.measurementStatus === "partial").length,
+    measurementsComplete: active.filter((row) => row.measurementStatus === "complete").length,
     groupCredit: amount(group.groupCreditAmount),
   };
   return {
@@ -975,7 +985,7 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
         printingType: data.printingType || "",
         embroideryType: data.embroideryType || "",
       },
-      measurements: {
+      measurements: withGraduationMeasurementStatus({
         gender: data.gender || "unspecified",
         height: data.height || null,
         weight: data.weight || null,
@@ -983,7 +993,7 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
         shoulder: data.shoulder || null,
         sleeveLength: data.sleeveLength || null,
         chest: data.chest || null,
-      },
+      }),
       colors: {
         ...defaultColors,
         ...(data.robeColor ? { robe: data.robeColor } : {}),
@@ -1027,6 +1037,8 @@ async function addStudent(groupId: number, raw: unknown, user: GraduationAdminUs
     .returning();
   await ensureIdentity(order, user);
   await syncGraduationEnterpriseOrder(order.id, user);
+  if (getGraduationMeasurementStatus(order.measurements) === "not_started")
+    await notifyTailorsMeasurementsPending(order);
   await db.insert(qrTokensTable).values({
     entityType: "graduation_order",
     entityId: order.id,
@@ -1057,6 +1069,16 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
   const measurements = record(order.measurements);
   const custom = record(order.customText);
   const colors = record(order.colors);
+  const nextMeasurements = withGraduationMeasurementStatus({
+    ...measurements,
+    ...Object.fromEntries(
+      ["height", "weight", "shoulder", "sleeveLength", "chest"]
+        .filter((key) => (data as any)[key] !== undefined)
+        .map((key) => [key, (data as any)[key]]),
+    ),
+    ...(data.size !== undefined ? { suggestedSize: data.size } : {}),
+    ...(data.gender !== undefined ? { gender: data.gender } : {}),
+  });
   const normalizedPhone = data.phone !== undefined
     ? data.phone
       ? normalizeIraqiPhone(data.phone)
@@ -1089,16 +1111,7 @@ async function patchStudent(orderId: number, raw: unknown, user: GraduationAdmin
             .map((key) => [key, (data as any)[key]]),
         ),
       },
-      measurements: {
-        ...measurements,
-        ...Object.fromEntries(
-          ["height", "weight", "shoulder", "sleeveLength", "chest"]
-            .filter((key) => (data as any)[key] !== undefined)
-            .map((key) => [key, (data as any)[key]]),
-        ),
-        ...(data.size !== undefined ? { suggestedSize: data.size } : {}),
-        ...(data.gender !== undefined ? { gender: data.gender } : {}),
-      },
+      measurements: nextMeasurements,
       customText: {
         ...custom,
         ...(data.customerName !== undefined ? { studentName: data.customerName } : {}),

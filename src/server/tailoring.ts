@@ -1,10 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   db,
   graduationGroupsTable,
   graduationOrdersTable,
 } from "@workspace/db";
+import { getGraduationMeasurementStatus } from "@/lib/graduation-measurements";
+import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
 
 /**
  * Tailors Portal (بوابة الخياطين) server module.
@@ -75,7 +77,27 @@ async function ensureTailoringTables() {
 // ---------------------------------------------------------------------------
 /** Admins get oversight of every order; everyone else is scoped to their own. */
 function canSeeAll(user: TailorUser) {
-  return user.role === "admin";
+  return (
+    user.role === "admin" ||
+    ["graduation_manager", "graduation"].some((permission) =>
+      user.permissions.includes(permission),
+    )
+  );
+}
+
+/** Portal access grants read-only access to assigned work; mutations require a
+ * specific tailoring permission (or a graduation/tailoring management role). */
+function hasTailoringPermission(user: TailorUser, permission: string, readOnly = false) {
+  if (user.role === "admin") return true;
+  if (user.permissions.includes(permission)) return true;
+  if (readOnly && user.permissions.includes("tailoring.portal.access")) return true;
+  return ["tailoring", "graduation", "graduation_production", "graduation_manager"].some((p) => user.permissions.includes(p));
+}
+
+function requireTailoringPermission(user: TailorUser, permission: string, readOnly = false) {
+  return hasTailoringPermission(user, permission, readOnly)
+    ? null
+    : error("ليس لديك صلاحية تنفيذ هذا الإجراء", 403);
 }
 
 /** SQL predicate: order is assigned to this tailor (direct or via resource). */
@@ -86,6 +108,36 @@ function assignedCondition(userId: number) {
       SELECT id FROM graduation_resources WHERE resource_type = 'tailor' AND operator_id = ${userId}
     )`,
   );
+}
+
+/** Unassigned orders with incomplete measurements are the shared intake queue. */
+function pendingMeasurementsCondition() {
+  return and(
+    isNull(graduationOrdersTable.assignedStaffId),
+    sql`coalesce(${graduationOrdersTable.productionEstimate} -> 'tailorAssignment' ->> 'tailorId', '') = ''`,
+    sql`not (
+      coalesce(${graduationOrdersTable.measurements}->>'status', '') in ('complete', 'needs_review', 'approved')
+      or (
+        coalesce(nullif(${graduationOrdersTable.measurements}->>'height', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'shoulder', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'chest', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'waist', ''), '') <> ''
+        and coalesce(nullif(${graduationOrdersTable.measurements}->>'sleeveLength', ''), '') <> ''
+      )
+      or (
+        ${graduationOrdersTable.measurements}->>'method' = 'ready'
+        and coalesce(
+          nullif(${graduationOrdersTable.measurements}->>'readySize', ''),
+          nullif(${graduationOrdersTable.measurements}->>'standardSize', ''),
+          ''
+        ) <> ''
+      )
+    )`,
+  );
+}
+
+function visibleCondition(user: TailorUser) {
+  return or(assignedCondition(user.id), pendingMeasurementsCondition());
 }
 
 // ---------------------------------------------------------------------------
@@ -110,15 +162,9 @@ function rec(value: unknown): Record<string, unknown> {
 
 /** Derive a status from the filled fields when the tailor didn't set one. */
 function deriveStatus(m: Record<string, unknown>): string {
-  if (typeof m.status === "string" && (TAILOR_MEASUREMENT_STATUSES as readonly string[]).includes(m.status))
+  if (m.status === "needs_review" || m.status === "approved")
     return m.status;
-  if (m.method === "ready" && m.readySize) return "complete";
-  const filled = MEASUREMENT_NUMERIC_KEYS.filter(
-    (k) => m[k] !== undefined && m[k] !== "" && m[k] !== null,
-  );
-  if (filled.length === 0) return "not_started";
-  if (filled.length < 5) return "partial";
-  return "complete";
+  return getGraduationMeasurementStatus(m);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,12 +244,12 @@ async function loadGroups(ids: number[]) {
   return new Map(rows.map((g) => [g.id, g]));
 }
 
-/** Fetch one order enforcing the assignment scope (null → not visible → 403). */
+/** Fetch one assigned order or one item in the shared missing-measurements queue. */
 async function fetchAssignedOrder(id: number, user: TailorUser) {
   const order = await db.query.graduationOrdersTable.findFirst({
     where: canSeeAll(user)
       ? eq(graduationOrdersTable.id, id)
-      : and(eq(graduationOrdersTable.id, id), assignedCondition(user.id)),
+      : and(eq(graduationOrdersTable.id, id), visibleCondition(user)),
   });
   return order ?? null;
 }
@@ -226,9 +272,11 @@ function buildNextMeasurements(previous: Record<string, unknown>, body: Record<s
   if (body.readySize !== undefined) incoming.readySize = body.readySize || undefined;
   const next: Record<string, unknown> = { ...previous, ...incoming };
   for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+  const derivedInput = { ...next };
+  delete derivedInput.status;
   next.status = typeof body.status === "string" && (TAILOR_MEASUREMENT_STATUSES as readonly string[]).includes(body.status)
     ? body.status
-    : deriveStatus(next);
+    : deriveStatus(derivedInput);
   next.updatedByName = user.fullName || user.username;
   next.updatedAt = new Date().toISOString();
   return next;
@@ -255,14 +303,26 @@ function canApprove(user: TailorUser) {
     || ["graduation.approval.manage", "graduation_manager", "graduation"].some((p) => user.permissions.includes(p));
 }
 
-/** A group is accessible when the tailor has at least one assigned order in it. */
+/** A group is accessible when it has an assigned or pending measurement order. */
 async function canAccessGroup(groupId: number, user: TailorUser) {
   if (canSeeAll(user)) return true;
   const row = await db.query.graduationOrdersTable.findFirst({
-    where: and(eq(graduationOrdersTable.groupId, groupId), assignedCondition(user.id)),
+    where: and(eq(graduationOrdersTable.groupId, groupId), visibleCondition(user)),
     columns: { id: true },
   });
   return !!row;
+}
+
+/**
+ * A group page must not widen a tailor's access.  Seeing one assigned student
+ * grants access to the group workspace, but not to classmates assigned to a
+ * different tailor. Pending, unassigned measurement rows stay available to
+ * the authorized tailor intake queue. Managers retain the complete view.
+ */
+function groupOrdersCondition(groupId: number, user: TailorUser) {
+  return canSeeAll(user)
+    ? eq(graduationOrdersTable.groupId, groupId)
+    : and(eq(graduationOrdersTable.groupId, groupId), visibleCondition(user));
 }
 
 /** Flattened row for the group measurement table. */
@@ -308,10 +368,35 @@ export async function handleTailorPortal(
   await ensureTailoringTables();
   const method = req.method;
 
+  // The router authorizes entry to this module; enforce the fine-grained action
+  // server-side here so a read-only tailor cannot mutate an assigned order.
+  if (method === "GET") {
+    const denied = requireTailoringPermission(user, "tailoring.assigned_orders.view", true);
+    if (denied) return denied;
+  }
+  if (method === "POST") {
+    const actionPermissions: Record<string, string> = {
+      submit: "tailoring.measurements.submit",
+      photos: "tailoring.photos.upload",
+      alterations: "tailoring.alterations.manage",
+      production: "tailoring.production.update",
+      notes: "tailoring.measurements.edit",
+    };
+    const action = parts[2] ?? "";
+    if (action === "measurements" && !hasTailoringPermission(user, "tailoring.measurements.create") && !hasTailoringPermission(user, "tailoring.measurements.edit")) {
+      return error("ليس لديك صلاحية تنفيذ هذا الإجراء", 403);
+    }
+    const permission = actionPermissions[action];
+    if (permission) {
+      const denied = requireTailoringPermission(user, permission);
+      if (denied) return denied;
+    }
+  }
+
   // GET /admin/tailoring  — dashboard buckets + assigned orders.
   if (method === "GET" && (!parts[0] || parts[0] === "dashboard")) {
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : assignedCondition(user.id),
+      where: canSeeAll(user) ? undefined : visibleCondition(user),
       orderBy: [desc(graduationOrdersTable.updatedAt)],
       limit: 1000,
     });
@@ -339,7 +424,7 @@ export async function handleTailorPortal(
     const search = (req.nextUrl.searchParams.get("search") ?? "").trim().toLowerCase();
     const bucket = req.nextUrl.searchParams.get("bucket") ?? "";
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : assignedCondition(user.id),
+      where: canSeeAll(user) ? undefined : visibleCondition(user),
       orderBy: [desc(graduationOrdersTable.updatedAt)],
       limit: 1000,
     });
@@ -430,7 +515,7 @@ export async function handleTailorPortal(
   // GET /admin/tailoring/groups — accessible groups with progress counts.
   if (method === "GET" && parts[0] === "groups" && !parts[1]) {
     const orders = await db.query.graduationOrdersTable.findMany({
-      where: canSeeAll(user) ? undefined : assignedCondition(user.id),
+      where: canSeeAll(user) ? undefined : visibleCondition(user),
       limit: 3000,
     });
     const byGroup = new Map<number, OrderRow[]>();
@@ -459,7 +544,7 @@ export async function handleTailorPortal(
     if (!(await canAccessGroup(gid, user))) return error("هذه المجموعة غير مخصصة لك", 403);
     const group = (await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, gid) })) ?? null;
     const students = await db.query.graduationOrdersTable.findMany({
-      where: eq(graduationOrdersTable.groupId, gid),
+      where: groupOrdersCondition(gid, user),
       orderBy: [asc(graduationOrdersTable.studentCode)],
       limit: 1000,
     });
@@ -479,7 +564,7 @@ export async function handleTailorPortal(
     if (!items.length) return error("لا توجد صفوف للحفظ", 400);
     // Only orders that actually belong to this group may be written.
     const rows = await db.query.graduationOrdersTable.findMany({
-      where: eq(graduationOrdersTable.groupId, gid),
+      where: groupOrdersCondition(gid, user),
       columns: { id: true, measurements: true },
       limit: 1000,
     });
@@ -568,6 +653,27 @@ export async function handleTailorPortal(
     if (action === "mark_ready") nextStage = "ready";
     else if (action === "set_stage" && typeof body.stage === "string" && (TAILOR_PRODUCTION_STAGES as readonly string[]).includes(body.stage)) nextStage = body.stage;
     const previous = order.productionStage;
+    const measurementBlock = await getGraduationProductionMeasurementBlock(
+      order,
+      nextStage,
+    );
+    if (measurementBlock) {
+      await notify?.({
+        audienceType: "admin",
+        type: "graduation_production_measurements_blocked",
+        title: "تعذر بدء الإنتاج قبل استكمال القياسات",
+        body: `${order.orderNo} - ${order.customerName}`,
+        entityType: "graduation_order",
+        entityId: id,
+        href: "/admin/graduation/orders",
+        metadata: {
+          attemptedStage: nextStage,
+          measurementStatus: measurementBlock.measurementStatus,
+          attemptedBy: user.id,
+        },
+      });
+      return error("يجب إكمال القياسات قبل بدء مرحلة القص والخياطة.", 409);
+    }
     if (nextStage !== previous) {
       await db.update(graduationOrdersTable)
         .set({ productionStage: nextStage, updatedAt: new Date() })

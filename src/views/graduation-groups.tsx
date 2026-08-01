@@ -713,15 +713,7 @@ export function GraduationGroupStudentRegistration({
       }),
   });
   const progress = useMemo(() => {
-    const required = [
-      form.customerName,
-      form.phone,
-      form.measurements.height,
-      form.measurements.shoulder,
-      form.measurements.chest,
-      form.measurements.waist,
-      form.measurements.sleeveLength,
-    ];
+    const required = [form.customerName, form.phone];
     return Math.round(
       (required.filter(Boolean).length / required.length) * 100,
     );
@@ -886,6 +878,9 @@ export function GraduationGroupStudentRegistration({
             <div className="mb-3 flex items-center gap-2">
               <Ruler className="h-4 w-4 text-primary" />
               <h3 className="font-semibold">القياسات</h3>
+              <span className="rounded-full bg-status-warning/15 px-2 py-1 text-[11px] text-status-warning">
+                اختياري — يمكن إدخالها لاحقاً
+              </span>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {(

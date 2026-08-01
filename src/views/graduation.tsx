@@ -920,16 +920,6 @@ function GraduationConfigurator() {
       !form.customPackage.items.some((item) => item.itemType === "robe")
     )
       return "أضف روباً واحداً على الأقل إلى الباقة";
-    if (step === 1) {
-      const missing = [
-        "height",
-        "shoulder",
-        "chest",
-        "waist",
-        "sleeveLength",
-      ].find((key) => !Number((form.measurements as any)[key]));
-      if (missing) return "أكمل القياسات الأساسية";
-    }
     if (step === 3 && !form.fabric.key) return "اختر نوع القماش";
     if (
       step === 9 &&
@@ -1326,7 +1316,7 @@ function GraduationConfigurator() {
                       <div>
                         <h2 className="font-bold">قياسات الروب</h2>
                         <p className="mt-1 text-sm text-muted-foreground">
-                          أدخل القياسات بالسنتيمتر للحصول على مقاس دقيق.
+                          القياسات اختيارية الآن، ويمكن إدخالها لاحقاً من الإدارة أو بوابة الخياطين.
                         </p>
                       </div>
                       <Button
@@ -1338,6 +1328,13 @@ function GraduationConfigurator() {
                         تقدير من صورة
                       </Button>
                     </div>
+                    {!MEASUREMENTS.some(([key]) =>
+                      Boolean(String((form.measurements as any)[key] ?? "").trim()),
+                    ) ? (
+                      <div className="rounded-lg border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-sm text-status-warning">
+                        🟠 القياسات غير مدخلة — لن يمنع ذلك متابعة الطلب أو تأكيده.
+                      </div>
+                    ) : null}
                     <div className="grid gap-4 sm:grid-cols-2">
                       {MEASUREMENTS.map(([key, label]) => (
                         <div key={key}>
@@ -1930,10 +1927,13 @@ function GraduationConfigurator() {
                             </span>
                             <strong>
                               {form.measurements.suggestedSize ||
-                                recommendedGraduationSize({
-                                  chest: Number(form.measurements.chest),
-                                  height: Number(form.measurements.height),
-                                })}
+                              (form.measurements.chest && form.measurements.height)
+                                ? form.measurements.suggestedSize ||
+                                  recommendedGraduationSize({
+                                    chest: Number(form.measurements.chest),
+                                    height: Number(form.measurements.height),
+                                  })
+                                : "🟠 القياسات غير مدخلة"}
                             </strong>
                           </div>
                           <div className="flex justify-between">

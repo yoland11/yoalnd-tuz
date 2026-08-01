@@ -91,6 +91,7 @@ const emptyProduct = {
   gownStyle: "",
   fabricType: "",
   sizeChart: "",
+  requiresMeasurements: false,
   sashModel: "",
   material: "",
   capModel: "",
@@ -161,6 +162,10 @@ function buildConfiguration(form: ProductForm): Record<string, unknown> {
     config.fabricType = form.fabricType;
     config.sizeChart = form.sizeChart;
     config.fabrics = splitList(form.fabrics);
+    delete config.requires_measurements;
+    delete config.measurementRequired;
+    delete config.measurementsRequired;
+    config.requiresMeasurements = form.requiresMeasurements;
   }
   if (form.templateType === "sash") {
     config.sashModel = form.sashModel;
@@ -211,6 +216,11 @@ function formFromItem(item: any): ProductForm {
     gownStyle: config.gownStyle || "",
     fabricType: config.fabricType || "",
     sizeChart: config.sizeChart || "",
+    requiresMeasurements:
+      config.requiresMeasurements === true ||
+      config.requires_measurements === true ||
+      config.measurementRequired === true ||
+      config.measurementsRequired === true,
     sashModel: config.sashModel || "",
     material: config.material || "",
     capModel: config.capModel || "",
@@ -634,6 +644,18 @@ export function GraduationProductsCenter() {
                 <Field label="نوع القماش" value={form.fabricType} onChange={(v) => setForm((c) => ({ ...c, fabricType: v }))} />
                 <Field label="الأقمشة المتاحة (فواصل)" value={form.fabrics} onChange={(v) => setForm((c) => ({ ...c, fabrics: v }))} />
                 <Field label="رابط جدول المقاسات" value={form.sizeChart} onChange={(v) => setForm((c) => ({ ...c, sizeChart: v }))} />
+                <label className="flex items-center gap-2 rounded-lg border border-border p-3 sm:col-span-2">
+                  <Checkbox
+                    checked={form.requiresMeasurements}
+                    onCheckedChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        requiresMeasurements: value === true,
+                      }))
+                    }
+                  />
+                  يتطلب هذا الروب قياسات مكتملة قبل القص والخياطة
+                </label>
               </>
             ) : null}
             {form.templateType === "sash" ? (

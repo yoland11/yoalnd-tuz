@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Banknote, CalendarClock, CheckCircle2, Upload, WalletCards, X } from "lucide-react";
+import { Banknote, CalendarClock, CheckCircle2, RefreshCw, Upload, WalletCards, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -37,6 +37,7 @@ const PAYMENT_STATUS_LABELS: Record<string, string> = {
   paid: "مدفوع بالكامل",
   partial: "مدفوع جزئياً",
   unpaid: "غير مدفوع",
+  overpaid: "مدفوع أكثر من المطلوب",
   pending: "بانتظار الاعتماد",
   executed: "معتمد",
 };
@@ -60,6 +61,7 @@ type Props = {
   paymentStatus: string;
   lastPayment?: LastPayment;
   onCollected?: () => void;
+  onRepairInvoiceStatus?: () => void;
   compact?: boolean;
 };
 
@@ -73,6 +75,7 @@ export function AccountSummaryCard({
   paymentStatus,
   lastPayment = null,
   onCollected,
+  onRepairInvoiceStatus,
   compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -87,13 +90,15 @@ export function AccountSummaryCard({
         hasPerm(admin.data, "accounting")),
   );
   const statusTone =
-    remaining <= 0
+    paid > total
+      ? "text-status-warning"
+      : remaining <= 0
       ? "text-status-success"
       : paid > 0
         ? "text-status-warning"
         : "text-status-danger";
   const effectivePaymentStatus =
-    remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+    paid > total ? "overpaid" : remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
 
   return (
     <section className={`mt-3 rounded-xl border border-border/25 bg-background/35 ${compact ? "p-3" : "p-4"}`}>
@@ -102,15 +107,22 @@ export function AccountSummaryCard({
           <WalletCards className="h-4 w-4 text-primary" />
           <h3 className="text-sm font-semibold text-foreground">ملخص الحساب</h3>
         </div>
-        {remaining > 0 && canCollect ? (
-          <Button size="sm" className="gap-1.5" onClick={() => setOpen(true)}>
-            <Banknote className="h-4 w-4" /> تحصيل دفعة
-          </Button>
-        ) : remaining <= 0 ? (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-status-success">
-            <CheckCircle2 className="h-4 w-4" /> الحساب مسدد
-          </span>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {sourceType === "sales_invoice" && onRepairInvoiceStatus ? (
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={onRepairInvoiceStatus}>
+              <RefreshCw className="h-4 w-4" /> تحديث حالة الفاتورة
+            </Button>
+          ) : null}
+          {remaining > 0 && canCollect ? (
+            <Button size="sm" className="gap-1.5" onClick={() => setOpen(true)}>
+              <Banknote className="h-4 w-4" /> تحصيل دفعة
+            </Button>
+          ) : remaining <= 0 ? (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-status-success">
+              <CheckCircle2 className="h-4 w-4" /> {effectivePaymentStatus === "overpaid" ? "يوجد مبلغ زائد" : "الحساب مسدد"}
+            </span>
+          ) : null}
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
         <SummaryValue label="الإجمالي" value={formatCurrency(total)} />

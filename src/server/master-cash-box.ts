@@ -241,6 +241,7 @@ export async function ensureMasterCashBoxTables() {
       ALTER TABLE IF EXISTS "expenses" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
       ALTER TABLE IF EXISTS "receipt_vouchers" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed';
       ALTER TABLE IF EXISTS "receipt_vouchers" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
+      ALTER TABLE IF EXISTS "receipt_voucher_allocations" ADD COLUMN IF NOT EXISTS "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0;
       ALTER TABLE IF EXISTS "payment_vouchers" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed';
       ALTER TABLE IF EXISTS "payment_vouchers" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
       ALTER TABLE IF EXISTS "orders" ADD COLUMN IF NOT EXISTS "due_date" date;
@@ -633,6 +634,79 @@ export function canApproveFinancialTransactions(actor: FinancialActor) {
   );
 }
 
+/** Rebuild invoice payment state from valid, posted receipt allocations only. */
+export async function recalculateSalesInvoicePaymentFromAllocations(tx: any, invoiceId: number) {
+  const result: any = await tx.execute(sql`
+    WITH invoice AS (
+      SELECT id, total::numeric AS total FROM sales_invoices WHERE id = ${invoiceId} FOR UPDATE
+    ), paid AS (
+      SELECT coalesce(sum(greatest(a.amount::numeric - CASE WHEN a.reversed_at IS NOT NULL THEN a.amount::numeric ELSE coalesce(a.reversed_amount::numeric, 0) END, 0)), 0)::numeric AS value
+      FROM receipt_voucher_allocations a
+      JOIN receipt_vouchers v ON v.id = a.receipt_voucher_id
+      WHERE a.source_type = 'sales_invoice' AND a.source_id = ${invoiceId}
+        AND a.posted_at IS NOT NULL
+        AND coalesce(v.approval_status, 'executed') = 'executed'
+    )
+    UPDATE sales_invoices s SET
+      paid_amount = paid.value,
+      remaining_amount = greatest(invoice.total - paid.value, 0),
+      payment_status = CASE WHEN paid.value <= 0 THEN 'unpaid' WHEN paid.value < invoice.total THEN 'partial' WHEN paid.value = invoice.total THEN 'paid' ELSE 'overpaid' END,
+      updated_at = now()
+    FROM invoice, paid WHERE s.id = invoice.id
+    RETURNING s.id, s.total, s.paid_amount, s.remaining_amount, s.payment_status
+  `);
+  return (result.rows ?? [])[0] ?? null;
+}
+
+/** Applies a full or partial receipt reversal to its allocation ledger. */
+async function reverseReceiptVoucherAllocations(
+  tx: any,
+  voucherId: number,
+  amount: number,
+  actor: FinancialActor,
+  reason: string,
+  reversalTransactionId: number,
+  scope?: { sourceType?: string; sourceId?: string | number },
+) {
+  const scopeFilter = scope?.sourceType && scope?.sourceId != null
+    ? sql`AND source_type = ${scope.sourceType} AND source_id = ${Number(scope.sourceId)}`
+    : sql``;
+  const rowsResult: any = await tx.execute(sql`
+    SELECT id, source_type, source_id, amount::numeric AS amount,
+      coalesce(reversed_amount::numeric, 0) AS reversed_amount
+    FROM receipt_voucher_allocations
+    WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NOT NULL
+      AND reversed_at IS NULL
+      AND amount::numeric - coalesce(reversed_amount::numeric, 0) > 0.005
+      ${scopeFilter}
+    ORDER BY id DESC
+    FOR UPDATE
+  `);
+  let remaining = money(amount);
+  const invoiceIds = new Set<number>();
+  for (const row of rowsResult.rows ?? []) {
+    if (remaining <= 0.005) break;
+    const available = money(money(row.amount) - money(row.reversed_amount));
+    const reversed = money(Math.min(available, remaining));
+    if (reversed <= 0) continue;
+    await tx.execute(sql`
+      UPDATE receipt_voucher_allocations
+      SET reversed_amount = coalesce(reversed_amount::numeric, 0) + ${reversed},
+          reversed_at = CASE WHEN coalesce(reversed_amount::numeric, 0) + ${reversed} >= amount::numeric - 0.005 THEN now() ELSE reversed_at END,
+          reversed_by = ${actor.id}, reversal_reason = ${reason},
+          reversal_transaction_id = ${reversalTransactionId}
+      WHERE id = ${Number(row.id)}
+    `);
+    if (row.source_type === "sales_invoice" && row.source_id)
+      invoiceIds.add(Number(row.source_id));
+    remaining = money(remaining - reversed);
+  }
+  if (remaining > 0.005)
+    throw new Error("مبلغ عكس سند القبض أكبر من التخصيصات الصالحة المتبقية.");
+  for (const invoiceId of invoiceIds)
+    await recalculateSalesInvoicePaymentFromAllocations(tx, invoiceId);
+}
+
 /** Posts the receipt plan inside the same transaction as cashbox and journal. */
 async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount: number) {
   const result = await tx.execute(sql`
@@ -648,6 +722,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
   if (Math.abs(allocated - amount) >= 0.01)
     throw new Error("إجمالي توزيعات سند القبض لا يساوي المبلغ المستلم.");
 
+  const salesInvoiceIds = new Set<number>();
   for (const allocation of allocations) {
     const value = money(allocation.amount);
     if (allocation.source_type === "customer_credit") continue;
@@ -668,14 +743,9 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
         RETURNING id
       `);
     } else if (allocation.source_type === "sales_invoice") {
-      updated = await tx.execute(sql`
-        UPDATE sales_invoices SET paid_amount = paid_amount::numeric + ${value},
-          remaining_amount = greatest(total::numeric - paid_amount::numeric - ${value}, 0),
-          payment_status = CASE WHEN total::numeric - paid_amount::numeric - ${value} <= 0 THEN 'paid' ELSE 'partial' END,
-          updated_at = now()
-        WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id}
-          AND remaining_amount::numeric >= ${value} RETURNING id
-      `);
+      // The authoritative values are rebuilt after posting, never incremented from client data.
+      updated = await tx.execute(sql`SELECT id FROM sales_invoices WHERE id = ${allocation.source_id} AND customer_id = ${allocation.customer_id} FOR UPDATE`);
+      salesInvoiceIds.add(Number(allocation.source_id));
     } else if (allocation.source_type === "order") {
       updated = await tx.execute(sql`
         UPDATE orders SET deposit_amount = deposit_amount::numeric + ${value},
@@ -711,6 +781,7 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
       throw new Error("لا يمكن توزيع المبلغ لأن الرصيد المتبقي تغيّر أو أن السجل لا يتبع للعميل.");
   }
   await tx.execute(sql`UPDATE receipt_voucher_allocations SET posted_at = now() WHERE receipt_voucher_id = ${voucherId} AND posted_at IS NULL`);
+  for (const invoiceId of salesInvoiceIds) await recalculateSalesInvoicePaymentFromAllocations(tx, invoiceId);
   return allocations;
 }
 
@@ -1203,6 +1274,23 @@ export async function reverseFinancialTransaction(
           updatedAt: now,
         })
         .where(eq(financialTransactionsTable.id, original.id));
+    }
+
+    // Cash, journal, allocation ledger, and invoice payment state are one unit.
+    // A partial reversal reduces only the still-valid allocation balance.
+    const receiptVoucherId = Number(original.sourceId);
+    if (original.sourceType === "receipt_voucher" && Number.isInteger(receiptVoucherId) && receiptVoucherId > 0) {
+      await reverseReceiptVoucherAllocations(
+        tx,
+        receiptVoucherId,
+        amount,
+        actor,
+        cleanReason,
+        reverse.id,
+        options?.sourceType && options.sourceType !== "receipt_voucher"
+          ? { sourceType: options.sourceType, sourceId: options.sourceId }
+          : undefined,
+      );
     }
 
     // 4) Recompute master balance from executed entries (_reversal nets to zero).

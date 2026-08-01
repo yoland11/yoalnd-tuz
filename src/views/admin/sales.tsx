@@ -1449,6 +1449,17 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
+  async function repairPaymentStatus() {
+    if (!invoice) return;
+    try {
+      const result = await adminFetch<{ invoice: { paid_amount: string; remaining_amount: string; payment_status: string } }>(`/admin/sales-invoices/${invoice.id}/sync-payment`, { method: "POST" });
+      toast({ title: "تم تحديث حالة الفاتورة", description: `المدفوع ${result.invoice.paid_amount} · المتبقي ${result.invoice.remaining_amount}` });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+    } catch (error) { toast({ title: "تعذر تحديث حالة الفاتورة", description: apiErrorMessage(error), variant: "destructive" }); }
+  }
+
   const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
 
   async function cancelInvoice() {
@@ -1581,6 +1592,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   : invoice.paymentStatus
               }
               lastPayment={invoice.lastPayment ?? null}
+              onRepairInvoiceStatus={repairPaymentStatus}
               onCollected={() => {
                 queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoice", invoiceId] });
                 queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
