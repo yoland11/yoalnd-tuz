@@ -805,7 +805,7 @@ function GraduationConfigurator() {
 
   const submit = useMutation({
     mutationFn: () =>
-      graduationFetch<{ order: any }>("/orders", {
+      graduationFetch<{ order: any; warning?: string }>("/orders", {
         method: "POST",
         body: JSON.stringify({
           ...form,
@@ -821,9 +821,14 @@ function GraduationConfigurator() {
           ),
         }),
       }),
-    onSuccess: ({ order }) => {
+    onSuccess: ({ order, warning }) => {
       setCompleted(order);
       window.scrollTo({ top: 0, behavior: "smooth" });
+      if (warning)
+        toast({
+          title: "تم إرسال الطلب",
+          description: warning,
+        });
     },
     onError: (error: Error) =>
       toast({

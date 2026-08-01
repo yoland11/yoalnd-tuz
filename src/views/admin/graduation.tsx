@@ -1282,6 +1282,8 @@ function Orders({
   deliveryOnly?: boolean;
   individualOnly?: boolean;
 }) {
+  const { toast } = useToast();
+  const client = useQueryClient();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [measurementStatus, setMeasurementStatus] = useState("");
@@ -1294,6 +1296,26 @@ function Orders({
         `/admin/graduation/orders?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&stage=${encodeURIComponent(stage)}&orderType=${individualOnly ? "individual" : ""}&measurementStatus=${encodeURIComponent(measurementStatus)}`,
       ),
   });
+  const removeBooking = useMutation({
+    mutationFn: (id: number) =>
+      adminFetch(`/admin/graduation/orders/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast({ title: "تم حذف الحجز الفردي" });
+      client.invalidateQueries({ queryKey: ["admin", "graduation"] });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذر حذف الحجز",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+  function confirmRemove(item: any) {
+    const confirmed = window.confirm(
+      `سيتم إلغاء وأرشفة الحجز ${item.orderNo} للزبون ${item.customerName}. هل تريد المتابعة؟`,
+    );
+    if (confirmed) removeBooking.mutate(item.id);
+  }
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row">
@@ -1351,7 +1373,7 @@ function Orders({
               <TableHead>التسليم</TableHead>
               <TableHead>المبلغ</TableHead>
               <TableHead>الحالة</TableHead>
-              <TableHead className="w-24">إجراء</TableHead>
+              <TableHead className="w-32">إجراء</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1385,14 +1407,32 @@ function Orders({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setSelected(item.id)}
-                      title="فتح التفاصيل"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setSelected(item.id)}
+                        title="فتح التفاصيل"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      {individualOnly ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => confirmRemove(item)}
+                          disabled={removeBooking.isPending}
+                          title="حذف الحجز الفردي"
+                        >
+                          {removeBooking.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

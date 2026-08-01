@@ -395,6 +395,14 @@ function canManageGraduationMedia(user: GraduationAdminUser) {
   return user.role === "admin" || user.permissions.includes("graduation") || user.permissions.includes("graduation.preview.manage");
 }
 
+function canDeleteIndividualGraduationOrder(user: GraduationAdminUser) {
+  return (
+    user.role === "admin" ||
+    user.permissions.includes("graduation") ||
+    user.permissions.includes("graduation.delete")
+  );
+}
+
 function graduationMediaUrl(row: typeof galleryItemsTable.$inferSelect) {
   return row.mediaUrl.startsWith("data:")
     ? `/api/media/gallery/${row.id}?v=${row.updatedAt.getTime()}`
@@ -2343,9 +2351,23 @@ export async function handleGraduationPublic(
   }
   if (method === "POST" && resource === "orders") {
     const result = await createOrder(await requestBody(req));
-    if (!result.response && result.order?.id)
+    if (result.response || !result.order?.id)
+      return result.response ?? json(result, 201);
+
+    // The order is already durable at this point. Enterprise kit/material
+    // projection must never turn a successful customer booking into a false
+    // 500 response; it is idempotent and is retried by the production flows.
+    let warning: string | undefined;
+    try {
       await syncGraduationEnterpriseOrder(result.order.id);
-    return result.response ?? json(result, 201);
+    } catch (syncError) {
+      console.error("graduation enterprise projection deferred", {
+        orderId: result.order.id,
+        error: syncError instanceof Error ? syncError.message : syncError,
+      });
+      warning = "تم استلام الطلب بنجاح. سيُستكمل تجهيز ملف الإنتاج تلقائياً من مركز الحجوزات.";
+    }
+    return json({ ...result, ...(warning ? { warning } : {}) }, 201);
   }
   if (method === "GET" && resource === "track" && parts[2]) {
     const order = await db.query.graduationOrdersTable.findFirst({
@@ -2823,6 +2845,90 @@ export async function handleAdminGraduation(
       limit,
       total: count[0]?.count ?? 0,
     });
+  }
+  if (method === "DELETE" && resource === "orders" && parts[1]) {
+    if (!canDeleteIndividualGraduationOrder(user))
+      return error("لا تملك صلاحية حذف حجوزات التخرج الفردية", 403);
+
+    const id = Number(parts[1]);
+    if (!Number.isInteger(id) || id <= 0)
+      return error("معرف طلب التخرج غير صحيح", 400);
+
+    const order = await db.query.graduationOrdersTable.findFirst({
+      where: eq(graduationOrdersTable.id, id),
+    });
+    if (!order) return error("طلب التخرج غير موجود", 404);
+    if (order.groupId)
+      return error("لا يمكن حذف حجز جماعي من شاشة الحجوزات الفردية", 409);
+    if (order.archivedAt)
+      return error("تم حذف هذا الحجز مسبقاً", 409);
+    if (
+      order.productionStage !== "new" ||
+      ["ready", "delivered"].includes(order.status)
+    )
+      return error(
+        "لا يمكن حذف حجز بدأ إنتاجه أو أصبح جاهزاً للتسليم. استخدم إجراء الإلغاء المعتمد.",
+        409,
+      );
+    if (money(order.paidAmount) > 0)
+      return error(
+        "لا يمكن حذف حجز عليه دفعة. اعكس أو ألغِ الدفعة أولاً.",
+        409,
+      );
+
+    if (order.invoiceId) {
+      const invoice = await db.query.salesInvoicesTable.findFirst({
+        where: eq(salesInvoicesTable.id, order.invoiceId),
+      });
+      if (invoice && money(invoice.paidAmount) > 0)
+        return error(
+          "لا يمكن حذف حجز مرتبط بفاتورة مدفوعة. اعكس أو ألغِ الدفعة أولاً.",
+          409,
+        );
+    }
+
+    // Cancellation restores inventory, cancels the linked invoice, and clears
+    // its payment target before the booking is hidden from operational lists.
+    const cancellation = await updateOrder(order, { status: "cancelled" }, user);
+    if (cancellation.response) return cancellation.response;
+
+    const now = new Date();
+    const [archived] = await db.transaction(async (tx) => {
+      await tx
+        .update(tasksTable)
+        .set({ status: "cancelled", updatedAt: now })
+        .where(
+          and(
+            eq(tasksTable.relatedType, "graduation_order"),
+            eq(tasksTable.relatedId, order.id),
+            sql`${tasksTable.status} not in ('completed', 'cancelled')`,
+          ),
+        );
+      return tx
+        .update(graduationOrdersTable)
+        .set({ archivedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(graduationOrdersTable.id, order.id),
+            isNull(graduationOrdersTable.archivedAt),
+          ),
+        )
+        .returning();
+    });
+    if (!archived) return error("تعذر حذف الحجز، حاول مرة أخرى", 409);
+
+    await addTimeline(
+      archived.id,
+      "individual_booking_deleted",
+      "تم إلغاء وأرشفة الحجز الفردي",
+      user,
+      { orderNo: archived.orderNo, archivedAt: now.toISOString() },
+    );
+    await addActivity(user, "graduation_individual_booking_deleted", archived.id, {
+      orderNo: archived.orderNo,
+      cancelledBeforeArchive: true,
+    });
+    return json({ order: publicOrder(archived), archived: true });
   }
   if (
     (method === "PATCH" || method === "PUT") &&
