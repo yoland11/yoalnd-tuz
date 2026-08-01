@@ -1940,7 +1940,7 @@ export async function updateOrder(
         title: "تم تعيين طلب تخرج جديد",
         body: `${saved.orderNo} - ${saved.customerName}`,
         entityId: saved.id,
-        href: `/admin/graduation/orders`,
+        href: `/staff/tailors/order/${saved.id}`,
         metadata: { tailorId: selectedTailor.id },
       });
       await db

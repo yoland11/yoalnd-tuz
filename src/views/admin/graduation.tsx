@@ -3274,13 +3274,20 @@ export default function GraduationAdminPage() {
     mode === "dashboard"
       ? "إدارة الطلبات والإنتاج والمخزون والمالية من مسار واحد"
       : undefined;
-  const actions =
-    mode === "configurator" ? (
-      <Button onClick={() => window.open("/graduation", "_blank")}>
-        <Eye className="ml-2 h-4 w-4" />
-        فتح المُعدّ
+  const actions = (
+    <>
+      <Button variant="outline" onClick={() => window.open("/staff/tailors", "_blank")}>
+        <Scissors className="ml-2 h-4 w-4" />
+        بوّابة الخيّاطين
       </Button>
-    ) : null;
+      {mode === "configurator" ? (
+        <Button onClick={() => window.open("/graduation", "_blank")}>
+          <Eye className="ml-2 h-4 w-4" />
+          فتح المُعدّ
+        </Button>
+      ) : null}
+    </>
+  );
   return (
     <div className="space-y-5" dir="rtl" style={GRADUATION_THEME_STYLE}>
       <PageHeader
