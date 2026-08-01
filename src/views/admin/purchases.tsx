@@ -11,6 +11,12 @@ import CustomerAccountPrompt from "./customer-account-prompt";
 import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
+import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
+import {
+  InvoicePaymentStatusBadge,
+  InvoiceRegisterSummaryCards,
+  type InvoiceRegisterSummary,
+} from "./invoice-payment-status";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -30,6 +36,10 @@ type PurchaseInvoice = {
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; notes?: string; createdByName: string; createdAt: string;
 };
+type InvoiceRegisterOptions = {
+  branches?: Array<{ value: string; label: string }>;
+  cashBoxes?: Array<{ value: string; label: string }>;
+};
 
 const PAYMENT_METHODS = [
   { value: "cash",     label: "نقداً" },
@@ -41,7 +51,6 @@ const PAYMENT_METHODS = [
 function blankItem(): PurchaseItem {
   return { productId: null, productName: "", barcode: "", quantity: 1, costPrice: 0, salePrice: 0, discount: 0, total: 0 };
 }
-
 function newForm() {
   return {
     date: new Date().toISOString().slice(0, 10),
@@ -66,6 +75,11 @@ export default function PurchasesPage() {
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
   const [listSearch, setListSearch] = useState("");
+  const [listPaymentStatus, setListPaymentStatus] = useState("");
+  const [listPaymentMethod, setListPaymentMethod] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [listBranchId, setListBranchId] = useState("");
+  const [listCashBox, setListCashBox] = useState("");
   const deferredListSearch = useDeferredValue(listSearch.trim());
   const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -88,11 +102,26 @@ export default function PurchasesPage() {
   });
 
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo, deferredListSearch],
-    queryFn: () => adminFetch<{ data: PurchaseInvoice[]; total: number }>(
-      `/admin/purchase-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${deferredListSearch ? `&search=${encodeURIComponent(deferredListSearch)}` : ""}`
-    ),
+    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, deferredListSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
+      if (listFrom) params.set("from", listFrom);
+      if (listTo) params.set("to", listTo);
+      if (listPaymentStatus) params.set("paymentStatus", listPaymentStatus);
+      if (listPaymentMethod) params.set("paymentMethod", listPaymentMethod);
+      if (listStatus) params.set("status", listStatus);
+      if (listBranchId) params.set("branchId", listBranchId);
+      if (listCashBox) params.set("cashBox", listCashBox);
+      if (deferredListSearch) params.set("search", deferredListSearch);
+      return adminFetch<{ data: PurchaseInvoice[]; total: number; summary: InvoiceRegisterSummary }>(`/admin/purchase-invoices?${params}`);
+    },
     enabled: listMode,
+  });
+  const { data: registerOptions } = useQuery<InvoiceRegisterOptions>({
+    queryKey: ["admin", "invoice-register-options"],
+    queryFn: () => adminFetch("/admin/reports/options"),
+    enabled: listMode,
+    staleTime: 5 * 60 * 1000,
   });
 
   async function createQuickSupplier() {
@@ -327,10 +356,17 @@ export default function PurchasesPage() {
     return <PurchaseListView
       invoices={invoicesList?.data ?? []}
       total={invoicesList?.total ?? 0}
+      summary={invoicesList?.summary}
       page={listPage} onPage={setListPage}
       from={listFrom} to={listTo}
       onFrom={setListFrom} onTo={setListTo}
       search={listSearch} onSearch={setListSearch}
+      paymentStatus={listPaymentStatus} onPaymentStatus={setListPaymentStatus}
+      paymentMethod={listPaymentMethod} onPaymentMethod={setListPaymentMethod}
+      invoiceStatus={listStatus} onInvoiceStatus={setListStatus}
+      branchId={listBranchId} onBranchId={setListBranchId}
+      cashBox={listCashBox} onCashBox={setListCashBox}
+      options={registerOptions}
       onBack={() => setListMode(false)}
       onEdit={editInvoice} onPrint={printInvoice} onDelete={deleteInvoice}
     />;
@@ -686,11 +722,20 @@ export default function PurchasesPage() {
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, search, onSearch, onBack, onEdit, onPrint, onDelete,
+  invoices, total, summary, page, onPage, from, to, onFrom, onTo, search, onSearch,
+  paymentStatus, onPaymentStatus, paymentMethod, onPaymentMethod, invoiceStatus, onInvoiceStatus,
+  branchId, onBranchId, cashBox, onCashBox, options, onBack, onEdit, onPrint, onDelete,
 }: {
   invoices: PurchaseInvoice[]; total: number; page: number; onPage: (p: number) => void;
+  summary?: InvoiceRegisterSummary;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
   search: string; onSearch: (v: string) => void;
+  paymentStatus: string; onPaymentStatus: (v: string) => void;
+  paymentMethod: string; onPaymentMethod: (v: string) => void;
+  invoiceStatus: string; onInvoiceStatus: (v: string) => void;
+  branchId: string; onBranchId: (v: string) => void;
+  cashBox: string; onCashBox: (v: string) => void;
+  options?: InvoiceRegisterOptions;
   onBack: () => void; onEdit: (inv: PurchaseInvoice) => void; onPrint: (inv: PurchaseInvoice) => void; onDelete: (inv: PurchaseInvoice) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
@@ -705,6 +750,7 @@ function PurchaseListView({
           <p className="text-xs text-muted-foreground">{total} فاتورة</p>
         </div>
       </div>
+      <InvoiceRegisterSummaryCards summary={summary} />
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="min-w-[280px] flex-1">
           <label className="text-xs text-muted-foreground mb-1 block">بحث</label>
@@ -724,6 +770,36 @@ function PurchaseListView({
           <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">حالة الدفع</label>
+          <select value={paymentStatus} onChange={e => { onPaymentStatus(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            {INVOICE_PAYMENT_STATUS_OPTIONS.map(option => <option key={option.value || "all"} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">طريقة الدفع</label>
+          <select value={paymentMethod} onChange={e => { onPaymentMethod(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option>{PAYMENT_METHODS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">حالة الفاتورة</label>
+          <select value={invoiceStatus} onChange={e => { onInvoiceStatus(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option><option value="active">نشطة</option><option value="draft">مسودة</option>
+          </select>
+        </div>
+        {!!options?.branches?.length && <div>
+          <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
+          <select value={branchId} onChange={e => { onBranchId(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option>{options.branches.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>}
+        {!!options?.cashBoxes?.length && <div>
+          <label className="text-xs text-muted-foreground mb-1 block">الصندوق</label>
+          <select value={cashBox} onChange={e => { onCashBox(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option>{options.cashBoxes.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>}
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
           <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
@@ -757,8 +833,8 @@ function PurchaseListView({
                         <PayBadge status={inv.paymentStatus} />
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${inv.status === "active" ? "bg-status-success/10 text-status-success" : "bg-status-danger/10 text-status-danger"}`}>
-                          {inv.status === "active" ? "نشطة" : "محذوفة"}
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${inv.status === "active" ? "bg-status-success/10 text-status-success" : inv.status === "draft" ? "bg-status-warning/10 text-status-warning" : "bg-status-danger/10 text-status-danger"}`}>
+                          {inv.status === "active" ? "نشطة" : inv.status === "draft" ? "مسودة" : "محذوفة"}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -796,11 +872,6 @@ function PurchaseListView({
 }
 
 function PayBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; class: string }> = {
-    paid:    { label: "مدفوع",     class: "text-status-success" },
-    partial: { label: "جزئي",      class: "text-status-warning" },
-    unpaid:  { label: "غير مدفوع", class: "text-status-danger" },
-  };
-  const s = map[status] ?? { label: status, class: "text-muted-foreground" };
-  return <span className={`text-xs font-medium ${s.class}`}>{s.label}</span>;
+  return <InvoicePaymentStatusBadge status={status} />;
 }
+

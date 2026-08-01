@@ -22,9 +22,12 @@ import { Button } from "@/components/ui/button";
 import { downloadElementPdf } from "@/lib/pdf";
 import { adminFetch, formatCurrency, formatMoney } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
+import { InvoicePaymentStatusBadge } from "./invoice-payment-status";
 
 type ReportType =
   | "invoice-sales"
+  | "purchase-invoices"
   | "invoice-details"
   | "customers"
   | "products"
@@ -55,6 +58,8 @@ type ReportOptions = {
   products: ReportOption[];
   categories: ReportOption[];
   paymentMethods: ReportOption[];
+  branches?: ReportOption[];
+  cashBoxes?: ReportOption[];
 };
 type Filters = {
   from: string;
@@ -63,11 +68,26 @@ type Filters = {
   product: string;
   category: string;
   paymentMethod: string;
+  paymentStatus: string;
+  invoiceStatus: string;
+  branchId: string;
+  cashBox: string;
 };
 
 const THIS_MONTH_FROM = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 const TODAY = new Date().toISOString().slice(0, 10);
-const DEFAULT_FILTERS: Filters = { from: THIS_MONTH_FROM, to: TODAY, customer: "", product: "", category: "", paymentMethod: "" };
+const DEFAULT_FILTERS: Filters = {
+  from: THIS_MONTH_FROM,
+  to: TODAY,
+  customer: "",
+  product: "",
+  category: "",
+  paymentMethod: "",
+  paymentStatus: "",
+  invoiceStatus: "",
+  branchId: "",
+  cashBox: "",
+};
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: "نقدي",
@@ -77,9 +97,10 @@ const PAYMENT_LABELS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  paid: "مدفوع",
-  partial: "جزئي",
+  paid: "مدفوع بالكامل",
+  partial: "مدفوع جزئياً",
   unpaid: "غير مدفوع",
+  overpaid: "مدفوع أكثر من المطلوب",
   active: "فعالة",
   returned: "مرتجع",
   refunded: "مسترجع",
@@ -117,6 +138,34 @@ const REPORTS: ReportConfig[] = [
       { key: "net_total", label: "الصافي", type: "money", align: "center" },
       { key: "payment_method", label: "الدفع", type: "payment", align: "center" },
       { key: "payment_status", label: "الحالة", type: "status", align: "center" },
+    ],
+  },
+  {
+    id: "purchase-invoices",
+    label: "فواتير المشتريات",
+    description: "فواتير الموردين مع حالة الدفع والإجماليات",
+    icon: ShoppingBag,
+    chartLabelKey: "invoice_no",
+    chartValueKey: "net_total",
+    totals: [
+      { key: "__rows", label: "عدد الفواتير", type: "number" },
+      { key: "subtotal", label: "إجمالي المشتريات", type: "money" },
+      { key: "discount", label: "إجمالي الخصومات", type: "money" },
+      { key: "net_total", label: "صافي المشتريات", type: "money" },
+      { key: "remaining_amount", label: "المتبقي", type: "money" },
+    ],
+    columns: [
+      { key: "invoice_no", label: "رقم الفاتورة" },
+      { key: "date", label: "التاريخ", type: "date", align: "center" },
+      { key: "supplier_name", label: "المورد" },
+      { key: "item_count", label: "الأصناف", type: "number", align: "center" },
+      { key: "subtotal", label: "الإجمالي", type: "money", align: "center" },
+      { key: "discount", label: "الخصم", type: "money", align: "center" },
+      { key: "net_total", label: "الصافي", type: "money", align: "center" },
+      { key: "paid_amount", label: "المدفوع", type: "money", align: "center" },
+      { key: "remaining_amount", label: "المتبقي", type: "money", align: "center" },
+      { key: "payment_method", label: "طريقة الدفع", type: "payment", align: "center" },
+      { key: "payment_status", label: "حالة الدفع", type: "status", align: "center" },
     ],
   },
   {
@@ -347,6 +396,10 @@ export default function ReportsPage() {
     if (appliedFilters.product.trim()) params.set("product", appliedFilters.product.trim());
     if (appliedFilters.category.trim()) params.set("category", appliedFilters.category.trim());
     if (appliedFilters.paymentMethod.trim()) params.set("paymentMethod", appliedFilters.paymentMethod.trim());
+    if (appliedFilters.paymentStatus.trim()) params.set("paymentStatus", appliedFilters.paymentStatus.trim());
+    if (appliedFilters.invoiceStatus.trim()) params.set("invoiceStatus", appliedFilters.invoiceStatus.trim());
+    if (appliedFilters.branchId.trim()) params.set("branchId", appliedFilters.branchId.trim());
+    if (appliedFilters.cashBox.trim()) params.set("cashBox", appliedFilters.cashBox.trim());
     return params.toString();
   }, [appliedFilters, tab]);
 
@@ -456,7 +509,7 @@ export default function ReportsPage() {
               className="admin-report-input"
             />
           </FilterField>
-          <FilterField label="العميل">
+          <FilterField label="العميل / المورد">
             <input
               list="report-customers"
               value={filters.customer}
@@ -508,6 +561,26 @@ export default function ReportsPage() {
               ))}
             </select>
           </FilterField>
+          <FilterField label="حالة الدفع">
+            <select value={filters.paymentStatus} onChange={(event) => updateFilter("paymentStatus", event.target.value)} className="admin-report-input">
+              {INVOICE_PAYMENT_STATUS_OPTIONS.map((option) => <option key={option.value || "all"} value={option.value}>{option.label}</option>)}
+            </select>
+          </FilterField>
+          <FilterField label="حالة الفاتورة">
+            <select value={filters.invoiceStatus} onChange={(event) => updateFilter("invoiceStatus", event.target.value)} className="admin-report-input">
+              <option value="">الفعالة</option><option value="draft">مسودة</option>
+            </select>
+          </FilterField>
+          {!!optionsQuery.data?.branches?.length && <FilterField label="الفرع">
+            <select value={filters.branchId} onChange={(event) => updateFilter("branchId", event.target.value)} className="admin-report-input">
+              <option value="">كل الفروع</option>{optionsQuery.data.branches.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </FilterField>}
+          {!!optionsQuery.data?.cashBoxes?.length && <FilterField label="الصندوق">
+            <select value={filters.cashBox} onChange={(event) => updateFilter("cashBox", event.target.value)} className="admin-report-input">
+              <option value="">كل الصناديق</option>{optionsQuery.data.cashBoxes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </FilterField>}
         </div>
 
         <div className="flex flex-wrap gap-2 items-center justify-between">
@@ -681,7 +754,9 @@ export default function ReportsPage() {
                           key={column.key}
                           className={`px-4 py-3 ${column.align === "center" ? "text-center" : "text-right"} ${column.type === "money" ? "font-medium text-primary" : ""}`}
                         >
-                          {formatCell(row[column.key], column.type)}
+                          {column.type === "status" && ["unpaid", "partial", "paid", "overpaid"].includes(String(row[column.key]))
+                            ? <InvoicePaymentStatusBadge status={String(row[column.key])} />
+                            : formatCell(row[column.key], column.type)}
                         </td>
                       ))}
                     </tr>

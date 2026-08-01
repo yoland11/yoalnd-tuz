@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
-  CheckCircle2, Clock, AlertCircle, QrCode, Download,
+  QrCode, Download,
   Printer, Ban, ScanLine,
 } from "lucide-react";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
@@ -25,6 +25,12 @@ import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
+import {
+  InvoicePaymentStatusBadge,
+  InvoiceRegisterSummaryCards,
+  type InvoiceRegisterSummary,
+} from "./invoice-payment-status";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
@@ -58,6 +64,10 @@ type Customer = {
   phone?: string | null;
 };
 type Supplier = { id: number; name: string };
+type InvoiceRegisterOptions = {
+  branches?: Array<{ value: string; label: string }>;
+  cashBoxes?: Array<{ value: string; label: string }>;
+};
 
 function finiteNumber(value: unknown, min = 0, max = 100_000_000) {
   const number = Number(value);
@@ -196,6 +206,11 @@ export default function SalesPage() {
   const [listFrom, setListFrom] = useState("");
   const [listTo, setListTo] = useState("");
   const [listReversed, setListReversed] = useState(""); // "" all | "false" active | "true" reversed
+  const [listPaymentStatus, setListPaymentStatus] = useState("");
+  const [listPaymentMethod, setListPaymentMethod] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [listBranchId, setListBranchId] = useState("");
+  const [listCashBox, setListCashBox] = useState("");
   const [listSearch, setListSearch] = useState("");
   const deferredListSearch = useDeferredValue(listSearch.trim());
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
@@ -224,11 +239,29 @@ export default function SalesPage() {
 
   // Invoices list
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, deferredListSearch],
-    queryFn: () => adminFetch<{ data: SalesInvoice[]; total: number }>(
-      `/admin/sales-invoices?limit=20&offset=${(listPage - 1) * 20}${listFrom ? `&from=${listFrom}` : ""}${listTo ? `&to=${listTo}` : ""}${listReversed ? `&reversed=${listReversed}` : ""}${deferredListSearch ? `&search=${encodeURIComponent(deferredListSearch)}` : ""}`
-    ),
+    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, deferredListSearch],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
+      if (listFrom) params.set("from", listFrom);
+      if (listTo) params.set("to", listTo);
+      if (listReversed) params.set("reversed", listReversed);
+      if (listPaymentStatus) params.set("paymentStatus", listPaymentStatus);
+      if (listPaymentMethod) params.set("paymentMethod", listPaymentMethod);
+      if (listStatus) params.set("status", listStatus);
+      if (listBranchId) params.set("branchId", listBranchId);
+      if (listCashBox) params.set("cashBox", listCashBox);
+      if (deferredListSearch) params.set("search", deferredListSearch);
+      return adminFetch<{ data: SalesInvoice[]; total: number; summary: InvoiceRegisterSummary }>(
+        `/admin/sales-invoices?${params}`,
+      );
+    },
     enabled: listMode,
+  });
+  const { data: registerOptions } = useQuery<InvoiceRegisterOptions>({
+    queryKey: ["admin", "invoice-register-options"],
+    queryFn: () => adminFetch("/admin/reports/options"),
+    enabled: listMode,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Filtered products for search
@@ -480,10 +513,17 @@ export default function SalesPage() {
         <InvoiceListView
           invoices={invoicesList?.data ?? []}
           total={invoicesList?.total ?? 0}
+          summary={invoicesList?.summary}
           page={listPage} onPage={setListPage}
           from={listFrom} to={listTo}
           onFrom={setListFrom} onTo={setListTo}
           reversed={listReversed} onReversed={setListReversed}
+          paymentStatus={listPaymentStatus} onPaymentStatus={setListPaymentStatus}
+          paymentMethod={listPaymentMethod} onPaymentMethod={setListPaymentMethod}
+          invoiceStatus={listStatus} onInvoiceStatus={setListStatus}
+          branchId={listBranchId} onBranchId={setListBranchId}
+          cashBox={listCashBox} onCashBox={setListCashBox}
+          options={registerOptions}
           search={listSearch} onSearch={setListSearch}
           onBack={() => setListMode(false)}
           onOpen={setSelectedInvoiceId}
@@ -937,11 +977,20 @@ export default function SalesPage() {
 
 // ── Invoice List Sub-View ──────────────────────────────────────────────────
 function InvoiceListView({
-  invoices, total, page, onPage, from, to, onFrom, onTo, reversed, onReversed, search, onSearch, onBack, onOpen,
+  invoices, total, summary, page, onPage, from, to, onFrom, onTo, reversed, onReversed,
+  paymentStatus, onPaymentStatus, paymentMethod, onPaymentMethod, invoiceStatus, onInvoiceStatus,
+  branchId, onBranchId, cashBox, onCashBox, options, search, onSearch, onBack, onOpen,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
+  summary?: InvoiceRegisterSummary;
   from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
   reversed: string; onReversed: (v: string) => void;
+  paymentStatus: string; onPaymentStatus: (v: string) => void;
+  paymentMethod: string; onPaymentMethod: (v: string) => void;
+  invoiceStatus: string; onInvoiceStatus: (v: string) => void;
+  branchId: string; onBranchId: (v: string) => void;
+  cashBox: string; onCashBox: (v: string) => void;
+  options?: InvoiceRegisterOptions;
   search: string; onSearch: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
 }) {
@@ -996,6 +1045,7 @@ function InvoiceListView({
           <p className="text-xs text-muted-foreground">{total} فاتورة</p>
         </div>
       </div>
+      <InvoiceRegisterSummaryCards summary={summary} />
       {/* Filters */}
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="min-w-[280px] flex-1">
@@ -1021,6 +1071,40 @@ function InvoiceListView({
           <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
             className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
         </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">حالة الدفع</label>
+          <select value={paymentStatus} onChange={e => { onPaymentStatus(e.target.value); onPage(1); }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            {INVOICE_PAYMENT_STATUS_OPTIONS.map(option => <option key={option.value || "all"} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">طريقة الدفع</label>
+          <select value={paymentMethod} onChange={e => { onPaymentMethod(e.target.value); onPage(1); }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value="">الكل</option>
+            {PAYMENT_METHODS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">حالة الفاتورة</label>
+          <select value={invoiceStatus} onChange={e => { onInvoiceStatus(e.target.value); onPage(1); }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value="">الكل</option><option value="active">نشطة</option><option value="draft">مسودة</option><option value="cancelled">ملغاة</option>
+          </select>
+        </div>
+        {!!options?.branches?.length && <div>
+          <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
+          <select value={branchId} onChange={e => { onBranchId(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option>{options.branches.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>}
+        {!!options?.cashBoxes?.length && <div>
+          <label className="text-xs text-muted-foreground mb-1 block">الصندوق</label>
+          <select value={cashBox} onChange={e => { onCashBox(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
+            <option value="">الكل</option>{options.cashBoxes.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>}
         <div>
           <label className="text-xs text-muted-foreground mb-1 block">الحالة المالية</label>
           <select value={reversed} onChange={e => { onReversed(e.target.value); onPage(1); }}
@@ -1070,7 +1154,7 @@ function InvoiceListView({
                             </span>
                           </div>
                         ) : (
-                          <PayStatusBadge status={inv.paymentStatus} />
+                          <InvoicePaymentStatusBadge status={inv.paymentStatus} />
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
@@ -1753,16 +1837,5 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function PayStatusBadge({ status }: { status: string }) {
-  const map: Record<string, { label: string; icon: any; class: string }> = {
-    paid:    { label: "مدفوع",     icon: CheckCircle2, class: "text-status-success" },
-    partial: { label: "جزئي",      icon: Clock,        class: "text-status-warning" },
-    unpaid:  { label: "غير مدفوع", icon: AlertCircle,  class: "text-status-danger" },
-  };
-  const s = map[status] ?? { label: status, icon: null, class: "text-muted-foreground" };
-  const Icon = s.icon;
-  return (
-    <span className={`text-xs flex items-center justify-center gap-1 ${s.class}`}>
-      {Icon && <Icon className="w-3 h-3" />}{s.label}
-    </span>
-  );
+  return <InvoicePaymentStatusBadge status={status} />;
 }

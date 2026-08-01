@@ -15,6 +15,12 @@ import QRCode from "qrcode";
 import webpush from "web-push";
 import { formatCurrency, formatMoney } from "@/lib/money";
 import { settlePaymentAmounts } from "@/lib/payment-settlement";
+import {
+  deriveInvoicePaymentStatus,
+  invoiceRemainingBalance,
+  INVOICE_PAYMENT_STATUSES,
+  type InvoicePaymentStatus,
+} from "@/lib/invoice-payment-status";
 import { parseRepx, guessCategory, REPORT_CATEGORIES } from "@/server/repx";
 import { z } from "zod/v4";
 import {
@@ -37396,14 +37402,68 @@ const invoiceRegisterQuerySchema = z.object({
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   status: z.string().trim().max(30).optional(),
-  paymentStatus: z.enum(["paid", "partial", "unpaid"]).optional(),
+  paymentStatus: z.enum(INVOICE_PAYMENT_STATUSES).optional(),
+  paymentMethod: z.string().trim().max(30).optional(),
+  branchId: z.coerce.number().int().positive().optional(),
+  cashBox: z.string().trim().max(30).optional(),
   reversed: z.enum(["true", "false"]).optional(),
+  export: z.enum(["true", "false"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
   offset: z.coerce.number().int().min(0).default(0),
 });
 
 function invoiceRegisterSearchPattern(value: string) {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+}
+
+function invoicePaymentStatusCondition(
+  paidColumn: any,
+  totalColumn: any,
+  status: InvoicePaymentStatus,
+) {
+  const paid = sql`COALESCE(${paidColumn}::numeric, 0)`;
+  const total = sql`COALESCE(${totalColumn}::numeric, 0)`;
+  if (status === "unpaid") return sql`${paid} = 0`;
+  if (status === "partial") return sql`${paid} > 0 AND ${paid} < ${total}`;
+  if (status === "paid") return sql`${paid} > 0 AND ${paid} = ${total}`;
+  return sql`${paid} > ${total}`;
+}
+
+function invoiceRegisterView<T extends Record<string, any>>(row: T) {
+  return {
+    ...row,
+    paymentStatus: deriveInvoicePaymentStatus(row.paidAmount, row.total),
+    remainingAmount: String(invoiceRemainingBalance(row.paidAmount, row.total)),
+  };
+}
+
+async function invoiceRegisterSummary(
+  table: any,
+  columns: { status: any; paidAmount: any; total: any },
+  conditions: any[],
+) {
+  const paid = sql`COALESCE(${columns.paidAmount}::numeric, 0)`;
+  const total = sql`COALESCE(${columns.total}::numeric, 0)`;
+  const activeConditions = [...conditions, eq(columns.status, "active")];
+  const [row] = await db
+    .select({
+      totalInvoices: sql<number>`COUNT(*)::int`,
+      unpaidTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} = 0), 0)::text`,
+      partialTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} > 0 AND ${paid} < ${total}), 0)::text`,
+      paidTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} > 0 AND ${paid} = ${total}), 0)::text`,
+      overpaidTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} > ${total}), 0)::text`,
+      remainingTotal: sql<string>`COALESCE(SUM(GREATEST(${total} - ${paid}, 0)), 0)::text`,
+    })
+    .from(table)
+    .where(and(...activeConditions) as any);
+  return row ?? {
+    totalInvoices: 0,
+    unpaidTotal: "0",
+    partialTotal: "0",
+    paidTotal: "0",
+    overpaidTotal: "0",
+    remainingTotal: "0",
+  };
 }
 
 /**
@@ -37608,28 +37668,41 @@ async function handleSalesInvoices(
       to,
       status,
       paymentStatus,
+      paymentMethod,
+      branchId,
+      cashBox,
       limit: limitQ,
       offset: offsetQ,
       reversed,
+      export: exportQ,
     } = parsedQuery.data;
     const search = (parsedQuery.data.search ?? parsedQuery.data.q ?? "").trim();
-    const conds: any[] = [sql`${salesInvoicesTable.status} != 'deleted'`];
-    if (from) conds.push(gte(salesInvoicesTable.date, from));
-    if (to) conds.push(lte(salesInvoicesTable.date, to));
-    if (status) conds.push(eq(salesInvoicesTable.status, status));
-    if (paymentStatus)
-      conds.push(eq(salesInvoicesTable.paymentStatus, paymentStatus));
+    const baseConds: any[] = [sql`${salesInvoicesTable.status} != 'deleted'`];
+    if (from) baseConds.push(gte(salesInvoicesTable.date, from));
+    if (to) baseConds.push(lte(salesInvoicesTable.date, to));
+    if (status) baseConds.push(eq(salesInvoicesTable.status, status));
+    if (paymentMethod)
+      baseConds.push(eq(salesInvoicesTable.paymentMethod, paymentMethod));
+    if (cashBox === "MASTER")
+      baseConds.push(eq(salesInvoicesTable.paymentMethod, "cash"));
+    if (branchId)
+      baseConds.push(sql`EXISTS (
+        SELECT 1 FROM branch_entity_assignments branch_assignment
+        WHERE branch_assignment.entity_type = 'sales_invoice'
+          AND branch_assignment.entity_id = ${salesInvoicesTable.id}
+          AND branch_assignment.branch_id = ${branchId}
+      )`);
     if (reversed === "true")
-      conds.push(eq(salesInvoicesTable.financiallyReversed, true));
+      baseConds.push(eq(salesInvoicesTable.financiallyReversed, true));
     else if (reversed === "false")
-      conds.push(eq(salesInvoicesTable.financiallyReversed, false));
+      baseConds.push(eq(salesInvoicesTable.financiallyReversed, false));
     if (search) {
       const pattern = invoiceRegisterSearchPattern(search);
       const compactPhone = search.replace(/\D/g, "");
       const compactPhonePattern = compactPhone
         ? invoiceRegisterSearchPattern(compactPhone)
         : null;
-      conds.push(sql`(
+      baseConds.push(sql`(
         ${salesInvoicesTable.invoiceNo} ILIKE ${pattern}
         OR ${salesInvoicesTable.customerName} ILIKE ${pattern}
         OR coalesce(${salesInvoicesTable.customerPhone}, '') ILIKE ${pattern}
@@ -37654,18 +37727,45 @@ async function handleSalesInvoices(
         )
       )`);
     }
+    const conds = [...baseConds];
+    if (paymentStatus) {
+      conds.push(
+        invoicePaymentStatusCondition(
+          salesInvoicesTable.paidAmount,
+          salesInvoicesTable.total,
+          paymentStatus,
+        ),
+      );
+      if (!status) conds.push(eq(salesInvoicesTable.status, "active"));
+    }
     const rows = await db
       .select()
       .from(salesInvoicesTable)
       .where(and(...conds) as any)
       .orderBy(desc(salesInvoicesTable.date), desc(salesInvoicesTable.id))
-      .limit(limitQ)
-      .offset(offsetQ);
-    const [countRow] = await db
-      .select({ c: sql<number>`count(*)::int` })
-      .from(salesInvoicesTable)
-      .where(and(...conds) as any);
-    return json({ data: rows, total: countRow?.c ?? 0 });
+      .limit(exportQ === "true" ? 5_000 : limitQ)
+      .offset(exportQ === "true" ? 0 : offsetQ);
+    const [[countRow], summary] = await Promise.all([
+      db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(salesInvoicesTable)
+        .where(and(...conds) as any),
+      invoiceRegisterSummary(
+        salesInvoicesTable,
+        {
+          status: salesInvoicesTable.status,
+          paidAmount: salesInvoicesTable.paidAmount,
+          total: salesInvoicesTable.total,
+        },
+        baseConds,
+      ),
+    ]);
+    return json({
+      data: rows.map(invoiceRegisterView),
+      total: countRow?.c ?? 0,
+      summary,
+      exportTruncated: exportQ === "true" && Number(countRow?.c ?? 0) > 5_000,
+    });
   }
 
   if (method === "POST" && id && parts[3] === "cancel") {
@@ -39023,23 +39123,36 @@ async function handlePurchaseInvoices(
       to,
       status,
       paymentStatus,
+      paymentMethod,
+      branchId,
+      cashBox,
       limit: limitQ,
       offset: offsetQ,
+      export: exportQ,
     } = parsedQuery.data;
     const search = (parsedQuery.data.search ?? parsedQuery.data.q ?? "").trim();
-    const conds: any[] = [sql`${purchaseInvoicesTable.status} != 'deleted'`];
-    if (from) conds.push(gte(purchaseInvoicesTable.date, from));
-    if (to) conds.push(lte(purchaseInvoicesTable.date, to));
-    if (status) conds.push(eq(purchaseInvoicesTable.status, status));
-    if (paymentStatus)
-      conds.push(eq(purchaseInvoicesTable.paymentStatus, paymentStatus));
+    const baseConds: any[] = [sql`${purchaseInvoicesTable.status} != 'deleted'`];
+    if (from) baseConds.push(gte(purchaseInvoicesTable.date, from));
+    if (to) baseConds.push(lte(purchaseInvoicesTable.date, to));
+    if (status) baseConds.push(eq(purchaseInvoicesTable.status, status));
+    if (paymentMethod)
+      baseConds.push(eq(purchaseInvoicesTable.paymentMethod, paymentMethod));
+    if (cashBox === "MASTER")
+      baseConds.push(eq(purchaseInvoicesTable.paymentMethod, "cash"));
+    if (branchId)
+      baseConds.push(sql`EXISTS (
+        SELECT 1 FROM branch_entity_assignments branch_assignment
+        WHERE branch_assignment.entity_type = 'purchase_invoice'
+          AND branch_assignment.entity_id = ${purchaseInvoicesTable.id}
+          AND branch_assignment.branch_id = ${branchId}
+      )`);
     if (search) {
       const pattern = invoiceRegisterSearchPattern(search);
       const compactPhone = search.replace(/\D/g, "");
       const compactPhonePattern = compactPhone
         ? invoiceRegisterSearchPattern(compactPhone)
         : null;
-      conds.push(sql`(
+      baseConds.push(sql`(
         ${purchaseInvoicesTable.invoiceNo} ILIKE ${pattern}
         OR ${purchaseInvoicesTable.supplierName} ILIKE ${pattern}
         OR coalesce(${purchaseInvoicesTable.notes}, '') ILIKE ${pattern}
@@ -39063,18 +39176,45 @@ async function handlePurchaseInvoices(
         )
       )`);
     }
+    const conds = [...baseConds];
+    if (paymentStatus) {
+      conds.push(
+        invoicePaymentStatusCondition(
+          purchaseInvoicesTable.paidAmount,
+          purchaseInvoicesTable.total,
+          paymentStatus,
+        ),
+      );
+      if (!status) conds.push(eq(purchaseInvoicesTable.status, "active"));
+    }
     const rows = await db
       .select()
       .from(purchaseInvoicesTable)
       .where(and(...conds) as any)
       .orderBy(desc(purchaseInvoicesTable.date), desc(purchaseInvoicesTable.id))
-      .limit(limitQ)
-      .offset(offsetQ);
-    const [countRow] = await db
-      .select({ c: sql<number>`count(*)::int` })
-      .from(purchaseInvoicesTable)
-      .where(and(...conds) as any);
-    return json({ data: rows, total: countRow?.c ?? 0 });
+      .limit(exportQ === "true" ? 5_000 : limitQ)
+      .offset(exportQ === "true" ? 0 : offsetQ);
+    const [[countRow], summary] = await Promise.all([
+      db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(purchaseInvoicesTable)
+        .where(and(...conds) as any),
+      invoiceRegisterSummary(
+        purchaseInvoicesTable,
+        {
+          status: purchaseInvoicesTable.status,
+          paidAmount: purchaseInvoicesTable.paidAmount,
+          total: purchaseInvoicesTable.total,
+        },
+        baseConds,
+      ),
+    ]);
+    return json({
+      data: rows.map(invoiceRegisterView),
+      total: countRow?.c ?? 0,
+      summary,
+      exportTruncated: exportQ === "true" && Number(countRow?.c ?? 0) > 5_000,
+    });
   }
 
   if (method === "GET" && id) {
@@ -39897,7 +40037,8 @@ async function handleReports(
   }
 
   if (reportType === "options") {
-    const [customers, products, categories, paymentMethods] = await Promise.all(
+    await ensureEnterprisePhase5Tables();
+    const [customers, products, categories, paymentMethods, branches] = await Promise.all(
       [
         db.execute(sql`
         SELECT label, value FROM (
@@ -39911,6 +40052,12 @@ async function handleReports(
             COALESCE(NULLIF(customer_name, ''), customer_phone, 'زبون') AS label,
             COALESCE(customer_phone, NULLIF(customer_name, ''), '') AS value
           FROM orders
+          UNION
+          SELECT DISTINCT
+            COALESCE(NULLIF(supplier_name, ''), 'مورد') AS label,
+            COALESCE(NULLIF(supplier_name, ''), supplier_id::text, '') AS value
+          FROM purchase_invoices
+          WHERE status = 'active'
         ) opts
         WHERE value <> ''
         ORDER BY label
@@ -39935,9 +40082,17 @@ async function handleReports(
           SELECT payment_method FROM sales_invoices WHERE payment_method IS NOT NULL
           UNION
           SELECT payment_method FROM orders WHERE payment_method IS NOT NULL
+          UNION
+          SELECT payment_method FROM purchase_invoices WHERE payment_method IS NOT NULL
         ) methods
         WHERE payment_method <> ''
         ORDER BY payment_method
+      `),
+        db.execute(sql`
+        SELECT id::text AS value, name AS label
+        FROM enterprise_branches
+        WHERE is_active = true
+        ORDER BY id
       `),
       ],
     );
@@ -39946,6 +40101,8 @@ async function handleReports(
       products: products.rows ?? [],
       categories: categories.rows ?? [],
       paymentMethods: paymentMethods.rows ?? [],
+      branches: branches.rows ?? [],
+      cashBoxes: [{ value: "MASTER", label: "الصندوق الرئيسي" }],
     });
   }
 
@@ -39959,11 +40116,122 @@ async function handleReports(
     const paymentMethod = (
       req.nextUrl.searchParams.get("paymentMethod") ?? ""
     ).trim();
+    const paymentStatusRaw = (
+      req.nextUrl.searchParams.get("paymentStatus") ?? ""
+    ).trim();
+    const paymentStatus = INVOICE_PAYMENT_STATUSES.includes(
+      paymentStatusRaw as InvoicePaymentStatus,
+    )
+      ? (paymentStatusRaw as InvoicePaymentStatus)
+      : "";
+    const invoiceStatus = (
+      req.nextUrl.searchParams.get("invoiceStatus") ?? ""
+    ).trim();
+    const requestedBranchId = Number(req.nextUrl.searchParams.get("branchId") ?? 0);
+    const branchId = Number.isInteger(requestedBranchId) && requestedBranchId > 0
+      ? requestedBranchId
+      : 0;
+    const cashBox = (req.nextUrl.searchParams.get("cashBox") ?? "").trim();
     const customerLike = `%${customer}%`;
     const productLike = `%${product}%`;
     const categoryLike = `%${category}%`;
     const fromTs = `${from}T00:00:00`;
     const toTs = `${to}T23:59:59`;
+    const salesPaid = sql`COALESCE(si.paid_amount::numeric, 0)`;
+    const salesTotal = sql`COALESCE(si.total::numeric, 0)`;
+    const salesPaymentStatusFilter =
+      paymentStatus === "unpaid"
+        ? sql`${salesPaid} = 0`
+        : paymentStatus === "partial"
+          ? sql`${salesPaid} > 0 AND ${salesPaid} < ${salesTotal}`
+          : paymentStatus === "paid"
+            ? sql`${salesPaid} > 0 AND ${salesPaid} = ${salesTotal}`
+            : paymentStatus === "overpaid"
+              ? sql`${salesPaid} > ${salesTotal}`
+              : sql`TRUE`;
+    const purchasePaid = sql`COALESCE(pi.paid_amount::numeric, 0)`;
+    const purchaseTotal = sql`COALESCE(pi.total::numeric, 0)`;
+    const purchasePaymentStatusFilter =
+      paymentStatus === "unpaid"
+        ? sql`${purchasePaid} = 0`
+        : paymentStatus === "partial"
+          ? sql`${purchasePaid} > 0 AND ${purchasePaid} < ${purchaseTotal}`
+          : paymentStatus === "paid"
+            ? sql`${purchasePaid} > 0 AND ${purchasePaid} = ${purchaseTotal}`
+            : paymentStatus === "overpaid"
+              ? sql`${purchasePaid} > ${purchaseTotal}`
+              : sql`TRUE`;
+    const salesRegisterScopeFilter = sql`
+      (${cashBox} = '' OR (${cashBox} = 'MASTER' AND si.payment_method = 'cash'))
+      AND (${branchId} = 0 OR EXISTS (
+        SELECT 1 FROM branch_entity_assignments ba
+        WHERE ba.entity_type = 'sales_invoice' AND ba.entity_id = si.id AND ba.branch_id = ${branchId}
+      ))
+    `;
+
+    if (type === "purchase-invoices") {
+      const rows = await db.execute(sql`
+        SELECT
+          pi.id,
+          pi.invoice_no,
+          pi.date::text AS date,
+          COALESCE(NULLIF(pi.supplier_name, ''), 'مورد') AS supplier_name,
+          COALESCE(pi.payment_method, '') AS payment_method,
+          CASE
+            WHEN COALESCE(pi.paid_amount::numeric, 0) = 0 THEN 'unpaid'
+            WHEN COALESCE(pi.paid_amount::numeric, 0) < COALESCE(pi.total::numeric, 0) THEN 'partial'
+            WHEN COALESCE(pi.paid_amount::numeric, 0) = COALESCE(pi.total::numeric, 0) THEN 'paid'
+            ELSE 'overpaid'
+          END AS payment_status,
+          COALESCE(item_stats.item_count, 0)::int AS item_count,
+          pi.subtotal::text AS subtotal,
+          pi.discount_amount::text AS discount,
+          pi.total::text AS net_total,
+          pi.paid_amount::text AS paid_amount,
+          GREATEST(COALESCE(pi.total::numeric, 0) - COALESCE(pi.paid_amount::numeric, 0), 0)::text AS remaining_amount
+        FROM purchase_invoices pi
+        LEFT JOIN (
+          SELECT invoice_id, COUNT(*)::int AS item_count
+          FROM purchase_invoice_items
+          GROUP BY invoice_id
+        ) item_stats ON item_stats.invoice_id = pi.id
+        WHERE pi.status = ${invoiceStatus || "active"}
+          AND pi.date >= ${from}
+          AND pi.date <= ${to}
+          AND (${customer} = '' OR pi.supplier_name ILIKE ${customerLike} OR pi.supplier_id::text = ${customer} OR EXISTS (
+            SELECT 1 FROM suppliers report_supplier
+            WHERE report_supplier.id = pi.supplier_id
+              AND (report_supplier.name ILIKE ${customerLike}
+                OR COALESCE(report_supplier.company, '') ILIKE ${customerLike}
+                OR COALESCE(report_supplier.phone, '') ILIKE ${customerLike}
+                OR COALESCE(report_supplier.supplier_code, '') ILIKE ${customerLike})
+          ))
+          AND (${paymentMethod} = '' OR pi.payment_method = ${paymentMethod})
+          AND ${purchasePaymentStatusFilter}
+          AND (${cashBox} = '' OR (${cashBox} = 'MASTER' AND pi.payment_method = 'cash'))
+          AND (${branchId} = 0 OR EXISTS (
+            SELECT 1 FROM branch_entity_assignments ba
+            WHERE ba.entity_type = 'purchase_invoice' AND ba.entity_id = pi.id AND ba.branch_id = ${branchId}
+          ))
+          AND (${product} = '' OR EXISTS (
+            SELECT 1 FROM purchase_invoice_items pii
+            WHERE pii.invoice_id = pi.id
+              AND (pii.product_name ILIKE ${productLike} OR COALESCE(pii.barcode, '') ILIKE ${productLike} OR pii.product_id::text = ${product})
+          ))
+          AND (${category} = '' OR EXISTS (
+            SELECT 1 FROM purchase_invoice_items pii
+            LEFT JOIN products p ON p.id = pii.product_id
+            LEFT JOIN categories c ON c.id = p.category_id
+            WHERE pii.invoice_id = pi.id
+              AND (p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
+                OR COALESCE(p.category, '') ILIKE ${categoryLike}
+                OR COALESCE(c.name_ar, c.name, c.slug, '') ILIKE ${categoryLike})
+          ))
+        ORDER BY pi.date DESC, pi.id DESC
+        LIMIT 1000
+      `);
+      return json({ type, from, to, rows: rows.rows ?? [] });
+    }
 
     if (type === "invoice-sales") {
       const rows = await db.execute(sql`
@@ -39976,25 +40244,36 @@ async function handleReports(
           COALESCE(NULLIF(si.supplier_name, ''), '—') AS supplier_name,
           COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد') AS staff_name,
           COALESCE(si.payment_method, '') AS payment_method,
-          COALESCE(si.payment_status, '') AS payment_status,
+          CASE
+            WHEN COALESCE(si.paid_amount::numeric, 0) = 0 THEN 'unpaid'
+            WHEN COALESCE(si.paid_amount::numeric, 0) < COALESCE(si.total::numeric, 0) THEN 'partial'
+            WHEN COALESCE(si.paid_amount::numeric, 0) = COALESCE(si.total::numeric, 0) THEN 'paid'
+            ELSE 'overpaid'
+          END AS payment_status,
           COALESCE(item_stats.item_count, 0)::int AS item_count,
           si.subtotal::text AS subtotal,
           (COALESCE(si.discount_amount, 0) + COALESCE(si.coupon_discount_amount, 0))::text AS discount,
           si.total::text AS net_total,
           si.paid_amount::text AS paid_amount,
-          si.remaining_amount::text AS remaining_amount
+          GREATEST(COALESCE(si.total::numeric, 0) - COALESCE(si.paid_amount::numeric, 0), 0)::text AS remaining_amount
         FROM sales_invoices si
         LEFT JOIN (
           SELECT invoice_id, COUNT(*)::int AS item_count
           FROM sales_invoice_items
           GROUP BY invoice_id
         ) item_stats ON item_stats.invoice_id = si.id
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND (${cashBox} = '' OR (${cashBox} = 'MASTER' AND si.payment_method = 'cash'))
+          AND (${branchId} = 0 OR EXISTS (
+            SELECT 1 FROM branch_entity_assignments ba
+            WHERE ba.entity_type = 'sales_invoice' AND ba.entity_id = si.id AND ba.branch_id = ${branchId}
+          ))
           AND (${product} = '' OR EXISTS (
             SELECT 1 FROM sales_invoice_items sii
             WHERE sii.invoice_id = si.id
@@ -40040,12 +40319,14 @@ async function handleReports(
         LEFT JOIN products p ON p.id = sii.product_id
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
           AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
             OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
@@ -40066,14 +40347,16 @@ async function handleReports(
           SUM(si.subtotal)::text AS gross_sales,
           SUM(COALESCE(si.discount_amount, 0) + COALESCE(si.coupon_discount_amount, 0))::text AS discounts,
           SUM(si.total)::text AS net_sales,
-          SUM(si.remaining_amount)::text AS remaining_amount
+          SUM(GREATEST(COALESCE(si.total::numeric, 0) - COALESCE(si.paid_amount::numeric, 0), 0))::text AS remaining_amount
         FROM sales_invoices si
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR EXISTS (
             SELECT 1 FROM sales_invoice_items sii
             WHERE sii.invoice_id = si.id
@@ -40111,12 +40394,14 @@ async function handleReports(
         LEFT JOIN products p ON p.id = sii.product_id
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
           AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
             OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
@@ -40142,12 +40427,14 @@ async function handleReports(
         LEFT JOIN products p ON p.id = sii.product_id
         LEFT JOIN categories c ON c.id = p.category_id
         LEFT JOIN categories sc ON sc.id = p.subcategory_id
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR sii.product_name ILIKE ${productLike} OR COALESCE(sii.barcode, '') ILIKE ${productLike} OR sii.product_id::text = ${product})
           AND (${category} = '' OR p.category_id::text = ${category} OR p.subcategory_id::text = ${category}
             OR COALESCE(p.category, '') ILIKE ${categoryLike} OR COALESCE(p.subcategory, '') ILIKE ${categoryLike}
@@ -40173,12 +40460,14 @@ async function handleReports(
           FROM sales_invoice_items sii
           WHERE sii.invoice_id = si.id
         ) item_profit ON true
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR EXISTS (
             SELECT 1 FROM sales_invoice_items sii
             WHERE sii.invoice_id = si.id
@@ -40221,12 +40510,14 @@ async function handleReports(
           FROM sales_invoice_items sii
           WHERE sii.invoice_id = si.id
         ) item_profit ON true
-        WHERE si.status = 'active'
+        WHERE si.status = ${invoiceStatus || "active"}
           AND si.financially_reversed = false
           AND si.date >= ${from}
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
           AND (${product} = '' OR EXISTS (
             SELECT 1 FROM sales_invoice_items sii
             WHERE sii.invoice_id = si.id
@@ -40305,6 +40596,8 @@ async function handleReports(
           AND si.date <= ${to}
           AND (${customer} = '' OR si.customer_name ILIKE ${customerLike} OR COALESCE(si.customer_phone, '') ILIKE ${customerLike})
           AND (${paymentMethod} = '' OR si.payment_method = ${paymentMethod})
+          AND ${salesPaymentStatusFilter}
+          AND ${salesRegisterScopeFilter}
         ORDER BY si.date DESC, si.id DESC
         LIMIT 500
       `);
