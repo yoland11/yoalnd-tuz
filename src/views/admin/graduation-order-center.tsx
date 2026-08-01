@@ -10,6 +10,7 @@ import {
   Eye,
   FileDown,
   FileSpreadsheet,
+  Gift,
   Loader2,
   MessageCircle,
   Palette,
@@ -69,6 +70,34 @@ import {
   thermalReceiptCss,
 } from "./print-helpers";
 
+type AccessoryItem = {
+  itemId: number;
+  templateId: number | null;
+  name: string;
+  code: string;
+  image: string | null;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  required: boolean;
+  free: boolean;
+};
+
+type AccessoryProduct = {
+  id: number;
+  code: string;
+  name: string;
+  image: string | null;
+  unitPrice: number;
+  defaultPrice: number;
+  discountPrice: number | null;
+  trackStock: boolean;
+  stock: number;
+  available: boolean;
+  required: boolean;
+  maxQuantity: number | null;
+};
+
 type StudentRow = {
   id: number;
   orderType: "individual" | "group";
@@ -102,6 +131,9 @@ type StudentRow = {
   printingType: string;
   embroideryType: string;
   accessories: string[];
+  accessoryItems: AccessoryItem[];
+  accessoriesCount: number;
+  accessoriesTotal: number;
   total: number;
   discount: number;
   paid: number;
@@ -498,6 +530,8 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
   const [addOpen, setAddOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [accessoryOpen, setAccessoryOpen] = useState(false);
+  const [studentAccessory, setStudentAccessory] = useState<StudentRow | null>(null);
   const { data, isLoading } = useQuery<GroupDetail>({
     queryKey: ["admin", "graduation", "group-workspace", groupId],
     queryFn: () => adminFetch(`/admin/graduation/groups/${groupId}`),
@@ -581,10 +615,12 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
     <div className="space-y-5">
       <div className="flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-start gap-3"><Button size="icon" variant="ghost" onClick={onBack}><ArrowRight className="h-5 w-5" /></Button><div><h2 className="text-xl font-bold">{data.group.title}</h2><p className="mt-1 text-sm text-muted-foreground">{data.group.groupNo} · {[data.group.university, data.group.college, data.group.department].filter(Boolean).join(" · ")}</p></div></div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => setAddOpen(true)}><Plus className="ml-2 h-4 w-4" />إضافة طالب</Button><Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="ml-2 h-4 w-4" />استيراد Excel</Button><Button variant="outline" onClick={exportExcel}><Download className="ml-2 h-4 w-4" />تصدير Excel</Button><Button variant="outline" onClick={printGroupReceipt}><Printer className="ml-2 h-4 w-4" />وصل المجموعة</Button><Button variant="outline" onClick={() => setPaymentOpen(true)}><WalletCards className="ml-2 h-4 w-4" />استلام دفعة</Button></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => setAddOpen(true)}><Plus className="ml-2 h-4 w-4" />إضافة طالب</Button><Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="ml-2 h-4 w-4" />استيراد Excel</Button><Button variant="outline" onClick={exportExcel}><Download className="ml-2 h-4 w-4" />تصدير Excel</Button><Button variant="outline" onClick={printGroupReceipt}><Printer className="ml-2 h-4 w-4" />وصل المجموعة</Button><Button variant="outline" onClick={() => setAccessoryOpen(true)}><Gift className="ml-2 h-4 w-4" />إدارة إكسسوارات المجموعة</Button><Button variant="outline" onClick={() => setPaymentOpen(true)}><WalletCards className="ml-2 h-4 w-4" />استلام دفعة</Button></div>
       </div>
       {(data.duplicates.length || data.shortages.length) ? <div className="grid gap-3 lg:grid-cols-2">{data.duplicates.length ? <div className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-3"><div className="flex items-center gap-2 font-semibold text-status-warning"><AlertTriangle className="h-4 w-4" />تنبيه أسماء أو هواتف متكررة</div><p className="mt-1 text-sm text-muted-foreground">راجع {data.duplicates.length} سجلاً قبل اعتماد الطباعة.</p></div> : null}{data.shortages.length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3"><div className="flex items-center gap-2 font-semibold text-destructive"><AlertTriangle className="h-4 w-4" />نقص في مواد المجموعة</div><p className="mt-1 text-sm text-muted-foreground">{data.shortages.map((item) => `${item.name}: ${item.shortage}`).join(" · ")}</p></div> : null}</div> : null}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">{[["الطلاب", data.totals.students], ["الإجمالي", formatCurrency(data.totals.orderValue)], ["المدفوع", formatCurrency(data.totals.paid)], ["المتبقي", formatCurrency(data.totals.remaining)], ["جاهز", data.totals.ready], ["تم التسليم", data.totals.delivered]].map(([label, value]) => <Card key={String(label)}><CardContent className="p-4"><p className="text-xs text-muted-foreground">{label}</p><strong className="mt-1 block text-lg">{value}</strong></CardContent></Card>)}</div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">{[["الطلاب", data.totals.students], ["الإجمالي", formatCurrency(data.totals.orderValue)], ["المدفوع", formatCurrency(data.totals.paid)], ["المتبقي", formatCurrency(data.totals.remaining)], ["قيمة الإكسسوارات", formatCurrency(data.totals.accessoriesValue || 0)], ["تم التسليم", data.totals.delivered]].map(([label, value]) => <Card key={String(label)}><CardContent className="p-4"><p className="text-xs text-muted-foreground">{label}</p><strong className="mt-1 block text-lg">{value}</strong></CardContent></Card>)}</div>
+      <GroupAccessorySection groupId={groupId} selected={selected} studentCount={data.students.length} />
+
       <section className="rounded-xl border border-border bg-card p-3">
         <div className="flex flex-wrap items-end gap-2">
           <div className="min-w-60 flex-1"><Label>بحث داخل المجموعة</Label><div className="relative mt-2"><Search className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pr-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="الاسم، الهاتف، كود الطالب، الوصل..." /></div></div>
@@ -602,9 +638,9 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
         </div>
       </section>
       <div className="hidden overflow-x-auto rounded-xl border border-border bg-card md:block">
-        <Table className="min-w-[3100px] text-xs">
-          <TableHeader><TableRow><TableHead className="sticky right-0 z-10 bg-card"><Checkbox checked={allSelected} onCheckedChange={(checked) => setSelected(checked ? filtered.map((row) => row.id) : [])} /></TableHead><TableHead>ت</TableHead><TableHead>كود الطالب / QR</TableHead><TableHead>اسم الطالب</TableHead><TableHead>الهاتف الأول</TableHead><TableHead>الهاتف الثاني</TableHead><TableHead>الجنس</TableHead><TableHead>الطول</TableHead><TableHead>الوزن</TableHead><TableHead>المقاس</TableHead><TableHead>نوع الروب</TableHead><TableHead>لون الروب</TableHead><TableHead>نوع الوشاح</TableHead><TableHead>لون الوشاح</TableHead><TableHead>كتابة اليمين</TableHead><TableHead>كتابة اليسار</TableHead><TableHead>الجامعة</TableHead><TableHead>الكلية</TableHead><TableHead>القسم</TableHead><TableHead>سنة التخرج</TableHead><TableHead>الطباعة</TableHead><TableHead>التطريز</TableHead><TableHead>السعر</TableHead><TableHead>المدفوع</TableHead><TableHead>المتبقي</TableHead><TableHead>التصميم</TableHead><TableHead>الإنتاج</TableHead><TableHead>التسليم</TableHead><TableHead>الوصل</TableHead><TableHead>الإجراءات</TableHead></TableRow></TableHeader>
-          <TableBody>{filtered.map((student) => <TableRow key={student.id}><TableCell className="sticky right-0 z-10 bg-card"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /></TableCell><TableCell>{student.sequence}</TableCell><TableCell><div className="font-mono text-[11px] text-primary">{student.studentCode}</div><div className="mt-1 flex gap-1"><QrCode className="h-3.5 w-3.5" /><span>{student.barcodeValue}</span></div></TableCell><TableCell><EditableCell value={student.customerName} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { customerName: value } })} /></TableCell><TableCell><EditableCell value={student.phone} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone: value } })} /></TableCell><TableCell><EditableCell value={student.phone2} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone2: value } })} /></TableCell><TableCell><Select value={student.gender} onValueChange={(value) => patch.mutate({ id: student.id, changes: { gender: value } })}><SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unspecified">—</SelectItem><SelectItem value="male">ذكر</SelectItem><SelectItem value="female">أنثى</SelectItem></SelectContent></Select></TableCell><TableCell><EditableCell type="number" value={student.height} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { height: Number(value) } })} /></TableCell><TableCell><EditableCell type="number" value={student.weight} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { weight: Number(value) } })} /></TableCell><TableCell><EditableCell value={student.size} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { size: value } })} /></TableCell><TableCell><EditableCell value={student.robeType} onCommit={(value) => patch.mutate({ id: student.id, changes: { robeType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.robeColor || "#111111"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { robeColor: value } })} /></TableCell><TableCell><EditableCell value={student.sashType} onCommit={(value) => patch.mutate({ id: student.id, changes: { sashType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.sashColor || "#d4af37"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { sashColor: value } })} /></TableCell><TableCell><EditableCell value={student.rightText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { rightText: value } })} /></TableCell><TableCell><EditableCell value={student.leftText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { leftText: value } })} /></TableCell><TableCell><EditableCell value={student.university} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { university: value } })} /></TableCell><TableCell><EditableCell value={student.college} className="w-36" onCommit={(value) => patch.mutate({ id: student.id, changes: { college: value } })} /></TableCell><TableCell><EditableCell value={student.department} className="w-32" onCommit={(value) => patch.mutate({ id: student.id, changes: { department: value } })} /></TableCell><TableCell><EditableCell value={student.graduationYear} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { graduationYear: value } })} /></TableCell><TableCell><EditableCell value={student.printingType} onCommit={(value) => patch.mutate({ id: student.id, changes: { printingType: value } })} /></TableCell><TableCell><EditableCell value={student.embroideryType} onCommit={(value) => patch.mutate({ id: student.id, changes: { embroideryType: value } })} /></TableCell><TableCell><EditableCell type="number" value={student.total} onCommit={(value) => patch.mutate({ id: student.id, changes: { totalAmount: Number(value) } })} /></TableCell><TableCell>{formatCurrency(student.paid)}</TableCell><TableCell className={student.remaining > 0 ? "font-bold text-destructive" : "font-bold text-status-success"}>{formatCurrency(student.remaining)}</TableCell><TableCell><StatusBadge kind="design" value={student.designStatus} /></TableCell><TableCell><StatusBadge kind="production" value={student.productionStage} /></TableCell><TableCell><StatusBadge kind="delivery" value={student.deliveryStatus} /></TableCell><TableCell><ReceiptActions student={student} /></TableCell><TableCell><div className="flex gap-1"><Button size="icon" variant="ghost" title="نسخ إعدادات الطالب" onClick={() => navigator.clipboard.writeText(JSON.stringify(student)).then(() => toast({ title: "تم نسخ إعدادات الطالب" }))}><Copy className="h-4 w-4" /></Button><Button size="icon" variant="ghost" title="فتح ملف الطالب" onClick={() => window.open(student.trackingUrl, "_blank")}><Eye className="h-4 w-4" /></Button><Button size="icon" variant="ghost" className="text-destructive" title="أرشفة الطالب" onClick={() => confirm("سيتم أرشفة الطالب مع حفظ سجله. هل تريد المتابعة؟") && remove.mutate(student.id)}><Trash2 className="h-4 w-4" /></Button></div></TableCell></TableRow>)}</TableBody>
+        <Table className="min-w-[3520px] text-xs">
+          <TableHeader><TableRow><TableHead className="sticky right-0 z-10 bg-card"><Checkbox checked={allSelected} onCheckedChange={(checked) => setSelected(checked ? filtered.map((row) => row.id) : [])} /></TableHead><TableHead>ت</TableHead><TableHead>كود الطالب / QR</TableHead><TableHead>اسم الطالب</TableHead><TableHead>الهاتف الأول</TableHead><TableHead>الهاتف الثاني</TableHead><TableHead>الجنس</TableHead><TableHead>الطول</TableHead><TableHead>الوزن</TableHead><TableHead>المقاس</TableHead><TableHead>نوع الروب</TableHead><TableHead>لون الروب</TableHead><TableHead>نوع الوشاح</TableHead><TableHead>لون الوشاح</TableHead><TableHead>كتابة اليمين</TableHead><TableHead>كتابة اليسار</TableHead><TableHead>الجامعة</TableHead><TableHead>الكلية</TableHead><TableHead>القسم</TableHead><TableHead>سنة التخرج</TableHead><TableHead>الطباعة</TableHead><TableHead>التطريز</TableHead><TableHead>الإكسسوارات</TableHead><TableHead>عدد الإكسسوارات</TableHead><TableHead>سعر الإكسسوارات</TableHead><TableHead>السعر</TableHead><TableHead>المدفوع</TableHead><TableHead>المتبقي</TableHead><TableHead>التصميم</TableHead><TableHead>الإنتاج</TableHead><TableHead>التسليم</TableHead><TableHead>الوصل</TableHead><TableHead>الإجراءات</TableHead></TableRow></TableHeader>
+          <TableBody>{filtered.map((student) => <TableRow key={student.id}><TableCell className="sticky right-0 z-10 bg-card"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /></TableCell><TableCell>{student.sequence}</TableCell><TableCell><div className="font-mono text-[11px] text-primary">{student.studentCode}</div><div className="mt-1 flex gap-1"><QrCode className="h-3.5 w-3.5" /><span>{student.barcodeValue}</span></div></TableCell><TableCell><EditableCell value={student.customerName} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { customerName: value } })} /></TableCell><TableCell><EditableCell value={student.phone} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone: value } })} /></TableCell><TableCell><EditableCell value={student.phone2} onCommit={(value) => patch.mutate({ id: student.id, changes: { phone2: value } })} /></TableCell><TableCell><Select value={student.gender} onValueChange={(value) => patch.mutate({ id: student.id, changes: { gender: value } })}><SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unspecified">—</SelectItem><SelectItem value="male">ذكر</SelectItem><SelectItem value="female">أنثى</SelectItem></SelectContent></Select></TableCell><TableCell><EditableCell type="number" value={student.height} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { height: Number(value) } })} /></TableCell><TableCell><EditableCell type="number" value={student.weight} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { weight: Number(value) } })} /></TableCell><TableCell><EditableCell value={student.size} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { size: value } })} /></TableCell><TableCell><EditableCell value={student.robeType} onCommit={(value) => patch.mutate({ id: student.id, changes: { robeType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.robeColor || "#111111"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { robeColor: value } })} /></TableCell><TableCell><EditableCell value={student.sashType} onCommit={(value) => patch.mutate({ id: student.id, changes: { sashType: value } })} /></TableCell><TableCell><EditableCell type="color" value={student.sashColor || "#d4af37"} className="w-16" onCommit={(value) => patch.mutate({ id: student.id, changes: { sashColor: value } })} /></TableCell><TableCell><EditableCell value={student.rightText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { rightText: value } })} /></TableCell><TableCell><EditableCell value={student.leftText} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { leftText: value } })} /></TableCell><TableCell><EditableCell value={student.university} className="w-40" onCommit={(value) => patch.mutate({ id: student.id, changes: { university: value } })} /></TableCell><TableCell><EditableCell value={student.college} className="w-36" onCommit={(value) => patch.mutate({ id: student.id, changes: { college: value } })} /></TableCell><TableCell><EditableCell value={student.department} className="w-32" onCommit={(value) => patch.mutate({ id: student.id, changes: { department: value } })} /></TableCell><TableCell><EditableCell value={student.graduationYear} className="w-20" onCommit={(value) => patch.mutate({ id: student.id, changes: { graduationYear: value } })} /></TableCell><TableCell><EditableCell value={student.printingType} onCommit={(value) => patch.mutate({ id: student.id, changes: { printingType: value } })} /></TableCell><TableCell><EditableCell value={student.embroideryType} onCommit={(value) => patch.mutate({ id: student.id, changes: { embroideryType: value } })} /></TableCell><TableCell><div className="flex max-w-56 flex-wrap items-center gap-1">{student.accessoryItems?.length ? student.accessoryItems.map((item) => <Badge key={item.itemId} variant="secondary" className="text-[10px]">{item.name}{item.quantity > 1 ? ` ×${item.quantity}` : ""}{item.free ? " (مجاني)" : ""}</Badge>) : <span className="text-muted-foreground">—</span>}<Button size="icon" variant="ghost" className="h-6 w-6" title="إدارة إكسسوارات الطالب" onClick={() => setStudentAccessory(student)}><Plus className="h-3.5 w-3.5" /></Button></div></TableCell><TableCell className="text-center">{student.accessoriesCount || 0}</TableCell><TableCell>{formatCurrency(student.accessoriesTotal || 0)}</TableCell><TableCell><EditableCell type="number" value={student.total} onCommit={(value) => patch.mutate({ id: student.id, changes: { totalAmount: Number(value) } })} /></TableCell><TableCell>{formatCurrency(student.paid)}</TableCell><TableCell className={student.remaining > 0 ? "font-bold text-destructive" : "font-bold text-status-success"}>{formatCurrency(student.remaining)}</TableCell><TableCell><StatusBadge kind="design" value={student.designStatus} /></TableCell><TableCell><StatusBadge kind="production" value={student.productionStage} /></TableCell><TableCell><StatusBadge kind="delivery" value={student.deliveryStatus} /></TableCell><TableCell><ReceiptActions student={student} /></TableCell><TableCell><div className="flex gap-1"><Button size="icon" variant="ghost" title="نسخ إعدادات الطالب" onClick={() => navigator.clipboard.writeText(JSON.stringify(student)).then(() => toast({ title: "تم نسخ إعدادات الطالب" }))}><Copy className="h-4 w-4" /></Button><Button size="icon" variant="ghost" title="فتح ملف الطالب" onClick={() => window.open(student.trackingUrl, "_blank")}><Eye className="h-4 w-4" /></Button><Button size="icon" variant="ghost" className="text-destructive" title="أرشفة الطالب" onClick={() => confirm("سيتم أرشفة الطالب مع حفظ سجله. هل تريد المتابعة؟") && remove.mutate(student.id)}><Trash2 className="h-4 w-4" /></Button></div></TableCell></TableRow>)}</TableBody>
         </Table>
       </div>
       <div className="space-y-3 md:hidden">{filtered.map((student) => <Card key={student.id}><CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Checkbox checked={selected.includes(student.id)} onCheckedChange={(checked) => setSelected((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><strong>{student.customerName}</strong></div><p className="mt-1 font-mono text-xs text-primary">{student.studentCode}</p></div><ReceiptActions student={student} /></div><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><span className="text-muted-foreground">المقاس</span><strong className="block">{student.size || "—"}</strong></div><div><span className="text-muted-foreground">المتبقي</span><strong className="block">{formatCurrency(student.remaining)}</strong></div><div><StatusBadge kind="design" value={student.designStatus} /></div><div><StatusBadge kind="production" value={student.productionStage} /></div></div></CardContent></Card>)}</div>
@@ -617,6 +653,8 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
       <AddStudentDialog groupId={groupId} open={addOpen} onOpenChange={setAddOpen} />
       <PaymentDialog groupId={groupId} students={data.students} open={paymentOpen} onOpenChange={setPaymentOpen} />
       <ImportStudentsDialog groupId={groupId} open={importOpen} onOpenChange={setImportOpen} />
+      <GroupAccessoryDialog groupId={groupId} students={data.students} open={accessoryOpen} onOpenChange={setAccessoryOpen} />
+      <StudentAccessoryDialog groupId={groupId} student={studentAccessory} students={data.students} open={Boolean(studentAccessory)} onOpenChange={(open) => !open && setStudentAccessory(null)} />
     </div>
   );
 }
@@ -684,5 +722,173 @@ export function GraduationTemplateLibrary() {
       <section className="rounded-xl border border-border bg-card p-4"><h3 className="font-bold">تركيبات ألوان جاهزة</h3><div className="mt-3 flex flex-wrap gap-2">{[["أسود × ذهبي", "#111111", "#d4af37"], ["أسود × فضي", "#111111", "#c0c0c0"], ["كحلي × ذهبي", "#172554", "#d4af37"], ["عنابي × ذهبي", "#7f1d1d", "#d4af37"], ["أخضر × ذهبي", "#14532d", "#d4af37"], ["أبيض × ذهبي", "#ffffff", "#d4af37"], ["رصاصي × فضي", "#52525b", "#c0c0c0"], ["بنفسجي × ذهبي", "#581c87", "#d4af37"]].map(([label, first, second]) => <span key={label} className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-sm"><i className="h-4 w-4 rounded-full border" style={{ background: first }} /><i className="h-4 w-4 rounded-full border" style={{ background: second }} />{label}</span>)}</div></section>
       <Dialog open={open} onOpenChange={setOpen}><DialogContent dir="rtl" className="max-h-[92dvh] max-w-3xl overflow-y-auto"><DialogHeader><DialogTitle>{editingId ? "تعديل النموذج" : "إنشاء نموذج جديد"}</DialogTitle></DialogHeader><div className="grid gap-4 sm:grid-cols-2">{[["name", "اسم النموذج"], ["code", "الكود"], ["university", "الجامعة"], ["college", "الكلية"], ["department", "القسم"], ["previewImageUrl", "رابط صورة المعاينة"], ["modelUrl", "رابط نموذج 3D"], ["robeType", "نوع الروب"], ["sashType", "نوع الوشاح"], ["capType", "تصميم القبعة"], ["printingStyle", "أسلوب الطباعة"], ["embroideryStyle", "أسلوب التطريز"], ["font", "الخط"]].map(([key, label]) => <div key={key}><Label>{label}</Label><Input className="mt-2" value={String((form as any)[key] || "")} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} /></div>)}<div><Label>نوع النموذج</Label><Select value={form.templateType} onValueChange={(value) => setForm((current) => ({ ...current, templateType: value }))}><SelectTrigger className="mt-2"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="robe">روب</SelectItem><SelectItem value="sash">وشاح</SelectItem><SelectItem value="cap">قبعة</SelectItem><SelectItem value="package">باقة كاملة</SelectItem><SelectItem value="university">خاص بجامعة</SelectItem><SelectItem value="college">خاص بكلية</SelectItem><SelectItem value="department">خاص بقسم</SelectItem></SelectContent></Select></div><div><Label>السعر الافتراضي</Label><Input className="mt-2" type="number" value={form.defaultPrice} onChange={(event) => setForm((current) => ({ ...current, defaultPrice: Number(event.target.value) }))} /></div><div className="grid grid-cols-3 gap-3 sm:col-span-2">{[["robeColor", "لون الروب"], ["sashColor", "لون الوشاح"], ["borderColor", "لون الحافة"]].map(([key, label]) => <div key={key}><Label>{label}</Label><Input className="mt-2" type="color" value={String((form as any)[key])} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} /></div>)}</div><label className="flex items-center gap-2"><Checkbox checked={form.isActive} onCheckedChange={(checked) => setForm((current) => ({ ...current, isActive: checked === true }))} />نشط</label><label className="flex items-center gap-2"><Checkbox checked={form.isFeatured} onCheckedChange={(checked) => setForm((current) => ({ ...current, isFeatured: checked === true }))} />مميز</label></div><div className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">العناصر النائبة المتاحة: {`{{student_name_ar}} · {{student_name_en}} · {{university}} · {{college}} · {{department}} · {{graduation_year}} · {{student_code}}`}</div><DialogFooter className="sm:justify-start"><Button onClick={() => save.mutate()} disabled={save.isPending || form.name.trim().length < 2}>{save.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="ml-2 h-4 w-4" />}حفظ النموذج</Button></DialogFooter></DialogContent></Dialog>
     </div>
+  );
+}
+
+// ── Group-order accessories UI (Phase 1) ─────────────────────────────────────
+function useAccessoryCatalog(groupId: number) {
+  return useQuery<{ accessories: AccessoryProduct[] }>({
+    queryKey: ["admin", "graduation", "accessory-catalog", groupId],
+    queryFn: () => adminFetch(`/admin/graduation/groups/${groupId}/accessories/catalog`),
+  });
+}
+
+// "إكسسوارات المجموعة" — catalog cards with quick apply (to selected if any, else all).
+function GroupAccessorySection({ groupId, selected, studentCount }: { groupId: number; selected: number[]; studentCount: number }) {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const catalog = useAccessoryCatalog(groupId);
+  const [qty, setQty] = useState<Record<number, number>>({});
+  const apply = useMutation({
+    mutationFn: (vars: { templateId: number; quantity: number; scope: string }) =>
+      adminFetch(`/admin/graduation/groups/${groupId}/accessories`, { method: "POST", body: JSON.stringify({ ...vars, studentOrderIds: selected }) }),
+    onSuccess: () => { client.invalidateQueries({ queryKey: ["admin", "graduation", "group-workspace", groupId] }); toast({ title: "تمت إضافة الإكسسوار للطلبة" }); },
+    onError: (error) => toast({ title: "تعذرت إضافة الإكسسوار", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const scope = selected.length ? "selected" : "all";
+  const items = catalog.data?.accessories ?? [];
+  return (
+    <section className="rounded-xl border border-border bg-card p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 font-bold"><Gift className="h-4 w-4 text-primary" />إكسسوارات المجموعة</h3>
+        <span className="text-xs text-muted-foreground">{selected.length ? `سيُضاف إلى ${selected.length} طالب محدد` : `سيُضاف إلى جميع الطلبة (${studentCount})`}</span>
+      </div>
+      {catalog.isLoading ? <Skeleton className="h-24" /> : items.length ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {items.map((item) => (
+            <div key={item.id} className="rounded-lg border border-border/60 p-3">
+              <div className="flex gap-3">
+                {item.image ? <img src={item.image} alt={item.name} className="h-14 w-14 rounded-md object-cover" loading="lazy" decoding="async" /> : <div className="grid h-14 w-14 place-items-center rounded-md bg-muted text-muted-foreground"><Gift className="h-5 w-5" /></div>}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1"><strong className="truncate text-sm">{item.name}</strong>{item.required ? <Badge className="text-[10px]">إلزامي</Badge> : <Badge variant="outline" className="text-[10px]">اختياري</Badge>}</div>
+                  <p className="font-mono text-[11px] text-muted-foreground">{item.code}</p>
+                  <p className="text-xs">{formatCurrency(item.unitPrice)} · {item.trackStock ? `المتوفر ${item.stock}` : "غير مخزَّن"}</p>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Input type="number" min={1} className="h-8 w-20" value={qty[item.id] ?? 1} onChange={(event) => setQty((current) => ({ ...current, [item.id]: Math.max(1, Number(event.target.value) || 1) }))} />
+                <Button size="sm" disabled={apply.isPending} onClick={() => apply.mutate({ templateId: item.id, quantity: qty[item.id] ?? 1, scope })}><Plus className="ml-1 h-3.5 w-3.5" />إضافة</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-sm text-muted-foreground">لا توجد إكسسوارات مُفعّلة. أضِفها من إدارة منتجات التخرج (النوع: إكسسوار).</p>}
+    </section>
+  );
+}
+
+// "إدارة إكسسوارات المجموعة" — full bulk editor: catalog + student multi-select.
+function GroupAccessoryDialog({ groupId, students, open, onOpenChange }: { groupId: number; students: StudentRow[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const catalog = useAccessoryCatalog(groupId);
+  const [templateId, setTemplateId] = useState<number | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [unitPrice, setUnitPrice] = useState("");
+  const [free, setFree] = useState(false);
+  const [reason, setReason] = useState("");
+  const [override, setOverride] = useState(false);
+  const [selectedStudents, setSelectedStudents] = useState<number[]>([]);
+  const items = catalog.data?.accessories ?? [];
+  const product = items.find((item) => item.id === templateId) ?? null;
+  const effectiveUnit = free ? 0 : unitPrice !== "" ? Number(unitPrice) : product?.unitPrice ?? 0;
+  const totalQty = quantity * selectedStudents.length;
+  const allSelected = students.length > 0 && selectedStudents.length === students.length;
+  const apply = useMutation({
+    mutationFn: () => adminFetch(`/admin/graduation/groups/${groupId}/accessories`, { method: "POST", body: JSON.stringify({ templateId, quantity, scope: "selected", studentOrderIds: selectedStudents, unitPrice: unitPrice !== "" ? Number(unitPrice) : undefined, free, reason: reason || undefined, managerApproved: override }) }),
+    onSuccess: () => { client.invalidateQueries({ queryKey: ["admin", "graduation", "group-workspace", groupId] }); toast({ title: "تم تطبيق الإكسسوار على الطلبة المحددين" }); onOpenChange(false); setSelectedStudents([]); },
+    onError: (error) => toast({ title: "تعذر التطبيق", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent dir="rtl" className="max-w-3xl">
+        <DialogHeader><DialogTitle>إدارة إكسسوارات المجموعة</DialogTitle></DialogHeader>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-3">
+            <div><Label>الإكسسوار</Label><Select value={templateId ? String(templateId) : ""} onValueChange={(value) => setTemplateId(Number(value))}><SelectTrigger className="mt-2"><SelectValue placeholder="اختر إكسسواراً" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name} · {formatCurrency(item.unitPrice)}</SelectItem>)}</SelectContent></Select></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><Label>الكمية لكل طالب</Label><Input type="number" min={1} className="mt-2" value={quantity} onChange={(event) => setQuantity(Math.max(1, Number(event.target.value) || 1))} /></div>
+              <div><Label>سعر الوحدة</Label><Input type="number" min={0} className="mt-2" value={free ? 0 : unitPrice} disabled={free} placeholder={product ? String(product.unitPrice) : ""} onChange={(event) => setUnitPrice(event.target.value)} /></div>
+            </div>
+            <label className="flex items-center gap-2 text-sm"><Checkbox checked={free} onCheckedChange={(checked) => setFree(Boolean(checked))} />إكسسوار مجاني</label>
+            {free || unitPrice !== "" ? <div><Label>سبب تغيير السعر</Label><Input className="mt-2" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="مطلوب عند تغيير السعر" /></div> : null}
+            {product?.trackStock ? <label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={override} onCheckedChange={(checked) => setOverride(Boolean(checked))} />تجاوز نقص المخزون (بموافقة المدير)</label> : null}
+            <div className="rounded-lg bg-muted/50 p-3 text-sm">
+              <div className="flex justify-between"><span>الطلبة المحددون</span><b>{selectedStudents.length}</b></div>
+              <div className="flex justify-between"><span>إجمالي الكمية</span><b>{totalQty}</b></div>
+              <div className="flex justify-between"><span>الإجمالي</span><b>{formatCurrency(effectiveUnit * totalQty)}</b></div>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between"><Label>الطلبة</Label><label className="flex items-center gap-2 text-xs"><Checkbox checked={allSelected} onCheckedChange={(checked) => setSelectedStudents(checked ? students.map((student) => student.id) : [])} />تحديد الكل</label></div>
+            <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+              {students.map((student) => <label key={student.id} className="flex items-center gap-2 text-sm"><Checkbox checked={selectedStudents.includes(student.id)} onCheckedChange={(checked) => setSelectedStudents((current) => checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span className="flex-1 truncate">{student.customerName}</span><span className="text-xs text-muted-foreground">{student.studentCode}</span></label>)}
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="sm:justify-start"><Button disabled={!templateId || !selectedStudents.length || apply.isPending} onClick={() => apply.mutate()}>{apply.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Gift className="ml-2 h-4 w-4" />}تطبيق على {selectedStudents.length} طالب</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Per-student accessories: view / add / remove / change quantity / copy from another student.
+function StudentAccessoryDialog({ groupId, student, students, open, onOpenChange }: { groupId: number; student: StudentRow | null; students: StudentRow[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const catalog = useAccessoryCatalog(groupId);
+  const [templateId, setTemplateId] = useState<number | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [copyFrom, setCopyFrom] = useState<number | null>(null);
+  const invalidate = () => client.invalidateQueries({ queryKey: ["admin", "graduation", "group-workspace", groupId] });
+  const items = catalog.data?.accessories ?? [];
+  const current = students.find((row) => row.id === student?.id) ?? student;
+  const add = useMutation({
+    mutationFn: () => adminFetch(`/admin/graduation/groups/${groupId}/accessories`, { method: "POST", body: JSON.stringify({ templateId, quantity, scope: "student", studentOrderIds: current ? [current.id] : [] }) }),
+    onSuccess: () => { invalidate(); toast({ title: "تمت إضافة الإكسسوار" }); setTemplateId(null); setQuantity(1); },
+    onError: (error) => toast({ title: "تعذرت الإضافة", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const removeItem = useMutation({
+    mutationFn: (itemId: number) => adminFetch(`/admin/graduation/groups/${groupId}/accessories/${itemId}`, { method: "DELETE" }),
+    onSuccess: () => invalidate(),
+    onError: (error) => toast({ title: "تعذرت الإزالة", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const changeQty = useMutation({
+    mutationFn: (vars: { itemId: number; quantity: number }) => adminFetch(`/admin/graduation/groups/${groupId}/accessories/${vars.itemId}`, { method: "PATCH", body: JSON.stringify({ quantity: vars.quantity }) }),
+    onSuccess: () => invalidate(),
+    onError: (error) => toast({ title: "تعذر التعديل", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const copy = useMutation({
+    mutationFn: () => adminFetch(`/admin/graduation/groups/${groupId}/students/${current!.id}/accessories-copy`, { method: "POST", body: JSON.stringify({ sourceOrderId: copyFrom }) }),
+    onSuccess: () => { invalidate(); toast({ title: "تم نسخ الإكسسوارات" }); setCopyFrom(null); },
+    onError: (error) => toast({ title: "تعذر النسخ", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent dir="rtl" className="max-w-lg">
+        <DialogHeader><DialogTitle>إكسسوارات الطالب — {current?.customerName}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            {current?.accessoryItems?.length ? current.accessoryItems.map((item) => (
+              <div key={item.itemId} className="flex items-center gap-2 rounded-lg border border-border/60 p-2 text-sm">
+                <span className="flex-1 truncate">{item.name}{item.free ? " (مجاني)" : ""}</span>
+                <Input type="number" min={1} className="h-8 w-16" defaultValue={item.quantity} onBlur={(event) => { const next = Math.max(1, Number(event.target.value) || 1); if (next !== item.quantity) changeQty.mutate({ itemId: item.itemId, quantity: next }); }} />
+                <span className="w-24 text-left">{formatCurrency(item.lineTotal)}</span>
+                <Button size="icon" variant="ghost" className="text-destructive" onClick={() => removeItem.mutate(item.itemId)}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            )) : <p className="text-sm text-muted-foreground">لا توجد إكسسوارات لهذا الطالب.</p>}
+          </div>
+          <div className="flex items-end gap-2 border-t border-border pt-3">
+            <div className="flex-1"><Label>إضافة إكسسوار</Label><Select value={templateId ? String(templateId) : ""} onValueChange={(value) => setTemplateId(Number(value))}><SelectTrigger className="mt-2"><SelectValue placeholder="اختر" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name} · {formatCurrency(item.unitPrice)}</SelectItem>)}</SelectContent></Select></div>
+            <Input type="number" min={1} className="w-16" value={quantity} onChange={(event) => setQuantity(Math.max(1, Number(event.target.value) || 1))} />
+            <Button disabled={!templateId || add.isPending} onClick={() => add.mutate()}><Plus className="h-4 w-4" /></Button>
+          </div>
+          <div className="flex items-end gap-2">
+            <div className="flex-1"><Label>نسخ إكسسوارات من طالب آخر</Label><Select value={copyFrom ? String(copyFrom) : ""} onValueChange={(value) => setCopyFrom(Number(value))}><SelectTrigger className="mt-2"><SelectValue placeholder="اختر الطالب المصدر" /></SelectTrigger><SelectContent>{students.filter((row) => row.id !== current?.id).map((row) => <SelectItem key={row.id} value={String(row.id)}>{row.customerName}</SelectItem>)}</SelectContent></Select></div>
+            <Button variant="outline" disabled={!copyFrom || copy.isPending} onClick={() => copy.mutate()}><Copy className="ml-1 h-4 w-4" />نسخ</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

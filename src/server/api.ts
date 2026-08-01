@@ -527,6 +527,7 @@ import {
   handleGraduationPublic,
 } from "@/server/graduation";
 import { handleAdminGraduationOperations } from "@/server/graduation-operations";
+import { handleTailorPortal } from "@/server/tailoring";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import {
   handleAdminResearch,
@@ -689,6 +690,19 @@ export const ALL_PERMISSIONS = [
   "graduation.production.update",
   "graduation.delivery.confirm",
   "graduation.report.view",
+  // Tailors Portal (بوابة الخياطين). The "tailoring" module gate implies all
+  // granular tailoring.* permissions — see hasPermission. Graduation managers
+  // also inherit tailoring access via the graduation module gate.
+  "tailoring",
+  "tailoring.portal.access",
+  "tailoring.assigned_orders.view",
+  "tailoring.measurements.create",
+  "tailoring.measurements.edit",
+  "tailoring.measurements.submit",
+  "tailoring.production.update",
+  "tailoring.alterations.manage",
+  "tailoring.photos.upload",
+  "tailoring.measurements.print",
   "hr",
   // Granular payroll permissions (kept separate from the HR module gate).
   "payroll_view",
@@ -1614,6 +1628,16 @@ function hasPermission(
   // The "graduation" module gate implies its granular sub-permissions, so
   // staff granted the module before the split keep full access.
   if ((perm.startsWith("graduation_") || perm.startsWith("graduation.")) && user.permissions.includes("graduation"))
+    return true;
+  // Tailoring module gate implies its granular sub-permissions; graduation
+  // managers/admins also inherit tailoring access.
+  if (
+    perm.startsWith("tailoring") &&
+    (user.permissions.includes("tailoring") ||
+      user.permissions.includes("graduation") ||
+      user.permissions.includes("graduation_production") ||
+      user.permissions.includes("graduation_manager"))
+  )
     return true;
   return false;
 }
@@ -27560,6 +27584,22 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (graduationOperations) return graduationOperations;
     const graduation = await handleAdminGraduation(req, parts.slice(2), auth);
     if (graduation) return graduation;
+  }
+
+  // Tailors Portal (بوابة الخياطين) — every route is scoped to the tailor's own
+  // assigned orders; unassigned ids return 403 inside the handler.
+  if (section === "tailoring") {
+    const auth = await requireAnyPermission(req, [
+      "tailoring.portal.access",
+      "tailoring.assigned_orders.view",
+      "tailoring",
+      "graduation_production",
+      "graduation_manager",
+      "graduation",
+    ]);
+    if (isResponse(auth)) return auth;
+    const tailoring = await handleTailorPortal(req, parts.slice(2), auth);
+    if (tailoring) return tailoring;
   }
 
   if (section === "research") {

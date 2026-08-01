@@ -59,6 +59,7 @@ export async function ensureGraduationOperationsTables() {
         ALTER TABLE graduation_orders ADD COLUMN IF NOT EXISTS garment_details jsonb NOT NULL DEFAULT '{}'::jsonb;
         ALTER TABLE graduation_orders ADD COLUMN IF NOT EXISTS template_version_id integer REFERENCES graduation_template_versions(id) ON DELETE SET NULL;
         ALTER TABLE graduation_orders ADD COLUMN IF NOT EXISTS template_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE graduation_orders ADD COLUMN IF NOT EXISTS accessories_total numeric(14,2) NOT NULL DEFAULT 0;
 
         UPDATE graduation_orders o
         SET order_type = CASE WHEN o.group_id IS NULL THEN 'individual' ELSE 'group' END,

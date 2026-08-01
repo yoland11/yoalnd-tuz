@@ -222,6 +222,12 @@ export const graduationOrdersTable = pgTable(
     subtotal: numeric("subtotal", { precision: 14, scale: 2 })
       .notNull()
       .default("0"),
+    // Post-creation group accessories contribution (Phase 1 accessories). Kept
+    // separate from `subtotal` (base package) so recalc never double-counts and
+    // existing orders (default 0) keep their original totals untouched.
+    accessoriesTotal: numeric("accessories_total", { precision: 14, scale: 2 })
+      .notNull()
+      .default("0"),
     discountAmount: numeric("discount_amount", { precision: 14, scale: 2 })
       .notNull()
       .default("0"),

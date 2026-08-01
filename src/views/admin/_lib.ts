@@ -136,6 +136,17 @@ export const ALL_PERMISSIONS = [
   "graduation.report.view",
   "graduation.reports.view",
   "graduation.settings.manage",
+  // Tailors Portal (بوابة الخياطين) — mirrors the server registry.
+  "tailoring",
+  "tailoring.portal.access",
+  "tailoring.assigned_orders.view",
+  "tailoring.measurements.create",
+  "tailoring.measurements.edit",
+  "tailoring.measurements.submit",
+  "tailoring.production.update",
+  "tailoring.alterations.manage",
+  "tailoring.photos.upload",
+  "tailoring.measurements.print",
   "research",
   "research.view",
   "research.create",
@@ -497,6 +508,16 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "graduation.report.view": "التخرج: عرض التقارير",
   "graduation.reports.view": "التخرج: عرض تقارير المؤسسة",
   "graduation.settings.manage": "التخرج: إدارة الإعدادات",
+  tailoring: "بوابة الخياطين (وصول كامل)",
+  "tailoring.portal.access": "الخياطين: الدخول للبوابة",
+  "tailoring.assigned_orders.view": "الخياطين: عرض الطلبات المخصصة",
+  "tailoring.measurements.create": "الخياطين: إدخال القياسات",
+  "tailoring.measurements.edit": "الخياطين: تعديل القياسات",
+  "tailoring.measurements.submit": "الخياطين: إرسال القياسات للاعتماد",
+  "tailoring.production.update": "الخياطين: تحديث مراحل الإنتاج",
+  "tailoring.alterations.manage": "الخياطين: إدارة التعديلات",
+  "tailoring.photos.upload": "الخياطين: رفع الصور",
+  "tailoring.measurements.print": "الخياطين: طباعة القياسات",
   production_view: "عرض الإنتاج",
   production_create: "إنشاء أوامر الإنتاج",
   production_edit: "تعديل أوامر الإنتاج",
@@ -856,6 +877,15 @@ export function hasPerm(
   // Mirror the server: the "graduation" module gate implies its granular
   // sub-permissions so existing holders keep access after the split.
   if ((perm.startsWith("graduation_") || perm.startsWith("graduation.")) && user.permissions.includes("graduation"))
+    return true;
+  // Tailoring module gate; graduation managers also inherit tailoring access.
+  if (
+    perm.startsWith("tailoring") &&
+    (user.permissions.includes("tailoring") ||
+      user.permissions.includes("graduation") ||
+      user.permissions.includes("graduation_production") ||
+      user.permissions.includes("graduation_manager"))
+  )
     return true;
   return false;
 }
