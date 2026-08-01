@@ -22,7 +22,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {t("تخطّى إلى المحتوى الرئيسي")}
       </a>
       <Navbar />
-      <main id="main-content" className="flex-1 pb-16 md:pb-0">
+      <main id="main-content" className="flex-1 pb-28 lg:pb-0">
         {children}
       </main>
       {settings?.whatsapp && (
@@ -31,7 +31,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           target="_blank"
           rel="noreferrer"
           aria-label="تواصل واتساب"
-          className="fixed bottom-20 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-6"
+          className="fixed bottom-28 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 lg:bottom-6"
         >
           <MessageCircle className="h-6 w-6" />
         </a>
@@ -39,7 +39,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <CustomerMessageWidget />
       <PwaInstallPrompt />
       <MobileNav />
-      <footer className="border-t border-border/40 pt-6 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
+      <footer className="border-t border-border/40 pt-6 pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">
           <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">
