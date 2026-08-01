@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, Route, Switch, useLocation } from "wouter";
 import {
-  ArrowRight, ClipboardList, Loader2, LogOut, Ruler,
-  Save, Scissors, Search, Send, ShieldCheck, User, XCircle,
+  ArrowRight, Camera, CheckCircle2, ClipboardList, Copy, Download, Filter,
+  Loader2, LogOut, Pause, Play, Plus, Printer, QrCode, Ruler, Save, Scissors,
+  Search, Send, ShieldCheck, Table2, Upload, User, Users, Wrench, X, XCircle,
 } from "lucide-react";
 import {
   fetchAdminMe, hasPerm, isSessionDecision, loginAdmin, logoutAdmin,
-  adminFetch, type AdminMe,
+  adminFetch, compressImageFile, type AdminMe,
 } from "@/views/admin/_lib";
+import { LiveScanner } from "@/views/staff/live-scanner";
 
 /** All tailor data flows through the assignment-scoped /admin/tailoring API. */
 function tailorApi<T = any>(path: string, init?: RequestInit): Promise<T> {
@@ -54,8 +56,63 @@ const NUMERIC_FIELDS: { key: string; label: string }[] = [
   { key: "capSize", label: "مقاس القبعة" },
 ];
 
+const PROD_STAGES: { key: string; label: string }[] = [
+  { key: "ready_for_cutting", label: "جاهز للقص" },
+  { key: "cutting", label: "قيد القص" },
+  { key: "sewing", label: "قيد الخياطة" },
+  { key: "fitting", label: "البروفة" },
+  { key: "adjustment", label: "التعديل" },
+  { key: "ironing", label: "الكي" },
+  { key: "quality_check", label: "فحص الجودة" },
+  { key: "ready", label: "جاهز" },
+];
+const PHOTO_TYPES: { key: string; label: string }[] = [
+  { key: "measurement", label: "صورة القياس" },
+  { key: "robe_fitting", label: "بروفة الروب" },
+  { key: "sleeve_fitting", label: "بروفة الكم" },
+  { key: "adjustment", label: "صورة التعديل" },
+];
+const ALTER_TYPES: { key: string; label: string }[] = [
+  { key: "shorten_robe", label: "تقصير الروب" },
+  { key: "lengthen_robe", label: "تطويل الروب" },
+  { key: "adjust_sleeve", label: "تعديل الكم" },
+  { key: "adjust_shoulder", label: "تعديل الكتف" },
+  { key: "adjust_chest", label: "تعديل الصدر" },
+  { key: "replace_zipper", label: "تبديل السحّاب" },
+  { key: "change_size", label: "تغيير المقاس" },
+  { key: "other", label: "أخرى" },
+];
+const alterLabel = (k: string) => ALTER_TYPES.find((a) => a.key === k)?.label ?? k;
+
 function Spinner() {
   return <div className="flex min-h-dvh items-center justify-center bg-background"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
+}
+
+/* Camera QR scanner — resolves a code to a scoped order, or 403/404. */
+function ScanOverlay({ onClose }: { onClose: () => void }) {
+  const [, navigate] = useLocation();
+  const [status, setStatus] = useState<string | null>(null);
+  const busyRef = useState({ v: false })[0];
+  async function resolve(code: string) {
+    if (busyRef.v) return;
+    busyRef.v = true; setStatus("جارٍ فتح الطالب…");
+    try {
+      const r = await tailorApi(`/scan?code=${encodeURIComponent(code)}`);
+      onClose(); navigate(`/staff/tailors/order/${r.orderId}`);
+    } catch (e: any) { setStatus(e?.message ?? "رمز غير معروف"); busyRef.v = false; }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/90" dir="rtl">
+      <div className="flex items-center justify-between p-4 text-white">
+        <span className="font-bold">مسح كود الطالب</span>
+        <button type="button" onClick={onClose} aria-label="إغلاق" className="rounded-lg border border-white/20 p-2"><X className="h-4 w-4" /></button>
+      </div>
+      <div className="mx-auto w-full max-w-sm px-4">
+        <div className="overflow-hidden rounded-2xl border border-primary/40"><LiveScanner onDetect={resolve} active stopOnDetect /></div>
+        <p className="mt-3 text-center text-sm text-white/70">{status ?? "وجّه الكاميرا نحو رمز QR أو الباركود على الطلب"}</p>
+      </div>
+    </div>
+  );
 }
 
 function Login({ onDone }: { onDone: () => void }) {
@@ -96,9 +153,12 @@ function Dashboard() {
   const [search, setSearch] = useState("");
   const [bucket, setBucket] = useState("");
   const [list, setList] = useState<any[] | null>(null);
+  const [groups, setGroups] = useState<any[]>([]);
+  const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
     tailorApi("/dashboard").then(setData).catch(() => setData({ buckets: {}, orders: [] })).finally(() => setLoading(false));
+    tailorApi("/groups").then((r) => setGroups(r.groups ?? [])).catch(() => setGroups([]));
   }, []);
 
   const runSearch = useCallback(() => {
@@ -115,6 +175,10 @@ function Dashboard() {
 
   return (
     <div className="space-y-5">
+      {scanning && <ScanOverlay onClose={() => setScanning(false)} />}
+      <button type="button" onClick={() => setScanning(true)} className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 py-3 font-bold text-primary">
+        <QrCode className="h-5 w-5" /> مسح كود الطالب
+      </button>
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
         {BUCKETS.map((b) => (
           <button
@@ -159,6 +223,21 @@ function Dashboard() {
           <div className="rounded-xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">لا توجد طلبات مطابقة</div>
         )}
       </div>
+
+      {groups.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="flex items-center gap-2 text-sm font-bold text-muted-foreground"><Table2 className="h-4 w-4" /> مجموعات التخرج</h3>
+          {groups.map((g: any) => (
+            <Link key={g.id} href={`/staff/tailors/group/${g.id}`} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
+              <div className="min-w-0">
+                <div className="truncate font-semibold">{g.title}</div>
+                <div className="truncate text-xs text-muted-foreground">{[g.groupNo, g.university, g.department].filter(Boolean).join(" — ")}</div>
+              </div>
+              <span className="shrink-0 text-xs text-muted-foreground">{g.completeCount}/{g.studentCount} مكتمل</span>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -167,9 +246,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div className="rounded-lg border border-border bg-background px-3 py-2"><div className="text-[11px] text-muted-foreground">{label}</div><div className="mt-0.5 text-sm font-medium">{children || "—"}</div></div>;
 }
 
-function OrderPage({ id }: { id: string }) {
+function OrderPage({ id, canReview }: { id: string; canReview: boolean }) {
   const [, navigate] = useLocation();
   const [order, setOrder] = useState<any>(null);
+  const [reviewNote, setReviewNote] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState<Record<string, any>>({});
@@ -177,6 +257,7 @@ function OrderPage({ id }: { id: string }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [altForm, setAltForm] = useState<any>({ type: "shorten_robe", problem: "", requiredChange: "", expectedDate: "", notes: "" });
 
   const load = useCallback(() => {
     setLoading(true); setErr(null);
@@ -211,6 +292,67 @@ function OrderPage({ id }: { id: string }) {
     finally { setBusy(false); }
   }
 
+  async function uploadPhoto(type: string, file: File) {
+    setMsg("جارٍ رفع الصورة…");
+    try {
+      const dataUrl = await compressImageFile(file, 1400, 0.8);
+      const r = await tailorApi(`/order/${id}/photos`, { method: "POST", body: JSON.stringify({ type, dataUrl }) });
+      setOrder((o: any) => ({ ...o, photos: r.photos })); setMsg("تم رفع الصورة");
+    } catch (e: any) { setMsg(e?.message ?? "تعذر رفع الصورة"); }
+  }
+  async function addAlteration() {
+    if (!altForm.problem && !altForm.requiredChange) { setMsg("أدخل المشكلة أو التعديل المطلوب"); return; }
+    try {
+      const r = await tailorApi(`/order/${id}/alterations`, { method: "POST", body: JSON.stringify({ alteration: altForm }) });
+      setOrder((o: any) => ({ ...o, alterations: r.alterations }));
+      setAltForm({ type: "shorten_robe", problem: "", requiredChange: "", expectedDate: "", notes: "" });
+      setMsg("تمت إضافة التعديل");
+    } catch (e: any) { setMsg(e?.message ?? "تعذر الحفظ"); }
+  }
+  async function doProduction(action: string, stage?: string) {
+    try {
+      const r = await tailorApi(`/order/${id}/production`, { method: "POST", body: JSON.stringify({ action, stage }) });
+      setOrder((o: any) => ({ ...o, productionStage: r.productionStage })); setMsg("تم تحديث الإنتاج");
+    } catch (e: any) { setMsg(e?.message ?? "تعذر التحديث"); }
+  }
+  async function review(decision: "approve" | "return") {
+    try {
+      await tailorApi(`/order/${id}/review`, { method: "POST", body: JSON.stringify({ decision, note: reviewNote || undefined }) });
+      setReviewNote(""); load();
+    } catch (e: any) { setMsg(e?.message ?? "تعذر تنفيذ القرار"); }
+  }
+  async function printA4() {
+    let qr = "";
+    try { const QR: any = await import("qrcode"); qr = await QR.toDataURL(`${location.origin}/graduation/track/${order.qrToken}`, { margin: 1, width: 150 }); } catch { /* QR optional */ }
+    const m = order.measurements || {};
+    const rows = [["الطول", m.height], ["الوزن", m.weight], ["الكتف", m.shoulder], ["الصدر", m.chest], ["الخصر", m.waist], ["الكم", m.sleeveLength], ["طول الروب", m.robeLength], ["الرقبة", m.neck], ["القبعة", m.capSize], ["المقاس", m.standardSize || m.readySize || m.customSize]]
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v ?? "—"}</td></tr>`).join("");
+    const w = window.open("", "_blank", "width=820,height=1040");
+    if (!w) { setMsg("اسمح بالنوافذ المنبثقة للطباعة"); return; }
+    w.document.write(`<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ورقة قياسات</title>
+      <style>*{font-family:'Segoe UI',system-ui,sans-serif}body{margin:0;padding:32px;color:#111}
+      .head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #C9F24A;padding-bottom:14px}
+      .brand{font-size:26px;font-weight:800}.brand span{color:#7a9b1a}
+      h1{font-size:20px;margin:18px 0 6px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;font-size:14px}
+      .grid div{padding:5px 0;border-bottom:1px dashed #ddd}table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
+      td{border:1px solid #ccc;padding:7px 10px}td:first-child{background:#f6f6f6;font-weight:700;width:45%}
+      .foot{margin-top:24px;display:flex;justify-content:space-between;font-size:13px;color:#444}
+      @media print{@page{size:A4;margin:14mm}}</style></head><body>
+      <div class="head"><div class="brand">AJN <span>مجموعة علي جان</span><div style="font-size:13px;color:#666;font-weight:400">تجهيزات التخرج — ورقة قياسات الخياط</div></div>
+      ${qr ? `<img src="${qr}" width="110" height="110" alt="QR"/>` : ""}</div>
+      <h1>${order.name || ""}</h1>
+      <div class="grid">
+        <div><b>رمز الطالب:</b> ${order.studentCode || "—"}</div><div><b>سنة التخرج:</b> ${order.graduationYear || "—"}</div>
+        <div><b>الجامعة:</b> ${order.university || "—"}</div><div><b>الكلية:</b> ${order.college || "—"}</div>
+        <div><b>القسم:</b> ${order.department || "—"}</div><div><b>المجموعة:</b> ${order.groupName || "—"}</div>
+        <div><b>الروب/الموديل:</b> ${[order.robe, order.robeModel].filter(Boolean).join(" — ") || "—"}</div><div><b>الخياط:</b> ${order.tailorName || "—"}</div>
+      </div>
+      <h1>القياسات</h1><table>${rows}</table>
+      <div class="foot"><span>ملاحظات: ${(m.tailorNotes || order.productionNotes || "—")}</span><span>التاريخ: ${new Date().toLocaleDateString("ar")}</span></div>
+      </body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 350);
+  }
+
   if (loading) return <Spinner />;
   if (err) return (
     <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-center">
@@ -222,7 +364,15 @@ function OrderPage({ id }: { id: string }) {
 
   return (
     <div className="space-y-4">
-      <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
+      <div className="flex items-center justify-between">
+        <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={printA4} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Printer className="h-3.5 w-3.5" /> طباعة A4</button>
+          {order.groupId ? (
+            <button type="button" onClick={() => navigate(`/staff/tailors/group/${order.groupId}`)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Table2 className="h-3.5 w-3.5" /> جدول المجموعة</button>
+          ) : null}
+        </div>
+      </div>
 
       {/* Student & garment info (read-only, no financials). */}
       <section className="rounded-2xl border border-border bg-card p-4">
@@ -315,6 +465,93 @@ function OrderPage({ id }: { id: string }) {
         </div>
       </section>
 
+      {/* Admin review outcome — visible to the tailor. */}
+      {order.measurements?.adminReview ? (
+        <div className={`rounded-xl border p-3 text-sm ${order.measurements.adminReview.decision === "approve" ? "border-status-success/40 bg-status-success/10 text-status-success" : "border-status-warning/40 bg-status-warning/10 text-status-warning"}`}>
+          <b>{order.measurements.adminReview.decision === "approve" ? "✓ اعتمدت الإدارة القياسات" : "↩︎ أُعيدت للتصحيح"}</b>
+          {order.measurements.adminReview.note ? <div className="mt-1 text-xs opacity-90">ملاحظة الإدارة: {order.measurements.adminReview.note}</div> : null}
+          <div className="mt-0.5 text-[11px] opacity-70">{order.measurements.adminReview.byName}</div>
+        </div>
+      ) : null}
+
+      {/* Manager approval panel. */}
+      {canReview && order.measurementStatus === "needs_review" ? (
+        <section className="rounded-2xl border border-accent/40 bg-accent/5 p-4">
+          <div className="mb-2 flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-accent" /><h3 className="font-bold">اعتماد الإدارة</h3></div>
+          <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} rows={2} placeholder="ملاحظة (اختياري)" className="w-full rounded-lg border border-border bg-background p-2 text-sm" />
+          <div className="mt-2 flex gap-2">
+            <button type="button" onClick={() => review("approve")} className="inline-flex items-center gap-1 rounded-lg bg-status-success px-4 py-2 text-sm font-bold text-white"><CheckCircle2 className="h-4 w-4" /> اعتماد</button>
+            <button type="button" onClick={() => review("return")} className="inline-flex items-center gap-1 rounded-lg border border-status-warning px-4 py-2 text-sm font-bold text-status-warning">إعادة للتصحيح</button>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Production stage — tailor actions. */}
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center gap-2"><Wrench className="h-4 w-4 text-primary" /><h3 className="font-bold">الإنتاج</h3>
+          <span className="ml-auto text-xs text-muted-foreground">المرحلة: {PROD_STAGES.find((s) => s.key === order.productionStage)?.label ?? order.productionStage}</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {PROD_STAGES.map((s) => (
+            <button key={s.key} type="button" onClick={() => doProduction("set_stage", s.key)}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs ${order.productionStage === s.key ? "border-primary bg-primary/10 text-primary" : "border-border"}`}>{s.label}</button>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" onClick={() => doProduction("start")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Play className="h-3.5 w-3.5" /> بدء العمل</button>
+          <button type="button" onClick={() => doProduction("pause")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs"><Pause className="h-3.5 w-3.5" /> إيقاف مؤقت</button>
+          <button type="button" onClick={() => doProduction("issue", undefined)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">الإبلاغ عن مشكلة</button>
+          <button type="button" onClick={() => doProduction("material")} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs">طلب مواد</button>
+          <button type="button" onClick={() => doProduction("mark_ready")} className="inline-flex items-center gap-1 rounded-lg border border-status-success/40 bg-status-success/10 px-3 py-1.5 text-xs text-status-success"><CheckCircle2 className="h-3.5 w-3.5" /> جاهز</button>
+        </div>
+      </section>
+
+      {/* Optional photos. */}
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center gap-2"><Camera className="h-4 w-4 text-primary" /><h3 className="font-bold">الصور (اختياري)</h3></div>
+        <div className="grid grid-cols-2 gap-2">
+          {PHOTO_TYPES.map((p) => (
+            <label key={p.key} className="flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground hover:border-primary">
+              <Camera className="h-3.5 w-3.5" /> {p.label}
+              <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => e.target.files?.[0] && uploadPhoto(p.key, e.target.files[0])} />
+            </label>
+          ))}
+        </div>
+        {(order.photos ?? []).length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {order.photos.map((ph: any, i: number) => (
+              <a key={i} href={ph.url} target="_blank" rel="noopener noreferrer" className="block">
+                <img src={ph.url} alt={ph.type} className="h-16 w-16 rounded-lg border border-border object-cover" />
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Alterations. */}
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center gap-2"><Scissors className="h-4 w-4 text-primary" /><h3 className="font-bold">التعديلات</h3></div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <select value={altForm.type} onChange={(e) => setAltForm((f: any) => ({ ...f, type: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm">
+            {ALTER_TYPES.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+          </select>
+          <input type="date" value={altForm.expectedDate} onChange={(e) => setAltForm((f: any) => ({ ...f, expectedDate: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
+          <input placeholder="المشكلة" value={altForm.problem} onChange={(e) => setAltForm((f: any) => ({ ...f, problem: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
+          <input placeholder="التعديل المطلوب" value={altForm.requiredChange} onChange={(e) => setAltForm((f: any) => ({ ...f, requiredChange: e.target.value }))} className="rounded-lg border border-border bg-background p-2 text-sm" />
+        </div>
+        <button type="button" onClick={addAlteration} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-sm font-bold text-primary-foreground"><Plus className="h-4 w-4" /> إضافة تعديل</button>
+        {(order.alterations ?? []).length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {order.alterations.map((a: any) => (
+              <li key={a.id} className="rounded-lg border border-border bg-background p-2 text-xs">
+                <b>{alterLabel(a.type)}</b>{a.problem ? ` — ${a.problem}` : ""}{a.requiredChange ? ` → ${a.requiredChange}` : ""}
+                {a.expectedDate ? <span className="text-muted-foreground"> · الموعد: {a.expectedDate}</span> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {/* Measurement history — never overwritten. */}
       <section className="rounded-2xl border border-border bg-card p-4">
         <h3 className="mb-3 flex items-center gap-2 font-bold"><ClipboardList className="h-4 w-4 text-primary" /> سجل القياسات</h3>
@@ -332,6 +569,193 @@ function OrderPage({ id }: { id: string }) {
           </ul>
         ) : <p className="text-sm text-muted-foreground">لا يوجد سجل بعد.</p>}
       </section>
+    </div>
+  );
+}
+
+/* ---------------- Group measurement table (Phase 2) ---------------- */
+const EDIT_COLS: { key: string; label: string }[] = [
+  { key: "height", label: "الطول" },
+  { key: "weight", label: "الوزن" },
+  { key: "shoulder", label: "الكتف" },
+  { key: "sleeveLength", label: "الكم" },
+  { key: "robeLength", label: "طول الروب" },
+  { key: "capSize", label: "القبعة" },
+];
+const CSV_HEAD = ["studentCode", "name", "height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize", "finalSize", "status"];
+const csvCell = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+function GroupPage({ id }: { id: string }) {
+  const [, navigate] = useLocation();
+  const [group, setGroup] = useState<any>(null);
+  const [rows, setRows] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [sel, setSel] = useState<Set<number>>(new Set());
+  const [onlyIncomplete, setOnlyIncomplete] = useState(false);
+  const [applySize, setApplySize] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true); setErr(null);
+    tailorApi(`/group/${id}`)
+      .then((r) => { setGroup(r.group); setRows((r.students ?? []).map((s: any) => ({ ...s }))); })
+      .catch((e: any) => setErr(e?.message ?? "تعذر فتح المجموعة"))
+      .finally(() => setLoading(false));
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  const visible = useMemo(
+    () => (onlyIncomplete ? rows.filter((r) => !["complete", "needs_review", "approved"].includes(r.measurementStatus)) : rows),
+    [rows, onlyIncomplete],
+  );
+
+  const setCell = (oid: number, key: string, val: string) =>
+    setRows((cur) => cur.map((r) => (r.id === oid ? { ...r, [key]: val, _dirty: true } : r)));
+  const toggleSel = (oid: number) => setSel((s) => { const n = new Set(s); n.has(oid) ? n.delete(oid) : n.add(oid); return n; });
+  const allSelected = visible.length > 0 && visible.every((r) => sel.has(r.id));
+  const toggleAll = () => setSel(allSelected ? new Set() : new Set(visible.map((r) => r.id)));
+
+  function payloadFor(r: any) {
+    return { orderId: r.id, height: r.height, weight: r.weight, shoulder: r.shoulder, sleeveLength: r.sleeveLength, robeLength: r.robeLength, capSize: r.capSize, standardSize: r.finalSize };
+  }
+  async function saveItems(items: any[]) {
+    if (!items.length) { setMsg("لا توجد صفوف محددة"); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const r = await tailorApi(`/group/${id}/measurements`, { method: "POST", body: JSON.stringify({ items }) });
+      setMsg(`تم حفظ ${r.saved} طالب`); setSel(new Set()); load();
+    } catch (e: any) { setMsg(e?.message ?? "تعذر الحفظ"); }
+    finally { setBusy(false); }
+  }
+  const saveSelected = () => saveItems(rows.filter((r) => sel.has(r.id)).map(payloadFor));
+  const saveAll = () => saveItems(rows.filter((r) => r._dirty).map(payloadFor));
+
+  function applySizeToSelected() {
+    if (!applySize) return;
+    setRows((cur) => cur.map((r) => (sel.has(r.id) ? { ...r, finalSize: applySize, _dirty: true } : r)));
+    setMsg(`طُبّق المقاس ${applySize} على المحدد (اضغط حفظ)`);
+  }
+  function copyToSelected() {
+    const src = rows.find((r) => sel.has(r.id));
+    if (!src) { setMsg("حدّد صفاً مصدراً أولاً"); return; }
+    setRows((cur) => cur.map((r) => (sel.has(r.id) && r.id !== src.id
+      ? { ...r, height: src.height, weight: src.weight, shoulder: src.shoulder, sleeveLength: src.sleeveLength, robeLength: src.robeLength, capSize: src.capSize, finalSize: src.finalSize, _dirty: true }
+      : r)));
+    setMsg("نُسخت قياسات أول صف محدد إلى البقية (اضغط حفظ)");
+  }
+
+  function exportCSV() {
+    const lines = [CSV_HEAD.join(",")];
+    rows.forEach((r) => lines.push([r.studentCode, r.name, r.height, r.weight, r.shoulder, r.sleeveLength, r.robeLength, r.capSize, r.finalSize, r.measurementStatus].map(csvCell).join(",")));
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `group-${group?.groupNo || id}-measurements.csv`; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  function importCSV(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "").replace(/^﻿/, "");
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return;
+      const head = lines[0].split(",").map((h) => h.replace(/(^"|"$)/g, "").trim());
+      const idx = (k: string) => head.indexOf(k);
+      const byCode = new Map(rows.map((r) => [String(r.studentCode), r]));
+      let hit = 0;
+      const updates = new Map<number, any>();
+      for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].match(/("([^"]|"")*"|[^,]*)/g)?.filter((_, j) => j % 2 === 0).map((c) => c.replace(/(^"|"$)/g, "").replace(/""/g, '"')) ?? [];
+        const code = cells[idx("studentCode")];
+        const row = byCode.get(String(code));
+        if (!row) continue;
+        const patch: any = { ...row, _dirty: true };
+        for (const c of ["height", "weight", "shoulder", "sleeveLength", "robeLength", "capSize"]) if (idx(c) >= 0 && cells[idx(c)] !== undefined) patch[c] = cells[idx(c)];
+        if (idx("finalSize") >= 0 && cells[idx("finalSize")]) patch.finalSize = cells[idx("finalSize")];
+        updates.set(row.id, patch); hit++;
+      }
+      setRows((cur) => cur.map((r) => updates.get(r.id) ?? r));
+      setMsg(`استُورد ${hit} صفاً من الملف (راجع ثم احفظ)`);
+    };
+    reader.readAsText(file);
+  }
+
+  if (loading) return <Spinner />;
+  if (err) return (
+    <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-center">
+      <ShieldCheck className="mx-auto mb-2 h-8 w-8 text-destructive" />
+      <p className="font-bold text-destructive">{err}</p>
+      <button type="button" onClick={() => navigate("/staff/tailors")} className="mt-4 rounded-lg border border-border px-4 py-2 text-sm">رجوع للوحة</button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <button type="button" onClick={() => navigate("/staff/tailors")} className="inline-flex items-center gap-1 text-sm text-muted-foreground"><ArrowRight className="h-4 w-4" /> رجوع</button>
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <h2 className="flex items-center gap-2 font-bold"><Users className="h-4 w-4 text-primary" /> {group?.title || "مجموعة"}</h2>
+        <p className="text-xs text-muted-foreground">{[group?.groupNo, group?.university, group?.department].filter(Boolean).join(" — ")} · {rows.length} طالب</p>
+      </div>
+
+      {/* Bulk action bar */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2 text-xs">
+        <button type="button" disabled={busy} onClick={saveSelected} className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 font-bold text-primary-foreground disabled:opacity-60"><Save className="h-3.5 w-3.5" /> حفظ المحدد</button>
+        <button type="button" disabled={busy} onClick={saveAll} className="rounded-lg border border-border px-3 py-1.5">حفظ كل المعدّل</button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <select value={applySize} onChange={(e) => setApplySize(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-1.5"><option value="">تطبيق مقاس…</option>{READY_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+        <button type="button" onClick={applySizeToSelected} className="rounded-lg border border-border px-3 py-1.5">تطبيق على المحدد</button>
+        <button type="button" onClick={copyToSelected} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Copy className="h-3.5 w-3.5" /> نسخ للمحدد</button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <button type="button" onClick={() => setOnlyIncomplete((v) => !v)} className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 ${onlyIncomplete ? "border-primary text-primary" : "border-border"}`}><Filter className="h-3.5 w-3.5" /> غير المكتملة</button>
+        <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Upload className="h-3.5 w-3.5" /> استيراد<input type="file" accept=".csv,text/csv" hidden onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} /></label>
+        <button type="button" onClick={exportCSV} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Download className="h-3.5 w-3.5" /> تصدير Excel</button>
+        <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5"><Printer className="h-3.5 w-3.5" /> طباعة</button>
+      </div>
+      {msg && <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
+
+      {/* Table */}
+      <div className="overflow-x-auto rounded-2xl border border-border" id="group-print">
+        <table className="w-full min-w-[760px] border-collapse text-xs">
+          <thead>
+            <tr className="bg-muted/40 text-muted-foreground">
+              <th className="p-2"><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="تحديد الكل" /></th>
+              <th className="p-2 text-right">رمز الطالب</th>
+              <th className="p-2 text-right">الاسم</th>
+              {EDIT_COLS.map((c) => <th key={c.key} className="p-2">{c.label}</th>)}
+              <th className="p-2">المقاس النهائي</th>
+              <th className="p-2">الحالة</th>
+              <th className="p-2">الخياط</th>
+              <th className="p-2">آخر تحديث</th>
+              <th className="p-2">حفظ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <tr key={r.id} className={`border-t border-border ${r._dirty ? "bg-primary/5" : ""}`}>
+                <td className="p-1.5 text-center"><input type="checkbox" checked={sel.has(r.id)} onChange={() => toggleSel(r.id)} aria-label={`تحديد ${r.name}`} /></td>
+                <td className="p-1.5 whitespace-nowrap font-mono text-[11px]">{r.studentCode}</td>
+                <td className="p-1.5 whitespace-nowrap font-medium">{r.name}</td>
+                {EDIT_COLS.map((c) => (
+                  <td key={c.key} className="p-1">
+                    <input inputMode="decimal" value={r[c.key] ?? ""} onChange={(e) => setCell(r.id, c.key, e.target.value)} className="w-14 rounded border border-border bg-background p-1 text-center" />
+                  </td>
+                ))}
+                <td className="p-1">
+                  <input value={r.finalSize ?? ""} onChange={(e) => setCell(r.id, "finalSize", e.target.value)} className="w-14 rounded border border-border bg-background p-1 text-center" />
+                </td>
+                <td className="p-1.5 text-center"><span className={`rounded-full px-2 py-0.5 text-[10px] ${STATUS_BADGE[r.measurementStatus] ?? "bg-muted"}`}>{STATUS_LABEL[r.measurementStatus] ?? r.measurementStatus}</span></td>
+                <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground">{r.tailorName || "—"}</td>
+                <td className="p-1.5 whitespace-nowrap text-center text-muted-foreground" dir="ltr">{r.updatedAt ? new Date(r.updatedAt).toLocaleDateString("ar") : "—"}</td>
+                <td className="p-1.5 text-center">
+                  <button type="button" title="حفظ هذا الطالب" onClick={() => saveItems([payloadFor(r)])} className="rounded-md border border-border p-1 hover:border-primary"><Save className="h-3.5 w-3.5" /></button>
+                </td>
+              </tr>
+            ))}
+            {!visible.length && <tr><td colSpan={12} className="p-10 text-center text-muted-foreground">لا يوجد طلاب</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -372,10 +796,12 @@ export default function TailorsPortal() {
     );
   }
 
+  const canReview = me.role === "admin" || hasPerm(me, "graduation.approval.manage");
   return (
     <Shell me={me}>
       <Switch>
-        <Route path="/staff/tailors/order/:id">{(params) => <OrderPage id={params.id} />}</Route>
+        <Route path="/staff/tailors/order/:id">{(params) => <OrderPage id={params.id} canReview={canReview} />}</Route>
+        <Route path="/staff/tailors/group/:id">{(params) => <GroupPage id={params.id} />}</Route>
         <Route><Dashboard /></Route>
       </Switch>
     </Shell>

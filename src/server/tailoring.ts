@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   db,
   graduationGroupsTable,
@@ -176,9 +176,17 @@ function serializeDetail(order: OrderRow, group: GroupRow | null, history: unkno
     colors: rec(order.colors),
     productionNotes: order.notes ?? "",
     measurements: rec(order.measurements),
+    photos: Array.isArray(garment.tailorPhotos) ? garment.tailorPhotos : [],
+    alterations: Array.isArray(garment.alterations) ? garment.alterations : [],
     history,
   };
 }
+
+/** Production stages a tailor may move an approved order through. */
+export const TAILOR_PRODUCTION_STAGES = [
+  "ready_for_cutting", "cutting", "sewing", "fitting",
+  "adjustment", "ironing", "quality_check", "ready",
+] as const;
 
 async function loadGroups(ids: number[]) {
   const unique = [...new Set(ids.filter((id): id is number => Number.isFinite(id)))];
@@ -197,6 +205,81 @@ async function fetchAssignedOrder(id: number, user: TailorUser) {
       : and(eq(graduationOrdersTable.id, id), assignedCondition(user.id)),
   });
   return order ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Shared measurement write helpers (used by single + group-bulk saves).
+// ---------------------------------------------------------------------------
+function buildNextMeasurements(previous: Record<string, unknown>, body: Record<string, unknown>, user: TailorUser) {
+  const incoming: Record<string, unknown> = {};
+  for (const key of MEASUREMENT_NUMERIC_KEYS) {
+    if (body[key] !== undefined) {
+      const raw = body[key];
+      incoming[key] = raw === "" || raw === null ? undefined : Number(raw);
+    }
+  }
+  for (const key of MEASUREMENT_TEXT_KEYS) {
+    if (body[key] !== undefined) incoming[key] = body[key] === null ? undefined : String(body[key]);
+  }
+  if (body.method === "ready" || body.method === "custom") incoming.method = body.method;
+  if (body.readySize !== undefined) incoming.readySize = body.readySize || undefined;
+  const next: Record<string, unknown> = { ...previous, ...incoming };
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+  next.status = typeof body.status === "string" && (TAILOR_MEASUREMENT_STATUSES as readonly string[]).includes(body.status)
+    ? body.status
+    : deriveStatus(next);
+  next.updatedByName = user.fullName || user.username;
+  next.updatedAt = new Date().toISOString();
+  return next;
+}
+
+async function persistMeasurements(orderId: number, next: Record<string, unknown>) {
+  await db.update(graduationOrdersTable)
+    .set({ measurements: next as OrderRow["measurements"], updatedAt: new Date() })
+    .where(eq(graduationOrdersTable.id, orderId));
+}
+
+async function recordHistory(orderId: number, previous: unknown, next: unknown, action: string, user: TailorUser, reason?: string | null, notes?: string | null) {
+  await db.execute(sql`
+    INSERT INTO graduation_measurement_history
+      (graduation_order_id, previous, next, action, changed_by, changed_by_name, reason, notes)
+    VALUES (${orderId}, ${JSON.stringify(previous)}::jsonb, ${JSON.stringify(next)}::jsonb, ${action},
+            ${user.id}, ${user.fullName || user.username}, ${reason ?? null}, ${notes ?? null})
+  `);
+}
+
+/** Managers/admins may approve or return submitted measurements. */
+function canApprove(user: TailorUser) {
+  return user.role === "admin"
+    || ["graduation.approval.manage", "graduation_manager", "graduation"].some((p) => user.permissions.includes(p));
+}
+
+/** A group is accessible when the tailor has at least one assigned order in it. */
+async function canAccessGroup(groupId: number, user: TailorUser) {
+  if (canSeeAll(user)) return true;
+  const row = await db.query.graduationOrdersTable.findFirst({
+    where: and(eq(graduationOrdersTable.groupId, groupId), assignedCondition(user.id)),
+    columns: { id: true },
+  });
+  return !!row;
+}
+
+/** Flattened row for the group measurement table. */
+function serializeGroupRow(order: OrderRow) {
+  const m = rec(order.measurements);
+  const num = (k: string) => (m[k] === undefined || m[k] === null ? "" : m[k]);
+  return {
+    id: order.id,
+    studentCode: order.studentCode,
+    name: order.customerName,
+    height: num("height"), weight: num("weight"), shoulder: num("shoulder"),
+    sleeveLength: num("sleeveLength"), robeLength: num("robeLength"), capSize: num("capSize"),
+    finalSize: (m.standardSize as string) || (m.readySize as string) || (m.customSize as string) || "",
+    measurementStatus: deriveStatus(m),
+    tailorName: (rec(rec(order.productionEstimate).tailorAssignment).tailorName as string) ?? "",
+    updatedAt: m.updatedAt ?? order.updatedAt,
+    measurements: m,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,37 +381,9 @@ export async function handleTailorPortal(
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
     const body = rec(await req.json().catch(() => ({})));
     const previous = rec(order.measurements);
-    const incoming: Record<string, unknown> = {};
-    for (const key of MEASUREMENT_NUMERIC_KEYS) {
-      if (body[key] !== undefined) {
-        const raw = body[key];
-        incoming[key] = raw === "" || raw === null ? undefined : Number(raw);
-      }
-    }
-    for (const key of MEASUREMENT_TEXT_KEYS) {
-      if (body[key] !== undefined) incoming[key] = body[key] === null ? undefined : String(body[key]);
-    }
-    if (body.method === "ready" || body.method === "custom") incoming.method = body.method;
-    if (body.readySize !== undefined) incoming.readySize = body.readySize || undefined;
-    const next: Record<string, unknown> = { ...previous, ...incoming };
-    // Drop keys explicitly cleared.
-    for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
-    next.status = typeof body.status === "string" && (TAILOR_MEASUREMENT_STATUSES as readonly string[]).includes(body.status)
-      ? body.status
-      : deriveStatus(next);
-    next.updatedByName = user.fullName || user.username;
-    next.updatedAt = new Date().toISOString();
-
-    await db.update(graduationOrdersTable)
-      .set({ measurements: next as OrderRow["measurements"], updatedAt: new Date() })
-      .where(eq(graduationOrdersTable.id, id));
-    await db.execute(sql`
-      INSERT INTO graduation_measurement_history
-        (graduation_order_id, previous, next, action, changed_by, changed_by_name, reason, notes)
-      VALUES (${id}, ${JSON.stringify(previous)}::jsonb, ${JSON.stringify(next)}::jsonb, 'edit',
-              ${user.id}, ${user.fullName || user.username},
-              ${body.reason ? String(body.reason) : null}, ${body.notes ? String(body.notes) : null})
-    `);
+    const next = buildNextMeasurements(previous, body, user);
+    await persistMeasurements(id, next);
+    await recordHistory(id, previous, next, "edit", user, body.reason ? String(body.reason) : null, body.notes ? String(body.notes) : null);
     return json({ ok: true, measurements: next, status: next.status });
   }
 
@@ -345,16 +400,187 @@ export async function handleTailorPortal(
       submittedByName: user.fullName || user.username,
       submittedAt: new Date().toISOString(),
     };
-    await db.update(graduationOrdersTable)
-      .set({ measurements: next as OrderRow["measurements"], updatedAt: new Date() })
-      .where(eq(graduationOrdersTable.id, id));
-    await db.execute(sql`
-      INSERT INTO graduation_measurement_history
-        (graduation_order_id, previous, next, action, changed_by, changed_by_name, reason)
-      VALUES (${id}, ${JSON.stringify(previous)}::jsonb, ${JSON.stringify(next)}::jsonb, 'submit',
-              ${user.id}, ${user.fullName || user.username}, 'إرسال القياسات للاعتماد')
-    `);
+    await persistMeasurements(id, next);
+    await recordHistory(id, previous, next, "submit", user, "إرسال القياسات للاعتماد");
     return json({ ok: true, status: "needs_review" });
+  }
+
+  // GET /admin/tailoring/groups — accessible groups with progress counts.
+  if (method === "GET" && parts[0] === "groups" && !parts[1]) {
+    const orders = await db.query.graduationOrdersTable.findMany({
+      where: canSeeAll(user) ? undefined : assignedCondition(user.id),
+      limit: 3000,
+    });
+    const byGroup = new Map<number, OrderRow[]>();
+    for (const o of orders) {
+      if (!o.groupId) continue;
+      const arr = byGroup.get(o.groupId) ?? [];
+      arr.push(o); byGroup.set(o.groupId, arr);
+    }
+    const groups = await loadGroups([...byGroup.keys()]);
+    const list = [...byGroup.entries()].map(([gid, rows]) => {
+      const g = groups.get(gid);
+      const complete = rows.filter((o) => ["complete", "needs_review", "approved"].includes(deriveStatus(rec(o.measurements)))).length;
+      return {
+        id: gid, title: g?.title ?? "", groupNo: g?.groupNo ?? "",
+        university: g?.university ?? "", department: g?.department ?? "",
+        studentCount: rows.length, completeCount: complete,
+      };
+    }).sort((a, b) => a.title.localeCompare(b.title, "ar"));
+    return json({ groups: list });
+  }
+
+  // GET /admin/tailoring/group/:id — every student of one group in a table.
+  if (method === "GET" && parts[0] === "group" && parts[1] && !parts[2]) {
+    const gid = Number(parts[1]);
+    if (!Number.isFinite(gid)) return error("معرّف غير صحيح", 400);
+    if (!(await canAccessGroup(gid, user))) return error("هذه المجموعة غير مخصصة لك", 403);
+    const group = (await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, gid) })) ?? null;
+    const students = await db.query.graduationOrdersTable.findMany({
+      where: eq(graduationOrdersTable.groupId, gid),
+      orderBy: [asc(graduationOrdersTable.studentCode)],
+      limit: 1000,
+    });
+    return json({
+      group: group ? { id: group.id, title: group.title, groupNo: group.groupNo, university: group.university, college: group.college, department: group.department, graduationYear: group.graduationYear } : null,
+      students: students.map(serializeGroupRow),
+    });
+  }
+
+  // POST /admin/tailoring/group/:id/measurements — bulk save selected students.
+  if (method === "POST" && parts[0] === "group" && parts[1] && parts[2] === "measurements") {
+    const gid = Number(parts[1]);
+    if (!Number.isFinite(gid)) return error("معرّف غير صحيح", 400);
+    if (!(await canAccessGroup(gid, user))) return error("هذه المجموعة غير مخصصة لك", 403);
+    const body = rec(await req.json().catch(() => ({})));
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) return error("لا توجد صفوف للحفظ", 400);
+    // Only orders that actually belong to this group may be written.
+    const rows = await db.query.graduationOrdersTable.findMany({
+      where: eq(graduationOrdersTable.groupId, gid),
+      columns: { id: true, measurements: true },
+      limit: 1000,
+    });
+    const allowed = new Map(rows.map((r) => [r.id, rec(r.measurements)]));
+    let saved = 0;
+    for (const raw of items) {
+      const item = rec(raw);
+      const oid = Number(item.orderId);
+      const previous = allowed.get(oid);
+      if (!Number.isFinite(oid) || previous === undefined) continue;
+      const next = buildNextMeasurements(previous, item, user);
+      await persistMeasurements(oid, next);
+      await recordHistory(oid, previous, next, "group_edit", user, item.reason ? String(item.reason) : "تعديل جماعي");
+      saved += 1;
+    }
+    return json({ ok: true, saved });
+  }
+
+  // GET /admin/tailoring/scan?code=  — resolve a scanned QR/barcode to an order.
+  if (method === "GET" && parts[0] === "scan" && !parts[1]) {
+    const code = (req.nextUrl.searchParams.get("code") ?? "").trim();
+    if (!code) return error("لا يوجد رمز", 400);
+    const found = await db.query.graduationOrdersTable.findFirst({
+      where: or(
+        eq(graduationOrdersTable.qrToken, code),
+        eq(graduationOrdersTable.barcodeValue, code),
+        eq(graduationOrdersTable.studentCode, code),
+      ),
+      columns: { id: true },
+    });
+    if (!found) return error("لا يوجد طالب بهذا الرمز", 404);
+    // Enforce the same assignment scope — a scan cannot open an unassigned order.
+    if (!(await fetchAssignedOrder(found.id, user))) return error("هذا الطلب غير مخصص لك", 403);
+    return json({ orderId: found.id });
+  }
+
+  // POST /admin/tailoring/order/:id/photos  — attach an optional tailoring photo.
+  if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "photos") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
+    const order = await fetchAssignedOrder(id, user);
+    if (!order) return error("هذا الطلب غير مخصص لك", 403);
+    const body = rec(await req.json().catch(() => ({})));
+    const url = typeof body.dataUrl === "string" ? body.dataUrl : "";
+    if (!url) return error("لا توجد صورة", 400);
+    const garment = rec(order.garmentDetails);
+    const photos = Array.isArray(garment.tailorPhotos) ? garment.tailorPhotos : [];
+    photos.push({ type: String(body.type ?? "measurement"), url, at: new Date().toISOString(), byName: user.fullName || user.username });
+    await db.update(graduationOrdersTable)
+      .set({ garmentDetails: { ...garment, tailorPhotos: photos.slice(-40) } as OrderRow["garmentDetails"], updatedAt: new Date() })
+      .where(eq(graduationOrdersTable.id, id));
+    return json({ ok: true, photos: photos.slice(-40) });
+  }
+
+  // POST /admin/tailoring/order/:id/alterations  — add or update an alteration.
+  if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "alterations") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
+    const order = await fetchAssignedOrder(id, user);
+    if (!order) return error("هذا الطلب غير مخصص لك", 403);
+    const body = rec(await req.json().catch(() => ({})));
+    const alt = rec(body.alteration);
+    const garment = rec(order.garmentDetails);
+    const list: any[] = Array.isArray(garment.alterations) ? garment.alterations : [];
+    if (alt.id && list.some((a) => a.id === alt.id)) {
+      const idx = list.findIndex((a) => a.id === alt.id);
+      list[idx] = { ...list[idx], ...alt };
+    } else {
+      list.push({ id: alt.id || Date.now(), type: alt.type ?? "other", problem: alt.problem ?? "", requiredChange: alt.requiredChange ?? "", expectedDate: alt.expectedDate ?? null, completedDate: alt.completedDate ?? null, notes: alt.notes ?? "", beforePhoto: alt.beforePhoto ?? null, afterPhoto: alt.afterPhoto ?? null, byName: user.fullName || user.username, createdAt: new Date().toISOString() });
+    }
+    await db.update(graduationOrdersTable)
+      .set({ garmentDetails: { ...garment, alterations: list } as OrderRow["garmentDetails"], updatedAt: new Date() })
+      .where(eq(graduationOrdersTable.id, id));
+    return json({ ok: true, alterations: list });
+  }
+
+  // POST /admin/tailoring/order/:id/production  — tailor moves a production stage.
+  if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "production") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
+    const order = await fetchAssignedOrder(id, user);
+    if (!order) return error("هذا الطلب غير مخصص لك", 403);
+    const body = rec(await req.json().catch(() => ({})));
+    const action = String(body.action ?? "");
+    let nextStage = order.productionStage;
+    if (action === "mark_ready") nextStage = "ready";
+    else if (action === "set_stage" && typeof body.stage === "string" && (TAILOR_PRODUCTION_STAGES as readonly string[]).includes(body.stage)) nextStage = body.stage;
+    const previous = order.productionStage;
+    if (nextStage !== previous) {
+      await db.update(graduationOrdersTable)
+        .set({ productionStage: nextStage, updatedAt: new Date() })
+        .where(eq(graduationOrdersTable.id, id));
+    }
+    // Log every action (start / pause / issue / material / stage) on the timeline.
+    await db.execute(sql`
+      INSERT INTO graduation_production_events
+        (graduation_order_id, stage, previous_stage, scan_type, notes, employee_id, employee_name)
+      VALUES (${id}, ${nextStage}, ${previous}, ${"tailor_" + (action || "update")}, ${body.notes ? String(body.notes) : null},
+              ${user.id}, ${user.fullName || user.username})
+    `);
+    return json({ ok: true, productionStage: nextStage });
+  }
+
+  // POST /admin/tailoring/order/:id/review  — manager approves / returns for correction.
+  if (method === "POST" && parts[0] === "order" && parts[1] && parts[2] === "review") {
+    if (!canApprove(user)) return error("لا تملك صلاحية اعتماد القياسات", 403);
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
+    const order = await db.query.graduationOrdersTable.findFirst({ where: eq(graduationOrdersTable.id, id) });
+    if (!order) return error("الطلب غير موجود", 404);
+    const body = rec(await req.json().catch(() => ({})));
+    const decision = String(body.decision ?? "");
+    if (!["approve", "return"].includes(decision)) return error("قرار غير صحيح", 400);
+    const previous = rec(order.measurements);
+    const status = decision === "approve" ? "approved" : "partial";
+    const next = {
+      ...previous,
+      status,
+      adminReview: { decision, note: body.note ? String(body.note) : "", byName: user.fullName || user.username, at: new Date().toISOString() },
+    };
+    await persistMeasurements(id, next);
+    await recordHistory(id, previous, next, "review", user, decision === "approve" ? "اعتماد القياسات" : "إعادة للتصحيح", body.note ? String(body.note) : null);
+    return json({ ok: true, status });
   }
 
   return null;
