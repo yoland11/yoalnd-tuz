@@ -535,6 +535,12 @@ import {
 } from "@/server/graduation";
 import { handleAdminGraduationOperations } from "@/server/graduation-operations";
 import { handleTailorPortal } from "@/server/tailoring";
+import {
+  handlePhotographyApproval,
+  isShootLocked,
+  onShootEdited,
+} from "@/server/photography-approval";
+import { handleRepresentativePortal } from "@/server/representative";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import {
   handleAdminResearch,
@@ -671,6 +677,16 @@ export const ALL_PERMISSIONS = [
   "graduation.inventory.view",
   "graduation.reports.view",
   "graduation.settings.manage",
+  "representative.portal.access",
+  "representative.group.view",
+  "representative.students.manage",
+  "representative.payments.create",
+  "representative.receipts.print",
+  "representative.measurements.edit",
+  "representative.reminders.send",
+  "representative.delivery.confirm",
+  "representative.issues.create",
+  "representative.reports.export",
   "research",
   "research.view",
   "research.create",
@@ -27593,6 +27609,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (graduation) return graduation;
   }
 
+  if (section === "representative") {
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
+    const representative = await handleRepresentativePortal(
+      req,
+      parts.slice(2),
+      auth,
+    );
+    if (representative) return representative;
+  }
+
   // Tailors Portal (بوابة الخياطين) — every route is scoped to the tailor's own
   // assigned orders; unassigned ids return 403 inside the handler.
   if (section === "tailoring") {
@@ -44373,6 +44400,16 @@ async function handlePhotographyStaffPortal(
       });
     }
 
+    // Manager-approval workflow (save/submit/approve/return + version history).
+    if (action === "approval") {
+      return handlePhotographyApproval(req, shoot.id, parts[5], auth, createNotification);
+    }
+    // Edit-lock: once a manager approves, the photographer cannot edit until it
+    // is returned for correction. Blocks every mutating shoot endpoint below.
+    if (["POST", "PATCH", "DELETE"].includes(method) && (await isShootLocked(shoot.id))) {
+      return error("تم اعتماد العمل ولا يمكن تعديله", 403);
+    }
+
     // Venue / coordinates / time / notes.
     if (method === "PATCH" && !action) {
       const payload = await body(req);
@@ -44398,6 +44435,8 @@ async function handlePhotographyStaffPortal(
         .set(patch)
         .where(eq(photographyShootsTable.id, shoot.id))
         .returning();
+      // Editing after submission bumps the work back to "modified — pending".
+      await onShootEdited(shoot.id, auth, createNotification);
       return json(shootCardPayload(event, updated));
     }
 
@@ -44437,6 +44476,7 @@ async function handlePhotographyStaffPortal(
           metadata: { shootId: shoot.id },
         });
       }
+      await onShootEdited(shoot.id, auth, createNotification);
       return json({
         ok: true,
         checklist: normalizeChecklist(updated.checklist),

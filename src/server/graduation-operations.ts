@@ -1215,7 +1215,13 @@ function distributePayment(
   return result.filter((entry) => entry.amount > 0);
 }
 
-async function receivePayment(
+/**
+ * Shared payment posting workflow.  The representative portal intentionally
+ * calls this only after an administrator approves a submitted receipt, so it
+ * produces the same allocation, receipt, cash-box and accounting records as
+ * the Graduation Operations screen.
+ */
+export async function receivePayment(
   raw: unknown,
   user: GraduationAdminUser,
   groupId?: number,

@@ -136,6 +136,16 @@ export const ALL_PERMISSIONS = [
   "graduation.report.view",
   "graduation.reports.view",
   "graduation.settings.manage",
+  "representative.portal.access",
+  "representative.group.view",
+  "representative.students.manage",
+  "representative.payments.create",
+  "representative.receipts.print",
+  "representative.measurements.edit",
+  "representative.reminders.send",
+  "representative.delivery.confirm",
+  "representative.issues.create",
+  "representative.reports.export",
   // Tailors Portal (بوابة الخياطين) — mirrors the server registry.
   "tailoring",
   "tailoring.portal.access",
@@ -508,6 +518,16 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "graduation.report.view": "التخرج: عرض التقارير",
   "graduation.reports.view": "التخرج: عرض تقارير المؤسسة",
   "graduation.settings.manage": "التخرج: إدارة الإعدادات",
+  "representative.portal.access": "ممثل الشعب: الدخول إلى البوابة",
+  "representative.group.view": "ممثل الشعب: عرض المجموعة",
+  "representative.students.manage": "ممثل الشعب: إدارة الطلبة",
+  "representative.payments.create": "ممثل الشعب: تسجيل دفعات",
+  "representative.receipts.print": "ممثل الشعب: طباعة الوصولات",
+  "representative.measurements.edit": "ممثل الشعب: إدخال القياسات",
+  "representative.reminders.send": "ممثل الشعب: إرسال التذكيرات",
+  "representative.delivery.confirm": "ممثل الشعب: تأكيد التسليم",
+  "representative.issues.create": "ممثل الشعب: الإبلاغ عن مشكلة",
+  "representative.reports.export": "ممثل الشعب: تصدير التقارير",
   tailoring: "بوابة الخياطين (وصول كامل)",
   "tailoring.portal.access": "الخياطين: الدخول للبوابة",
   "tailoring.assigned_orders.view": "الخياطين: عرض الطلبات المخصصة",
@@ -569,6 +589,7 @@ export function currentPortal(): string {
   // /staff/sound route is detected here so device rows label it correctly.
   if (path.startsWith("/staff/sound")) return "sound";
   if (path.startsWith("/staff/koshas") || path.startsWith("/staff")) return "kosha";
+  if (path.startsWith("/representative")) return "representative";
   if (path.startsWith("/admin")) return "admin";
   return "";
 }

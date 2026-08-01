@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import {
   BadgeCheck, Boxes, CheckCircle2, ChevronLeft, Circle, ClipboardCheck,
-  Loader2, MapPin, Navigation, QrCode, Radio, Undo2, Users,
+  History, Loader2, Lock, MapPin, Navigation, QrCode, Radio, Send, Undo2, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,10 +14,28 @@ import { ShootMediaPanel } from "./post";
 import { ShootGalleryPanel } from "./gallery";
 import {
   CHECKLIST_ITEMS, SHOOT_STAGES, SHOOT_STAGE_LABEL, nextStage, readPositionOnce, shootApi,
-  type PhotographyAsset, type ShootBoard, type ShootCard, type ShootDetail, type ShootStage,
+  type PhotographyAsset, type ShootApproval, type ShootBoard, type ShootCard, type ShootDetail, type ShootStage, type ShootWorkVersion,
 } from "./lib";
 
 const isManager = (me: AdminMe | null | undefined) => !!me && (me.role === "admin" || me.role === "manager");
+
+/** Approval workflow status → Arabic label + tone. */
+const APPROVAL_LABEL: Record<string, string> = {
+  draft: "مسودة",
+  saved: "محفوظ",
+  pending: "بانتظار اعتماد المدير",
+  modified_pending: "تم التعديل — بانتظار الاعتماد",
+  approved: "معتمد",
+  returned: "مطلوب تعديل",
+};
+const APPROVAL_TONE: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground",
+  saved: "bg-accent/15 text-accent",
+  pending: "bg-status-warning/15 text-status-warning",
+  modified_pending: "bg-status-warning/15 text-status-warning",
+  approved: "bg-status-success/15 text-status-success",
+  returned: "bg-destructive/15 text-destructive",
+};
 
 /** Stage → badge tone. Grouped so the pipeline reads as prep → field → post → done. */
 const STAGE_TONE: Record<ShootStage, string> = {
@@ -228,11 +246,28 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
   const [photographers, setPhotographers] = useState<Array<{ id: number; name: string }>>([]);
   const [crewStaffId, setCrewStaffId] = useState(0);
   const [crewRole, setCrewRole] = useState("photographer");
+  const [approval, setApproval] = useState<ShootApproval | null>(null);
+  const [versions, setVersions] = useState<ShootWorkVersion[]>([]);
+  const [reviewNote, setReviewNote] = useState("");
   const manager = isManager(me);
 
   const load = useCallback(() => {
     shootApi.detail(shootRef).then(setData).catch((err) => setError(apiErrorMessage(err)));
+    shootApi.approval(shootRef).then((r) => { setApproval(r.approval ?? null); setVersions(r.versions ?? []); }).catch(() => {});
   }, [shootRef]);
+
+  async function workflow(sub: "save" | "submit" | "approve" | "return", payload: Record<string, unknown> = {}) {
+    setBusy(true);
+    try {
+      await shootApi.approvalAction(shootRef, sub, payload);
+      const toasts: Record<string, string> = { save: "تم حفظ العمل", submit: "أُرسل للاعتماد", approve: "تم اعتماد العمل", return: "أُرجع للتعديل" };
+      toast({ title: toasts[sub] });
+      setReviewNote("");
+      load();
+    } catch (err: any) {
+      toast({ title: "تعذّر تنفيذ الإجراء", description: apiErrorMessage(err), variant: "destructive" });
+    } finally { setBusy(false); }
+  }
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {

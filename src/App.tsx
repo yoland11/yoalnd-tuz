@@ -31,6 +31,7 @@ const PhotographyStaffPortal = lazy(
   () => import("@/views/staff/photography/index"),
 );
 const TailorsStaffPortal = lazy(() => import("@/views/staff/tailors/index"));
+const RepresentativePortal = lazy(() => import("@/views/representative/index"));
 
 // Customer routes — lazy (heavy components: ModelViewer, charts, tracking logic)
 const ProductDetail = lazy(() => import("@/views/store/id"));
@@ -192,6 +193,17 @@ function Router() {
       <Route path="/staff">
         <Suspense fallback={<AdminSpinner />}>
           <StaffPortal />
+        </Suspense>
+      </Route>
+
+      <Route path="/representative/*">
+        <Suspense fallback={<AdminSpinner />}>
+          <RepresentativePortal />
+        </Suspense>
+      </Route>
+      <Route path="/representative">
+        <Suspense fallback={<AdminSpinner />}>
+          <RepresentativePortal />
         </Suspense>
       </Route>
 

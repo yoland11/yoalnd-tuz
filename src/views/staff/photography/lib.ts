@@ -270,6 +270,25 @@ export type ShootBoard = {
   total: number;
 };
 
+export type ShootApproval = {
+  status: string;
+  locked?: boolean | string | number;
+  manager_note?: string | null;
+  last_edited_by_name?: string | null;
+  last_edited_at?: string | null;
+  submitted_at?: string | null;
+  approved_by_name?: string | null;
+  approved_at?: string | null;
+};
+export type ShootWorkVersion = {
+  id: number;
+  version: number;
+  change_type: string;
+  edited_by_name: string;
+  note: string | null;
+  created_at: string;
+};
+
 export const shootApi = {
   board: () => adminFetch<ShootBoard>(`${base}/board`),
   list: (opts: { stage?: string; search?: string; from?: string; to?: string } = {}) => {
@@ -284,6 +303,13 @@ export const shootApi = {
   detail: (ref: string | number) => adminFetch<ShootDetail>(`${base}/shoots/${encodeURIComponent(String(ref))}`),
   update: (ref: string | number, payload: Record<string, unknown>) =>
     adminFetch<ShootCard>(`${base}/shoots/${encodeURIComponent(String(ref))}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  // Manager-approval workflow.
+  approval: (ref: string | number) =>
+    adminFetch<{ approval: ShootApproval; versions: ShootWorkVersion[] }>(`${base}/shoots/${encodeURIComponent(String(ref))}/approval`),
+  approvalAction: (ref: string | number, sub: "save" | "submit" | "approve" | "return", payload: Record<string, unknown> = {}) =>
+    adminFetch<{ ok: boolean; status: string }>(`${base}/shoots/${encodeURIComponent(String(ref))}/approval/${sub}`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
   setChecklist: (ref: string | number, checklist: Record<string, boolean>) =>
     adminFetch<{ ok: boolean; checklist: Record<string, boolean>; checklistComplete: boolean; checklistCompletedAt: string | null }>(
       `${base}/shoots/${encodeURIComponent(String(ref))}/checklist`,
