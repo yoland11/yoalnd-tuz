@@ -36,7 +36,8 @@
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
-    "test:research-center": "node ./scripts/verify-research-center.mjs"
+    "test:research-center": "node ./scripts/verify-research-center.mjs",
+    "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

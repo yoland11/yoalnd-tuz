@@ -541,6 +541,7 @@ import {
   onShootEdited,
 } from "@/server/photography-approval";
 import { handleRepresentativePortal } from "@/server/representative";
+import { handleBrideDashboard } from "@/server/bride-dashboard";
 import { handleInstallments } from "@/server/installments";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import {
@@ -16618,6 +16619,8 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
     where: eq(customersTable.id, customerId),
   });
   if (!customer) return error("المستخدم غير موجود", 404);
+
+  if (section === "bride" || section === "wedding") return handleBrideDashboard(req, parts, customer);
 
   if (section === "graduation" && method === "GET") {
     await ensureGraduationTables();
