@@ -36,6 +36,10 @@ const APPROVAL_TONE: Record<string, string> = {
   approved: "bg-status-success/15 text-status-success",
   returned: "bg-destructive/15 text-destructive",
 };
+const CHANGE_LABEL: Record<string, string> = {
+  draft: "حفظ مسودة", save: "حفظ التغييرات", edit: "تعديل",
+  submit: "إرسال للاعتماد", approve: "اعتماد", return: "إرجاع للتعديل",
+};
 
 /** Stage → badge tone. Grouped so the pipeline reads as prep → field → post → done. */
 const STAGE_TONE: Record<ShootStage, string> = {
@@ -419,6 +423,72 @@ export function ShootDetailPage({ shootRef, me }: { shootRef: string; me: AdminM
           </div>
         ) : null}
       </header>
+
+      {/* Manager-approval workflow */}
+      {(() => {
+        const status = approval?.status ?? "draft";
+        const locked = status === "approved";
+        return (
+          <section className="rounded-xl border border-border/30 bg-card p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="flex items-center gap-2 text-sm font-bold text-foreground"><BadgeCheck className="h-4 w-4 text-primary" /> اعتماد العمل</h2>
+              <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${APPROVAL_TONE[status] ?? "bg-muted"}`}>{APPROVAL_LABEL[status] ?? status}</span>
+            </div>
+
+            {locked ? (
+              <div className="flex items-center gap-2 rounded-lg border border-status-success/30 bg-status-success/10 p-2.5 text-xs text-status-success">
+                <Lock className="h-4 w-4 shrink-0" /> تم اعتماد العمل ولا يمكن تعديله
+                {approval?.approved_by_name ? <span className="opacity-80">· {approval.approved_by_name}</span> : null}
+              </div>
+            ) : null}
+
+            {approval?.manager_note && status === "returned" ? (
+              <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-xs text-destructive">
+                <b>ملاحظة المدير:</b> {approval.manager_note}
+              </div>
+            ) : null}
+
+            {approval?.last_edited_by_name ? (
+              <p className="mt-2 text-[11px] text-muted-foreground">آخر تعديل: {approval.last_edited_by_name}{approval.last_edited_at ? ` · ${new Date(approval.last_edited_at).toLocaleString("ar")}` : ""}</p>
+            ) : null}
+
+            {!locked ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => workflow("save", { mode: "draft" })}>حفظ مسودة</Button>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => workflow("save", { mode: "changes" })}>حفظ التغييرات</Button>
+                <Button size="sm" disabled={busy} onClick={() => workflow("submit")}><Send className="ml-1 h-3.5 w-3.5" /> إرسال للاعتماد</Button>
+              </div>
+            ) : null}
+
+            {manager && (status === "pending" || status === "modified_pending") ? (
+              <div className="mt-3 space-y-2 rounded-lg border border-accent/30 bg-accent/5 p-2.5">
+                <Input placeholder="ملاحظة التصحيح (تُطلب عند الإرجاع)" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} />
+                <div className="flex gap-2">
+                  <Button size="sm" disabled={busy} onClick={() => workflow("approve")}><CheckCircle2 className="ml-1 h-3.5 w-3.5" /> اعتماد</Button>
+                  <Button size="sm" variant="outline" disabled={busy || !reviewNote.trim()} onClick={() => workflow("return", { note: reviewNote })}><Undo2 className="ml-1 h-3.5 w-3.5" /> إرجاع للتعديل</Button>
+                </div>
+              </div>
+            ) : null}
+
+            {versions.length ? (
+              <details className="mt-3">
+                <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-bold text-muted-foreground"><History className="h-3.5 w-3.5" /> سجل النسخ ({versions.length})</summary>
+                <ul className="mt-2 space-y-1.5">
+                  {versions.map((v) => (
+                    <li key={v.id} className="rounded-lg border border-border/30 bg-background p-2 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">نسخة {v.version} · {CHANGE_LABEL[v.change_type] ?? v.change_type}</span>
+                        <span className="shrink-0 text-muted-foreground tabular-nums" dir="ltr">{new Date(v.created_at).toLocaleString("ar")}</span>
+                      </div>
+                      <div className="text-muted-foreground">{v.edited_by_name}{v.note ? ` — ${v.note}` : ""}</div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </section>
+        );
+      })()}
 
       {/* Lifecycle */}
       <section className="rounded-xl border border-border/30 bg-card p-4">
