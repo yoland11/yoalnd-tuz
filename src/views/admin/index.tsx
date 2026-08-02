@@ -123,6 +123,7 @@ const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
 const PrinterSettingsPage = lazy(() => import("./printer-settings"));
 const InvoiceDesignerPage = lazy(() => import("./invoice-designer"));
+const InstallmentsPage = lazy(() => import("./installments"));
 const ApprovalCenterPage = lazy(() => import("./operations"));
 const DocumentCenterPage = lazy(() =>
   import("./operations").then((module) => ({
@@ -613,6 +614,9 @@ export default function Admin() {
                 <FinanceDashboardPage me={me} />
               </Guard>
             )}
+          </Route>
+          <Route path="/admin/installments">
+            {() => <Guard me={me} perm="installments.view"><InstallmentsPage /></Guard>}
           </Route>
           <Route path="/admin/finance/daily-report">
             {() => (

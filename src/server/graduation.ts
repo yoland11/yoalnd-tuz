@@ -40,11 +40,17 @@ import {
   qrTokensTable,
   salesInvoiceItemsTable,
   salesInvoicesTable,
+  serviceOrdersTable,
+  servicesTable,
   settingsTable,
   staffTable,
   stockMovementsTable,
   tasksTable,
 } from "@workspace/db";
+import {
+  syncCentralBookingToPhotography,
+  findPhotographerConflict,
+} from "@/server/photography-booking-integration";
 import { normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
 import {
   DEFAULT_GRADUATION_CONFIG,
@@ -1347,8 +1353,58 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       });
     }
   }
+  // ── Graduation Extras: flowers become snapshotted order items priced into the
+  // graduation invoice, with Flower Store stock reserved through the existing
+  // inventoryItems → applyInventory path. (Photography is handled after insert.)
+  const extrasInput = ((data as Record<string, unknown>).extras ?? {}) as {
+    flowers?: Array<{ productId: number; variantId?: number; quantity?: number; color?: string; wrapColor?: string; ribbonColor?: string; giftCard?: string }>;
+    photography?: { serviceId: number; session?: string; date?: string; time?: string; photographerId?: number; location?: string; notes?: string } | null;
+  };
+  const flowerInputs = Array.isArray(extrasInput.flowers) ? extrasInput.flowers : [];
+  const flowerLines: Array<{ key: string; name: string; amount: number; cost: number }> = [];
+  if (flowerInputs.length) {
+    const flowerIds = [...new Set(flowerInputs.map((f) => Number(f.productId)).filter(Boolean))];
+    const flowerProducts = flowerIds.length
+      ? await db.select().from(productsTable).where(inArray(productsTable.id, flowerIds))
+      : [];
+    const flowerById = new Map(flowerProducts.map((p) => [p.id, p]));
+    flowerInputs.forEach((f, index) => {
+      const product = flowerById.get(Number(f.productId));
+      if (!product) return;
+      const qty = Math.max(1, Number(f.quantity) || 1);
+      const unit = Number(product.price || 0);
+      const cost = Number(product.costPrice || 0);
+      const firstImage = Array.isArray(product.images) ? product.images[0] : null;
+      const image = typeof firstImage === "string" ? firstImage : (firstImage as { url?: string } | null)?.url ?? null;
+      flowerLines.push({
+        key: `flower:${product.id}:${index}`,
+        name: qty > 1 ? `${product.nameAr} × ${qty}` : product.nameAr,
+        amount: unit * qty,
+        cost: cost * qty,
+      });
+      orderItemsPlan.push({
+        groupId: group?.id ?? null,
+        itemType: "flower",
+        productId: product.id,
+        productName: product.nameAr,
+        quantity: String(qty),
+        originalUnitPrice: String(unit),
+        finalUnitPrice: String(unit),
+        lineTotal: String(unit * qty),
+        customization: {
+          color: f.color ?? null,
+          wrapColor: f.wrapColor ?? null,
+          ribbonColor: f.ribbonColor ?? null,
+          giftCard: f.giftCard ?? null,
+        },
+        imageUrl: image,
+        snapshot: { source: "graduation_extra", kind: "flower", variantId: f.variantId ?? null },
+        sortOrder: 1000 + index,
+      });
+    });
+  }
   const basePricing = graduationPriceSummary(data, config);
-  const pricingLines = [...basePricing.lines, ...customLines];
+  const pricingLines = [...basePricing.lines, ...customLines, ...flowerLines];
   const pricingSubtotal = pricingLines.reduce((sum, line) => sum + line.amount, 0);
   const pricingCost = pricingLines.reduce((sum, line) => sum + line.cost, 0);
   const pricingDiscount = Math.min(Math.max(0, Number(data.discountAmount || 0)), pricingSubtotal);
@@ -1487,6 +1543,14 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
         decorationType: data.decoration.type,
         decorationPosition: data.decoration.position,
       },
+      extras: flowerLines.length
+        ? {
+            flowers: {
+              count: flowerInputs.reduce((sum, f) => sum + (Number(f.quantity) || 1), 0),
+              names: flowerLines.map((line) => line.name),
+            },
+          }
+        : {},
       updatedAt: new Date(),
     })
     .where(eq(graduationOrdersTable.id, draft.id))
@@ -1649,6 +1713,85 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       metadata: { orderId: order.id, orderNo },
     });
   }
+  // ── Graduation Extras: photography session → a linked service_order the
+  // existing pipeline surfaces in the Photographers Portal (student, university,
+  // group, date/time, photographer, notes travel in customFields). Priced by
+  // staff at fulfillment (services carry no catalog price). Conflict-checked,
+  // best-effort — a failure never blocks the graduation order.
+  let extrasWarning: string | undefined;
+  const photo = extrasInput.photography;
+  if (photo && Number(photo.serviceId) > 0 && data.status === "submitted") {
+    try {
+      const photographerId = Number(photo.photographerId) || 0;
+      const eventDate = String(photo.date || "").slice(0, 10) || null;
+      const conflict =
+        photographerId && eventDate
+          ? await findPhotographerConflict({
+              staffId: photographerId,
+              eventId: -1,
+              eventDate,
+              startTime: photo.time ?? null,
+              endTime: null,
+            })
+          : null;
+      if (conflict) {
+        extrasWarning =
+          "الموعد المطلوب للتصوير محجوز لهذا المصور، تم تسجيل الطلب بدون تثبيت حجز التصوير.";
+      } else {
+        const [serviceOrder] = await db
+          .insert(serviceOrdersTable)
+          .values({
+            serviceId: Number(photo.serviceId),
+            customerName: order.customerName,
+            phone: order.phone,
+            eventDate,
+            eventLocation: photo.location ?? null,
+            notes: photo.notes ?? null,
+            status: "pending",
+            customFields: {
+              bookingSource: "graduation",
+              graduationOrderId: order.id,
+              studentName: order.customerName,
+              university: (order.studentProfile as Record<string, unknown> | null)?.university ?? "",
+              group: group?.title ?? "",
+              session: photo.session ?? "",
+              eventStartTime: photo.time ?? "",
+              assignedPhotographerId: photographerId || undefined,
+              departments: ["photography"],
+              notes: photo.notes ?? "",
+            },
+          })
+          .returning();
+        if (serviceOrder?.id) {
+          try {
+            await syncCentralBookingToPhotography(serviceOrder.id, {
+              id: user?.id,
+              name: user ? user.fullName || user.username : "الموقع",
+            });
+          } catch (syncError) {
+            console.warn("[graduation-extras] photography portal sync failed", syncError);
+          }
+          await db
+            .update(graduationOrdersTable)
+            .set({
+              extras: {
+                ...((order.extras as Record<string, unknown> | null) ?? {}),
+                photography: { serviceOrderId: serviceOrder.id, ...photo },
+              },
+            })
+            .where(eq(graduationOrdersTable.id, order.id));
+          void addActivity(user, "graduation_photography_booked", order.id, {
+            serviceOrderId: serviceOrder.id,
+            serviceId: photo.serviceId,
+            date: eventDate,
+          });
+        }
+      }
+    } catch (photoError) {
+      console.warn("[graduation-extras] photography booking failed", photoError);
+      extrasWarning = "تعذر تثبيت حجز التصوير، تم تسجيل الطلب.";
+    }
+  }
   const qrDataUrl = await QRCode.toDataURL(
     `${process.env.APP_BASE_URL || ""}/graduation/track/${qrToken}`,
     { width: 320, margin: 1 },
@@ -1659,6 +1802,7 @@ export async function createOrder(raw: unknown, user?: GraduationAdminUser | nul
       invoiceId: invoice?.id ?? null,
       qrDataUrl,
     },
+    ...(extrasWarning ? { warning: extrasWarning } : {}),
   };
 }
 
@@ -2348,6 +2492,50 @@ export async function handleGraduationPublic(
       enterpriseCatalog,
       aiAvailable: Boolean(process.env.OPENAI_API_KEY) && config.aiEnabled,
     });
+  }
+  // Graduation Extras — read-only catalogues for the customer "extras" step.
+  if (method === "GET" && resource === "photography-services") {
+    const rows = await db
+      .select()
+      .from(servicesTable)
+      .where(eq(servicesTable.isActive, true))
+      .orderBy(asc(servicesTable.sortOrder));
+    const isPhoto = (value: string) => /(photo|photograph|تصوير|فوتو|فيديو|video|album|ألبوم|فريم|frame|drone|درون)/i.test(value);
+    const services = rows
+      .filter((service) => {
+        const meta = (service.imageMetadata ?? {}) as Record<string, unknown>;
+        const dept = String(meta.department ?? meta.departmentCode ?? "").toLowerCase();
+        return (
+          dept === "photography" ||
+          isPhoto(service.type || "") ||
+          isPhoto(`${service.nameAr} ${service.name}`)
+        );
+      })
+      .map((service) => {
+        const meta = (service.imageMetadata ?? {}) as Record<string, unknown>;
+        return {
+          id: service.id,
+          name: service.nameAr || service.name,
+          description: service.descriptionAr || service.description || "",
+          image: service.image || null,
+          duration: (meta.duration ?? meta.durationLabel ?? null) as string | null,
+          price: Number(meta.price ?? meta.basePrice ?? 0) || null,
+        };
+      });
+    return json({ services });
+  }
+  if (method === "GET" && resource === "photographers") {
+    const rows = await db
+      .select({ id: staffTable.id, name: staffTable.fullName, role: staffTable.role, permissions: staffTable.permissions, isActive: staffTable.isActive })
+      .from(staffTable)
+      .where(eq(staffTable.isActive, true));
+    const photographers = rows
+      .filter((row) => {
+        const perms = Array.isArray(row.permissions) ? (row.permissions as string[]) : [];
+        return row.role === "admin" || perms.some((p) => p.startsWith("photography"));
+      })
+      .map((row) => ({ id: row.id, name: row.name }));
+    return json({ photographers });
   }
   if (method === "POST" && resource === "orders") {
     const result = await createOrder(await requestBody(req));

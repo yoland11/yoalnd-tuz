@@ -34,6 +34,7 @@
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
+    "test:installments": "node ./scripts/verify-installments.mjs",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs"
   },

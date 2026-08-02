@@ -447,6 +447,38 @@ export const graduationOrderInputSchema = z
       .passthrough()
       .default({}),
     accessories: z.array(z.string()).default([]),
+    // Graduation Extras (Phase 1): Store flowers (added as order items) + one
+    // photography session (created as a linked service_order). Both optional so
+    // existing clients that omit `extras` are unaffected.
+    extras: z
+      .object({
+        flowers: z
+          .array(
+            z.object({
+              productId: z.coerce.number().int().positive(),
+              variantId: z.coerce.number().int().positive().optional(),
+              quantity: z.coerce.number().int().min(1).max(100).default(1),
+              color: optionalString,
+              wrapColor: optionalString,
+              ribbonColor: optionalString,
+              giftCard: optionalString,
+            }),
+          )
+          .default([]),
+        photography: z
+          .object({
+            serviceId: z.coerce.number().int().positive(),
+            session: optionalString,
+            date: optionalString,
+            time: optionalString,
+            photographerId: z.coerce.number().int().positive().optional(),
+            location: optionalString,
+            notes: optionalString,
+          })
+          .nullable()
+          .optional(),
+      })
+      .default({ flowers: [] }),
     universityTemplate: z.record(z.string(), z.unknown()).default({}),
     previewAssets: z.record(z.string(), z.unknown()).default({}),
     discountAmount: z.coerce.number().min(0).default(0),

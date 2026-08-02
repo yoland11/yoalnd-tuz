@@ -232,6 +232,28 @@ function componentDefinitions(order: any) {
       required: true,
     });
   }
+  // Graduation Extras — Bouquet + Photography booking on the kit checklist.
+  const extras = record(order.extras);
+  const flowersInfo = record(extras.flowers);
+  const flowerNames = Array.isArray(flowersInfo.names) ? (flowersInfo.names as unknown[]).map(String) : [];
+  if (Number(flowersInfo.count) > 0 || flowerNames.length) {
+    definitions.push({
+      type: "bouquet",
+      model: flowerNames.length ? flowerNames.join("، ") : "بوكيه",
+      color: "",
+      size: "",
+      required: false,
+    });
+  }
+  if (extras.photography) {
+    definitions.push({
+      type: "photography",
+      model: "جلسة تصوير التخرج",
+      color: "",
+      size: "",
+      required: false,
+    });
+  }
   return definitions;
 }
 

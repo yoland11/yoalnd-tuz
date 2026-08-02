@@ -203,6 +203,13 @@ export const graduationOrdersTable = pgTable(
       .notNull()
       .default({}),
     accessories: jsonb("accessories").$type<string[]>().notNull().default([]),
+    // Graduation Extras (Phase 1): photography-session snapshot + linked
+    // service_order id. Flowers live in graduation_order_items (itemType 'flower'),
+    // so only the photography link/snapshot is stored here. Existing orders → {}.
+    extras: jsonb("extras")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     universityTemplate: jsonb("university_template")
       .$type<Record<string, unknown>>()
       .notNull()

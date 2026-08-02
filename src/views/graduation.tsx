@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   Download,
   FileImage,
+  Gift,
   GraduationCap,
   Layers3,
   Loader2,
@@ -34,6 +35,7 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BouquetPreview } from "@/components/bouquet-preview";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -148,6 +150,7 @@ const STEPS = [
   { label: "الطباعة / التطريز", icon: Scissors },
   { label: "النصوص", icon: FileImage },
   { label: "الإكسسوارات", icon: PackageCheck },
+  { label: "خدمات إضافية", icon: Gift },
   { label: "المعاينة", icon: ScanLine },
   { label: "ملخص السعر", icon: CircleDollarSign },
   { label: "التأكيد", icon: ClipboardCheck },
@@ -243,6 +246,28 @@ const initialForm = {
     alignment: "center",
   },
   accessories: [] as string[],
+  extras: {
+    flowers: [] as Array<{
+      productId: number;
+      variantId?: number;
+      name: string;
+      color?: string;
+      colorHex?: string;
+      wrapColor?: string;
+      ribbonColor?: string;
+      quantity: number;
+    }>,
+    photography: null as {
+      serviceId: number;
+      serviceName?: string;
+      session?: string;
+      date?: string;
+      time?: string;
+      photographerId?: number;
+      location?: string;
+      notes?: string;
+    } | null,
+  },
   universityTemplate: {} as Record<string, unknown>,
   previewAssets: {} as Record<string, unknown>,
   discountAmount: 0,
@@ -927,7 +952,7 @@ function GraduationConfigurator() {
       return "أضف روباً واحداً على الأقل إلى الباقة";
     if (step === 3 && !form.fabric.key) return "اختر نوع القماش";
     if (
-      step === 9 &&
+      step === 10 &&
       (!form.customerName.trim() || form.phone.replace(/\D/g, "").length < 10)
     )
       return "أدخل اسم الزبون ورقم هاتف صحيح";
@@ -943,7 +968,7 @@ function GraduationConfigurator() {
       });
       return;
     }
-    setStep((value) => Math.min(9, value + 1));
+    setStep((value) => Math.min(10, value + 1));
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function previous() {
@@ -1798,6 +1823,10 @@ function GraduationConfigurator() {
                 ) : null}
 
                 {step === 7 ? (
+                  <GraduationExtrasStep form={form} setForm={setForm} />
+                ) : null}
+
+                {step === 8 ? (
                   <div className="space-y-5">
                     <PreviewPanel config={config} form={form} />
                     {selectedCustomRobe?.modelUrl || selectedStyle?.modelUrl ? (
@@ -1825,7 +1854,7 @@ function GraduationConfigurator() {
                   </div>
                 ) : null}
 
-                {step === 8 ? (
+                {step === 9 ? (
                   <div className="space-y-5">
                     <h2 className="font-bold">ملخص السعر والإنتاج</h2>
                     <div className="divide-y divide-border rounded-xl border border-border">
@@ -1872,7 +1901,7 @@ function GraduationConfigurator() {
                   </div>
                 ) : null}
 
-                {step === 9 ? (
+                {step === 10 ? (
                   <div className="space-y-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div>
@@ -1989,7 +2018,7 @@ function GraduationConfigurator() {
                 <ArrowRight className="ml-2 h-4 w-4" />
                 السابق
               </Button>
-              {step < 9 ? (
+              {step < 10 ? (
                 <Button onClick={next}>
                   التالي
                   <ArrowLeft className="mr-2 h-4 w-4" />
@@ -2054,7 +2083,7 @@ function GraduationConfigurator() {
                 {formatCurrency(pricing.total)}
               </strong>
             </div>
-            {step < 9 ? (
+            {step < 10 ? (
               <Button onClick={next}>
                 التالي
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -2527,6 +2556,256 @@ export function GraduationTracking() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ── Graduation Extras step (Phase 1): Flowers + Photography ──────────────────
+type ExtrasForm = typeof initialForm;
+type DesignerCatalogProduct = {
+  id: number;
+  name: string;
+  nameAr: string;
+  price: number;
+  stock: number;
+  designerSection: string;
+  images: string[];
+  variants: Array<{ id: number; color: string | null; colorHex: string | null; price: number | null; stock: number }>;
+};
+
+function GraduationExtrasStep({
+  form,
+  setForm,
+}: {
+  form: ExtrasForm;
+  setForm: (updater: (current: ExtrasForm) => ExtrasForm) => void;
+}) {
+  const flowerCatalog = useQuery({
+    queryKey: ["graduation-extras", "flowers"],
+    queryFn: async () => {
+      const res = await fetch("/api/products/designer-catalog", { credentials: "include" });
+      if (!res.ok) throw new Error("تعذر تحميل كتالوج الورود");
+      return res.json() as Promise<{ products: DesignerCatalogProduct[] }>;
+    },
+  });
+  const photoServices = useQuery({
+    queryKey: ["graduation-extras", "photo-services"],
+    queryFn: () =>
+      graduationFetch<{ services: Array<{ id: number; name: string; description: string; image: string | null; duration: string | null; price: number | null }> }>(
+        "/photography-services",
+      ),
+  });
+  const photographers = useQuery({
+    queryKey: ["graduation-extras", "photographers"],
+    queryFn: () => graduationFetch<{ photographers: Array<{ id: number; name: string }> }>("/photographers"),
+  });
+
+  const flowerProducts = (flowerCatalog.data?.products ?? []).filter((product) =>
+    ["flowers", "bridal_bouquets", "ready_bouquets"].includes(product.designerSection),
+  );
+  const flowers = form.extras.flowers;
+  const bouquet = {
+    flowers: flowers.map((f) => ({ name: f.name, color: f.color ?? null, colorHex: f.colorHex ?? null, quantity: f.quantity })),
+    wrapColor: flowers.find((f) => f.wrapColor)?.wrapColor ?? null,
+    ribbonColor: flowers.find((f) => f.ribbonColor)?.ribbonColor ?? null,
+  };
+
+  function addFlower(product: DesignerCatalogProduct) {
+    const variant = product.variants[0] ?? null;
+    setForm((current) => ({
+      ...current,
+      extras: {
+        ...current.extras,
+        flowers: [
+          ...current.extras.flowers,
+          {
+            productId: product.id,
+            variantId: variant?.id,
+            name: product.nameAr || product.name,
+            color: variant?.color ?? undefined,
+            colorHex: variant?.colorHex ?? undefined,
+            quantity: 1,
+          },
+        ],
+      },
+    }));
+  }
+  function updateFlower(index: number, patch: Partial<ExtrasForm["extras"]["flowers"][number]>) {
+    setForm((current) => ({
+      ...current,
+      extras: {
+        ...current.extras,
+        flowers: current.extras.flowers.map((f, i) => (i === index ? { ...f, ...patch } : f)),
+      },
+    }));
+  }
+  function removeFlower(index: number) {
+    setForm((current) => ({
+      ...current,
+      extras: { ...current.extras, flowers: current.extras.flowers.filter((_, i) => i !== index) },
+    }));
+  }
+  const photo = form.extras.photography;
+  function setPhoto(patch: Partial<NonNullable<ExtrasForm["extras"]["photography"]>> | null) {
+    setForm((current) => ({
+      ...current,
+      extras: {
+        ...current.extras,
+        photography: patch === null ? null : { ...(current.extras.photography ?? { serviceId: 0 }), ...patch },
+      },
+    }));
+  }
+
+  return (
+    <div className="space-y-8" dir="rtl">
+      <div>
+        <h2 className="flex items-center gap-2 font-bold">
+          <Gift className="h-5 w-5 text-primary" />
+          خدمات التخرج الإضافية
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">أضِف الورود وباقات التخرج واحجز جلسة تصوير — كل ذلك اختياري.</p>
+      </div>
+
+      <section className="space-y-4">
+        <h3 className="font-bold">🌹 الورود والباقات</h3>
+        <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {flowerCatalog.isLoading ? (
+              <Skeleton className="col-span-full h-40" />
+            ) : flowerProducts.length ? (
+              flowerProducts.map((product) => {
+                const variant = product.variants[0] ?? null;
+                const price = Number(variant?.price ?? product.price);
+                return (
+                  <div key={product.id} className="rounded-xl border border-border p-2">
+                    {product.images?.[0] ? (
+                      <img src={product.images[0]} alt={product.nameAr || product.name} className="h-24 w-full rounded-lg object-cover" loading="lazy" decoding="async" />
+                    ) : (
+                      <div className="grid h-24 place-items-center rounded-lg bg-muted text-muted-foreground">
+                        <Gift className="h-6 w-6" />
+                      </div>
+                    )}
+                    <div className="mt-2 text-sm font-semibold">{product.nameAr || product.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {formatCurrency(price)} · متوفر {variant?.stock ?? product.stock}
+                    </div>
+                    <Button size="sm" className="mt-2 w-full" onClick={() => addFlower(product)}>
+                      <Plus className="ml-1 h-3.5 w-3.5" />
+                      إضافة
+                    </Button>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="col-span-full text-sm text-muted-foreground">لا توجد منتجات ورود متاحة حالياً.</p>
+            )}
+          </div>
+          <div>
+            <BouquetPreview bouquet={bouquet} />
+            <div className="space-y-2">
+              {flowers.map((f, i) => (
+                <div key={i} className="flex items-center gap-2 rounded-lg border border-border p-2 text-sm">
+                  <span className="flex-1 truncate">{f.name}</span>
+                  <div className="flex items-center gap-1">
+                    <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => updateFlower(i, { quantity: Math.max(1, f.quantity - 1) })}>
+                      <Minus className="h-3 w-3" />
+                    </Button>
+                    <span className="w-6 text-center">{f.quantity}</span>
+                    <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => updateFlower(i, { quantity: f.quantity + 1 })}>
+                      <Plus className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => removeFlower(i)}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+              {flowers.length ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-xs text-muted-foreground">
+                    لون التغليف
+                    <Input type="color" className="mt-1 h-8" value={flowers[0]?.wrapColor || "#e9dcc4"} onChange={(e) => updateFlower(0, { wrapColor: e.target.value })} />
+                  </label>
+                  <label className="text-xs text-muted-foreground">
+                    لون الشريط
+                    <Input type="color" className="mt-1 h-8" value={flowers[0]?.ribbonColor || "#c9a24b"} onChange={(e) => updateFlower(0, { ribbonColor: e.target.value })} />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold">📸 جلسة تصوير التخرج</h3>
+          {photo ? (
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setPhoto(null)}>
+              إزالة الحجز
+            </Button>
+          ) : null}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {photoServices.isLoading ? (
+            <Skeleton className="col-span-full h-28" />
+          ) : (photoServices.data?.services ?? []).length ? (
+            (photoServices.data?.services ?? []).map((service) => (
+              <button
+                key={service.id}
+                type="button"
+                onClick={() => setPhoto({ serviceId: service.id, serviceName: service.name })}
+                className={`rounded-xl border p-3 text-right transition ${photo?.serviceId === service.id ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+              >
+                {service.image ? <img src={service.image} alt={service.name} className="mb-2 h-24 w-full rounded-lg object-cover" loading="lazy" decoding="async" /> : null}
+                <div className="font-semibold">{service.name}</div>
+                {service.description ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{service.description}</p> : null}
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {service.duration ? `${service.duration} · ` : ""}
+                  {service.price ? formatCurrency(service.price) : "السعر عند التأكيد"}
+                </div>
+              </button>
+            ))
+          ) : (
+            <p className="col-span-full text-sm text-muted-foreground">لا توجد خدمات تصوير متاحة حالياً.</p>
+          )}
+        </div>
+        {photo ? (
+          <div className="grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-2">
+            <label className="text-sm">
+              التاريخ
+              <Input type="date" className="mt-1" value={photo.date || ""} onChange={(e) => setPhoto({ date: e.target.value })} />
+            </label>
+            <label className="text-sm">
+              الوقت
+              <Input type="time" className="mt-1" value={photo.time || ""} onChange={(e) => setPhoto({ time: e.target.value })} />
+            </label>
+            <label className="text-sm">
+              المصوّر
+              <select
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                value={photo.photographerId ?? ""}
+                onChange={(e) => setPhoto({ photographerId: Number(e.target.value) || undefined })}
+              >
+                <option value="">بدون تفضيل</option>
+                {(photographers.data?.photographers ?? []).map((ph) => (
+                  <option key={ph.id} value={ph.id}>
+                    {ph.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm">
+              الموقع
+              <Input className="mt-1" value={photo.location || ""} onChange={(e) => setPhoto({ location: e.target.value })} placeholder="القاعة / الاستوديو / خارجي" />
+            </label>
+            <label className="text-sm sm:col-span-2">
+              ملاحظات
+              <Textarea className="mt-1" rows={2} value={photo.notes || ""} onChange={(e) => setPhoto({ notes: e.target.value })} />
+            </label>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

@@ -541,6 +541,7 @@ import {
   onShootEdited,
 } from "@/server/photography-approval";
 import { handleRepresentativePortal } from "@/server/representative";
+import { handleInstallments } from "@/server/installments";
 import { GRADUATION_STAGE_LABELS } from "@/lib/graduation";
 import {
   handleAdminResearch,
@@ -687,6 +688,20 @@ export const ALL_PERMISSIONS = [
   "representative.delivery.confirm",
   "representative.issues.create",
   "representative.reports.export",
+  "installments",
+  "installments.view",
+  "installments.create",
+  "installments.convert_invoice",
+  "installments.receive_payment",
+  "installments.edit_schedule",
+  "installments.reschedule",
+  "installments.pause",
+  "installments.cancel",
+  "installments.approve_changes",
+  "installments.send_reminders",
+  "installments.export",
+  "installments.view_credit_score",
+  "installments.manage_representative_custody",
   "research",
   "research.view",
   "research.create",
@@ -27618,6 +27633,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       auth,
     );
     if (representative) return representative;
+  }
+
+  if (section === "installments") {
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
+    return handleInstallments(req, parts.slice(2), auth);
   }
 
   // Tailors Portal (بوابة الخياطين) — every route is scoped to the tailor's own

@@ -419,6 +419,12 @@ export const NAV: NavItem[] = [
     perm: "accounting",
   },
   {
+    href: "/admin/installments",
+    label: "إدارة الأقساط",
+    icon: WalletCards,
+    perm: "installments.view",
+  },
+  {
     href: "/admin/finance/master-cash",
     label: "الصندوق الرئيسي",
     icon: CircleDollarSign,
@@ -957,6 +963,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Wallet,
     items: [
       navItem("/admin/finance"),
+      navItem("/admin/installments"),
       navItem("/admin/finance/master-cash"),
       navItem("/admin/finance/request"),
       navItem("/admin/finance/daily-report"),
