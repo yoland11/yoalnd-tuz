@@ -144,13 +144,7 @@ export const provinceDeliverySchema = z.object({
     .number({ error: "اختر المحافظة" })
     .int()
     .positive("اختر المحافظة"),
-  city: z.string().trim().min(1, "أدخل القضاء / المدينة").max(120),
-  area: z.string().trim().min(1, "أدخل الحي / المنطقة").max(120),
-  fullAddress: z.string().trim().min(1, "أدخل العنوان التفصيلي").max(1000),
-  receiverName: z.string().trim().min(1, "أدخل اسم المستلم").max(160),
   receiverPhone: iraqiPhone,
-  deliveryType: z.enum(DELIVERY_TYPES, { error: "اختر نوع التوصيل" }),
-  deliveryFee: fee,
 });
 
 /** Province registry + pricing, as managed from Delivery Settings. */

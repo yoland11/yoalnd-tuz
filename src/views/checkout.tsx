@@ -106,17 +106,11 @@ export default function Checkout() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const customerPhone = normalizeIraqiPhone(form.customerPhone);
-    const validationMessage = !form.customerName.trim()
-      ? "اسم العميل مطلوب."
-      : !customerPhone
-        ? "أدخل رقم هاتف عراقي صحيح مثل 07700000000."
-        : !form.deliveryZoneId
-          ? "يرجى اختيار منطقة التوصيل."
-          : !!selectedZone?.areas?.length && !form.area
-            ? "يرجى اختيار المنطقة أو الحي."
-            : !form.address.trim()
-              ? "العنوان غير مكتمل."
-              : null;
+    const validationMessage = !customerPhone
+      ? "أدخل رقم هاتف عراقي صحيح مثل 07700000000."
+      : !form.deliveryZoneId
+        ? "يرجى اختيار المحافظة."
+        : null;
     if (validationMessage) {
       toast({
         title: "تحقق من بيانات الطلب",
@@ -232,7 +226,9 @@ export default function Checkout() {
                 />
               </div>
               <div>
-                <label className="block text-sm text-muted-foreground mb-1.5">{t("رقم الهاتف")}</label>
+                <label className="block text-sm text-muted-foreground mb-1.5">
+                  {t("رقم الهاتف")} <span className="text-destructive">*</span>
+                </label>
                 <input
                   name="customerPhone"
                   value={form.customerPhone}
@@ -249,7 +245,9 @@ export default function Checkout() {
           <div className="bg-card rounded-xl border border-border/30 p-6 space-y-4">
             <h2 className="text-lg font-semibold text-foreground mb-2">{t("بيانات التوصيل")}</h2>
             <div>
-              <label className="block text-sm text-muted-foreground mb-1.5">{t("المحافظة")}</label>
+              <label className="block text-sm text-muted-foreground mb-1.5">
+                {t("المحافظة")} <span className="text-destructive">*</span>
+              </label>
               <select
                 name="deliveryZoneId"
                 value={form.deliveryZoneId}

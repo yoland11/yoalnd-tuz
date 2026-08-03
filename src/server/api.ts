@@ -14990,10 +14990,8 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (cartItems.length === 0) return error("السلة فارغة", 422);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
     if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 422);
-    const safeCustomerName = String(data.customerName ?? "").trim();
-    if (!safeCustomerName) return error("اسم العميل مطلوب", 422);
-    if (!String(data.address ?? "").trim())
-      return error("العنوان غير مكتمل", 422);
+    // اسم العميل والعنوان وبقية تفاصيل التوصيل اختيارية؛ رقم الهاتف والمحافظة فقط مطلوبان.
+    const safeCustomerName = String(data.customerName ?? "").trim() || "عميل";
     if (!data.deliveryZoneId)
       return error("يرجى اختيار منطقة التوصيل", 422);
 
@@ -15002,11 +15000,6 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     });
     if (!zone) return error("منطقة التوصيل غير موجودة", 404);
     if (!zone.isActive) return error("منطقة التوصيل غير متاحة حالياً", 409);
-    if (Array.isArray(zone.areas) && zone.areas.length > 0) {
-      if (!data.area || !zone.areas.includes(data.area))
-        return error("يرجى اختيار المنطقة أو الحي", 422);
-    }
-
     const paymentMethod = data.paymentMethod ?? "cod";
     if (!["cod", "transfer", "paid"].includes(paymentMethod))
       return error("طريقة الدفع غير صالحة", 422);

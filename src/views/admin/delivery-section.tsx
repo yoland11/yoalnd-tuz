@@ -134,11 +134,7 @@ export default function DeliverySection({
   const quote = quoteFee(province, deliveryType, subtotal, codEnabled);
 
   const phoneValid = IRAQI_PHONE.test(f.receiverPhone.replace(/\s/g, ""));
-  const provinceComplete =
-    method !== "province" ||
-    Boolean(
-      provinceId && f.city.trim() && f.area.trim() && f.fullAddress.trim() && f.receiverName.trim() && phoneValid,
-    );
+  const provinceComplete = method !== "province" || Boolean(provinceId && phoneValid);
 
   // Report the current output up whenever anything relevant changes.
   useEffect(() => {
@@ -307,24 +303,22 @@ export default function DeliverySection({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <Field label="القضاء / المدينة" required value={f.city} onChange={(v) => setF({ ...f, city: v })} />
+                <Field label="القضاء / المدينة" value={f.city} onChange={(v) => setF({ ...f, city: v })} />
                 <Field label="الناحية" value={f.district} onChange={(v) => setF({ ...f, district: v })} />
-                <Field label="الحي / المنطقة" required value={f.area} onChange={(v) => setF({ ...f, area: v })} />
+                <Field label="الحي / المنطقة" value={f.area} onChange={(v) => setF({ ...f, area: v })} />
                 <Field label="أقرب نقطة دالة" value={f.landmark} onChange={(v) => setF({ ...f, landmark: v })} />
               </div>
               <Field
                 label="العنوان التفصيلي"
-                required
                 value={f.fullAddress}
                 onChange={(v) => setF({ ...f, fullAddress: v })}
               />
               <Field label="رابط Google Maps" value={f.mapsUrl} onChange={(v) => setF({ ...f, mapsUrl: v })} dir="ltr" />
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <Field
-                  label="اسم المستلم"
-                  required
-                  value={f.receiverName}
+              <Field
+                label="اسم المستلم"
+                value={f.receiverName}
                   onChange={(v) => setF({ ...f, receiverName: v })}
                 />
                 <Field
@@ -352,7 +346,7 @@ export default function DeliverySection({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs text-muted-foreground mb-1.5">
-                    نوع التوصيل <span className="text-status-danger">*</span>
+                    نوع التوصيل
                   </label>
                   <select value={deliveryType} onChange={(e) => setDeliveryType(e.target.value)} className={FIELD_CLS}>
                     {DELIVERY_TYPES.map((t) => (
@@ -402,7 +396,7 @@ export default function DeliverySection({
 
               {!provinceComplete && (
                 <p className="text-xs text-status-danger">
-                  أكمل الحقول الإلزامية (المحافظة، المدينة، الحي، العنوان، اسم ورقم المستلم).
+                  أكمل المحافظة ورقم هاتف المستلم للمتابعة.
                 </p>
               )}
             </div>
