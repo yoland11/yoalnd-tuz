@@ -1,24 +1,18 @@
 import { Link, useLocation } from "wouter";
 import {
-  Armchair,
   Facebook,
-  Flower2,
-  GraduationCap,
   Heart,
-  Images,
   Instagram,
   Lock,
   MapPin,
   MessageCircle,
   Moon,
   Phone,
-  Route,
   ShoppingBag,
-  Store,
   Sun,
   User,
-  WandSparkles,
 } from "lucide-react";
+import { desktopNavItems } from "./nav-items";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -150,63 +144,18 @@ export function Navbar() {
           </span>
         </Link>
 
-        {/* Desktop Navigation */}
+        {/* Desktop Navigation — driven by the shared navigationItems source. */}
         <nav className="hidden md:flex items-center gap-8">
-          <Link
-            href="/"
-            className={`ajn-nav-link text-sm font-medium ${location === "/" ? "is-active" : ""}`}
-          >
-            {t("الرئيسية")}
-          </Link>
-          <Link
-            href="/services"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/services") ? "is-active" : ""}`}
-          >
-            <WandSparkles className="h-3.5 w-3.5 shrink-0" />
-            {t("الخدمات")}
-          </Link>
-          <Link
-            href="/store"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/store") ? "is-active" : ""}`}
-          >
-            <Store className="h-3.5 w-3.5 shrink-0" />
-            {t("المتجر")}
-          </Link>
-          <Link
-            href="/koshas"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/koshas") ? "is-active" : ""}`}
-          >
-            <Armchair className="h-3.5 w-3.5 shrink-0" />
-            الكوشات
-          </Link>
-          <Link
-            href="/graduation"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/graduation") ? "is-active" : ""}`}
-          >
-            <GraduationCap className="h-3.5 w-3.5 shrink-0" />
-            تجهيزات التخرج
-          </Link>
-          <Link
-            href="/design"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/design") ? "is-active" : ""}`}
-          >
-            <Flower2 className="h-3.5 w-3.5 shrink-0" />
-            تصميم باقة
-          </Link>
-          <Link
-            href="/gallery"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/gallery") ? "is-active" : ""}`}
-          >
-            <Images className="h-3.5 w-3.5 shrink-0" />
-            {t("أعمالنا")}
-          </Link>
-          <Link
-            href="/track"
-            className={`ajn-nav-link inline-flex items-center gap-1.5 text-sm font-medium ${location.startsWith("/track") ? "is-active" : ""}`}
-          >
-            <Route className="h-3.5 w-3.5 shrink-0" />
-            {t("تتبع الطلب")}
-          </Link>
+          {desktopNavItems.map((item) => (
+            <Link
+              key={item.key}
+              href={item.href}
+              className={`ajn-nav-link ${item.desktopIcon ? "inline-flex items-center gap-1.5 " : ""}text-sm font-medium ${item.match(location) ? "is-active" : ""}`}
+            >
+              {item.desktopIcon ? <item.Icon className="h-3.5 w-3.5 shrink-0" /> : null}
+              {item.translate ? t(item.label) : item.label}
+            </Link>
+          ))}
         </nav>
 
         {/* Actions */}
