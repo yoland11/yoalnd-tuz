@@ -2546,7 +2546,43 @@ export async function handleGraduationPublic(
     return json({ photographers });
   }
   if (method === "POST" && resource === "orders") {
-    const result = await createOrder(await requestBody(req));
+    const payload = await requestBody(req);
+    let result: Awaited<ReturnType<typeof createOrder>>;
+    try {
+      result = await createOrder(payload);
+    } catch (submissionError) {
+      // The order row is created before optional operational integrations
+      // (notifications, tasks, invoice projection and external services). A
+      // failure there must not make a durable customer booking look failed.
+      const input = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+      const phone = normalizeIraqiPhone(String(input.phone ?? ""));
+      const customerName = String(input.customerName ?? "").trim();
+      const [durableOrder] = phone && customerName
+        ? await db
+            .select()
+            .from(graduationOrdersTable)
+            .where(and(
+              eq(graduationOrdersTable.phone, phone),
+              eq(graduationOrdersTable.customerName, customerName),
+              eq(graduationOrdersTable.status, "submitted"),
+              isNull(graduationOrdersTable.archivedAt),
+              sql`${graduationOrdersTable.createdAt} > now() - interval '10 minutes'`,
+            ))
+            .orderBy(desc(graduationOrdersTable.createdAt))
+            .limit(1)
+        : [];
+      if (durableOrder) {
+        console.error("graduation booking completed with deferred integration", {
+          orderId: durableOrder.id,
+          error: submissionError instanceof Error ? submissionError.message : submissionError,
+        });
+        return json({
+          order: publicOrder(durableOrder),
+          warning: "تم استلام طلبك بنجاح. سيُستكمل إجراء داخلي تلقائياً دون الحاجة لإعادة الإرسال.",
+        }, 201);
+      }
+      throw submissionError;
+    }
     if (result.response || !result.order?.id)
       return result.response ?? json(result, 201);
 
