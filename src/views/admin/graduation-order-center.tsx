@@ -549,6 +549,7 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
   const [importOpen, setImportOpen] = useState(false);
   const [accessoryOpen, setAccessoryOpen] = useState(false);
   const [studentAccessory, setStudentAccessory] = useState<StudentRow | null>(null);
+  const [workspaceTab, setWorkspaceTab] = useState("students");
   const { data, isLoading } = useQuery<GroupDetail>({
     queryKey: ["admin", "graduation", "group-workspace", groupId],
     queryFn: () => adminFetch(`/admin/graduation/groups/${groupId}`),
@@ -635,11 +636,22 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
     <div className="space-y-5">
       <div className="flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-start gap-3"><Button size="icon" variant="ghost" onClick={onBack}><ArrowRight className="h-5 w-5" /></Button><div><h2 className="text-xl font-bold">{data.group.title}</h2><p className="mt-1 text-sm text-muted-foreground">{data.group.groupNo} · {[data.group.university, data.group.college, data.group.department].filter(Boolean).join(" · ")}</p></div></div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => setAddOpen(true)}><Plus className="ml-2 h-4 w-4" />إضافة طالب</Button><Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="ml-2 h-4 w-4" />استيراد Excel</Button><Button variant="outline" onClick={exportExcel}><Download className="ml-2 h-4 w-4" />تصدير Excel</Button><Button variant="outline" onClick={printGroupReceipt}><Printer className="ml-2 h-4 w-4" />وصل المجموعة</Button><Button variant="outline" onClick={() => setAccessoryOpen(true)}><Gift className="ml-2 h-4 w-4" />إدارة إكسسوارات المجموعة</Button><Button variant="outline" onClick={() => setPaymentOpen(true)}><WalletCards className="ml-2 h-4 w-4" />استلام دفعة</Button></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => setAddOpen(true)}><Plus className="ml-2 h-4 w-4" />إضافة طالب</Button><Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="ml-2 h-4 w-4" />استيراد Excel</Button><Button variant="outline" onClick={exportExcel}><Download className="ml-2 h-4 w-4" />تصدير Excel</Button><Button variant="outline" onClick={printGroupReceipt}><Printer className="ml-2 h-4 w-4" />وصل المجموعة</Button>{workspaceTab === "accessories" ? <Button variant="outline" onClick={() => data.students.length ? setAccessoryOpen(true) : toast({ title: "أضف طلبة إلى المجموعة قبل تطبيق الإكسسوارات." })}><Gift className="ml-2 h-4 w-4" />إدارة إكسسوارات المجموعة</Button> : null}<Button variant="outline" onClick={() => setPaymentOpen(true)}><WalletCards className="ml-2 h-4 w-4" />استلام دفعة</Button></div>
       </div>
       {(data.duplicates.length || data.shortages.length) ? <div className="grid gap-3 lg:grid-cols-2">{data.duplicates.length ? <div className="rounded-xl border border-status-warning/40 bg-status-warning/5 p-3"><div className="flex items-center gap-2 font-semibold text-status-warning"><AlertTriangle className="h-4 w-4" />تنبيه أسماء أو هواتف متكررة</div><p className="mt-1 text-sm text-muted-foreground">راجع {data.duplicates.length} سجلاً قبل اعتماد الطباعة.</p></div> : null}{data.shortages.length ? <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3"><div className="flex items-center gap-2 font-semibold text-destructive"><AlertTriangle className="h-4 w-4" />نقص في مواد المجموعة</div><p className="mt-1 text-sm text-muted-foreground">{data.shortages.map((item) => `${item.name}: ${item.shortage}`).join(" · ")}</p></div> : null}</div> : null}
+      <nav aria-label="مراحل الطلب الجماعي" className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1.5">
+        {[
+          ["information", "معلومات الطلب الجماعي"],
+          ["students", "الطلبة"],
+          ["measurements", "القياسات"],
+          ["setup", "التجهيزات الأساسية"],
+          ["accessories", "الإكسسوارات"],
+          ["payments", "المدفوعات"],
+          ["delivery", "التسليم والتغليف"],
+        ].map(([value, label]) => <Button key={value} type="button" size="sm" variant={workspaceTab === value ? "default" : "ghost"} className="shrink-0" onClick={() => setWorkspaceTab(value)}>{label}</Button>)}
+      </nav>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">{[["الطلاب", data.totals.students], ["الإجمالي", formatCurrency(data.totals.orderValue)], ["المدفوع", formatCurrency(data.totals.paid)], ["المتبقي", formatCurrency(data.totals.remaining)], ["قيمة الإكسسوارات", formatCurrency(data.totals.accessoriesValue || 0)], ["تم التسليم", data.totals.delivered]].map(([label, value]) => <Card key={String(label)}><CardContent className="p-4"><p className="text-xs text-muted-foreground">{label}</p><strong className="mt-1 block text-lg">{value}</strong></CardContent></Card>)}</div>
-      <GroupAccessorySection groupId={groupId} selected={selected} studentCount={data.students.length} />
+      {workspaceTab === "accessories" ? <GroupAccessorySection groupId={groupId} selected={selected} studentCount={data.students.length} /> : null}
 
       <section className="rounded-xl border border-border bg-card p-3">
         <div className="flex flex-wrap items-end gap-2">
@@ -674,8 +686,8 @@ export function GraduationGroupWorkspace({ groupId, onBack }: { groupId: number;
       <AddStudentDialog groupId={groupId} open={addOpen} onOpenChange={setAddOpen} />
       <PaymentDialog groupId={groupId} students={data.students} open={paymentOpen} onOpenChange={setPaymentOpen} />
       <ImportStudentsDialog groupId={groupId} open={importOpen} onOpenChange={setImportOpen} />
-      <GroupAccessoryDialog groupId={groupId} students={data.students} open={accessoryOpen} onOpenChange={setAccessoryOpen} />
-      <StudentAccessoryDialog groupId={groupId} student={studentAccessory} students={data.students} open={Boolean(studentAccessory)} onOpenChange={(open) => !open && setStudentAccessory(null)} />
+      {workspaceTab === "accessories" ? <GroupAccessoryDialog groupId={groupId} students={data.students} open={accessoryOpen} onOpenChange={setAccessoryOpen} /> : null}
+      {workspaceTab === "accessories" && studentAccessory ? <StudentAccessoryDialog groupId={groupId} student={studentAccessory} students={data.students} open onOpenChange={(open) => !open && setStudentAccessory(null)} /> : null}
     </div>
   );
 }
@@ -747,10 +759,11 @@ export function GraduationTemplateLibrary() {
 }
 
 // ── Group-order accessories UI (Phase 1) ─────────────────────────────────────
-function useAccessoryCatalog(groupId: number) {
+function useAccessoryCatalog(groupId: number, enabled = true) {
   return useQuery<{ accessories: AccessoryProduct[] }>({
     queryKey: ["admin", "graduation", "accessory-catalog", groupId],
     queryFn: () => adminFetch(`/admin/graduation/groups/${groupId}/accessories/catalog`),
+    enabled,
   });
 }
 
@@ -758,7 +771,7 @@ function useAccessoryCatalog(groupId: number) {
 function GroupAccessorySection({ groupId, selected, studentCount }: { groupId: number; selected: number[]; studentCount: number }) {
   const client = useQueryClient();
   const { toast } = useToast();
-  const catalog = useAccessoryCatalog(groupId);
+  const catalog = useAccessoryCatalog(groupId, studentCount > 0);
   const [qty, setQty] = useState<Record<number, number>>({});
   const apply = useMutation({
     mutationFn: (vars: { templateId: number; quantity: number; scope: string }) =>
@@ -768,6 +781,9 @@ function GroupAccessorySection({ groupId, selected, studentCount }: { groupId: n
   });
   const scope = selected.length ? "selected" : "all";
   const items = catalog.data?.accessories ?? [];
+  if (!studentCount) {
+    return <section className="rounded-xl border border-border bg-card p-4"><h3 className="flex items-center gap-2 font-bold"><Gift className="h-4 w-4 text-primary" />الإكسسوارات</h3><p className="mt-2 text-sm text-muted-foreground">أضف طلبة إلى المجموعة قبل تطبيق الإكسسوارات.</p></section>;
+  }
   return (
     <section className="rounded-xl border border-border bg-card p-3">
       <div className="mb-3 flex items-center justify-between">
@@ -802,7 +818,7 @@ function GroupAccessorySection({ groupId, selected, studentCount }: { groupId: n
 function GroupAccessoryDialog({ groupId, students, open, onOpenChange }: { groupId: number; students: StudentRow[]; open: boolean; onOpenChange: (open: boolean) => void }) {
   const client = useQueryClient();
   const { toast } = useToast();
-  const catalog = useAccessoryCatalog(groupId);
+  const catalog = useAccessoryCatalog(groupId, open && students.length > 0);
   const [templateId, setTemplateId] = useState<number | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [unitPrice, setUnitPrice] = useState("");
@@ -857,7 +873,7 @@ function GroupAccessoryDialog({ groupId, students, open, onOpenChange }: { group
 function StudentAccessoryDialog({ groupId, student, students, open, onOpenChange }: { groupId: number; student: StudentRow | null; students: StudentRow[]; open: boolean; onOpenChange: (open: boolean) => void }) {
   const client = useQueryClient();
   const { toast } = useToast();
-  const catalog = useAccessoryCatalog(groupId);
+  const catalog = useAccessoryCatalog(groupId, open && Boolean(student));
   const [templateId, setTemplateId] = useState<number | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [copyFrom, setCopyFrom] = useState<number | null>(null);

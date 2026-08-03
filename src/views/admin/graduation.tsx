@@ -433,6 +433,7 @@ function GroupOrders() {
     onSuccess: ({ group }) => {
       client.invalidateQueries({ queryKey: ["admin", "graduation", "groups"] });
       setOpen(false);
+      setSelectedGroupId(group.id);
       navigator.clipboard
         ?.writeText(`${window.location.origin}${group.joinUrl}`)
         .catch(() => undefined);

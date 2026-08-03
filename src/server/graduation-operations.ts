@@ -26,6 +26,7 @@ import {
   qrTokensTable,
   salesInvoiceItemsTable,
   salesInvoicesTable,
+  stockMovementsTable,
 } from "@workspace/db";
 import { normalizeGraduationConfig, GRADUATION_STAGES } from "@/lib/graduation";
 import {
@@ -615,7 +616,41 @@ async function recalcGraduationOrderTotals(orderId: number) {
       updatedAt: new Date(),
     })
     .where(eq(graduationOrdersTable.id, orderId));
+  if (order.invoiceId) {
+    await db
+      .update(salesInvoicesTable)
+      .set({
+        total: String(total),
+        remainingAmount: String(remaining),
+        paymentStatus,
+        updatedAt: new Date(),
+      })
+      .where(eq(salesInvoicesTable.id, order.invoiceId));
+  }
   return { accessoriesTotal, total, remaining };
+}
+
+function accessoryStoreProductId(template: typeof graduationTemplatesTable.$inferSelect) {
+  const configuration = record(template.configuration);
+  const inventoryItems = Array.isArray(configuration.inventoryItems) ? configuration.inventoryItems : [];
+  return Number(
+    configuration.productId ??
+      configuration.storeProductId ??
+      configuration.inventoryProductId ??
+      (inventoryItems.length === 1 ? record(inventoryItems[0]).productId : 0),
+  ) || 0;
+}
+
+async function accessoryStoreProduct(template: typeof graduationTemplatesTable.$inferSelect) {
+  const productId = accessoryStoreProductId(template);
+  if (!productId) return null;
+  return db.query.productsTable.findFirst({
+    where: and(
+      eq(productsTable.id, productId),
+      eq(productsTable.isActive, true),
+      sql`${productsTable.archivedAt} is null`,
+    ),
+  });
 }
 
 async function accessoryCatalog() {
@@ -630,24 +665,63 @@ async function accessoryCatalog() {
       ),
     )
     .orderBy(desc(graduationTemplatesTable.isFeatured), asc(graduationTemplatesTable.sortOrder));
-  return rows.map((template) => {
+  const linked = await Promise.all(rows.map(async (template) => ({ template, product: await accessoryStoreProduct(template) })));
+  return linked.flatMap(({ template, product }) => {
+    // Accessories are store-backed only.  An unlinked graduation template is
+    // intentionally not exposed, which prevents creating order lines without
+    // a product_id and keeps stock in one source of truth.
+    if (!product) return [];
     const config = record(template.configuration);
-    const stock = Number(template.stock ?? 0);
-    return {
+    const stock = Number(product.stock ?? 0);
+    return [{
       id: template.id,
-      code: template.code,
-      name: template.name,
-      image: (Array.isArray(template.images) ? template.images[0] : null) || template.previewImageUrl || null,
-      unitPrice: amount(template.discountPrice ?? template.defaultPrice),
-      defaultPrice: amount(template.defaultPrice),
-      discountPrice: template.discountPrice != null ? amount(template.discountPrice) : null,
+      productId: product.id,
+      code: product.barcode || template.code,
+      name: product.nameAr || product.name || template.name,
+      image: (Array.isArray(product.images) ? product.images[0] : null) || (Array.isArray(template.images) ? template.images[0] : null) || template.previewImageUrl || null,
+      unitPrice: amount(product.price),
+      defaultPrice: amount(product.originalPrice ?? product.price),
+      discountPrice: product.originalPrice != null && amount(product.originalPrice) > amount(product.price) ? amount(product.price) : null,
       trackStock: template.trackStock,
       stock,
       available: !template.trackStock || stock > 0,
       required: Boolean(config.required),
       maxQuantity: Number(config.maxQuantity) > 0 ? Number(config.maxQuantity) : null,
-    };
+    }];
   });
+}
+
+async function adjustAccessoryStoreStock(
+  product: typeof productsTable.$inferSelect,
+  quantity: number,
+  groupId: number,
+  orderId: number,
+  direction: -1 | 1,
+  user: GraduationAdminUser,
+  allowNegative = false,
+) {
+  const sourceProductId = product.sharedStockProductId || product.id;
+  const change = direction * quantity;
+  const changed = await db.execute(sql`
+    UPDATE products
+    SET stock = stock + ${change}, updated_at = now()
+    WHERE id = ${sourceProductId}
+      AND (${allowNegative} OR stock >= ${quantity})
+    RETURNING id, stock
+  `);
+  if (!changed.rows?.length) return false;
+  await db.insert(stockMovementsTable).values({
+    productId: product.id,
+    stockSourceProductId: sourceProductId,
+    quantityChange: String(change),
+    reason: direction < 0 ? "graduation_group_accessory_deducted" : "graduation_group_accessory_restored",
+    relatedType: "graduation_group",
+    relatedId: groupId,
+    metadata: { graduationOrderId: orderId, source: "group_accessory" },
+    createdBy: user.id,
+    createdByName: user.fullName || user.username,
+  });
+  return true;
 }
 
 // Resolve the target student orders for a scope, validated to this group.
@@ -690,13 +764,17 @@ async function applyAccessory(groupId: number, raw: JsonMap, user: GraduationAdm
     ),
   });
   if (!template) return { response: fail("الإكسسوار غير متاح", 400) };
+  const group = await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
+  if (!group) return { response: fail("يرجى حفظ بيانات الطلب الجماعي أولاً لإضافة الإكسسوارات.", 400) };
+  const product = await accessoryStoreProduct(template);
+  if (!product) return { response: fail("يجب ربط الإكسسوار بمنتج فعّال من المتجر أولاً.", 400) };
   const maxQuantity = Number(record(template.configuration).maxQuantity) || 0;
   if (maxQuantity > 0 && quantity > maxQuantity)
     return { response: fail(`الحد الأقصى للكمية لهذا الإكسسوار هو ${maxQuantity}`, 400) };
   const targetIds = await resolveAccessoryTargets(groupId, scope, raw?.studentOrderIds);
   if (!targetIds.length) return { response: fail("لا يوجد طلبة مستهدفون", 400) };
 
-  const catalogPrice = amount(template.discountPrice ?? template.defaultPrice);
+  const catalogPrice = amount(product.price);
   const free = raw?.free === true;
   const overridePrice = raw?.unitPrice != null && raw.unitPrice !== "" ? amount(raw.unitPrice) : null;
   const priceChanged = free || (overridePrice != null && overridePrice !== catalogPrice);
@@ -709,7 +787,7 @@ async function applyAccessory(groupId: number, raw: JsonMap, user: GraduationAdm
   // Inventory: prevent overselling unless a manager explicitly overrides.
   if (template.trackStock) {
     const need = quantity * targetIds.length;
-    const available = Number(template.stock ?? 0);
+    const available = Number(product.stock ?? 0);
     if (need > available && raw?.managerApproved !== true) {
       return {
         response: fail(`الكمية المتوفرة لا تكفي، النقص ${need - available} قطعة`, 409, {
@@ -723,23 +801,31 @@ async function applyAccessory(groupId: number, raw: JsonMap, user: GraduationAdm
 
   const finalUnitPrice = free ? 0 : overridePrice != null ? overridePrice : catalogPrice;
   const required = raw?.required === true || Boolean(record(template.configuration).required);
-  const image = (Array.isArray(template.images) ? template.images[0] : null) || template.previewImageUrl || null;
+  const image = (Array.isArray(product.images) ? product.images[0] : null) || (Array.isArray(template.images) ? template.images[0] : null) || template.previewImageUrl || null;
+  if (template.trackStock) {
+    for (const orderId of targetIds) {
+      const deducted = await adjustAccessoryStoreStock(product, quantity, groupId, orderId, -1, user, raw?.managerApproved === true);
+      if (!deducted) return { response: fail("تغيّر مخزون المتجر أثناء الحفظ، يرجى إعادة المحاولة.", 409) };
+    }
+  }
   await db.insert(graduationOrderItemsTable).values(
     targetIds.map((orderId) => ({
       graduationOrderId: orderId,
       groupId,
       itemType: "accessory" as const,
       templateId: template.id,
-      productName: template.name,
-      productSku: template.sku ?? null,
+      productId: product.id,
+      productName: product.nameAr || product.name || template.name,
+      productSku: product.barcode ?? template.sku ?? null,
       quantity: String(quantity),
-      originalUnitPrice: String(amount(template.defaultPrice)),
+      originalUnitPrice: String(amount(product.originalPrice ?? product.price)),
       finalUnitPrice: String(finalUnitPrice),
       lineTotal: String(Math.round(finalUnitPrice * quantity * 100) / 100),
       imageUrl: image,
       snapshot: {
         source: "group_accessory",
         templateCode: template.code,
+        productId: product.id,
         required,
         free,
         overrideReason: priceChanged ? reason : undefined,
@@ -778,6 +864,13 @@ async function removeAccessory(groupId: number, raw: JsonMap, user: GraduationAd
       where: eq(graduationOrderItemsTable.id, itemId),
     });
     if (!item || item.groupId !== groupId) return { response: fail("عنصر غير موجود", 404) };
+    if (item.templateId && item.productId) {
+      const [template, product] = await Promise.all([
+        db.query.graduationTemplatesTable.findFirst({ where: eq(graduationTemplatesTable.id, item.templateId) }),
+        db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) }),
+      ]);
+      if (template?.trackStock && product) await adjustAccessoryStoreStock(product, Number(item.quantity), groupId, item.graduationOrderId, 1, user);
+    }
     await db.delete(graduationOrderItemsTable).where(eq(graduationOrderItemsTable.id, itemId));
     await recalcGraduationOrderTotals(item.graduationOrderId);
     await audit(user, "graduation_accessory_removed", "graduation_group", groupId, {
@@ -833,15 +926,21 @@ async function changeAccessoryQuantity(
   const quantity = Math.max(1, Math.floor(Number(raw?.quantity) || 1));
   const previousQuantity = Number(item.quantity);
   const unitPrice = amount(item.finalUnitPrice);
-  if (item.templateId) {
+  if (item.templateId && item.productId) {
     const template = await db.query.graduationTemplatesTable.findFirst({
       where: eq(graduationTemplatesTable.id, item.templateId),
     });
+    const product = await db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId) });
     const delta = quantity - previousQuantity;
-    if (template?.trackStock && delta > 0 && delta > Number(template.stock ?? 0) && raw?.managerApproved !== true) {
+    if (!product) return { response: fail("منتج الإكسسوار غير موجود في المتجر", 400) };
+    if (template?.trackStock && delta > 0 && delta > Number(product.stock ?? 0) && raw?.managerApproved !== true) {
       return {
         response: fail(`الكمية المتوفرة لا تكفي، النقص ${delta - Number(template.stock ?? 0)} قطعة`, 409),
       };
+    }
+    if (template?.trackStock && delta) {
+      const adjusted = await adjustAccessoryStoreStock(product, Math.abs(delta), groupId, item.graduationOrderId, delta > 0 ? -1 : 1, user, raw?.managerApproved === true);
+      if (!adjusted) return { response: fail("تغيّر مخزون المتجر أثناء الحفظ، يرجى إعادة المحاولة.", 409) };
     }
   }
   await db
@@ -879,6 +978,19 @@ async function copyAccessories(
     .where(and(eq(graduationOrderItemsTable.graduationOrderId, sourceOrderId), eq(graduationOrderItemsTable.itemType, "accessory"))))
     .filter((item) => record(item.snapshot).source === "group_accessory");
   if (!sourceItems.length) return { response: fail("لا توجد إكسسوارات لنسخها", 400) };
+  if (sourceItems.some((item) => !item.productId))
+    return { response: fail("لا يمكن نسخ إكسسوار غير مرتبط بمنتج المتجر.", 400) };
+  for (const item of sourceItems) {
+    const [template, product] = await Promise.all([
+      item.templateId ? db.query.graduationTemplatesTable.findFirst({ where: eq(graduationTemplatesTable.id, item.templateId) }) : null,
+      db.query.productsTable.findFirst({ where: eq(productsTable.id, item.productId!) }),
+    ]);
+    if (!product) return { response: fail("منتج الإكسسوار غير موجود في المتجر", 400) };
+    if (template?.trackStock) {
+      const deducted = await adjustAccessoryStoreStock(product, Number(item.quantity), groupId, targetOrderId, -1, user);
+      if (!deducted) return { response: fail("تغيّر مخزون المتجر أثناء الحفظ، يرجى إعادة المحاولة.", 409) };
+    }
+  }
   await db.insert(graduationOrderItemsTable).values(
     sourceItems.map((item) => ({
       graduationOrderId: targetOrderId,
@@ -1853,6 +1965,8 @@ export async function handleAdminGraduationOperations(
       return result ? json(result) : fail("المجموعة غير موجودة", 404);
     }
     if (action === "accessories") {
+      const group = await db.query.graduationGroupsTable.findFirst({ where: eq(graduationGroupsTable.id, groupId) });
+      if (!group) return fail("يرجى حفظ بيانات الطلب الجماعي أولاً لإضافة الإكسسوارات.", 400);
       // Read-only catalog for any user who can view the module.
       if (parts[3] === "catalog" && method === "GET") {
         const denied = requireOperationPermission(user, "graduation.view");
