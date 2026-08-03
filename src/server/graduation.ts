@@ -409,6 +409,14 @@ function canDeleteIndividualGraduationOrder(user: GraduationAdminUser) {
   );
 }
 
+function canDeleteGraduationGroup(user: GraduationAdminUser) {
+  return (
+    user.role === "admin" ||
+    user.permissions.includes("graduation") ||
+    user.permissions.includes("graduation.delete")
+  );
+}
+
 function graduationMediaUrl(row: typeof galleryItemsTable.$inferSelect) {
   return row.mediaUrl.startsWith("data:")
     ? `/api/media/gallery/${row.id}?v=${row.updatedAt.getTime()}`
@@ -3228,6 +3236,32 @@ export async function handleAdminGraduation(
     });
   }
   if (resource === "groups") {
+    if (method === "DELETE" && parts[1]) {
+      if (!canDeleteGraduationGroup(user))
+        return error("لا تملك صلاحية حذف الحجوزات الجماعية", 403);
+      const groupId = Number(parts[1]);
+      if (!Number.isInteger(groupId) || groupId <= 0)
+        return error("معرف المجموعة غير صحيح", 400);
+      const group = await db.query.graduationGroupsTable.findFirst({
+        where: eq(graduationGroupsTable.id, groupId),
+      });
+      if (!group) return error("المجموعة غير موجودة", 404);
+      const [usage] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(graduationOrdersTable)
+        .where(eq(graduationOrdersTable.groupId, groupId));
+      if ((usage?.count ?? 0) > 0)
+        return error(
+          `لا يمكن حذف المجموعة لأنها مرتبطة بـ ${usage?.count ?? 0} طلب طالب. أغلق التسجيل أو ألغِ الطلبات وفق إجراءاتها أولاً.`,
+          409,
+        );
+      await db.delete(graduationGroupsTable).where(eq(graduationGroupsTable.id, groupId));
+      await addActivity(user, "graduation_group_deleted", groupId, {
+        groupNo: group.groupNo,
+        title: group.title,
+      }, "graduation_group");
+      return json({ ok: true, id: groupId });
+    }
     if (method === "GET") {
       const [groups, orders] = await Promise.all([
         db

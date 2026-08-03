@@ -457,6 +457,26 @@ function GroupOrders() {
     onSuccess: () =>
       client.invalidateQueries({ queryKey: ["admin", "graduation", "groups"] }),
   });
+  const removeGroup = useMutation({
+    mutationFn: (id: number) =>
+      adminFetch(`/admin/graduation/groups/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast({ title: "تم حذف الحجز الجماعي" });
+      client.invalidateQueries({ queryKey: ["admin", "graduation", "groups"] });
+    },
+    onError: (error) =>
+      toast({
+        title: "تعذر حذف الحجز الجماعي",
+        description: apiErrorMessage(error),
+        variant: "destructive",
+      }),
+  });
+  function confirmRemoveGroup(item: any) {
+    const confirmed = window.confirm(
+      `سيتم حذف المجموعة ${item.groupNo} نهائياً. لا يمكن حذف مجموعة انضم إليها طلاب. هل تريد المتابعة؟`,
+    );
+    if (confirmed) removeGroup.mutate(item.id);
+  }
   if (selectedGroupId) {
     return (
       <GraduationGroupWorkspace
@@ -568,6 +588,20 @@ function GroupOrders() {
                           <X className="h-4 w-4" />
                         </Button>
                       ) : null}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        title="حذف الحجز الجماعي"
+                        disabled={removeGroup.isPending}
+                        onClick={() => confirmRemoveGroup(item)}
+                      >
+                        {removeGroup.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
