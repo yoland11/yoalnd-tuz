@@ -716,6 +716,18 @@ function GraduationConfigurator() {
   const [scanImage, setScanImage] = useState("");
   const [tryOnImage, setTryOnImage] = useState("");
 
+  // Preserve the confirmed receipt for this browser session. If the browser
+  // reloads after the API has created the order, the customer sees success
+  // instead of an empty form that could lead to a duplicate submission.
+  useEffect(() => {
+    try {
+      const saved = window.sessionStorage.getItem("ajn-graduation-completed-order");
+      if (saved) setCompleted(JSON.parse(saved));
+    } catch {
+      // Session storage is optional and must never block a graduation order.
+    }
+  }, []);
+
   const { data: config, isLoading } = useQuery({
     queryKey: ["graduation", "config"],
     queryFn: () => graduationFetch<PublicGraduationConfig>("/config"),
@@ -847,13 +859,20 @@ function GraduationConfigurator() {
         }),
       }),
     onSuccess: ({ order, warning }) => {
+      try {
+        window.sessionStorage.setItem(
+          "ajn-graduation-completed-order",
+          JSON.stringify(order),
+        );
+      } catch {
+        // Session storage is optional and must never affect a successful order.
+      }
       setCompleted(order);
       window.scrollTo({ top: 0, behavior: "smooth" });
-      if (warning)
-        toast({
-          title: "تم إرسال الطلب",
-          description: warning,
-        });
+      toast({
+        title: "تم إرسال الطلب بنجاح",
+        description: warning || `رقم طلبك ${order.orderNo}`,
+      });
     },
     onError: (error: Error) =>
       toast({
@@ -1123,6 +1142,11 @@ function GraduationConfigurator() {
                 className="flex-1"
                 variant="outline"
                 onClick={() => {
+                  try {
+                    window.sessionStorage.removeItem("ajn-graduation-completed-order");
+                  } catch {
+                    // Storage is optional.
+                  }
                   setCompleted(null);
                   setForm(initialForm);
                   setStep(0);
@@ -1980,10 +2004,20 @@ function GraduationConfigurator() {
                           </div>
                         </div>
                         <Button
+                          type="button"
                           className="mt-6 w-full"
                           size="lg"
                           disabled={submit.isPending}
                           onClick={() => {
+                            try {
+                              const saved = window.sessionStorage.getItem("ajn-graduation-completed-order");
+                              if (saved) {
+                                setCompleted(JSON.parse(saved));
+                                return;
+                              }
+                            } catch {
+                              // Continue with validation when storage is unavailable.
+                            }
                             const issue = validateStep();
                             if (issue) {
                               toast({
