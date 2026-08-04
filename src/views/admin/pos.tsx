@@ -1084,7 +1084,7 @@ export default function POSPage() {
           </div>
 
           {/* Delivery (province-based) */}
-          <DeliverySection subtotal={subtotal} customerId={selectedCustomerId} onChange={setDelivery} />
+          <DeliverySection subtotal={subtotal} customerId={selectedCustomerId} customerPhone={form.customerPhone} onChange={setDelivery} />
 
           {/* Totals */}
           <div className="bg-card rounded-xl border border-border/30 p-3 space-y-1.5">

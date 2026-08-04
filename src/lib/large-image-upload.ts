@@ -91,7 +91,7 @@ async function checksum(file: File): Promise<string> {
       return hex(hash);
     }
     // Incremental streaming digest via Web Streams when the platform supports it.
-    // @ts-expect-error - DigestStream is non-standard; guarded below.
+    // DigestStream is non-standard; accessed defensively and guarded below.
     const DigestStreamCtor = typeof globalThis !== "undefined" ? (globalThis as any).DigestStream : undefined;
     if (typeof DigestStreamCtor === "function") {
       const stream = new DigestStreamCtor("SHA-256");

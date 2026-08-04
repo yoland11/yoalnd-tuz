@@ -882,7 +882,7 @@ export default function SalesPage() {
           </div>
 
           {/* Delivery (province-based) */}
-          <DeliverySection subtotal={subtotal} onChange={setDelivery} />
+          <DeliverySection subtotal={subtotal} customerPhone={form.customerPhone} onChange={setDelivery} />
 
           {/* Payment */}
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">

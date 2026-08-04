@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, MapPin, PackageCheck, Store, Truck } from "lucide-react";
 import { adminFetch, formatCurrency } from "./_lib";
@@ -91,10 +91,14 @@ const FIELD_CLS =
 export default function DeliverySection({
   subtotal,
   customerId,
+  customerPhone,
   onChange,
 }: {
   subtotal: number;
   customerId?: number | null;
+  /** Customer's main phone from the booking — auto-copied into the delivery
+   *  (receiver) phone for province delivery until the user edits it manually. */
+  customerPhone?: string | null;
   onChange: (output: DeliveryOutput) => void;
 }) {
   const [method, setMethod] = useState<DeliveryMethod>("pickup");
@@ -112,6 +116,18 @@ export default function DeliverySection({
   const [needsRefrigeration, setNeedsRefrigeration] = useState(false);
   const [saveAddress, setSaveAddress] = useState(false);
   const [savedAddressId, setSavedAddressId] = useState<number | null>(null);
+  // Auto-fill of the receiver phone from the customer's main phone. `phoneTouched`
+  // flips once the user (or a saved address) sets the phone, after which we never
+  // overwrite it automatically. `autoFilled` drives the "copied automatically" badge.
+  const [phoneTouched, setPhoneTouched] = useState(false);
+  const [autoFilled, setAutoFilled] = useState(false);
+
+  const mainPhone = (customerPhone ?? "").trim();
+  useEffect(() => {
+    if (method !== "province" || phoneTouched || !mainPhone) return;
+    setF((prev) => (prev.receiverPhone === mainPhone ? prev : { ...prev, receiverPhone: mainPhone }));
+    setAutoFilled(true);
+  }, [method, mainPhone, phoneTouched]);
 
   const { data: provinces } = useProvinces(true);
   const province = useMemo(() => provinces?.find((p) => p.id === provinceId), [provinces, provinceId]);
@@ -190,6 +206,8 @@ export default function DeliverySection({
   function applySavedAddress(a: SavedAddress) {
     setSavedAddressId(a.id);
     if (a.provinceId) setProvinceId(a.provinceId);
+    // A saved-address phone is an explicit choice — keep it, don't auto-overwrite.
+    if (a.phone) { setPhoneTouched(true); setAutoFilled(false); }
     setF((prev) => ({
       ...prev,
       city: a.city || "", district: a.district || "", area: a.area || "",
@@ -326,8 +344,14 @@ export default function DeliverySection({
                   required
                   dir="ltr"
                   value={f.receiverPhone}
-                  onChange={(v) => setF({ ...f, receiverPhone: v })}
+                  placeholder={!mainPhone && !f.receiverPhone ? "سيتم تعبئة الرقم تلقائياً بعد إدخال رقم العميل" : undefined}
+                  onChange={(v) => { setPhoneTouched(true); setAutoFilled(false); setF({ ...f, receiverPhone: v }); }}
                   error={f.receiverPhone.length > 0 && !phoneValid ? "رقم هاتف عراقي غير صحيح" : undefined}
+                  hint={autoFilled && !phoneTouched && f.receiverPhone ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                      🔄 تم النسخ تلقائياً من رقم هاتف العميل
+                    </span>
+                  ) : undefined}
                 />
                 <Field
                   label="رقم هاتف بديل"
@@ -408,7 +432,7 @@ export default function DeliverySection({
 }
 
 function Field({
-  label, value, onChange, required, dir, error, placeholder,
+  label, value, onChange, required, dir, error, placeholder, hint,
 }: {
   label: string;
   value: string;
@@ -417,6 +441,7 @@ function Field({
   dir?: "ltr" | "rtl";
   error?: string;
   placeholder?: string;
+  hint?: ReactNode;
 }) {
   return (
     <div>
@@ -431,6 +456,7 @@ function Field({
         className={`${FIELD_CLS} ${error ? "border-status-danger" : ""}`}
       />
       {error && <p className="text-[11px] text-status-danger mt-1">{error}</p>}
+      {!error && hint && <div className="mt-1">{hint}</div>}
     </div>
   );
 }
