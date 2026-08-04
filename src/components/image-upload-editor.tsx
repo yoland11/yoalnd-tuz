@@ -12,6 +12,15 @@ import {
   type ImageObjectFit,
   type ImageProcessOptions,
 } from "@/lib/image-tools";
+import {
+  ImageUploadError,
+  MAX_IMAGE_UPLOAD_BYTES,
+  imageUploadFolder,
+  uploadImageWithVariants,
+  uploadProgressLabel,
+  validateImageUpload,
+  type ImageUploadProgress,
+} from "@/lib/large-image-upload";
 import type { ImageSettings } from "@/lib/public-settings";
 
 export type ImageEditResult = {
@@ -102,8 +111,10 @@ export function ImageUploadEditor({
   const [source, setSource] = useState<SourceInfo | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [progress, setProgress] = useState(0);
+  const [transfer, setTransfer] = useState<ImageUploadProgress | null>(null);
   const [error, setError] = useState("");
   const [closing, setClosing] = useState(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
   const maxSize = maxSizeForKind(kind, settings);
   const isAvatar = kind === "avatar";
@@ -117,12 +128,13 @@ export function ImageUploadEditor({
     const picked = Array.from(files ?? []);
     if (picked.length === 0) return;
     setError("");
-    const oversized = picked.find((file) => file.size > 18 * 1024 * 1024);
+    const oversized = picked.find((file) => file.size > MAX_IMAGE_UPLOAD_BYTES);
     if (oversized) {
-      setError("الصورة كبيرة جداً. الرجاء اختيار ملف أقل من 18MB.");
+      setError("The maximum allowed image size is 40 MB.");
       return;
     }
-    const unsupported = picked.find((file) => !file.type.startsWith("image/") && !(allowVideo && file.type.startsWith("video/")));
+    const imageFiles = picked.filter((file) => file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif|avif)$/i.test(file.name));
+    const unsupported = picked.find((file) => !imageFiles.includes(file) && !(allowVideo && file.type.startsWith("video/")));
     if (unsupported) {
       setError(allowVideo ? "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG أو فيديو." : "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG فقط.");
       return;
@@ -151,8 +163,14 @@ export function ImageUploadEditor({
       setTimeout(() => setProgress(0), 500);
     }
 
-    const images = picked.filter((file) => file.type.startsWith("image/"));
+    const images = imageFiles;
     if (images.length === 0) return;
+    try {
+      await Promise.all(images.map((file) => validateImageUpload(file)));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "تعذر التحقق من ملف الصورة.");
+      return;
+    }
     const nextQueue = multiple ? images : [images[0]];
     setQueue(nextQueue);
     await loadForEdit(nextQueue[0]);
@@ -216,33 +234,58 @@ export function ImageUploadEditor({
     if (!source || !editor || queue.length === 0) return;
     setError("");
     setProgress(15);
+    setTransfer(null);
+    uploadAbortRef.current?.abort();
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     const results: ImageEditResult[] = [];
-    for (let index = 0; index < queue.length; index++) {
-      const file = queue[index];
-      const inspected = index === 0 ? source : { ...(await inspectImageFile(file)), fileName: file.name };
-      const dataUrl = await processImageFile(file, processingOptions(editor, cropRatio, settings, watermarkText));
-      const size = await dataUrlSize(dataUrl);
-      results.push({
-        dataUrl,
-        metadata: {
-          originalWidth: inspected.originalWidth,
-          originalHeight: inspected.originalHeight,
-          originalSize: inspected.originalSize,
-          originalType: inspected.originalType,
-          width: editor.width,
-          height: editor.height,
-          processedSize: size,
-          processedType: dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/webp",
-          cropRatio,
-          objectFit: editor.objectFit,
-          cropZoom: editor.zoom,
-          cropOffsetX: editor.offsetX,
-          cropOffsetY: editor.offsetY,
-          preset: editor.preset,
-          updatedAt: new Date().toISOString(),
-        },
-      });
-      setProgress(Math.round(((index + 1) / queue.length) * 100));
+    try {
+      for (let index = 0; index < queue.length; index++) {
+        const file = queue[index];
+        const inspected = index === 0 ? source : { ...(await inspectImageFile(file)), fileName: file.name };
+        const stored = await uploadImageWithVariants(file, {
+          folder: imageUploadFolder(kind),
+          signal: controller.signal,
+          onProgress: setTransfer,
+        });
+        // Keep the editor's crop as the image displayed by legacy modules while
+        // retaining the original and responsive derivatives in its metadata.
+        const dataUrl = await processImageFile(file, processingOptions(editor, cropRatio, settings, watermarkText));
+        const size = await dataUrlSize(dataUrl);
+        // Browsers that cannot decode HEIC/AVIF may return the source unchanged.
+        // Never send that 40 MB data URL into a legacy JSON save request.
+        const displayValue = size > 8 * 1024 * 1024 ? stored.largeUrl : dataUrl;
+        results.push({
+          dataUrl: displayValue,
+          metadata: {
+            originalWidth: inspected.originalWidth,
+            originalHeight: inspected.originalHeight,
+            originalSize: inspected.originalSize,
+            originalType: inspected.originalType,
+            width: editor.width,
+            height: editor.height,
+            processedSize: size,
+            processedType: displayValue.match(/^data:([^;,]+)/)?.[1] ?? file.type ?? "image/webp",
+            cropRatio,
+            objectFit: editor.objectFit,
+            cropZoom: editor.zoom,
+            cropOffsetX: editor.offsetX,
+            cropOffsetY: editor.offsetY,
+            preset: editor.preset,
+            ...stored,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+        setProgress(Math.round(((index + 1) / queue.length) * 100));
+      }
+    } catch (cause) {
+      setProgress(0);
+      setTransfer(null);
+      if (cause instanceof DOMException && cause.name === "AbortError") setError("تم إلغاء رفع الصورة. يمكنك إعادة المحاولة دون فقدان التقدم.");
+      else setError(cause instanceof ImageUploadError ? cause.message : "تعذر رفع الصورة. حاول مرة أخرى.");
+      return;
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
     }
     onComplete(results);
     setClosing(true);
@@ -283,6 +326,8 @@ export function ImageUploadEditor({
 
   function closeEditor(confirmIfDirty = true) {
     if (confirmIfDirty && source && !window.confirm("إغلاق نافذة الصورة؟ سيتم تجاهل التعديلات غير المحفوظة.")) return;
+    uploadAbortRef.current?.abort();
+    if (source?.dataUrl.startsWith("blob:")) URL.revokeObjectURL(source.dataUrl);
     setQueue([]);
     setSource(null);
     setEditor(null);
@@ -349,9 +394,21 @@ export function ImageUploadEditor({
 
       {error && <p className="rounded-lg border border-status-danger/20 bg-status-danger/10 px-3 py-2 text-xs text-status-danger">{error}</p>}
 
+      {error && source && queue.length > 0 && (
+        <Button type="button" size="sm" variant="outline" onClick={() => void applyEdits()}><RotateCcw className="ml-1 h-3.5 w-3.5" />إعادة المحاولة</Button>
+      )}
+
       {progress > 0 && (
         <div className="h-2 overflow-hidden rounded-full border border-border/20 bg-background">
           <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+
+      {transfer && (
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs" aria-live="polite">
+          <div className="mb-2 flex items-center justify-between gap-3"><span className="font-medium text-foreground">{transfer.phase === "original" ? "رفع الصورة الأصلية" : transfer.phase === "optimizing" ? "إنشاء النسخ المحسنة" : "اكتمل الرفع"}</span><span className="text-primary">{transfer.percent}%</span></div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-primary/15"><div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${transfer.percent}%` }} /></div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-muted-foreground"><span>{uploadProgressLabel(transfer)}</span>{uploadAbortRef.current && transfer.phase !== "complete" ? <Button type="button" size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => uploadAbortRef.current?.abort()}><X className="ml-1 h-3.5 w-3.5" />إلغاء الرفع</Button> : null}</div>
         </div>
       )}
 
@@ -504,7 +561,8 @@ export function ImageUploadEditor({
               </div>
             </div>
 
-            <div className="flex shrink-0 flex-col gap-2 border-t border-border/30 bg-background/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+            <div className="flex shrink-0 flex-col gap-2 border-t border-border/30 bg-background/60 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-5">
+              {transfer || error ? <div className="w-full rounded-lg bg-muted/50 px-3 py-2 text-xs" aria-live="polite"><div className="flex items-center justify-between gap-2"><span className={error ? "text-destructive" : "text-muted-foreground"}>{error || (transfer ? uploadProgressLabel(transfer) : "")}</span>{uploadAbortRef.current && !error ? <Button type="button" size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => uploadAbortRef.current?.abort()}><X className="ml-1 h-3.5 w-3.5" />إلغاء</Button> : error ? <Button type="button" size="sm" variant="ghost" onClick={() => void applyEdits()}><RotateCcw className="ml-1 h-3.5 w-3.5" />إعادة المحاولة</Button> : null}</div>{transfer ? <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-primary/15"><div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${transfer.percent}%` }} /></div> : null}</div> : null}
               <p className="text-[11px] text-muted-foreground">اسحب الصورة داخل الإطار ثم احفظ النتيجة.</p>
               <div className="flex gap-2">
                 <button type="button" onClick={reset} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-border/35 bg-card px-3 py-2 text-xs text-foreground hover:border-primary/40">

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, BarChart3, CheckCircle2, ClipboardList, Loader2, QrCode, Wrench,
+  AlertTriangle, BarChart3, Bell, CheckCircle2, ClipboardList, Clock3, Loader2, MapPin, QrCode, Truck, Users, Wrench,
 } from "lucide-react";
+import { Link } from "wouter";
 import { apiErrorMessage, compressImageFile } from "@/views/admin/_lib";
 import { LiveScanner } from "./live-scanner";
 import {
@@ -27,11 +28,13 @@ function Banner({ kind, children }: { kind: "ok" | "error"; children: React.Reac
  * five scan points. Rendered inside the existing booking detail screen — no route,
  * navigation or permission changes.
  */
-export function KoshaOperationsPanel({ bookingId, source = "kosha" }: { bookingId: number; source?: string }) {
+export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }: { bookingId: number; source?: string; activeTab?: "checklist" | "scan" | "damage" }) {
   const [data, setData] = useState<OperationsPayload | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"checklist" | "scan" | "damage">("checklist");
+
+  useEffect(() => { if (activeTab) setTab(activeTab); }, [activeTab]);
 
   const load = useCallback(() => {
     koshaOpsApi.get(bookingId, source).then(setData).catch(() => setData(null));
@@ -49,13 +52,31 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha" }: { bookingI
     } finally { setBusy(false); }
   }
 
+  const checklistProgress = useMemo(() => {
+    if (!data) return { completed: 0, total: CHECKLIST_ITEMS.length, percent: 0 };
+    const completed = data.checklist.filter((row) => row.condition === "available").length;
+    return { completed, total: CHECKLIST_ITEMS.length, percent: Math.round((completed / CHECKLIST_ITEMS.length) * 100) };
+  }, [data]);
+
   if (!data) return <Spinner />;
 
   const conditionOf = (item: string) =>
     data.checklist.find((row) => row.item === item)?.condition ?? "";
 
   return (
-    <section className="space-y-3 rounded-xl border border-border bg-card p-3">
+    <section className="space-y-3 rounded-xl border border-border bg-card p-3" aria-label="مركز تجهيز وتنفيذ الحجز">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold">مركز التجهيز الميداني</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">تحقق من القائمة ثم وثّق حركة الأصول والأضرار من نفس الحجز.</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${data.checklistCovered && !data.checklistIssues.length ? "bg-status-success/15 text-status-success" : "bg-status-warning/15 text-status-warning"}`}>
+          {checklistProgress.completed}/{checklistProgress.total}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-label={`نسبة جاهزية المعدات ${checklistProgress.percent}%`}>
+        <div className={`h-full rounded-full transition-[width] duration-200 motion-reduce:transition-none ${data.checklistIssues.length ? "bg-destructive" : "bg-status-success"}`} style={{ width: `${checklistProgress.percent}%` }} />
+      </div>
       <div className="flex gap-1.5">
         {([
           { key: "checklist", label: "قائمة المعدات", icon: ClipboardList },
@@ -296,26 +317,42 @@ function DamageTab({
 
 export function KoshaOpsBoardPage() {
   const [data, setData] = useState<KoshaOpsBoard | null>(null);
-  useEffect(() => { koshaOpsApi.board().then(setData).catch(() => setData(null)); }, []);
+  useEffect(() => {
+    let mounted = true;
+    const load = () => koshaOpsApi.board().then((next) => { if (mounted) setData(next); }).catch(() => { if (mounted) setData(null); });
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
   if (!data) return <Spinner />;
   const stats = [
-    { label: "حجوزات اليوم", value: data.counts.today },
-    { label: "قيد التجهيز", value: data.counts.preparing },
-    { label: "قيد التنفيذ", value: data.counts.inProgress },
-    { label: "مكتملة", value: data.counts.completed },
-    { label: "متأخرة", value: data.counts.delayed },
+    { label: "حجوزات اليوم", value: data.counts.today, icon: ClipboardList },
+    { label: "قيد التجهيز", value: data.counts.preparing, icon: Clock3 },
+    { label: "قيد التنفيذ", value: data.counts.inProgress, icon: Truck },
+    { label: "مكتملة", value: data.counts.completed, icon: CheckCircle2 },
+    { label: "متأخرة", value: data.counts.delayed, icon: AlertTriangle, danger: true },
+    { label: "طاقم متاح", value: data.counts.availableStaff, icon: Users },
+    { label: "مركبات متاحة", value: data.counts.availableVehicles, icon: Truck },
+    { label: "مهام معلقة", value: data.counts.pendingTasks, icon: ClipboardList },
+    { label: "إشعارات", value: data.counts.unreadNotifications, icon: Bell },
   ];
   return (
     <div className="space-y-4 p-4">
-      <h1 className="text-lg font-bold">اللوحة الحية</h1>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <div className="flex items-end justify-between gap-3"><div><h1 className="text-lg font-bold">مركز العمليات الحي</h1><p className="text-xs text-muted-foreground">يتجدد تلقائياً كل 30 ثانية · {data.today}</p></div><span className="rounded-full bg-status-success/10 px-2 py-1 text-[11px] font-bold text-status-success">مباشر</span></div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         {stats.map((stat) => (
           <div key={stat.label} className="rounded-xl border border-border bg-card p-3">
+            <stat.icon className={`mb-2 h-4 w-4 ${stat.danger && stat.value > 0 ? "text-destructive" : "text-primary"}`} />
             <div className="text-xl font-bold tabular-nums">{stat.value}</div>
             <div className="mt-0.5 text-[11px] text-muted-foreground">{stat.label}</div>
           </div>
         ))}
       </div>
+
+      <section className="rounded-xl border border-border bg-card p-3">
+        <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-bold">العمليات الجارية الآن</h2><span className="text-xs text-muted-foreground">{data.currentJobs.length}</span></div>
+        {data.currentJobs.length ? <ul className="divide-y divide-border/70">{data.currentJobs.map((job) => <li key={job.bookingId}><Link href={`/staff/koshas/booking/${job.bookingId}`} className="flex min-h-12 items-center justify-between gap-3 py-2 text-sm"><div className="min-w-0"><b className="block truncate">{job.customerName}</b><span className="flex items-center gap-1 truncate text-xs text-muted-foreground"><MapPin className="h-3 w-3" />{job.hall || "الموقع غير محدد"}</span></div><div className="shrink-0 text-left"><b className="block text-xs text-primary">{STAGE_LABEL[job.stage] ?? job.stage}</b><span className="text-xs text-muted-foreground">{job.eventTime || "—"}</span></div></Link></li>)}</ul> : <p className="py-3 text-sm text-muted-foreground">لا توجد عملية ميدانية جارية الآن.</p>}
+      </section>
 
       {data.missingAssets.length > 0 && (
         <section>

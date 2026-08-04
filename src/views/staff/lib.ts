@@ -1,4 +1,5 @@
 import { adminFetch, compressImageFile, fileToDataUrl } from "@/views/admin/_lib";
+import { uploadImageWithVariants } from "@/lib/large-image-upload";
 import { mutateOrQueue, type QueuedResult } from "./offline";
 import { formatMoney } from "@/lib/money";
 
@@ -98,7 +99,14 @@ export async function filesToMedia(files: FileList | File[]): Promise<MediaInput
     if (file.type.startsWith("video/")) {
       out.push({ url: await fileToDataUrl(file), kind: "video" });
     } else {
-      out.push({ url: await compressImageFile(file, 1600, 0.82), kind: "image" });
+      // Field photos use the shared resumable uploader. Offline work keeps the
+      // established queue path for small, compressed proofs until connectivity returns.
+      if (navigator.onLine) {
+        const stored = await uploadImageWithVariants(file, { folder: "kosha/operations" });
+        out.push({ url: stored.largeUrl, kind: "image" });
+      } else {
+        out.push({ url: await compressImageFile(file, 1600, 0.82), kind: "image" });
+      }
     }
   }
   return out;
@@ -208,8 +216,10 @@ export type KoshaOpsBoard = {
   today: string;
   counts: {
     today: number; preparing: number; inProgress: number;
-    completed: number; delayed: number;
+    completed: number; delayed: number; availableStaff: number;
+    availableVehicles: number; pendingTasks: number; unreadNotifications: number;
   };
+  currentJobs: Array<{ bookingId: number; customerName: string; eventTime: string | null; stage: string; hall: string | null }>;
   missingAssets: Array<{ bookingId: number; customerName: string; item: string }>;
   damagedAssets: Array<{ bookingId: number; customerName: string; description: string; priority: string }>;
   employeeWorkload: Array<{ staffId: number; name: string; bookings: number }>;

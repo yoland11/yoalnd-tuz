@@ -1973,6 +1973,7 @@ function BookingProductionSection({ bookingId }: { bookingId: number }) {
 function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
   const [previewReady, setPreviewReady] = useState(false);
+  const [editorTab, setEditorTab] = useState<"details" | "products">("details");
   const savedPricing = ((booking.bookingDetails ?? {}) as any).pricing ?? {};
   const textNumber = (value: unknown) => String(Number(value ?? 0) || 0);
   const [form, setForm] = useState({
@@ -2067,6 +2068,11 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
         </div>
         <div className="space-y-5 overflow-y-auto p-4 sm:p-5">
+          <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
+            <button type="button" onClick={() => setEditorTab("details")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "details" ? "bg-background font-semibold shadow-sm" : "text-muted-foreground"}`}>تفاصيل الحجز</button>
+            <button type="button" onClick={() => setEditorTab("products")} className={`flex-1 rounded-md px-3 py-2 ${editorTab === "products" ? "bg-background font-semibold text-primary shadow-sm" : "text-muted-foreground"}`}>🛍 الخدمات والمنتجات الإضافية</button>
+          </div>
+          <div className={editorTab === "details" ? "space-y-5" : "hidden"}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div><label className="mb-1 block text-xs text-muted-foreground">الكوشة</label><select value={form.koshaId} onChange={(event) => setForm({ ...form, koshaId: Number(event.target.value) })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{koshas.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}</select></div>
             <Field label="اسم الزبون" value={form.customerName} onChange={(value) => setForm({ ...form, customerName: value })} />
@@ -2132,6 +2138,8 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           </div>
 
           {previewReady && <div className="rounded-xl border border-primary/35 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-semibold text-foreground">معاينة التغييرات</h4><Check className="h-4 w-4 text-primary" /></div><div className="grid gap-2 text-xs sm:grid-cols-3"><div><p className="text-muted-foreground">الإجمالي السابق</p><p className="mt-1 font-semibold">{formatCurrency(booking.totalAmount)}</p></div><div><p className="text-muted-foreground">الإجمالي الجديد</p><p className="mt-1 font-semibold">{formatCurrency(projectedTotal)}</p></div><div><p className="text-muted-foreground">الفرق المالي</p><p className="mt-1 font-semibold text-primary">{formatCurrency(projectedTotal - booking.totalAmount)}</p></div></div></div>}
+          </div>
+          {editorTab === "products" ? <KoshaBookingProducts bookingId={booking.id} onChanged={onSaved} /> : null}
         </div>
         <div className="flex shrink-0 justify-end gap-2 border-t border-border/30 p-4"><Button type="button" variant="outline" onClick={onClose}>إلغاء</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? "جاري الحفظ..." : previewReady ? "تأكيد وحفظ" : "معاينة التغييرات"}</Button></div>
       </form>
@@ -2141,4 +2149,175 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
 
 function KoshaBookingOptionPicker({ title, options, selected, onToggle, single = false }: { title: string; options: KoshaOption[]; selected: string[]; onToggle: (name: string) => void; single?: boolean }) {
   return <div className="space-y-2"><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold text-foreground">{title}</h4><span className="text-xs text-muted-foreground">{single ? "اختيار واحد" : `${selected.length} مختار`}</span></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{options.map((option) => { const active = selected.includes(option.name); return <button key={option.id} type="button" onClick={() => onToggle(option.name)} className={`flex items-center gap-3 rounded-lg border p-2.5 text-right transition-colors ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-background/35 hover:border-primary/30"}`}>{option.mainImage ? <img src={option.mainImage} alt="" className="h-11 w-11 shrink-0 rounded-md object-cover" /> : <span className="h-11 w-11 shrink-0 rounded-md bg-muted" />}<span className="min-w-0 flex-1"><span className="block truncate text-sm text-foreground">{option.name}</span><span className="text-xs text-primary">{formatCurrency(option.price ?? 0)}</span></span>{active && <Check className="h-4 w-4 shrink-0 text-primary" />}</button>; })}</div></div>;
+}
+
+// ── Kosha booking Additional Services (Store products) ───────────────────────
+type KoshaStoreProduct = {
+  id: number;
+  name: string;
+  sku: string | null;
+  barcode: string | null;
+  category: string | null;
+  price: number;
+  rentalPrice: number;
+  isRental: boolean;
+  stock: number;
+  image: string | null;
+};
+type KoshaLineItem = {
+  id: number;
+  productId: number | null;
+  productName: string;
+  productSku: string | null;
+  imageUrl: string | null;
+  category: string | null;
+  quantity: number;
+  unitPrice: number;
+  costPrice: number;
+  isRental: boolean;
+  rentalDays: number;
+  checkoutDate: string | null;
+  returnDate: string | null;
+  discount: number;
+  tax: number;
+  lineTotal: number;
+  notes: string | null;
+  currentStock: number | null;
+};
+type KoshaItemsResponse = {
+  items: KoshaLineItem[];
+  summary: { productsTotal: number; rentalTotal: number; salesTotal: number; count: number };
+};
+
+function KoshaBookingProducts({ bookingId, onChanged }: { bookingId: number; onChanged?: () => void }) {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const itemsQuery = useQuery<KoshaItemsResponse>({
+    queryKey: ["admin", "kosha-booking-items", bookingId],
+    queryFn: () => adminFetch(`/admin/kosha-bookings/${bookingId}/items`),
+  });
+  const invalidate = () => {
+    client.invalidateQueries({ queryKey: ["admin", "kosha-booking-items", bookingId] });
+    onChanged?.();
+  };
+  const add = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      adminFetch(`/admin/kosha-bookings/${bookingId}/items`, { method: "POST", body: JSON.stringify(body) }),
+    onSuccess: () => { invalidate(); toast({ title: "تمت إضافة المنتج للحجز" }); },
+    onError: (e: any) => toast({ title: "تعذرت الإضافة", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const patch = useMutation({
+    mutationFn: ({ itemId, body }: { itemId: number; body: Record<string, unknown> }) =>
+      adminFetch(`/admin/kosha-bookings/${bookingId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+    onSuccess: invalidate,
+    onError: (e: any) => toast({ title: "تعذر التعديل", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const remove = useMutation({
+    mutationFn: (itemId: number) => adminFetch(`/admin/kosha-bookings/${bookingId}/items/${itemId}`, { method: "DELETE" }),
+    onSuccess: invalidate,
+    onError: (e: any) => toast({ title: "تعذرت الإزالة", description: apiErrorMessage(e), variant: "destructive" }),
+  });
+  const items = itemsQuery.data?.items ?? [];
+  const summary = itemsQuery.data?.summary;
+  return (
+    <div className="space-y-4" dir="rtl">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="font-bold text-foreground">🛍 الخدمات والمنتجات الإضافية</h4>
+          <p className="text-xs text-muted-foreground">أضف منتجات من المتجر مباشرة — بدون إنشاء منتجات جديدة، ويبقى المخزون متزامناً.</p>
+        </div>
+        <Button type="button" onClick={() => setBrowserOpen(true)}><Plus className="ml-1 h-4 w-4" />إضافة من المتجر</Button>
+      </div>
+      {itemsQuery.isLoading ? (
+        <div className="p-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+      ) : items.length ? (
+        <div className="overflow-x-auto rounded-xl border border-border/40">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead className="border-b text-right text-xs text-muted-foreground">
+              <tr>{["المنتج", "الكمية", "السعر", "الخصم", "النوع", "الإجمالي", "ملاحظات", ""].map((h) => <th key={h} className="p-2">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-b border-border/20">
+                  <td className="p-2">
+                    <div className="flex items-center gap-2">
+                      {item.imageUrl ? <img src={item.imageUrl} alt="" className="h-9 w-9 rounded object-cover" /> : <span className="grid h-9 w-9 place-items-center rounded bg-muted"><Package className="h-4 w-4 text-muted-foreground" /></span>}
+                      <div><div className="font-medium">{item.productName}</div>{item.productSku ? <div className="text-[11px] text-muted-foreground">{item.productSku}</div> : null}</div>
+                    </div>
+                  </td>
+                  <td className="p-2">
+                    <div className="flex items-center gap-1">
+                      <button type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: Math.max(1, item.quantity - 1) } })}><Minus className="h-3 w-3" /></button>
+                      <span className="w-6 text-center">{item.quantity}</span>
+                      <button type="button" className="grid h-7 w-7 place-items-center rounded border border-border/40" onClick={() => patch.mutate({ itemId: item.id, body: { quantity: item.quantity + 1 } })}><Plus className="h-3 w-3" /></button>
+                    </div>
+                  </td>
+                  <td className="p-2">{formatCurrency(item.unitPrice)}</td>
+                  <td className="p-2"><input type="number" min={0} defaultValue={item.discount} className="w-20 rounded border border-border/40 bg-background px-2 py-1 text-sm" onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== item.discount) patch.mutate({ itemId: item.id, body: { discount: v } }); }} /></td>
+                  <td className="p-2"><button type="button" onClick={() => patch.mutate({ itemId: item.id, body: { isRental: !item.isRental } })} className={`rounded-full px-2 py-0.5 text-[11px] ${item.isRental ? "bg-accent/15 text-accent" : "bg-muted text-muted-foreground"}`}>{item.isRental ? `إيجار${item.rentalDays > 1 ? ` ×${item.rentalDays}ي` : ""}` : "بيع"}</button></td>
+                  <td className="p-2 font-bold">{formatCurrency(item.lineTotal)}</td>
+                  <td className="p-2"><input defaultValue={item.notes ?? ""} placeholder="ملاحظة" className="w-28 rounded border border-border/40 bg-background px-2 py-1 text-sm" onBlur={(e) => { if (e.target.value !== (item.notes ?? "")) patch.mutate({ itemId: item.id, body: { notes: e.target.value } }); }} /></td>
+                  <td className="p-2"><button type="button" className="text-destructive" onClick={() => remove.mutate(item.id)}><Trash2 className="h-4 w-4" /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border/50 p-8 text-center text-sm text-muted-foreground">لا توجد منتجات مضافة بعد. اضغط «إضافة من المتجر».</div>
+      )}
+      {summary ? (
+        <div className="grid gap-2 rounded-xl border border-primary/25 bg-primary/5 p-4 sm:grid-cols-4">
+          <div><div className="text-xs text-muted-foreground">إجمالي المنتجات</div><div className="font-bold text-foreground">{formatCurrency(summary.productsTotal)}</div></div>
+          <div><div className="text-xs text-muted-foreground">إجمالي البيع</div><div className="font-bold text-foreground">{formatCurrency(summary.salesTotal)}</div></div>
+          <div><div className="text-xs text-muted-foreground">إجمالي الإيجار</div><div className="font-bold text-foreground">{formatCurrency(summary.rentalTotal)}</div></div>
+          <div><div className="text-xs text-muted-foreground">عدد العناصر</div><div className="font-bold text-foreground">{summary.count}</div></div>
+        </div>
+      ) : null}
+      {browserOpen ? <KoshaStoreBrowser bookingId={bookingId} onClose={() => setBrowserOpen(false)} onAdd={(body) => add.mutate(body)} /> : null}
+    </div>
+  );
+}
+
+function KoshaStoreBrowser({ bookingId, onClose, onAdd }: { bookingId: number; onClose: () => void; onAdd: (body: Record<string, unknown>) => void }) {
+  const [search, setSearch] = useState("");
+  const [inStock, setInStock] = useState(false);
+  const q = useQuery<{ products: KoshaStoreProduct[] }>({
+    queryKey: ["admin", "kosha-store-products", bookingId, search, inStock],
+    queryFn: () => adminFetch(`/admin/kosha-bookings/store-products?search=${encodeURIComponent(search)}${inStock ? "&inStock=1" : ""}`),
+  });
+  const products = q.data?.products ?? [];
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-background" dir="rtl">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border/30 p-4">
+        <h3 className="whitespace-nowrap font-bold text-foreground">إضافة من المتجر</h3>
+        <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الباركود…" className="flex-1 rounded-lg border border-border/40 bg-card px-3 py-2 text-sm" />
+        <label className="flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"><input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} />المتوفر فقط</label>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+      </div>
+      <div className="grid flex-1 auto-rows-max grid-cols-2 gap-3 overflow-y-auto p-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {q.isLoading ? (
+          <div className="col-span-full p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+        ) : products.length ? (
+          products.map((p) => (
+            <div key={p.id} className="flex flex-col rounded-xl border border-border/40 bg-card p-2">
+              {p.image ? <img src={p.image} alt={p.name} className="h-28 w-full rounded-lg object-cover" loading="lazy" decoding="async" /> : <div className="grid h-28 place-items-center rounded-lg bg-muted"><Package className="h-6 w-6 text-muted-foreground" /></div>}
+              <div className="mt-2 flex-1">
+                <div className="text-sm font-semibold text-foreground">{p.name}</div>
+                <div className="text-[11px] text-muted-foreground">{p.sku || "—"} · متوفر {p.stock}</div>
+                <div className="mt-1 text-sm text-foreground">{formatCurrency(p.price)}{p.isRental && p.rentalPrice > 0 ? <span className="text-xs text-accent"> · إيجار {formatCurrency(p.rentalPrice)}</span> : null}</div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-1">
+                <Button type="button" size="sm" onClick={() => onAdd({ productId: p.id, quantity: 1 })}><Plus className="ml-1 h-3.5 w-3.5" />بيع</Button>
+                {p.isRental && p.rentalPrice > 0 ? <Button type="button" size="sm" variant="outline" onClick={() => onAdd({ productId: p.id, quantity: 1, isRental: true })}>إيجار</Button> : null}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="col-span-full p-8 text-center text-sm text-muted-foreground">لا توجد منتجات مطابقة.</div>
+        )}
+      </div>
+    </div>
+  );
 }

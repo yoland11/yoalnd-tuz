@@ -31,9 +31,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { formatCurrency } from "@/lib/money";
 import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import type { GraduationConfig } from "@/lib/graduation";
+import { GRADUATION_STEPS, GRADUATION_THEME_STYLE, GraduationStepRail } from "@/components/graduation-step-rail";
 
 type PublicGraduationConfig = GraduationConfig & { aiAvailable: boolean };
 
@@ -182,6 +184,7 @@ const initialGroup = {
 export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState(initialGroup);
+  const [step, setStep] = useState(0);
   const [created, setCreated] = useState<any>(null);
   const { data: config, isLoading } = useQuery({
     queryKey: ["graduation", "config"],
@@ -312,10 +315,17 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
     form.representativePhone.replace(/\D/g, "").length >= 10 &&
     form.styleKey &&
     form.fabricKey;
+  const selectedStyle = config.styles.find((item) => item.key === form.styleKey);
+  const selectedPackage = config.packages.find((item) => item.key === form.packageKey);
+  const unitPrice = Number(selectedStyle?.price || 0) + Number(selectedPackage?.price || 0);
+  const groupTotal = unitPrice * Number(form.expectedStudentCount || 0);
+  const next = () => setStep((current) => Math.min(GRADUATION_STEPS.length - 1, current + 1));
+  const previous = () => setStep((current) => Math.max(0, current - 1));
   return (
-    <main className="min-h-dvh bg-background px-3 py-6 sm:px-5" dir="rtl">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+    <main className="min-h-dvh bg-background pb-24" dir="rtl" style={GRADUATION_THEME_STYLE}>
+      <GraduationStepRail current={step} />
+      <div className="container mx-auto max-w-[1500px] space-y-5 px-3 py-5 sm:px-5">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-primary">طلب تخرج جماعي</p>
             <h1 className="mt-1 text-2xl font-bold">
@@ -328,7 +338,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
           </Button>
         </header>
 
-        <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+        <section className={step === 0 ? "rounded-xl border border-border bg-card p-4 sm:p-5" : "hidden"}>
           <div className="mb-4 flex items-center gap-2">
             <Users className="h-5 w-5 text-primary" />
             <h2 className="font-bold">معلومات المجموعة</h2>
@@ -420,7 +430,21 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
           </div>
         </section>
 
-        <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+        {step === 1 ? (
+          <section className="rounded-xl border border-border bg-card p-5 sm:p-6">
+            <div className="flex items-start gap-3">
+              <Users className="mt-0.5 h-5 w-5 text-primary" />
+              <div><h2 className="font-bold">قائمة الطلبة والقياسات</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">احفظ إعدادات المجموعة أولاً، ثم أضف الطلبة أو شارك رابط التسجيل. تبقى القياسات الخاصة بكل طالب مستقلة عن إعدادات المجموعة المشتركة.</p></div>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">عدد الطلبة المتوقع</p><strong className="mt-2 block text-2xl text-primary">{form.expectedStudentCount}</strong></div>
+              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">الحالة</p><strong className="mt-2 block">بانتظار حفظ المجموعة</strong></div>
+              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">طريقة الإضافة</p><strong className="mt-2 block">الرابط أو الإدارة</strong></div>
+            </div>
+          </section>
+        ) : null}
+
+        <section className={step >= 2 && step <= 7 ? "rounded-xl border border-border bg-card p-4 sm:p-5" : "hidden"}>
           <div className="mb-4 flex items-center gap-2">
             <LockKeyhole className="h-5 w-5 text-primary" />
             <div>
@@ -608,7 +632,32 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
           </div>
         </section>
 
-        <div className="flex justify-end">
+        {step === 8 ? (
+          <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="overflow-hidden rounded-xl border border-border bg-card">
+              <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="font-bold">معاينة المجموعة</h2><span className="text-xs text-muted-foreground">معاينة طالب ممثل</span></div>
+              <div className="flex aspect-[4/3] items-center justify-center bg-muted/40 p-5">
+                {form.defaultDesign || selectedStyle?.imageUrl ? <img src={form.defaultDesign || selectedStyle?.imageUrl || ""} alt="معاينة تجهيزات المجموعة" className="h-full w-full object-contain" /> : <div className="text-center"><Shirt className="mx-auto h-20 w-20 text-primary" style={{ color: form.colors.robe }} /><p className="mt-4 text-sm text-muted-foreground">اختر نوع الروب أو ارفع التصميم الافتراضي لإظهار المعاينة.</p></div>}
+              </div>
+            </div>
+            <aside className="rounded-xl border border-border bg-card p-4"><h2 className="font-bold">تفاصيل المعاينة</h2><div className="mt-4 space-y-3 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">الروب</span><b>{selectedStyle?.name || "—"}</b></div><div className="flex justify-between"><span className="text-muted-foreground">القماش</span><b>{config.fabrics.find((item) => item.key === form.fabricKey)?.name || "—"}</b></div><div className="flex justify-between"><span className="text-muted-foreground">الطلبة</span><b>{form.expectedStudentCount}</b></div></div></aside>
+          </section>
+        ) : null}
+
+        {step === 9 ? (
+          <section className="rounded-xl border border-border bg-card p-5"><h2 className="font-bold">ملخص السعر للمجموعة</h2><div className="mt-4 divide-y divide-border rounded-xl border border-border"><div className="flex justify-between px-4 py-3 text-sm"><span>سعر تجهيز الطالب</span><strong>{formatCurrency(unitPrice)}</strong></div><div className="flex justify-between px-4 py-3 text-sm"><span>عدد الطلبة</span><strong>{form.expectedStudentCount}</strong></div><div className="flex justify-between px-4 py-4 text-lg"><strong>الإجمالي التقديري</strong><strong className="text-primary">{formatCurrency(groupTotal)}</strong></div></div></section>
+        ) : null}
+
+        {step === 10 ? (
+          <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]"><div className="rounded-xl border border-border bg-card p-5"><h2 className="font-bold">تأكيد إعدادات المجموعة</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">سيتم قفل الإعدادات المشتركة عند إنشاء المجموعة، ثم يستطيع كل طالب إكمال بياناته وقياساته الخاصة من الرابط الآمن.</p></div><div className="rounded-xl border border-primary/30 bg-primary/5 p-5"><p className="text-sm text-muted-foreground">إجمالي المجموعة التقديري</p><strong className="mt-1 block text-2xl text-primary">{formatCurrency(groupTotal)}</strong><Button className="mt-5 w-full" size="lg" disabled={!valid || create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Users className="ml-2 h-4 w-4" />}إنشاء المجموعة وقفل القالب</Button></div></section>
+        ) : null}
+
+        <div className="flex items-center justify-between border-t border-border pt-4">
+          <Button variant="outline" onClick={previous} disabled={step === 0}><ArrowRight className="ml-2 h-4 w-4" />السابق</Button>
+          {step < GRADUATION_STEPS.length - 1 ? <Button onClick={next}>التالي<ArrowLeft className="mr-2 h-4 w-4" /></Button> : null}
+        </div>
+
+        <div className={step === 10 ? "hidden" : "hidden"}>
           <Button
             size="lg"
             disabled={!valid || create.isPending}

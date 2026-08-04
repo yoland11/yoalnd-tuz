@@ -23,6 +23,13 @@ function Banner({ kind, children }: { kind: "info" | "error" | "ok"; children: R
   return <div className={`rounded-lg border px-3 py-2 text-sm ${c}`}>{children}</div>;
 }
 
+function Progress({ label, value }: { label: string; value: number }) {
+  return <div>
+    <div className="mb-1 flex items-center justify-between gap-2"><span className="text-muted-foreground">{label}</span><b className="tabular-nums">{value}%</b></div>
+    <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width] duration-200 motion-reduce:transition-none" style={{ width: `${value}%` }} /></div>
+  </div>;
+}
+
 function MediaPicker({ media, setMedia, label }: { media: MediaInput[]; setMedia: (m: MediaInput[]) => void; label: string }) {
   const [busy, setBusy] = useState(false);
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -73,7 +80,7 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string) => void }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
-        <label className="text-sm font-medium">توقيع العميل (اختياري)</label>
+        <label className="text-sm font-medium">توقيع العميل (إلزامي قبل الإكمال)</label>
         <button onClick={clear} className="text-xs text-muted-foreground underline">مسح</button>
       </div>
       <canvas ref={ref} width={320} height={120} className="w-full touch-none rounded-lg border border-border bg-white"
@@ -88,8 +95,10 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [panel, setPanel] = useState<null | "checklist" | "executed" | "delivered">(null);
+  const [panel, setPanel] = useState<null | "before-install" | "after-install" | "before-return" | "after-return" | "delivered">(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [operationsTab, setOperationsTab] = useState<"checklist" | "scan" | "damage">("checklist");
+  const operationsRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(async () => {
     try { setData(await staffApi.booking(id, source)); setErr(null); }
@@ -107,6 +116,9 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const next = STAGES[stageRank(current) + 1]?.key as StageKey | undefined;
   const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
   const pendingPricing = isKoshaPendingPricing(b);
+  const preparationPercent = current === "booked" ? 0 : stageRank(current) >= stageRank("ready") ? 100 : 50;
+  const installationPercent = stageRank(current) < stageRank("executing") ? 0 : stageRank(current) < stageRank("executed") ? 50 : 100;
+  const overallPercent = Math.round((stageRank(current) / Math.max(1, STAGES.length - 1)) * 100);
 
   async function run(fn: () => Promise<any>) {
     setBusy(true); setErr(null); setNotice(null);
@@ -121,8 +133,16 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
   function onAdvance() {
     if (!next) return;
-    if (next === "out_of_warehouse") return setPanel("checklist");
-    if (next === "executed") return setPanel("executed");
+    if (next === "out_of_warehouse") {
+      setOperationsTab("checklist");
+      setNotice("أكمل قائمة المعدات النظامية أولاً؛ تمنع القائمة الناقصة خروج الحجز من المخزن.");
+      requestAnimationFrame(() => operationsRef.current?.scrollIntoView({ block: "start" }));
+      return;
+    }
+    if (next === "executing") return setPanel("before-install");
+    if (next === "executed") return setPanel("after-install");
+    if (next === "dismantling") return setPanel("before-return");
+    if (next === "returned") return setPanel("after-return");
     if (next === "delivered") return setPanel("delivered");
     run(() => staffApi.setStage(id, next, undefined, undefined, source));
   }
@@ -141,6 +161,18 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
       <div className="space-y-4 p-4">
         {err && <Banner kind="error">{err}</Banner>}
         {notice && <Banner kind="ok">{notice}</Banner>}
+
+        <section className="rounded-xl border border-border bg-card p-3" aria-label="تقدم التنفيذ">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div><h2 className="text-sm font-bold">حالة التنفيذ الآن</h2><p className="text-xs text-muted-foreground">{STAGE_LABEL[current]}{next ? ` · الإجراء التالي: ${STAGE_LABEL[next]}` : ""}</p></div>
+            <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-bold text-primary">{overallPercent}%</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-xs">
+            <Progress label="التحضير" value={preparationPercent} />
+            <Progress label="التركيب" value={installationPercent} />
+            <Progress label="الإجمالي" value={overallPercent} />
+          </div>
+        </section>
 
         {/* Customer + event meta */}
         <div className="rounded-xl border border-border bg-card p-3 text-sm">
@@ -225,14 +257,12 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
               );
             })}
           </ol>
-          {next && !panel && (
-            <button onClick={onAdvance} disabled={busy}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-              الانتقال إلى: {STAGE_LABEL[next]}
-            </button>
-          )}
+          {next && <p className="mt-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">الإجراء التالي متاح دائماً في الشريط السفلي: {STAGE_LABEL[next]}</p>}
           {current === "delivered" && <Banner kind="ok">تم تسليم الكوشة بنجاح.</Banner>}
+        </div>
+
+        <div ref={operationsRef} className="scroll-mt-20">
+          <KoshaOperationsPanel bookingId={id} source={source} activeTab={operationsTab} />
         </div>
 
         {/* Products & Assets — uses the canonical booking operations record shared with Admin. */}
@@ -241,14 +271,10 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
         {/* Booking assets — QR checkout / return */}
         <AssetsSection id={id} source={source} />
 
-        {/* Field operations — equipment checklist, scan points, damage report */}
-        <KoshaOperationsPanel bookingId={id} source={source} />
-
-        {/* Checklist before warehouse exit */}
-        {panel === "checklist" && <ChecklistPanel booking={b} busy={busy} onCancel={() => setPanel(null)} onConfirm={(note) => run(() => staffApi.setStage(id, "out_of_warehouse", note, undefined, source))} />}
-
-        {/* Mandatory media for executed */}
-        {panel === "executed" && <ExecutedPanel busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media, source))} />}
+        {panel === "before-install" && <StageMediaPanel title="قبل التركيب" label="ارفع صورة للموقع قبل بدء التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executing", note, media, source))} />}
+        {panel === "after-install" && <StageMediaPanel title="بعد التركيب" label="ارفع صوراً أو فيديو بعد اكتمال التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media, source))} />}
+        {panel === "before-return" && <StageMediaPanel title="قبل الإرجاع" label="وثّق حالة المعدات قبل الفك والإرجاع" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "dismantling", note, media, source))} />}
+        {panel === "after-return" && <StageMediaPanel title="بعد الإرجاع" label="وثّق المعدات بعد عودتها من الموقع" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "returned", note, media, source))} />}
 
         {/* Delivery form */}
         {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload, source))} />}
@@ -316,6 +342,13 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
           <img src={lightbox} alt="" className="max-h-[88dvh] max-w-full rounded-lg object-contain" />
         </div>
       )}
+      {next && !panel && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 p-3 pb-safe backdrop-blur">
+          <div className="mx-auto max-w-xl"><button onClick={onAdvance} disabled={busy} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-60">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />} الانتقال إلى: {STAGE_LABEL[next]}
+          </button></div>
+        </div>
+      )}
     </div>
   );
 }
@@ -365,44 +398,16 @@ function PanelShell({ title, children, onCancel }: { title: string; children: Re
   );
 }
 
-function ChecklistPanel({ booking, busy, onCancel, onConfirm }: { booking: any; busy: boolean; onCancel: () => void; onConfirm: (note: string) => void }) {
-  const items = [
-    "الكوشة الأساسية",
-    ...((booking.selectedAccessories as string[]) ?? []),
-    ...((booking.selectedAddons as string[]) ?? []),
-    ...((booking.welcomeBoards as string[]) ?? []),
-  ];
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
-  const allChecked = items.every((i) => checked[i]);
-  return (
-    <PanelShell title="قائمة تجهيز قبل الخروج من المخزن" onCancel={onCancel}>
-      <div className="space-y-1.5">
-        {items.map((i) => (
-          <label key={i} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={!!checked[i]} onChange={(e) => setChecked({ ...checked, [i]: e.target.checked })} className="h-4 w-4 accent-primary" />
-            {i}
-          </label>
-        ))}
-      </div>
-      <button disabled={!allChecked || busy} onClick={() => onConfirm(`تم تجهيز: ${items.join("، ")}`)}
-        className="mt-3 w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-        تأكيد التجهيز والخروج
-      </button>
-      {!allChecked && <div className="mt-1.5 text-center text-xs text-muted-foreground">أكّد جميع القطع للمتابعة</div>}
-    </PanelShell>
-  );
-}
-
-function ExecutedPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: () => void; onSave: (media: MediaInput[], note: string) => void }) {
+function StageMediaPanel({ title, label, busy, onCancel, onSave }: { title: string; label: string; busy: boolean; onCancel: () => void; onSave: (media: MediaInput[], note: string) => void }) {
   const [media, setMedia] = useState<MediaInput[]>([]);
   const [note, setNote] = useState("");
   return (
-    <PanelShell title="تم التنفيذ — رفع صور/فيديو (إجباري)" onCancel={onCancel}>
-      <MediaPicker media={media} setMedia={setMedia} label="صور أو فيديو التنصيب" />
+    <PanelShell title={`${title} — توثيق إلزامي`} onCancel={onCancel}>
+      <MediaPicker media={media} setMedia={setMedia} label={label} />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-3 w-full rounded-lg border border-border bg-background p-2 text-sm" />
       <button disabled={media.length === 0 || busy} onClick={() => onSave(media, note)}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} حفظ مرحلة التنفيذ
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} حفظ التوثيق والمتابعة
       </button>
       {media.length === 0 && <div className="mt-1.5 text-center text-xs text-muted-foreground">يجب رفع ملف واحد على الأقل</div>}
     </PanelShell>
@@ -418,7 +423,7 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
   const [compensation, setCompensation] = useState("");
   const issue = hasLoss === true || hasBreakage === true;
   const answered = hasLoss !== null && hasBreakage !== null;
-  const valid = answered && note.trim().length > 0 && media.length > 0;
+  const valid = answered && note.trim().length > 0 && media.length > 0 && signature.length > 0;
 
   const YN = ({ label, value, set }: { label: string; value: boolean | null; set: (v: boolean) => void }) => (
     <div className="flex items-center justify-between gap-3">
@@ -451,6 +456,7 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />} تأكيد التسليم
         </button>
         {!answered && <div className="text-center text-xs text-muted-foreground">أجب على السؤالين للمتابعة</div>}
+        {answered && !signature && <div className="text-center text-xs text-muted-foreground">توقيع العميل مطلوب لإكمال الحجز.</div>}
       </div>
     </PanelShell>
   );

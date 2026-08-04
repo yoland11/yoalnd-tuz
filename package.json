@@ -37,7 +37,8 @@
     "test:installments": "node ./scripts/verify-installments.mjs",
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs",
-    "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs"
+    "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
+    "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

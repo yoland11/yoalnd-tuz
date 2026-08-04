@@ -17,6 +17,11 @@ export type ImageMetadata = {
   cropOffsetX?: number;
   cropOffsetY?: number;
   preset?: string;
+  originalUrl?: string;
+  thumbnailUrl?: string;
+  mediumUrl?: string;
+  largeUrl?: string;
+  checksum?: string;
   updatedAt?: string;
 };
 
@@ -72,7 +77,9 @@ function loadImage(source: string): Promise<HTMLImageElement> {
 }
 
 export async function inspectImageFile(file: File): Promise<ImageMetadata & { dataUrl: string }> {
-  const dataUrl = await fileToDataUrl(file);
+  // A 40 MB file should not be duplicated as a base64 string merely to show its
+  // preview. Object URLs keep the original file outside the React state heap.
+  const dataUrl = typeof URL !== "undefined" ? URL.createObjectURL(file) : await fileToDataUrl(file);
   if (!file.type.startsWith("image/") || typeof window === "undefined") {
     return {
       dataUrl,

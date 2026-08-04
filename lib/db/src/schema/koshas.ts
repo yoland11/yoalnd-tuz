@@ -107,6 +107,9 @@ export const koshaBookingsTable = pgTable("kosha_bookings", {
   trackingCode: varchar("tracking_code", { length: 40 }),
   trackingStatus: varchar("tracking_status", { length: 40 }).notNull().default("booked"),
   totalAmount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+  // Store line-items subtotal (Additional Services). Kept separate so it folds
+  // into the pricing breakdown without disturbing existing bookings (default 0).
+  productsTotal: numeric("products_total", { precision: 14, scale: 2 }).notNull().default("0"),
   paidAmount: numeric("paid_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   remainingAmount: numeric("remaining_amount", { precision: 14, scale: 2 }).notNull().default("0"),
   paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
@@ -175,6 +178,36 @@ export const koshaPackageComponentsTable = pgTable("kosha_package_components", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Additional Services line items — REFERENCE-ONLY links to Store products
+// (product_id → products.id, kept as a plain integer like customer_id/assigned_
+// staff_id). Name/SKU/price/cost are snapshotted at add time so a later Store
+// price change never rewrites a past booking. No product is ever duplicated.
+export const koshaBookingItemsTable = pgTable("kosha_booking_items", {
+  id: serial("id").primaryKey(),
+  koshaBookingId: integer("kosha_booking_id").notNull().references(() => koshaBookingsTable.id, { onDelete: "cascade" }),
+  productId: integer("product_id"),
+  productName: text("product_name").notNull().default(""),
+  productSku: varchar("product_sku", { length: 120 }),
+  imageUrl: text("image_url"),
+  category: text("category"),
+  quantity: numeric("quantity", { precision: 12, scale: 2 }).notNull().default("1"),
+  unitPrice: numeric("unit_price", { precision: 14, scale: 2 }).notNull().default("0"),
+  costPrice: numeric("cost_price", { precision: 14, scale: 2 }).notNull().default("0"),
+  isRental: boolean("is_rental").notNull().default(false),
+  rentalDays: integer("rental_days").notNull().default(0),
+  checkoutDate: date("checkout_date"),
+  returnDate: date("return_date"),
+  returnedAt: timestamp("returned_at"),
+  discount: numeric("discount", { precision: 14, scale: 2 }).notNull().default("0"),
+  tax: numeric("tax", { precision: 14, scale: 2 }).notNull().default("0"),
+  lineTotal: numeric("line_total", { precision: 14, scale: 2 }).notNull().default("0"),
+  notes: text("notes"),
+  customization: jsonb("customization").$type<Record<string, unknown>>().notNull().default({}),
+  reservedAt: timestamp("reserved_at"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertKoshaSchema = createInsertSchema(koshasTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertKoshaImageSchema = createInsertSchema(koshaImagesTable).omit({ id: true, createdAt: true });
 export const insertKoshaBookingSchema = createInsertSchema(koshaBookingsTable).omit({ id: true, createdAt: true, updatedAt: true });
@@ -189,6 +222,7 @@ export const insertKoshaPackageComponentSchema = createInsertSchema(koshaPackage
 export type Kosha = typeof koshasTable.$inferSelect;
 export type KoshaImage = typeof koshaImagesTable.$inferSelect;
 export type KoshaBooking = typeof koshaBookingsTable.$inferSelect;
+export type KoshaBookingItem = typeof koshaBookingItemsTable.$inferSelect;
 export type KoshaAccessory = typeof koshaAccessoriesTable.$inferSelect;
 export type KoshaAddon = typeof koshaAddonsTable.$inferSelect;
 export type KoshaWelcomeBoard = typeof koshaWelcomeBoardsTable.$inferSelect;

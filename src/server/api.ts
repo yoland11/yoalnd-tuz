@@ -77,6 +77,7 @@ import {
   koshaAccessoriesTable,
   koshaCategoriesTable,
   koshaBookingsTable,
+  koshaBookingItemsTable,
   koshaBookingEventsTable,
   koshaMediaTable,
   koshaDeliveryReportsTable,
@@ -976,8 +977,15 @@ function validationError(
   );
 }
 
+// JSON actions stay intentionally small. Large images use the same media storage
+// pipeline in resumable 3 MB chunks instead of growing this request limit.
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
-const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD_BYTES = 40 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/avif",
+]);
 
 class RequestBodyTooLargeError extends Error {}
 
@@ -4044,6 +4052,175 @@ async function persistDataUrlToStorage(
     });
     return value;
   }
+}
+
+type ResumableImageSession = {
+  actorId: number;
+  path: string;
+  remoteUrl: string;
+  size: number;
+  checksum: string;
+  mime: string;
+  expiresAt: number;
+};
+
+function imageUploadSecret() {
+  return process.env.AJN_IMAGE_UPLOAD_SECRET || sessionSecret();
+}
+
+function signImageUploadSession(payload: ResumableImageSession): string {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", imageUploadSecret()).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function readImageUploadSession(value: unknown): ResumableImageSession | null {
+  const [encoded, signature] = String(value ?? "").split(".");
+  if (!encoded || !signature) return null;
+  const expected = createHmac("sha256", imageUploadSecret()).update(encoded).digest("base64url");
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as ResumableImageSession;
+    if (!Number.isInteger(parsed.actorId) || !parsed.path || !parsed.remoteUrl || parsed.expiresAt < Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function imageMimeFromBytes(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString("ascii") === "ftyp") {
+    const brand = bytes.subarray(8, 12).toString("ascii").toLowerCase();
+    if (["heic", "heix", "hevc", "hevx"].includes(brand)) return "image/heic";
+    if (["avif", "avis"].includes(brand)) return "image/avif";
+    if (brand === "mif1") return "image/heif";
+  }
+  return null;
+}
+
+function safeImageUploadFolder(value: unknown): string | null {
+  const folder = String(value ?? "").trim().replace(/^\/+|\/+$/g, "");
+  if (!folder || !/^[a-z0-9][a-z0-9_/-]{0,110}$/i.test(folder) || folder.includes("..")) return null;
+  const root = folder.split("/")[0];
+  return ["products", "gallery", "settings", "avatars", "kosha", "service-orders", "categories", "services", "uploads"].includes(root) ? folder : null;
+}
+
+function imageUploadPath(folder: string, checksum: string, suffix: string, mime: string): string {
+  const safeChecksum = checksum.toLowerCase();
+  const safeSuffix = String(suffix || "original").replace(/[^a-z0-9_-]/gi, "").slice(0, 30) || "original";
+  return `${folder}/${safeChecksum.slice(0, 2)}/${safeChecksum}-${safeSuffix}.${storageExtension(mime)}`;
+}
+
+function publicStorageUrl(path: string): string {
+  return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+}
+
+function storageHeaders(extra: HeadersInit = {}): Headers {
+  return new Headers({
+    apikey: STORAGE_SERVICE_KEY,
+    authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+    ...extra,
+  });
+}
+
+async function storageObjectExists(path: string) {
+  const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`, { method: "HEAD", headers: storageHeaders() });
+  return response.ok;
+}
+
+async function verifyStoredImage(session: ResumableImageSession): Promise<boolean> {
+  const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${session.path}`, { headers: storageHeaders() });
+  if (!response.ok) return false;
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  return bytes.byteLength === session.size && digest === session.checksum && Boolean(imageMimeFromBytes(bytes));
+}
+
+async function handleImageUploads(req: NextRequest, parts: string[]) {
+  if (req.method !== "POST") return error("الطريقة غير مدعومة", 405);
+  const actor = await getAdminUser(req);
+  if (!actor) return error("غير مخول", 401);
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY) return error("تخزين الصور غير مهيأ حالياً.", 503);
+  const action = parts[2];
+  const data = await body(req);
+
+  if (action === "init") {
+    const size = Number(data?.size ?? 0);
+    const mime = String(data?.mime ?? "").toLowerCase();
+    const checksum = String(data?.checksum ?? "").toLowerCase();
+    const folder = safeImageUploadFolder(data?.folder);
+    if (!folder || !SUPPORTED_IMAGE_MIME_TYPES.has(mime)) return error("نوع أو مسار الصورة غير مدعوم", 415);
+    if (!Number.isInteger(size) || size <= 0) return error("الملف فارغ أو غير صالح", 422);
+    if (size > MAX_IMAGE_UPLOAD_BYTES) return error("The maximum allowed image size is 40 MB.", 413);
+    if (!/^[a-f0-9]{64}$/.test(checksum)) return error("بصمة الصورة غير صالحة", 422);
+    const path = imageUploadPath(folder, checksum, data?.suffix, mime);
+    if (await storageObjectExists(path)) return json({ url: publicStorageUrl(path), offset: size, duplicate: true });
+
+    const metadata = [
+      ["bucketName", STORAGE_BUCKET], ["objectName", path], ["contentType", mime],
+    ].map(([key, value]) => `${key} ${Buffer.from(value).toString("base64")}`).join(",");
+    const upstream = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/upload/resumable`, {
+      method: "POST",
+      headers: storageHeaders({
+        "tus-resumable": "1.0.0",
+        "upload-length": String(size),
+        "upload-metadata": metadata,
+        "x-upsert": "true",
+      }),
+    });
+    const location = upstream.headers.get("location");
+    if (!upstream.ok || !location) {
+      console.warn("Supabase resumable upload initialization failed", { status: upstream.status });
+      return error("تعذر بدء الرفع المجزأ إلى التخزين. حاول مرة أخرى.", 503);
+    }
+    const remoteUrl = new URL(location, `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/upload/resumable`).toString();
+    const session = signImageUploadSession({ actorId: actor.id, path, remoteUrl, size, checksum, mime, expiresAt: Date.now() + 2 * 60 * 60 * 1000 });
+    return json({ session, offset: 0 });
+  }
+
+  const session = readImageUploadSession(data?.session);
+  if (!session || session.actorId !== actor.id) return error("جلسة رفع الصور غير صالحة أو انتهت.", 401);
+  if (!session.remoteUrl.startsWith(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/upload/resumable/`)) return error("جلسة رفع غير صالحة", 400);
+
+  if (action === "status") {
+    const upstream = await fetch(session.remoteUrl, { method: "HEAD", headers: storageHeaders({ "tus-resumable": "1.0.0" }) });
+    if (!upstream.ok) return error("تعذر استئناف الرفع. أعد المحاولة.", 409);
+    const offset = Math.max(0, Number(upstream.headers.get("upload-offset") ?? 0));
+    if (offset >= session.size && await verifyStoredImage(session)) return json({ offset, url: publicStorageUrl(session.path) });
+    return json({ offset });
+  }
+
+  if (action === "cancel") {
+    await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${session.path}`, { method: "DELETE", headers: storageHeaders() });
+    return json({ ok: true });
+  }
+
+  if (action !== "chunk") return error("إجراء رفع غير مدعوم", 404);
+  const offset = Number(data?.offset ?? -1);
+  const encoded = String(data?.chunk ?? "");
+  let chunk: Buffer;
+  try { chunk = Buffer.from(encoded, "base64"); } catch { return error("جزء الصورة غير صالح", 422); }
+  if (!Number.isInteger(offset) || offset < 0 || chunk.length === 0 || chunk.length > MAX_IMAGE_UPLOAD_CHUNK_BYTES || offset + chunk.length > session.size) return error("جزء الصورة خارج الحدود المسموح بها", 422);
+  const detectedMime = offset === 0 ? imageMimeFromBytes(chunk) : null;
+  if (offset === 0 && (!detectedMime || (detectedMime !== session.mime && !(detectedMime === "image/heif" && session.mime === "image/heic")))) return error("محتوى الملف لا يطابق نوع الصورة المسموح", 415);
+  const upstream = await fetch(session.remoteUrl, {
+    method: "PATCH",
+    headers: storageHeaders({ "tus-resumable": "1.0.0", "upload-offset": String(offset), "content-type": "application/offset+octet-stream" }),
+    body: bodyFromBuffer(chunk),
+  });
+  if (!upstream.ok) return error(upstream.status === 409 ? "تغير تقدم الرفع. أعد المحاولة لاستئنافه." : "تعذر إرسال جزء الصورة إلى التخزين.", upstream.status === 409 ? 409 : 503);
+  const nextOffset = Math.max(0, Number(upstream.headers.get("upload-offset") ?? 0));
+  if (nextOffset >= session.size) {
+    if (!await verifyStoredImage(session)) {
+      await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${session.path}`, { method: "DELETE", headers: storageHeaders() });
+      return error("فشل التحقق من سلامة الصورة بعد رفعها.", 422);
+    }
+    return json({ offset: nextOffset, url: publicStorageUrl(session.path) });
+  }
+  return json({ offset: nextOffset });
 }
 
 function cleanMediaInput(value: unknown): string {
@@ -7985,7 +8162,8 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "assigned_staff_id" integer,
         add column if not exists "archived_at" timestamp,
         add column if not exists "tracking_code" varchar(40),
-        add column if not exists "tracking_status" varchar(40) not null default 'booked';
+        add column if not exists "tracking_status" varchar(40) not null default 'booked',
+        add column if not exists "products_total" numeric(14,2) not null default 0;
       -- Backfill the canonical customer relation for legacy bookings that only
       -- stored a phone number. This is deterministic and leaves unmatched rows
       -- untouched for manual reconciliation.
@@ -8014,6 +8192,35 @@ async function ensureKoshaTables(): Promise<void> {
         add column if not exists "price" numeric(14,2) not null default 0,
         add column if not exists "description" text,
         add column if not exists "main_image" text;
+
+      -- Additional Services: reference-only Store line items on a kosha booking.
+      create table if not exists "kosha_booking_items" (
+        "id" serial primary key,
+        "kosha_booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
+        "product_id" integer,
+        "product_name" text not null default '',
+        "product_sku" varchar(120),
+        "image_url" text,
+        "category" text,
+        "quantity" numeric(12,2) not null default 1,
+        "unit_price" numeric(14,2) not null default 0,
+        "cost_price" numeric(14,2) not null default 0,
+        "is_rental" boolean not null default false,
+        "rental_days" integer not null default 0,
+        "checkout_date" date,
+        "return_date" date,
+        "returned_at" timestamp,
+        "discount" numeric(14,2) not null default 0,
+        "tax" numeric(14,2) not null default 0,
+        "line_total" numeric(14,2) not null default 0,
+        "notes" text,
+        "customization" jsonb not null default '{}'::jsonb,
+        "reserved_at" timestamp,
+        "sort_order" integer not null default 0,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "kosha_booking_items_booking_idx" on "kosha_booking_items" ("kosha_booking_id", "sort_order");
+      create index if not exists "kosha_booking_items_product_idx" on "kosha_booking_items" ("product_id");
 
       create table if not exists "kosha_addons" (
         "id" serial primary key,
@@ -17701,6 +17908,165 @@ async function uniqueKoshaCategorySlug(
   }
 }
 
+// ── Kosha booking Additional Services (reference-only Store line items) ───────
+function koshaItemLineTotal(row: {
+  quantity: unknown;
+  unitPrice: unknown;
+  isRental?: unknown;
+  rentalDays?: unknown;
+  discount?: unknown;
+  tax?: unknown;
+}): number {
+  const qty = money(row.quantity) || 0;
+  const unit = money(row.unitPrice) || 0;
+  const days = row.isRental ? Math.max(1, Number(row.rentalDays) || 1) : 1;
+  const gross = unit * qty * days;
+  const net = Math.max(0, gross - (money(row.discount) || 0) + (money(row.tax) || 0));
+  return Math.round(net * 100) / 100;
+}
+
+function rentalDaysBetween(checkout?: string | null, ret?: string | null): number {
+  if (!checkout || !ret) return 1;
+  const a = new Date(checkout).getTime();
+  const b = new Date(ret).getTime();
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return 1;
+  return Math.max(1, Math.round((b - a) / 86_400_000));
+}
+
+function firstImageUrl(images: unknown): string | null {
+  if (!Array.isArray(images) || !images.length) return null;
+  const first = images[0];
+  return typeof first === "string" ? first : (first as { url?: string } | null)?.url ?? null;
+}
+
+// Recompute products_total and fold it onto the client-priced base (the pricing
+// breakdown the editor saves in bookingDetails.pricing.totalAmount, which never
+// includes Store items) so the booking total/remaining/status stay correct and
+// are never double-counted. Existing bookings without items keep products_total 0.
+async function recalcKoshaBookingProducts(bookingId: number) {
+  const booking = await db.query.koshaBookingsTable.findFirst({
+    where: eq(koshaBookingsTable.id, bookingId),
+  });
+  if (!booking) return null;
+  const items = await db
+    .select({ lineTotal: koshaBookingItemsTable.lineTotal })
+    .from(koshaBookingItemsTable)
+    .where(eq(koshaBookingItemsTable.koshaBookingId, bookingId));
+  const productsTotal = Math.round(items.reduce((sum, it) => sum + money(it.lineTotal), 0) * 100) / 100;
+  const details = (booking.bookingDetails ?? {}) as Record<string, unknown>;
+  const pricing = (details.pricing ?? {}) as Record<string, unknown>;
+  const base =
+    pricing.totalAmount != null
+      ? money(pricing.totalAmount)
+      : Math.max(0, money(booking.totalAmount) - money(booking.productsTotal));
+  const grand = Math.max(0, Math.round((base + productsTotal) * 100) / 100);
+  const paid = money(booking.paidAmount);
+  const remaining = Math.max(0, Math.round((grand - paid) * 100) / 100);
+  const paymentStatus = grand <= 0 ? "pending_pricing" : remaining <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid";
+  await db
+    .update(koshaBookingsTable)
+    .set({
+      productsTotal: String(productsTotal),
+      totalAmount: String(grand),
+      remainingAmount: String(remaining),
+      paymentStatus,
+      updatedAt: new Date(),
+    })
+    .where(eq(koshaBookingsTable.id, bookingId));
+  return { productsTotal, total: grand, remaining };
+}
+
+async function koshaBookingItemsResponse(bookingId: number) {
+  const items = await db
+    .select()
+    .from(koshaBookingItemsTable)
+    .where(eq(koshaBookingItemsTable.koshaBookingId, bookingId))
+    .orderBy(asc(koshaBookingItemsTable.sortOrder), asc(koshaBookingItemsTable.id));
+  const productIds = [...new Set(items.map((it) => it.productId).filter((v): v is number => !!v))];
+  const products = productIds.length
+    ? await db.query.productsTable.findMany({ where: inArray(productsTable.id, productIds) })
+    : [];
+  const stockById = new Map(products.map((p) => [p.id, Number(p.stock ?? 0)]));
+  const productsTotal = items.reduce((sum, it) => sum + money(it.lineTotal), 0);
+  const rentalTotal = items.filter((it) => it.isRental).reduce((sum, it) => sum + money(it.lineTotal), 0);
+  return {
+    items: items.map((it) => ({
+      id: it.id,
+      productId: it.productId,
+      productName: it.productName,
+      productSku: it.productSku,
+      imageUrl: it.imageUrl,
+      category: it.category,
+      quantity: money(it.quantity),
+      unitPrice: money(it.unitPrice),
+      costPrice: money(it.costPrice),
+      isRental: it.isRental,
+      rentalDays: it.rentalDays,
+      checkoutDate: it.checkoutDate,
+      returnDate: it.returnDate,
+      discount: money(it.discount),
+      tax: money(it.tax),
+      lineTotal: money(it.lineTotal),
+      notes: it.notes,
+      customization: it.customization,
+      sortOrder: it.sortOrder,
+      currentStock: it.productId ? stockById.get(it.productId) ?? null : null,
+    })),
+    summary: {
+      productsTotal: Math.round(productsTotal * 100) / 100,
+      rentalTotal: Math.round(rentalTotal * 100) / 100,
+      salesTotal: Math.round((productsTotal - rentalTotal) * 100) / 100,
+      count: items.length,
+    },
+  };
+}
+
+// On confirm, deduct stock for SALE line items (rentals return after the event
+// and are not deducted) and write inventory movements. Guarded by reserved_at so
+// it runs exactly once per item. Best-effort — never blocks the status change.
+async function reserveKoshaBookingItems(
+  bookingId: number,
+  actorInfo: { id?: number | null; name?: string },
+) {
+  const items = await db
+    .select()
+    .from(koshaBookingItemsTable)
+    .where(
+      and(
+        eq(koshaBookingItemsTable.koshaBookingId, bookingId),
+        isNull(koshaBookingItemsTable.reservedAt),
+      ),
+    );
+  for (const item of items) {
+    if (item.isRental || !item.productId) continue;
+    const qty = Math.round(money(item.quantity));
+    if (qty <= 0) continue;
+    try {
+      await db
+        .update(productsTable)
+        .set({ stock: sql`greatest(0, ${productsTable.stock} - ${qty})` })
+        .where(eq(productsTable.id, item.productId));
+      await db.insert(stockMovementsTable).values({
+        productId: item.productId,
+        quantityChange: String(-qty),
+        reason: "kosha_booking_out",
+        relatedType: "kosha_booking",
+        relatedId: bookingId,
+        movementType: "out",
+        createdBy: actorInfo.id ?? null,
+        createdByName: actorInfo.name ?? "",
+        metadata: { koshaBookingItemId: item.id },
+      } as any);
+      await db
+        .update(koshaBookingItemsTable)
+        .set({ reservedAt: new Date() })
+        .where(eq(koshaBookingItemsTable.id, item.id));
+    } catch (err) {
+      console.warn("[kosha-items] stock reserve failed", err);
+    }
+  }
+}
+
 async function handleAdminKoshas(
   req: NextRequest,
   parts: string[],
@@ -18489,6 +18855,44 @@ async function handleAdminKoshas(
       });
     }
 
+    // Store product browser feed for the "Additional Services" tab. Reference
+    // only — reads the existing Store catalogue, never creates products.
+    if (parts[2] === "store-products" && method === "GET") {
+      const search = req.nextUrl.searchParams.get("search")?.trim() ?? "";
+      const category = req.nextUrl.searchParams.get("category")?.trim() ?? "";
+      const inStock = req.nextUrl.searchParams.get("inStock") === "1";
+      const filters: any[] = [];
+      if (search)
+        filters.push(
+          or(
+            ilike(productsTable.nameAr, `%${search}%`),
+            ilike(productsTable.name, `%${search}%`),
+            ilike(productsTable.barcode, `%${search}%`),
+          ),
+        );
+      if (category) filters.push(eq(productsTable.category, category));
+      if (inStock) filters.push(sql`${productsTable.stock} > 0`);
+      const rows = await db.query.productsTable.findMany({
+        where: filters.length ? and(...filters) : undefined,
+        orderBy: (p, { desc }) => [desc(p.id)],
+        limit: 120,
+      });
+      return json({
+        products: rows.map((p) => ({
+          id: p.id,
+          name: p.nameAr || p.name,
+          sku: p.barcode ?? null,
+          barcode: p.barcode ?? null,
+          category: p.category ?? null,
+          price: money(p.price),
+          rentalPrice: money(p.pricePerDay),
+          isRental: p.isRental,
+          stock: Number(p.stock ?? 0),
+          image: firstImageUrl(p.images),
+        })),
+      });
+    }
+
     if (parts[2]) {
       const id = int(parts[2]);
       if (!id) return error("معرف الحجز غير صحيح", 400);
@@ -18644,6 +19048,112 @@ async function handleAdminKoshas(
             source: entry.entrySide,
           })),
         });
+      }
+
+      // Additional Services line items — reference-only Store products on the
+      // booking (folds into products_total + booking total + accounting).
+      if (parts[3] === "items") {
+        if (method === "GET") return json(await koshaBookingItemsResponse(id));
+        if (method === "POST" && !parts[4]) {
+          const b = await body(req);
+          const product = b?.productId
+            ? await db.query.productsTable.findFirst({ where: eq(productsTable.id, Number(b.productId)) })
+            : null;
+          if (!product) return error("المنتج غير موجود في المتجر", 400);
+          const qty = Math.max(1, Number(b?.quantity) || 1);
+          const isRental = b?.isRental === true;
+          const checkout = b?.checkoutDate ?? null;
+          const ret = b?.returnDate ?? null;
+          const rentalDays = isRental ? rentalDaysBetween(checkout, ret) : 0;
+          const unitPrice =
+            b?.unitPrice != null
+              ? money(b.unitPrice)
+              : isRental
+                ? money(product.pricePerDay) || money(product.price)
+                : money(product.price);
+          const discount = money(b?.discount);
+          const tax = money(b?.tax);
+          const lineTotal = koshaItemLineTotal({ quantity: qty, unitPrice, isRental, rentalDays, discount, tax });
+          const [maxRow] = await db
+            .select({ n: sql<number>`coalesce(max(${koshaBookingItemsTable.sortOrder}), 0)::int` })
+            .from(koshaBookingItemsTable)
+            .where(eq(koshaBookingItemsTable.koshaBookingId, id));
+          await db.insert(koshaBookingItemsTable).values({
+            koshaBookingId: id,
+            productId: product.id,
+            productName: product.nameAr || product.name,
+            productSku: product.barcode ?? null,
+            imageUrl: firstImageUrl(product.images),
+            category: product.category ?? null,
+            quantity: String(qty),
+            unitPrice: String(unitPrice),
+            costPrice: String(money(product.costPrice)),
+            isRental,
+            rentalDays,
+            checkoutDate: checkout,
+            returnDate: ret,
+            discount: String(discount),
+            tax: String(tax),
+            lineTotal: String(lineTotal),
+            notes: b?.notes ?? null,
+            customization: b?.customization && typeof b.customization === "object" ? b.customization : {},
+            sortOrder: Number(maxRow?.n ?? 0) + 1,
+          });
+          await recalcKoshaBookingProducts(id);
+          void logAdminActivity(req, "kosha_booking_product_added", "kosha_booking", id, {
+            productId: product.id,
+            quantity: qty,
+            isRental,
+          });
+          return json(await koshaBookingItemsResponse(id));
+        }
+        const itemId = int(parts[4]);
+        if (itemId && (method === "PATCH" || method === "PUT")) {
+          const item = await db.query.koshaBookingItemsTable.findFirst({
+            where: eq(koshaBookingItemsTable.id, itemId),
+          });
+          if (!item || item.koshaBookingId !== id) return error("العنصر غير موجود", 404);
+          const b = await body(req);
+          const quantity = b?.quantity != null ? Math.max(1, Number(b.quantity) || 1) : money(item.quantity);
+          const isRental = b?.isRental != null ? b.isRental === true : item.isRental;
+          const checkout = b?.checkoutDate !== undefined ? b.checkoutDate : item.checkoutDate;
+          const ret = b?.returnDate !== undefined ? b.returnDate : item.returnDate;
+          const rentalDays = isRental ? rentalDaysBetween(checkout, ret) : 0;
+          const unitPrice = b?.unitPrice != null ? money(b.unitPrice) : money(item.unitPrice);
+          const discount = b?.discount != null ? money(b.discount) : money(item.discount);
+          const tax = b?.tax != null ? money(b.tax) : money(item.tax);
+          const lineTotal = koshaItemLineTotal({ quantity, unitPrice, isRental, rentalDays, discount, tax });
+          await db
+            .update(koshaBookingItemsTable)
+            .set({
+              quantity: String(quantity),
+              unitPrice: String(unitPrice),
+              isRental,
+              rentalDays,
+              checkoutDate: checkout ?? null,
+              returnDate: ret ?? null,
+              discount: String(discount),
+              tax: String(tax),
+              lineTotal: String(lineTotal),
+              notes: b?.notes !== undefined ? b.notes : item.notes,
+              customization:
+                b?.customization && typeof b.customization === "object" ? b.customization : item.customization,
+            })
+            .where(eq(koshaBookingItemsTable.id, itemId));
+          await recalcKoshaBookingProducts(id);
+          void logAdminActivity(req, "kosha_booking_product_updated", "kosha_booking", id, { itemId });
+          return json(await koshaBookingItemsResponse(id));
+        }
+        if (itemId && method === "DELETE") {
+          const item = await db.query.koshaBookingItemsTable.findFirst({
+            where: eq(koshaBookingItemsTable.id, itemId),
+          });
+          if (!item || item.koshaBookingId !== id) return error("العنصر غير موجود", 404);
+          await db.delete(koshaBookingItemsTable).where(eq(koshaBookingItemsTable.id, itemId));
+          await recalcKoshaBookingProducts(id);
+          void logAdminActivity(req, "kosha_booking_product_removed", "kosha_booking", id, { itemId });
+          return json(await koshaBookingItemsResponse(id));
+        }
       }
 
       // Booking ↔ Reserved products/variants. Reserves (holds) stock without deducting until
@@ -19303,11 +19813,18 @@ async function handleAdminKoshas(
             };
           }
         }
-        const [row] = await db
+        let [row] = await db
           .update(koshaBookingsTable)
           .set(update)
           .where(eq(koshaBookingsTable.id, id))
           .returning();
+        // Fold Additional-Services line items into the grand total BEFORE the
+        // financial sync so accounting/remaining include Store products.
+        await recalcKoshaBookingProducts(id);
+        const refreshedKoshaRow = await db.query.koshaBookingsTable.findFirst({
+          where: eq(koshaBookingsTable.id, id),
+        });
+        if (refreshedKoshaRow) row = refreshedKoshaRow;
         if (update.status !== undefined && row.status !== existing.status) {
           await syncAutomaticTasksForEntityStatus({
             entityType: "kosha_booking",
@@ -19329,6 +19846,7 @@ async function handleAdminKoshas(
           const who = actor(auth);
           if (["confirmed", "in_progress", "completed"].includes(row.status)) {
             await consumeReservations("kosha_booking", row.id, who);
+            await reserveKoshaBookingItems(row.id, { id: auth.id, name: auth.fullName || auth.username });
           } else if (row.status === "cancelled") {
             await releaseReservations("kosha_booking", row.id, who);
           }
@@ -47063,7 +47581,7 @@ async function handleStaffPortal(
     const bookingById = new Map(bookings.map((row) => [row.id, row]));
     const stageOf = (row: any) => String(row.executionStage ?? "preparing");
 
-    const [checklistRows, damageRows] = await Promise.all([
+    const [checklistRows, damageRows, staffRows, vehicleRows, openTasks, unreadNotifications] = await Promise.all([
       db.execute(sql`
         select booking_id, item, condition from kosha_checklist_entries
         where condition <> 'available'
@@ -47072,6 +47590,13 @@ async function handleStaffPortal(
         select booking_id, description, priority from kosha_damage_reports
         where status <> 'none' order by created_at desc limit 200
       `),
+      db.query.staffTable.findMany({ where: eq(staffTable.isActive, true), limit: 500 }),
+      db.query.fleetVehiclesTable.findMany({ where: and(eq(fleetVehiclesTable.isActive, true), eq(fleetVehiclesTable.status, "available")), limit: 500 }),
+      db.query.tasksTable.findMany({
+        where: and(eq(tasksTable.relatedType, "kosha_booking"), isNull(tasksTable.archivedAt), sql`${tasksTable.status} not in ('completed','cancelled')`),
+        limit: 500,
+      }),
+      db.query.koshaStaffNotificationsTable.findMany({ where: eq(koshaStaffNotificationsTable.isRead, false), limit: 500 }),
     ]);
 
     const nameFor = (bookingId: number) =>
@@ -47097,6 +47622,18 @@ async function handleStaffPortal(
       entry.bookings += 1;
       workload.set(staffId, entry);
     }
+    const assignedToday = new Set(workload.keys());
+    const availableStaff = staffRows.filter((row) => {
+      const department = String(row.department ?? "").toLowerCase();
+      const permissions = Array.isArray(row.permissions) ? row.permissions : [];
+      const servesKosha = department.includes("kosha") || permissions.includes("koshas") || ["admin", "manager"].includes(String(row.role));
+      return servesKosha && !assignedToday.has(row.id);
+    }).length;
+    const currentJobs = bookings
+      .filter((row) => ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "dismantling"].includes(stageOf(row)))
+      .sort((a, b) => String(a.eventTime ?? "").localeCompare(String(b.eventTime ?? "")))
+      .slice(0, 20)
+      .map((row) => ({ bookingId: row.id, customerName: row.customerName, eventTime: row.eventTime ?? null, stage: stageOf(row), hall: row.hallLocation ?? row.area ?? null }));
 
     return json({
       today,
@@ -47108,7 +47645,12 @@ async function handleStaffPortal(
         ).length,
         completed: bookings.filter((row) => ["returned", "delivered"].includes(stageOf(row))).length,
         delayed: delayed.length,
+        availableStaff,
+        availableVehicles: vehicleRows.length,
+        pendingTasks: openTasks.length,
+        unreadNotifications: unreadNotifications.length,
       },
+      currentJobs,
       delayed: delayed.slice(0, 30).map((row) => ({
         bookingId: row.id,
         customerName: row.customerName,
@@ -51497,6 +52039,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         ? await handleClientGallery(req, parts)
         : root === "media"
           ? await handleMedia(req, parts)
+          : root === "uploads"
+            ? await handleImageUploads(req, parts)
           : root === "settings"
             ? await handlePublicSettings(req, parts)
             : root === "customer"
