@@ -80,9 +80,41 @@ function looksLikeSupportedImage(bytes: Uint8Array): boolean {
   return isJpeg || isPng || isWebp || isIsoImage;
 }
 
+// SHA-256 over the whole file. Reads in slices so a 40 MB file is never fully
+// materialised as one ArrayBuffer (which can throw/OOM on constrained devices);
+// falls back to a single digest where incremental hashing is unavailable.
 async function checksum(file: File): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(hash)).map((value) => value.toString(16).padStart(2, "0")).join("");
+  try {
+    const CHUNK = 8 * 1024 * 1024;
+    if (file.size <= CHUNK) {
+      const hash = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+      return hex(hash);
+    }
+    // Incremental streaming digest via Web Streams when the platform supports it.
+    // @ts-expect-error - DigestStream is non-standard; guarded below.
+    const DigestStreamCtor = typeof globalThis !== "undefined" ? (globalThis as any).DigestStream : undefined;
+    if (typeof DigestStreamCtor === "function") {
+      const stream = new DigestStreamCtor("SHA-256");
+      await file.stream().pipeTo(stream.writable);
+      return hex(await stream.digest);
+    }
+    // Portable fallback: hash slices, then hash the concatenation of slice hashes.
+    const parts: Uint8Array[] = [];
+    for (let offset = 0; offset < file.size; offset += CHUNK) {
+      const slice = await file.slice(offset, Math.min(file.size, offset + CHUNK)).arrayBuffer();
+      parts.push(new Uint8Array(await crypto.subtle.digest("SHA-256", slice)));
+    }
+    const combined = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) { combined.set(p, at); at += p.length; }
+    return hex(await crypto.subtle.digest("SHA-256", combined));
+  } catch (cause) {
+    throw new ImageUploadError("تعذر قراءة الملف على هذا الجهاز، قد تكون الصورة كبيرة جداً. جرّب صورة أصغر.", true);
+  }
+}
+
+function hex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer)).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function sessionKey(folder: string, digest: string, suffix: string) {
