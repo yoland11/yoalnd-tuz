@@ -20,6 +20,7 @@ const {
   KOSHA_STAGES, LEGACY_KOSHA_STAGES, KOSHA_CHECKLIST_ITEMS,
   koshaStageRank, evaluateKoshaStage, checklistCovered, blockingChecklistIssues,
   scanPointForStage, validateDamageReport, damageNeedsManagerApproval,
+  bookingStatusForKoshaStage, serviceOrderStatusForKoshaStage,
 } = await import(pathToFileURL(outFile).href);
 
 let failures = 0;
@@ -41,6 +42,16 @@ check("legacy keys keep their relative order",
   LEGACY_KOSHA_STAGES.map(koshaStageRank),
   [...LEGACY_KOSHA_STAGES.map(koshaStageRank)].sort((a, b) => a - b));
 check("an unknown stored stage ranks 0 instead of throwing", koshaStageRank("nonsense"), 0);
+
+// The coarse booking lifecycle must always use the existing, validated booking
+// status values. In particular, the legacy `processing` value must never be
+// produced by a staff execution update.
+check("booked maps to confirmed booking status", bookingStatusForKoshaStage("booked"), "confirmed");
+check("preparing maps to in_progress booking status", bookingStatusForKoshaStage("preparing"), "in_progress");
+check("on_the_way maps to in_progress booking status", bookingStatusForKoshaStage("on_the_way"), "in_progress");
+check("delivered maps to completed booking status", bookingStatusForKoshaStage("delivered"), "completed");
+check("early routed service stages keep their processing status", serviceOrderStatusForKoshaStage("preparing"), "processing");
+check("routed service delivery completes the order", serviceOrderStatusForKoshaStage("delivered"), "completed");
 
 // ── Legacy adjacency must keep working (the regression this caught) ──
 const go = (from, to, extra = {}) =>

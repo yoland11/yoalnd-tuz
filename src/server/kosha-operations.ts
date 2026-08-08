@@ -54,6 +54,50 @@ export function koshaStageRank(stage: string): number {
   return index < 0 ? 0 : index;
 }
 
+/**
+ * Maps the crew-only execution stage to the existing booking lifecycle.
+ *
+ * `executionStage` remains the detailed operational source of truth. The booking
+ * `status` is deliberately kept at the coarser lifecycle level used by the
+ * admin list, filters, finance and reports. Keeping this mapping here prevents
+ * the staff API from persisting values (such as the former `processing`) that
+ * are not valid booking statuses.
+ */
+export function bookingStatusForKoshaStage(stage: unknown):
+  | "confirmed"
+  | "in_progress"
+  | "completed" {
+  switch (stage) {
+    case "booked":
+      return "confirmed";
+    case "delivered":
+      return "completed";
+    default:
+      return "in_progress";
+  }
+}
+
+/**
+ * Service orders use the established service-order lifecycle, where the early
+ * booking stages are called `processing`. This is intentionally separate from
+ * `kosha_bookings.status`, whose accepted values use `in_progress` instead.
+ */
+export function serviceOrderStatusForKoshaStage(stage: unknown):
+  | "processing"
+  | "in_progress"
+  | "completed" {
+  switch (stage) {
+    case "booked":
+    case "preparing":
+    case "ready":
+      return "processing";
+    case "delivered":
+      return "completed";
+    default:
+      return "in_progress";
+  }
+}
+
 /** Equipment classes a kosha job is checked against before it leaves the warehouse. */
 export const KOSHA_CHECKLIST_ITEMS = [
   "backdrop", "flowers", "lighting", "chairs", "tables",

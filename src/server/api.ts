@@ -320,6 +320,8 @@ import {
   KOSHA_CHECKLIST_ITEMS,
   KOSHA_CHECKLIST_LABELS,
   KOSHA_STAGE_LABELS,
+  bookingStatusForKoshaStage,
+  serviceOrderStatusForKoshaStage,
   type KoshaStage,
   SCAN_POINT_LABELS,
   blockingChecklistIssues,
@@ -20487,13 +20489,31 @@ async function handleAdminKoshas(
           .set(update)
           .where(eq(koshaBookingsTable.id, id))
           .returning();
+        if (!row) {
+          return error("تعذر حفظ تحديث حجز الكوشة", 409);
+        }
         // Fold Additional-Services line items into the grand total BEFORE the
         // financial sync so accounting/remaining include Store products.
         await recalcKoshaBookingProducts(id);
         const refreshedKoshaRow = await db.query.koshaBookingsTable.findFirst({
           where: eq(koshaBookingsTable.id, id),
         });
-        if (refreshedKoshaRow) row = refreshedKoshaRow;
+        if (!refreshedKoshaRow) {
+          return error("تعذر التحقق من حفظ تحديث حجز الكوشة", 409);
+        }
+        row = refreshedKoshaRow;
+        if (
+          parsed.data.status !== undefined &&
+          row.status !== parsed.data.status
+        ) {
+          return error("لم تُحفظ حالة الحجز المطلوبة", 409);
+        }
+        if (
+          parsed.data.trackingStatus !== undefined &&
+          row.trackingStatus !== parsed.data.trackingStatus
+        ) {
+          return error("لم تُحفظ حالة التتبع المطلوبة", 409);
+        }
         if (update.status !== undefined && row.status !== existing.status) {
           await syncAutomaticTasksForEntityStatus({
             entityType: "kosha_booking",
@@ -20519,6 +20539,23 @@ async function handleAdminKoshas(
           } else if (row.status === "cancelled") {
             await releaseReservations("kosha_booking", row.id, who);
           }
+        }
+        if (
+          update.trackingStatus !== undefined &&
+          row.trackingStatus !== existing.trackingStatus
+        ) {
+          void addEntityTimeline({
+            entityType: "kosha_booking",
+            entityId: row.id,
+            type: "tracking_status_changed",
+            title: "تغيرت حالة تتبع الكوشة",
+            body: `${existing.trackingStatus} → ${row.trackingStatus}`,
+            actor: erpActorFromAdmin(auth),
+            metadata: {
+              from: existing.trackingStatus,
+              to: row.trackingStatus,
+            },
+          });
         }
         await syncKoshaFinancialPayment(row, financialActor(auth));
         const wasPendingPricing =
@@ -47377,12 +47414,6 @@ function crewStageToBookingOperation(stage: unknown): string {
   } as Record<string, string>)[value] ?? "preparing";
 }
 
-function bookingStatusForOperationStage(stage: string) {
-  if (stage === "completed") return "completed";
-  if (["booked", "preparing", "ready"].includes(stage)) return "processing";
-  return "in_progress";
-}
-
 function syncedCrewStage(details: Record<string, any>, fallback: unknown) {
   return bookingOperationStageToCrew(details.bookingOperations?.bookingStage) ?? String(fallback ?? "preparing");
 }
@@ -48968,7 +48999,7 @@ async function handleStaffPortal(
       ];
       const updatedFields = await saveRoutedKoshaServiceExecution(routed.order, fields);
       const [updated] = await db.update(serviceOrdersTable)
-        .set({ status: bookingStatusForOperationStage(bookingStage) })
+        .set({ status: serviceOrderStatusForKoshaStage(toStage) })
         .where(eq(serviceOrdersTable.id, updatedFields.id))
         .returning();
       return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
@@ -48998,7 +49029,7 @@ async function handleStaffPortal(
       .update(koshaBookingsTable)
       .set({
         executionStage: toStage,
-        status: bookingStatusForOperationStage(bookingStage),
+        status: bookingStatusForKoshaStage(toStage),
         bookingDetails: {
           ...nativeDetails,
           bookingOperations: {

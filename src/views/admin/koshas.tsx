@@ -78,6 +78,13 @@ type KoshaBooking = {
   createdAt: string;
 };
 
+function replaceCachedKoshaBooking(
+  rows: KoshaBooking[] | undefined,
+  booking: KoshaBooking,
+) {
+  return rows?.map((row) => (row.id === booking.id ? { ...row, ...booking } : row));
+}
+
 type KoshaBookingFinanceMovement = {
   id?: number | string;
   transactionNo?: string | null;
@@ -1039,9 +1046,28 @@ export function AdminKoshaBookingsPage() {
     return list;
   }, [data, search, sortRemaining]);
   const update = useMutation({
-    mutationFn: ({ id, values }: { id: number; values: Partial<KoshaBooking> }) => adminFetch(`/admin/kosha-bookings/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم تحديث الحجز" }); },
-    onError: (err: any) => toast({ title: "تعذر تحديث الحجز", description: err?.message, variant: "destructive" }),
+    mutationFn: ({ id, values }: { id: number; values: Partial<KoshaBooking> }) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${id}`, { method: "PATCH", body: JSON.stringify(values) }),
+    onMutate: async ({ id, values }) => {
+      await queryClient.cancelQueries({ queryKey: ["admin", "kosha-bookings"] });
+      const previous = queryClient.getQueriesData<KoshaBooking[]>({ queryKey: ["admin", "kosha-bookings"] });
+      queryClient.setQueriesData<KoshaBooking[]>(
+        { queryKey: ["admin", "kosha-bookings"] },
+        (rows) => rows?.map((row) => (row.id === id ? { ...row, ...values } : row)),
+      );
+      return { previous };
+    },
+    onSuccess: (saved) => {
+      queryClient.setQueriesData<KoshaBooking[]>(
+        { queryKey: ["admin", "kosha-bookings"] },
+        (rows) => replaceCachedKoshaBooking(rows, saved),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+      toast({ title: "تم تحديث الحجز" });
+    },
+    onError: (err: any, _variables, context) => {
+      context?.previous.forEach(([key, rows]) => queryClient.setQueryData(key, rows));
+      toast({ title: "تعذر تحديث الحجز", description: err?.message, variant: "destructive" });
+    },
   });
 
   const csv = useMemo(() => {
@@ -1336,15 +1362,42 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
   const { toast } = useToast();
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [trackingStatus, setTrackingStatus] = useState(booking.trackingStatus ?? "booked");
+  useEffect(() => {
+    setTrackingStatus(booking.trackingStatus ?? "booked");
+  }, [booking.id, booking.trackingStatus]);
   const financeQuery = useQuery({
     queryKey: ["admin", "kosha-booking-finance", booking.id],
     queryFn: () => adminFetch<KoshaBookingFinanceResponse>(`/admin/kosha-bookings/${booking.id}/finance`),
     retry: false,
   });
   const updateTracking = useMutation({
-    mutationFn: (next: string) => adminFetch(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] }); toast({ title: "تم تحديث حالة التتبع" }); },
-    onError: (err: any) => toast({ title: "تعذر تحديث الحالة", description: err?.message, variant: "destructive" }),
+    mutationFn: (next: string) => adminFetch<KoshaBooking>(`/admin/kosha-bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ trackingStatus: next }) }),
+    onMutate: async (next) => {
+      await queryClient.cancelQueries({ queryKey: ["admin", "kosha-bookings"] });
+      const previousStatus = trackingStatus;
+      const previous = queryClient.getQueriesData<KoshaBooking[]>({ queryKey: ["admin", "kosha-bookings"] });
+      setTrackingStatus(next);
+      queryClient.setQueriesData<KoshaBooking[]>(
+        { queryKey: ["admin", "kosha-bookings"] },
+        (rows) => rows?.map((row) => row.id === booking.id ? { ...row, trackingStatus: next } : row),
+      );
+      return { previousStatus, previous };
+    },
+    onSuccess: (saved) => {
+      const savedTrackingStatus = saved.trackingStatus ?? "booked";
+      setTrackingStatus(savedTrackingStatus);
+      queryClient.setQueriesData<KoshaBooking[]>(
+        { queryKey: ["admin", "kosha-bookings"] },
+        (rows) => replaceCachedKoshaBooking(rows, saved),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
+      toast({ title: "تم تحديث حالة التتبع" });
+    },
+    onError: (err: any, _next, context) => {
+      setTrackingStatus(context?.previousStatus ?? booking.trackingStatus ?? "booked");
+      context?.previous.forEach(([key, rows]) => queryClient.setQueryData(key, rows));
+      toast({ title: "تعذر تحديث الحالة", description: err?.message, variant: "destructive" });
+    },
   });
   const koshasQuery = useQuery({ queryKey: ["admin", "koshas"], queryFn: () => adminFetch<Kosha[]>("/admin/koshas") });
   const addonsQuery = useQuery({ queryKey: ["admin", "kosha-addons"], queryFn: () => adminFetch<KoshaOption[]>("/admin/kosha-addons") });
@@ -1420,7 +1473,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           </div>
           <div className="mt-2">
             <label className="mb-1 block text-xs text-muted-foreground">حالة التتبع (تظهر للزبون)</label>
-            <select value={trackingStatus} disabled={updateTracking.isPending} onChange={(event) => { setTrackingStatus(event.target.value); updateTracking.mutate(event.target.value); }} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm sm:w-72">
+            <select value={trackingStatus} disabled={updateTracking.isPending} onChange={(event) => updateTracking.mutate(event.target.value)} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm sm:w-72">
               {KOSHA_TRACKING_STAGES.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}
             </select>
           </div>
