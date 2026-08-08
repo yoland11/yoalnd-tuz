@@ -44,8 +44,7 @@ const ClientGalleryPage = lazy(() => import("@/views/client-gallery"));
 const Checkout = lazy(() => import("@/views/checkout"));
 const Gallery = lazy(() => import("@/views/gallery"));
 const Favorites = lazy(() => import("@/views/favorites"));
-const Profile = lazy(() => import("@/views/profile"));
-const Account = lazy(() => import("@/views/account"));
+const CustomerPortal = lazy(() => import("@/views/customer-portal"));
 const AccountKoshas = lazy(() => import("@/views/account-koshas"));
 const GraduationConfigurator = lazy(() => import("@/views/graduation"));
 const ResearchRequestPage = lazy(() => import("@/views/research"));
@@ -306,7 +305,7 @@ function Router() {
               <Route path="/login" component={Login} />
               <Route path="/profile">
                 <Suspense fallback={<PageSpinner />}>
-                  <Profile />
+                  <CustomerPortal />
                 </Suspense>
               </Route>
               <Route path="/account/koshas">
@@ -316,7 +315,7 @@ function Router() {
               </Route>
               <Route path="/account">
                 <Suspense fallback={<PageSpinner />}>
-                  <Account />
+                  <CustomerPortal />
                 </Suspense>
               </Route>
               <Route component={NotFound} />

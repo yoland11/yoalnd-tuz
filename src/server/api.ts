@@ -55,6 +55,11 @@ import {
   crewsTable,
   customerActivityLogsTable,
   customerAddressesTable,
+  customerAccountsTable,
+  customerSessionsTable,
+  customerRecoveryRequestsTable,
+  customerPrivatePhotosTable,
+  customerAccountAuditLogsTable,
   customerNotesTable,
   customerPreferencesTable,
   customerRewardHistoryTable,
@@ -842,6 +847,8 @@ export const ALL_PERMISSIONS = [
   "catering_inventory_manage",
   "catering_reports_view",
   "catering_settings_manage",
+  // Customer private photos are deliberately scoped to the main manager only.
+  "customer.private_photo.view",
   // Bouquet designer administration. These are separate from the broad store
   // permission so access can be delegated without exposing all products.
   "bouquet.admin.view",
@@ -870,6 +877,9 @@ type Json = Record<string, unknown> | unknown[];
 
 const isProd = process.env.NODE_ENV === "production";
 const customerSessions = new Map<string, number>();
+let customerAccountTablesPromise: Promise<void> | null = null;
+const customerLoginByIp = new Map<string, Bucket>();
+const customerLoginByIdentifier = new Map<string, Bucket>();
 
 type Bucket = { count: number; resetAt: number };
 const otpRequestByPhone = new Map<string, Bucket>();
@@ -1319,6 +1329,132 @@ function clearCustomerCookie(response: NextResponse): NextResponse {
     maxAge: 0,
   });
   return response;
+}
+
+type ResolvedCustomerAccountSession = {
+  account: typeof customerAccountsTable.$inferSelect;
+  customer: typeof customersTable.$inferSelect;
+  session: typeof customerSessionsTable.$inferSelect;
+};
+
+function customerSessionTokenHash(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function newRecoveryCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const chars = Array.from({ length: 12 }, () => alphabet[randomInt(0, alphabet.length)]);
+  return `AJN-R-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8).join("")}`;
+}
+
+function validCustomerUsername(value: unknown) {
+  return /^[a-zA-Z0-9._-]{4,80}$/.test(String(value ?? "").trim());
+}
+
+function customerPasswordProblem(value: unknown): string | null {
+  const password = String(value ?? "");
+  if (password.length < 10) return "كلمة المرور يجب أن تكون 10 أحرف على الأقل";
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password))
+    return "استخدم حروفاً وأرقاماً في كلمة المرور";
+  return null;
+}
+
+function hasSameOriginCustomerRequest(req: NextRequest) {
+  const origin = req.headers.get("origin");
+  if (!origin) return true; // non-browser clients still require the HttpOnly session.
+  try {
+    return new URL(origin).host === req.nextUrl.host;
+  } catch {
+    return false;
+  }
+}
+
+async function logCustomerAccountEvent(
+  req: NextRequest,
+  action: string,
+  values: { customerId?: number | null; accountId?: number | null; actorStaffId?: number | null; metadata?: Record<string, unknown> } = {},
+) {
+  try {
+    await db.insert(customerAccountAuditLogsTable).values({
+      customerId: values.customerId ?? null,
+      accountId: values.accountId ?? null,
+      actorStaffId: values.actorStaffId ?? null,
+      action,
+      metadata: values.metadata ?? {},
+      ipAddress: ip(req),
+      userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
+    });
+  } catch {
+    // Account audit must never leak security secrets or block a logout.
+  }
+}
+
+async function createCustomerAccountSession(
+  account: typeof customerAccountsTable.$inferSelect,
+  req: NextRequest,
+) {
+  const sessionId = randomUUID();
+  const secret = randomBytes(32).toString("base64url");
+  const token = `v2.${sessionId}.${secret}`;
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await db.insert(customerSessionsTable).values({
+    sessionId,
+    accountId: account.id,
+    customerId: account.customerId,
+    tokenHash: customerSessionTokenHash(token),
+    expiresAt,
+    deviceId: deviceIdHeader(req),
+    userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
+    ipAddress: ip(req),
+    lastActiveAt: new Date(),
+  });
+  return { token, expiresAt };
+}
+
+async function resolveCustomerAccountSession(
+  req: NextRequest,
+): Promise<ResolvedCustomerAccountSession | null> {
+  const token = req.cookies.get(CUSTOMER_COOKIE_NAME)?.value;
+  if (!token?.startsWith("v2.")) return null;
+  const [prefix, sessionText, secret] = token.split(".");
+  if (prefix !== "v2" || !sessionText || !secret) return null;
+  const session = await db.query.customerSessionsTable.findFirst({
+    where: and(
+      eq(customerSessionsTable.sessionId, sessionText),
+      eq(customerSessionsTable.tokenHash, customerSessionTokenHash(token)),
+      gt(customerSessionsTable.expiresAt, new Date()),
+      isNull(customerSessionsTable.revokedAt),
+    ),
+  });
+  if (!session) return null;
+  const [account, customer] = await Promise.all([
+    db.query.customerAccountsTable.findFirst({ where: eq(customerAccountsTable.id, session.accountId) }),
+    db.query.customersTable.findFirst({ where: eq(customersTable.id, session.customerId) }),
+  ]);
+  if (!account || !customer) return null;
+  void db.update(customerSessionsTable)
+    .set({ lastActiveAt: new Date() })
+    .where(eq(customerSessionsTable.id, session.id));
+  return { account, customer, session };
+}
+
+function customerAccountPayload(
+  account: typeof customerAccountsTable.$inferSelect,
+  customer: typeof customersTable.$inferSelect,
+) {
+  return {
+    customerId: customer.id,
+    customerCode: account.customerCode,
+    username: account.username,
+    phone: customer.phone,
+    phoneDisplay: formatIraqiPhone(customer.phone),
+    fullName: customer.fullName || customer.name,
+    email: account.email || customer.email || "",
+    createdAt: account.createdAt?.toISOString?.() ?? account.createdAt,
+    linkStatus: account.linkStatus,
+    recoveryAcknowledged: Boolean(account.recoveryAcknowledgedAt),
+    hasPrivatePhoto: false,
+  };
 }
 
 export function hashPassword(plain: string): string {
@@ -4052,6 +4188,48 @@ async function persistDataUrlToStorage(
     });
     return value;
   }
+}
+
+const CUSTOMER_PRIVATE_BUCKET =
+  process.env.AJN_CUSTOMER_PRIVATE_BUCKET || process.env.SUPABASE_CUSTOMER_PRIVATE_BUCKET || "";
+
+function privateImageSignatureMatches(bytes: Buffer, mime: string) {
+  if (mime === "image/jpeg") return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mime === "image/png") return bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (mime === "image/webp") return bytes.length > 12 && bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP";
+  return false;
+}
+
+async function storeCustomerPrivatePhoto(dataUrl: string, customerId: number) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed || !["image/jpeg", "image/png", "image/webp"].includes(parsed.mime) || !privateImageSignatureMatches(parsed.bytes, parsed.mime))
+    throw new Error("صيغة الصورة غير صالحة");
+  if (parsed.bytes.byteLength < 32 || parsed.bytes.byteLength > 5 * 1024 * 1024)
+    throw new Error("حجم الصورة يجب أن يكون بين 32 بايت و5 ميغابايت");
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !CUSTOMER_PRIVATE_BUCKET)
+    throw new Error("تخزين الصور الخاصة غير مهيأ");
+  const checksum = createHash("sha256").update(parsed.bytes).digest("hex");
+  const path = `customers/private/${customerId}/${randomUUID()}.${storageExtension(parsed.mime)}`;
+  const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${CUSTOMER_PRIVATE_BUCKET}/${path}`, {
+    method: "POST",
+    headers: {
+      apikey: STORAGE_SERVICE_KEY,
+      authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+      "content-type": parsed.mime,
+      "x-upsert": "false",
+    },
+    body: bodyFromBuffer(parsed.bytes),
+  });
+  if (!response.ok) throw new Error("تعذر حفظ الصورة الخاصة");
+  return { path, mime: parsed.mime, size: parsed.bytes.byteLength, checksum };
+}
+
+async function deleteCustomerPrivateObject(path: string | null | undefined) {
+  if (!path || !STORAGE_URL || !STORAGE_SERVICE_KEY || !CUSTOMER_PRIVATE_BUCKET) return;
+  await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${CUSTOMER_PRIVATE_BUCKET}/${path}`, {
+    method: "DELETE",
+    headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}` },
+  }).catch(() => undefined);
 }
 
 type ResumableImageSession = {
@@ -7207,6 +7385,89 @@ async function ensureCustomerProfileColumns(): Promise<void> {
   await customerProfilePromise;
 }
 
+async function ensureCustomerAccountTables(): Promise<void> {
+  if (!customerAccountTablesPromise) {
+    customerAccountTablesPromise = db.execute(sql`
+      create table if not exists "customer_accounts" (
+        "id" serial primary key,
+        "customer_id" integer not null unique references "customers"("id") on delete restrict,
+        "customer_code" varchar(32) not null unique,
+        "username" varchar(80) not null unique,
+        "phone_normalized" varchar(20) not null,
+        "email" text,
+        "password_hash" text not null,
+        "recovery_code_hash" text not null,
+        "recovery_generated_at" timestamp not null default now(),
+        "recovery_acknowledged_at" timestamp,
+        "failed_login_count" integer not null default 0,
+        "locked_until" timestamp,
+        "link_status" varchar(24) not null default 'linked',
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create index if not exists "customer_accounts_phone_normalized_idx" on "customer_accounts" ("phone_normalized");
+      create table if not exists "customer_sessions" (
+        "id" serial primary key,
+        "session_id" uuid not null unique,
+        "account_id" integer not null references "customer_accounts"("id") on delete cascade,
+        "customer_id" integer not null references "customers"("id") on delete cascade,
+        "token_hash" text not null unique,
+        "expires_at" timestamp not null,
+        "user_agent" text,
+        "device_id" text,
+        "ip_address" varchar(80),
+        "last_active_at" timestamp,
+        "revoked_at" timestamp,
+        "revoke_reason" text,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "customer_sessions_customer_idx" on "customer_sessions" ("customer_id", "expires_at");
+      create table if not exists "customer_account_recovery_requests" (
+        "id" serial primary key,
+        "customer_id" integer references "customers"("id") on delete set null,
+        "account_id" integer references "customer_accounts"("id") on delete set null,
+        "identifier" varchar(120) not null,
+        "phone_normalized" varchar(20),
+        "notes" text,
+        "status" varchar(24) not null default 'pending',
+        "reviewed_by" integer references "staff"("id") on delete set null,
+        "review_notes" text,
+        "created_at" timestamp not null default now(),
+        "reviewed_at" timestamp
+      );
+      create table if not exists "customer_private_photos" (
+        "id" serial primary key,
+        "customer_id" integer not null unique references "customers"("id") on delete cascade,
+        "storage_path" text not null,
+        "mime_type" varchar(80) not null,
+        "file_size" integer not null,
+        "width" integer,
+        "height" integer,
+        "checksum" varchar(128) not null,
+        "deleted_at" timestamp,
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "customer_account_audit_logs" (
+        "id" serial primary key,
+        "customer_id" integer references "customers"("id") on delete set null,
+        "account_id" integer references "customer_accounts"("id") on delete set null,
+        "actor_staff_id" integer references "staff"("id") on delete set null,
+        "action" varchar(100) not null,
+        "metadata" jsonb not null default '{}'::jsonb,
+        "ip_address" varchar(80),
+        "user_agent" text,
+        "created_at" timestamp not null default now()
+      );
+      create index if not exists "customer_account_audit_customer_idx" on "customer_account_audit_logs" ("customer_id", "created_at" desc);
+    `).then(() => undefined).catch((err) => {
+      customerAccountTablesPromise = null;
+      throw err;
+    });
+  }
+  await customerAccountTablesPromise;
+}
+
 async function ensureCustomerAddressTables(): Promise<void> {
   if (!customerAddressTablesPromise) {
     customerAddressTablesPromise = db
@@ -10049,8 +10310,10 @@ function publicCustomer(customer: any) {
       customer.fullName || customer.name || formatIraqiPhone(customer.phone),
     fullName: customer.fullName ?? customer.name ?? "",
     email: customer.email ?? "",
-    avatarUrl: customer.avatarUrl ?? "",
-    avatarMetadata: customer.avatarMetadata ?? {},
+    // Customer avatars are now private.  Public and staff-facing payloads
+    // intentionally receive no real image URL.
+    avatarUrl: "",
+    avatarMetadata: {},
     address: customer.address ?? "",
     city: customer.city ?? "",
     role: customer.role,
@@ -11585,7 +11848,372 @@ async function cancelStoreSoundBooking(order: any, note: string) {
   });
 }
 
+async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
+  if (parts[1] !== "customer") return null;
+  await ensureCustomerAccountTables();
+  const method = req.method;
+  const action = parts[2] ?? "";
+
+  if (method === "POST" && action === "register") {
+    const data = await body(req);
+    const fullName = String(data?.fullName ?? "").trim().slice(0, 160);
+    const username = String(data?.username ?? "").trim().toLowerCase();
+    const phone = normalizeIraqiPhone(data?.phone);
+    const email = String(data?.email ?? "").trim().slice(0, 180) || null;
+    const password = String(data?.password ?? "");
+    if (!fullName || !phone || !validCustomerUsername(username))
+      return error("تحقق من الاسم ورقم الهاتف واسم المستخدم", 400);
+    const passwordProblem = customerPasswordProblem(password);
+    if (passwordProblem) return error(passwordProblem, 400);
+    if (password !== String(data?.confirmPassword ?? ""))
+      return error("تأكيد كلمة المرور غير مطابق", 400);
+    const existingUsername = await db.query.customerAccountsTable.findFirst({
+      where: eq(customerAccountsTable.username, username),
+    });
+    if (existingUsername) return error("اسم المستخدم مستخدم بالفعل", 409);
+    const existingCustomer = await findCustomerByPhone(phone);
+    const customer = existingCustomer ?? await ensureCustomerForPhone(phone, fullName);
+    if (!customer) return error("تعذر إنشاء الحساب حالياً", 500);
+    const existingAccount = await db.query.customerAccountsTable.findFirst({
+      where: eq(customerAccountsTable.customerId, customer.id),
+    });
+    if (existingAccount) return error("يوجد حساب مرتبط بهذا العميل بالفعل", 409);
+
+    const recoveryCode = newRecoveryCode();
+    const linkStatus = existingCustomer ? "pending_review" : "linked";
+    const [account] = await db.insert(customerAccountsTable).values({
+      customerId: customer.id,
+      customerCode: `AJN-C-${String(customer.id).padStart(6, "0")}`,
+      username,
+      phoneNormalized: phone,
+      email,
+      passwordHash: bcrypt.hashSync(password, 12),
+      recoveryCodeHash: bcrypt.hashSync(recoveryCode, 12),
+      linkStatus,
+    }).returning();
+    const session = await createCustomerAccountSession(account, req);
+    await logCustomerAccountEvent(req, "customer_account_created", {
+      customerId: customer.id,
+      accountId: account.id,
+      metadata: { linkStatus },
+    });
+    return withCustomerCookie(json({
+      account: customerAccountPayload(account, customer),
+      recoveryCode,
+      requiresRecoverySave: true,
+      pendingLinkReview: linkStatus !== "linked",
+    }, 201), session.token);
+  }
+
+  if (method === "POST" && action === "login") {
+    const data = await body(req);
+    const identifier = String(data?.identifier ?? "").trim().toLowerCase();
+    const password = String(data?.password ?? "");
+    if (!identifier || !password) return error("بيانات تسجيل الدخول غير صحيحة", 400);
+    if (!checkRateLimit(customerLoginByIp, ip(req), 12, 15 * 60 * 1000) ||
+        !checkRateLimit(customerLoginByIdentifier, identifier, 8, 15 * 60 * 1000)) {
+      return error("تم إيقاف المحاولات مؤقتاً. حاول لاحقاً.", 429);
+    }
+    const normalizedPhone = normalizeIraqiPhone(identifier);
+    const account = await db.query.customerAccountsTable.findFirst({
+      where: normalizedPhone
+        ? or(eq(customerAccountsTable.phoneNormalized, normalizedPhone), eq(customerAccountsTable.username, identifier))
+        : eq(customerAccountsTable.username, identifier),
+    });
+    const generic = () => error("بيانات تسجيل الدخول غير صحيحة", 401);
+    if (!account) return generic();
+    if (account.lockedUntil && account.lockedUntil > new Date())
+      return error("تم إيقاف الحساب مؤقتاً. حاول لاحقاً.", 423);
+    if (!verifyPassword(password, account.passwordHash)) {
+      const failures = Number(account.failedLoginCount ?? 0) + 1;
+      await db.update(customerAccountsTable).set({
+        failedLoginCount: failures,
+        lockedUntil: failures >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null,
+        updatedAt: new Date(),
+      }).where(eq(customerAccountsTable.id, account.id));
+      if (failures >= 5) await logCustomerAccountEvent(req, "customer_login_locked", { customerId: account.customerId, accountId: account.id });
+      return generic();
+    }
+    const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, account.customerId) });
+    if (!customer) return generic();
+    await db.update(customerAccountsTable).set({ failedLoginCount: 0, lockedUntil: null, updatedAt: new Date() }).where(eq(customerAccountsTable.id, account.id));
+    const session = await createCustomerAccountSession(account, req);
+    await logCustomerAccountEvent(req, "customer_login", { customerId: customer.id, accountId: account.id });
+    return withCustomerCookie(json({
+      account: customerAccountPayload(account, customer),
+      requiresRecoverySave: !account.recoveryAcknowledgedAt,
+    }), session.token);
+  }
+
+  if (method === "POST" && action === "forgot-password") {
+    const data = await body(req);
+    const identifier = String(data?.identifier ?? "").trim().toLowerCase();
+    const recoveryCode = String(data?.recoveryCode ?? "").trim().toUpperCase();
+    const password = String(data?.password ?? "");
+    const confirmPassword = String(data?.confirmPassword ?? "");
+    const generic = () => error("تعذر التحقق من بيانات الاسترجاع", 400);
+    const passwordProblem = customerPasswordProblem(password);
+    if (!identifier || !recoveryCode || passwordProblem || password !== confirmPassword) return generic();
+    const phone = normalizeIraqiPhone(identifier);
+    const account = await db.query.customerAccountsTable.findFirst({
+      where: phone ? or(eq(customerAccountsTable.phoneNormalized, phone), eq(customerAccountsTable.username, identifier)) : eq(customerAccountsTable.username, identifier),
+    });
+    if (!account || !verifyPassword(recoveryCode, account.recoveryCodeHash)) return generic();
+    const customer = await db.query.customersTable.findFirst({ where: eq(customersTable.id, account.customerId) });
+    if (!customer) return generic();
+    const newCode = newRecoveryCode();
+    await db.transaction(async (tx) => {
+      await tx.update(customerAccountsTable).set({
+        passwordHash: bcrypt.hashSync(password, 12),
+        recoveryCodeHash: bcrypt.hashSync(newCode, 12),
+        recoveryGeneratedAt: new Date(),
+        recoveryAcknowledgedAt: null,
+        failedLoginCount: 0,
+        lockedUntil: null,
+        updatedAt: new Date(),
+      }).where(eq(customerAccountsTable.id, account.id));
+      await tx.update(customerSessionsTable).set({
+        revokedAt: new Date(),
+        revokeReason: "password_recovered",
+      }).where(and(eq(customerSessionsTable.accountId, account.id), isNull(customerSessionsTable.revokedAt)));
+    });
+    const fresh = { ...account, passwordHash: "", recoveryAcknowledgedAt: null };
+    const session = await createCustomerAccountSession(fresh, req);
+    await logCustomerAccountEvent(req, "customer_password_recovered", { customerId: customer.id, accountId: account.id });
+    return withCustomerCookie(json({
+      account: customerAccountPayload(fresh, customer),
+      recoveryCode: newCode,
+      requiresRecoverySave: true,
+    }), session.token);
+  }
+
+  if (method === "POST" && action === "recovery-request") {
+    const data = await body(req);
+    const identifier = String(data?.identifier ?? "").trim().slice(0, 120);
+    const phone = normalizeIraqiPhone(data?.phone);
+    if (!identifier) return error("أدخل اسم المستخدم أو رقم الهاتف", 400);
+    const account = await db.query.customerAccountsTable.findFirst({
+      where: phone ? or(eq(customerAccountsTable.phoneNormalized, phone), eq(customerAccountsTable.username, identifier.toLowerCase())) : eq(customerAccountsTable.username, identifier.toLowerCase()),
+    });
+    await db.insert(customerRecoveryRequestsTable).values({
+      customerId: account?.customerId ?? null,
+      accountId: account?.id ?? null,
+      identifier,
+      phoneNormalized: phone,
+      notes: String(data?.notes ?? "").trim().slice(0, 1000) || null,
+    });
+    return json({ message: "تم إرسال طلب الاسترجاع إلى الإدارة للمراجعة." }, 201);
+  }
+
+  // Main Manager recovery and existing-customer link approvals. These routes
+  // are intentionally not available to regular customer sessions.
+  if (action === "admin") {
+    const manager = await getAdminUser(req);
+    if (!manager || !["admin", "manager"].includes(manager.role))
+      return error("غير مخول", 403);
+    const resource = parts[3] ?? "";
+    const id = int(parts[4]);
+    if (method === "GET" && resource === "recovery-requests") {
+      const rows = await db.query.customerRecoveryRequestsTable.findMany({
+        where: eq(customerRecoveryRequestsTable.status, "pending"),
+        orderBy: [desc(customerRecoveryRequestsTable.createdAt)],
+        limit: 100,
+      });
+      return json(rows.map((row) => ({
+        id: row.id, identifier: row.identifier, phone: row.phoneNormalized,
+        customerId: row.customerId, accountId: row.accountId, notes: row.notes ?? "",
+        createdAt: row.createdAt.toISOString(),
+      })));
+    }
+    if (method === "POST" && resource === "recovery-requests" && id && parts[5] === "review") {
+      const data = await body(req);
+      const decision = data?.decision === "approve" ? "approved" : "rejected";
+      const notes = String(data?.notes ?? "").trim().slice(0, 1000);
+      if (!notes) return error("أدخل ملاحظات سبب المراجعة", 400);
+      const row = await db.query.customerRecoveryRequestsTable.findFirst({ where: eq(customerRecoveryRequestsTable.id, id) });
+      if (!row || row.status !== "pending") return error("طلب الاسترجاع غير متاح", 404);
+      let recoveryCode: string | null = null;
+      if (decision === "approved" && row.accountId) {
+        recoveryCode = newRecoveryCode();
+        await db.transaction(async (tx) => {
+          await tx.update(customerAccountsTable).set({
+            recoveryCodeHash: bcrypt.hashSync(recoveryCode!, 12),
+            recoveryGeneratedAt: new Date(),
+            recoveryAcknowledgedAt: null,
+            updatedAt: new Date(),
+          }).where(eq(customerAccountsTable.id, row.accountId!));
+          await tx.update(customerSessionsTable).set({
+            revokedAt: new Date(), revokeReason: "manager_recovery_reset",
+          }).where(and(eq(customerSessionsTable.accountId, row.accountId!), isNull(customerSessionsTable.revokedAt)));
+        });
+      }
+      await db.update(customerRecoveryRequestsTable).set({
+        status: decision, reviewedBy: manager.id, reviewNotes: notes, reviewedAt: new Date(),
+      }).where(eq(customerRecoveryRequestsTable.id, id));
+      await logCustomerAccountEvent(req, "manager_recovery_" + decision, {
+        customerId: row.customerId, accountId: row.accountId, actorStaffId: manager.id,
+      });
+      return json({ ok: true, recoveryCode });
+    }
+    if (method === "GET" && resource === "link-requests") {
+      const rows = await db.query.customerAccountsTable.findMany({
+        where: eq(customerAccountsTable.linkStatus, "pending_review"),
+        orderBy: [desc(customerAccountsTable.createdAt)],
+        limit: 100,
+      });
+      return json(rows.map((row) => ({
+        id: row.id, customerId: row.customerId, customerCode: row.customerCode,
+        username: row.username, phone: row.phoneNormalized, createdAt: row.createdAt.toISOString(),
+      })));
+    }
+    if (method === "POST" && resource === "link-requests" && id && parts[5] === "review") {
+      const data = await body(req);
+      const decision = data?.decision === "approve" ? "linked" : "rejected";
+      const notes = String(data?.notes ?? "").trim().slice(0, 1000);
+      if (!notes) return error("أدخل ملاحظات المراجعة", 400);
+      const account = await db.query.customerAccountsTable.findFirst({ where: eq(customerAccountsTable.id, id) });
+      if (!account || account.linkStatus !== "pending_review") return error("طلب الربط غير متاح", 404);
+      await db.update(customerAccountsTable).set({ linkStatus: decision, updatedAt: new Date() }).where(eq(customerAccountsTable.id, id));
+      await logCustomerAccountEvent(req, "customer_existing_link_" + decision, {
+        customerId: account.customerId, accountId: account.id, actorStaffId: manager.id, metadata: { notes },
+      });
+      return json({ ok: true });
+    }
+    return error("المسار غير موجود", 404);
+  }
+
+  const resolved = await resolveCustomerAccountSession(req);
+  if (!resolved) return error("غير مخول", 401);
+  const { account, customer, session } = resolved;
+
+  if (method === "GET" && action === "me")
+    return json(customerAccountPayload(account, customer));
+
+  if (method === "POST" && action === "recovery-acknowledge") {
+    await db.update(customerAccountsTable).set({ recoveryAcknowledgedAt: new Date(), updatedAt: new Date() }).where(eq(customerAccountsTable.id, account.id));
+    await logCustomerAccountEvent(req, "customer_recovery_code_saved", { customerId: customer.id, accountId: account.id });
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && action === "logout") {
+    await db.update(customerSessionsTable).set({ revokedAt: new Date(), revokeReason: "customer_logout" }).where(eq(customerSessionsTable.id, session.id));
+    await logCustomerAccountEvent(req, "customer_logout", { customerId: customer.id, accountId: account.id });
+    return clearCustomerCookie(json({ ok: true }));
+  }
+
+  if (method === "GET" && action === "sessions") {
+    const sessions = await db.query.customerSessionsTable.findMany({
+      where: and(eq(customerSessionsTable.accountId, account.id), isNull(customerSessionsTable.revokedAt)),
+      orderBy: [desc(customerSessionsTable.lastActiveAt)],
+    });
+    return json(sessions.map((row) => ({
+      id: row.sessionId,
+      deviceId: row.deviceId ?? null,
+      userAgent: row.userAgent ?? "",
+      lastActivity: row.lastActiveAt?.toISOString?.() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      current: row.id === session.id,
+    })));
+  }
+
+  if (method === "POST" && action === "logout-all") {
+    await db.update(customerSessionsTable).set({ revokedAt: new Date(), revokeReason: "customer_logout_all" }).where(and(eq(customerSessionsTable.accountId, account.id), isNull(customerSessionsTable.revokedAt)));
+    await logCustomerAccountEvent(req, "customer_logout_all_devices", { customerId: customer.id, accountId: account.id });
+    return clearCustomerCookie(json({ ok: true }));
+  }
+
+  if (method === "POST" && action === "change-password") {
+    const data = await body(req);
+    const newPassword = String(data?.newPassword ?? "");
+    const problem = customerPasswordProblem(newPassword);
+    if (!verifyPassword(String(data?.currentPassword ?? ""), account.passwordHash) || problem || newPassword !== String(data?.confirmPassword ?? ""))
+      return error("تعذر تغيير كلمة المرور", 400);
+    await db.transaction(async (tx) => {
+      await tx.update(customerAccountsTable).set({ passwordHash: bcrypt.hashSync(newPassword, 12), updatedAt: new Date() }).where(eq(customerAccountsTable.id, account.id));
+      await tx.update(customerSessionsTable).set({ revokedAt: new Date(), revokeReason: "password_changed" }).where(and(eq(customerSessionsTable.accountId, account.id), ne(customerSessionsTable.id, session.id), isNull(customerSessionsTable.revokedAt)));
+    });
+    await logCustomerAccountEvent(req, "customer_password_changed", { customerId: customer.id, accountId: account.id });
+    return json({ ok: true });
+  }
+
+  if (method === "POST" && action === "regenerate-recovery-code") {
+    const data = await body(req);
+    if (!verifyPassword(String(data?.currentPassword ?? ""), account.passwordHash)) return error("تعذر التحقق من كلمة المرور", 400);
+    const recoveryCode = newRecoveryCode();
+    await db.update(customerAccountsTable).set({
+      recoveryCodeHash: bcrypt.hashSync(recoveryCode, 12),
+      recoveryGeneratedAt: new Date(),
+      recoveryAcknowledgedAt: null,
+      updatedAt: new Date(),
+    }).where(eq(customerAccountsTable.id, account.id));
+    await logCustomerAccountEvent(req, "customer_recovery_code_regenerated", { customerId: customer.id, accountId: account.id });
+    return json({ recoveryCode, requiresRecoverySave: true });
+  }
+
+  if (method === "PATCH" && action === "profile") {
+    const data = await body(req);
+    const fullName = String(data?.fullName ?? "").trim().slice(0, 160);
+    const nextPhone = data?.phone === undefined ? customer.phone : normalizeIraqiPhone(data.phone);
+    const email = String(data?.email ?? "").trim().slice(0, 180) || null;
+    if (!fullName || !nextPhone) return error("تحقق من الاسم ورقم الهاتف", 400);
+    const collision = await db.query.customersTable.findFirst({ where: eq(customersTable.phone, nextPhone) });
+    if (collision && collision.id !== customer.id) return error("رقم الهاتف مرتبط بسجل عميل آخر ويحتاج مراجعة الإدارة", 409);
+    const [updatedCustomer] = await db.update(customersTable).set({
+      name: fullName,
+      fullName,
+      phone: nextPhone,
+      email,
+      updatedAt: new Date(),
+    }).where(eq(customersTable.id, customer.id)).returning();
+    const [updatedAccount] = await db.update(customerAccountsTable).set({
+      phoneNormalized: nextPhone,
+      email,
+      updatedAt: new Date(),
+    }).where(eq(customerAccountsTable.id, account.id)).returning();
+    await logCustomerAccountEvent(req, "customer_profile_updated", { customerId: customer.id, accountId: account.id });
+    return json(customerAccountPayload(updatedAccount, updatedCustomer));
+  }
+
+  if (method === "POST" && action === "profile-photo") {
+    const data = await body(req);
+    try {
+      const stored = await storeCustomerPrivatePhoto(String(data?.dataUrl ?? ""), customer.id);
+      const existing = await db.query.customerPrivatePhotosTable.findFirst({ where: eq(customerPrivatePhotosTable.customerId, customer.id) });
+      await db.insert(customerPrivatePhotosTable).values({
+        customerId: customer.id,
+        storagePath: stored.path,
+        mimeType: stored.mime,
+        fileSize: stored.size,
+        checksum: stored.checksum,
+        deletedAt: null,
+        updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: customerPrivatePhotosTable.customerId,
+        set: { storagePath: stored.path, mimeType: stored.mime, fileSize: stored.size, checksum: stored.checksum, deletedAt: null, updatedAt: new Date() },
+      });
+      await deleteCustomerPrivateObject(existing?.storagePath);
+      await logCustomerAccountEvent(req, existing ? "customer_private_photo_changed" : "customer_private_photo_added", { customerId: customer.id, accountId: account.id });
+      return json({ imageUrl: "/api/customer/photo" }, 201);
+    } catch (err: any) {
+      return error(err?.message || "تعذر حفظ الصورة الخاصة", 400);
+    }
+  }
+
+  if (method === "DELETE" && action === "profile-photo") {
+    const existing = await db.query.customerPrivatePhotosTable.findFirst({ where: eq(customerPrivatePhotosTable.customerId, customer.id) });
+    if (existing) {
+      await db.delete(customerPrivatePhotosTable).where(eq(customerPrivatePhotosTable.id, existing.id));
+      await deleteCustomerPrivateObject(existing.storagePath);
+      await logCustomerAccountEvent(req, "customer_private_photo_deleted", { customerId: customer.id, accountId: account.id });
+    }
+    return json({ ok: true });
+  }
+  return null;
+}
+
 async function handleAuth(req: NextRequest, parts: string[]) {
+  const customerAccountRoute = await handleCustomerAccountAuth(req, parts);
+  if (customerAccountRoute) return customerAccountRoute;
   const method = req.method;
   const isWhatsAppRequest =
     parts[1] === "whatsapp" && parts[2] === "request-otp";
@@ -14999,7 +15627,7 @@ async function handleOrders(req: NextRequest, parts: string[]) {
   await ensureStockTrackingTables();
 
   if (method === "GET" && parts[1] === "my") {
-    const customerId = getCurrentCustomerId(req);
+    const customerId = (await resolveCustomerAccountSession(req))?.customer.id ?? getCurrentCustomerId(req);
     if (!customerId) return error("غير مخول", 401);
     await ensureRentalProductsTables();
     const customer = await db.query.customersTable.findFirst({
@@ -15727,11 +16355,10 @@ async function handleOrders(req: NextRequest, parts: string[]) {
 async function handleUnifiedTracking(req: NextRequest, parts: string[]) {
   if (req.method !== "GET" || parts[1] !== "by-phone") return null;
 
-  const customerId = getCurrentCustomerId(req);
+  const accountSession = await resolveCustomerAccountSession(req);
+  const customerId = accountSession?.customer.id ?? null;
   if (!customerId) return error("سجل الدخول للوصول إلى طلباتك", 401);
-  const customer = await db.query.customersTable.findFirst({
-    where: eq(customersTable.id, customerId),
-  });
+  const customer = accountSession?.customer ?? null;
   const rawPhone = req.nextUrl.searchParams.get("phone") ?? "";
   const normalizedPhone = normalizeIraqiPhone(rawPhone);
   if (!customer || !normalizedPhone || !phoneBelongsToLookup(customer.phone, normalizedPhone))
@@ -16807,18 +17434,60 @@ async function handlePublicSettings(req: NextRequest, parts: string[]) {
   return null;
 }
 
+async function handleCustomerPrivatePhoto(req: NextRequest, parts: string[]) {
+  if (req.method !== "GET" || parts[1] !== "photo") return null;
+  await ensureCustomerAccountTables();
+  const requestedId = int(parts[2]);
+  const customerSession = await resolveCustomerAccountSession(req);
+  const admin = customerSession ? null : await getAdminUser(req);
+  const targetCustomerId = requestedId ?? customerSession?.customer.id ?? null;
+  if (!targetCustomerId) return error("غير مخول", 401);
+  const isSelf = customerSession?.customer.id === targetCustomerId;
+  const canManagerView = !isSelf && !!admin &&
+    (admin.role === "admin" || admin.role === "manager") &&
+    hasPermission(admin, "customer.private_photo.view");
+  if (!isSelf && !canManagerView) return error("غير مخول", 403);
+  const photo = await db.query.customerPrivatePhotosTable.findFirst({
+    where: and(eq(customerPrivatePhotosTable.customerId, targetCustomerId), isNull(customerPrivatePhotosTable.deletedAt)),
+  });
+  if (!photo || !STORAGE_URL || !STORAGE_SERVICE_KEY || !CUSTOMER_PRIVATE_BUCKET)
+    return error("الصورة غير متوفرة", 404);
+  const object = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${CUSTOMER_PRIVATE_BUCKET}/${photo.storagePath}`, {
+    headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}` },
+  });
+  if (!object.ok || !object.body) return error("تعذر تحميل الصورة", 404);
+  if (canManagerView) {
+    await logCustomerAccountEvent(req, "viewed_private_customer_photo", {
+      customerId: targetCustomerId,
+      actorStaffId: admin!.id,
+      metadata: { managerId: admin!.id },
+    });
+  }
+  return new NextResponse(object.body, {
+    headers: {
+      "content-type": photo.mimeType,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 async function handleCustomer(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
-  const customerId = getCurrentCustomerId(req);
+  const privatePhoto = await handleCustomerPrivatePhoto(req, parts);
+  if (privatePhoto) return privatePhoto;
+  const accountSession = await resolveCustomerAccountSession(req);
+  const customerId = accountSession?.customer.id ?? null;
   if (!customerId) return error("غير مخول", 401);
   await ensureCustomerAddressTables();
   await ensureCustomerProfileColumns();
 
-  const customer = await db.query.customersTable.findFirst({
-    where: eq(customersTable.id, customerId),
-  });
+  const customer = accountSession?.customer ?? null;
   if (!customer) return error("المستخدم غير موجود", 404);
+
+  if (accountSession?.account.linkStatus !== "linked")
+    return error("حسابك بانتظار اعتماد ربط بيانات العميل من الإدارة.", 403);
 
   if (section === "bride" || section === "wedding") return handleBrideDashboard(req, parts, customer);
 
@@ -51950,6 +52619,9 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "dashboard" ||
         root === "customer"
           ? ensureCustomerProfileColumns()
+          : undefined,
+        root === "auth" || root === "customer"
+          ? ensureCustomerAccountTables()
           : undefined,
         root === "products" ||
         root === "services" ||
