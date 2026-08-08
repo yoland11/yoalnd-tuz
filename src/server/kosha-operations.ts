@@ -209,7 +209,11 @@ export function evaluateKoshaStage(input: {
   const legacyFrom = LEGACY_KOSHA_STAGES.indexOf(from as KoshaStage);
   const legacyTo = LEGACY_KOSHA_STAGES.indexOf(to as KoshaStage);
   const adjacentLegacy = legacyFrom >= 0 && legacyTo === legacyFrom + 1;
-  if (!adjacentNew && !adjacentLegacy) {
+  // Loading remains an inventory checkpoint, but it is not a customer-facing
+  // workflow step. A ready job can therefore depart directly to "on the way"
+  // once the exact same checklist gate has passed.
+  const readyToDeparture = from === "ready" && to === "on_the_way";
+  if (!adjacentNew && !adjacentLegacy && !readyToDeparture) {
     return {
       ok: false,
       reason: `لا يمكن الانتقال من «${KOSHA_STAGE_LABELS[from as KoshaStage] ?? from}» إلى «${KOSHA_STAGE_LABELS[to]}» مباشرة`,
@@ -217,7 +221,7 @@ export function evaluateKoshaStage(input: {
     };
   }
 
-  if (to === "out_of_warehouse") {
+  if (to === "out_of_warehouse" || to === "on_the_way") {
     const entries = input.checklist ?? [];
     if (!checklistCovered(entries)) {
       return { ok: false, reason: "أكمل قائمة المعدات قبل تحميل الحجز", status: 422 };

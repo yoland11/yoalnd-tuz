@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video } from "lucide-react";
 import {
-  STAGES, STAGE_LABEL, isKoshaPendingPricing, stageRank, money, mapsUrl, filesToMedia, staffApi,
+  WORKFLOW_STAGES, STAGE_LABEL, isKoshaPendingPricing, workflowStageRank, nextWorkflowStage, money, mapsUrl, filesToMedia, staffApi,
   type BookingDetail, type StageKey, type MediaInput, type SetupItem,
 } from "./lib";
 import { isQueued } from "./offline";
@@ -98,7 +98,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const [panel, setPanel] = useState<null | "before-install" | "after-install" | "before-return" | "after-return" | "delivered">(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [operationsTab, setOperationsTab] = useState<"checklist" | "scan" | "damage">("checklist");
-  const operationsRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(async () => {
     try { setData(await staffApi.booking(id, source)); setErr(null); }
@@ -113,19 +113,25 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const b = data.booking;
   const setup = data.setup;
   const current = b.executionStage as StageKey;
-  const next = STAGES[stageRank(current) + 1]?.key as StageKey | undefined;
+  const next = nextWorkflowStage(current);
   const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
   const pendingPricing = isKoshaPendingPricing(b);
-  const preparationPercent = current === "booked" ? 0 : stageRank(current) >= stageRank("ready") ? 100 : 50;
-  const installationPercent = stageRank(current) < stageRank("executing") ? 0 : stageRank(current) < stageRank("executed") ? 50 : 100;
-  const overallPercent = Math.round((stageRank(current) / Math.max(1, STAGES.length - 1)) * 100);
+  const preparationPercent = current === "booked" ? 0 : workflowStageRank(current) >= workflowStageRank("ready") ? 100 : 50;
+  const installationPercent = workflowStageRank(current) < workflowStageRank("executing") ? 0 : workflowStageRank(current) < workflowStageRank("executed") ? 50 : 100;
+  const overallPercent = Math.round((workflowStageRank(current) / Math.max(1, WORKFLOW_STAGES.length - 1)) * 100);
 
   async function run(fn: () => Promise<any>) {
+    if (busy) return;
     setBusy(true); setErr(null); setNotice(null);
     try {
       const res = await fn();
       if (isQueued(res)) { setNotice("تم الحفظ محليًا — سيُرفع تلقائيًا عند عودة الاتصال"); setPanel(null); }
-      else { if (res && (res as any).booking) setData(res as BookingDetail); else await reload(); setPanel(null); }
+      else {
+        if (res && (res as any).booking) setData(res as BookingDetail); else await reload();
+        setNotice("تم تحديث مرحلة التنفيذ بنجاح");
+        setPanel(null);
+        requestAnimationFrame(() => stageRef.current?.scrollIntoView({ block: "nearest" }));
+      }
     }
     catch (e: any) { setErr(e?.message ?? "تعذر إكمال العملية"); }
     finally { setBusy(false); }
@@ -133,12 +139,6 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
   function onAdvance() {
     if (!next) return;
-    if (next === "out_of_warehouse") {
-      setOperationsTab("checklist");
-      setNotice("أكمل قائمة المعدات النظامية أولاً؛ تمنع القائمة الناقصة خروج الحجز من المخزن.");
-      requestAnimationFrame(() => operationsRef.current?.scrollIntoView({ block: "start" }));
-      return;
-    }
     if (next === "executing") return setPanel("before-install");
     if (next === "executed") return setPanel("after-install");
     if (next === "dismantling") return setPanel("before-return");
@@ -242,11 +242,11 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
         )}
 
         {/* Stage stepper */}
-        <div className="rounded-xl border border-border bg-card p-3">
+        <div ref={stageRef} className="rounded-xl border border-border bg-card p-3">
           <div className="mb-2 text-sm font-bold">مراحل التنفيذ</div>
           <ol className="space-y-1.5">
-            {STAGES.map((s, i) => {
-              const done = i < stageRank(current); const cur = i === stageRank(current);
+            {WORKFLOW_STAGES.map((s, i) => {
+              const done = i < workflowStageRank(current); const cur = i === workflowStageRank(current);
               return (
                 <li key={s.key} className="flex items-center gap-2.5 text-sm">
                   <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${done ? "bg-status-success text-white" : cur ? "bg-primary text-primary-foreground" : "border-2 border-border"}`}>
@@ -261,7 +261,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
           {current === "delivered" && <Banner kind="ok">تم تسليم الكوشة بنجاح.</Banner>}
         </div>
 
-        <div ref={operationsRef} className="scroll-mt-20">
+        <div className="scroll-mt-20">
           <KoshaOperationsPanel bookingId={id} source={source} activeTab={operationsTab} />
         </div>
 

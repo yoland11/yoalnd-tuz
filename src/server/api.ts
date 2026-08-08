@@ -327,6 +327,7 @@ import {
   blockingChecklistIssues,
   checklistCovered,
   damageNeedsManagerApproval,
+  evaluateKoshaStage,
   isChecklistCondition,
   isScanPoint,
   validateDamageReport,
@@ -48939,9 +48940,10 @@ async function handleStaffPortal(
       );
     }
 
-    // Equipment checklist gate on dispatch. Evaluated before the booking is resolved to a
-    // row so it applies identically to native kosha bookings and routed service orders.
-    if (toStage === "out_of_warehouse") {
+    // Keep the warehouse checkpoint enforced even though the staff-facing
+    // workflow presents "ready → on the way" as one action.
+    let checklistEntries: Array<{ item: string; condition: string }> = [];
+    if (toStage === "out_of_warehouse" || toStage === "on_the_way") {
       await ensureKoshaOperationsTables();
       const source = koshaSourceHint(req) === "service" ? "service" : "kosha";
       const rows: any[] =
@@ -48949,21 +48951,21 @@ async function handleStaffPortal(
           select item, condition from kosha_checklist_entries
           where booking_id = ${id} and booking_source = ${source}
         `)) as any).rows ?? [];
-      const entries = rows.map((row) => ({
+      checklistEntries = rows.map((row) => ({
         item: String(row.item),
         condition: String(row.condition),
       }));
-      if (!checklistCovered(entries)) {
-        return error("أكمل قائمة المعدات قبل تحميل الحجز", 422);
-      }
-      const issues = blockingChecklistIssues(entries);
-      if (issues.length) {
-        const names = issues.map(
-          (issue) => KOSHA_CHECKLIST_LABELS[issue.item as KoshaChecklistItem] ?? issue.item,
-        );
-        return error(`عناصر غير متوفرة تمنع التحميل: ${names.join("، ")}`, 422);
-      }
     }
+    const currentExecutionStage = routed
+      ? routedServiceExecutionFields(routed.order).executionStage ?? "preparing"
+      : nativeBooking!.executionStage ?? "preparing";
+    const transition = evaluateKoshaStage({
+      from: currentExecutionStage,
+      to: toStage,
+      isManager: auth.role === "admin" || auth.role === "manager",
+      checklist: checklistEntries,
+    });
+    if (!transition.ok) return error(transition.reason, transition.status);
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const fromStage = fields.executionStage ?? "preparing";
@@ -48993,7 +48995,7 @@ async function handleStaffPortal(
           fromStage,
           toStage,
           note: data?.note ?? null,
-          meta: {},
+          meta: { device: req.headers.get("user-agent")?.slice(0, 200) ?? null },
           createdAt: new Date().toISOString(),
         },
       ];
@@ -49002,6 +49004,11 @@ async function handleStaffPortal(
         .set({ status: serviceOrderStatusForKoshaStage(toStage) })
         .where(eq(serviceOrdersTable.id, updatedFields.id))
         .returning();
+      void logAdminActivity(req, "kosha_execution_stage_changed", "service_order", updated.id, {
+        fromStage,
+        toStage,
+        note: data?.note ?? null,
+      });
       return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
     }
     const booking = nativeBooking!;
@@ -49013,6 +49020,7 @@ async function handleStaffPortal(
       fromStage,
       toStage,
       note: data?.note ?? null,
+      meta: { device: req.headers.get("user-agent")?.slice(0, 200) ?? null },
     });
     if (media.length)
       await saveKoshaMedia({
@@ -49041,6 +49049,28 @@ async function handleStaffPortal(
         updatedAt: new Date(),
       })
       .where(eq(koshaBookingsTable.id, id));
+    await addKoshaNotification({
+      audience: "manager",
+      type: "execution_stage_changed",
+      title: "تحديث مرحلة تنفيذ الكوشة",
+      body: `${auth.fullName || auth.username}: ${KOSHA_STAGE_LABELS[fromStage as KoshaStage] ?? fromStage} → ${KOSHA_STAGE_LABELS[toStage as KoshaStage] ?? toStage}`,
+      href: `/admin/kosha-bookings?booking=${id}`,
+      bookingId: id,
+    });
+    void createNotification({
+      audienceType: "admin",
+      type: "kosha_execution_stage_changed",
+      title: "تحديث مرحلة تنفيذ الكوشة",
+      body: `${booking.customerName}: ${KOSHA_STAGE_LABELS[fromStage as KoshaStage] ?? fromStage} → ${KOSHA_STAGE_LABELS[toStage as KoshaStage] ?? toStage}`,
+      entityType: "kosha_booking",
+      entityId: id,
+      href: `/admin/kosha-bookings?booking=${id}`,
+    });
+    void logAdminActivity(req, "kosha_execution_stage_changed", "kosha_booking", id, {
+      fromStage,
+      toStage,
+      note: data?.note ?? null,
+    });
     return json(await loadKoshaBookingDetail(id));
   }
 

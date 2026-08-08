@@ -66,6 +66,12 @@ check("legacy executed → delivered still allowed", go("executed", "delivered")
 check("booked → preparing", go("booked", "preparing").ok, true);
 check("preparing → ready", go("preparing", "ready").ok, true);
 check("ready → out_of_warehouse", go("ready", "out_of_warehouse").ok, true);
+check("ready → on_the_way uses the staff-facing departure action", go("ready", "on_the_way").ok, true);
+check("ready → on_the_way still requires the full checklist",
+  go("ready", "on_the_way", { checklist: partial }).status, 422);
+check("on_the_way → executing", go("on_the_way", "executing").ok, true);
+check("executing → executed", go("executing", "executed").ok, true);
+check("ready cannot skip to executing", go("ready", "executing").status, 409);
 check("executed → event_running", go("executed", "event_running").ok, true);
 check("event_running → dismantling", go("event_running", "dismantling").ok, true);
 check("dismantling → returned", go("dismantling", "returned").ok, true);

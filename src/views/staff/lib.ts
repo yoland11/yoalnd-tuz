@@ -25,10 +25,29 @@ export const STAGES: { key: StageKey; label: string }[] = [
   { key: "returned", label: "تم الإرجاع" },
   { key: "delivered", label: "مكتمل" },
 ];
+
+// "جاري التحميل" is retained for legacy records and inventory scans, while the
+// staff-facing execution flow follows the concise operational sequence.
+export const WORKFLOW_STAGES = STAGES.filter(
+  (stage) => stage.key !== "out_of_warehouse",
+);
 export const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 export function stageRank(key: string): number {
   const i = STAGES.findIndex((s) => s.key === key);
   return i < 0 ? 0 : i;
+}
+
+export function workflowStageRank(key: string): number {
+  if (key === "out_of_warehouse") {
+    return Math.max(0, WORKFLOW_STAGES.findIndex((stage) => stage.key === "ready"));
+  }
+  const i = WORKFLOW_STAGES.findIndex((stage) => stage.key === key);
+  return i < 0 ? 0 : i;
+}
+
+export function nextWorkflowStage(key: string): StageKey | undefined {
+  const index = workflowStageRank(key);
+  return WORKFLOW_STAGES[index + 1]?.key;
 }
 
 export function isKoshaPendingPricing(booking: { paymentStatus?: string; totalAmount?: number }) {
