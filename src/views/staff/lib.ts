@@ -10,7 +10,7 @@ import { formatMoney } from "@/lib/money";
  */
 export type StageKey =
   | "booked" | "preparing" | "ready" | "out_of_warehouse" | "on_the_way"
-  | "executing" | "executed" | "event_running" | "dismantling" | "returned" | "delivered";
+  | "executing" | "executed" | "event_running" | "before_return" | "dismantling" | "returned" | "delivered";
 
 export const STAGES: { key: StageKey; label: string }[] = [
   { key: "booked", label: "محجوزة" },
@@ -21,6 +21,7 @@ export const STAGES: { key: StageKey; label: string }[] = [
   { key: "executing", label: "جاري التنصيب" },
   { key: "executed", label: "تم التنصيب" },
   { key: "event_running", label: "المناسبة جارية" },
+  { key: "before_return", label: "قبل الإرجاع" },
   { key: "dismantling", label: "جاري الفك" },
   { key: "returned", label: "تم الإرجاع" },
   { key: "delivered", label: "مكتمل" },
@@ -110,7 +111,16 @@ export type KoshaSetup = {
 };
 export type BookingDetail = { booking: CrewBooking; setup?: KoshaSetup; timeline: TimelineRow[]; media: MediaRow[]; delivery: DeliveryRow; paymentRequests: PaymentReq[] };
 
-export type MediaInput = { url: string; kind: "image" | "video" };
+export type MediaInput = {
+  url: string;
+  kind: "image" | "video";
+  /** Upload metadata is retained in the booking event, not trusted for status. */
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+};
 
 export async function filesToMedia(files: FileList | File[]): Promise<MediaInput[]> {
   const out: MediaInput[] = [];
@@ -238,7 +248,7 @@ export type KoshaOpsBoard = {
     completed: number; delayed: number; availableStaff: number;
     availableVehicles: number; pendingTasks: number; unreadNotifications: number;
   };
-  currentJobs: Array<{ bookingId: number; customerName: string; eventTime: string | null; stage: string; hall: string | null }>;
+  currentJobs: Array<{ bookingId: number; source?: "kosha" | "service"; customerName: string; eventTime: string | null; stage: string; hall: string | null }>;
   missingAssets: Array<{ bookingId: number; customerName: string; item: string }>;
   damagedAssets: Array<{ bookingId: number; customerName: string; description: string; priority: string }>;
   employeeWorkload: Array<{ staffId: number; name: string; bookings: number }>;

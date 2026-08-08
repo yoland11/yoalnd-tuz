@@ -39,6 +39,7 @@ const KOSHA_STAGES: StageDef[] = [
   { key: "executing", label: "جاري التنصيب", phase: "active" },
   { key: "executed", label: "تم التنصيب", phase: "active" },
   { key: "event_running", label: "المناسبة جارية", phase: "active" },
+  { key: "before_return", label: "قبل الإرجاع", phase: "active" },
   { key: "dismantling", label: "جاري الفك", phase: "transit" },
   { key: "returned", label: "تم الإرجاع", phase: "done" },
   { key: "delivered", label: "مكتمل", phase: "done" },

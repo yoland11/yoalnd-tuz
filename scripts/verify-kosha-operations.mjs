@@ -2,7 +2,7 @@
 // Run: node scripts/verify-kosha-operations.mjs
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,12 +15,18 @@ const bundle = await build({
 });
 const outFile = join(mkdtempSync(join(tmpdir(), "ajn-kosha-")), "kosha.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
+const staffBookingDetail = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
+const staffApi = readFileSync("src/server/api.ts", "utf8");
+const staffOperations = readFileSync("src/views/staff/operations.tsx", "utf8");
+const serviceWorker = readFileSync("public/sw.js", "utf8");
+const appShell = readFileSync("src/App.tsx", "utf8");
 
 const {
   KOSHA_STAGES, LEGACY_KOSHA_STAGES, KOSHA_CHECKLIST_ITEMS,
   koshaStageRank, evaluateKoshaStage, checklistCovered, blockingChecklistIssues,
   scanPointForStage, validateDamageReport, damageNeedsManagerApproval,
   bookingStatusForKoshaStage, serviceOrderStatusForKoshaStage,
+  trackingStatusForKoshaStage,
 } = await import(pathToFileURL(outFile).href);
 
 let failures = 0;
@@ -35,13 +41,26 @@ const partial = full.slice(0, 5);
 const withIssue = full.map((e) => (e.item === "lighting" ? { ...e, condition: "damaged" } : e));
 
 // ── The pipeline extends, never replaces ──
-check("11 stages", KOSHA_STAGES.length, 11);
+check("12 stages including mandatory before-return proof", KOSHA_STAGES.length, 12);
 check("every legacy key survives",
   LEGACY_KOSHA_STAGES.filter((s) => !KOSHA_STAGES.includes(s)), []);
 check("legacy keys keep their relative order",
   LEGACY_KOSHA_STAGES.map(koshaStageRank),
   [...LEGACY_KOSHA_STAGES.map(koshaStageRank)].sort((a, b) => a - b));
 check("an unknown stored stage ranks 0 instead of throwing", koshaStageRank("nonsense"), 0);
+
+// ── Mandatory field-photo contract ──
+check("mandatory photo uploader uses shared resumable upload", staffBookingDetail.includes("uploadImageWithVariants(entry.file"), true);
+check("mandatory photo uploader validates file signatures", staffBookingDetail.includes("validateImageUpload(entry.file)"), true);
+check("mandatory photo uploader creates an immediate local preview", staffBookingDetail.includes("URL.createObjectURL(file)"), true);
+check("mandatory photo uploader reports per-file progress", staffBookingDetail.includes("uploadProgressLabel(upload.progress)"), true);
+check("mandatory photo uploader has retry and cancel actions", staffBookingDetail.includes("retryUpload") && staffBookingDetail.includes("cancelUpload"), true);
+check("mandatory photo uploader supports drop input", staffBookingDetail.includes("onDrop={(event) =>"), true);
+check("mandatory workflow stays locked while an upload is active", staffBookingDetail.includes("media.length === 0 || busy || uploading"), true);
+check("before-return proof accepts supported image formats only", staffBookingDetail.includes("imagesOnly={title === \"قبل الإرجاع\"}"), true);
+check("server requires a trusted photo before return", staffApi.includes('toStage === "before_return"') && staffApi.includes("isTrustedKoshaOperationImage"), true);
+check("saved proof generates a timeline media event", staffApi.includes("koshaMediaTimelineMeta") && staffApi.includes('type: "media"'), true);
+check("saved proof generates an audit event", staffApi.includes("kosha_execution_photo_uploaded"), true);
 
 // The coarse booking lifecycle must always use the existing, validated booking
 // status values. In particular, the legacy `processing` value must never be
@@ -52,6 +71,8 @@ check("on_the_way maps to in_progress booking status", bookingStatusForKoshaStag
 check("delivered maps to completed booking status", bookingStatusForKoshaStage("delivered"), "completed");
 check("early routed service stages keep their processing status", serviceOrderStatusForKoshaStage("preparing"), "processing");
 check("routed service delivery completes the order", serviceOrderStatusForKoshaStage("delivered"), "completed");
+check("field status maps to the public customer tracking state", trackingStatusForKoshaStage("on_the_way"), "preparing");
+check("delivered maps to completed customer tracking", trackingStatusForKoshaStage("delivered"), "completed");
 
 // ── Legacy adjacency must keep working (the regression this caught) ──
 const go = (from, to, extra = {}) =>
@@ -73,14 +94,16 @@ check("on_the_way → executing", go("on_the_way", "executing").ok, true);
 check("executing → executed", go("executing", "executed").ok, true);
 check("ready cannot skip to executing", go("ready", "executing").status, 409);
 check("executed → event_running", go("executed", "event_running").ok, true);
-check("event_running → dismantling", go("event_running", "dismantling").ok, true);
+check("event_running → before_return", go("event_running", "before_return").ok, true);
+check("before_return → dismantling", go("before_return", "dismantling").ok, true);
 check("dismantling → returned", go("dismantling", "returned").ok, true);
 check("returned → delivered", go("returned", "delivered").ok, true);
 
 // ── Illegal moves ──
 check("cannot skip several stages", go("booked", "on_the_way").ok, false);
 check("skipping returns 409", go("booked", "on_the_way").status, 409);
-check("same stage refused", go("preparing", "preparing").status, 409);
+check("same stage is idempotent", go("preparing", "preparing").ok, true);
+check("same stage is marked idempotent", go("preparing", "preparing").idempotent, true);
 check("unknown target refused", go("preparing", "teleport").status, 400);
 check("crew cannot rewind", go("on_the_way", "out_of_warehouse").ok, false);
 check("rewind refusal is 403", go("on_the_way", "out_of_warehouse").status, 403);
@@ -128,6 +151,16 @@ check("dismantling scans the return", scanPointForStage("dismantling"), "return"
 check("arriving back scans warehouse in", scanPointForStage("returned"), "warehouse_in");
 check("stages without scanning return null",
   [scanPointForStage("booked"), scanPointForStage("delivered")], [null, null]);
+
+// ── Status integrity, authorization and PWA cache safeguards ──
+check("execution stage is preferred over generic booking-operation stage",
+  staffApi.includes("const explicit = String(fallback ?? \"\")") && staffApi.includes("if ((KOSHA_EXECUTION_STAGES as readonly string[]).includes(explicit)) return explicit"), true);
+check("all field operation mutations use the central booking access guard",
+  ["operations", "action === \"stage\"", "action === \"media\"", "action === \"delivery\"", "action === \"collect\""].every((token) => staffApi.includes(token)) && (staffApi.match(/authorizeKoshaPortalBooking\(/g) ?? []).length >= 6, true);
+check("scanner prevents concurrent duplicate submissions", staffOperations.includes("requestInFlight.current") && staffOperations.includes("setSubmitting(true)"), true);
+check("no-damage acknowledgement is idempotent", staffApi.includes("where not exists (") && staffApi.includes("status = ${\"none\"}"), true);
+check("PWA never caches staff pages or Next runtime chunks", serviceWorker.includes('url.pathname.startsWith("/staff/")') && serviceWorker.includes('url.pathname.startsWith("/_next/")'), true);
+check("service worker is not registered in development", appShell.includes('process.env.NODE_ENV !== "production"'), true);
 
 // ── Damage report validation ──
 const ok = (draft) => validateDamageReport(draft);

@@ -1,5 +1,9 @@
 export async function registerServiceWorker() {
-  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return null;
+  if (
+    typeof window === "undefined" ||
+    process.env.NODE_ENV !== "production" ||
+    !("serviceWorker" in navigator)
+  ) return null;
   const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   registration.addEventListener("updatefound", () => {
     const worker = registration.installing;

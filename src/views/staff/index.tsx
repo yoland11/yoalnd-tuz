@@ -17,6 +17,7 @@ const STAGE_BADGE: Record<string, string> = {
   executing: "bg-accent/15 text-accent",
   executed: "bg-status-success/15 text-status-success",
   event_running: "bg-primary/15 text-primary",
+  before_return: "bg-primary/15 text-primary",
   dismantling: "bg-accent/15 text-accent",
   returned: "bg-status-success/15 text-status-success",
   delivered: "bg-status-success/15 text-status-success dark:text-status-success",
@@ -195,7 +196,7 @@ function Dashboard() {
   );
 }
 
-function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
+function BookingsList({ bucket, showOperations = false }: { bucket: Bucket | "all"; showOperations?: boolean }) {
   const [rows, setRows] = useState<CrewBooking[] | null>(null);
   const [search, setSearch] = useState("");
   const [dept, setDept] = useState<"all" | "kosha" | "sound" | "mixed">("all");
@@ -230,11 +231,12 @@ function BookingsList({ bucket }: { bucket: Bucket | "all" }) {
         <Search className="h-4 w-4 text-muted-foreground" />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الهاتف..." className="w-full bg-transparent py-2 text-sm outline-none" />
       </div>
-      {/* Operations surfaces sit one tap away instead of crowding the tab bar. */}
-      <div className="grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => nav("/staff/koshas/ops-board")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">اللوحة الحية</button>
-        <button type="button" onClick={() => nav("/staff/koshas/ops-reports")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">التقارير التشغيلية</button>
-      </div>
+      {showOperations && (
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => nav("/staff/koshas/ops-board")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">اللوحة الحية</button>
+          <button type="button" onClick={() => nav("/staff/koshas/ops-reports")} className="min-h-11 rounded-lg border border-border bg-card text-xs font-bold">التقارير التشغيلية</button>
+        </div>
+      )}
       {/* Department filter. Client-side over the already-loaded rows, so no route,
           request or permission changes — a booking missing `departments` counts as kosha. */}
       <div className="flex gap-1.5 overflow-x-auto pb-1">
@@ -417,6 +419,7 @@ function StaffPortalContent() {
 
   const canStaff = !!me && hasPerm(me, "koshas");
   const isManager = !!me && (hasPerm(me, "accounting") || hasPerm(me, "bookings") || me.role === "admin");
+  const canSeeAllOperations = me?.role === "admin" || me?.role === "manager";
   const allowed = canStaff || isManager;
 
   // Poll notifications (push-like) + fire a browser notification for new items.
@@ -498,8 +501,8 @@ function StaffPortalContent() {
       <main className="pb-20">
         <Switch>
           <Route path="/staff/koshas/booking/:id">{(p) => <StaffBookingDetail id={Number(p.id)} source={new URLSearchParams(window.location.search).get("source") === "service" ? "service" : "kosha"} onBack={() => window.history.back()} />}</Route>
-          <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} />}</Route>
-          <Route path="/staff/koshas/list"><BookingsList bucket="all" /></Route>
+          <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} showOperations={canSeeAllOperations} />}</Route>
+          <Route path="/staff/koshas/list"><BookingsList bucket="all" showOperations={canSeeAllOperations} /></Route>
           <Route path="/staff/koshas/notifications"><Notifications /></Route>
           <Route path="/staff/koshas/ops-board"><KoshaOpsBoardPage /></Route>
           <Route path="/staff/koshas/ops-reports"><KoshaOpsReportsPage /></Route>

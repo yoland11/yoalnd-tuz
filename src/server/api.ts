@@ -322,6 +322,7 @@ import {
   KOSHA_STAGE_LABELS,
   bookingStatusForKoshaStage,
   serviceOrderStatusForKoshaStage,
+  trackingStatusForKoshaStage,
   type KoshaStage,
   SCAN_POINT_LABELS,
   blockingChecklistIssues,
@@ -4410,6 +4411,26 @@ function cleanMediaInput(value: unknown): string {
   if (raw.startsWith("data:image/") || raw.startsWith("data:video/"))
     return raw;
   return cleanPublicUrl(raw);
+}
+
+/** Mandatory Koshat proof must be an image verified by the shared resumable
+ * uploader, never an arbitrary URL or a client-provided data URI. */
+function isTrustedKoshaOperationImage(value: unknown): boolean {
+  if (!STORAGE_URL) return false;
+  try {
+    const url = new URL(String(value ?? "").trim());
+    const storage = new URL(STORAGE_URL);
+    const prefix = `/storage/v1/object/public/${STORAGE_BUCKET}/kosha/operations/`;
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      !url.username &&
+      !url.password &&
+      url.origin === storage.origin &&
+      url.pathname.startsWith(prefix)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function persistMediaValue(
@@ -47409,6 +47430,7 @@ function crewStageToBookingOperation(stage: unknown): string {
     executing: "assets_out",
     executed: "event_active",
     event_running: "event_active",
+    before_return: "event_active",
     dismantling: "event_active",
     returned: "returned",
     delivered: "completed",
@@ -47416,7 +47438,13 @@ function crewStageToBookingOperation(stage: unknown): string {
 }
 
 function syncedCrewStage(details: Record<string, any>, fallback: unknown) {
-  return bookingOperationStageToCrew(details.bookingOperations?.bookingStage) ?? String(fallback ?? "preparing");
+  // execution_stage is the detailed field-operations source of truth. The
+  // generic booking-operation stage is intentionally coarser, so it can only
+  // fill an old row that has no valid execution stage; it must not downgrade a
+  // later state such as before_return/dismantling back to event_running.
+  const explicit = String(fallback ?? "");
+  if ((KOSHA_EXECUTION_STAGES as readonly string[]).includes(explicit)) return explicit;
+  return bookingOperationStageToCrew(details.bookingOperations?.bookingStage) ?? "preparing";
 }
 
 /**
@@ -47465,6 +47493,32 @@ function canStaffOpenKoshaBooking(auth: AdminUser, row: any) {
     isKoshaBookingAssignedTo(row, auth.id) ||
     isKoshaBookingUnassigned(row)
   );
+}
+
+type AuthorizedKoshaPortalBooking = Exclude<ResolvedPortalBooking, { kind: "ambiguous" }>;
+type KoshaBookingAuthorization =
+  | { resolved: AuthorizedKoshaPortalBooking }
+  | { response: NextResponse };
+
+/**
+ * Single staff-assignment guard for every direct booking mutation. The route
+ * list, detail screen, equipment actions, photos, delivery and field operations
+ * must all agree or an employee could bypass the UI by changing a numeric id.
+ */
+async function authorizeKoshaPortalBooking(
+  auth: AdminUser,
+  id: number,
+  source: KoshaPortalSource | null,
+): Promise<KoshaBookingAuthorization> {
+  const resolved = await resolveKoshaPortalBooking(id, source);
+  if (!resolved || resolved.kind === "ambiguous")
+    return { response: error("الحجز غير موجود", 404) };
+  const crewBooking = resolved.kind === "kosha"
+    ? await formatKoshaBookingForCrew(resolved.native)
+    : await formatRoutedKoshaServiceBookingForCrew(resolved.routed.order, resolved.routed.service);
+  if (!canStaffOpenKoshaBooking(auth, crewBooking))
+    return { response: error("لا تملك صلاحية الوصول إلى هذا الحجز", 403) };
+  return { resolved };
 }
 
 async function formatKoshaBookingForCrew(row: any) {
@@ -47583,10 +47637,13 @@ async function saveKoshaMedia(input: {
   bookingId: number;
   eventId?: number | null;
   staff: AdminUser | null;
-  media: Array<{ url?: string; kind?: string }>;
+  media: Array<{ url?: string; kind?: string; fileName?: string; fileSize?: number; mimeType?: string; width?: number; height?: number }>;
   stage?: string | null;
   purpose: string;
+  /** A booking-stage transaction can supply its own database writer. */
+  store?: any;
 }) {
+  const store = input.store ?? db;
   const saved: any[] = [];
   for (const m of input.media || []) {
     const cleaned = String(m?.url ?? "").trim();
@@ -47598,7 +47655,7 @@ async function saveKoshaMedia(input: {
           `koshas/${input.purpose}/${input.bookingId}`,
         )
       : cleaned;
-    const [row] = await db
+    const [row] = await store
       .insert(koshaMediaTable)
       .values({
         bookingId: input.bookingId,
@@ -47613,6 +47670,29 @@ async function saveKoshaMedia(input: {
     saved.push(row);
   }
   return saved;
+}
+
+function koshaMediaTimelineMeta(
+  media: Array<{ url?: string; kind?: string; fileName?: string; fileSize?: number; mimeType?: string; width?: number; height?: number }>,
+  saved: Array<{ id?: number | string; url?: string; kind?: string }>,
+  stage: string,
+  device: string | null,
+) {
+  return {
+    stage,
+    count: saved.length,
+    device,
+    media: saved.map((row, index) => ({
+      id: row.id ?? null,
+      url: row.url ?? null,
+      kind: row.kind ?? media[index]?.kind ?? "image",
+      fileName: String(media[index]?.fileName ?? "") || null,
+      fileSize: Number.isFinite(Number(media[index]?.fileSize)) ? Number(media[index]?.fileSize) : null,
+      mimeType: String(media[index]?.mimeType ?? "") || null,
+      width: Number.isFinite(Number(media[index]?.width)) ? Number(media[index]?.width) : null,
+      height: Number.isFinite(Number(media[index]?.height)) ? Number(media[index]?.height) : null,
+    })),
+  };
 }
 
 // Resolve a booking's selections into full visual items (image + price) for the crew portal.
@@ -47824,7 +47904,7 @@ async function saveRoutedKoshaServiceExecution(
 
 async function persistRoutedKoshaServiceMedia(
   orderId: number,
-  media: Array<{ url?: string; kind?: string }>,
+  media: Array<{ url?: string; kind?: string; fileName?: string; fileSize?: number; mimeType?: string; width?: number; height?: number }>,
   purpose: string,
   stage: string | null,
 ) {
@@ -47841,6 +47921,11 @@ async function persistRoutedKoshaServiceMedia(
       kind: item?.kind === "video" || raw.startsWith("data:video") ? "video" : "image",
       purpose,
       stage,
+      fileName: String(item?.fileName ?? "") || null,
+      fileSize: Number.isFinite(Number(item?.fileSize)) ? Number(item?.fileSize) : null,
+      mimeType: String(item?.mimeType ?? "") || null,
+      width: Number.isFinite(Number(item?.width)) ? Number(item?.width) : null,
+      height: Number.isFinite(Number(item?.height)) ? Number(item?.height) : null,
       createdAt: new Date().toISOString(),
     });
   }
@@ -48045,7 +48130,16 @@ async function handleStaffPortal(
     const actorName = auth.fullName || auth.username;
     const bookingId = id;
     if (!bookingId) return error("معرّف الحجز مطلوب", 400);
-    const bookingSource = String(req.nextUrl.searchParams.get("source") ?? "kosha").slice(0, 20);
+    const requestedSource = req.nextUrl.searchParams.get("source");
+    if (requestedSource && requestedSource !== "kosha" && requestedSource !== "service")
+      return error("مصدر الحجز غير معروف", 400);
+    const bookingSource = (requestedSource ?? "kosha") as KoshaPortalSource;
+
+    // Checklist, scans and damage reports are mutations too. They must use the
+    // exact source discriminator and staff-assignment rule used by the booking
+    // detail endpoint; portal access alone cannot operate a colleague's job.
+    const authorized = await authorizeKoshaPortalBooking(auth, bookingId, bookingSource);
+    if ("response" in authorized) return authorized.response;
 
     const loadChecklist = async () => {
       const rows: any[] =
@@ -48173,8 +48267,12 @@ async function handleStaffPortal(
           insert into kosha_damage_reports
             (booking_id, booking_source, product_id, description, priority, cost_estimate,
              reported_by, reported_by_name, status)
-          values (${bookingId}, ${bookingSource}, null, ${"لا توجد أضرار"}, ${"low"}, 0,
-                  ${auth.id}, ${actorName}, ${"none"})
+          select ${bookingId}, ${bookingSource}, null, ${"لا توجد أضرار"}, ${"low"}, 0,
+                 ${auth.id}, ${actorName}, ${"none"}
+          where not exists (
+            select 1 from kosha_damage_reports
+            where booking_id = ${bookingId} and booking_source = ${bookingSource} and status = ${"none"}
+          )
         `);
         return json({ ok: true, noDamage: true });
       }
@@ -48271,24 +48369,26 @@ async function handleStaffPortal(
   if (resource === "ops-board" && method === "GET") {
     const auth = await requirePermission(req, "koshas");
     if (isResponse(auth)) return auth;
+    if (!canSeeAllKoshaBookings(auth))
+      return error("لوحة العمليات الشاملة متاحة للمشرفين فقط", 403);
     await ensureKoshaOperationsTables();
     const today = new Date().toISOString().slice(0, 10);
 
-    const bookings = await db.query.koshaBookingsTable.findMany({
-      where: sql`${koshaBookingsTable.archivedAt} is null`,
-      orderBy: [desc(koshaBookingsTable.eventDate)],
-      limit: 500,
-    });
-    const bookingById = new Map(bookings.map((row) => [row.id, row]));
+    // The manager board must contain both native kosha_bookings and qualifying
+    // booking-centre service orders. The crew list already composes this exact
+    // set, so reuse it instead of creating a second, incomplete board query.
+    const { visible: bookings } = await getVisibleKoshaBookingsForStaff(auth);
+    const bookingKey = (row: { source?: string; id: number }) => `${row.source ?? "kosha"}:${row.id}`;
+    const bookingById = new Map(bookings.map((row: any) => [bookingKey(row), row]));
     const stageOf = (row: any) => String(row.executionStage ?? "preparing");
 
     const [checklistRows, damageRows, staffRows, vehicleRows, openTasks, unreadNotifications] = await Promise.all([
       db.execute(sql`
-        select booking_id, item, condition from kosha_checklist_entries
+        select booking_id, booking_source, item, condition from kosha_checklist_entries
         where condition <> 'available'
       `),
       db.execute(sql`
-        select booking_id, description, priority from kosha_damage_reports
+        select booking_id, booking_source, description, priority from kosha_damage_reports
         where status <> 'none' order by created_at desc limit 200
       `),
       db.query.staffTable.findMany({ where: eq(staffTable.isActive, true), limit: 500 }),
@@ -48300,8 +48400,8 @@ async function handleStaffPortal(
       db.query.koshaStaffNotificationsTable.findMany({ where: eq(koshaStaffNotificationsTable.isRead, false), limit: 500 }),
     ]);
 
-    const nameFor = (bookingId: number) =>
-      bookingById.get(bookingId)?.customerName ?? `#${bookingId}`;
+    const nameFor = (bookingId: number, source = "kosha") =>
+      bookingById.get(`${source}:${bookingId}`)?.customerName ?? `#${bookingId}`;
 
     // A booking is delayed when its event date has passed and it never reached a
     // terminal stage — the crew is still holding equipment that should be back.
@@ -48331,10 +48431,10 @@ async function handleStaffPortal(
       return servesKosha && !assignedToday.has(row.id);
     }).length;
     const currentJobs = bookings
-      .filter((row) => ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "dismantling"].includes(stageOf(row)))
+      .filter((row) => ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "before_return", "dismantling"].includes(stageOf(row)))
       .sort((a, b) => String(a.eventTime ?? "").localeCompare(String(b.eventTime ?? "")))
       .slice(0, 20)
-      .map((row) => ({ bookingId: row.id, customerName: row.customerName, eventTime: row.eventTime ?? null, stage: stageOf(row), hall: row.hallLocation ?? row.area ?? null }));
+      .map((row: any) => ({ bookingId: row.id, source: row.source ?? "kosha", customerName: row.customerName, eventTime: row.eventTime ?? null, stage: stageOf(row), hall: row.hallLocation ?? row.area ?? null }));
 
     return json({
       today,
@@ -48342,7 +48442,7 @@ async function handleStaffPortal(
         today: bookings.filter((row) => String(row.eventDate ?? "") === today).length,
         preparing: bookings.filter((row) => ["booked", "preparing", "ready"].includes(stageOf(row))).length,
         inProgress: bookings.filter((row) =>
-          ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "dismantling"].includes(stageOf(row)),
+          ["out_of_warehouse", "on_the_way", "executing", "executed", "event_running", "before_return", "dismantling"].includes(stageOf(row)),
         ).length,
         completed: bookings.filter((row) => ["returned", "delivered"].includes(stageOf(row))).length,
         delayed: delayed.length,
@@ -48363,12 +48463,12 @@ async function handleStaffPortal(
         .slice(0, 50)
         .map((row) => ({
           bookingId: Number(row.booking_id),
-          customerName: nameFor(Number(row.booking_id)),
+          customerName: nameFor(Number(row.booking_id), String(row.booking_source ?? "kosha")),
           item: String(row.item),
         })),
       damagedAssets: (((damageRows as any).rows ?? []) as any[]).slice(0, 50).map((row) => ({
         bookingId: Number(row.booking_id),
-        customerName: nameFor(Number(row.booking_id)),
+        customerName: nameFor(Number(row.booking_id), String(row.booking_source ?? "kosha")),
         description: String(row.description),
         priority: String(row.priority),
       })),
@@ -48382,6 +48482,8 @@ async function handleStaffPortal(
   if (resource === "ops-reports" && method === "GET") {
     const auth = await requirePermission(req, "koshas");
     if (isResponse(auth)) return auth;
+    if (!canSeeAllKoshaBookings(auth))
+      return error("التقارير التشغيلية الشاملة متاحة للمشرفين فقط", 403);
     await ensureKoshaOperationsTables();
     const params = req.nextUrl.searchParams;
     const today = new Date();
@@ -48732,7 +48834,12 @@ async function handleStaffPortal(
   // ── Crew asset reservation / checkout / return ──
   // Uses the same canonical booking-operation executor as /admin/bookings.
   if (resource === "bookings" && id && action === "assets") {
-    const source = koshaSourceHint(req) === "service" ? "service" : "kosha";
+    const requestedSource = req.nextUrl.searchParams.get("source");
+    if (requestedSource && requestedSource !== "kosha" && requestedSource !== "service")
+      return error("مصدر الحجز غير معروف", 400);
+    const source = (requestedSource ?? "kosha") as KoshaPortalSource;
+    const authorized = await authorizeKoshaPortalBooking(auth, id, source);
+    if ("response" in authorized) return authorized.response;
     const reference = await loadBookingOperationsReference(source, id);
     if (!reference) return error("الحجز غير موجود", 404);
 
@@ -48901,9 +49008,11 @@ async function handleStaffPortal(
       return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
     const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
     const routed = resolved?.kind === "service" ? resolved.routed : null;
-    return routed
-      ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
-      : error("الحجز غير موجود", 404);
+    if (!routed) return error("الحجز غير موجود", 404);
+    const crewBooking = await formatRoutedKoshaServiceBookingForCrew(routed.order, routed.service);
+    if (!canStaffOpenKoshaBooking(auth, crewBooking))
+      return error("هذا الحجز غير مُسند إليك", 403);
+    return json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service));
   }
 
   // ── Change execution stage ──
@@ -48921,24 +49030,17 @@ async function handleStaffPortal(
       return error("استخدم نموذج التسليم لإكمال هذه المرحلة", 400);
     // Resolve by the explicit source when the client sends one: kosha_bookings
     // and service_orders share an id space, so id alone can select the wrong row.
-    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
-    if (resolved?.kind === "ambiguous")
-      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
-    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
-    const routed = resolved?.kind === "service" ? resolved.routed : null;
-    if (!nativeBooking && !routed) return error("الحجز غير موجود", 404);
-    const media: Array<{ url?: string; kind?: string }> = Array.isArray(
+    if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))
+      return error("مصدر الحجز غير معروف", 400);
+    const authorized = await authorizeKoshaPortalBooking(auth, id, koshaSourceHint(req));
+    if ("response" in authorized) return authorized.response;
+    const nativeBooking = authorized.resolved.kind === "kosha" ? authorized.resolved.native : null;
+    const routed = authorized.resolved.kind === "service" ? authorized.resolved.routed : null;
+    const media: Array<{ url?: string; kind?: string; fileName?: string; fileSize?: number; mimeType?: string; width?: number; height?: number }> = Array.isArray(
       data?.media,
     )
       ? data.media
       : [];
-
-    if (toStage === "executed" && media.length === 0) {
-      return error(
-        "يجب رفع صورة واحدة على الأقل أو فيديو قبل حفظ مرحلة (تم التنفيذ)",
-        400,
-      );
-    }
 
     // Keep the warehouse checkpoint enforced even though the staff-facing
     // workflow presents "ready → on the way" as one action.
@@ -48966,6 +49068,25 @@ async function handleStaffPortal(
       checklist: checklistEntries,
     });
     if (!transition.ok) return error(transition.reason, transition.status);
+    if (transition.idempotent) {
+      return routed
+        ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
+        : json(await loadKoshaBookingDetail(id));
+    }
+    const hasMandatoryPhotoProof = media.some(
+      (item) => item?.kind !== "video" && isTrustedKoshaOperationImage(item?.url),
+    );
+    if ((toStage === "executed" || toStage === "before_return") && media.length === 0) {
+      return error(
+        toStage === "before_return"
+          ? "يجب رفع صورة واحدة على الأقل قبل الانتقال إلى مرحلة (قبل الإرجاع)."
+          : "يجب رفع صورة واحدة على الأقل أو فيديو قبل حفظ مرحلة (تم التنفيذ)",
+        400,
+      );
+    }
+    if (toStage === "before_return" && !hasMandatoryPhotoProof) {
+      return error("صورة التوثيق يجب أن تكتمل في التخزين الآمن قبل الانتقال إلى مرحلة (قبل الإرجاع).", 400);
+    }
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const fromStage = fields.executionStage ?? "preparing";
@@ -48976,6 +49097,7 @@ async function handleStaffPortal(
         toStage,
       );
       fields.executionStage = toStage;
+      fields.trackingStatus = trackingStatusForKoshaStage(toStage);
       const bookingStage = crewStageToBookingOperation(toStage);
       fields.bookingOperations = {
         ...(fields.bookingOperations ?? {}),
@@ -48998,57 +49120,148 @@ async function handleStaffPortal(
           meta: { device: req.headers.get("user-agent")?.slice(0, 200) ?? null },
           createdAt: new Date().toISOString(),
         },
+        ...(savedMedia.length ? [{
+          id: `service-media-${routed.order.id}-${Date.now()}`,
+          type: "media",
+          staffName: auth.fullName || auth.username,
+          fromStage: null,
+          toStage,
+          note: "تم رفع صور التوثيق",
+          meta: koshaMediaTimelineMeta(
+            media,
+            savedMedia,
+            toStage,
+            req.headers.get("user-agent")?.slice(0, 200) ?? null,
+          ),
+          createdAt: new Date().toISOString(),
+        }] : []),
       ];
-      const updatedFields = await saveRoutedKoshaServiceExecution(routed.order, fields);
+      // Compare the stage stored at read-time inside the UPDATE itself. This
+      // makes retried or concurrent stage requests idempotent for routed
+      // booking-centre orders just as they are for native kosha bookings, while
+      // jsonb merging preserves unrelated booking-centre fields.
+      const fieldsPatch = {
+        executionStage: fields.executionStage,
+        trackingStatus: fields.trackingStatus,
+        bookingOperations: fields.bookingOperations,
+        koshaPortalMedia: fields.koshaPortalMedia,
+        koshaPortalTimeline: fields.koshaPortalTimeline,
+      };
       const [updated] = await db.update(serviceOrdersTable)
-        .set({ status: serviceOrderStatusForKoshaStage(toStage) })
-        .where(eq(serviceOrdersTable.id, updatedFields.id))
+        .set({
+          customFields: sql`coalesce(${serviceOrdersTable.customFields}, '{}'::jsonb) || ${JSON.stringify(fieldsPatch)}::jsonb`,
+          status: serviceOrderStatusForKoshaStage(toStage),
+        } as any)
+        .where(and(
+          eq(serviceOrdersTable.id, routed.order.id),
+          sql`coalesce(${serviceOrdersTable.customFields}->>'executionStage', ${fromStage}) = ${fromStage}`,
+        ))
         .returning();
+      if (!updated) {
+        const latest = await findRoutedKoshaServiceBooking(routed.order.id);
+        const latestFields = latest ? routedServiceExecutionFields(latest.order) : null;
+        if (latest && latestFields && syncedCrewStage(latestFields, latestFields.executionStage) === toStage)
+          return json(await loadRoutedKoshaServiceBookingDetail(latest.order, latest.service));
+        return error("تغيّرت مرحلة الحجز من جهاز آخر؛ تمّت مزامنة الحالة الحالية", 409);
+      }
       void logAdminActivity(req, "kosha_execution_stage_changed", "service_order", updated.id, {
         fromStage,
         toStage,
         note: data?.note ?? null,
       });
+      if (savedMedia.length) {
+        void logAdminActivity(req, "kosha_execution_photo_uploaded", "service_order", updated.id, {
+          stage: toStage,
+          count: savedMedia.length,
+        });
+      }
       return json(await loadRoutedKoshaServiceBookingDetail(updated, routed.service));
     }
     const booking = nativeBooking!;
     const fromStage = (booking as any).executionStage ?? "preparing";
-    const event = await addKoshaEvent({
-      bookingId: id,
-      staff: auth,
-      type: "stage",
-      fromStage,
-      toStage,
-      note: data?.note ?? null,
-      meta: { device: req.headers.get("user-agent")?.slice(0, 200) ?? null },
-    });
-    if (media.length)
-      await saveKoshaMedia({
-        bookingId: id,
-        eventId: event.id,
-        staff: auth,
-        media,
-        stage: toStage,
-        purpose: "execution",
-      });
     const nativeDetails = (booking.bookingDetails ?? {}) as Record<string, any>;
     const bookingStage = crewStageToBookingOperation(toStage);
-    await db
-      .update(koshaBookingsTable)
-      .set({
-        executionStage: toStage,
-        status: bookingStatusForKoshaStage(toStage),
-        bookingDetails: {
-          ...nativeDetails,
-          bookingOperations: {
-            ...(nativeDetails.bookingOperations ?? {}),
-            bookingStage,
-            bookingStageUpdatedAt: new Date().toISOString(),
+    const committed = await db.transaction(async (tx) => {
+      // The current stage is part of the WHERE clause. Only one concurrent
+      // request can win this transition, so a retry cannot create duplicate
+      // events or overwrite a later stage.
+      const [saved] = await tx
+        .update(koshaBookingsTable)
+        .set({
+          executionStage: toStage,
+          status: bookingStatusForKoshaStage(toStage),
+          trackingStatus: trackingStatusForKoshaStage(toStage),
+          bookingDetails: {
+            ...nativeDetails,
+            bookingOperations: {
+              ...(nativeDetails.bookingOperations ?? {}),
+              bookingStage,
+              bookingStageUpdatedAt: new Date().toISOString(),
+            },
           },
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(koshaBookingsTable.id, id));
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(koshaBookingsTable.id, id),
+            eq(koshaBookingsTable.executionStage, fromStage),
+          ),
+        )
+        .returning();
+      if (!saved) return null;
+      const [event] = await tx
+        .insert(koshaBookingEventsTable)
+        .values({
+          bookingId: id,
+          staffId: auth.id,
+          staffName: auth.fullName || auth.username,
+          type: "stage",
+          fromStage,
+          toStage,
+          note: data?.note ?? null,
+          meta: { device: req.headers.get("user-agent")?.slice(0, 200) ?? null },
+        })
+        .returning();
+      const savedMedia = media.length
+        ? await saveKoshaMedia({
+          bookingId: id,
+          eventId: event.id,
+          staff: auth,
+          media,
+          stage: toStage,
+          purpose: "execution",
+          store: tx,
+        })
+        : [];
+      if (savedMedia.length) {
+        await tx.insert(koshaBookingEventsTable).values({
+          bookingId: id,
+          staffId: auth.id,
+          staffName: auth.fullName || auth.username,
+          type: "media",
+          fromStage: null,
+          toStage,
+          note: "تم رفع صور التوثيق",
+          meta: koshaMediaTimelineMeta(
+            media,
+            savedMedia,
+            toStage,
+            req.headers.get("user-agent")?.slice(0, 200) ?? null,
+          ),
+        });
+      }
+      return { saved, event, savedMedia };
+    });
+    if (!committed) {
+      const latest = await db.query.koshaBookingsTable.findFirst({
+        where: eq(koshaBookingsTable.id, id),
+      });
+      if (latest?.executionStage === toStage) {
+        return json(await loadKoshaBookingDetail(id));
+      }
+      return error("تغيرت مرحلة الحجز من جهاز آخر؛ تمّت مزامنة الحالة الحالية", 409);
+    }
+    const savedMedia = committed.savedMedia;
     await addKoshaNotification({
       audience: "manager",
       type: "execution_stage_changed",
@@ -49071,6 +49284,12 @@ async function handleStaffPortal(
       toStage,
       note: data?.note ?? null,
     });
+    if (savedMedia.length) {
+      void logAdminActivity(req, "kosha_execution_photo_uploaded", "kosha_booking", id, {
+        stage: toStage,
+        count: savedMedia.length,
+      });
+    }
     return json(await loadKoshaBookingDetail(id));
   }
 
@@ -49090,11 +49309,12 @@ async function handleStaffPortal(
     if (media.length === 0) return error("لا توجد ملفات للرفع", 400);
     // Resolve by the explicit source when the client sends one: kosha_bookings
     // and service_orders share an id space, so id alone can select the wrong row.
-    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
-    if (resolved?.kind === "ambiguous")
-      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
-    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
-    const routed = resolved?.kind === "service" ? resolved.routed : null;
+    if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))
+      return error("مصدر الحجز غير معروف", 400);
+    const authorized = await authorizeKoshaPortalBooking(auth, id, koshaSourceHint(req));
+    if ("response" in authorized) return authorized.response;
+    const nativeBooking = authorized.resolved.kind === "kosha" ? authorized.resolved.native : null;
+    const routed = authorized.resolved.kind === "service" ? authorized.resolved.routed : null;
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const savedMedia = await persistRoutedKoshaServiceMedia(
@@ -49168,11 +49388,40 @@ async function handleStaffPortal(
     }
     // Resolve by the explicit source when the client sends one: kosha_bookings
     // and service_orders share an id space, so id alone can select the wrong row.
-    const resolved = await resolveKoshaPortalBooking(id, koshaSourceHint(req));
-    if (resolved?.kind === "ambiguous")
-      return error("هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره", 409);
-    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
-    const routed = resolved?.kind === "service" ? resolved.routed : null;
+    if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))
+      return error("مصدر الحجز غير معروف", 400);
+    const authorized = await authorizeKoshaPortalBooking(auth, id, koshaSourceHint(req));
+    if ("response" in authorized) return authorized.response;
+    const nativeBooking = authorized.resolved.kind === "kosha" ? authorized.resolved.native : null;
+    const routed = authorized.resolved.kind === "service" ? authorized.resolved.routed : null;
+    const source = routed ? "service" : "kosha";
+    const currentExecutionStage = routed
+      ? syncedCrewStage(routedServiceExecutionFields(routed.order), routedServiceExecutionFields(routed.order).executionStage)
+      : String(nativeBooking?.executionStage ?? "preparing");
+    // Delivery is a terminal workflow transition, not a standalone write.
+    // This blocks direct API attempts to skip return/inspection, and makes a
+    // retried completed delivery return the canonical detail without duplicate
+    // media, timeline or compensation records.
+    await ensureKoshaOperationsTables();
+    const damageRows: any[] = ((await db.execute(sql`
+      select id from kosha_damage_reports
+      where booking_id = ${id} and booking_source = ${source}
+      limit 1
+    `)) as any).rows ?? [];
+    const deliveryTransition = evaluateKoshaStage({
+      from: currentExecutionStage,
+      to: "delivered",
+      isManager: auth.role === "admin" || auth.role === "manager",
+      // Legacy rows may finish through the legacy executed → delivered path;
+      // new returned jobs always require an explicit damage answer.
+      damageAnswered: currentExecutionStage === "returned" ? damageRows.length > 0 : undefined,
+    });
+    if (!deliveryTransition.ok) return error(deliveryTransition.reason, deliveryTransition.status);
+    if (deliveryTransition.idempotent) {
+      return routed
+        ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
+        : json(await loadKoshaBookingDetail(id));
+    }
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const savedMedia = await persistRoutedKoshaServiceMedia(
@@ -49192,6 +49441,7 @@ async function handleStaffPortal(
       const remaining = money(routed.order.remainingAmount) + compensation;
       const fromStage = fields.executionStage ?? "preparing";
       fields.executionStage = "delivered";
+      fields.trackingStatus = trackingStatusForKoshaStage("delivered");
       fields.bookingOperations = {
         ...(fields.bookingOperations ?? {}),
         bookingStage: "completed",
@@ -49231,7 +49481,7 @@ async function handleStaffPortal(
           totalAmount: String(total),
           remainingAmount: String(remaining),
           paymentStatus: remaining <= 0 ? "paid" : Number(routed.order.depositAmount) > 0 ? "partial" : "unpaid",
-          status: "delivered",
+          status: serviceOrderStatusForKoshaStage("delivered"),
         })
         .where(eq(serviceOrdersTable.id, routed.order.id))
         .returning();
@@ -49306,6 +49556,7 @@ async function handleStaffPortal(
     const patch: Record<string, unknown> = {
       executionStage: "delivered",
       status: "completed",
+      trackingStatus: trackingStatusForKoshaStage("delivered"),
       bookingDetails: {
         ...bookingDetails,
         bookingOperations: {
@@ -49342,6 +49593,10 @@ async function handleStaffPortal(
     action === "collect" &&
     method === "POST"
   ) {
+    if (req.nextUrl.searchParams.get("source") === "service")
+      return error("التحصيل الميداني غير متاح لهذا المصدر", 400);
+    const authorized = await authorizeKoshaPortalBooking(auth, id, "kosha");
+    if ("response" in authorized) return authorized.response;
     const data = await body(req);
     const amount = Number(data?.amount ?? 0);
     const note = String(data?.note ?? "").trim();

@@ -27,6 +27,7 @@ export const KOSHA_EXECUTION_STAGES = [
   "executing",        // جاري التنصيب
   "executed",         // تم التنصيب
   "event_running",    // المناسبة جارية      (new)
+  "before_return",    // قبل الإرجاع         (new)
   "dismantling",      // جاري الفك           (new)
   "returned",         // تم الإرجاع          (new)
   "delivered",        // مكتمل

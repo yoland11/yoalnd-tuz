@@ -329,13 +329,20 @@ function Router() {
 
 function App() {
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        registerServiceWorker().catch(() => {
-          /* SW registration is non-fatal */
-        });
+    // A service worker must never cache Turbopack's development chunks.  A stale
+    // cached module makes the staff portal fail before it can render, which is
+    // particularly harmful to field teams. Production keeps the existing PWA.
+    if (process.env.NODE_ENV !== "production" || !("serviceWorker" in navigator)) return;
+
+    const register = () => {
+      registerServiceWorker().catch(() => {
+        /* SW registration is non-fatal */
       });
-    }
+    };
+    if (document.readyState === "complete") register();
+    else window.addEventListener("load", register, { once: true });
+
+    return () => window.removeEventListener("load", register);
   }, []);
 
   return (

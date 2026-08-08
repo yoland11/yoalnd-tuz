@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, BarChart3, Bell, CheckCircle2, ClipboardList, Clock3, Loader2, MapPin, QrCode, Truck, Users, Wrench,
 } from "lucide-react";
@@ -23,6 +23,17 @@ function Banner({ kind, children }: { kind: "ok" | "error"; children: React.Reac
   );
 }
 
+function LoadFailure({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-center" role="alert">
+      <p className="text-sm text-destructive">{message}</p>
+      <button type="button" onClick={onRetry} className="min-h-10 rounded-lg border border-border bg-card px-4 text-xs font-bold text-primary">
+        إعادة المحاولة
+      </button>
+    </div>
+  );
+}
+
 /**
  * Field-operations panel for one booking: equipment checklist, damage report and the
  * five scan points. Rendered inside the existing booking detail screen — no route,
@@ -31,13 +42,20 @@ function Banner({ kind, children }: { kind: "ok" | "error"; children: React.Reac
 export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }: { bookingId: number; source?: string; activeTab?: "checklist" | "scan" | "damage" }) {
   const [data, setData] = useState<OperationsPayload | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"checklist" | "scan" | "damage">("checklist");
 
   useEffect(() => { if (activeTab) setTab(activeTab); }, [activeTab]);
 
-  const load = useCallback(() => {
-    koshaOpsApi.get(bookingId, source).then(setData).catch(() => setData(null));
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      setData(await koshaOpsApi.get(bookingId, source));
+    } catch (err: any) {
+      setData(null);
+      setLoadError(apiErrorMessage(err, "تعذّر تحميل مركز العمليات"));
+    }
   }, [bookingId, source]);
   useEffect(() => { load(); }, [load]);
 
@@ -58,6 +76,7 @@ export function KoshaOperationsPanel({ bookingId, source = "kosha", activeTab }:
     return { completed, total: CHECKLIST_ITEMS.length, percent: Math.round((completed / CHECKLIST_ITEMS.length) * 100) };
   }, [data]);
 
+  if (loadError && !data) return <LoadFailure message={loadError} onRetry={() => void load()} />;
   if (!data) return <Spinner />;
 
   const conditionOf = (item: string) =>
@@ -160,14 +179,22 @@ function ScanTab({
   const [point, setPoint] = useState(SCAN_POINTS[0].key);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const requestInFlight = useRef(false);
 
   async function submit(code: string) {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
+    setSubmitting(true);
     try {
       const res = await koshaOpsApi.scanItem(bookingId, { scanPoint: point, code }, source);
       setMsg({ ok: true, text: `${res.name} — ${res.scanPointLabel}` });
       onDone();
     } catch (err: any) {
       setMsg({ ok: false, text: apiErrorMessage(err, "تعذر تسجيل المسح") });
+    } finally {
+      requestInFlight.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -178,9 +205,10 @@ function ScanTab({
           <button
             key={item.key}
             type="button"
+            disabled={submitting}
             onClick={() => setPoint(item.key)}
             aria-pressed={point === item.key}
-            className={`rounded-lg px-2 py-1.5 text-[11px] font-bold ${point === item.key ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground"}`}
+            className={`rounded-lg px-2 py-1.5 text-[11px] font-bold disabled:opacity-50 ${point === item.key ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground"}`}
           >
             {item.label}
             {counts[item.key] ? <span className="ms-1 opacity-70">{counts[item.key]}</span> : null}
@@ -188,6 +216,7 @@ function ScanTab({
         ))}
       </div>
       {msg && <Banner kind={msg.ok ? "ok" : "error"}>{msg.text}</Banner>}
+      {submitting && <div className="flex items-center justify-center gap-1.5 py-1 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> جارٍ تسجيل المسح…</div>}
       {scanning ? (
         <>
           {/* Batch scanning: the camera stays open so a whole load can be swept. */}
@@ -317,13 +346,22 @@ function DamageTab({
 
 export function KoshaOpsBoardPage() {
   const [data, setData] = useState<KoshaOpsBoard | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   useEffect(() => {
     let mounted = true;
-    const load = () => koshaOpsApi.board().then((next) => { if (mounted) setData(next); }).catch(() => { if (mounted) setData(null); });
+    const load = () => koshaOpsApi.board().then((next) => {
+      if (!mounted) return;
+      setData(next);
+      setError(null);
+    }).catch((err) => {
+      if (mounted) setError(apiErrorMessage(err, "تعذّر تحميل لوحة العمليات"));
+    });
     load();
     const timer = window.setInterval(load, 30_000);
     return () => { mounted = false; window.clearInterval(timer); };
-  }, []);
+  }, [retryKey]);
+  if (error && !data) return <div className="p-4"><LoadFailure message={error} onRetry={() => setRetryKey((key) => key + 1)} /></div>;
   if (!data) return <Spinner />;
   const stats = [
     { label: "حجوزات اليوم", value: data.counts.today, icon: ClipboardList },
@@ -351,7 +389,7 @@ export function KoshaOpsBoardPage() {
 
       <section className="rounded-xl border border-border bg-card p-3">
         <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-bold">العمليات الجارية الآن</h2><span className="text-xs text-muted-foreground">{data.currentJobs.length}</span></div>
-        {data.currentJobs.length ? <ul className="divide-y divide-border/70">{data.currentJobs.map((job) => <li key={job.bookingId}><Link href={`/staff/koshas/booking/${job.bookingId}`} className="flex min-h-12 items-center justify-between gap-3 py-2 text-sm"><div className="min-w-0"><b className="block truncate">{job.customerName}</b><span className="flex items-center gap-1 truncate text-xs text-muted-foreground"><MapPin className="h-3 w-3" />{job.hall || "الموقع غير محدد"}</span></div><div className="shrink-0 text-left"><b className="block text-xs text-primary">{STAGE_LABEL[job.stage] ?? job.stage}</b><span className="text-xs text-muted-foreground">{job.eventTime || "—"}</span></div></Link></li>)}</ul> : <p className="py-3 text-sm text-muted-foreground">لا توجد عملية ميدانية جارية الآن.</p>}
+        {data.currentJobs.length ? <ul className="divide-y divide-border/70">{data.currentJobs.map((job) => <li key={`${job.source ?? "kosha"}-${job.bookingId}`}><Link href={`/staff/koshas/booking/${job.bookingId}${job.source === "service" ? "?source=service" : ""}`} className="flex min-h-12 items-center justify-between gap-3 py-2 text-sm"><div className="min-w-0"><b className="block truncate">{job.customerName}</b><span className="flex items-center gap-1 truncate text-xs text-muted-foreground"><MapPin className="h-3 w-3" />{job.hall || "الموقع غير محدد"}</span></div><div className="shrink-0 text-left"><b className="block text-xs text-primary">{STAGE_LABEL[job.stage] ?? job.stage}</b><span className="text-xs text-muted-foreground">{job.eventTime || "—"}</span></div></Link></li>)}</ul> : <p className="py-3 text-sm text-muted-foreground">لا توجد عملية ميدانية جارية الآن.</p>}
       </section>
 
       {data.missingAssets.length > 0 && (
@@ -402,11 +440,15 @@ export function KoshaOpsBoardPage() {
 export function KoshaOpsReportsPage() {
   const [data, setData] = useState<KoshaOpsReport | null>(null);
   const [range, setRange] = useState({ from: "", to: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   useEffect(() => {
+    setError(null);
     koshaOpsApi.reports({ from: range.from || undefined, to: range.to || undefined })
-      .then(setData)
-      .catch(() => setData(null));
-  }, [range.from, range.to]);
+      .then((next) => { setData(next); setError(null); })
+      .catch((err) => { setData(null); setError(apiErrorMessage(err, "تعذّر تحميل التقارير التشغيلية")); });
+  }, [range.from, range.to, retryKey]);
+  if (error && !data) return <div className="p-4"><LoadFailure message={error} onRetry={() => setRetryKey((key) => key + 1)} /></div>;
   if (!data) return <Spinner />;
 
   const section = (title: string, rows: React.ReactNode) => (

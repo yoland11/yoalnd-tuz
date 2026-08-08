@@ -1,5 +1,5 @@
 // AJN Service Worker — PWA shell, offline fallback, and Web Push.
-const VERSION = "ajn-pwa-v5";
+const VERSION = "ajn-pwa-v6";
 const APP_SHELL = [
   "/",
   "/store",
@@ -41,9 +41,15 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
+  // Next.js owns chunk caching. Caching its dev/runtime modules here can pair a
+  // stale module factory with fresh application code and prevent the staff app
+  // from loading at all.
+  if (url.pathname.startsWith("/_next/")) return;
   // Never keep authenticated pages in Cache Storage on a shared device.
   if (
     url.pathname.startsWith("/admin/") ||
+    url.pathname === "/staff" ||
+    url.pathname.startsWith("/staff/") ||
     url.pathname === "/profile" ||
     url.pathname.startsWith("/profile/") ||
     url.pathname === "/account" ||
@@ -55,8 +61,10 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
+          if (isCacheable(response)) {
+            const copy = response.clone();
+            caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
+          }
           return response;
         })
         .catch(() => caches.match(request).then((cached) => cached || caches.match("/offline.html"))),
@@ -68,7 +76,7 @@ self.addEventListener("fetch", (event) => {
     caches.match(request).then((cached) => {
       const fetched = fetch(request)
         .then((response) => {
-          if (response && response.status === 200 && response.type === "basic") {
+          if (isCacheable(response)) {
             const copy = response.clone();
             caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
           }
@@ -79,6 +87,12 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+
+function isCacheable(response) {
+  if (!response || response.status !== 200 || response.type !== "basic") return false;
+  const cacheControl = response.headers.get("cache-control") || "";
+  return !/(?:no-store|private)/i.test(cacheControl);
+}
 
 self.addEventListener("push", (event) => {
   let data = {};

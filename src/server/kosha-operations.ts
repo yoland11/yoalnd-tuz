@@ -20,6 +20,7 @@ export const KOSHA_STAGES = [
   "executing",          // legacy — قيد التنفيذ (installation started)
   "executed",           // legacy — تم التنفيذ (installed)
   "event_running",      // new
+  "before_return",      // new — mandatory equipment proof before dismantling
   "dismantling",        // new
   "returned",           // new
   "delivered",          // legacy — تم التسليم (completed)
@@ -40,6 +41,7 @@ export const KOSHA_STAGE_LABELS: Record<KoshaStage, string> = {
   executing: "جاري التنصيب",
   executed: "تم التنصيب",
   event_running: "المناسبة جارية",
+  before_return: "قبل الإرجاع",
   dismantling: "جاري الفك",
   returned: "تم الإرجاع",
   delivered: "مكتمل",
@@ -98,6 +100,35 @@ export function serviceOrderStatusForKoshaStage(stage: unknown):
   }
 }
 
+/**
+ * Public tracking uses a deliberately shorter vocabulary than the field crew.
+ * Keeping this mapping here makes a persisted crew transition visible to the
+ * customer without exposing internal loading, return, or damage operations.
+ */
+export function trackingStatusForKoshaStage(stage: unknown):
+  | "booked"
+  | "preparing"
+  | "ready"
+  | "executed"
+  | "completed" {
+  switch (stage) {
+    case "booked":
+      return "booked";
+    case "ready":
+      return "ready";
+    case "delivered":
+      return "completed";
+    case "executed":
+    case "event_running":
+    case "before_return":
+    case "dismantling":
+    case "returned":
+      return "executed";
+    default:
+      return "preparing";
+  }
+}
+
 /** Equipment classes a kosha job is checked against before it leaves the warehouse. */
 export const KOSHA_CHECKLIST_ITEMS = [
   "backdrop", "flowers", "lighting", "chairs", "tables",
@@ -152,7 +183,7 @@ export function isScanPoint(value: unknown): value is KoshaScanPoint {
 }
 
 export type StageRefusal = { ok: false; reason: string; status: number };
-export type StageApproval = { ok: true; backward: boolean };
+export type StageApproval = { ok: true; backward: boolean; idempotent?: boolean };
 
 export type ChecklistEntry = { item: string; condition: string };
 
@@ -190,7 +221,9 @@ export function evaluateKoshaStage(input: {
 }): StageApproval | StageRefusal {
   const { from, to, isManager } = input;
   if (!isKoshaStage(to)) return { ok: false, reason: "مرحلة غير معروفة", status: 400 };
-  if (from === to) return { ok: false, reason: "الحجز في هذه المرحلة بالفعل", status: 409 };
+  // Retried requests are safe: the caller receives the latest booking instead
+  // of a false conflict, and no second timeline event is created.
+  if (from === to) return { ok: true, backward: false, idempotent: true };
 
   const fromRank = koshaStageRank(from);
   const toRank = koshaStageRank(to);

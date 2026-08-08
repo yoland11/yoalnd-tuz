@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video } from "lucide-react";
+import { ArrowRight, Camera, CheckCircle2, ChevronLeft, MapPin, Phone, Upload, Loader2, AlertTriangle, Banknote, ImageIcon, Video, RotateCcw, X } from "lucide-react";
 import {
-  WORKFLOW_STAGES, STAGE_LABEL, isKoshaPendingPricing, workflowStageRank, nextWorkflowStage, money, mapsUrl, filesToMedia, staffApi,
+  WORKFLOW_STAGES, STAGE_LABEL, isKoshaPendingPricing, workflowStageRank, nextWorkflowStage, money, mapsUrl, staffApi,
   type BookingDetail, type StageKey, type MediaInput, type SetupItem,
 } from "./lib";
 import { isQueued } from "./offline";
 import { LiveScanner } from "./live-scanner";
 import { KoshaOperationsPanel } from "./operations";
+import { fileToDataUrl, formatBytes, inspectImageFile } from "@/lib/image-tools";
+import {
+  ImageUploadError,
+  uploadImageWithVariants,
+  uploadProgressLabel,
+  validateImageUpload,
+  type ImageUploadProgress,
+} from "@/lib/large-image-upload";
 
 const PURPOSE_LABEL: Record<string, string> = {
   execution: "التنفيذ", delivery: "التسليم", breakage: "كسر/فقدان", loss: "فقدان", signature: "توقيع",
@@ -30,30 +38,193 @@ function Progress({ label, value }: { label: string; value: number }) {
   </div>;
 }
 
-function MediaPicker({ media, setMedia, label }: { media: MediaInput[]; setMedia: (m: MediaInput[]) => void; label: string }) {
-  const [busy, setBusy] = useState(false);
-  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!e.target.files?.length) return;
-    setBusy(true);
-    try { setMedia([...media, ...(await filesToMedia(e.target.files))]); }
-    finally { setBusy(false); e.target.value = ""; }
+type UploadState = "queued" | "uploading" | "complete" | "error" | "cancelled";
+type PendingMediaUpload = {
+  id: string;
+  file: File;
+  previewUrl: string;
+  kind: "image" | "video";
+  state: UploadState;
+  progress?: ImageUploadProgress;
+  error?: string;
+  width?: number;
+  height?: number;
+  stored?: MediaInput;
+  controller?: AbortController;
+};
+
+function uploadId() {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function uploadFailureMessage(cause: unknown) {
+  if (cause instanceof DOMException && cause.name === "AbortError") return "تم إلغاء الرفع. يمكنك إعادة المحاولة دون اختيار الصورة من جديد.";
+  if (cause instanceof ImageUploadError) return cause.message;
+  if (typeof navigator !== "undefined" && !navigator.onLine) return "انقطع الاتصال بالإنترنت. أعد المحاولة عند عودة الشبكة.";
+  return cause instanceof Error && cause.message ? cause.message : "تعذر رفع الصورة إلى التخزين. حاول مرة أخرى.";
+}
+
+function MediaPicker({
+  media,
+  setMedia,
+  label,
+  imagesOnly = false,
+  onUploadingChange,
+}: {
+  media: MediaInput[];
+  setMedia: (next: MediaInput[] | ((current: MediaInput[]) => MediaInput[])) => void;
+  label: string;
+  imagesOnly?: boolean;
+  onUploadingChange?: (value: boolean) => void;
+}) {
+  const [uploads, setUploads] = useState<PendingMediaUpload[]>([]);
+  const uploadsRef = useRef<PendingMediaUpload[]>([]);
+  const hasActiveUpload = uploads.some((upload) => upload.state === "queued" || upload.state === "uploading");
+
+  useEffect(() => { uploadsRef.current = uploads; }, [uploads]);
+  useEffect(() => { onUploadingChange?.(hasActiveUpload); }, [hasActiveUpload, onUploadingChange]);
+  useEffect(() => () => {
+    for (const upload of uploadsRef.current) {
+      upload.controller?.abort();
+      if (upload.previewUrl.startsWith("blob:")) URL.revokeObjectURL(upload.previewUrl);
+    }
+  }, []);
+
+  const patchUpload = useCallback((id: string, patch: Partial<PendingMediaUpload>) => {
+    setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, ...patch } : upload));
+  }, []);
+
+  const startUpload = useCallback(async (entry: PendingMediaUpload) => {
+    const controller = new AbortController();
+    patchUpload(entry.id, { state: "uploading", error: undefined, progress: undefined, controller });
+    try {
+      if (entry.kind === "video") {
+        // Video proof follows the existing small JSON-media flow. Field photos
+        // use the resumable image path below, so a 40 MB image never enters JSON.
+        if (entry.file.size > 7 * 1024 * 1024) throw new Error("حجم فيديو التوثيق كبير. ارفع صورة أو فيديو أصغر من 7 MB.");
+        const stored: MediaInput = { url: await fileToDataUrl(entry.file), kind: "video" };
+        setMedia((current) => [...current, stored]);
+        patchUpload(entry.id, { state: "complete", stored, controller: undefined });
+        return;
+      }
+
+      // Validate the actual signature as well as MIME/size before any request.
+      await validateImageUpload(entry.file);
+      const image = await inspectImageFile(entry.file);
+      if (image.dataUrl.startsWith("blob:") && image.dataUrl !== entry.previewUrl) URL.revokeObjectURL(image.dataUrl);
+      patchUpload(entry.id, { width: image.originalWidth ?? image.width, height: image.originalHeight ?? image.height });
+
+      const stored = await uploadImageWithVariants(entry.file, {
+        folder: "kosha/operations",
+        signal: controller.signal,
+        onProgress: (progress) => patchUpload(entry.id, { progress }),
+      });
+      const mediaItem: MediaInput = {
+        url: stored.largeUrl,
+        kind: "image",
+        fileName: entry.file.name,
+        fileSize: entry.file.size,
+        mimeType: entry.file.type,
+        width: image.originalWidth ?? image.width,
+        height: image.originalHeight ?? image.height,
+      };
+      setMedia((current) => [...current, mediaItem]);
+      patchUpload(entry.id, { state: "complete", stored: mediaItem, progress: { percent: 100, uploadedBytes: entry.file.size, totalBytes: entry.file.size, bytesPerSecond: 0, remainingSeconds: 0, phase: "complete" }, controller: undefined });
+    } catch (cause) {
+      const cancelled = cause instanceof DOMException && cause.name === "AbortError";
+      patchUpload(entry.id, { state: cancelled ? "cancelled" : "error", error: uploadFailureMessage(cause), controller: undefined });
+    }
+  }, [patchUpload, setMedia]);
+
+  async function queueFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (!selected.length || hasActiveUpload) return;
+    const queued = selected.map((file): PendingMediaUpload => ({
+      id: uploadId(),
+      file,
+      previewUrl: URL.createObjectURL(file),
+      kind: file.type.startsWith("video/") ? "video" : "image",
+      state: "queued",
+    }));
+    setUploads((current) => [...current, ...queued]);
+    // Process a selected batch serially so mobile devices never generate image
+    // variants for several 40 MB files at the same time.
+    for (const entry of queued) await startUpload(entry);
   }
+
+  function onPick(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = event.target.files;
+    event.target.value = "";
+    if (files) void queueFiles(files);
+  }
+
+  function cancelUpload(id: string) {
+    uploadsRef.current.find((upload) => upload.id === id)?.controller?.abort();
+  }
+
+  async function retryUpload(id: string) {
+    const entry = uploadsRef.current.find((upload) => upload.id === id);
+    if (entry && !hasActiveUpload) await startUpload(entry);
+  }
+
+  function removeUpload(id: string) {
+    const entry = uploadsRef.current.find((upload) => upload.id === id);
+    entry?.controller?.abort();
+    if (entry?.stored) setMedia((current) => current.filter((item) => item.url !== entry.stored?.url));
+    if (entry?.previewUrl.startsWith("blob:")) URL.revokeObjectURL(entry.previewUrl);
+    setUploads((current) => current.filter((upload) => upload.id !== id));
+  }
+
+  const accepted = imagesOnly
+    ? "image/jpeg,image/png,image/webp"
+    : "image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,video/*";
+
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium">{label}</label>
-      <div className="flex flex-wrap gap-2">
-        {media.map((m, i) => (
-          <div key={i} className="relative h-16 w-16 overflow-hidden rounded-lg border border-border">
-            {m.kind === "video"
-              ? <video src={m.url} className="h-full w-full object-cover" muted />
-              : <img src={m.url} alt="" className="h-full w-full object-cover" />}
-            <button onClick={() => setMedia(media.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-[11px] font-bold text-white">×</button>
+      <div className="space-y-2">
+        {uploads.map((upload) => (
+          <div key={upload.id} className="overflow-hidden rounded-lg border border-border bg-background" aria-live="polite">
+            <div className="flex gap-2 p-2">
+              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-md bg-muted">
+                {upload.kind === "video"
+                  ? <video src={upload.previewUrl} className="h-full w-full object-cover" muted />
+                  : <img src={upload.previewUrl} alt={`معاينة ${upload.file.name}`} className="h-full w-full object-cover" />}
+              </div>
+              <div className="min-w-0 flex-1 text-xs">
+                <div className="truncate font-medium">{upload.file.name}</div>
+                <div className="mt-0.5 text-muted-foreground">
+                  {formatBytes(upload.file.size)}{upload.width && upload.height ? ` · ${upload.width}×${upload.height}` : ""}
+                </div>
+                {upload.state === "uploading" && upload.progress && <>
+                  <div className="mt-2 flex items-center justify-between gap-2"><span className="text-primary">{upload.progress.percent}%</span><span className="truncate text-muted-foreground">{uploadProgressLabel(upload.progress)}</span></div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-primary/15"><div className="h-full bg-primary transition-[width] duration-200" style={{ width: `${upload.progress.percent}%` }} /></div>
+                </>}
+                {upload.state === "queued" && <div className="mt-2 text-muted-foreground">بانتظار بدء الرفع…</div>}
+                {upload.state === "complete" && <div className="mt-2 inline-flex rounded-full bg-status-success/15 px-2 py-0.5 font-medium text-status-success">تم الرفع بنجاح</div>}
+                {(upload.state === "error" || upload.state === "cancelled") && <div className="mt-2 text-destructive" role="alert">{upload.error}</div>}
+              </div>
+              <div className="flex shrink-0 flex-col gap-1">
+                {upload.state === "uploading" && <button type="button" onClick={() => cancelUpload(upload.id)} className="rounded-md border border-destructive/30 px-2 py-1 text-[11px] text-destructive">إلغاء</button>}
+                {(upload.state === "error" || upload.state === "cancelled") && <button type="button" onClick={() => void retryUpload(upload.id)} disabled={hasActiveUpload} className="inline-flex items-center gap-1 rounded-md border border-primary/30 px-2 py-1 text-[11px] text-primary disabled:opacity-50"><RotateCcw className="h-3 w-3" />إعادة</button>}
+                <button type="button" onClick={() => removeUpload(upload.id)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground"><X className="h-3 w-3" />إزالة</button>
+              </div>
+            </div>
           </div>
         ))}
-        <label className="flex h-16 w-16 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border text-muted-foreground hover:border-primary">
-          {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
-          <span className="text-[11px]">إضافة</span>
-          <input type="file" accept="image/*,video/*" multiple capture="environment" className="hidden" onChange={onPick} />
+        <label
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            if (!hasActiveUpload) void queueFiles(event.dataTransfer.files);
+          }}
+          className={`flex min-h-20 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border px-3 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary ${hasActiveUpload ? "cursor-not-allowed opacity-60" : ""}`}
+        >
+          {hasActiveUpload ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
+          <span>{media.length || uploads.some((upload) => upload.state === "complete") ? "إضافة أو استبدال صورة" : "اختر صورة للتوثيق"}</span>
+          <input type="file" accept={accepted} multiple disabled={hasActiveUpload} capture="environment" className="hidden" onChange={onPick} />
         </label>
       </div>
     </div>
@@ -133,7 +304,12 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
         requestAnimationFrame(() => stageRef.current?.scrollIntoView({ block: "nearest" }));
       }
     }
-    catch (e: any) { setErr(e?.message ?? "تعذر إكمال العملية"); }
+    catch (e: any) {
+      // A 409 means another request/device changed the row first. Re-read the
+      // canonical booking so the worker never remains on a stale next action.
+      if (e?.status === 409) await reload();
+      setErr(e?.message ?? "تعذر إكمال العملية");
+    }
     finally { setBusy(false); }
   }
 
@@ -141,7 +317,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
     if (!next) return;
     if (next === "executing") return setPanel("before-install");
     if (next === "executed") return setPanel("after-install");
-    if (next === "dismantling") return setPanel("before-return");
+    if (next === "before_return") return setPanel("before-return");
     if (next === "returned") return setPanel("after-return");
     if (next === "delivered") return setPanel("delivered");
     run(() => staffApi.setStage(id, next, undefined, undefined, source));
@@ -273,7 +449,7 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
 
         {panel === "before-install" && <StageMediaPanel title="قبل التركيب" label="ارفع صورة للموقع قبل بدء التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executing", note, media, source))} />}
         {panel === "after-install" && <StageMediaPanel title="بعد التركيب" label="ارفع صوراً أو فيديو بعد اكتمال التركيب" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "executed", note, media, source))} />}
-        {panel === "before-return" && <StageMediaPanel title="قبل الإرجاع" label="وثّق حالة المعدات قبل الفك والإرجاع" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "dismantling", note, media, source))} />}
+        {panel === "before-return" && <StageMediaPanel title="قبل الإرجاع" label="وثّق حالة المعدات قبل الفك والإرجاع" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "before_return", note, media, source))} />}
         {panel === "after-return" && <StageMediaPanel title="بعد الإرجاع" label="وثّق المعدات بعد عودتها من الموقع" busy={busy} onCancel={() => setPanel(null)} onSave={(media, note) => run(() => staffApi.setStage(id, "returned", note, media, source))} />}
 
         {/* Delivery form */}
@@ -401,15 +577,16 @@ function PanelShell({ title, children, onCancel }: { title: string; children: Re
 function StageMediaPanel({ title, label, busy, onCancel, onSave }: { title: string; label: string; busy: boolean; onCancel: () => void; onSave: (media: MediaInput[], note: string) => void }) {
   const [media, setMedia] = useState<MediaInput[]>([]);
   const [note, setNote] = useState("");
+  const [uploading, setUploading] = useState(false);
   return (
     <PanelShell title={`${title} — توثيق إلزامي`} onCancel={onCancel}>
-      <MediaPicker media={media} setMedia={setMedia} label={label} />
+      <MediaPicker media={media} setMedia={setMedia} label={label} onUploadingChange={setUploading} imagesOnly={title === "قبل الإرجاع"} />
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-3 w-full rounded-lg border border-border bg-background p-2 text-sm" />
-      <button disabled={media.length === 0 || busy} onClick={() => onSave(media, note)}
+      <button disabled={media.length === 0 || busy || uploading} onClick={() => onSave(media, note)}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} حفظ التوثيق والمتابعة
+        {busy || uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} {uploading ? "جاري رفع التوثيق…" : "حفظ التوثيق والمتابعة"}
       </button>
-      {media.length === 0 && <div className="mt-1.5 text-center text-xs text-muted-foreground">يجب رفع ملف واحد على الأقل</div>}
+      {media.length === 0 && !uploading && <div className="mt-1.5 text-center text-xs text-muted-foreground">يجب رفع ملف واحد على الأقل بنجاح</div>}
     </PanelShell>
   );
 }
