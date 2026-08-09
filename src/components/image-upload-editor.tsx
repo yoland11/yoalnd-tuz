@@ -15,6 +15,7 @@ import {
 import {
   ImageUploadError,
   MAX_IMAGE_UPLOAD_BYTES,
+  MAX_LOGO_UPLOAD_BYTES,
   imageUploadFolder,
   uploadImageWithVariants,
   uploadProgressLabel,
@@ -87,8 +88,9 @@ type Props = {
   currentMetadata?: ImageMetadata | null;
   settings?: Partial<ImageSettings>;
   watermarkText?: string;
-  onComplete: (results: ImageEditResult[]) => void;
+  onComplete: (results: ImageEditResult[]) => void | Promise<void>;
   onRemove?: () => void;
+  onUploadStateChange?: (uploading: boolean) => void;
 };
 
 export function ImageUploadEditor({
@@ -103,6 +105,7 @@ export function ImageUploadEditor({
   watermarkText,
   onComplete,
   onRemove,
+  onUploadStateChange,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -117,6 +120,7 @@ export function ImageUploadEditor({
   const uploadAbortRef = useRef<AbortController | null>(null);
 
   const maxSize = maxSizeForKind(kind, settings);
+  const maxUploadBytes = kind === "logo" ? MAX_LOGO_UPLOAD_BYTES : MAX_IMAGE_UPLOAD_BYTES;
   const isAvatar = kind === "avatar";
 
   const cropRatio = useMemo(() => {
@@ -128,12 +132,16 @@ export function ImageUploadEditor({
     const picked = Array.from(files ?? []);
     if (picked.length === 0) return;
     setError("");
-    const oversized = picked.find((file) => file.size > MAX_IMAGE_UPLOAD_BYTES);
+    const oversized = picked.find((file) => file.size > maxUploadBytes);
     if (oversized) {
-      setError("The maximum allowed image size is 40 MB.");
+      setError(kind === "logo" ? "حجم الصورة أكبر من الحد المسموح للشعار (5 ميغابايت)." : "The maximum allowed image size is 40 MB.");
       return;
     }
-    const imageFiles = picked.filter((file) => file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif|avif)$/i.test(file.name));
+    const imageFiles = picked.filter((file) =>
+      kind === "logo"
+        ? ["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase()) || /\.(jpe?g|png|webp)$/i.test(file.name)
+        : file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif|avif)$/i.test(file.name),
+    );
     const unsupported = picked.find((file) => !imageFiles.includes(file) && !(allowVideo && file.type.startsWith("video/")));
     if (unsupported) {
       setError(allowVideo ? "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG أو فيديو." : "نوع الملف غير مدعوم. استخدم صورة WebP/PNG/JPG فقط.");
@@ -166,7 +174,7 @@ export function ImageUploadEditor({
     const images = imageFiles;
     if (images.length === 0) return;
     try {
-      await Promise.all(images.map((file) => validateImageUpload(file)));
+      await Promise.all(images.map((file) => validateImageUpload(file, maxUploadBytes)));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "تعذر التحقق من ملف الصورة.");
       return;
@@ -180,6 +188,9 @@ export function ImageUploadEditor({
     try {
       setProgress(10);
       const info = await inspectImageFile(file);
+      if (kind === "logo" && (!info.width || !info.height || info.width > 10_000 || info.height > 10_000)) {
+        throw new Error("الملف تالف أو غير صالح كشعار.");
+      }
       const sourceInfo = { ...info, fileName: file.name };
       setSource(sourceInfo);
       setEditor(initialEditor(kind, sourceInfo, maxSize, settings));
@@ -238,6 +249,7 @@ export function ImageUploadEditor({
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
+    onUploadStateChange?.(true);
     const results: ImageEditResult[] = [];
     try {
       for (let index = 0; index < queue.length; index++) {
@@ -245,6 +257,7 @@ export function ImageUploadEditor({
         const inspected = index === 0 ? source : { ...(await inspectImageFile(file)), fileName: file.name };
         const stored = await uploadImageWithVariants(file, {
           folder: imageUploadFolder(kind),
+          maxBytes: maxUploadBytes,
           signal: controller.signal,
           onProgress: setTransfer,
         });
@@ -278,6 +291,7 @@ export function ImageUploadEditor({
         });
         setProgress(Math.round(((index + 1) / queue.length) * 100));
       }
+      await onComplete(results);
     } catch (cause) {
       setProgress(0);
       setTransfer(null);
@@ -286,8 +300,8 @@ export function ImageUploadEditor({
       return;
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      onUploadStateChange?.(false);
     }
-    onComplete(results);
     setClosing(true);
     setTimeout(() => {
       closeEditor(false);

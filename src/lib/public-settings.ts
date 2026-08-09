@@ -107,3 +107,9 @@ export function usePublicSettings() {
 export function logoSrc(settings: PublicSettings | undefined): string {
   return settings?.logo_url || FALLBACK_LOGO_URL;
 }
+
+export function handleDefaultLogoError(event: { currentTarget: HTMLImageElement }) {
+  const image = event.currentTarget;
+  if (image.getAttribute("src") === FALLBACK_LOGO_URL) return;
+  image.src = FALLBACK_LOGO_URL;
+}

@@ -24,6 +24,8 @@ import { useToast } from "@/hooks/use-toast";
 import CustomerAccountPrompt from "./customer-account-prompt";
 import {
   adminFetch,
+  apiErrorMessage,
+  apiErrorStatus,
   compressImageFile,
   fileToDataUrl,
   formatCurrency,
@@ -90,6 +92,14 @@ type PurchaseInvoice = {
 type InvoiceRegisterOptions = {
   branches?: Array<{ value: string; label: string }>;
   cashBoxes?: Array<{ value: string; label: string }>;
+};
+type PurchaseInvoiceRegisterResponse = {
+  data?: PurchaseInvoice[];
+  // Compatibility with the previous list envelope while all current requests
+  // use { data, total, summary }.
+  invoices?: PurchaseInvoice[];
+  total?: number;
+  summary?: InvoiceRegisterSummary;
 };
 
 const PAYMENT_METHODS = [
@@ -177,7 +187,7 @@ export default function PurchasesPage() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const { data: invoicesList } = useQuery({
+  const { data: invoicesList, isLoading: invoicesLoading, isError: invoicesError, error: invoicesLoadError, isFetching: invoicesFetching, refetch: refetchInvoices } = useQuery<PurchaseInvoiceRegisterResponse>({
     queryKey: [
       "admin",
       "purchase-invoices",
@@ -204,11 +214,7 @@ export default function PurchasesPage() {
       if (listBranchId) params.set("branchId", listBranchId);
       if (listCashBox) params.set("cashBox", listCashBox);
       if (deferredListSearch) params.set("search", deferredListSearch);
-      return adminFetch<{
-        data: PurchaseInvoice[];
-        total: number;
-        summary: InvoiceRegisterSummary;
-      }>(`/admin/purchase-invoices?${params}`);
+      return adminFetch<PurchaseInvoiceRegisterResponse>(`/admin/purchase-invoices?${params}`);
     },
     enabled: listMode,
   });
@@ -588,11 +594,20 @@ export default function PurchasesPage() {
   }
 
   if (listMode) {
+    const invoiceRows = Array.isArray(invoicesList?.data)
+      ? invoicesList.data
+      : Array.isArray(invoicesList?.invoices)
+        ? invoicesList.invoices
+        : [];
     return (
       <PurchaseListView
-        invoices={invoicesList?.data ?? []}
-        total={invoicesList?.total ?? 0}
+        invoices={invoiceRows}
+        total={Number.isFinite(invoicesList?.total) ? Number(invoicesList?.total) : invoiceRows.length}
         summary={invoicesList?.summary}
+        loading={invoicesLoading}
+        error={invoicesError ? invoicesLoadError : null}
+        refreshing={invoicesFetching}
+        onRefresh={() => { void refetchInvoices(); }}
         page={listPage}
         onPage={setListPage}
         from={listFrom}
@@ -1216,6 +1231,10 @@ function PurchaseListView({
   onEdit,
   onPrint,
   onDelete,
+  loading,
+  error,
+  refreshing,
+  onRefresh,
 }: {
   invoices: PurchaseInvoice[];
   total: number;
@@ -1243,6 +1262,10 @@ function PurchaseListView({
   onEdit: (inv: PurchaseInvoice) => void;
   onPrint: (inv: PurchaseInvoice) => void;
   onDelete: (inv: PurchaseInvoice) => void;
+  loading: boolean;
+  error: unknown;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
@@ -1254,10 +1277,10 @@ function PurchaseListView({
         </Button>
         <div>
           <h1 className="text-xl font-bold">سجل فواتير المشتريات</h1>
-          <p className="text-xs text-muted-foreground">{total} فاتورة</p>
+          <p className="text-xs text-muted-foreground">{loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}</p>
         </div>
       </div>
-      <InvoiceRegisterSummaryCards summary={summary} />
+      <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="min-w-[280px] flex-1">
           <label className="text-xs text-muted-foreground mb-1 block">
@@ -1407,6 +1430,7 @@ function PurchaseListView({
         </div>
       </div>
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
+        {error ? <PurchaseListLoadError error={error} onRetry={onRefresh} retrying={refreshing} /> : null}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -1421,7 +1445,13 @@ function PurchaseListView({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
-              {invoices.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-muted-foreground">
+                    جارٍ تحميل فواتير المشتريات...
+                  </td>
+                </tr>
+              ) : error ? null : invoices.length === 0 ? (
                 <tr>
                   <td
                     colSpan={7}
@@ -1567,6 +1597,22 @@ function PurchaseListView({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function PurchaseListLoadError({ error, onRetry, retrying }: { error: unknown; onRetry: () => void; retrying: boolean }) {
+  const status = apiErrorStatus(error);
+  const permissionDenied = status === 401 || status === 403;
+  const message = permissionDenied
+    ? "ليس لديك صلاحية عرض سجل فواتير المشتريات."
+    : "تعذر تحميل فواتير المشتريات. لم يتم اعتبار ذلك نتيجة بحث فارغة.";
+  return (
+    <div className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
+      <span>{message}{!permissionDenied && apiErrorMessage(error) ? ` ${apiErrorMessage(error)}` : ""}</span>
+      <Button type="button" variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+        {retrying ? "جارٍ إعادة المحاولة..." : "إعادة المحاولة"}
+      </Button>
     </div>
   );
 }

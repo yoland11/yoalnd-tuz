@@ -1007,6 +1007,7 @@ function validationError(
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_BYTES = 40 * 1024 * 1024;
+const MAX_LOGO_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -4487,6 +4488,27 @@ function publicStorageUrl(path: string): string {
   return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
 }
 
+function websiteLogoStoragePath(value: unknown): string | null {
+  if (!STORAGE_URL || typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const storage = new URL(STORAGE_URL);
+    const prefix = `/storage/v1/object/public/${STORAGE_BUCKET}/`;
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      url.origin !== storage.origin ||
+      !url.pathname.startsWith(prefix)
+    )
+      return null;
+    const path = decodeURIComponent(url.pathname.slice(prefix.length));
+    return path.startsWith("settings/logo/") && !path.includes("..") ? path : null;
+  } catch {
+    return null;
+  }
+}
+
 function storageHeaders(extra: HeadersInit = {}): Headers {
   return new Headers({
     apikey: STORAGE_SERVICE_KEY,
@@ -4501,6 +4523,59 @@ async function storageObjectExists(path: string) {
     { method: "HEAD", headers: storageHeaders() },
   );
   return response.ok;
+}
+
+async function deleteWebsiteLogoObjectIfUnshared(path: string, currentUrl: string) {
+  if (!websiteLogoStoragePath(currentUrl) || !STORAGE_URL || !STORAGE_SERVICE_KEY)
+    return false;
+  const settings = await db.query.settingsTable.findMany();
+  const usedElsewhere = settings.some(
+    (setting) =>
+      setting.key !== "logoUrl" &&
+      setting.key !== "logoMetadata" &&
+      JSON.stringify(setting.value ?? "").includes(currentUrl),
+  );
+  if (usedElsewhere) return false;
+  const response = await fetch(
+    `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`,
+    { method: "DELETE", headers: storageHeaders() },
+  );
+  if (!response.ok) {
+    console.warn("website logo cleanup failed", { action: "site_logo_cleanup", status: response.status });
+    return false;
+  }
+  return true;
+}
+
+async function cleanupUncommittedWebsiteLogo(metadata: Record<string, unknown>, previousUrl: string) {
+  const urls = [
+    metadata.originalUrl,
+    metadata.thumbnailUrl,
+    metadata.mediumUrl,
+    metadata.largeUrl,
+  ]
+    .filter((value): value is string => typeof value === "string" && value !== previousUrl)
+    .filter((value, index, values) => values.indexOf(value) === index);
+  for (const url of urls) {
+    const path = websiteLogoStoragePath(url);
+    if (!path) continue;
+    try {
+      const response = await fetch(
+        `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`,
+        { method: "DELETE", headers: storageHeaders() },
+      );
+      if (!response.ok)
+        console.warn("website logo orphan cleanup failed", {
+          action: "site_logo_orphan_cleanup",
+          status: response.status,
+        });
+    } catch (cleanupError) {
+      console.warn("website logo orphan cleanup failed", {
+        action: "site_logo_orphan_cleanup",
+        message: cleanupError instanceof Error ? cleanupError.message : "unknown",
+      });
+    }
+  }
 }
 
 async function verifyStoredImage(
@@ -4536,10 +4611,25 @@ async function handleImageUploads(req: NextRequest, parts: string[]) {
     const folder = safeImageUploadFolder(data?.folder);
     if (!folder || !SUPPORTED_IMAGE_MIME_TYPES.has(mime))
       return error("نوع أو مسار الصورة غير مدعوم", 415);
+    if (
+      folder === "settings/logo" &&
+      !["image/jpeg", "image/png", "image/webp"].includes(mime)
+    )
+      return error("نوع الملف غير مدعوم للشعار. استخدم PNG أو JPG أو WebP.", 415);
     if (!Number.isInteger(size) || size <= 0)
       return error("الملف فارغ أو غير صالح", 422);
-    if (size > MAX_IMAGE_UPLOAD_BYTES)
-      return error("The maximum allowed image size is 40 MB.", 413);
+    const maximumBytes = folder === "settings/logo" ? MAX_LOGO_UPLOAD_BYTES : MAX_IMAGE_UPLOAD_BYTES;
+    if (size > maximumBytes)
+      return error(
+        folder === "settings/logo"
+          ? "حجم الصورة أكبر من الحد المسموح للشعار (5 ميغابايت)."
+          : "The maximum allowed image size is 40 MB.",
+        413,
+      );
+    if (folder === "settings/logo") {
+      const settingsAuth = await requirePermission(req, "settings");
+      if (isResponse(settingsAuth)) return settingsAuth;
+    }
     if (!/^[a-f0-9]{64}$/.test(checksum))
       return error("بصمة الصورة غير صالحة", 422);
     const path = imageUploadPath(folder, checksum, data?.suffix, mime);
@@ -43615,43 +43705,156 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json(await loadSiteSettings());
     }
     if (method === "POST" && parts[2] === "logo") {
-      const data = await body(req);
-      const logoUrl = await persistMediaValue(
-        data?.logoUrl ?? data?.url ?? "",
-        "settings/logo",
-      );
-      const logoMetadata =
-        data?.logoMetadata && typeof data.logoMetadata === "object"
-          ? data.logoMetadata
-          : {};
-      if (!logoUrl) return error("رابط الشعار غير صالح", 400);
-      await Promise.all([
-        db
-          .insert(settingsTable)
-          .values({ key: "logoUrl", value: logoUrl as any })
-          .onConflictDoUpdate({
-            target: settingsTable.key,
-            set: { value: logoUrl as any, updatedAt: new Date() },
-          }),
-        db
-          .insert(settingsTable)
-          .values({ key: "logoMetadata", value: logoMetadata as any })
-          .onConflictDoUpdate({
-            target: settingsTable.key,
-            set: { value: logoMetadata as any, updatedAt: new Date() },
-          }),
-      ]);
-      revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
-      void logAdminActivity(req, "site_logo_updated", "settings");
-      return json({ logoUrl, logo_url: logoUrl, logoMetadata });
+      const startedAt = Date.now();
+      const admin = actor(auth);
+      let mime = "unknown";
+      let size = 0;
+      let logoMetadata: Record<string, unknown> = {};
+      let previousUrl = "";
+      let settingsUpdated = false;
+      const failLogoUpload = (message: string, status: number, storageCode?: number) => {
+        console.warn("website logo upload rejected", {
+          action: "site_logo_upload",
+          adminId: admin.id,
+          mime,
+          size,
+          storageCode,
+          durationMs: Date.now() - startedAt,
+        });
+        return error(message, status);
+      };
+      try {
+        if (!STORAGE_URL || !STORAGE_SERVICE_KEY)
+          return failLogoUpload("تخزين الصور غير مهيأ حالياً. تواصل مع مسؤول النظام.", 503);
+        const data = await body(req);
+        logoMetadata =
+          data?.logoMetadata && typeof data.logoMetadata === "object"
+            ? data.logoMetadata
+            : {};
+        mime = String((logoMetadata as any).originalType ?? "unknown").slice(0, 80);
+        size = Math.max(0, Number((logoMetadata as any).originalSize ?? 0));
+        const rawLogoUrl = String(data?.logoUrl ?? data?.url ?? "").trim();
+        if (rawLogoUrl.startsWith("data:"))
+          return failLogoUpload("يجب رفع الشعار إلى التخزين أولاً. أعد المحاولة.", 422);
+        const path = websiteLogoStoragePath(rawLogoUrl);
+        if (!path)
+          return failLogoUpload("رابط الشعار غير صالح أو لا ينتمي لتخزين الموقع.", 400);
+        if (!(await storageObjectExists(path)))
+          return failLogoUpload("تعذر التحقق من حفظ الشعار في التخزين. أعد المحاولة.", 422);
+        const logoUrl = publicStorageUrl(path);
+        const previous = await db.query.settingsTable.findFirst({
+          where: eq(settingsTable.key, "logoUrl"),
+        });
+        previousUrl = cleanPublicUrl(previous?.value ?? "");
+        await db.transaction(async (tx) => {
+          await tx
+            .insert(settingsTable)
+            .values({ key: "logoUrl", value: logoUrl as any })
+            .onConflictDoUpdate({
+              target: settingsTable.key,
+              set: { value: logoUrl as any, updatedAt: new Date() },
+            });
+          await tx
+            .insert(settingsTable)
+            .values({ key: "logoMetadata", value: logoMetadata as any })
+            .onConflictDoUpdate({
+              target: settingsTable.key,
+              set: { value: logoMetadata as any, updatedAt: new Date() },
+            });
+        });
+        settingsUpdated = true;
+        revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
+        const previousPath = websiteLogoStoragePath(previousUrl);
+        if (previousPath && previousUrl !== logoUrl) {
+          await deleteWebsiteLogoObjectIfUnshared(previousPath, previousUrl).catch((cleanupError) => {
+            console.warn("website logo cleanup failed", {
+              action: "site_logo_replace_cleanup",
+              message: cleanupError instanceof Error ? cleanupError.message : "unknown",
+            });
+          });
+        }
+        void logAdminActivity(req, "site_logo_updated", "settings");
+        console.info("website logo upload completed", {
+          action: "site_logo_upload",
+          adminId: admin.id,
+          mime,
+          size,
+          durationMs: Date.now() - startedAt,
+        });
+        return json({ logoUrl, logo_url: logoUrl, logoMetadata });
+      } catch (uploadError) {
+        if (!settingsUpdated)
+          await cleanupUncommittedWebsiteLogo(logoMetadata, previousUrl);
+        console.error("website logo upload failed", {
+          action: "site_logo_upload",
+          adminId: admin.id,
+          mime,
+          size,
+          durationMs: Date.now() - startedAt,
+          message: uploadError instanceof Error ? uploadError.message : "unknown",
+        });
+        return error("تعذر حفظ الشعار. أعد المحاولة.", 500);
+      }
+    }
+    if (method === "DELETE" && parts[2] === "logo") {
+      const startedAt = Date.now();
+      const admin = actor(auth);
+      try {
+        const existing = await db.query.settingsTable.findFirst({
+          where: eq(settingsTable.key, "logoUrl"),
+        });
+        const previousUrl = cleanPublicUrl(existing?.value ?? "");
+        await db.transaction(async (tx) => {
+          await tx
+            .insert(settingsTable)
+            .values({ key: "logoUrl", value: "" as any })
+            .onConflictDoUpdate({
+              target: settingsTable.key,
+              set: { value: "" as any, updatedAt: new Date() },
+            });
+          await tx
+            .insert(settingsTable)
+            .values({ key: "logoMetadata", value: {} as any })
+            .onConflictDoUpdate({
+              target: settingsTable.key,
+              set: { value: {} as any, updatedAt: new Date() },
+            });
+        });
+        revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
+        const previousPath = websiteLogoStoragePath(previousUrl);
+        if (previousPath) await deleteWebsiteLogoObjectIfUnshared(previousPath, previousUrl).catch(() => false);
+        void logAdminActivity(req, "site_logo_removed", "settings");
+        console.info("website logo removed", {
+          action: "site_logo_delete",
+          adminId: admin.id,
+          durationMs: Date.now() - startedAt,
+        });
+        return json({ logoUrl: "", logo_url: "", logoMetadata: {} });
+      } catch (deleteError) {
+        console.error("website logo removal failed", {
+          action: "site_logo_delete",
+          adminId: admin.id,
+          durationMs: Date.now() - startedAt,
+          message: deleteError instanceof Error ? deleteError.message : "unknown",
+        });
+        return error("تعذر حذف الشعار. أعد المحاولة.", 500);
+      }
     }
     if (method === "PUT" || method === "PATCH") {
-      const entries = Object.entries(await body(req));
+      const settingsBody = await body(req);
+      const entries = Object.entries(settingsBody);
+      const requestedLogoUrl = Object.prototype.hasOwnProperty.call(settingsBody ?? {}, "logoUrl")
+        ? String((settingsBody as any).logoUrl ?? "").trim()
+        : null;
+      if (requestedLogoUrl?.startsWith("data:") || requestedLogoUrl?.startsWith("blob:"))
+        return error("لا يمكن حفظ الشعار بصيغة مؤقتة. ارفع الصورة من أداة الشعار.", 422);
+      if (requestedLogoUrl && !cleanPublicUrl(requestedLogoUrl))
+        return error("رابط الشعار غير صالح.", 400);
       await Promise.all(
         entries.map(async ([key, value]) => {
           const storedValue =
             key === "logoUrl"
-              ? await persistMediaValue(value, "settings/logo")
+              ? cleanPublicUrl(value)
               : key === "mapUrl"
                 ? cleanPublicUrl(value)
                 : value;
@@ -47611,7 +47814,6 @@ async function invoiceRegisterSummary(
 ) {
   const paid = sql`COALESCE(${columns.paidAmount}::numeric, 0)`;
   const total = sql`COALESCE(${columns.total}::numeric, 0)`;
-  const activeConditions = [...conditions, eq(columns.status, "active")];
   const [row] = await db
     .select({
       totalInvoices: sql<number>`COUNT(*)::int`,
@@ -47622,7 +47824,10 @@ async function invoiceRegisterSummary(
       remainingTotal: sql<string>`COALESCE(SUM(GREATEST(${total} - ${paid}, 0)), 0)::text`,
     })
     .from(table)
-    .where(and(...activeConditions) as any);
+    // The summary must describe the exact data set displayed in the register.
+    // Do not silently add an "active" filter when the table is showing
+    // cancelled, draft, or all non-deleted invoices.
+    .where(and(...conditions) as any);
   return (
     row ?? {
       totalInvoices: 0,
@@ -48056,11 +48261,27 @@ async function handleSalesInvoices(
     if (cashBox === "MASTER")
       baseConds.push(eq(salesInvoicesTable.paymentMethod, "cash"));
     if (branchId)
-      baseConds.push(sql`EXISTS (
-        SELECT 1 FROM branch_entity_assignments branch_assignment
-        WHERE branch_assignment.entity_type = 'sales_invoice'
-          AND branch_assignment.entity_id = ${salesInvoicesTable.id}
-          AND branch_assignment.branch_id = ${branchId}
+      baseConds.push(sql`(
+        EXISTS (
+          SELECT 1 FROM branch_entity_assignments branch_assignment
+          WHERE branch_assignment.entity_type = 'sales_invoice'
+            AND branch_assignment.entity_id = ${salesInvoicesTable.id}
+            AND branch_assignment.branch_id = ${branchId}
+        )
+        OR (
+          -- Sales invoices created before branch assignment are legacy MAIN
+          -- records. Selecting MAIN must not make that financial history vanish.
+          NOT EXISTS (
+            SELECT 1 FROM branch_entity_assignments any_branch_assignment
+            WHERE any_branch_assignment.entity_type = 'sales_invoice'
+              AND any_branch_assignment.entity_id = ${salesInvoicesTable.id}
+          )
+          AND EXISTS (
+            SELECT 1 FROM enterprise_branches requested_branch
+            WHERE requested_branch.id = ${branchId}
+              AND requested_branch.code = 'MAIN'
+          )
+        )
       )`);
     if (reversed === "true")
       baseConds.push(eq(salesInvoicesTable.financiallyReversed, true));
@@ -48082,6 +48303,14 @@ async function handleSalesInvoices(
           ('CUS-' || lpad(${salesInvoicesTable.customerId}::text, 6, '0')) ILIKE ${pattern})
         OR (${compactPhonePattern}::text IS NOT NULL AND
           regexp_replace(coalesce(${salesInvoicesTable.customerPhone}, ''), '[^0-9]', '', 'g') ILIKE ${compactPhonePattern})
+        OR EXISTS (
+          SELECT 1 FROM sales_invoice_items invoice_item
+          WHERE invoice_item.invoice_id = ${salesInvoicesTable.id}
+            AND (
+              coalesce(invoice_item.barcode, '') ILIKE ${pattern}
+              OR invoice_item.product_name ILIKE ${pattern}
+            )
+        )
         OR EXISTS (
           SELECT 1 FROM customers customer_account
           WHERE customer_account.id = ${salesInvoicesTable.customerId}
@@ -48127,7 +48356,7 @@ async function handleSalesInvoices(
           paidAmount: salesInvoicesTable.paidAmount,
           total: salesInvoicesTable.total,
         },
-        baseConds,
+        conds,
       ),
     ]);
     return json({
@@ -49752,11 +49981,27 @@ async function handlePurchaseInvoices(
     if (cashBox === "MASTER")
       baseConds.push(eq(purchaseInvoicesTable.paymentMethod, "cash"));
     if (branchId)
-      baseConds.push(sql`EXISTS (
-        SELECT 1 FROM branch_entity_assignments branch_assignment
-        WHERE branch_assignment.entity_type = 'purchase_invoice'
-          AND branch_assignment.entity_id = ${purchaseInvoicesTable.id}
-          AND branch_assignment.branch_id = ${branchId}
+      baseConds.push(sql`(
+        EXISTS (
+          SELECT 1 FROM branch_entity_assignments branch_assignment
+          WHERE branch_assignment.entity_type = 'purchase_invoice'
+            AND branch_assignment.entity_id = ${purchaseInvoicesTable.id}
+            AND branch_assignment.branch_id = ${branchId}
+        )
+        OR (
+          -- Purchase invoices created before branch assignment belong to the
+          -- legacy MAIN history and must remain visible when MAIN is selected.
+          NOT EXISTS (
+            SELECT 1 FROM branch_entity_assignments any_branch_assignment
+            WHERE any_branch_assignment.entity_type = 'purchase_invoice'
+              AND any_branch_assignment.entity_id = ${purchaseInvoicesTable.id}
+          )
+          AND EXISTS (
+            SELECT 1 FROM enterprise_branches requested_branch
+            WHERE requested_branch.id = ${branchId}
+              AND requested_branch.code = 'MAIN'
+          )
+        )
       )`);
     if (search) {
       const pattern = invoiceRegisterSearchPattern(search);
@@ -49769,6 +50014,14 @@ async function handlePurchaseInvoices(
         OR ${purchaseInvoicesTable.supplierName} ILIKE ${pattern}
         OR coalesce(${purchaseInvoicesTable.notes}, '') ILIKE ${pattern}
         OR coalesce(${purchaseInvoicesTable.supplierId}::text, '') ILIKE ${pattern}
+        OR EXISTS (
+          SELECT 1 FROM purchase_invoice_items invoice_item
+          WHERE invoice_item.invoice_id = ${purchaseInvoicesTable.id}
+            AND (
+              coalesce(invoice_item.barcode, '') ILIKE ${pattern}
+              OR invoice_item.product_name ILIKE ${pattern}
+            )
+        )
         OR EXISTS (
           SELECT 1 FROM suppliers supplier_account
           WHERE supplier_account.id = ${purchaseInvoicesTable.supplierId}
@@ -49818,7 +50071,7 @@ async function handlePurchaseInvoices(
           paidAmount: purchaseInvoicesTable.paidAmount,
           total: purchaseInvoicesTable.total,
         },
-        baseConds,
+        conds,
       ),
     ]);
     return json({

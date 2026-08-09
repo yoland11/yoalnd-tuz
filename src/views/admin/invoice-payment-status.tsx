@@ -59,8 +59,10 @@ export function InvoicePaymentStatusBadge({ status }: { status: string }) {
 
 export function InvoiceRegisterSummaryCards({
   summary,
+  loading = false,
 }: {
   summary?: InvoiceRegisterSummary;
+  loading?: boolean;
 }) {
   const cards = [
     {
@@ -107,11 +109,14 @@ export function InvoiceRegisterSummaryCards({
           </span>
           <span className="min-w-0">
             <span className="block text-xs text-muted-foreground">{card.label}</span>
-            <span className="block truncate text-sm font-bold text-foreground">{card.value}</span>
+            {loading ? (
+              <span className="mt-1 block h-5 w-20 animate-pulse rounded bg-muted" aria-label="جارٍ تحميل الملخص" />
+            ) : (
+              <span className="block truncate text-sm font-bold text-foreground">{card.value}</span>
+            )}
           </span>
         </div>
       ))}
     </div>
   );
 }
-

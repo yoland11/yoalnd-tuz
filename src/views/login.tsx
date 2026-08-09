@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { CheckCircle, Loader2, MessageCircle, Phone, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatIraqiPhone, formatIraqiPhoneInput, normalizeIraqiPhone, normalizePhoneDigits } from "@/lib/phone";
-import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
 
 type Step = "phone" | "otp";
 
@@ -75,7 +75,7 @@ export default function Login() {
       <div className="max-w-xl mx-auto">
         <div className="text-center mb-8">
           <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center mb-4">
-            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={48} height={48} decoding="async" className="h-12 w-12 object-contain" />
+            <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={48} height={48} decoding="async" onError={handleDefaultLogoError} className="h-12 w-12 object-contain" />
           </div>
           <h1 className="text-3xl font-bold text-foreground mb-2">تسجيل الدخول</h1>
           <p className="text-muted-foreground">ادخل برقم هاتفك العراقي واستلم رمز التحقق على واتساب</p>

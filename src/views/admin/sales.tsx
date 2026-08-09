@@ -16,7 +16,7 @@ import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import CustomerAccountPrompt from "./customer-account-prompt";
-import { adminFetch, apiErrorMessage, fetchAdminMe, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, apiErrorStatus, fetchAdminMe, formatCurrency } from "./_lib";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
 import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
@@ -67,6 +67,14 @@ type Supplier = { id: number; name: string };
 type InvoiceRegisterOptions = {
   branches?: Array<{ value: string; label: string }>;
   cashBoxes?: Array<{ value: string; label: string }>;
+};
+type InvoiceRegisterResponse = {
+  data?: SalesInvoice[];
+  // Compatibility with the previous list envelope while all current requests
+  // use { data, total, summary }.
+  invoices?: SalesInvoice[];
+  total?: number;
+  summary?: InvoiceRegisterSummary;
 };
 
 function finiteNumber(value: unknown, min = 0, max = 100_000_000) {
@@ -238,7 +246,7 @@ export default function SalesPage() {
   });
 
   // Invoices list
-  const { data: invoicesList } = useQuery({
+  const { data: invoicesList, isLoading: invoicesLoading, isError: invoicesError, error: invoicesLoadError, isFetching: invoicesFetching, refetch: refetchInvoices } = useQuery<InvoiceRegisterResponse>({
     queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, deferredListSearch],
     queryFn: () => {
       const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
@@ -251,7 +259,7 @@ export default function SalesPage() {
       if (listBranchId) params.set("branchId", listBranchId);
       if (listCashBox) params.set("cashBox", listCashBox);
       if (deferredListSearch) params.set("search", deferredListSearch);
-      return adminFetch<{ data: SalesInvoice[]; total: number; summary: InvoiceRegisterSummary }>(
+      return adminFetch<InvoiceRegisterResponse>(
         `/admin/sales-invoices?${params}`,
       );
     },
@@ -508,12 +516,21 @@ export default function SalesPage() {
 
   // ── View: Invoice List ───────────────────────────────────────────────────
   if (listMode) {
+    const invoiceRows = Array.isArray(invoicesList?.data)
+      ? invoicesList.data
+      : Array.isArray(invoicesList?.invoices)
+        ? invoicesList.invoices
+        : [];
     return (
       <>
         <InvoiceListView
-          invoices={invoicesList?.data ?? []}
-          total={invoicesList?.total ?? 0}
+          invoices={invoiceRows}
+          total={Number.isFinite(invoicesList?.total) ? Number(invoicesList?.total) : invoiceRows.length}
           summary={invoicesList?.summary}
+          loading={invoicesLoading}
+          error={invoicesError ? invoicesLoadError : null}
+          refreshing={invoicesFetching}
+          onRefresh={() => { void refetchInvoices(); }}
           page={listPage} onPage={setListPage}
           from={listFrom} to={listTo}
           onFrom={setListFrom} onTo={setListTo}
@@ -980,6 +997,7 @@ function InvoiceListView({
   invoices, total, summary, page, onPage, from, to, onFrom, onTo, reversed, onReversed,
   paymentStatus, onPaymentStatus, paymentMethod, onPaymentMethod, invoiceStatus, onInvoiceStatus,
   branchId, onBranchId, cashBox, onCashBox, options, search, onSearch, onBack, onOpen,
+  loading, error, refreshing, onRefresh,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
   summary?: InvoiceRegisterSummary;
@@ -993,6 +1011,7 @@ function InvoiceListView({
   options?: InvoiceRegisterOptions;
   search: string; onSearch: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
+  loading: boolean; error: unknown; refreshing: boolean; onRefresh: () => void;
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -1042,10 +1061,10 @@ function InvoiceListView({
         </Button>
         <div>
           <h1 className="text-xl font-bold">سجل فواتير المبيعات</h1>
-          <p className="text-xs text-muted-foreground">{total} فاتورة</p>
+          <p className="text-xs text-muted-foreground">{loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}</p>
         </div>
       </div>
-      <InvoiceRegisterSummaryCards summary={summary} />
+      <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
       {/* Filters */}
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="min-w-[280px] flex-1">
@@ -1117,6 +1136,7 @@ function InvoiceListView({
       </div>
       {/* Table */}
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
+        {error ? <InvoiceListLoadError error={error} onRetry={onRefresh} retrying={refreshing} /> : null}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -1133,7 +1153,11 @@ function InvoiceListView({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
-              {invoices.length === 0
+              {loading
+                ? <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">جارٍ تحميل فواتير المبيعات...</td></tr>
+                : error
+                  ? null
+                  : invoices.length === 0
                 ? <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
@@ -1190,6 +1214,22 @@ function InvoiceListView({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function InvoiceListLoadError({ error, onRetry, retrying }: { error: unknown; onRetry: () => void; retrying: boolean }) {
+  const status = apiErrorStatus(error);
+  const permissionDenied = status === 401 || status === 403;
+  const message = permissionDenied
+    ? "ليس لديك صلاحية عرض سجل فواتير المبيعات."
+    : "تعذر تحميل فواتير المبيعات. لم يتم اعتبار ذلك نتيجة بحث فارغة.";
+  return (
+    <div className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
+      <span>{message}{!permissionDenied && apiErrorMessage(error) ? ` ${apiErrorMessage(error)}` : ""}</span>
+      <Button type="button" variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+        {retrying ? "جارٍ إعادة المحاولة..." : "إعادة المحاولة"}
+      </Button>
     </div>
   );
 }

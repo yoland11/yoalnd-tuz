@@ -2,6 +2,7 @@ import { formatBytes, processImageFile } from "@/lib/image-tools";
 
 /** Shared client limits for every AJN image picker.  The server enforces them too. */
 export const MAX_IMAGE_UPLOAD_BYTES = 40 * 1024 * 1024;
+export const MAX_LOGO_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const IMAGE_UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
 export const ALLOWED_IMAGE_MIME_TYPES = [
   "image/jpeg",
@@ -58,9 +59,15 @@ export function imageMimeFromFile(file: File): string {
   return supplied;
 }
 
-export async function validateImageUpload(file: File): Promise<string> {
+export async function validateImageUpload(file: File, maxBytes = MAX_IMAGE_UPLOAD_BYTES): Promise<string> {
   if (!file || file.size <= 0) throw new ImageUploadError("الملف فارغ. اختر صورة صالحة.");
-  if (file.size > MAX_IMAGE_UPLOAD_BYTES) throw new ImageUploadError("The maximum allowed image size is 40 MB.");
+  if (file.size > maxBytes) {
+    throw new ImageUploadError(
+      maxBytes === MAX_LOGO_UPLOAD_BYTES
+        ? "حجم الصورة أكبر من الحد المسموح للشعار (5 ميغابايت)."
+        : "The maximum allowed image size is 40 MB.",
+    );
+  }
   const mime = imageMimeFromFile(file);
   if (!ALLOWED_IMAGE_MIME_TYPES.includes(mime as (typeof ALLOWED_IMAGE_MIME_TYPES)[number])) {
     throw new ImageUploadError("نوع الصورة غير مدعوم. استخدم JPG أو PNG أو WEBP أو HEIC أو AVIF.");
@@ -210,11 +217,12 @@ export async function uploadImageWithVariants(
   file: File,
   options: {
     folder: string;
+    maxBytes?: number;
     signal?: AbortSignal;
     onProgress?: (progress: ImageUploadProgress) => void;
   },
 ): Promise<StoredImageUpload> {
-  const mime = await validateImageUpload(file);
+  const mime = await validateImageUpload(file, options.maxBytes);
   const digest = await checksum(file);
   const startedAt = performance.now();
   const emit = (uploadedBytes: number, totalBytes: number, phase: ImageUploadProgress["phase"]) => {

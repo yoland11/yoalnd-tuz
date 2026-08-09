@@ -1,7 +1,7 @@
 import React from "react";
 import { Navbar } from "./Navbar";
 import { MobileNav } from "./MobileNav";
-import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { MessageCircle } from "lucide-react";
 import { CustomerMessageWidget } from "@/components/customer-message-widget";
@@ -41,7 +41,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <MobileNav />
       <footer className="border-t border-border/40 pt-6 pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-6 text-center text-sm text-muted-foreground mt-auto" style={{ backgroundColor: "hsl(var(--ajn-footer))" }}>
         <div className="container mx-auto px-4 flex flex-col items-center gap-3">
-          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" className="h-10 w-24 object-contain" />
+          <img src={logoSrc(settings)} alt={settings?.site_name ?? "AJN"} width={96} height={40} loading="lazy" decoding="async" onError={handleDefaultLogoError} className="h-10 w-24 object-contain" />
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs md:text-sm">
             <span className="text-foreground font-medium">{settings?.site_name ?? "مجموعة علي جان"}</span>
             {settings?.phone && <a href={`tel:${settings.phone}`} className="hover:text-primary transition-colors">{settings.phone}</a>}

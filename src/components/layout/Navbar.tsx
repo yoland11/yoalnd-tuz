@@ -16,7 +16,7 @@ import { desktopNavItems } from "./nav-items";
 import { Button } from "@/components/ui/button";
 import { useGetCart } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
-import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { deriveAlternateAppearance, hexToHsl } from "@/lib/appearance";
 import { useThemeMode } from "@/lib/theme-mode";
@@ -135,6 +135,7 @@ export function Navbar() {
               height={40}
               fetchPriority="high"
               decoding="async"
+              onError={handleDefaultLogoError}
               className="h-full w-full object-contain"
             />
           </span>

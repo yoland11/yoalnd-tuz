@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
 import { ChevronLeft, MapPin, MessageCircle, Phone } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { buildWhatsAppLink } from "@/lib/order-stages";
 import { ProductColorDots } from "@/components/product-colors";
 import { useT } from "@/lib/i18n";
@@ -39,7 +39,7 @@ export default function Home() {
         </div>
         
         <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg animate-fade-up" />
+          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" onError={handleDefaultLogoError} className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg animate-fade-up" />
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg text-balance animate-fade-up [animation-delay:80ms]">
             {siteName}
           </h1>

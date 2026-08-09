@@ -87,6 +87,7 @@ export default function SettingsPage() {
   const [form, setForm] = useState<Settings | null>(null);
   const [customFont, setCustomFont] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
+  const [logoSaving, setLogoSaving] = useState(false);
   const { data: notificationSettings, isLoading: notificationsLoading } = useQuery({
     queryKey: ["admin", "notification-settings"],
     queryFn: () => adminFetch<NotificationSettings>("/admin/notifications/settings"),
@@ -160,17 +161,41 @@ export default function SettingsPage() {
   async function handleLogoResult(results: ImageEditResult[]) {
     const result = results[0];
     if (!result) return;
+    const storedLogoUrl = result.metadata.largeUrl;
+    if (!storedLogoUrl) {
+      const message = "تعذر التحقق من حفظ الشعار في التخزين. أعد المحاولة.";
+      toast({ title: "تعذر رفع الشعار", description: message, variant: "destructive" });
+      throw new Error(message);
+    }
     try {
       const res = await adminFetch<{ logoUrl: string; logoMetadata?: ImageMetadata }>("/admin/settings/logo", {
         method: "POST",
-        body: JSON.stringify({ logoUrl: result.dataUrl, logoMetadata: result.metadata }),
+        body: JSON.stringify({ logoUrl: storedLogoUrl, logoMetadata: result.metadata }),
       });
       setForm(f => ({ ...f!, logoUrl: res.logoUrl, logoMetadata: res.logoMetadata ?? result.metadata }));
       qc.invalidateQueries({ queryKey: ["admin", "settings"] });
       qc.invalidateQueries({ queryKey: ["settings", "public"] });
-      toast({ title: "تم تحديث الشعار" });
+      toast({ title: "تم تحديث شعار الموقع بنجاح" });
     } catch (err: any) {
       toast({ title: "تعذر رفع الشعار", description: err?.message, variant: "destructive" });
+      throw err;
+    }
+  }
+
+  async function removeLogo() {
+    if (!form?.logoUrl || logoSaving) return;
+    if (!window.confirm("هل تريد حذف الشعار المخصص والعودة إلى الشعار الافتراضي؟")) return;
+    setLogoSaving(true);
+    try {
+      await adminFetch("/admin/settings/logo", { method: "DELETE" });
+      setForm((current) => current ? { ...current, logoUrl: "", logoMetadata: {} } : current);
+      qc.invalidateQueries({ queryKey: ["admin", "settings"] });
+      qc.invalidateQueries({ queryKey: ["settings", "public"] });
+      toast({ title: "تم حذف الشعار والعودة إلى الشعار الافتراضي" });
+    } catch (err: any) {
+      toast({ title: "تعذر حذف الشعار", description: err?.message, variant: "destructive" });
+    } finally {
+      setLogoSaving(false);
     }
   }
   async function handleQrUpload(file: File) {
@@ -215,8 +240,8 @@ export default function SettingsPage() {
     <form onSubmit={e => { e.preventDefault(); save.mutate(form); }} className="space-y-6 max-w-3xl">
       <div className="flex items-center justify-between sticky top-0 bg-background py-2 z-10">
         <h1 className="text-2xl font-bold text-foreground">إعدادات الموقع</h1>
-        <Button type="submit" disabled={save.isPending} className="gap-2">
-          <Save className="w-4 h-4" /> {save.isPending ? "جاري الحفظ..." : savedFlash ? "تم الحفظ ✓" : "حفظ التغييرات"}
+        <Button type="submit" disabled={save.isPending || logoSaving} className="gap-2">
+          <Save className="w-4 h-4" /> {logoSaving ? "جاري رفع الشعار..." : save.isPending ? "جاري الحفظ..." : savedFlash ? "تم الحفظ ✓" : "حفظ التغييرات"}
         </Button>
       </div>
 
@@ -230,13 +255,20 @@ export default function SettingsPage() {
           <ImageUploadEditor
             kind="logo"
             label="رفع أو سحب اللوغو"
+            accept="image/png,image/jpeg,image/webp"
             currentImage={form.logoUrl}
             currentMetadata={form.logoMetadata}
             settings={form.imageSettings}
             watermarkText={form.siteName}
-            onComplete={(results) => void handleLogoResult(results)}
-            onRemove={() => setForm(f => ({ ...f!, logoUrl: "", logoMetadata: {} }))}
+            onComplete={handleLogoResult}
+            onRemove={() => void removeLogo()}
+            onUploadStateChange={setLogoSaving}
           />
+          {form.logoUrl && (
+            <Button type="button" variant="outline" size="sm" className="mt-2" disabled={logoSaving} onClick={() => void removeLogo()}>
+              حذف الشعار وإرجاع الافتراضي
+            </Button>
+          )}
           <div className="flex gap-2 items-center">
             <input value={form.logoUrl.startsWith("data:") ? "" : form.logoUrl} onChange={e => setForm(f => ({ ...f!, logoUrl: e.target.value }))}
               placeholder="أو رابط URL"
