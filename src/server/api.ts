@@ -48113,10 +48113,13 @@ async function handleSalesInvoices(
         : "accounting",
   );
   if (isResponse(auth)) return auth;
-  await ensureSalesInvoicesTables();
-  await ensureStockTrackingTables();
   const method = req.method;
   const id = parts[2] ? int(parts[2]) : null;
+  // The register is read-only; do not run stock DDL before returning history.
+  if (!(method === "GET" && !id)) {
+    await ensureSalesInvoicesTables();
+    await ensureStockTrackingTables();
+  }
   const resultRows = (result: any) => result?.rows ?? result ?? [];
 
   // Repair one invoice from the immutable receipt-allocation ledger. This deliberately
@@ -49946,10 +49949,13 @@ async function handlePurchaseInvoices(
   if (section !== "purchase-invoices") return null;
   const auth = await requirePermission(req, "accounting");
   if (isResponse(auth)) return auth;
-  await ensurePurchasesTables();
-  await ensureStockTrackingTables();
   const method = req.method;
   const id = parts[2] ? int(parts[2]) : null;
+  // The register is read-only; avoid blocking it behind unrelated stock DDL.
+  if (!(method === "GET" && !id)) {
+    await ensurePurchasesTables();
+    await ensureStockTrackingTables();
+  }
 
   if (method === "GET" && !id) {
     const parsedQuery = invoiceRegisterQuerySchema.safeParse(
@@ -65043,6 +65049,13 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
   const parts = rawParts.map((p) => decodeURIComponent(p)).filter(Boolean);
   const root = parts[0];
   const isAdminAuth = root === "admin" && parts[1] === "auth";
+  // Invoice registers are read-only. Keep them independent from the broad
+  // schema bootstrap for unrelated admin modules.
+  const isInvoiceRegisterRequest =
+    root === "admin" &&
+    (parts[1] === "sales-invoices" || parts[1] === "purchase-invoices");
+  const shouldBootstrapAdminSchemas =
+    root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest;
 
   try {
     if (!root && req.method === "GET") return json({ status: "ok" });
@@ -65068,7 +65081,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "auth" ||
         root === "orders" ||
         root === "track" ||
-        (!isAdminAuth && root === "admin") ||
+        shouldBootstrapAdminSchemas ||
         root === "dashboard" ||
         root === "customer"
           ? ensureCustomerProfileColumns()
@@ -65079,7 +65092,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "products" ||
         root === "services" ||
         root === "gallery" ||
-        (!isAdminAuth && root === "admin") ||
+        shouldBootstrapAdminSchemas ||
         root === "auth" ||
         root === "customer" ||
         root === "settings"
@@ -65088,7 +65101,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "cart" ||
         root === "orders" ||
         root === "products" ||
-        (!isAdminAuth && root === "admin") ||
+        shouldBootstrapAdminSchemas ||
         root === "customer" ||
         root === "dashboard"
           ? ensureProductColorColumns()
@@ -65096,14 +65109,14 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "customer" ||
         root === "orders" ||
         root === "service-orders" ||
-        (!isAdminAuth && root === "admin") ||
+        shouldBootstrapAdminSchemas ||
         root === "auth"
           ? ensureCustomerRewards()
           : undefined,
         root === "orders" ||
         root === "track" ||
         root === "service-orders" ||
-        (!isAdminAuth && root === "admin") ||
+        shouldBootstrapAdminSchemas ||
         root === "dashboard"
           ? Promise.all([
               ensureTrackingColumns(),
@@ -65112,12 +65125,16 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
               ensurePerformanceIndexes(),
             ])
           : undefined,
-        root === "admin" ? ensureStaffActivityColumn() : undefined,
-        root === "admin" ? ensureAdminProductsColumns() : undefined,
-        root === "products" || (!isAdminAuth && root === "admin")
+        root === "admin" && !isInvoiceRegisterRequest
+          ? ensureStaffActivityColumn()
+          : undefined,
+        root === "admin" && !isInvoiceRegisterRequest
+          ? ensureAdminProductsColumns()
+          : undefined,
+        root === "products" || shouldBootstrapAdminSchemas
           ? ensureStoreCategoryColumns()
           : undefined,
-        root === "coupons" || (!isAdminAuth && root === "admin")
+        root === "coupons" || shouldBootstrapAdminSchemas
           ? ensureCouponsTables()
           : undefined,
         root === "messages" ||
@@ -65125,12 +65142,12 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "qr" ||
         root === "track" ||
         root === "notifications" ||
-        (!isAdminAuth && root === "admin")
+        shouldBootstrapAdminSchemas
           ? ensureAdminExtensionsTables()
           : undefined,
         root === "koshas" ||
         root === "track" ||
-        (!isAdminAuth && root === "admin")
+        shouldBootstrapAdminSchemas
           ? ensureKoshaTables()
           : undefined,
         root === "staff" && parts[1] === "koshas"
@@ -65140,7 +65157,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
           ? ensurePhotographyStaffTables()
           : undefined,
         root === "rental-orders" ? ensureRentalProductsTables() : undefined,
-        root === "graduation" || (!isAdminAuth && root === "admin")
+        root === "graduation" || shouldBootstrapAdminSchemas
           ? ensureGraduationTables()
           : undefined,
         root === "orders" ||
@@ -65148,7 +65165,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "koshas" ||
         root === "rental-orders" ||
         (root === "staff" && parts[1] === "photography") ||
-        (!isAdminAuth && root === "admin")
+        shouldBootstrapAdminSchemas
           ? ensureMasterCashBoxTables()
           : undefined,
       ].filter(Boolean),
