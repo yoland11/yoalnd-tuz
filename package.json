@@ -14,6 +14,7 @@
     "test:payroll-lifecycle": "pnpm --filter @workspace/db exec tsx ../../scripts/test-payroll-lifecycle.ts",
     "test:asset-sales": "node ./scripts/test-asset-sale-logic.mjs",
     "test:sales-invoice-cancellation": "node ./scripts/test-sales-invoice-cancellation-logic.mjs",
+    "test:sales-invoice-customer-linking": "pnpm --filter @workspace/db exec tsx ../../scripts/test-sales-invoice-customer-linking.ts",
     "test:customer-receivable-repair": "pnpm --filter @workspace/db exec tsx ../../scripts/test-customer-receivable-repair.ts",
     "repair:customer-receivables": "pnpm --filter @workspace/db exec tsx ../../scripts/repair-customer-receivables.ts",
     "test:shoot-lifecycle": "node ./scripts/verify-shoot-lifecycle.mjs",

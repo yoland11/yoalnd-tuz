@@ -395,7 +395,7 @@ export default function SalesPage() {
   const [customerPrompt, setCustomerPrompt] = useState(false);
 
   // ── Save ─────────────────────────────────────────────────────────────────
-  async function saveInvoice(customerIdOverride?: number | null) {
+  async function saveInvoice(customerIdOverride?: number | null, useCashCustomer = false) {
     if (saving) return;
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
     if (delivery.method === "province" && !delivery.valid) {
@@ -420,6 +420,7 @@ export default function SalesPage() {
             : form.customerId
               ? Number(form.customerId)
               : null,
+        useCashCustomer,
         supplierId: form.supplierId || null,
         supplierName: form.supplierName || null,
         subtotal, discountAmount: totalDiscount, taxAmount, total: grandTotal,
@@ -478,7 +479,7 @@ export default function SalesPage() {
       setCustomerPrompt(true);
       return;
     }
-    void saveInvoice();
+    void saveInvoice(undefined, isCashCustomer);
   }
 
   async function applyCoupon() {
@@ -977,7 +978,7 @@ export default function SalesPage() {
               onCancel={() => setCustomerPrompt(false)}
               onDecline={() => {
                 setCustomerPrompt(false);
-                void saveInvoice(null);
+                toast({ title: "يلزم اختيار عميل أو اختيار العميل النقدي صراحةً", variant: "destructive" });
               }}
               onConfirm={(customerId, phone) => {
                 setCustomerPrompt(false);
@@ -1028,6 +1029,20 @@ function InvoiceListView({
   });
   const canCancel = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.cancel"));
   const canDelete = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.permanent_delete"));
+  const canRepairCustomerLinks = !!currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("sales_invoice.customer.repair"));
+  const [customerLinkRepairOpen, setCustomerLinkRepairOpen] = useState(false);
+  const [customerLinkRepairSelection, setCustomerLinkRepairSelection] = useState<number[]>([]);
+  const [customerLinkRepairBusy, setCustomerLinkRepairBusy] = useState(false);
+  const customerLinkRepairPreview = useQuery<{ preview: Array<{ invoiceId: number; invoiceNo: string; customerName: string; customerPhone: string | null; category: string; candidates: Array<{ id: number; name: string; phone: string }> }>; counts: Record<string, number> }>({
+    queryKey: ["admin", "sales-invoice-customer-link-repair"],
+    queryFn: () => adminFetch("/admin/sales-invoices/customer-link-repair"),
+    enabled: customerLinkRepairOpen && canRepairCustomerLinks,
+    staleTime: 0,
+  });
+  useEffect(() => {
+    if (!customerLinkRepairPreview.data) return;
+    setCustomerLinkRepairSelection(customerLinkRepairPreview.data.preview.filter((row) => row.category === "confirmed_match").map((row) => row.invoiceId));
+  }, [customerLinkRepairPreview.data]);
   const [deletingInvoice, setDeletingInvoice] = useState<SalesInvoice | null>(null);
   // After a successful permanent deletion: refresh the register + dependent
   // stats without a full reload, and step back a page if we just removed the
@@ -1052,10 +1067,28 @@ function InvoiceListView({
       toast({ title: "تعذر إلغاء الفاتورة", description: apiErrorMessage(error), variant: "destructive" });
     } finally { setCancelling(false); }
   }
+  async function applyCustomerLinkRepair() {
+    if (!customerLinkRepairSelection.length || customerLinkRepairBusy) return;
+    setCustomerLinkRepairBusy(true);
+    try {
+      const result = await adminFetch<{ linked: number[]; skipped: Array<{ invoiceId: number }> }>("/admin/sales-invoices/customer-link-repair/apply", {
+        method: "POST",
+        body: JSON.stringify({ invoiceIds: customerLinkRepairSelection }),
+      });
+      toast({ title: "تم إصلاح ربط الفواتير", description: `تم ربط ${result.linked.length} فاتورة. ${result.skipped.length ? `تم تجاوز ${result.skipped.length} فاتورة غير مؤكدة.` : ""}` });
+      setCustomerLinkRepairOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+    } catch (error) {
+      toast({ title: "تعذر إصلاح ربط الفواتير", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setCustomerLinkRepairBusy(false);
+    }
+  }
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
     <div dir="rtl" className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ChevronLeft className="w-4 h-4 ml-1" />رجوع
         </Button>
@@ -1063,6 +1096,7 @@ function InvoiceListView({
           <h1 className="text-xl font-bold">سجل فواتير المبيعات</h1>
           <p className="text-xs text-muted-foreground">{loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}</p>
         </div>
+        {canRepairCustomerLinks ? <Button variant="outline" size="sm" onClick={() => setCustomerLinkRepairOpen(true)}>ربط الفواتير القديمة بالعملاء</Button> : null}
       </div>
       <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
       {/* Filters */}
@@ -1200,6 +1234,16 @@ function InvoiceListView({
         </div>
         {cancellingInvoice && <SalesInvoiceRegisterCancellationDialog invoice={cancellationDetail ?? cancellingInvoice} itemCount={cancellationDetailLoading ? null : cancellationDetail?.items?.length ?? 0} reason={cancelReason} setReason={setCancelReason} password={cancelPassword} setPassword={setCancelPassword} confirmed={cancelConfirmed} setConfirmed={setCancelConfirmed} loadingDetails={cancellationDetailLoading} busy={cancelling} onClose={() => { setCancellingInvoice(null); setCancelReason(""); setCancelPassword(""); setCancelConfirmed(false); }} onConfirm={confirmCancellation} />}
         {deletingInvoice && <SalesInvoicePermanentDeleteDialog invoice={deletingInvoice} onClose={() => setDeletingInvoice(null)} onDeleted={onInvoiceDeleted} />}
+        {customerLinkRepairOpen ? <CustomerLinkRepairDialog
+          preview={customerLinkRepairPreview.data?.preview ?? []}
+          counts={customerLinkRepairPreview.data?.counts ?? {}}
+          loading={customerLinkRepairPreview.isLoading}
+          busy={customerLinkRepairBusy}
+          selection={customerLinkRepairSelection}
+          onToggle={(id, checked) => setCustomerLinkRepairSelection((current) => checked ? [...new Set([...current, id])] : current.filter((value) => value !== id))}
+          onClose={() => setCustomerLinkRepairOpen(false)}
+          onApply={applyCustomerLinkRepair}
+        /> : null}
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 p-3 border-t border-border/20">
             <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
@@ -1216,6 +1260,28 @@ function InvoiceListView({
       </div>
     </div>
   );
+}
+
+function CustomerLinkRepairDialog({
+  preview,
+  counts,
+  loading,
+  busy,
+  selection,
+  onToggle,
+  onClose,
+  onApply,
+}: {
+  preview: Array<{ invoiceId: number; invoiceNo: string; customerName: string; customerPhone: string | null; category: string; candidates: Array<{ id: number; name: string; phone: string }> }>;
+  counts: Record<string, number>;
+  loading: boolean;
+  busy: boolean;
+  selection: number[];
+  onToggle: (id: number, checked: boolean) => void;
+  onClose: () => void;
+  onApply: () => void;
+}) {
+  return <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" dir="rtl"><div className="w-full max-w-4xl rounded-xl border border-border/40 bg-card shadow-xl"><div className="flex items-center justify-between gap-3 border-b border-border/30 p-4"><div><h3 className="font-bold">ربط الفواتير القديمة بالعملاء</h3><p className="mt-1 text-xs text-muted-foreground">تُربط فقط المطابقات المؤكدة برقم الهاتف. لا تتغير المبالغ أو الدفعات.</p></div><Button variant="ghost" size="sm" onClick={onClose} disabled={busy}><X className="h-4 w-4" /></Button></div><div className="space-y-3 p-4"><div className="flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-status-success/10 px-2 py-1 text-status-success">مطابق مؤكد: {counts.confirmed_match ?? 0}</span><span className="rounded-full bg-status-warning/10 px-2 py-1 text-status-warning">متعدد: {counts.multiple_matches ?? 0}</span><span className="rounded-full bg-muted px-2 py-1 text-muted-foreground">بدون تطابق: {counts.no_match ?? 0}</span><span className="rounded-full bg-muted px-2 py-1 text-muted-foreground">بيانات ناقصة: {counts.missing_data ?? 0}</span></div>{loading ? <p className="py-8 text-center text-sm text-muted-foreground">جارٍ فحص الفواتير…</p> : <div className="max-h-[50vh] overflow-auto rounded-lg border border-border/30"><table className="w-full min-w-[660px] text-sm"><thead className="sticky top-0 bg-muted/80 text-xs text-muted-foreground"><tr><th className="p-3 text-right">ربط</th><th className="p-3 text-right">الفاتورة</th><th className="p-3 text-right">بيانات الفاتورة</th><th className="p-3 text-right">المطابقة المقترحة</th><th className="p-3 text-right">الحالة</th></tr></thead><tbody>{preview.map((row) => { const confirmed = row.category === "confirmed_match"; const candidate = row.candidates[0]; return <tr key={row.invoiceId} className="border-t border-border/20"><td className="p-3"><input type="checkbox" checked={selection.includes(row.invoiceId)} disabled={!confirmed || busy} onChange={(event) => onToggle(row.invoiceId, event.target.checked)} /></td><td className="p-3 font-mono text-primary">{row.invoiceNo}</td><td className="p-3"><div>{row.customerName || "—"}</div><div className="text-xs text-muted-foreground" dir="ltr">{row.customerPhone || "—"}</div></td><td className="p-3">{candidate ? <><div>{candidate.name}</div><div className="text-xs text-muted-foreground" dir="ltr">{candidate.phone}</div></> : "—"}</td><td className="p-3 text-xs">{confirmed ? <span className="text-status-success">مطابقة مؤكدة</span> : row.category === "multiple_matches" ? <span className="text-status-warning">أكثر من تطابق</span> : <span className="text-muted-foreground">لا يُربط تلقائياً</span>}</td></tr>; })}</tbody></table></div>}</div><div className="flex justify-end gap-2 border-t border-border/30 p-4"><Button variant="outline" onClick={onClose} disabled={busy}>إلغاء</Button><Button onClick={onApply} disabled={busy || loading || !selection.length}>{busy ? "جارٍ الربط…" : `ربط ${selection.length} فاتورة مؤكدة`}</Button></div></div></div>;
 }
 
 function InvoiceListLoadError({ error, onRetry, retrying }: { error: unknown; onRetry: () => void; retrying: boolean }) {

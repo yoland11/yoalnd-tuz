@@ -22,6 +22,7 @@ import {
   type InvoicePaymentStatus,
 } from "@/lib/invoice-payment-status";
 import { parseRepx, guessCategory, REPORT_CATEGORIES } from "@/server/repx";
+import { customerLinkResolution, salesInvoicePaymentProjection } from "@/server/sales-invoice-customer-link-logic";
 import { z } from "zod/v4";
 import {
   and,
@@ -639,6 +640,9 @@ export const ALL_PERMISSIONS = [
   "sales_invoice.print_cancelled",
   "sales_invoice.approve_cancellation",
   "sales_invoice.permanent_delete",
+  "sales_invoice.customer.link",
+  "sales_invoice.customer.relink",
+  "sales_invoice.customer.repair",
   "whatsapp",
   "accounting",
   // Voucher lifecycle permissions. "accounting" remains an umbrella grant for
@@ -47859,6 +47863,7 @@ const salesInvoiceCreateSchema = z.object({
   customerName: z.string().trim().max(500).default(""),
   customerPhone: z.string().trim().max(30).optional().nullable(),
   customerId: z.coerce.number().int().positive().nullable().optional(),
+  useCashCustomer: z.boolean().optional().default(false),
   supplierId: z.coerce.number().int().positive().nullable().optional(),
   supplierName: z.string().trim().max(500).optional().nullable(),
   discountAmount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
@@ -48223,15 +48228,200 @@ function purchaseInvoiceItems(value: unknown) {
     .filter((item) => item.productName && item.quantity > 0);
 }
 
+type SalesInvoiceCustomerCandidate = {
+  id: number;
+  name: string;
+  fullName: string | null;
+  phone: string;
+  customerCode: string | null;
+  secondaryPhone: string | null;
+  balance: number;
+  matchMethod: "phone" | "account_phone" | "manual";
+};
+
+function salesInvoiceCustomerName(customer: typeof customersTable.$inferSelect) {
+  return customer.fullName?.trim() || customer.name?.trim() || "عميل";
+}
+
+/** Legacy invoice phones are suggestions only: this function never chooses or links a customer. */
+async function salesInvoiceCustomerCandidates(phone: string | null | undefined): Promise<SalesInvoiceCustomerCandidate[]> {
+  const normalized = normalizeIraqiPhone(phone);
+  if (!normalized) return [];
+  const variants = iraqiPhoneVariants(phone);
+  const [directRows, accountRows] = await Promise.all([
+    db.query.customersTable.findMany({
+      where: and(eq(customersTable.status, "active"), inArray(customersTable.phone, variants)),
+      limit: 25,
+    }),
+    db.query.customerAccountsTable.findMany({
+      where: eq(customerAccountsTable.phoneNormalized, normalized),
+      limit: 25,
+    }),
+  ]);
+  const accountCustomerIds = [...new Set(accountRows.map((row) => row.customerId))];
+  const accountCustomers = accountCustomerIds.length
+    ? await db.query.customersTable.findMany({
+        where: and(eq(customersTable.status, "active"), inArray(customersTable.id, accountCustomerIds)),
+      })
+    : [];
+  const customersById = new Map<number, typeof customersTable.$inferSelect>();
+  for (const row of [...directRows, ...accountCustomers]) customersById.set(row.id, row);
+  const ids = [...customersById.keys()];
+  const invoices = ids.length
+    ? await db.query.salesInvoicesTable.findMany({
+        where: and(
+          inArray(salesInvoicesTable.customerId, ids),
+          eq(salesInvoicesTable.status, "active"),
+          eq(salesInvoicesTable.financiallyReversed, false),
+        ),
+      })
+    : [];
+  const balances = new Map<number, number>();
+  for (const invoice of invoices) {
+    if (!invoice.customerId) continue;
+    balances.set(invoice.customerId, money((balances.get(invoice.customerId) ?? 0) + money(invoice.remainingAmount)));
+  }
+  const directIds = new Set(directRows.map((row) => row.id));
+  const accountByCustomer = new Map<number, typeof customerAccountsTable.$inferSelect>();
+  for (const account of accountRows) accountByCustomer.set(account.customerId, account);
+  return ids.map((id) => {
+    const customer = customersById.get(id)!;
+    const account = accountByCustomer.get(id);
+    return {
+      id,
+      name: salesInvoiceCustomerName(customer),
+      fullName: customer.fullName,
+      phone: customer.phone,
+      customerCode: account?.customerCode ?? null,
+      secondaryPhone: account?.phoneNormalized && account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
+        ? formatIraqiPhone(account.phoneNormalized)
+        : null,
+      balance: balances.get(id) ?? 0,
+      matchMethod: directIds.has(id) ? "phone" : "account_phone",
+    };
+  });
+}
+
+async function searchSalesInvoiceCustomers(query: string): Promise<SalesInvoiceCustomerCandidate[]> {
+  const raw = query.trim().slice(0, 100);
+  if (!raw) return [];
+  const normalized = normalizeIraqiPhone(raw);
+  const variants = normalized ? iraqiPhoneVariants(raw) : [];
+  const pattern = `%${raw.replace(/[\\%_]/g, "\\$&")}%`;
+  const customerConditions: any[] = [ilike(customersTable.name, pattern), ilike(customersTable.fullName, pattern)];
+  if (variants.length) customerConditions.push(inArray(customersTable.phone, variants));
+  const [customers, accounts] = await Promise.all([
+    db.query.customersTable.findMany({
+      where: and(eq(customersTable.status, "active"), or(...customerConditions)),
+      limit: 25,
+    }),
+    db.query.customerAccountsTable.findMany({
+      where: normalized
+        ? or(eq(customerAccountsTable.phoneNormalized, normalized), ilike(customerAccountsTable.customerCode, pattern))
+        : ilike(customerAccountsTable.customerCode, pattern),
+      limit: 25,
+    }),
+  ]);
+  const accountIds = [...new Set(accounts.map((account) => account.customerId))];
+  const additional = accountIds.length
+    ? await db.query.customersTable.findMany({ where: and(eq(customersTable.status, "active"), inArray(customersTable.id, accountIds)) })
+    : [];
+  const all = new Map<number, typeof customersTable.$inferSelect>();
+  for (const customer of [...customers, ...additional]) all.set(customer.id, customer);
+  const accountByCustomer = new Map(accounts.map((account) => [account.customerId, account]));
+  return [...all.values()].map((customer) => {
+    const account = accountByCustomer.get(customer.id);
+    return {
+      id: customer.id,
+      name: salesInvoiceCustomerName(customer),
+      fullName: customer.fullName,
+      phone: customer.phone,
+      customerCode: account?.customerCode ?? null,
+      secondaryPhone: account?.phoneNormalized && account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
+        ? formatIraqiPhone(account.phoneNormalized)
+        : null,
+      balance: 0,
+      matchMethod: "manual" as const,
+    };
+  });
+}
+
+async function salesInvoiceCustomerLinkPrecheck(invoiceId: number) {
+  const invoice = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invoiceId) });
+  if (!invoice) return null;
+  const candidates = invoice.customerId ? [] : await salesInvoiceCustomerCandidates(invoice.customerPhone);
+  return {
+    invoice: {
+      id: invoice.id,
+      invoiceNo: invoice.invoiceNo,
+      customerId: invoice.customerId,
+      customerName: invoice.customerName,
+      customerPhone: invoice.customerPhone,
+      status: invoice.status,
+    },
+    candidates,
+    resolution: customerLinkResolution({
+      customerId: invoice.customerId,
+      normalizedPhone: normalizeIraqiPhone(invoice.customerPhone),
+      candidateCount: candidates.length,
+    }),
+  } as const;
+}
+
+async function getOrCreateSalesCashCustomer() {
+  const key = "salesCashCustomer";
+  const setting = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, key) });
+  const configuredId = Number((setting?.value as any)?.customerId);
+  if (configuredId > 0) {
+    const configured = await db.query.customersTable.findFirst({ where: and(eq(customersTable.id, configuredId), eq(customersTable.status, "active")) });
+    if (configured) return configured;
+  }
+  const existing = await db.query.customersTable.findFirst({ where: and(eq(customersTable.phone, "00000000000"), eq(customersTable.status, "active")) });
+  const inserted = existing ? [existing] : await db.insert(customersTable)
+    .values({ phone: "00000000000", name: "عميل نقدي", fullName: "عميل نقدي", status: "active" })
+    .onConflictDoNothing({ target: customersTable.phone })
+    .returning();
+  const customer = inserted[0] ?? await db.query.customersTable.findFirst({ where: eq(customersTable.phone, "00000000000") });
+  if (!customer) throw new Error("تعذر إعداد العميل النقدي");
+  await db.insert(settingsTable).values({ key, value: { customerId: customer.id, customerCode: "AJN-CASH" } as any }).onConflictDoUpdate({
+    target: settingsTable.key,
+    set: { value: { customerId: customer.id, customerCode: "AJN-CASH" } as any, updatedAt: new Date() },
+  });
+  return customer;
+}
+
+async function linkSalesInvoiceCustomer(input: { invoiceId: number; customerId: number; allowRelink: boolean; reason?: string }) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select id from sales_invoices where id = ${input.invoiceId} for update`);
+    const invoice = await tx.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, input.invoiceId) });
+    if (!invoice) throw new Error("الفاتورة غير موجودة");
+    if (["deleted", "cancelled"].includes(invoice.status)) throw new Error("لا يمكن ربط فاتورة ملغاة أو محذوفة");
+    const customer = await tx.query.customersTable.findFirst({ where: eq(customersTable.id, input.customerId) });
+    if (!customer || customer.status !== "active") throw new Error("العميل المحدد غير موجود أو غير نشط");
+    if (invoice.customerId && invoice.customerId !== customer.id) {
+      if (!input.allowRelink) throw new Error("الفاتورة مرتبطة بعميل آخر");
+      if (!input.reason || input.reason.trim().length < 3) throw new Error("سبب إعادة الربط مطلوب");
+    }
+    if (invoice.customerId === customer.id) return { invoice, customer, oldCustomerId: invoice.customerId, changed: false };
+    const [updated] = await tx.update(salesInvoicesTable).set({ customerId: customer.id, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, invoice.id)).returning();
+    return { invoice: updated, customer, oldCustomerId: invoice.customerId, changed: true };
+  });
+}
+
 async function handleSalesInvoices(
   req: NextRequest,
   parts: string[],
   section: string | undefined,
 ) {
   if (section !== "sales-invoices") return null;
+  const isCustomerLinkRequest =
+    parts[3] === "customer-link" || parts[2] === "customer-link-repair";
+  const isCustomerLinkWrite = isCustomerLinkRequest && req.method === "POST";
   const auth = await requirePermission(
     req,
-    parts[3] === "cancel"
+    isCustomerLinkWrite
+      ? "sales_invoice.customer.link"
+      : parts[3] === "cancel"
       ? "sales_invoice.cancel"
       : req.method === "DELETE"
         ? "sales_invoice.permanent_delete"
@@ -48246,6 +48436,186 @@ async function handleSalesInvoices(
     await ensureStockTrackingTables();
   }
   const resultRows = (result: any) => result?.rows ?? result ?? [];
+
+  if ((method === "GET" || method === "POST") && parts[2] === "customer-link-repair") {
+    if (!hasPermission(auth, "sales_invoice.customer.repair"))
+      return error("إصلاح ربط الفواتير التاريخية متاح للمدير فقط", 403);
+    const rows = await db.query.salesInvoicesTable.findMany({
+      where: and(isNull(salesInvoicesTable.customerId), eq(salesInvoicesTable.status, "active")),
+      orderBy: [desc(salesInvoicesTable.createdAt)],
+      limit: 250,
+    });
+    const preview = [] as Array<any>;
+    for (const invoice of rows) {
+      const candidates = await salesInvoiceCustomerCandidates(invoice.customerPhone);
+      preview.push({
+        invoiceId: invoice.id,
+        invoiceNo: invoice.invoiceNo,
+        customerName: invoice.customerName,
+        customerPhone: invoice.customerPhone,
+        candidates,
+        category: !normalizeIraqiPhone(invoice.customerPhone)
+          ? "missing_data"
+          : candidates.length === 0
+            ? "no_match"
+            : candidates.length === 1
+              ? "confirmed_match"
+              : "multiple_matches",
+      });
+    }
+    if (method === "GET" || parts[3] !== "apply") {
+      const counts = preview.reduce((all, row) => {
+        all[row.category] = (all[row.category] ?? 0) + 1;
+        return all;
+      }, {} as Record<string, number>);
+      return json({ preview, counts, scanned: rows.length, limitedTo: 250 });
+    }
+    const payload = await body(req);
+    const requestedIds = Array.isArray(payload?.invoiceIds)
+      ? [...new Set(payload.invoiceIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isInteger(value) && value > 0))].slice(0, 250)
+      : [];
+    if (!requestedIds.length) return error("حدد الفواتير المؤكدة أولاً", 400);
+    const selected = preview.filter((row) => requestedIds.includes(row.invoiceId));
+    const linked: number[] = [];
+    const skipped: Array<{ invoiceId: number; reason: string }> = [];
+    for (const row of selected) {
+      if (row.category !== "confirmed_match") {
+        skipped.push({ invoiceId: row.invoiceId, reason: "المطابقة ليست مؤكدة" });
+        continue;
+      }
+      try {
+        const result = await linkSalesInvoiceCustomer({
+          invoiceId: row.invoiceId,
+          customerId: row.candidates[0].id,
+          allowRelink: false,
+        });
+        if (result.changed) {
+          linked.push(row.invoiceId);
+          await addEntityTimeline({
+            entityType: "sales_invoice",
+            entityId: row.invoiceId,
+            type: "customer_linked",
+            title: "تم ربط الفاتورة بعميل",
+            actor: erpActorFromAdmin(auth),
+            metadata: { oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, matchMethod: row.candidates[0].matchMethod, repair: true },
+          });
+          await logAdminActivity(req, "sales_invoice_customer_linked_backfill", "sales_invoice", row.invoiceId, {
+            oldCustomerId: result.oldCustomerId,
+            newCustomerId: result.customer.id,
+            matchMethod: row.candidates[0].matchMethod,
+          });
+        }
+      } catch (err: any) {
+        skipped.push({ invoiceId: row.invoiceId, reason: err?.message || "تعذر الربط" });
+      }
+    }
+    if (linked.length) {
+      await notifyMainManagers({
+        type: "sales_invoice_customer_link_repair",
+        title: "تم إصلاح ربط فواتير المبيعات",
+        body: `تم ربط ${linked.length} فاتورة تاريخية بعملائها بعد مطابقة رقم الهاتف.`,
+        href: "/admin/sales",
+        metadata: { linkedInvoiceIds: linked },
+      });
+    }
+    return json({ ok: true, linked, skipped, scanned: rows.length });
+  }
+
+  if (id && parts[3] === "customer-link") {
+    if (method === "GET" && parts[4] === "search") {
+      const query = req.nextUrl.searchParams.get("q") ?? "";
+      return json({ candidates: await searchSalesInvoiceCustomers(query) });
+    }
+    if (method === "GET") {
+      const precheck = await salesInvoiceCustomerLinkPrecheck(id);
+      return precheck ? json(precheck) : error("الفاتورة غير موجودة", 404);
+    }
+    if (method === "POST") {
+      const payload = await body(req);
+      const action = String(payload?.action ?? "link");
+      const reason = textFallback(payload?.reason).slice(0, 500);
+      const currentInvoice = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+      if (!currentInvoice) return error("الفاتورة غير موجودة", 404);
+      if (["deleted", "cancelled"].includes(currentInvoice.status)) return error("لا يمكن ربط فاتورة ملغاة أو محذوفة", 409);
+      if (currentInvoice.customerId && action !== "link") return error("الفاتورة مرتبطة بعميل آخر", 409);
+      let customerId = optionalPositiveId(payload?.customerId);
+      let createdFromInvoice = false;
+      let matchMethod = ["phone", "account_phone", "manual", "cash"].includes(String(payload?.matchMethod))
+        ? String(payload.matchMethod)
+        : "manual";
+      if (action === "cash") {
+        customerId = (await getOrCreateSalesCashCustomer()).id;
+        matchMethod = "cash";
+      } else if (action === "create") {
+        if (!hasPermission(auth, "customers")) return error("لا تملك صلاحية إنشاء عميل", 403);
+        const name = textFallback(payload?.name).slice(0, 200);
+        const phone = normalizeIraqiPhone(textFallback(payload?.phone));
+        if (!name || !phone) return error("اسم العميل ورقم هاتف عراقي صحيح مطلوبان", 400);
+        const duplicates = await salesInvoiceCustomerCandidates(phone);
+        if (duplicates.length) {
+          await notifyMainManagers({
+            type: "sales_invoice_customer_duplicate_risk",
+            title: "تم منع إنشاء عميل مكرر",
+            body: `فاتورة ${currentInvoice.invoiceNo}: يوجد عميل بنفس رقم الهاتف.`,
+            href: `/admin/sales?invoice=${id}`,
+            metadata: { invoiceId: id, phone, candidateIds: duplicates.map((candidate) => candidate.id) },
+          });
+          return json({ code: "duplicate_customer", message: "يوجد عميل مسجل بنفس رقم الهاتف", candidates: duplicates }, 409);
+        }
+        try {
+          const [created] = await db.insert(customersTable).values({ phone, name, fullName: name, status: "active" }).returning();
+          customerId = created?.id ?? null;
+          createdFromInvoice = true;
+          matchMethod = "manual";
+        } catch (err: any) {
+          if (err?.code === "23505") {
+            const candidates = await salesInvoiceCustomerCandidates(phone);
+            await notifyMainManagers({
+              type: "sales_invoice_customer_duplicate_risk",
+              title: "تم منع إنشاء عميل مكرر",
+              body: `فاتورة ${currentInvoice.invoiceNo}: تعارض رقم الهاتف أثناء إنشاء العميل.`,
+              href: `/admin/sales?invoice=${id}`,
+              metadata: { invoiceId: id, phone, candidateIds: candidates.map((candidate) => candidate.id) },
+            });
+            return json({ code: "duplicate_customer", message: "يوجد عميل مسجل بنفس رقم الهاتف", candidates }, 409);
+          }
+          throw err;
+        }
+      }
+      if (!customerId) return error("اختر العميل الصحيح قبل المتابعة", 400);
+      const result = await linkSalesInvoiceCustomer({
+        invoiceId: id,
+        customerId,
+        allowRelink: hasPermission(auth, "sales_invoice.customer.relink"),
+        reason,
+      });
+      if (result.changed) {
+        await addEntityTimeline({
+          entityType: "sales_invoice",
+          entityId: id,
+          type: result.oldCustomerId ? "customer_relinked" : "customer_linked",
+          title: result.oldCustomerId ? "تمت إعادة ربط الفاتورة بعميل" : "تم ربط الفاتورة بعميل",
+          actor: erpActorFromAdmin(auth),
+          metadata: { oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, matchMethod, reason: reason || null },
+        });
+        await logAdminActivity(req, result.oldCustomerId ? "sales_invoice_customer_relinked" : "sales_invoice_customer_linked", "sales_invoice", id, {
+          oldCustomerId: result.oldCustomerId,
+          newCustomerId: result.customer.id,
+          matchMethod,
+          reason: reason || null,
+          createdFromInvoice,
+        });
+        await notifyMainManagers({
+          type: result.oldCustomerId ? "sales_invoice_customer_relinked" : "sales_invoice_customer_linked",
+          title: result.oldCustomerId ? "تمت إعادة ربط فاتورة مبيعات" : "تم ربط فاتورة مبيعات بعميل",
+          body: `${result.invoice.invoiceNo} ← ${salesInvoiceCustomerName(result.customer)}`,
+          href: `/admin/sales?invoice=${id}`,
+          metadata: { invoiceId: id, oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, reason: reason || null },
+        });
+      }
+      return json({ ok: true, customer: { id: result.customer.id, name: salesInvoiceCustomerName(result.customer), phone: result.customer.phone }, invoice: result.invoice, linked: result.changed });
+    }
+  }
 
   // Repair one invoice from the immutable receipt-allocation ledger. This deliberately
   // ignores any client-supplied status or cached paid amount.
@@ -49298,12 +49668,20 @@ async function handleSalesInvoices(
       : null;
     if (supplierId && !supplier) return error("المورد المختار غير موجود", 400);
     const supplierName = nullableText(b.supplierName ?? supplier?.name);
-    const customerId = optionalPositiveId(b.customerId);
+    let customerId = optionalPositiveId(b.customerId);
     if (customerId) {
       const customer = await db.query.customersTable.findFirst({
         where: eq(customersTable.id, customerId),
       });
       if (!customer) return error("العميل المحدد غير موجود", 400);
+    }
+
+    if (!customerId) {
+      if (b.useCashCustomer !== true)
+        return error("اختر عميلاً أو استخدم العميل النقدي قبل حفظ الفاتورة", 400);
+      // Anonymous walk-in invoices use one configured generic customer rather
+      // than leaving the financial document without a customer reference.
+      customerId = (await getOrCreateSalesCashCustomer()).id;
     }
 
     // Header, lines, stock, coupon use, and delivery are a single unit of work.
@@ -52758,7 +53136,10 @@ async function collectionSourceSummary(
     }
   }
   if (!source) return null;
-  if (!customerId && customerPhone) {
+  // Sales invoices must be explicitly linked before collection.  Do not turn a
+  // phone lookup into a hidden customer_id assignment here: that was the source
+  // of ambiguous legacy collections and made the UI and ledger disagree.
+  if (sourceType !== "sales_invoice" && !customerId && customerPhone) {
     customerId = (await findCustomerByPhone(customerPhone))?.id ?? null;
   }
   const lastPayment = await db.query.financialTransactionsTable.findFirst({
@@ -52882,16 +53263,11 @@ async function handleCollections(
       400,
     );
 
-  const paid = money(before.paid + amount);
-  const remaining = money(Math.max(before.total - paid, 0));
-  const paymentStatus =
-    paid <= 0
-      ? "unpaid"
-      : paid < before.total
-        ? "partial"
-        : paid === before.total
-          ? "paid"
-          : "overpaid";
+  const { paid, remaining, paymentStatus } = salesInvoicePaymentProjection(
+    before.total,
+    before.paid,
+    amount,
+  );
   const a = actor(currentUser);
   const sourceMethod =
     data.paymentMethod === "transfer"
