@@ -45,6 +45,8 @@ import {
   adminActivityLogsTable,
   attendanceRecordsTable,
   approvalRequestsTable,
+  approvalActionsTable,
+  employeeApprovalPermissionsTable,
   assetSalesTable,
   assetProfilesTable,
   assetCategoriesTable,
@@ -858,6 +860,14 @@ export const ALL_PERMISSIONS = [
   "catering_inventory_manage",
   "catering_reports_view",
   "catering_settings_manage",
+  "approvals.view",
+  "approvals.approve",
+  "approvals.reject",
+  "approvals.return_for_edit",
+  "approvals.forward_to_main_manager",
+  "approvals.comment",
+  "approvals.audit.view",
+  "approvals.reverse",
   // Customer private photos are deliberately scoped to the main manager only.
   "customer.private_photo.view",
   // Bouquet designer administration. These are separate from the broad store
@@ -3047,6 +3057,59 @@ async function createApprovalRequest(input: {
     });
   }
   return row;
+}
+
+const DELEGATED_APPROVAL_CODES = [
+  "approvals.view", "approvals.approve", "approvals.reject", "approvals.return_for_edit",
+  "approvals.forward_to_main_manager", "approvals.comment", "approvals.audit.view", "approvals.reverse",
+] as const;
+
+function approvalRequestScope(row: any) {
+  const values = (row.newValues ?? {}) as Record<string, unknown>;
+  return {
+    category: String(values.approvalCategory ?? row.type ?? "other"),
+    department: String(values.department ?? values.departmentId ?? ""),
+    branchId: Number(values.branchId ?? 0) || null,
+    requiresMain: values.approvalMode === "main_manager_final",
+    amount: Math.max(0, Number(row.amount ?? 0) || 0),
+  };
+}
+
+function activeDelegation(profile: any) {
+  if (!profile?.isActive) return false;
+  const now = Date.now();
+  return (!profile.validFrom || new Date(profile.validFrom).getTime() <= now) &&
+    (!profile.validUntil || new Date(profile.validUntil).getTime() >= now);
+}
+
+function profileAllowsScope(profile: any, row: any) {
+  const scope = approvalRequestScope(row);
+  const categories = Array.isArray(profile?.allowedCategories) ? profile.allowedCategories : [];
+  const departments = Array.isArray(profile?.allowedDepartments) ? profile.allowedDepartments : [];
+  const branches = Array.isArray(profile?.allowedBranchIds) ? profile.allowedBranchIds.map(Number) : [];
+  return categories.includes(scope.category) &&
+    (!departments.length || departments.includes(scope.department)) &&
+    (!branches.length || (scope.branchId !== null && branches.includes(scope.branchId)));
+}
+
+async function approvalDelegationFor(user: AdminUser) {
+  await ensureAdminExtensionsTables();
+  const profile = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, user.id) });
+  return profile && activeDelegation(profile) ? profile : null;
+}
+
+async function notifyMainManagers(input: { type: string; title: string; body: string; requestId?: number; href?: string; metadata?: Record<string, unknown> }) {
+  const managers = await db.query.staffTable.findMany({ where: and(eq(staffTable.isActive, true), eq(staffTable.role, "admin")) });
+  await Promise.all(managers.map((manager) => createNotification({ audienceType: "admin", staffId: manager.id, type: input.type, title: input.title, body: input.body, entityType: input.requestId ? "approval_request" : "staff", entityId: input.requestId ?? null, href: input.href ?? "/admin/approvals", metadata: input.metadata ?? {} })));
+}
+
+async function addApprovalAction(input: { request: any; action: string; oldStatus: string; newStatus: string; actor: AdminUser; note?: string | null; req: NextRequest; metadata?: Record<string, unknown> }) {
+  await db.insert(approvalActionsTable).values({
+    approvalRequestId: input.request.id, action: input.action, oldStatus: input.oldStatus, newStatus: input.newStatus,
+    actorStaffId: input.actor.id, actorName: input.actor.fullName || input.actor.username, actorRole: input.actor.role,
+    note: nullableText(input.note), amount: String(Math.max(0, Number(input.request.amount ?? 0) || 0)), ipAddress: ip(input.req),
+    sessionId: input.req.cookies.get(COOKIE_NAME)?.value?.slice(0, 120) ?? null, metadata: input.metadata ?? {},
+  });
 }
 
 async function executeApprovedApprovalRequest(
@@ -10334,6 +10397,41 @@ async function ensureAdminExtensionsTables(): Promise<void> {
         "created_at" timestamp not null default now(),
         "updated_at" timestamp not null default now()
       );
+      create table if not exists "employee_approval_permissions" (
+        "id" serial primary key,
+        "staff_id" integer not null unique references "staff" ("id") on delete cascade,
+        "permission_codes" jsonb not null default '[]'::jsonb,
+        "allowed_categories" jsonb not null default '[]'::jsonb,
+        "allowed_departments" jsonb not null default '[]'::jsonb,
+        "allowed_branch_ids" jsonb not null default '[]'::jsonb,
+        "category_modes" jsonb not null default '{}'::jsonb,
+        "max_amount" numeric(16,2) not null default 0,
+        "unlimited_amount" boolean not null default false,
+        "valid_from" timestamp,
+        "valid_until" timestamp,
+        "is_active" boolean not null default true,
+        "is_temporary" boolean not null default false,
+        "delegation_reason" text,
+        "granted_by" integer references "staff" ("id"),
+        "created_at" timestamp not null default now(),
+        "updated_at" timestamp not null default now()
+      );
+      create table if not exists "approval_actions" (
+        "id" serial primary key,
+        "approval_request_id" integer not null references "approval_requests" ("id") on delete cascade,
+        "action" varchar(40) not null,
+        "old_status" varchar(30),
+        "new_status" varchar(30),
+        "actor_staff_id" integer references "staff" ("id"),
+        "actor_name" text not null default '',
+        "actor_role" varchar(30),
+        "note" text,
+        "amount" numeric(16,2),
+        "ip_address" varchar(120),
+        "session_id" varchar(120),
+        "metadata" jsonb not null default '{}'::jsonb,
+        "created_at" timestamp not null default now()
+      );
       create table if not exists "entity_documents" (
         "id" serial primary key,
         "entity_type" varchar(60) not null,
@@ -10428,6 +10526,9 @@ async function ensureAdminExtensionsTables(): Promise<void> {
       create index if not exists "tasks_related_template_idx" on "tasks" ("related_type", "related_id", "template_key");
       create index if not exists "approval_requests_status_idx" on "approval_requests" ("status", "created_at");
       create index if not exists "approval_requests_entity_idx" on "approval_requests" ("entity_type", "entity_id");
+      create index if not exists "employee_approval_permissions_active_staff_idx" on "employee_approval_permissions" ("is_active", "staff_id");
+      create index if not exists "approval_actions_request_created_idx" on "approval_actions" ("approval_request_id", "created_at");
+      create index if not exists "approval_actions_actor_created_idx" on "approval_actions" ("actor_staff_id", "created_at");
       create index if not exists "entity_documents_entity_idx" on "entity_documents" ("entity_type", "entity_id", "created_at");
       create index if not exists "entity_timeline_entity_idx" on "entity_timeline" ("entity_type", "entity_id", "created_at");
       create unique index if not exists "warehouse_stock_product_warehouse_idx" on "warehouse_stock" ("product_id", "warehouse_id");
@@ -37030,10 +37131,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "approvals") {
-    const auth = await requirePermission(req, "tasks");
-    if (isResponse(auth)) return auth;
+    const auth = (await getAdminUser(req)) as AdminUser;
+    if (!auth) return error("غير مخول", 401);
     await ensureAdminExtensionsTables();
+    const isMainManager = auth.role === "admin";
+    const delegation = isMainManager ? null : await approvalDelegationFor(auth);
+    if (!isMainManager && !delegation) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
     if (method === "GET") {
+      if (!isMainManager && !(delegation?.permissionCodes ?? []).includes("approvals.view")) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
       const params = req.nextUrl.searchParams;
       const status = params.get("status")?.trim();
       const type = params.get("type")?.trim();
@@ -37054,9 +37159,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         orderBy: [desc(approvalRequestsTable.createdAt)],
         limit: 200,
       });
-      return json({ data: rows.map(formatApprovalRequest) });
+      const visible = isMainManager ? rows : rows.filter((row) => profileAllowsScope(delegation, row));
+      return json({ data: visible.map((row) => ({ ...formatApprovalRequest(row), allowedActions: isMainManager ? ["approve", "reject", "return_for_edit", "forward_to_main_manager", "comment", "audit"] : (delegation?.permissionCodes ?? []).map(String), requiresMainManager: approvalRequestScope(row).requiresMain })) });
     }
     if (method === "POST" && !parts[2]) {
+      if (!isMainManager) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
       const b = await body(req);
       const title = textFallback(b?.title, "طلب موافقة");
       const row = await createApprovalRequest({
@@ -37082,65 +37189,42 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       return json(formatApprovalRequest(row), 201);
     }
     if (method === "PATCH" && parts[2]) {
-      const id = int(parts[2]);
-      if (!id) return error("معرف غير صحيح", 400);
-      if (!(auth.role === "admin" || auth.role === "manager"))
-        return error("اعتماد الطلبات متاح للمدير فقط", 403);
-      const b = await body(req);
-      const status = String(b?.status ?? b?.action ?? "").toLowerCase();
-      const next =
-        status === "approved" || status === "approve"
-          ? "approved"
-          : status === "rejected" || status === "reject"
-            ? "rejected"
-            : "";
-      if (!next) return error("اختر موافقة أو رفض", 400);
-      const existing = await db.query.approvalRequestsTable.findFirst({
-        where: eq(approvalRequestsTable.id, id),
-      });
-      if (!existing) return error("طلب الموافقة غير موجود", 404);
-      if (existing.status !== "pending")
-        return error("تمت مراجعة هذا الطلب مسبقاً", 409);
-      const [row] = await db
-        .update(approvalRequestsTable)
-        .set({
-          status: next,
-          reviewedBy: auth.id,
-          reviewedByName: auth.fullName || auth.username,
-          reviewNote: nullableText(b?.reviewNote ?? b?.note),
-          reviewedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(approvalRequestsTable.id, id))
-        .returning();
-      let execution: unknown = null;
-      if (next === "approved") {
-        execution = await executeApprovedApprovalRequest(
-          row,
-          erpActorFromAdmin(auth),
-        );
+      const id = int(parts[2]) ?? 0;
+      const delegatedBody = await body(req);
+      const delegatedAction = String(delegatedBody?.action ?? delegatedBody?.status ?? "").toLowerCase();
+      const actionMap: Record<string, { code: string; action: string; status: string }> = {
+        approve: { code: "approvals.approve", action: "approve", status: "approved" }, approved: { code: "approvals.approve", action: "approve", status: "approved" },
+        reject: { code: "approvals.reject", action: "reject", status: "rejected" }, rejected: { code: "approvals.reject", action: "reject", status: "rejected" },
+        return_for_edit: { code: "approvals.return_for_edit", action: "return_for_edit", status: "returned_for_edit" },
+        forward_to_main_manager: { code: "approvals.forward_to_main_manager", action: "forward_to_main_manager", status: "pending_main_manager" },
+        comment: { code: "approvals.comment", action: "comment", status: "under_review" },
+      };
+      const delegatedRule = actionMap[delegatedAction];
+      if (!delegatedRule) return error("اختر إجراء موافقة صالحاً.", 400);
+      const delegatedRequest = await db.query.approvalRequestsTable.findFirst({ where: eq(approvalRequestsTable.id, id) });
+      if (!delegatedRequest) return error("طلب الموافقة غير موجود", 404);
+      if (!["pending", "under_review", "pending_main_manager", "approved_by_delegate"].includes(delegatedRequest.status)) return error("تمت مراجعة هذا الطلب مسبقاً", 409);
+      if (!isMainManager) {
+        if (!(delegation?.permissionCodes ?? []).includes(delegatedRule.code) || !profileAllowsScope(delegation, delegatedRequest)) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+        if (delegatedRequest.requestedBy && delegatedRequest.requestedBy === auth.id) {
+          void logAdminActivity(req, "approval_unauthorized_self_attempt", "approval_request", id, { action: delegatedRule.action });
+          void notifyMainManagers({ type: "approval_action", title: "محاولة موافقة غير مصرح بها", body: `حاول ${auth.fullName || auth.username} اعتماد طلبه الشخصي.`, requestId: id, metadata: { action: "self_approval_attempt" } });
+          return error("لا يمكن للموظف اعتماد طلبه الشخصي.", 403);
+        }
       }
-      if (row.entityType && row.entityId) {
-        void addEntityTimeline({
-          entityType: row.entityType,
-          entityId: row.entityId,
-          type: next === "approved" ? "approval_approved" : "approval_rejected",
-          title: next === "approved" ? "تمت الموافقة" : "تم الرفض",
-          body: row.title,
-          actor: erpActorFromAdmin(auth),
-          metadata: { approvalRequestId: row.id, status: next, execution },
-        });
-      }
-      void logAdminActivity(
-        req,
-        next === "approved"
-          ? "approval_request_approved"
-          : "approval_request_rejected",
-        "approval_request",
-        row.id,
-        { requestNo: row.requestNo },
-      );
-      return json({ ...formatApprovalRequest(row), execution });
+      const scope = approvalRequestScope(delegatedRequest);
+      let delegatedNext = delegatedRule.status;
+      const mode = String((delegation?.categoryModes as any)?.[scope.category] ?? "");
+      const overLimit = !isMainManager && delegatedRule.action === "approve" && !delegation?.unlimitedAmount && scope.amount > Number(delegation?.maxAmount ?? 0);
+      if (!isMainManager && delegatedRule.action === "approve" && (scope.requiresMain || mode === "main_manager_final" || overLimit)) delegatedNext = "pending_main_manager";
+      const [delegatedRow] = await db.update(approvalRequestsTable).set({ status: delegatedNext, reviewedBy: auth.id, reviewedByName: auth.fullName || auth.username, reviewNote: nullableText(delegatedBody?.note ?? delegatedBody?.reviewNote), reviewedAt: new Date(), updatedAt: new Date() }).where(eq(approvalRequestsTable.id, id)).returning();
+      let delegatedExecution: unknown = null;
+      if (delegatedNext === "approved") delegatedExecution = await executeApprovedApprovalRequest(delegatedRow, erpActorFromAdmin(auth));
+      await addApprovalAction({ request: delegatedRequest, action: overLimit ? "limit_exceeded_forwarded" : delegatedRule.action, oldStatus: delegatedRequest.status, newStatus: delegatedNext, actor: auth, note: delegatedBody?.note ?? delegatedBody?.reviewNote, req, metadata: { category: scope.category, overLimit, requiresMain: scope.requiresMain } });
+      if (delegatedRow.entityType && delegatedRow.entityId) void addEntityTimeline({ entityType: delegatedRow.entityType, entityId: delegatedRow.entityId, type: `approval_${delegatedRule.action}`, title: delegatedNext === "pending_main_manager" ? "تم تحويل الطلب للمدير الرئيسي" : delegatedNext === "returned_for_edit" ? "أعيد الطلب للتعديل" : delegatedNext === "rejected" ? "تم الرفض" : delegatedNext === "approved" ? "تم الاعتماد النهائي" : "تمت مراجعة الطلب", body: delegatedRow.title, actor: erpActorFromAdmin(auth), metadata: { approvalRequestId: id, status: delegatedNext } });
+      if (!isMainManager) await notifyMainManagers({ type: "approval_action", title: "إجراء موافقة مفوض", body: `قام ${auth.fullName || auth.username} بـ${delegatedRule.action} للطلب ${delegatedRow.requestNo}${scope.amount ? ` بمبلغ ${scope.amount.toLocaleString("ar-IQ")} د.ع` : ""}.`, requestId: id, metadata: { action: delegatedRule.action, amount: scope.amount, note: delegatedBody?.note ?? delegatedBody?.reviewNote, overLimit } });
+      void logAdminActivity(req, `approval_${delegatedRule.action}`, "approval_request", id, { requestNo: delegatedRow.requestNo, oldStatus: delegatedRequest.status, newStatus: delegatedNext, overLimit });
+      return json({ ...formatApprovalRequest(delegatedRow), execution: delegatedExecution, overLimit });
     }
   }
 
@@ -43927,6 +44011,37 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
     }
 
+    if (parts[2] && parts[3] === "approval-permissions") {
+      if (auth.role !== "admin") return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+      await ensureAdminExtensionsTables();
+      const staffId = int(parts[2]);
+      if (!staffId) return error("معرف الموظف غير صحيح", 400);
+      const employee = await db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) });
+      if (!employee) return error("الموظف غير موجود", 404);
+      if (method === "GET") {
+        const profile = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, staffId) });
+        const actions = await db.query.approvalActionsTable.findMany({ where: eq(approvalActionsTable.actorStaffId, staffId), orderBy: (table, { desc }) => [desc(table.createdAt)], limit: 30 });
+        return json({ profile: profile ?? null, actions });
+      }
+      if (method === "PATCH") {
+        const bodyValue = await body(req);
+        const codes = Array.isArray(bodyValue?.permissionCodes) ? bodyValue.permissionCodes.map(String).filter((code: string) => (DELEGATED_APPROVAL_CODES as readonly string[]).includes(code)) : [];
+        const categories = Array.isArray(bodyValue?.allowedCategories) ? bodyValue.allowedCategories.map(String).filter(Boolean).slice(0, 40) : [];
+        const departments = Array.isArray(bodyValue?.allowedDepartments) ? bodyValue.allowedDepartments.map(String).filter(Boolean).slice(0, 40) : [];
+        const branches = Array.isArray(bodyValue?.allowedBranchIds) ? bodyValue.allowedBranchIds.map(Number).filter((value: number) => Number.isInteger(value) && value > 0).slice(0, 100) : [];
+        const modeValues: Record<string, "delegated_final" | "main_manager_final"> = (typeof bodyValue?.categoryModes === "object" && bodyValue.categoryModes ? Object.fromEntries(Object.entries(bodyValue.categoryModes).filter(([key, value]) => categories.includes(key) && ["delegated_final", "main_manager_final"].includes(String(value)))) : {}) as Record<string, "delegated_final" | "main_manager_final">;
+        const validFrom = normalizeDateOnly(bodyValue?.validFrom);
+        const validUntil = normalizeDateOnly(bodyValue?.validUntil);
+        if (validFrom && validUntil && validFrom > validUntil) return error("تاريخ انتهاء التفويض يجب أن يكون بعد تاريخ البداية.", 400);
+        const values = { permissionCodes: codes, allowedCategories: categories, allowedDepartments: departments, allowedBranchIds: branches, categoryModes: modeValues, maxAmount: String(Math.max(0, Number(bodyValue?.maxAmount) || 0)), unlimitedAmount: bodyValue?.unlimitedAmount === true, validFrom: validFrom ? new Date(`${validFrom}T00:00:00Z`) : null, validUntil: validUntil ? new Date(`${validUntil}T23:59:59Z`) : null, isActive: bodyValue?.isActive === true, isTemporary: bodyValue?.isTemporary === true, delegationReason: nullableText(bodyValue?.delegationReason), grantedBy: auth.id, updatedAt: new Date() };
+        const before = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, staffId) });
+        const [profile] = before ? await db.update(employeeApprovalPermissionsTable).set(values).where(eq(employeeApprovalPermissionsTable.staffId, staffId)).returning() : await db.insert(employeeApprovalPermissionsTable).values({ staffId, ...values }).returning();
+        await logAdminActivity(req, "approval_permissions_updated", "staff", staffId, { oldPermissions: before?.permissionCodes ?? [], newPermissions: codes, maxAmount: values.maxAmount, active: values.isActive });
+        await notifyMainManagers({ type: "approval_action", title: "تحديث صلاحيات الموافقات", body: `قام ${auth.fullName || auth.username} بتحديث صلاحيات الموافقات للموظف ${employee.fullName || employee.username}.`, metadata: { staffId, action: before?.isActive && !values.isActive ? "permission_removed" : "permission_granted" } });
+        return json({ profile });
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (parts[2] && parts[3] === "salary-settings") {
       const id = int(parts[2]);
       if (!id) return error("معرف الموظف غير صحيح", 400);

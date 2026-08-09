@@ -64,6 +64,8 @@ type ApprovalRow = {
   requestedByName: string;
   reviewedByName: string;
   createdAt: string | null;
+  allowedActions?: string[];
+  requiresMainManager?: boolean;
 };
 
 type DocumentRow = {
@@ -268,9 +270,9 @@ export default function ApprovalCenterPage() {
     staleTime: 20_000,
   });
   const review = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: "approved" | "rejected" }) => adminFetch(`/admin/approvals/${id}`, {
+    mutationFn: ({ id, status, note }: { id: number; status: string; note?: string }) => adminFetch(`/admin/approvals/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ action: status, note }),
     }),
     onSuccess: () => {
       toast({ title: "تم تحديث طلب الموافقة" });
@@ -320,10 +322,12 @@ export default function ApprovalCenterPage() {
                     <td className="p-3"><span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span></td>
                     <td className="p-3 text-muted-foreground">{row.requestedByName || "النظام"}<br /><span className="text-xs">{formatDate(row.createdAt)}</span></td>
                     <td className="p-3">
-                      {row.status === "pending" ? (
+                      {["pending", "under_review", "pending_main_manager"].includes(row.status) ? (
                         <div className="flex gap-2">
-                          <Button size="sm" onClick={() => review.mutate({ id: row.id, status: "approved" })} className="gap-1"><CheckCircle2 className="h-4 w-4" /> موافقة</Button>
-                          <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "rejected" })} className="gap-1"><XCircle className="h-4 w-4" /> رفض</Button>
+                          {(row.allowedActions ?? []).some((action) => ["approve", "approvals.approve"].includes(action)) && <Button size="sm" onClick={() => review.mutate({ id: row.id, status: "approve" })} className="gap-1"><CheckCircle2 className="h-4 w-4" /> موافقة</Button>}
+                          {(row.allowedActions ?? []).some((action) => ["reject", "approvals.reject"].includes(action)) && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "reject" })} className="gap-1"><XCircle className="h-4 w-4" /> رفض</Button>}
+                          {(row.allowedActions ?? []).includes("approvals.return_for_edit") && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "return_for_edit" })}>إعادة للتعديل</Button>}
+                          {(row.allowedActions ?? []).includes("approvals.forward_to_main_manager") && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "forward_to_main_manager" })}>تحويل للمدير</Button>}
                         </div>
                       ) : <span className="text-xs text-muted-foreground">{row.reviewedByName || "تمت المراجعة"}</span>}
                     </td>

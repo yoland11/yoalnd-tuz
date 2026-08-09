@@ -1,4 +1,4 @@
-import { index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex } from "drizzle-orm/pg-core";
+import { index, pgTable, serial, text, integer, timestamp, varchar, jsonb, numeric, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 import { customersTable } from "./customers";
 
@@ -91,6 +91,45 @@ export const approvalRequestsTable = pgTable("approval_requests", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+/** Individually granted delegated approval profile; no role receives this by default. */
+export const employeeApprovalPermissionsTable = pgTable("employee_approval_permissions", {
+  id: serial("id").primaryKey(),
+  staffId: integer("staff_id").notNull().unique().references(() => staffTable.id, { onDelete: "cascade" }),
+  permissionCodes: jsonb("permission_codes").$type<string[]>().notNull().default([]),
+  allowedCategories: jsonb("allowed_categories").$type<string[]>().notNull().default([]),
+  allowedDepartments: jsonb("allowed_departments").$type<string[]>().notNull().default([]),
+  allowedBranchIds: jsonb("allowed_branch_ids").$type<number[]>().notNull().default([]),
+  categoryModes: jsonb("category_modes").$type<Record<string, "delegated_final" | "main_manager_final">>().notNull().default({}),
+  maxAmount: numeric("max_amount", { precision: 16, scale: 2 }).notNull().default("0"),
+  unlimitedAmount: boolean("unlimited_amount").notNull().default(false),
+  validFrom: timestamp("valid_from"),
+  validUntil: timestamp("valid_until"),
+  isActive: boolean("is_active").notNull().default(true),
+  isTemporary: boolean("is_temporary").notNull().default(false),
+  delegationReason: text("delegation_reason"),
+  grantedBy: integer("granted_by").references(() => staffTable.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({ activeStaffIdx: index("employee_approval_permissions_active_staff_idx").on(table.isActive, table.staffId) }));
+
+/** Immutable approval action history. UI never exposes destructive operations. */
+export const approvalActionsTable = pgTable("approval_actions", {
+  id: serial("id").primaryKey(),
+  approvalRequestId: integer("approval_request_id").notNull().references(() => approvalRequestsTable.id, { onDelete: "cascade" }),
+  action: varchar("action", { length: 40 }).notNull(),
+  oldStatus: varchar("old_status", { length: 30 }),
+  newStatus: varchar("new_status", { length: 30 }),
+  actorStaffId: integer("actor_staff_id").references(() => staffTable.id),
+  actorName: text("actor_name").notNull().default(""),
+  actorRole: varchar("actor_role", { length: 30 }),
+  note: text("note"),
+  amount: numeric("amount", { precision: 16, scale: 2 }),
+  ipAddress: varchar("ip_address", { length: 120 }),
+  sessionId: varchar("session_id", { length: 120 }),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({ requestCreatedIdx: index("approval_actions_request_created_idx").on(table.approvalRequestId, table.createdAt), actorCreatedIdx: index("approval_actions_actor_created_idx").on(table.actorStaffId, table.createdAt) }));
 
 export const entityDocumentsTable = pgTable("entity_documents", {
   id: serial("id").primaryKey(),

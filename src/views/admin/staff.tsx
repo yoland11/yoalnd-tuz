@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Edit2, Trash2, X, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -471,6 +471,7 @@ export default function StaffPage() {
                 ))}
               </div>
             </div>
+            {editing.id && <ApprovalPermissionsPanel staff={editing} />}
             <label
               className={`flex items-center gap-2 text-sm ${editing.role === "admin" ? "opacity-70" : ""}`}
             >
@@ -494,6 +495,35 @@ export default function StaffPage() {
       )}
     </div>
   );
+}
+
+const APPROVAL_CODES = [
+  ["approvals.view", "مشاهدة طلبات الموافقة"], ["approvals.approve", "اعتماد الطلبات"], ["approvals.reject", "رفض الطلبات"],
+  ["approvals.return_for_edit", "إعادة للتعديل"], ["approvals.forward_to_main_manager", "تحويل للمدير الرئيسي"], ["approvals.comment", "كتابة ملاحظات"], ["approvals.audit.view", "مشاهدة السجل"],
+] as const;
+const APPROVAL_CATEGORIES = ["الرواتب", "المكافآت", "السلف", "المصروفات", "المشتريات", "الخصومات", "الإلغاءات", "تعديل الفواتير", "طلبات الموظفين", "تجهيزات التخرج", "الكوشات", "التصوير", "المخزون", "الأصول", "الصيانة", "طلبات أخرى"];
+
+function ApprovalPermissionsPanel({ staff }: { staff: Editing }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState<any>({ permissionCodes: [], allowedCategories: [], allowedDepartments: [], allowedBranchIds: [], categoryModes: {}, maxAmount: "0", unlimitedAmount: false, isActive: false, isTemporary: false, validFrom: "", validUntil: "", delegationReason: "" });
+  const { data, isLoading } = useQuery<{ profile: any; actions: any[] }>({ queryKey: ["admin", "staff", staff.id, "approval-permissions"], queryFn: () => adminFetch(`/admin/staff/${staff.id}/approval-permissions`) });
+  useEffect(() => { if (data?.profile) setDraft({ ...draft, ...data.profile, validFrom: data.profile.validFrom?.slice(0, 10) ?? "", validUntil: data.profile.validUntil?.slice(0, 10) ?? "" }); }, [data?.profile]);
+  const saveApproval = useMutation({ mutationFn: () => adminFetch(`/admin/staff/${staff.id}/approval-permissions`, { method: "PATCH", body: JSON.stringify(draft) }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin", "staff", staff.id, "approval-permissions"] }); toast({ title: "تم تحديث صلاحيات الموافقات" }); }, onError: (error) => toast({ title: "تعذر حفظ صلاحيات الموافقات", description: cleanErrorMessage(error), variant: "destructive" }) });
+  const toggle = (key: "permissionCodes" | "allowedCategories", value: string) => setDraft((current: any) => ({ ...current, [key]: current[key].includes(value) ? current[key].filter((entry: string) => entry !== value) : [...current[key], value] }));
+  return <section className="space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-4" dir="rtl">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><h4 className="font-semibold text-primary">صلاحيات الموافقات</h4><p className="mt-1 text-xs text-muted-foreground">تفويض فردي فقط؛ لا يمنح صلاحيات مدير رئيسي.</p></div><span className={`rounded-full px-2.5 py-1 text-xs ${draft.isActive ? "bg-status-success/15 text-status-success" : "bg-muted text-muted-foreground"}`}>{draft.isActive ? (draft.isTemporary ? "تفويض مؤقت" : "مخول") : "غير مخول"}</span></div>
+    {isLoading ? <Skeleton className="h-24" /> : <>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.isActive} onChange={(event) => setDraft((current: any) => ({ ...current, isActive: event.target.checked }))} className="accent-primary" />تفعيل صلاحيات الموافقات</label>
+      <div className="grid gap-2 sm:grid-cols-2">{APPROVAL_CODES.map(([code, label]) => <label key={code} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.permissionCodes.includes(code)} onChange={() => toggle("permissionCodes", code)} className="accent-primary" />{label}</label>)}</div>
+      <div><p className="mb-2 text-xs font-medium text-foreground">فئات الموافقات المسموحة</p><div className="flex flex-wrap gap-2">{APPROVAL_CATEGORIES.map((category) => <label key={category} className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs ${draft.allowedCategories.includes(category) ? "border-primary bg-primary/10 text-primary" : "border-border/40 text-muted-foreground"}`}><input type="checkbox" className="sr-only" checked={draft.allowedCategories.includes(category)} onChange={() => toggle("allowedCategories", category)} />{category}</label>)}</div></div>
+      <div className="grid gap-3 sm:grid-cols-2"><Field label="أقصى مبلغ اعتماد (د.ع)" type="number" value={String(draft.maxAmount ?? "0")} onChange={(value) => setDraft((current: any) => ({ ...current, maxAmount: value }))} /><div className="space-y-2 pt-5"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.unlimitedAmount} onChange={(event) => setDraft((current: any) => ({ ...current, unlimitedAmount: event.target.checked }))} />حد غير محدود</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.isTemporary} onChange={(event) => setDraft((current: any) => ({ ...current, isTemporary: event.target.checked }))} />تفويض مؤقت</label></div></div>
+      {draft.isTemporary && <div className="grid gap-3 sm:grid-cols-2"><Field label="صالح من" type="date" value={draft.validFrom} onChange={(value) => setDraft((current: any) => ({ ...current, validFrom: value }))} /><Field label="صالح لغاية" type="date" value={draft.validUntil} onChange={(value) => setDraft((current: any) => ({ ...current, validUntil: value }))} /></div>}
+      <Field label="سبب التفويض" value={draft.delegationReason ?? ""} onChange={(value) => setDraft((current: any) => ({ ...current, delegationReason: value }))} />
+      <div className="flex flex-wrap gap-2"><Button type="button" size="sm" onClick={() => saveApproval.mutate()} disabled={saveApproval.isPending}>{saveApproval.isPending ? "جاري الحفظ..." : "حفظ صلاحيات الموافقات"}</Button><Button type="button" size="sm" variant="outline" onClick={() => { setDraft((current: any) => ({ ...current, isActive: false, permissionCodes: [] })); }} >إيقاف جميع الصلاحيات</Button></div>
+      {data?.actions?.length ? <p className="text-xs text-muted-foreground">آخر إجراء: {data.actions[0].action} · {new Date(data.actions[0].createdAt).toLocaleString("ar-IQ")}</p> : null}
+    </>}
+  </section>;
 }
 
 function Field({
