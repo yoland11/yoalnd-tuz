@@ -4,6 +4,7 @@ import { Crop, Image as ImageIcon, Lock, Minus, Plus, RotateCcw, SlidersHorizont
 import { Button } from "@/components/ui/button";
 import {
   dataUrlSize,
+  dataUrlToFile,
   fileToDataUrl,
   formatBytes,
   inspectImageFile,
@@ -12,6 +13,7 @@ import {
   type ImageObjectFit,
   type ImageProcessOptions,
 } from "@/lib/image-tools";
+import { IMAGE_COMPRESSION_OPTIONS, SUPPORTED_IMAGE_INPUT_ACCEPT, outputByteTarget, type ImageCompressionMode } from "@/lib/image-upload-config";
 import {
   ImageUploadError,
   MAX_IMAGE_UPLOAD_BYTES,
@@ -97,7 +99,7 @@ export function ImageUploadEditor({
   kind,
   label = "رفع صورة",
   multiple = false,
-  accept = "image/*",
+  accept = SUPPORTED_IMAGE_INPUT_ACCEPT,
   allowVideo = false,
   currentImage,
   currentMetadata,
@@ -116,6 +118,8 @@ export function ImageUploadEditor({
   const [progress, setProgress] = useState(0);
   const [transfer, setTransfer] = useState<ImageUploadProgress | null>(null);
   const [error, setError] = useState("");
+  const [compressionMode, setCompressionMode] = useState<ImageCompressionMode>("auto");
+  const [processingStage, setProcessingStage] = useState("");
   const [closing, setClosing] = useState(false);
   const uploadAbortRef = useRef<AbortController | null>(null);
 
@@ -134,13 +138,11 @@ export function ImageUploadEditor({
     setError("");
     const oversized = picked.find((file) => file.size > maxUploadBytes);
     if (oversized) {
-      setError(kind === "logo" ? "حجم الصورة أكبر من الحد المسموح للشعار (5 ميغابايت)." : "The maximum allowed image size is 40 MB.");
+      setError("حجم الصورة أكبر من الحد المسموح (100 ميغابايت).");
       return;
     }
     const imageFiles = picked.filter((file) =>
-      kind === "logo"
-        ? ["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase()) || /\.(jpe?g|png|webp)$/i.test(file.name)
-        : file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif|avif)$/i.test(file.name),
+      file.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|bmp|heic|heif|avif|tiff?|svg)$/i.test(file.name),
     );
     const unsupported = picked.find((file) => !imageFiles.includes(file) && !(allowVideo && file.type.startsWith("video/")));
     if (unsupported) {
@@ -188,7 +190,7 @@ export function ImageUploadEditor({
     try {
       setProgress(10);
       const info = await inspectImageFile(file);
-      if (kind === "logo" && (!info.width || !info.height || info.width > 10_000 || info.height > 10_000)) {
+      if (!info.width || !info.height) {
         throw new Error("الملف تالف أو غير صالح كشعار.");
       }
       const sourceInfo = { ...info, fileName: file.name };
@@ -246,6 +248,7 @@ export function ImageUploadEditor({
     setError("");
     setProgress(15);
     setTransfer(null);
+    setProcessingStage("جاري تجهيز الصورة وضغطها...");
     uploadAbortRef.current?.abort();
     const controller = new AbortController();
     uploadAbortRef.current = controller;
@@ -255,19 +258,26 @@ export function ImageUploadEditor({
       for (let index = 0; index < queue.length; index++) {
         const file = queue[index];
         const inspected = index === 0 ? source : { ...(await inspectImageFile(file)), fileName: file.name };
-        const stored = await uploadImageWithVariants(file, {
+        const dataUrl = await processImageFile(file, {
+          ...processingOptions(editor, cropRatio, settings, watermarkText),
+          compressionMode,
+          maxBytes: outputByteTarget(kind),
+          preserveTransparency: /png|webp|svg/i.test(file.type),
+        });
+        const size = await dataUrlSize(dataUrl);
+        const edited = await dataUrlToFile(dataUrl, `${file.name.replace(/\.[^.]+$/, "")}-edited.${dataUrl.startsWith("data:image/png") ? "png" : "webp"}`);
+        setProcessingStage("جاري رفع النسخة المحسّنة...");
+        const stored = await uploadImageWithVariants(edited, {
           folder: imageUploadFolder(kind),
-          maxBytes: maxUploadBytes,
+          maxBytes: outputByteTarget(kind),
+          outputMaxBytes: outputByteTarget(kind),
+          maxSize: Math.max(editor.width, editor.height),
+          compressionMode,
+          preserveTransparency: /png|webp/i.test(edited.type),
           signal: controller.signal,
           onProgress: setTransfer,
         });
-        // Keep the editor's crop as the image displayed by legacy modules while
-        // retaining the original and responsive derivatives in its metadata.
-        const dataUrl = await processImageFile(file, processingOptions(editor, cropRatio, settings, watermarkText));
-        const size = await dataUrlSize(dataUrl);
-        // Browsers that cannot decode HEIC/AVIF may return the source unchanged.
-        // Never send that 40 MB data URL into a legacy JSON save request.
-        const displayValue = size > 8 * 1024 * 1024 ? stored.largeUrl : dataUrl;
+        const displayValue = size > outputByteTarget(kind) ? stored.largeUrl : dataUrl;
         results.push({
           dataUrl: displayValue,
           metadata: {
@@ -278,7 +288,9 @@ export function ImageUploadEditor({
             width: editor.width,
             height: editor.height,
             processedSize: size,
-            processedType: displayValue.match(/^data:([^;,]+)/)?.[1] ?? file.type ?? "image/webp",
+            processedType: displayValue.match(/^data:([^;,]+)/)?.[1] ?? edited.type ?? "image/webp",
+            compressionMode,
+            animationFlattened: inspected.animationFlattened,
             cropRatio,
             objectFit: editor.objectFit,
             cropZoom: editor.zoom,
@@ -295,6 +307,7 @@ export function ImageUploadEditor({
     } catch (cause) {
       setProgress(0);
       setTransfer(null);
+      setProcessingStage("");
       if (cause instanceof DOMException && cause.name === "AbortError") setError("تم إلغاء رفع الصورة. يمكنك إعادة المحاولة دون فقدان التقدم.");
       else setError(cause instanceof ImageUploadError ? cause.message : "تعذر رفع الصورة. حاول مرة أخرى.");
       return;
@@ -306,6 +319,7 @@ export function ImageUploadEditor({
     setTimeout(() => {
       closeEditor(false);
       setProgress(0);
+      setProcessingStage("");
       setClosing(false);
     }, 180);
   }
@@ -412,6 +426,8 @@ export function ImageUploadEditor({
         <Button type="button" size="sm" variant="outline" onClick={() => void applyEdits()}><RotateCcw className="ml-1 h-3.5 w-3.5" />إعادة المحاولة</Button>
       )}
 
+      {processingStage && <p className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary" aria-live="polite">{processingStage}</p>}
+
       {progress > 0 && (
         <div className="h-2 overflow-hidden rounded-full border border-border/20 bg-background">
           <div className="h-full bg-primary transition-[width] duration-300" style={{ width: `${progress}%` }} />
@@ -492,10 +508,21 @@ export function ImageUploadEditor({
                     <Info label="الأبعاد الأصلية" value={`${source.originalWidth ?? 0}×${source.originalHeight ?? 0}`} />
                     <Info label="حجم الملف" value={formatBytes(source.originalSize)} />
                     <Info label="الصيغة" value={source.originalType?.replace("image/", "").toUpperCase() || "IMAGE"} />
+                    <Info label="أبعاد الإخراج" value={`${editor.width}×${editor.height}`} />
+                    <Info label="صيغة الإخراج" value={/png|webp|svg/i.test(source.originalType ?? "") ? "WebP / PNG" : "WebP / JPEG"} />
+                    <Info label="حد الحجم الناتج" value={`≤ ${formatBytes(outputByteTarget(kind))}`} />
+                    <Info label="جودة الإخراج" value={IMAGE_COMPRESSION_OPTIONS.find((option) => option.value === compressionMode)?.label ?? "تلقائي"} />
                   </div>
                 </div>
 
                 <div className="min-w-0 space-y-4">
+                  <Panel title="جودة الصورة وحجمها">
+                    <label className="block text-xs text-muted-foreground" htmlFor="image-compression-mode">اختر الجودة المطلوبة</label>
+                    <select id="image-compression-mode" value={compressionMode} onChange={(event) => setCompressionMode(event.target.value as ImageCompressionMode)} className="mt-2 h-10 w-full rounded-lg border border-border/35 bg-card px-3 text-sm text-foreground">
+                      {IMAGE_COMPRESSION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">يحافظ PNG/WebP الشفاف على الشفافية. تُحوّل صور GIF إلى لقطة ثابتة، ولا تُرفع الصورة الأصلية غير المضغوطة.</p>
+                  </Panel>
                   <Panel title="الأبعاد الجاهزة">
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-2">
                       {PRESETS.map((preset) => (

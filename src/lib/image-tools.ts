@@ -1,4 +1,9 @@
 import type { ImageSettings } from "@/lib/public-settings";
+import {
+  IMAGE_UPLOAD_CONFIG,
+  type ImageCompressionMode,
+  compressionQuality,
+} from "@/lib/image-upload-config";
 
 export type ImageObjectFit = "cover" | "contain" | "fill";
 
@@ -11,6 +16,8 @@ export type ImageMetadata = {
   height?: number;
   processedSize?: number;
   processedType?: string;
+  compressionMode?: ImageCompressionMode;
+  animationFlattened?: boolean;
   cropRatio?: string;
   objectFit?: ImageObjectFit;
   cropZoom?: number;
@@ -34,6 +41,9 @@ export type ImageProcessOptions = Partial<ImageSettings> & {
   cropOffsetX?: number;
   cropOffsetY?: number;
   watermarkText?: string;
+  compressionMode?: ImageCompressionMode;
+  maxBytes?: number;
+  preserveTransparency?: boolean;
 };
 
 export function fileToDataUrl(file: File): Promise<string> {
@@ -45,6 +55,12 @@ export function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+export async function dataUrlToFile(dataUrl: string, name: string): Promise<File> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return new File([blob], name, { type: blob.type || "image/webp" });
+}
+
 export function formatBytes(bytes?: number): string {
   const value = Number(bytes ?? 0);
   if (!Number.isFinite(value) || value <= 0) return "0 KB";
@@ -54,17 +70,8 @@ export function formatBytes(bytes?: number): string {
 
 export async function dataUrlSize(dataUrl: string): Promise<number> {
   if (!dataUrl.startsWith("data:")) return 0;
-  try {
-    const response = await fetch(dataUrl);
-    return (await response.blob()).size;
-  } catch {
-    const base64 = dataUrl.split(",")[1] ?? "";
-    return Math.round((base64.length * 3) / 4);
-  }
-}
-
-function mimeFromDataUrl(dataUrl: string): string {
-  return dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/jpeg";
+  const response = await fetch(dataUrl);
+  return (await response.blob()).size;
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {
@@ -76,19 +83,50 @@ function loadImage(source: string): Promise<HTMLImageElement> {
   });
 }
 
-export async function inspectImageFile(file: File): Promise<ImageMetadata & { dataUrl: string }> {
-  // A 40 MB file should not be duplicated as a base64 string merely to show its
-  // preview. Object URLs keep the original file outside the React state heap.
-  const dataUrl = typeof URL !== "undefined" ? URL.createObjectURL(file) : await fileToDataUrl(file);
-  if (!file.type.startsWith("image/") || typeof window === "undefined") {
-    return {
-      dataUrl,
-      originalSize: file.size,
-      originalType: file.type,
-      width: 0,
-      height: 0,
-    };
+function imageExtension(file: File) {
+  return file.name.split(".").pop()?.toLowerCase() ?? "";
+}
+
+function isHeic(file: File) {
+  return ["image/heic", "image/heif"].includes(file.type.toLowerCase()) || ["heic", "heif"].includes(imageExtension(file));
+}
+
+function isSvg(file: File) {
+  return file.type.toLowerCase() === "image/svg+xml" || imageExtension(file) === "svg";
+}
+
+/** Reject active or externally-referenced SVG before it is ever previewed. */
+export async function sanitizeSvgFile(file: File): Promise<File> {
+  const source = await file.text();
+  if (source.length === 0 || source.length > 4 * 1024 * 1024 || !/<svg[\s>]/i.test(source)) throw new Error("ملف SVG تالف أو غير صالح.");
+  const unsafe = /<(?:script|foreignObject|iframe|object|embed|link|use|audio|video)\b|\son[a-z]+\s*=|javascript\s*:|\b(?:href|xlink:href)\s*=\s*["']\s*(?!#)|url\s*\(\s*(?!\s*['"]?#)/i;
+  if (unsafe.test(source)) throw new Error("ملف SVG يحتوي على محتوى غير آمن.");
+  const clean = source.replace(/<!--[\s\S]*?-->/g, "").replace(/<\?xml[\s\S]*?\?>/gi, "");
+  return new File([clean], file.name.replace(/\.[^.]+$/, ".svg"), { type: "image/svg+xml" });
+}
+
+async function normalizeDecodableImage(file: File): Promise<File> {
+  if (isSvg(file)) return sanitizeSvgFile(file);
+  if (!isHeic(file)) return file;
+  const preview = URL.createObjectURL(file);
+  try {
+    await loadImage(preview);
+    return file;
+  } catch {
+    const converter = (await import("heic2any")).default;
+    const converted = await converter({ blob: file, toType: "image/png", quality: 0.92 });
+    const blob = Array.isArray(converted) ? converted[0] : converted;
+    if (!blob) throw new Error("تعذر تحويل صورة HEIC/HEIF على هذا الجهاز.");
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.png`, { type: "image/png" });
+  } finally {
+    URL.revokeObjectURL(preview);
   }
+}
+
+export async function inspectImageFile(file: File): Promise<ImageMetadata & { dataUrl: string }> {
+  const normalized = await normalizeDecodableImage(file);
+  const dataUrl = typeof URL !== "undefined" ? URL.createObjectURL(normalized) : await fileToDataUrl(normalized);
+  if (typeof window === "undefined") return { dataUrl, originalSize: file.size, originalType: file.type, width: 0, height: 0 };
   try {
     const image = await loadImage(dataUrl);
     return {
@@ -99,15 +137,11 @@ export async function inspectImageFile(file: File): Promise<ImageMetadata & { da
       originalType: file.type,
       width: image.width,
       height: image.height,
+      animationFlattened: file.type === "image/gif" || imageExtension(file) === "gif",
     };
   } catch {
-    return {
-      dataUrl,
-      originalSize: file.size,
-      originalType: file.type,
-      width: 0,
-      height: 0,
-    };
+    URL.revokeObjectURL(dataUrl);
+    throw new Error("تعذر قراءة الصورة أو تحويلها على هذا الجهاز.");
   }
 }
 
@@ -116,8 +150,7 @@ function cropDimensions(width: number, height: number, ratio: string) {
   const [rw, rh] = ratio.split(":").map(Number);
   if (!rw || !rh) return { sx: 0, sy: 0, sw: width, sh: height };
   const target = rw / rh;
-  const current = width / height;
-  if (current > target) {
+  if (width / height > target) {
     const sw = Math.round(height * target);
     return { sx: Math.round((width - sw) / 2), sy: 0, sw, sh: height };
   }
@@ -125,98 +158,80 @@ function cropDimensions(width: number, height: number, ratio: string) {
   return { sx: 0, sy: Math.round((height - sh) / 2), sw: width, sh };
 }
 
-export async function processImageDataUrl(source: string, options: ImageProcessOptions = {}, sourceType = "image/jpeg"): Promise<string> {
-  if (typeof window === "undefined") return source;
+function outputMime(sourceType: string, options: ImageProcessOptions) {
+  const alphaSource = options.preserveTransparency || /png|webp|svg/i.test(sourceType);
+  const probe = document.createElement("canvas");
+  const webp = probe.toDataURL("image/webp").startsWith("data:image/webp");
+  if (alphaSource) return webp ? "image/webp" : "image/png";
+  return webp ? "image/webp" : "image/jpeg";
+}
 
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      const targetWidth = Math.max(1, Math.round(Number(options.targetWidth ?? 0)));
-      const targetHeight = Math.max(1, Math.round(Number(options.targetHeight ?? 0)));
-      const hasTargetSize = targetWidth > 1 && targetHeight > 1;
-      const objectFit = options.objectFit ?? "cover";
-      const maxSize = options.maxSize ?? Math.max(1, Number(options.productMaxSize ?? 1600));
-      const canvas = document.createElement("canvas");
-      let width = targetWidth;
-      let height = targetHeight;
-
-      if (!hasTargetSize) {
-        const crop = cropDimensions(image.width, image.height, options.cropRatio ?? "free");
-        const scale = Math.min(1, maxSize / Math.max(crop.sw, crop.sh));
-        width = Math.max(1, Math.round(crop.sw * scale));
-        height = Math.max(1, Math.round(crop.sh * scale));
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          resolve(source);
-          return;
-        }
-        ctx.drawImage(image, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, width, height);
-        drawWatermark(ctx, width, height, options);
-        resolve(canvasToDataUrl(canvas, sourceType, options.quality));
-        return;
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(source);
-        return;
-      }
-      ctx.clearRect(0, 0, width, height);
-
-      if (objectFit === "fill") {
-        ctx.drawImage(image, 0, 0, width, height);
-      } else {
-        const baseScale = objectFit === "contain"
-          ? Math.min(width / image.width, height / image.height)
-          : Math.max(width / image.width, height / image.height);
-        const zoom = objectFit === "contain" ? 1 : Math.min(3, Math.max(1, Number(options.cropZoom ?? 1)));
-        const scale = baseScale * zoom;
-        const drawnWidth = image.width * scale;
-        const drawnHeight = image.height * scale;
-        const maxOffsetX = Math.max(0, (drawnWidth - width) / 2);
-        const maxOffsetY = Math.max(0, (drawnHeight - height) / 2);
-        const offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, Number(options.cropOffsetX ?? 0)));
-        const offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, Number(options.cropOffsetY ?? 0)));
-        const dx = (width - drawnWidth) / 2 + offsetX;
-        const dy = (height - drawnHeight) / 2 + offsetY;
-        ctx.drawImage(image, dx, dy, drawnWidth, drawnHeight);
-      }
-
-      drawWatermark(ctx, width, height, options);
-      resolve(canvasToDataUrl(canvas, sourceType, options.quality));
-    };
-    image.onerror = () => resolve(source);
-    image.src = source;
-  });
+function constrainDimensions(width: number, height: number) {
+  const dimensionScale = Math.min(1, IMAGE_UPLOAD_CONFIG.maxCanvasDimension / Math.max(width, height));
+  const pixelScale = Math.min(1, Math.sqrt(IMAGE_UPLOAD_CONFIG.maxCanvasPixels / Math.max(1, width * height)));
+  const scale = Math.min(dimensionScale, pixelScale);
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
 
 function drawWatermark(ctx: CanvasRenderingContext2D, width: number, height: number, options: ImageProcessOptions) {
   if (!options.watermark || !options.watermarkText) return;
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `${Math.max(14, Math.round(width / 30))}px sans-serif`;
-  ctx.textAlign = "left";
-  ctx.shadowColor = "rgba(0,0,0,0.35)";
-  ctx.shadowBlur = 4;
-  ctx.fillText(options.watermarkText, 16, height - 16);
-  ctx.restore();
+  ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = "#fff"; ctx.font = `${Math.max(14, Math.round(width / 30))}px sans-serif`;
+  ctx.textAlign = "left"; ctx.shadowColor = "rgba(0,0,0,.35)"; ctx.shadowBlur = 4; ctx.fillText(options.watermarkText, 16, height - 16); ctx.restore();
 }
 
-function canvasToDataUrl(canvas: HTMLCanvasElement, sourceType: string, quality?: number): string {
-  const supportsWebp = canvas.toDataURL("image/webp").startsWith("data:image/webp");
-  const sourceMime = sourceType || mimeFromDataUrl(canvas.toDataURL());
-  const mime = supportsWebp ? "image/webp" : (sourceMime === "image/png" ? "image/png" : "image/jpeg");
-  return canvas.toDataURL(mime, Math.min(0.95, Math.max(0.45, Number(quality ?? 0.82))));
+function canvasToDataUrl(canvas: HTMLCanvasElement, mime: string, quality: number) {
+  return canvas.toDataURL(mime, Math.min(0.95, Math.max(0.45, quality)));
+}
+
+export async function processImageDataUrl(source: string, options: ImageProcessOptions = {}, sourceType = "image/jpeg"): Promise<string> {
+  if (typeof window === "undefined") return source;
+  const image = await loadImage(source);
+  const requestedWidth = Math.round(Number(options.targetWidth ?? 0));
+  const requestedHeight = Math.round(Number(options.targetHeight ?? 0));
+  const hasTargetSize = requestedWidth > 1 && requestedHeight > 1;
+  const maxSize = Math.max(1, Number(options.maxSize ?? options.productMaxSize ?? 1600));
+  const crop = hasTargetSize ? null : cropDimensions(image.width, image.height, options.cropRatio ?? "free");
+  const baseWidth = hasTargetSize ? requestedWidth : Math.round((crop?.sw ?? image.width) * Math.min(1, maxSize / Math.max(crop?.sw ?? image.width, crop?.sh ?? image.height)));
+  const baseHeight = hasTargetSize ? requestedHeight : Math.round((crop?.sh ?? image.height) * Math.min(1, maxSize / Math.max(crop?.sw ?? image.width, crop?.sh ?? image.height)));
+  const target = constrainDimensions(baseWidth, baseHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = target.width; canvas.height = target.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("تعذر تجهيز الصورة على هذا الجهاز.");
+  ctx.clearRect(0, 0, target.width, target.height);
+  if (!hasTargetSize) {
+    ctx.drawImage(image, crop!.sx, crop!.sy, crop!.sw, crop!.sh, 0, 0, target.width, target.height);
+  } else if ((options.objectFit ?? "cover") === "fill") {
+    ctx.drawImage(image, 0, 0, target.width, target.height);
+  } else {
+    const contain = (options.objectFit ?? "cover") === "contain";
+    const baseScale = contain ? Math.min(target.width / image.width, target.height / image.height) : Math.max(target.width / image.width, target.height / image.height);
+    const zoom = contain ? 1 : Math.min(3, Math.max(1, Number(options.cropZoom ?? 1)));
+    const drawnWidth = image.width * baseScale * zoom; const drawnHeight = image.height * baseScale * zoom;
+    const maxX = Math.max(0, (drawnWidth - target.width) / 2); const maxY = Math.max(0, (drawnHeight - target.height) / 2);
+    const offsetX = Math.max(-maxX, Math.min(maxX, Number(options.cropOffsetX ?? 0)));
+    const offsetY = Math.max(-maxY, Math.min(maxY, Number(options.cropOffsetY ?? 0)));
+    ctx.drawImage(image, (target.width - drawnWidth) / 2 + offsetX, (target.height - drawnHeight) / 2 + offsetY, drawnWidth, drawnHeight);
+  }
+  drawWatermark(ctx, target.width, target.height, options);
+  const mime = outputMime(sourceType, options);
+  const targetBytes = Number(options.maxBytes ?? 0);
+  let quality = options.quality ?? compressionQuality(options.compressionMode ?? "auto");
+  let result = canvasToDataUrl(canvas, mime, quality);
+  while (targetBytes > 0 && await dataUrlSize(result) > targetBytes && quality > 0.5) {
+    quality = Math.max(0.5, quality - 0.07);
+    result = canvasToDataUrl(canvas, mime, quality);
+  }
+  return result;
 }
 
 export async function processImageFile(file: File, options: ImageProcessOptions = {}): Promise<string> {
-  if (!file.type.startsWith("image/") || typeof window === "undefined") return fileToDataUrl(file);
-  const source = await fileToDataUrl(file);
-  if (options.compression === false && !options.targetWidth && !options.targetHeight && !options.cropRatio && !options.watermark) return source;
-  return processImageDataUrl(source, options, file.type);
+  if (typeof window === "undefined") return fileToDataUrl(file);
+  const normalized = await normalizeDecodableImage(file);
+  const source = URL.createObjectURL(normalized);
+  try {
+    return await processImageDataUrl(source, options, normalized.type || file.type);
+  } finally {
+    URL.revokeObjectURL(source);
+  }
 }

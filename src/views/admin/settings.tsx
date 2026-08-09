@@ -255,7 +255,7 @@ export default function SettingsPage() {
           <ImageUploadEditor
             kind="logo"
             label="رفع أو سحب اللوغو"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/avif,image/heic,image/heif,image/tiff,image/svg+xml,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.heic,.heif,.tif,.tiff,.svg"
             currentImage={form.logoUrl}
             currentMetadata={form.logoMetadata}
             settings={form.imageSettings}

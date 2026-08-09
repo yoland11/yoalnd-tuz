@@ -1006,8 +1006,10 @@ function validationError(
 // pipeline in resumable 3 MB chunks instead of growing this request limit.
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
-const MAX_IMAGE_UPLOAD_BYTES = 40 * 1024 * 1024;
-const MAX_LOGO_UPLOAD_BYTES = 5 * 1024 * 1024;
+// Image sources are compressed in the browser. These are strict limits for the
+// generated storage objects, never a reason to send a 100 MB original to Vercel.
+const MAX_IMAGE_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_LOGO_UPLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -4622,8 +4624,8 @@ async function handleImageUploads(req: NextRequest, parts: string[]) {
     if (size > maximumBytes)
       return error(
         folder === "settings/logo"
-          ? "حجم الصورة أكبر من الحد المسموح للشعار (5 ميغابايت)."
-          : "The maximum allowed image size is 40 MB.",
+          ? "حجم الشعار الناتج أكبر من الحد المسموح (2 ميغابايت)."
+          : "حجم الصورة الناتجة أكبر من الحد المسموح (8 ميغابايت).",
         413,
       );
     if (folder === "settings/logo") {
