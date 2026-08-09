@@ -137,7 +137,7 @@ async function addEvent(tx: any, line: any, actor: HrActor, action: string, reas
 
 async function refreshRunStatus(tx: any, runId: number) {
   const summary = rows<any>(await tx.execute(sql`select count(*)::int as total,count(*) filter(where amount_paid>=net_salary and net_salary>0)::int as paid,count(*) filter(where amount_paid>0 and amount_paid<net_salary)::int as partial,coalesce(sum(amount_paid),0)::float as amount_paid,coalesce(sum(net_salary),0)::float as total_net from payroll_lines where payroll_run_id=${runId}`))[0];
-  const status = Number(summary.total) > 0 && Number(summary.paid) === Number(summary.total) ? "paid" : Number(summary.amount_paid) > 0 ? "partially_paid" : "approved";
+  const status = Number(summary.total) > 0 && Number(summary.paid) === Number(summary.total) ? "paid" : Number(summary.amount_paid) > 0 ? "partially_paid" : "ready_to_pay";
   await tx.execute(sql`update payroll_runs set status=${status},paid_at=case when ${status}='paid' then coalesce(paid_at,now()) else null end,updated_at=now() where id=${runId}`);
   return status;
 }
@@ -200,7 +200,7 @@ export async function payEmployeeSalary(runId: number, lineId: number, input: un
     if (!line) throw new Error("سجل الراتب غير موجود");
     const previous = rows<any>(await tx.execute(sql`select * from employee_salary_payments where idempotency_key=${idempotency} limit 1`))[0];
     if (previous) return { payment: previous, duplicate: true };
-    if (!["approved", "partially_paid"].includes(String(line.run_status))) throw new Error("يجب اعتماد دورة الرواتب قبل الدفع");
+    if (!["approved", "ready_to_pay", "partially_paid"].includes(String(line.run_status))) throw new Error("يجب اعتماد دورة الرواتب وتجهيزها للصرف قبل الدفع");
     const oldPaid = num(line.amount_paid), remaining = Math.max(0, num(line.net_salary) - oldPaid);
     if (remaining <= 0) throw new Error("تم صرف هذا الراتب مسبقًا");
     if (data.amount > remaining) throw new Error("مبلغ الدفع أكبر من المتبقي على الراتب");

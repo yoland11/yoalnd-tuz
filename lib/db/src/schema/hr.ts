@@ -1,4 +1,4 @@
-import { boolean, date, index, integer, jsonb, numeric, pgTable, serial, text, time, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { AnyPgColumn, boolean, date, index, integer, jsonb, numeric, pgTable, serial, text, time, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 
 /** One approved payroll configuration per employee. Legacy staff salary fields stay in place for compatibility. */
@@ -88,6 +88,10 @@ export const payrollRunsTable = pgTable("payroll_runs", {
   period: varchar("period", { length: 7 }).notNull(),
   periodType: varchar("period_type", { length: 20 }).notNull().default("monthly"),
   periodKey: varchar("period_key", { length: 80 }),
+  runKind: varchar("run_kind", { length: 20 }).notNull().default("standard"),
+  parentPayrollRunId: integer("parent_payroll_run_id").references((): AnyPgColumn => payrollRunsTable.id, { onDelete: "restrict" }),
+  supplementReason: text("supplement_reason"),
+  versionNo: integer("version_no").notNull().default(1),
   status: varchar("status", { length: 20 }).notNull().default("draft"),
   notes: text("notes"),
   totalGross: numeric("total_gross", { precision: 16, scale: 2 }).notNull().default("0"),
@@ -98,6 +102,12 @@ export const payrollRunsTable = pgTable("payroll_runs", {
   approvedBy: integer("approved_by").references(() => staffTable.id, { onDelete: "set null" }),
   approvedByName: text("approved_by_name").notNull().default(""),
   approvedAt: timestamp("approved_at"),
+  reviewedAt: timestamp("reviewed_at"),
+  reviewedBy: integer("reviewed_by").references(() => staffTable.id, { onDelete: "set null" }),
+  lockedAt: timestamp("locked_at"),
+  lockedBy: integer("locked_by").references(() => staffTable.id, { onDelete: "set null" }),
+  closedAt: timestamp("closed_at"),
+  closedBy: integer("closed_by").references(() => staffTable.id, { onDelete: "set null" }),
   paidAt: timestamp("paid_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

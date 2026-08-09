@@ -277,7 +277,10 @@ import {
   saveBonusRule,
   deleteBonusRule,
   createPayrollRun,
+  createSupplementPayrollRun,
   createManualSalaryRecord,
+  addEmployeesToPayrollRun,
+  transferPayrollLine,
   editPayrollLine,
   deleteDraftPayrollLine,
   cancelPayrollRun,
@@ -290,11 +293,15 @@ import {
   hrDashboard,
   listPayrollRuns,
   payPayrollRun,
+  closePayrollRun,
+  lockPayrollRun,
+  markPayrollReadyToPay,
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
   reversePayrollRunPayment,
   submitPayrollForApproval,
+  reviewPayrollRun,
   rejectPayrollRun,
   reopenPayrollRun,
   upsertTarget,
@@ -24881,11 +24888,58 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_recalculated", title: "تمت إعادة حساب الراتب", actor: erpActorFromAdmin(auth) });
         return json(run);
       }
+      if (method === "POST" && id && parts[4] === "review") {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية مراجعة دورة الرواتب"); if (denied) return denied;
+        const oldRun = await getPayrollRun(id); const run = await reviewPayrollRun(id, actor);
+        const metadata = { oldValues: oldRun, newValues: run, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_review_started", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_review_started", title: "تم إرسال دورة الرواتب للمراجعة", actor: erpActorFromAdmin(auth), metadata });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "employees") {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية إضافة موظفين إلى دورة الرواتب"); if (denied) return denied;
+        const payload = await body(req); const oldRun = await getPayrollRun(id); const run = await addEmployeesToPayrollRun(id, payload, actor);
+        const metadata = { oldValues: oldRun, newValues: run, reason: payload?.reason, employeeIds: payload?.employeeIds, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_employees_added", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_employees_added", title: "تمت إضافة موظفين إلى دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
+        return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "supplements") {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية إنشاء دورة تكميلية"); if (denied) return denied;
+        const payload = await body(req); const run = await createSupplementPayrollRun(id, payload, actor);
+        const metadata = { newValues: run, reason: payload?.reason, employeeIds: payload?.employeeIds, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_supplement_created", "payroll_run", Number(run?.id), metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_supplement_created", title: "تم إنشاء دورة رواتب تكميلية", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata: { supplementPayrollRunId: run?.id } });
+        return json(run, 201);
+      }
+      if (method === "POST" && id && parts[4] === "lines" && parts[5] && parts[6] === "transfer") {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية نقل الموظف بين دورات الرواتب"); if (denied) return denied;
+        const lineId = int(parts[5])!; const payload = await body(req); const result = await transferPayrollLine(id, lineId, payload, actor);
+        const metadata = { newValues: result, reason: payload?.reason, targetPayrollRunId: payload?.targetPayrollRunId, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_employee_transferred", "payroll_line", lineId, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_employee_transferred", title: "تم نقل موظف إلى دورة رواتب أخرى", body: payload?.reason || null, actor: erpActorFromAdmin(auth), metadata });
+        return json(result);
+      }
       if (method === "POST" && id && parts[4] === "submit") {
         const denied = requirePayroll("payroll_submit", "لا تملك صلاحية إرسال دورة الرواتب للاعتماد"); if (denied) return denied;
         const run = await submitPayrollForApproval(id, actor);
         void logAdminActivity(req, "payroll_submitted", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_submitted", title: "تم إرسال دورة الرواتب لاعتماد المدير", actor: erpActorFromAdmin(auth) });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "ready-to-pay") {
+        const denied = requirePayroll("payroll_pay", "لا تملك صلاحية تجهيز دورة الرواتب للصرف"); if (denied) return denied;
+        const oldRun = await getPayrollRun(id); const run = await markPayrollReadyToPay(id, actor);
+        const metadata = { oldValues: oldRun, newValues: run, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_ready_to_pay", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_ready_to_pay", title: "أصبحت دورة الرواتب جاهزة للصرف", actor: erpActorFromAdmin(auth), metadata });
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "lock") {
+        const denied = requirePayroll("payroll_edit", "لا تملك صلاحية قفل دورة الرواتب"); if (denied) return denied;
+        const payload = await body(req); const run = await lockPayrollRun(id, actor, payload);
+        void logAdminActivity(req, "payroll_locked", "payroll_run", id, { newValues: run, reason: payload?.reason, ip: ip(req), device: req.headers.get("user-agent") || "" });
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_locked", title: "تم قفل دورة الرواتب", body: payload?.reason || null, actor: erpActorFromAdmin(auth) });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "reject") {
@@ -24973,6 +25027,14 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         const run = await payPayrollRun(id, actor);
         void logAdminActivity(req, "payroll_paid", "payroll_run", id, { newValues: run as any, ip: ip(req), device: req.headers.get("user-agent") || "" });
         try { await createNotification({ audienceType: "admin", type: "payroll_paid", title: "تم دفع دورة الرواتب", body: `دورة ${run?.runNo ?? id} تم دفعها بنجاح`, entityType: "payroll_run", entityId: id, href: "/admin/hr" }); } catch { /* non-blocking */ }
+        return json(run);
+      }
+      if (method === "POST" && id && parts[4] === "close") {
+        const denied = requirePayroll("payroll_approve", "لا تملك صلاحية إقفال دورة الرواتب"); if (denied) return denied;
+        const oldRun = await getPayrollRun(id); const run = await closePayrollRun(id, actor);
+        const metadata = { oldValues: oldRun, newValues: run, ip: ip(req), device: req.headers.get("user-agent") || "" };
+        void logAdminActivity(req, "payroll_closed", "payroll_run", id, metadata);
+        void addEntityTimeline({ entityType: "payroll_run", entityId: id, type: "payroll_closed", title: "تم إقفال دورة الرواتب", actor: erpActorFromAdmin(auth), metadata });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "reverse") {
