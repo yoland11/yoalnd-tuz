@@ -8,7 +8,7 @@ import { ensureMasterCashBoxTables, reverseFinancialTransaction } from "@/server
 const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
 const num = (value: unknown) => Number.isFinite(Number(value)) ? Math.round((Number(value) + Number.EPSILON) * 100) / 100 : 0;
 const todayBaghdad = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-const PAYMENT_METHODS = ["cash", "main_cash_box", "bank", "transfer"] as const;
+const PAYMENT_METHODS = ["cash", "main_cash_box", "bank", "transfer", "card"] as const;
 
 const paymentSchema = z.object({
   amount: z.coerce.number().positive().max(1_000_000_000),

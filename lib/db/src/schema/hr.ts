@@ -83,7 +83,11 @@ export const hrIncentiveEventsTable = pgTable("hr_incentive_events", {
 export const payrollRunsTable = pgTable("payroll_runs", {
   id: serial("id").primaryKey(),
   runNo: varchar("run_no", { length: 40 }).notNull().unique(),
-  period: varchar("period", { length: 7 }).notNull().unique(),
+  // `period` remains the report month. `periodKey` is the unique payroll
+  // window, so weekly/daily/custom cycles can coexist without duplicate runs.
+  period: varchar("period", { length: 7 }).notNull(),
+  periodType: varchar("period_type", { length: 20 }).notNull().default("monthly"),
+  periodKey: varchar("period_key", { length: 80 }),
   status: varchar("status", { length: 20 }).notNull().default("draft"),
   notes: text("notes"),
   totalGross: numeric("total_gross", { precision: 16, scale: 2 }).notNull().default("0"),

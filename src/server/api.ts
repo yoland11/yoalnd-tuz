@@ -24787,9 +24787,9 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
       }
       if (method === "POST" && id && parts[4] === "apply") {
         if (!hasPermission(auth, "bonus_apply") && !adminOnly()) return error("لا تملك صلاحية تطبيق المكافأة على الرواتب", 403);
-        console.error("Bonus request payload", { operation: "apply", id, payload: null });
+        const payload = await body(req);
         await validateBonus(id);
-        const result = await applyBonus(id, actor);
+        const result = await applyBonus(id, actor, payload);
         void logAdminActivity(req, "bonus_applied", "hr_incentive", id, { newValues: result, ip: ip(req), device: req.headers.get("user-agent") || "" });
         return json(result);
       }
@@ -24857,6 +24857,7 @@ async function handleHrAdmin(req: NextRequest, parts: string[], section: string 
         return json(await listPayrollRuns({
           period: query.get("period") || undefined,
           year: query.get("year") || undefined,
+          periodType: (query.get("periodType") || undefined) as any,
           department: query.get("department") || undefined,
           employee: query.get("employee") || undefined,
           status: query.get("status") || undefined,

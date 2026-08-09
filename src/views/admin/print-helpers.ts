@@ -256,6 +256,9 @@ export function salarySlipCss() {
     .salary-net { display:flex; justify-content:space-between; align-items:center; border:2px solid #111; padding:12px; margin-top:14px; font-size:18px; font-weight:800; }
     .salary-signatures { display:flex; justify-content:space-between; gap:30px; margin-top:35px; }
     .salary-signatures div { width:42%; border-top:1px dashed #111; padding-top:7px; text-align:center; }
+    .salary-slip .qr-block { margin-top:14px; text-align:center; break-inside:avoid; page-break-inside:avoid; }
+    .salary-slip .qr-code { width:96px; height:96px; object-fit:contain; image-rendering:pixelated; display:block; margin:0 auto 4px; }
+    .salary-slip .qr-block small { display:block; font-variant-numeric:tabular-nums; }
   `;
 }
 
