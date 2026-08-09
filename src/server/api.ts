@@ -4413,26 +4413,6 @@ function cleanMediaInput(value: unknown): string {
   return cleanPublicUrl(raw);
 }
 
-/** Mandatory Koshat proof must be an image verified by the shared resumable
- * uploader, never an arbitrary URL or a client-provided data URI. */
-function isTrustedKoshaOperationImage(value: unknown): boolean {
-  if (!STORAGE_URL) return false;
-  try {
-    const url = new URL(String(value ?? "").trim());
-    const storage = new URL(STORAGE_URL);
-    const prefix = `/storage/v1/object/public/${STORAGE_BUCKET}/kosha/operations/`;
-    return (
-      (url.protocol === "https:" || url.protocol === "http:") &&
-      !url.username &&
-      !url.password &&
-      url.origin === storage.origin &&
-      url.pathname.startsWith(prefix)
-    );
-  } catch {
-    return false;
-  }
-}
-
 async function persistMediaValue(
   value: unknown,
   folder: string,
@@ -49073,20 +49053,9 @@ async function handleStaffPortal(
         ? json(await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service))
         : json(await loadKoshaBookingDetail(id));
     }
-    const hasMandatoryPhotoProof = media.some(
-      (item) => item?.kind !== "video" && isTrustedKoshaOperationImage(item?.url),
-    );
-    if ((toStage === "executed" || toStage === "before_return") && media.length === 0) {
-      return error(
-        toStage === "before_return"
-          ? "يجب رفع صورة واحدة على الأقل قبل الانتقال إلى مرحلة (قبل الإرجاع)."
-          : "يجب رفع صورة واحدة على الأقل أو فيديو قبل حفظ مرحلة (تم التنفيذ)",
-        400,
-      );
-    }
-    if (toStage === "before_return" && !hasMandatoryPhotoProof) {
-      return error("صورة التوثيق يجب أن تكتمل في التخزين الآمن قبل الانتقال إلى مرحلة (قبل الإرجاع).", 400);
-    }
+    // Documentation is optional. When media is supplied it still goes through
+    // the shared validated uploader; an empty collection must never block a
+    // valid booking-stage transition.
     if (routed) {
       const fields = routedServiceExecutionFields(routed.order);
       const fromStage = fields.executionStage ?? "preparing";
@@ -49382,10 +49351,9 @@ async function handleStaffPortal(
       0,
       Number(data?.compensationAmount ?? 0) || 0,
     );
-    // Proof is mandatory on delivery in BOTH cases (loss/breakage = yes or no).
-    if (!note || media.length === 0) {
-      return error("التسليم يتطلب كتابة ملاحظة ورفع صورة واحدة على الأقل", 400);
-    }
+    // The delivery note remains part of the existing handover record, while
+    // photos are optional documentation and must not block completion.
+    if (!note) return error("التسليم يتطلب كتابة ملاحظة", 400);
     // Resolve by the explicit source when the client sends one: kosha_bookings
     // and service_orders share an id space, so id alone can select the wrong row.
     if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))

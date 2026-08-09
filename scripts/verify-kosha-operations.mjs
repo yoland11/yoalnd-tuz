@@ -41,7 +41,7 @@ const partial = full.slice(0, 5);
 const withIssue = full.map((e) => (e.item === "lighting" ? { ...e, condition: "damaged" } : e));
 
 // ── The pipeline extends, never replaces ──
-check("12 stages including mandatory before-return proof", KOSHA_STAGES.length, 12);
+check("12 stages including optional before-return documentation", KOSHA_STAGES.length, 12);
 check("every legacy key survives",
   LEGACY_KOSHA_STAGES.filter((s) => !KOSHA_STAGES.includes(s)), []);
 check("legacy keys keep their relative order",
@@ -49,16 +49,18 @@ check("legacy keys keep their relative order",
   [...LEGACY_KOSHA_STAGES.map(koshaStageRank)].sort((a, b) => a - b));
 check("an unknown stored stage ranks 0 instead of throwing", koshaStageRank("nonsense"), 0);
 
-// ── Mandatory field-photo contract ──
-check("mandatory photo uploader uses shared resumable upload", staffBookingDetail.includes("uploadImageWithVariants(entry.file"), true);
-check("mandatory photo uploader validates file signatures", staffBookingDetail.includes("validateImageUpload(entry.file)"), true);
-check("mandatory photo uploader creates an immediate local preview", staffBookingDetail.includes("URL.createObjectURL(file)"), true);
-check("mandatory photo uploader reports per-file progress", staffBookingDetail.includes("uploadProgressLabel(upload.progress)"), true);
-check("mandatory photo uploader has retry and cancel actions", staffBookingDetail.includes("retryUpload") && staffBookingDetail.includes("cancelUpload"), true);
-check("mandatory photo uploader supports drop input", staffBookingDetail.includes("onDrop={(event) =>"), true);
-check("mandatory workflow stays locked while an upload is active", staffBookingDetail.includes("media.length === 0 || busy || uploading"), true);
-check("before-return proof accepts supported image formats only", staffBookingDetail.includes("imagesOnly={title === \"قبل الإرجاع\"}"), true);
-check("server requires a trusted photo before return", staffApi.includes('toStage === "before_return"') && staffApi.includes("isTrustedKoshaOperationImage"), true);
+// ── Optional field-photo documentation ──
+check("optional photo uploader uses shared resumable upload", staffBookingDetail.includes("uploadImageWithVariants(entry.file"), true);
+check("optional photo uploader validates file signatures", staffBookingDetail.includes("validateImageUpload(entry.file)"), true);
+check("optional photo uploader creates an immediate local preview", staffBookingDetail.includes("URL.createObjectURL(file)"), true);
+check("optional photo uploader reports per-file progress", staffBookingDetail.includes("uploadProgressLabel(upload.progress)"), true);
+check("optional photo uploader has retry and cancel actions", staffBookingDetail.includes("retryUpload") && staffBookingDetail.includes("cancelUpload"), true);
+check("optional photo uploader supports drop input", staffBookingDetail.includes("onDrop={(event) =>"), true);
+check("optional workflow can continue without media", staffBookingDetail.includes("disabled={busy || uploading}"), true);
+check("optional workflow explains that photos can be skipped", staffBookingDetail.includes("المتابعة بدون رفع صور"), true);
+check("optional before-return uploads keep image-only validation", staffBookingDetail.includes("imagesOnly={title === \"قبل الإرجاع\"}"), true);
+check("server allows a stage transition without photos", !staffApi.includes("hasMandatoryPhotoProof") && !staffApi.includes("يجب رفع صورة واحدة على الأقل قبل الانتقال"), true);
+check("delivery does not require a photo", !staffApi.includes("!note || media.length === 0"), true);
 check("saved proof generates a timeline media event", staffApi.includes("koshaMediaTimelineMeta") && staffApi.includes('type: "media"'), true);
 check("saved proof generates an audit event", staffApi.includes("kosha_execution_photo_uploaded"), true);
 

@@ -579,14 +579,14 @@ function StageMediaPanel({ title, label, busy, onCancel, onSave }: { title: stri
   const [note, setNote] = useState("");
   const [uploading, setUploading] = useState(false);
   return (
-    <PanelShell title={`${title} — توثيق إلزامي`} onCancel={onCancel}>
+    <PanelShell title={`${title} — توثيق (اختياري)`} onCancel={onCancel}>
       <MediaPicker media={media} setMedia={setMedia} label={label} onUploadingChange={setUploading} imagesOnly={title === "قبل الإرجاع"} />
+      <p className="mt-2 text-center text-xs text-muted-foreground">يمكنك رفع صور لتوثيق العمل، أو المتابعة بدون رفع صور.</p>
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-3 w-full rounded-lg border border-border bg-background p-2 text-sm" />
-      <button disabled={media.length === 0 || busy || uploading} onClick={() => onSave(media, note)}
+      <button disabled={busy || uploading} onClick={() => onSave(media, note)}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-        {busy || uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} {uploading ? "جاري رفع التوثيق…" : "حفظ التوثيق والمتابعة"}
+        {busy || uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} {uploading ? "جاري رفع التوثيق…" : media.length ? "حفظ التوثيق والمتابعة" : "المتابعة بدون صور"}
       </button>
-      {media.length === 0 && !uploading && <div className="mt-1.5 text-center text-xs text-muted-foreground">يجب رفع ملف واحد على الأقل بنجاح</div>}
     </PanelShell>
   );
 }
@@ -600,7 +600,7 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
   const [compensation, setCompensation] = useState("");
   const issue = hasLoss === true || hasBreakage === true;
   const answered = hasLoss !== null && hasBreakage !== null;
-  const valid = answered && note.trim().length > 0 && media.length > 0 && signature.length > 0;
+  const valid = answered && note.trim().length > 0 && signature.length > 0;
 
   const YN = ({ label, value, set }: { label: string; value: boolean | null; set: (v: boolean) => void }) => (
     <div className="flex items-center justify-between gap-3">
@@ -617,8 +617,8 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
       <div className="space-y-3">
         <YN label="هل يوجد فقدان؟" value={hasLoss} set={setHasLoss} />
         <YN label="هل يوجد كسر؟" value={hasBreakage} set={setHasBreakage} />
-        <Banner kind="info">صور وملاحظة إجبارية لإثبات حالة التسليم (في الحالتين).</Banner>
-        <MediaPicker media={media} setMedia={setMedia} label={issue ? "صور الفقدان/الكسر (إجباري)" : "صور التسليم (إجباري)"} />
+        <Banner kind="info">يمكنك رفع صور للتوثيق عند التسليم، أو المتابعة بدون رفع صور.</Banner>
+        <MediaPicker media={media} setMedia={setMedia} label={issue ? "صور الفقدان/الكسر (اختياري)" : "صور التسليم (اختياري)"} />
         {issue && (
           <div>
             <label className="mb-1 block text-sm font-medium">قيمة التعويض (اختياري — تُضاف للمتبقي)</label>

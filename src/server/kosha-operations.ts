@@ -20,7 +20,7 @@ export const KOSHA_STAGES = [
   "executing",          // legacy — قيد التنفيذ (installation started)
   "executed",           // legacy — تم التنفيذ (installed)
   "event_running",      // new
-  "before_return",      // new — mandatory equipment proof before dismantling
+  "before_return",      // new — optional documentation checkpoint before dismantling
   "dismantling",        // new
   "returned",           // new
   "delivered",          // legacy — تم التسليم (completed)
