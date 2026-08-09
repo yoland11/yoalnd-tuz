@@ -35184,6 +35184,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
 
+  // Registers are independent read paths. Route them before the broader admin
+  // handler chain so an unrelated module cannot turn invoice history into a
+  // generic server error.
+  if (section === "sales-invoices")
+    return handleSalesInvoices(req, parts, section);
+  if (section === "purchase-invoices")
+    return handlePurchaseInvoices(req, parts, section);
+
   if (section === "bouquet-designer")
     return handleBouquetDesignerAdmin(req, parts.slice(2));
 
