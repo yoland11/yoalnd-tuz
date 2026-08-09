@@ -1,10 +1,31 @@
-import { date, pgTable, serial, text, numeric, integer, boolean, timestamp, varchar, jsonb } from "drizzle-orm/pg-core";
+import {
+  date,
+  pgTable,
+  serial,
+  text,
+  numeric,
+  integer,
+  boolean,
+  timestamp,
+  varchar,
+  jsonb,
+  customType,
+} from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { categoriesTable } from "./categories";
 import { assetCategoriesTable } from "./asset-categories";
 import { customersTable } from "./customers";
 import { staffTable } from "./staff";
+
+// Drizzle's built-in numeric type deliberately returns strings. Inventory has
+// historically been consumed as a number throughout AJN, so retain that safe
+// application contract while persisting exact three-decimal quantities.
+const quantityNumeric = customType<{ data: number; driverData: string }>({
+  dataType: () => "numeric(14,3)",
+  fromDriver: (value) => Number(value),
+  toDriver: (value) => String(value),
+});
 
 export const productsTable = pgTable("products", {
   id: serial("id").primaryKey(),
@@ -20,14 +41,21 @@ export const productsTable = pgTable("products", {
 
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   originalPrice: numeric("original_price", { precision: 10, scale: 2 }),
-  costPrice: numeric("cost_price", { precision: 14, scale: 2 }).notNull().default("0"),
+  costPrice: numeric("cost_price", { precision: 14, scale: 2 })
+    .notNull()
+    .default("0"),
 
-  stock: integer("stock").notNull().default(0),
-  minStock: integer("min_stock").notNull().default(0),
+  // Inventory is measured in business quantities, not only whole units. Keep
+  // this aligned with invoice and warehouse quantities (numeric(12,3)) so a
+  // sale of 0.5 cannot be rounded or rejected by the database.
+  stock: quantityNumeric("stock").notNull().default(0),
+  minStock: quantityNumeric("min_stock").notNull().default(0),
   sharedStockProductId: integer("shared_stock_product_id"),
 
   isRental: boolean("is_rental").notNull().default(false),
-  pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 }).notNull().default("0"),
+  pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
   // Explicit fixed-asset flag. Only is_asset products appear in Asset Depreciation /
   // Passport / Management. Provisioned at runtime (see ensureAdminProductsColumns).
   isAsset: boolean("is_asset").notNull().default(false),
@@ -38,23 +66,23 @@ export const productsTable = pgTable("products", {
   subcategoryId: integer("subcategory_id").references(() => categoriesTable.id),
   // A product may appear in several store subcategories while retaining one ID,
   // barcode and shared inventory source.
-  subcategoryIds: jsonb("subcategory_ids").$type<number[]>().notNull().default([]),
+  subcategoryIds: jsonb("subcategory_ids")
+    .$type<number[]>()
+    .notNull()
+    .default([]),
 
   category: varchar("category", { length: 100 }),
   subcategory: varchar("subcategory", { length: 100 }),
   // Internal equipment category. It is distinct from the storefront category
   // fields above and keeps fixed-asset classification referentially safe.
-  assetCategoryId: integer("asset_category_id").references(() => assetCategoriesTable.id, { onDelete: "restrict" }),
+  assetCategoryId: integer("asset_category_id").references(
+    () => assetCategoriesTable.id,
+    { onDelete: "restrict" },
+  ),
 
-  images: jsonb("images")
-    .$type<string[]>()
-    .notNull()
-    .default([]),
+  images: jsonb("images").$type<string[]>().notNull().default([]),
 
-  videos: jsonb("videos")
-    .$type<string[]>()
-    .notNull()
-    .default([]),
+  videos: jsonb("videos").$type<string[]>().notNull().default([]),
 
   imageMetadata: jsonb("image_metadata")
     .$type<Record<string, unknown>[]>()
@@ -63,12 +91,15 @@ export const productsTable = pgTable("products", {
 
   colors: jsonb("colors")
     .$type<
-      Array<{
-        name: string;
-        hex: string;
-        image?: string | null;
-        imageUrl?: string | null;
-      } | string>
+      Array<
+        | {
+            name: string;
+            hex: string;
+            image?: string | null;
+            imageUrl?: string | null;
+          }
+        | string
+      >
     >()
     .notNull()
     .default([]),
@@ -82,7 +113,9 @@ export const productsTable = pgTable("products", {
     .default(false),
   // Explicit photorealistic-preview fields. Product card media above remains
   // separate and must never be used as a composition layer.
-  showInBouquetBuilder: boolean("show_in_bouquet_builder").notNull().default(false),
+  showInBouquetBuilder: boolean("show_in_bouquet_builder")
+    .notNull()
+    .default(false),
   bouquetElementType: varchar("bouquet_element_type", { length: 24 }),
   previewCutoutUrl: text("preview_cutout_url"),
   readyMadePreviewUrl: text("ready_made_preview_url"),
@@ -93,10 +126,17 @@ export const productsTable = pgTable("products", {
   previewLayer: integer("preview_layer"),
   // Structured coordinates keep the preview portable across web, mobile and
   // future renderers instead of persisting arbitrary CSS text.
-  previewPosition: jsonb("preview_position").$type<{ x?: number; y?: number; anchor?: string } | null>(),
+  previewPosition: jsonb("preview_position").$type<{
+    x?: number;
+    y?: number;
+    anchor?: string;
+  } | null>(),
   accessoryType: varchar("accessory_type", { length: 60 }),
   maximumQuantityPerBouquet: integer("maximum_quantity_per_bouquet"),
-  bouquetRecipe: jsonb("bouquet_recipe").$type<Array<Record<string, unknown>>>().notNull().default([]),
+  bouquetRecipe: jsonb("bouquet_recipe")
+    .$type<Array<Record<string, unknown>>>()
+    .notNull()
+    .default([]),
   isReadyMadeBouquet: boolean("is_ready_made_bouquet").notNull().default(false),
   isBouquetTemplate: boolean("is_bouquet_template").notNull().default(false),
 
@@ -120,8 +160,12 @@ export const productsTable = pgTable("products", {
 export const rentalOrdersTable = pgTable("rental_orders", {
   id: serial("id").primaryKey(),
   orderNo: varchar("order_no", { length: 40 }).notNull().unique(),
-  productId: integer("product_id").notNull().references(() => productsTable.id),
-  stockSourceProductId: integer("stock_source_product_id").references(() => productsTable.id),
+  productId: integer("product_id")
+    .notNull()
+    .references(() => productsTable.id),
+  stockSourceProductId: integer("stock_source_product_id").references(
+    () => productsTable.id,
+  ),
   customerId: integer("customer_id").references(() => customersTable.id),
   customerName: text("customer_name").notNull().default(""),
   phone: varchar("phone", { length: 30 }).notNull(),
@@ -129,12 +173,24 @@ export const rentalOrdersTable = pgTable("rental_orders", {
   startDate: date("start_date").notNull(),
   endDate: date("end_date").notNull(),
   days: integer("days").notNull().default(1),
-  pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 }).notNull().default("0"),
-  totalAmount: numeric("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
-  paidAmount: numeric("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
-  remainingAmount: numeric("remaining_amount", { precision: 12, scale: 2 }).notNull().default("0"),
-  paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
-  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("paid"),
+  pricePerDay: numeric("price_per_day", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
+  totalAmount: numeric("total_amount", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
+  paidAmount: numeric("paid_amount", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
+  remainingAmount: numeric("remaining_amount", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
+  paymentMethod: varchar("payment_method", { length: 20 })
+    .notNull()
+    .default("cash"),
+  paymentStatus: varchar("payment_status", { length: 20 })
+    .notNull()
+    .default("paid"),
   status: varchar("status", { length: 20 }).notNull().default("active"),
   notes: text("notes"),
   stockApplied: integer("stock_applied").notNull().default(1),
@@ -151,9 +207,14 @@ export const rentalOrdersTable = pgTable("rental_orders", {
 export const stockMovementsTable = pgTable("stock_movements", {
   id: serial("id").primaryKey(),
   productId: integer("product_id").references(() => productsTable.id),
-  stockSourceProductId: integer("stock_source_product_id").references(() => productsTable.id),
+  stockSourceProductId: integer("stock_source_product_id").references(
+    () => productsTable.id,
+  ),
   variantId: integer("variant_id"),
-  quantityChange: numeric("quantity_change", { precision: 12, scale: 3 }).notNull(),
+  quantityChange: numeric("quantity_change", {
+    precision: 12,
+    scale: 3,
+  }).notNull(),
   reason: varchar("reason", { length: 80 }).notNull(),
   relatedType: varchar("related_type", { length: 40 }),
   relatedId: integer("related_id"),
@@ -167,13 +228,20 @@ export const stockMovementsTable = pgTable("stock_movements", {
   cancelledBy: integer("cancelled_by"),
   cancelledAt: timestamp("cancelled_at"),
   idempotencyKey: varchar("idempotency_key", { length: 180 }),
-  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  metadata: jsonb("metadata")
+    .$type<Record<string, unknown>>()
+    .notNull()
+    .default({}),
   createdBy: integer("created_by"),
   createdByName: text("created_by_name").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export const insertProductSchema = createInsertSchema(productsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertProductSchema = createInsertSchema(productsTable).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
 export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type Product = typeof productsTable.$inferSelect;
 export type StockMovement = typeof stockMovementsTable.$inferSelect;

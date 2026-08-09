@@ -1,14 +1,33 @@
 import { useDeferredValue, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Plus, Trash2, Search, Save, RefreshCw, X,
-  ChevronLeft, ChevronRight, CheckCircle2, Clock, AlertCircle, Package, Paperclip, Pencil, Printer, ScanLine,
+  Plus,
+  Trash2,
+  Search,
+  Save,
+  RefreshCw,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  Package,
+  Paperclip,
+  Pencil,
+  Printer,
+  ScanLine,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import CustomerAccountPrompt from "./customer-account-prompt";
-import { adminFetch, compressImageFile, fileToDataUrl, formatCurrency } from "./_lib";
+import {
+  adminFetch,
+  compressImageFile,
+  fileToDataUrl,
+  formatCurrency,
+} from "./_lib";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
@@ -20,21 +39,53 @@ import {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
-  id: number; name: string; nameAr: string; price: string; costPrice?: string;
-  stock: string; barcode?: string; categoryName?: string; category?: string;
+  id: number;
+  name: string;
+  nameAr: string;
+  price: string;
+  costPrice?: string;
+  stock: string;
+  barcode?: string;
+  categoryName?: string;
+  category?: string;
 };
 type Supplier = {
-  id: number; name: string; phone?: string; email?: string; balance: string; isActive: number;
+  id: number;
+  name: string;
+  phone?: string;
+  email?: string;
+  balance: string;
+  isActive: number;
 };
 type PurchaseItem = {
-  productId: number | null; productName: string; barcode: string;
-  quantity: number; costPrice: number; salePrice: number; discount: number; total: number;
+  productId: number | null;
+  productName: string;
+  barcode: string;
+  quantity: number;
+  costPrice: number;
+  salePrice: number;
+  discount: number;
+  total: number;
 };
 type PurchaseInvoice = {
-  id: number; invoiceNo: string; date: string; supplierName: string; supplierId?: number;
-  subtotal: string; discountAmount: string; taxAmount: string; shippingCost: string; total: string;
-  paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
-  status: string; notes?: string; createdByName: string; createdAt: string;
+  id: number;
+  invoiceNo: string;
+  date: string;
+  supplierName: string;
+  supplierId?: number;
+  subtotal: string;
+  discountAmount: string;
+  taxAmount: string;
+  shippingCost: string;
+  total: string;
+  paidAmount: string;
+  remainingAmount: string;
+  paymentMethod: string;
+  paymentStatus: string;
+  status: string;
+  notes?: string;
+  createdByName: string;
+  createdAt: string;
 };
 type InvoiceRegisterOptions = {
   branches?: Array<{ value: string; label: string }>;
@@ -42,21 +93,35 @@ type InvoiceRegisterOptions = {
 };
 
 const PAYMENT_METHODS = [
-  { value: "cash",     label: "نقداً" },
-  { value: "card",     label: "بطاقة" },
+  { value: "cash", label: "نقداً" },
+  { value: "card", label: "بطاقة" },
   { value: "transfer", label: "تحويل" },
-  { value: "credit",   label: "آجل" },
+  { value: "credit", label: "آجل" },
 ];
 
 function blankItem(): PurchaseItem {
-  return { productId: null, productName: "", barcode: "", quantity: 1, costPrice: 0, salePrice: 0, discount: 0, total: 0 };
+  return {
+    productId: null,
+    productName: "",
+    barcode: "",
+    quantity: 1,
+    costPrice: 0,
+    salePrice: 0,
+    discount: 0,
+    total: 0,
+  };
 }
 function newForm() {
   return {
     date: new Date().toISOString().slice(0, 10),
-    supplierName: "", supplierId: "" as string | number,
-    paymentMethod: "cash", paidAmount: "",
-    shippingCost: "0", discountAmount: "0", taxPct: "0", notes: "",
+    supplierName: "",
+    supplierId: "" as string | number,
+    paymentMethod: "cash",
+    paidAmount: "",
+    shippingCost: "0",
+    discountAmount: "0",
+    taxPct: "0",
+    notes: "",
   };
 }
 
@@ -69,7 +134,9 @@ export default function PurchasesPage() {
   const [scanOpen, setScanOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [searchQ, setSearchQ] = useState<Record<number, string>>({});
-  const [showProductSearch, setShowProductSearch] = useState<number | null>(null);
+  const [showProductSearch, setShowProductSearch] = useState<number | null>(
+    null,
+  );
   const [listMode, setListMode] = useState(false);
   const [listPage, setListPage] = useState(1);
   const [listFrom, setListFrom] = useState("");
@@ -81,12 +148,21 @@ export default function PurchasesPage() {
   const [listBranchId, setListBranchId] = useState("");
   const [listCashBox, setListCashBox] = useState("");
   const deferredListSearch = useDeferredValue(listSearch.trim());
-  const [attachment, setAttachment] = useState<{ url: string; name: string; type: string } | null>(null);
+  const [attachment, setAttachment] = useState<{
+    url: string;
+    name: string;
+    type: string;
+  } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingNo, setEditingNo] = useState<string>("");
   const [quickSupplier, setQuickSupplier] = useState(false);
-  const [quickSupplierForm, setQuickSupplierForm] = useState({ name: "", phone: "", company: "" });
+  const [quickSupplierForm, setQuickSupplierForm] = useState({
+    name: "",
+    phone: "",
+    company: "",
+  });
   const firstFieldRef = useRef<HTMLSelectElement>(null);
+  const submitKeyRef = useRef<string | null>(null);
 
   const { data: products = [] } = useQuery<Product[]>({
     queryKey: ["admin", "products-all"],
@@ -102,9 +178,24 @@ export default function PurchasesPage() {
   });
 
   const { data: invoicesList } = useQuery({
-    queryKey: ["admin", "purchase-invoices", listPage, listFrom, listTo, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, deferredListSearch],
+    queryKey: [
+      "admin",
+      "purchase-invoices",
+      listPage,
+      listFrom,
+      listTo,
+      listPaymentStatus,
+      listPaymentMethod,
+      listStatus,
+      listBranchId,
+      listCashBox,
+      deferredListSearch,
+    ],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
+      const params = new URLSearchParams({
+        limit: "20",
+        offset: String((listPage - 1) * 20),
+      });
       if (listFrom) params.set("from", listFrom);
       if (listTo) params.set("to", listTo);
       if (listPaymentStatus) params.set("paymentStatus", listPaymentStatus);
@@ -113,7 +204,11 @@ export default function PurchasesPage() {
       if (listBranchId) params.set("branchId", listBranchId);
       if (listCashBox) params.set("cashBox", listCashBox);
       if (deferredListSearch) params.set("search", deferredListSearch);
-      return adminFetch<{ data: PurchaseInvoice[]; total: number; summary: InvoiceRegisterSummary }>(`/admin/purchase-invoices?${params}`);
+      return adminFetch<{
+        data: PurchaseInvoice[];
+        total: number;
+        summary: InvoiceRegisterSummary;
+      }>(`/admin/purchase-invoices?${params}`);
     },
     enabled: listMode,
   });
@@ -125,13 +220,31 @@ export default function PurchasesPage() {
   });
 
   async function createQuickSupplier() {
-    if (!quickSupplierForm.name.trim()) { toast({ title: "اسم المورد مطلوب", variant: "destructive" }); return; }
+    if (!quickSupplierForm.name.trim()) {
+      toast({ title: "اسم المورد مطلوب", variant: "destructive" });
+      return;
+    }
     try {
-      const supplier = await adminFetch<Supplier>("/admin/suppliers", { method: "POST", body: JSON.stringify(quickSupplierForm) });
+      const supplier = await adminFetch<Supplier>("/admin/suppliers", {
+        method: "POST",
+        body: JSON.stringify(quickSupplierForm),
+      });
       queryClient.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-      setForm((f) => ({ ...f, supplierId: supplier.id, supplierName: supplier.name })); setQuickSupplier(false); setQuickSupplierForm({ name: "", phone: "", company: "" });
+      setForm((f) => ({
+        ...f,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+      }));
+      setQuickSupplier(false);
+      setQuickSupplierForm({ name: "", phone: "", company: "" });
       toast({ title: "تمت إضافة المورد واختياره" });
-    } catch (error: any) { toast({ title: "تعذرت إضافة المورد", description: error.message, variant: "destructive" }); }
+    } catch (error: any) {
+      toast({
+        title: "تعذرت إضافة المورد",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
   }
 
   // ── Totals ───────────────────────────────────────────────────────────────
@@ -139,22 +252,29 @@ export default function PurchasesPage() {
   const extraDiscount = parseFloat(form.discountAmount || "0");
   const shipping = parseFloat(form.shippingCost || "0");
   const taxPct = parseFloat(form.taxPct || "0");
-  const taxAmount = +((subtotal - extraDiscount) * taxPct / 100).toFixed(2);
-  const grandTotal = +(subtotal - extraDiscount + taxAmount + shipping).toFixed(2);
-  const paidAmt = isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
+  const taxAmount = +(((subtotal - extraDiscount) * taxPct) / 100).toFixed(2);
+  const grandTotal = +(subtotal - extraDiscount + taxAmount + shipping).toFixed(
+    2,
+  );
+  const paidAmt = isCashPaymentMethod(form.paymentMethod)
+    ? grandTotal
+    : parseFloat(form.paidAmount || "0");
   const remaining = +(grandTotal - paidAmt).toFixed(2);
-  const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
+  const autoStatus =
+    paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
 
   // ── Item operations ──────────────────────────────────────────────────────
-  function addRow() { setItems(prev => [...prev, blankItem()]); }
+  function addRow() {
+    setItems((prev) => [...prev, blankItem()]);
+  }
 
   // Scanned product → increment an existing row, else fill the first blank row
   // (or append one). Purchase price is taken from the product's cost price.
   function handleScanAdd(product: ScanProduct) {
     const cost = parseFloat(String(product.costPrice ?? "0")) || 0;
     const sale = parseFloat(String(product.price ?? "0")) || 0;
-    setItems(prev => {
-      const existingIdx = prev.findIndex(r => r.productId === product.id);
+    setItems((prev) => {
+      const existingIdx = prev.findIndex((r) => r.productId === product.id);
       if (existingIdx >= 0) {
         const updated = [...prev];
         const it = { ...updated[existingIdx] };
@@ -163,7 +283,7 @@ export default function PurchasesPage() {
         updated[existingIdx] = it;
         return updated;
       }
-      const blankIdx = prev.findIndex(r => !r.productId && !r.productName);
+      const blankIdx = prev.findIndex((r) => !r.productId && !r.productName);
       const rows = blankIdx >= 0 ? [...prev] : [...prev, blankItem()];
       const idx = blankIdx >= 0 ? blankIdx : rows.length - 1;
       const qty = rows[idx].quantity || 1;
@@ -183,14 +303,18 @@ export default function PurchasesPage() {
 
   function removeRow(idx: number) {
     if (items.length === 1) return;
-    setItems(prev => prev.filter((_, i) => i !== idx));
+    setItems((prev) => prev.filter((_, i) => i !== idx));
   }
 
-  function updateItem(idx: number, field: keyof PurchaseItem, raw: string | number) {
-    setItems(prev => {
+  function updateItem(
+    idx: number,
+    field: keyof PurchaseItem,
+    raw: string | number,
+  ) {
+    setItems((prev) => {
       const updated = [...prev];
       const item = { ...updated[idx] } as any;
-      const val = typeof raw === "string" ? (parseFloat(raw) || 0) : raw;
+      const val = typeof raw === "string" ? parseFloat(raw) || 0 : raw;
       if (field === "productName" || field === "barcode") item[field] = raw;
       else item[field] = val;
       item.total = +(item.quantity * item.costPrice - item.discount).toFixed(2);
@@ -200,7 +324,7 @@ export default function PurchasesPage() {
   }
 
   function selectProduct(idx: number, p: Product) {
-    setItems(prev => {
+    setItems((prev) => {
       const updated = [...prev];
       updated[idx] = {
         ...updated[idx],
@@ -209,12 +333,15 @@ export default function PurchasesPage() {
         barcode: p.barcode || "",
         costPrice: parseFloat(p.costPrice || "0"),
         salePrice: parseFloat(p.price || "0"),
-        total: +(updated[idx].quantity * parseFloat(p.costPrice || "0") - updated[idx].discount).toFixed(2),
+        total: +(
+          updated[idx].quantity * parseFloat(p.costPrice || "0") -
+          updated[idx].discount
+        ).toFixed(2),
       };
       return updated;
     });
     setShowProductSearch(null);
-    setSearchQ(prev => ({ ...prev, [idx]: "" }));
+    setSearchQ((prev) => ({ ...prev, [idx]: "" }));
   }
 
   // "Open a customer account?" prompt shown on save for a new counterparty name.
@@ -235,48 +362,100 @@ export default function PurchasesPage() {
 
   // ── Save ─────────────────────────────────────────────────────────────────
   async function saveInvoice() {
-    const validItems = items.filter(i => i.productName && i.quantity > 0);
-    if (validItems.length === 0) { toast({ title: "أضف أصناف للفاتورة", variant: "destructive" }); return; }
+    if (saving) return;
+    const validItems = items.filter((i) => i.productName && i.quantity > 0);
+    if (validItems.length === 0) {
+      toast({ title: "أضف أصناف للفاتورة", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     try {
+      submitKeyRef.current ??= `purchase-invoice:${crypto.randomUUID()}`;
       const payload = {
         date: form.date,
         supplierName: form.supplierName,
         supplierId: form.supplierId || null,
-        subtotal, discountAmount: extraDiscount, taxAmount, shippingCost: shipping,
-        total: grandTotal, paidAmount: paidAmt, remainingAmount: remaining,
-        paymentMethod: form.paymentMethod, paymentStatus: autoStatus,
+        subtotal,
+        discountAmount: extraDiscount,
+        taxAmount,
+        shippingCost: shipping,
+        total: grandTotal,
+        paidAmount: paidAmt,
+        remainingAmount: remaining,
+        paymentMethod: form.paymentMethod,
+        paymentStatus: autoStatus,
         notes: form.notes,
-        items: validItems.map(i => ({
-          productId: i.productId, productName: i.productName, barcode: i.barcode,
-          quantity: i.quantity, costPrice: i.costPrice, salePrice: i.salePrice,
-          discount: i.discount, total: i.total,
+        items: validItems.map((i) => ({
+          productId: i.productId,
+          productName: i.productName,
+          barcode: i.barcode,
+          quantity: i.quantity,
+          costPrice: i.costPrice,
+          salePrice: i.salePrice,
+          discount: i.discount,
+          total: i.total,
         })),
       };
       const res = await adminFetch<{ invoice: PurchaseInvoice }>(
-        editingId ? `/admin/purchase-invoices/${editingId}` : "/admin/purchase-invoices",
-        { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) },
+        editingId
+          ? `/admin/purchase-invoices/${editingId}`
+          : "/admin/purchase-invoices",
+        {
+          method: editingId ? "PUT" : "POST",
+          headers: editingId
+            ? undefined
+            : { "x-idempotency-key": submitKeyRef.current },
+          body: JSON.stringify(payload),
+        },
       );
+      submitKeyRef.current = null;
       // Attach the uploaded invoice image / PDF and link it to the invoice (shows inside each asset's passport).
       const invId = res?.invoice?.id ?? editingId;
       if (attachment && invId) {
         try {
-          await adminFetch("/admin/documents", { method: "POST", body: JSON.stringify({ entityType: "purchase_invoice", entityId: invId, documentType: "invoice", title: `فاتورة شراء ${res.invoice?.invoiceNo ?? ""}`.trim(), fileName: attachment.name, mimeType: attachment.type, fileUrl: attachment.url }) });
-        } catch { /* attachment is best-effort; the invoice itself is already saved */ }
+          await adminFetch("/admin/documents", {
+            method: "POST",
+            body: JSON.stringify({
+              entityType: "purchase_invoice",
+              entityId: invId,
+              documentType: "invoice",
+              title: `فاتورة شراء ${res.invoice?.invoiceNo ?? ""}`.trim(),
+              fileName: attachment.name,
+              mimeType: attachment.type,
+              fileUrl: attachment.url,
+            }),
+          });
+        } catch {
+          /* attachment is best-effort; the invoice itself is already saved */
+        }
       }
-      toast({ title: editingId ? "تم تعديل فاتورة الشراء" : "تم حفظ فاتورة الشراء", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
-      queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
+      toast({
+        title: editingId ? "تم تعديل فاتورة الشراء" : "تم حفظ فاتورة الشراء",
+        description: res?.invoice?.invoiceNo ?? "تم الحفظ",
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "purchase-invoices"],
+      });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "inventory-alerts"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "inventory-alert-count"],
+      });
       setItems([blankItem()]);
       setForm(newForm());
       setAttachment(null);
-      setEditingId(null); setEditingNo("");
+      setEditingId(null);
+      setEditingNo("");
       if (editingId) setListMode(true);
       else requestAnimationFrame(() => firstFieldRef.current?.focus()); // ready for a new purchase invoice
     } catch (e: any) {
-      toast({ title: "خطأ في الحفظ", description: e.message, variant: "destructive" });
+      toast({
+        title: "خطأ في الحفظ",
+        description: e.message,
+        variant: "destructive",
+      });
     } finally {
       setSaving(false);
     }
@@ -284,8 +463,13 @@ export default function PurchasesPage() {
 
   async function editInvoice(inv: PurchaseInvoice) {
     try {
-      const full = await adminFetch<PurchaseInvoice & { items: any[] }>(`/admin/purchase-invoices/${inv.id}`);
-      const sub = (full.items ?? []).reduce((s: number, it: any) => s + (Number(it.total) || 0), 0);
+      const full = await adminFetch<PurchaseInvoice & { items: any[] }>(
+        `/admin/purchase-invoices/${inv.id}`,
+      );
+      const sub = (full.items ?? []).reduce(
+        (s: number, it: any) => s + (Number(it.total) || 0),
+        0,
+      );
       const baseForTax = sub - (Number(full.discountAmount) || 0);
       setForm({
         date: full.date,
@@ -295,33 +479,65 @@ export default function PurchasesPage() {
         paidAmount: String(full.paidAmount ?? ""),
         shippingCost: String(full.shippingCost ?? "0"),
         discountAmount: String(full.discountAmount ?? "0"),
-        taxPct: baseForTax > 0 ? String(+((Number(full.taxAmount) || 0) / baseForTax * 100).toFixed(2)) : "0",
+        taxPct:
+          baseForTax > 0
+            ? String(
+                +(((Number(full.taxAmount) || 0) / baseForTax) * 100).toFixed(
+                  2,
+                ),
+              )
+            : "0",
         notes: full.notes ?? "",
       });
-      setItems((full.items ?? []).map((it: any) => ({
-        productId: it.productId ?? null, productName: it.productName ?? "", barcode: it.barcode ?? "",
-        quantity: Number(it.quantity) || 1, costPrice: Number(it.costPrice) || 0, salePrice: Number(it.salePrice) || 0,
-        discount: Number(it.discount) || 0, total: Number(it.total) || 0,
-      })));
-      setEditingId(full.id); setEditingNo(full.invoiceNo); setAttachment(null); setListMode(false);
-    } catch (e: any) { toast({ title: "تعذّر فتح الفاتورة", description: e.message, variant: "destructive" }); }
+      setItems(
+        (full.items ?? []).map((it: any) => ({
+          productId: it.productId ?? null,
+          productName: it.productName ?? "",
+          barcode: it.barcode ?? "",
+          quantity: Number(it.quantity) || 1,
+          costPrice: Number(it.costPrice) || 0,
+          salePrice: Number(it.salePrice) || 0,
+          discount: Number(it.discount) || 0,
+          total: Number(it.total) || 0,
+        })),
+      );
+      setEditingId(full.id);
+      setEditingNo(full.invoiceNo);
+      setAttachment(null);
+      setListMode(false);
+    } catch (e: any) {
+      toast({
+        title: "تعذّر فتح الفاتورة",
+        description: e.message,
+        variant: "destructive",
+      });
+    }
   }
 
   async function printInvoice(inv: PurchaseInvoice) {
     let full: any = inv;
-    try { full = await adminFetch(`/admin/purchase-invoices/${inv.id}`); } catch { /* fall back to row */ }
+    try {
+      full = await adminFetch(`/admin/purchase-invoices/${inv.id}`);
+    } catch {
+      /* fall back to row */
+    }
     const items: any[] = full.items ?? [];
     const win = window.open("", "_blank", "width=900,height=1100");
     if (!win) return;
-    const rows = items.map((it, i) => `<tr>
+    const rows = items
+      .map(
+        (it, i) => `<tr>
       <td style="text-align:center">${i + 1}</td>
       <td style="text-align:center">${it.image ? `<img src="${it.image}" style="width:42px;height:42px;object-fit:cover;border-radius:4px"/>` : "—"}</td>
       <td>${it.productName ?? ""}</td>
       <td style="text-align:center">${Number(it.quantity) || 0}</td>
       <td style="text-align:center">${formatCurrency(it.costPrice)}</td>
       <td style="text-align:center">${formatCurrency(it.total)}</td>
-    </tr>`).join("");
-    win.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${full.invoiceNo ?? "فاتورة شراء"}</title>
+    </tr>`,
+      )
+      .join("");
+    win.document
+      .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${full.invoiceNo ?? "فاتورة شراء"}</title>
       <style>@page{size:A4;margin:14mm}body{font-family:Tahoma,sans-serif;color:#111}h1{font-size:20px;margin:0}.muted{color:#555;font-size:12px;margin-top:4px}table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}th,td{border:1px solid #ccc;padding:6px}th{background:#f3f4f6}.tot{margin-top:14px;width:280px;margin-inline-start:auto;font-size:13px}.tot div{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed #e5e7eb}.tot .g{font-weight:700;font-size:15px;border-bottom:2px solid #111}</style>
       </head><body onload="window.print()">
       <h1>فاتورة شراء</h1>
@@ -341,35 +557,67 @@ export default function PurchasesPage() {
   }
 
   async function deleteInvoice(inv: PurchaseInvoice) {
-    if (!confirm(`حذف فاتورة الشراء ${inv.invoiceNo}؟ سيُعكس المخزون والحركة المالية.`)) return;
+    if (
+      !confirm(
+        `حذف فاتورة الشراء ${inv.invoiceNo}؟ سيُعكس المخزون والحركة المالية.`,
+      )
+    )
+      return;
     try {
-      await adminFetch(`/admin/purchase-invoices/${inv.id}`, { method: "DELETE" });
+      await adminFetch(`/admin/purchase-invoices/${inv.id}`, {
+        method: "DELETE",
+      });
       toast({ title: "تم حذف الفاتورة", description: inv.invoiceNo });
-      queryClient.invalidateQueries({ queryKey: ["admin", "purchase-invoices"] });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "purchase-invoices"],
+      });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
-      queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
-    } catch (e: any) { toast({ title: "تعذّر الحذف", description: e.message, variant: "destructive" }); }
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "inventory-alerts"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "inventory-alert-count"],
+      });
+    } catch (e: any) {
+      toast({
+        title: "تعذّر الحذف",
+        description: e.message,
+        variant: "destructive",
+      });
+    }
   }
 
   if (listMode) {
-    return <PurchaseListView
-      invoices={invoicesList?.data ?? []}
-      total={invoicesList?.total ?? 0}
-      summary={invoicesList?.summary}
-      page={listPage} onPage={setListPage}
-      from={listFrom} to={listTo}
-      onFrom={setListFrom} onTo={setListTo}
-      search={listSearch} onSearch={setListSearch}
-      paymentStatus={listPaymentStatus} onPaymentStatus={setListPaymentStatus}
-      paymentMethod={listPaymentMethod} onPaymentMethod={setListPaymentMethod}
-      invoiceStatus={listStatus} onInvoiceStatus={setListStatus}
-      branchId={listBranchId} onBranchId={setListBranchId}
-      cashBox={listCashBox} onCashBox={setListCashBox}
-      options={registerOptions}
-      onBack={() => setListMode(false)}
-      onEdit={editInvoice} onPrint={printInvoice} onDelete={deleteInvoice}
-    />;
+    return (
+      <PurchaseListView
+        invoices={invoicesList?.data ?? []}
+        total={invoicesList?.total ?? 0}
+        summary={invoicesList?.summary}
+        page={listPage}
+        onPage={setListPage}
+        from={listFrom}
+        to={listTo}
+        onFrom={setListFrom}
+        onTo={setListTo}
+        search={listSearch}
+        onSearch={setListSearch}
+        paymentStatus={listPaymentStatus}
+        onPaymentStatus={setListPaymentStatus}
+        paymentMethod={listPaymentMethod}
+        onPaymentMethod={setListPaymentMethod}
+        invoiceStatus={listStatus}
+        onInvoiceStatus={setListStatus}
+        branchId={listBranchId}
+        onBranchId={setListBranchId}
+        cashBox={listCashBox}
+        onCashBox={setListCashBox}
+        options={registerOptions}
+        onBack={() => setListMode(false)}
+        onEdit={editInvoice}
+        onPrint={printInvoice}
+        onDelete={deleteInvoice}
+      />
+    );
   }
 
   return (
@@ -380,20 +628,38 @@ export default function PurchasesPage() {
         products={products as unknown as ScanProduct[]}
         context="purchase"
         onAdd={handleScanAdd}
-        onCreated={() => queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] })}
+        onCreated={() =>
+          queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] })
+        }
       />
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{editingId ? `تعديل فاتورة شراء ${editingNo}` : "فاتورة مشتريات"}</h1>
-          <p className="text-sm text-muted-foreground">{editingId ? "سيُعاد ضبط المخزون والحركة المالية حسب الأصناف الجديدة" : "استلام البضاعة وتحديث المخزون"}</p>
+          <h1 className="text-2xl font-bold text-foreground">
+            {editingId ? `تعديل فاتورة شراء ${editingNo}` : "فاتورة مشتريات"}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {editingId
+              ? "سيُعاد ضبط المخزون والحركة المالية حسب الأصناف الجديدة"
+              : "استلام البضاعة وتحديث المخزون"}
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => setListMode(true)}>
             <Package className="w-4 h-4 ml-1" />
             سجل المشتريات
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { setItems([blankItem()]); setForm(newForm()); setEditingId(null); setEditingNo(""); setAttachment(null); }}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setItems([blankItem()]);
+              setForm(newForm());
+              setEditingId(null);
+              setEditingNo("");
+              setAttachment(null);
+            }}
+          >
             <RefreshCw className="w-4 h-4 ml-1" />
             {editingId ? "إلغاء التعديل" : "جديدة"}
           </Button>
@@ -408,7 +674,12 @@ export default function PurchasesPage() {
             <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between gap-2">
               <span className="font-semibold text-sm">أصناف الفاتورة</span>
               <div className="flex items-center gap-1">
-                <Button variant="outline" size="sm" onClick={() => setScanOpen(true)} className="gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setScanOpen(true)}
+                  className="gap-1.5"
+                >
                   <ScanLine className="w-4 h-4" />
                   مسح باركود
                 </Button>
@@ -436,19 +707,29 @@ export default function PurchasesPage() {
                   {items.map((item, idx) => {
                     const q = (searchQ[idx] ?? "").toLowerCase();
                     const filtered = q
-                      ? products.filter(p =>
-                          p.nameAr?.toLowerCase().includes(q) || p.name?.toLowerCase().includes(q) || p.barcode?.toLowerCase().includes(q)
-                        ).slice(0, 8)
+                      ? products
+                          .filter(
+                            (p) =>
+                              p.nameAr?.toLowerCase().includes(q) ||
+                              p.name?.toLowerCase().includes(q) ||
+                              p.barcode?.toLowerCase().includes(q),
+                          )
+                          .slice(0, 8)
                       : [];
                     return (
                       <tr key={idx} className="hover:bg-muted/10">
-                        <td className="px-3 py-2 text-muted-foreground">{idx + 1}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {idx + 1}
+                        </td>
                         <td className="px-3 py-2 relative min-w-[180px]">
                           <div className="flex items-center gap-1">
                             <input
                               value={item.productName || searchQ[idx] || ""}
-                              onChange={e => {
-                                setSearchQ(prev => ({ ...prev, [idx]: e.target.value }));
+                              onChange={(e) => {
+                                setSearchQ((prev) => ({
+                                  ...prev,
+                                  [idx]: e.target.value,
+                                }));
                                 updateItem(idx, "productName", e.target.value);
                                 setShowProductSearch(idx);
                               }}
@@ -457,7 +738,11 @@ export default function PurchasesPage() {
                               className="bg-transparent w-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1 py-0.5"
                             />
                             <button
-                              onClick={() => setShowProductSearch(showProductSearch === idx ? null : idx)}
+                              onClick={() =>
+                                setShowProductSearch(
+                                  showProductSearch === idx ? null : idx,
+                                )
+                              }
                               className="text-muted-foreground hover:text-primary shrink-0"
                             >
                               <Search className="w-3.5 h-3.5" />
@@ -465,21 +750,30 @@ export default function PurchasesPage() {
                           </div>
                           {showProductSearch === idx && filtered.length > 0 && (
                             <div className="absolute top-full right-0 z-20 w-72 bg-card border border-border/40 rounded-lg shadow-lg overflow-hidden mt-1">
-                              {filtered.map(p => (
+                              {filtered.map((p) => (
                                 <button
                                   key={p.id}
                                   onClick={() => selectProduct(idx, p)}
                                   className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-right"
                                 >
                                   <span>
-                                    <span className="block font-medium text-foreground">{p.nameAr || p.name}</span>
+                                    <span className="block font-medium text-foreground">
+                                      {p.nameAr || p.name}
+                                    </span>
                                     <span className="block text-[11px] text-muted-foreground">
-                                      {p.barcode ? `${p.barcode} · ` : ""}{p.categoryName || p.category || "بدون قسم"}
+                                      {p.barcode ? `${p.barcode} · ` : ""}
+                                      {p.categoryName ||
+                                        p.category ||
+                                        "بدون قسم"}
                                     </span>
                                   </span>
                                   <span className="text-xs text-muted-foreground text-left">
-                                    <span className="block">{formatCurrency(p.costPrice || "0")}</span>
-                                    <span className="block">مخزون: {p.stock}</span>
+                                    <span className="block">
+                                      {formatCurrency(p.costPrice || "0")}
+                                    </span>
+                                    <span className="block">
+                                      مخزون: {p.stock}
+                                    </span>
                                   </span>
                                 </button>
                               ))}
@@ -487,30 +781,47 @@ export default function PurchasesPage() {
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0.001" step="0.001"
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="0.001"
                             value={item.quantity}
-                            onChange={e => updateItem(idx, "quantity", e.target.value)}
+                            onChange={(e) =>
+                              updateItem(idx, "quantity", e.target.value)
+                            }
                             className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0"
+                          <input
+                            type="number"
+                            min="0"
                             value={item.costPrice}
-                            onChange={e => updateItem(idx, "costPrice", e.target.value)}
+                            onChange={(e) =>
+                              updateItem(idx, "costPrice", e.target.value)
+                            }
                             className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0"
+                          <input
+                            type="number"
+                            min="0"
                             value={item.salePrice}
-                            onChange={e => updateItem(idx, "salePrice", e.target.value)}
+                            onChange={(e) =>
+                              updateItem(idx, "salePrice", e.target.value)
+                            }
                             className="bg-background border border-border/30 rounded text-center w-24 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0"
+                          <input
+                            type="number"
+                            min="0"
                             value={item.discount}
-                            onChange={e => updateItem(idx, "discount", e.target.value)}
+                            onChange={(e) =>
+                              updateItem(idx, "discount", e.target.value)
+                            }
                             className="bg-background border border-border/30 rounded text-center w-20 px-2 py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           />
                         </td>
@@ -518,7 +829,10 @@ export default function PurchasesPage() {
                           {formatCurrency(item.total)}
                         </td>
                         <td className="px-3 py-2">
-                          <button onClick={() => removeRow(idx)} className="text-muted-foreground hover:text-destructive transition-colors">
+                          <button
+                            onClick={() => removeRow(idx)}
+                            className="text-muted-foreground hover:text-destructive transition-colors"
+                          >
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </td>
@@ -529,7 +843,12 @@ export default function PurchasesPage() {
               </table>
             </div>
             <div className="px-4 py-2 border-t border-border/20">
-              <Button variant="ghost" size="sm" onClick={addRow} className="text-muted-foreground">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={addRow}
+                className="text-muted-foreground"
+              >
                 <Plus className="w-4 h-4 ml-1" />
                 إضافة صنف جديد
               </Button>
@@ -543,39 +862,66 @@ export default function PurchasesPage() {
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
             <h3 className="font-semibold text-sm">بيانات الفاتورة</h3>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">التاريخ</label>
-              <input type="date" value={form.date}
-                onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+              <label className="text-xs text-muted-foreground mb-1 block">
+                التاريخ
+              </label>
+              <input
+                type="date"
+                value={form.date}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, date: e.target.value }))
+                }
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">المورد</label>
+              <label className="text-xs text-muted-foreground mb-1 block">
+                المورد
+              </label>
               <select
                 ref={firstFieldRef}
                 value={form.supplierId}
-                onChange={e => {
+                onChange={(e) => {
                   const id = e.target.value;
-                  const sup = suppliers.find(s => s.id.toString() === id);
-                  setForm(f => ({ ...f, supplierId: id, supplierName: sup?.name || "" }));
+                  const sup = suppliers.find((s) => s.id.toString() === id);
+                  setForm((f) => ({
+                    ...f,
+                    supplierId: id,
+                    supplierName: sup?.name || "",
+                  }));
                 }}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <option value="">اختر مورد أو اكتب اسمه</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {suppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
               </select>
             </div>
             {!form.supplierId && (
               <div>
                 <input
                   value={form.supplierName}
-                  onChange={e => setForm(f => ({ ...f, supplierName: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, supplierName: e.target.value }))
+                  }
                   placeholder="اسم المورد (اختياري)"
                   className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </div>
             )}
-            <Button type="button" variant="outline" size="sm" className="w-full" onClick={() => setQuickSupplier(true)}><Plus className="ml-1 h-4 w-4" />إنشاء مورد جديد</Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => setQuickSupplier(true)}
+            >
+              <Plus className="ml-1 h-4 w-4" />
+              إنشاء مورد جديد
+            </Button>
           </div>
 
           {/* Totals */}
@@ -587,24 +933,40 @@ export default function PurchasesPage() {
             </div>
             <div className="flex items-center justify-between text-sm gap-2">
               <span className="text-muted-foreground">خصم إضافي</span>
-              <input type="number" min="0" value={form.discountAmount}
-                onChange={e => setForm(f => ({ ...f, discountAmount: e.target.value }))}
+              <input
+                type="number"
+                min="0"
+                value={form.discountAmount}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, discountAmount: e.target.value }))
+                }
                 className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
             <div className="flex items-center justify-between text-sm gap-2">
               <span className="text-muted-foreground">شحن</span>
-              <input type="number" min="0" value={form.shippingCost}
-                onChange={e => setForm(f => ({ ...f, shippingCost: e.target.value }))}
+              <input
+                type="number"
+                min="0"
+                value={form.shippingCost}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, shippingCost: e.target.value }))
+                }
                 className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
             </div>
             <div className="flex items-center justify-between text-sm gap-2">
               <span className="text-muted-foreground">ضريبة %</span>
-              <input type="number" min="0" max="100" value={form.taxPct}
-                onChange={e => setForm(f => ({ ...f, taxPct: e.target.value }))}
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={form.taxPct}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, taxPct: e.target.value }))
+                }
                 className="bg-background border border-border/30 rounded px-2 py-1 text-sm w-28 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 dir="ltr"
               />
@@ -619,9 +981,18 @@ export default function PurchasesPage() {
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
             <h3 className="font-semibold text-sm">الدفع</h3>
             <div className="grid grid-cols-2 gap-2">
-              {PAYMENT_METHODS.map(m => (
-                <button key={m.value}
-                  onClick={() => setForm(f => ({ ...f, paymentMethod: m.value, paidAmount: isCashPaymentMethod(m.value) ? grandTotal.toString() : f.paidAmount }))}
+              {PAYMENT_METHODS.map((m) => (
+                <button
+                  key={m.value}
+                  onClick={() =>
+                    setForm((f) => ({
+                      ...f,
+                      paymentMethod: m.value,
+                      paidAmount: isCashPaymentMethod(m.value)
+                        ? grandTotal.toString()
+                        : f.paidAmount,
+                    }))
+                  }
                   className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                     form.paymentMethod === m.value
                       ? "bg-primary text-black border-primary"
@@ -633,9 +1004,20 @@ export default function PurchasesPage() {
               ))}
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">المبلغ المدفوع</label>
-              <input type="number" min="0" value={isCashPaymentMethod(form.paymentMethod) ? grandTotal : form.paidAmount}
-                onChange={e => setForm(f => ({ ...f, paidAmount: e.target.value }))}
+              <label className="text-xs text-muted-foreground mb-1 block">
+                المبلغ المدفوع
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={
+                  isCashPaymentMethod(form.paymentMethod)
+                    ? grandTotal
+                    : form.paidAmount
+                }
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, paidAmount: e.target.value }))
+                }
                 readOnly={isCashPaymentMethod(form.paymentMethod)}
                 placeholder={grandTotal.toString()}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -643,25 +1025,46 @@ export default function PurchasesPage() {
               />
             </div>
             {grandTotal > 0 && (
-              <div className={`flex justify-between text-sm font-medium ${remaining > 0 ? "text-status-danger" : "text-status-success"}`}>
+              <div
+                className={`flex justify-between text-sm font-medium ${remaining > 0 ? "text-status-danger" : "text-status-success"}`}
+              >
                 <span>{remaining > 0 ? "المتبقي" : "الباقي"}</span>
-                <span>{formatCurrency(Math.abs(remaining))}{remaining < 0 ? " (زيادة)" : ""}</span>
+                <span>
+                  {formatCurrency(Math.abs(remaining))}
+                  {remaining < 0 ? " (زيادة)" : ""}
+                </span>
               </div>
             )}
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
-              <textarea value={form.notes}
-                onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              <label className="text-xs text-muted-foreground mb-1 block">
+                ملاحظات
+              </label>
+              <textarea
+                value={form.notes}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, notes: e.target.value }))
+                }
                 rows={2}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">صورة / PDF الفاتورة (تُربط بالأصل)</label>
+              <label className="text-xs text-muted-foreground mb-1 block">
+                صورة / PDF الفاتورة (تُربط بالأصل)
+              </label>
               {attachment ? (
                 <div className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
-                  <span className="flex items-center gap-1.5 truncate text-foreground"><Paperclip className="w-4 h-4 shrink-0 text-primary" />{attachment.name}</span>
-                  <button type="button" onClick={() => setAttachment(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+                  <span className="flex items-center gap-1.5 truncate text-foreground">
+                    <Paperclip className="w-4 h-4 shrink-0 text-primary" />
+                    {attachment.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachment(null)}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               ) : (
                 <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-border/50 bg-background py-2.5 text-sm text-muted-foreground hover:border-primary hover:text-primary">
@@ -675,10 +1078,19 @@ export default function PurchasesPage() {
                       e.target.value = "";
                       if (!file) return;
                       try {
-                        const url = file.type.startsWith("image/") ? await compressImageFile(file, 1800, 0.85) : await fileToDataUrl(file);
-                        setAttachment({ url, name: file.name, type: file.type });
+                        const url = file.type.startsWith("image/")
+                          ? await compressImageFile(file, 1800, 0.85)
+                          : await fileToDataUrl(file);
+                        setAttachment({
+                          url,
+                          name: file.name,
+                          type: file.type,
+                        });
                       } catch {
-                        toast({ title: "تعذّر قراءة الملف", variant: "destructive" });
+                        toast({
+                          title: "تعذّر قراءة الملف",
+                          variant: "destructive",
+                        });
                       }
                     }}
                   />
@@ -693,10 +1105,17 @@ export default function PurchasesPage() {
             disabled={saving}
             className="w-full bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
           >
-            {saving
-              ? <><RefreshCw className="w-4 h-4 ml-2 animate-spin" />جاري الحفظ...</>
-              : <><Save className="w-4 h-4 ml-2" />حفظ فاتورة الشراء</>
-            }
+            {saving ? (
+              <>
+                <RefreshCw className="w-4 h-4 ml-2 animate-spin" />
+                جاري الحفظ...
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4 ml-2" />
+                حفظ فاتورة الشراء
+              </>
+            )}
           </Button>
 
           {customerPrompt ? (
@@ -715,35 +1134,123 @@ export default function PurchasesPage() {
           ) : null}
         </div>
       </div>
-      {quickSupplier && <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" dir="rtl"><div className="w-full max-w-md space-y-3 rounded-xl border bg-card p-5 shadow-xl"><div className="flex items-center justify-between"><h3 className="font-bold">مورد جديد</h3><Button variant="ghost" size="sm" onClick={() => setQuickSupplier(false)}><X className="h-4 w-4" /></Button></div><input autoFocus value={quickSupplierForm.name} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, name: e.target.value }))} placeholder="اسم المورد *" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.company} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, company: e.target.value }))} placeholder="الشركة" className="w-full rounded-lg border bg-background p-2 text-sm" /><input value={quickSupplierForm.phone} onChange={(e) => setQuickSupplierForm((f) => ({ ...f, phone: e.target.value }))} placeholder="الهاتف" className="w-full rounded-lg border bg-background p-2 text-sm" /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setQuickSupplier(false)}>إلغاء</Button><Button onClick={createQuickSupplier}>حفظ واختيار</Button></div></div></div>}
+      {quickSupplier && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4"
+          dir="rtl"
+        >
+          <div className="w-full max-w-md space-y-3 rounded-xl border bg-card p-5 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold">مورد جديد</h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setQuickSupplier(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <input
+              autoFocus
+              value={quickSupplierForm.name}
+              onChange={(e) =>
+                setQuickSupplierForm((f) => ({ ...f, name: e.target.value }))
+              }
+              placeholder="اسم المورد *"
+              className="w-full rounded-lg border bg-background p-2 text-sm"
+            />
+            <input
+              value={quickSupplierForm.company}
+              onChange={(e) =>
+                setQuickSupplierForm((f) => ({ ...f, company: e.target.value }))
+              }
+              placeholder="الشركة"
+              className="w-full rounded-lg border bg-background p-2 text-sm"
+            />
+            <input
+              value={quickSupplierForm.phone}
+              onChange={(e) =>
+                setQuickSupplierForm((f) => ({ ...f, phone: e.target.value }))
+              }
+              placeholder="الهاتف"
+              className="w-full rounded-lg border bg-background p-2 text-sm"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setQuickSupplier(false)}>
+                إلغاء
+              </Button>
+              <Button onClick={createQuickSupplier}>حفظ واختيار</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Purchase List Sub-View ─────────────────────────────────────────────────
 function PurchaseListView({
-  invoices, total, summary, page, onPage, from, to, onFrom, onTo, search, onSearch,
-  paymentStatus, onPaymentStatus, paymentMethod, onPaymentMethod, invoiceStatus, onInvoiceStatus,
-  branchId, onBranchId, cashBox, onCashBox, options, onBack, onEdit, onPrint, onDelete,
+  invoices,
+  total,
+  summary,
+  page,
+  onPage,
+  from,
+  to,
+  onFrom,
+  onTo,
+  search,
+  onSearch,
+  paymentStatus,
+  onPaymentStatus,
+  paymentMethod,
+  onPaymentMethod,
+  invoiceStatus,
+  onInvoiceStatus,
+  branchId,
+  onBranchId,
+  cashBox,
+  onCashBox,
+  options,
+  onBack,
+  onEdit,
+  onPrint,
+  onDelete,
 }: {
-  invoices: PurchaseInvoice[]; total: number; page: number; onPage: (p: number) => void;
+  invoices: PurchaseInvoice[];
+  total: number;
+  page: number;
+  onPage: (p: number) => void;
   summary?: InvoiceRegisterSummary;
-  from: string; to: string; onFrom: (v: string) => void; onTo: (v: string) => void;
-  search: string; onSearch: (v: string) => void;
-  paymentStatus: string; onPaymentStatus: (v: string) => void;
-  paymentMethod: string; onPaymentMethod: (v: string) => void;
-  invoiceStatus: string; onInvoiceStatus: (v: string) => void;
-  branchId: string; onBranchId: (v: string) => void;
-  cashBox: string; onCashBox: (v: string) => void;
+  from: string;
+  to: string;
+  onFrom: (v: string) => void;
+  onTo: (v: string) => void;
+  search: string;
+  onSearch: (v: string) => void;
+  paymentStatus: string;
+  onPaymentStatus: (v: string) => void;
+  paymentMethod: string;
+  onPaymentMethod: (v: string) => void;
+  invoiceStatus: string;
+  onInvoiceStatus: (v: string) => void;
+  branchId: string;
+  onBranchId: (v: string) => void;
+  cashBox: string;
+  onCashBox: (v: string) => void;
   options?: InvoiceRegisterOptions;
-  onBack: () => void; onEdit: (inv: PurchaseInvoice) => void; onPrint: (inv: PurchaseInvoice) => void; onDelete: (inv: PurchaseInvoice) => void;
+  onBack: () => void;
+  onEdit: (inv: PurchaseInvoice) => void;
+  onPrint: (inv: PurchaseInvoice) => void;
+  onDelete: (inv: PurchaseInvoice) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / 20));
   return (
     <div dir="rtl" className="space-y-4">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={onBack}>
-          <ChevronLeft className="w-4 h-4 ml-1" />رجوع
+          <ChevronLeft className="w-4 h-4 ml-1" />
+          رجوع
         </Button>
         <div>
           <h1 className="text-xl font-bold">سجل فواتير المشتريات</h1>
@@ -753,57 +1260,150 @@ function PurchaseListView({
       <InvoiceRegisterSummaryCards summary={summary} />
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
         <div className="min-w-[280px] flex-1">
-          <label className="text-xs text-muted-foreground mb-1 block">بحث</label>
+          <label className="text-xs text-muted-foreground mb-1 block">
+            بحث
+          </label>
           <div className="relative">
             <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
               value={search}
-              onChange={e => { onSearch(e.target.value); onPage(1); }}
+              onChange={(e) => {
+                onSearch(e.target.value);
+                onPage(1);
+              }}
               placeholder="ابحث برقم الفاتورة، اسم المورد، الهاتف..."
               className="w-full bg-background border border-border/40 rounded-lg py-2 ps-3 pe-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
           </div>
         </div>
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
-          <input type="date" value={from} onChange={e => { onFrom(e.target.value); onPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          <label className="text-xs text-muted-foreground mb-1 block">
+            من تاريخ
+          </label>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => {
+              onFrom(e.target.value);
+              onPage(1);
+            }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
         </div>
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">حالة الدفع</label>
-          <select value={paymentStatus} onChange={e => { onPaymentStatus(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-            {INVOICE_PAYMENT_STATUS_OPTIONS.map(option => <option key={option.value || "all"} value={option.value}>{option.label}</option>)}
+          <label className="text-xs text-muted-foreground mb-1 block">
+            حالة الدفع
+          </label>
+          <select
+            value={paymentStatus}
+            onChange={(e) => {
+              onPaymentStatus(e.target.value);
+              onPage(1);
+            }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+          >
+            {INVOICE_PAYMENT_STATUS_OPTIONS.map((option) => (
+              <option key={option.value || "all"} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </div>
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">طريقة الدفع</label>
-          <select value={paymentMethod} onChange={e => { onPaymentMethod(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-            <option value="">الكل</option>{PAYMENT_METHODS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          <label className="text-xs text-muted-foreground mb-1 block">
+            طريقة الدفع
+          </label>
+          <select
+            value={paymentMethod}
+            onChange={(e) => {
+              onPaymentMethod(e.target.value);
+              onPage(1);
+            }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="">الكل</option>
+            {PAYMENT_METHODS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </div>
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">حالة الفاتورة</label>
-          <select value={invoiceStatus} onChange={e => { onInvoiceStatus(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-            <option value="">الكل</option><option value="active">نشطة</option><option value="draft">مسودة</option>
+          <label className="text-xs text-muted-foreground mb-1 block">
+            حالة الفاتورة
+          </label>
+          <select
+            value={invoiceStatus}
+            onChange={(e) => {
+              onInvoiceStatus(e.target.value);
+              onPage(1);
+            }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="">الكل</option>
+            <option value="active">نشطة</option>
+            <option value="draft">مسودة</option>
           </select>
         </div>
-        {!!options?.branches?.length && <div>
-          <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
-          <select value={branchId} onChange={e => { onBranchId(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-            <option value="">الكل</option>{options.branches.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </div>}
-        {!!options?.cashBoxes?.length && <div>
-          <label className="text-xs text-muted-foreground mb-1 block">الصندوق</label>
-          <select value={cashBox} onChange={e => { onCashBox(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
-            <option value="">الكل</option>{options.cashBoxes.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </div>}
+        {!!options?.branches?.length && (
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              الفرع
+            </label>
+            <select
+              value={branchId}
+              onChange={(e) => {
+                onBranchId(e.target.value);
+                onPage(1);
+              }}
+              className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+            >
+              <option value="">الكل</option>
+              {options.branches.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {!!options?.cashBoxes?.length && (
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">
+              الصندوق
+            </label>
+            <select
+              value={cashBox}
+              onChange={(e) => {
+                onCashBox(e.target.value);
+                onPage(1);
+              }}
+              className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm"
+            >
+              <option value="">الكل</option>
+              {options.cashBoxes.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">إلى تاريخ</label>
-          <input type="date" value={to} onChange={e => { onTo(e.target.value); onPage(1); }}
-            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          <label className="text-xs text-muted-foreground mb-1 block">
+            إلى تاريخ
+          </label>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => {
+              onTo(e.target.value);
+              onPage(1);
+            }}
+            className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
         </div>
       </div>
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
@@ -821,47 +1421,147 @@ function PurchaseListView({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
-              {invoices.length === 0
-                ? <tr><td colSpan={7} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
-                : invoices.map(inv => (
-                    <tr key={inv.id} className="hover:bg-muted/10">
-                      <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{inv.date}</td>
-                      <td className="px-4 py-3">{inv.supplierName || "—"}</td>
-                      <td className="px-4 py-3 text-center font-medium">{formatCurrency(inv.total)}</td>
-                      <td className="px-4 py-3 text-center">
-                        <PayBadge status={inv.paymentStatus} />
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${inv.status === "active" ? "bg-status-success/10 text-status-success" : inv.status === "draft" ? "bg-status-warning/10 text-status-warning" : "bg-status-danger/10 text-status-danger"}`}>
-                          {inv.status === "active" ? "نشطة" : inv.status === "draft" ? "مسودة" : "محذوفة"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-center gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => onPrint(inv)} title="طباعة"><Printer className="w-4 h-4" /></Button>
-                          {inv.status === "active" ? <Button variant="ghost" size="sm" onClick={() => onEdit(inv)} title="تعديل" className="text-primary"><Pencil className="w-4 h-4" /></Button> : null}
-                          {inv.status === "active" ? <Button variant="ghost" size="sm" onClick={() => onDelete(inv)} title="حذف" className="text-destructive"><Trash2 className="w-4 h-4" /></Button> : null}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-              }
+              {invoices.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="text-center py-10 text-muted-foreground"
+                  >
+                    لا توجد فواتير مطابقة.
+                  </td>
+                </tr>
+              ) : (
+                invoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-muted/10">
+                    <td className="px-4 py-3 font-mono text-primary font-medium">
+                      {inv.invoiceNo}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {inv.date}
+                    </td>
+                    <td className="px-4 py-3">{inv.supplierName || "—"}</td>
+                    <td className="px-4 py-3 text-center font-medium">
+                      {formatCurrency(inv.total)}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <PayBadge status={inv.paymentStatus} />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${inv.status === "active" ? "bg-status-success/10 text-status-success" : inv.status === "draft" ? "bg-status-warning/10 text-status-warning" : "bg-status-danger/10 text-status-danger"}`}
+                      >
+                        {inv.status === "active"
+                          ? "نشطة"
+                          : inv.status === "draft"
+                            ? "مسودة"
+                            : "محذوفة"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onPrint(inv)}
+                          title="طباعة"
+                        >
+                          <Printer className="w-4 h-4" />
+                        </Button>
+                        {inv.status === "active" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onEdit(inv)}
+                            title="تعديل"
+                            className="text-primary"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                        ) : null}
+                        {inv.status === "active" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => onDelete(inv)}
+                            title="حذف"
+                            className="text-destructive"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
-            {invoices.length > 0 && <TableTotalsFooter rows={invoices} labelColSpan={3} cells={[
-              { key: "total", label: "إجمالي المشتريات", value: (invoice) => Number(invoice.total ?? 0), format: formatCurrency },
-              { key: "payment", label: "المدفوع والمتبقي", value: () => 0, format: (_, rows) => <span className="text-xs"><span className="text-status-success">مدفوع {formatCurrency(rows.reduce((sum, invoice) => sum + Number(invoice.paidAmount ?? 0), 0))}</span><span className="mx-1 text-muted-foreground">/</span><span className="text-status-warning">متبقي {formatCurrency(rows.reduce((sum, invoice) => sum + Number(invoice.remainingAmount ?? 0), 0))}</span></span> },
-              { key: "status", label: "" }, { key: "actions", label: "" },
-            ]} />}
+            {invoices.length > 0 && (
+              <TableTotalsFooter
+                rows={invoices}
+                labelColSpan={3}
+                cells={[
+                  {
+                    key: "total",
+                    label: "إجمالي المشتريات",
+                    value: (invoice) => Number(invoice.total ?? 0),
+                    format: formatCurrency,
+                  },
+                  {
+                    key: "payment",
+                    label: "المدفوع والمتبقي",
+                    value: () => 0,
+                    format: (_, rows) => (
+                      <span className="text-xs">
+                        <span className="text-status-success">
+                          مدفوع{" "}
+                          {formatCurrency(
+                            rows.reduce(
+                              (sum, invoice) =>
+                                sum + Number(invoice.paidAmount ?? 0),
+                              0,
+                            ),
+                          )}
+                        </span>
+                        <span className="mx-1 text-muted-foreground">/</span>
+                        <span className="text-status-warning">
+                          متبقي{" "}
+                          {formatCurrency(
+                            rows.reduce(
+                              (sum, invoice) =>
+                                sum + Number(invoice.remainingAmount ?? 0),
+                              0,
+                            ),
+                          )}
+                        </span>
+                      </span>
+                    ),
+                  },
+                  { key: "status", label: "" },
+                  { key: "actions", label: "" },
+                ]}
+              />
+            )}
           </table>
         </div>
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 p-3 border-t border-border/20">
-            <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => onPage(page - 1)}
+            >
               <ChevronRight className="w-4 h-4" />
             </Button>
-            <span className="text-sm text-muted-foreground">صفحة {page} من {totalPages}</span>
-            <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>
+            <span className="text-sm text-muted-foreground">
+              صفحة {page} من {totalPages}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={page >= totalPages}
+              onClick={() => onPage(page + 1)}
+            >
               <ChevronLeft className="w-4 h-4" />
             </Button>
           </div>
@@ -874,4 +1574,3 @@ function PurchaseListView({
 function PayBadge({ status }: { status: string }) {
   return <InvoicePaymentStatusBadge status={status} />;
 }
-
