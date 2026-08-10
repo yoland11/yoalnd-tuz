@@ -19767,19 +19767,26 @@ async function handleQr(req: NextRequest, parts: string[]) {
   if (req.method !== "GET" || !parts[1]) return null;
   await ensureAdminExtensionsTables();
   const token = String(parts[1] ?? "").trim();
-  if (!/^[a-f0-9]{32,80}$/i.test(token)) return error("رمز QR غير صالح", 400);
+  if (!/^[a-f0-9]{32,80}$/i.test(token))
+    return error("رابط التحقق غير صالح.", 404);
   const row = await db.query.qrTokensTable.findFirst({
     where: eq(qrTokensTable.token, token),
   });
-  if (!row) return error("رمز QR غير موجود", 404);
+  if (!row) return error("الفاتورة غير موجودة أو رابط التحقق غير صالح.", 404);
   if (parts[2] === "status") {
     try {
       return json(await buildPublicQrStatus(row));
     } catch (err: any) {
-      return error(
-        err?.message ?? "تعذر قراءة حالة QR",
-        Number(err?.status ?? 500),
-      );
+      const status = Number(err?.status ?? 500);
+      if (status === 404)
+        return error("الفاتورة غير موجودة أو رابط التحقق غير صالح.", 404);
+      console.error("public QR status load failed", {
+        entityType: row.entityType,
+        tokenId: row.id,
+        code: err?.code,
+        error: err instanceof Error ? err.message : "unknown",
+      });
+      return error("تعذر تحميل تفاصيل الفاتورة. حاول مرة أخرى لاحقاً.", 500);
     }
   }
   await db
@@ -19890,20 +19897,73 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
       throw Object.assign(new Error("لم يتم العثور على الفاتورة"), {
         status: 404,
       });
+    // The QR token has already been verified above. Fetch line items once and
+    // whitelist every public field below; never leak costs, staff IDs, or
+    // accounting/audit records from the admin invoice shape.
+    const [items, deliveryRow] = await Promise.all([
+      db.query.salesInvoiceItemsTable.findMany({
+        where: eq(salesInvoiceItemsTable.invoiceId, invoice.id),
+        columns: {
+          productName: true,
+          quantity: true,
+          unitPrice: true,
+          total: true,
+        },
+      }),
+      // Delivery is optional. A legacy database without the extension tables
+      // must still be able to show the safe invoice receipt.
+      getInvoiceDelivery(invoice.id).catch(() => null),
+    ]);
+    const invoiceStatus = invoice.status === "active" ? "confirmed" : invoice.status;
+    const paidAmount = Number(invoice.paidAmount ?? 0);
+    const remainingAmount = Number(invoice.remainingAmount ?? 0);
+    const paymentStatus = invoice.paymentStatus ?? "unpaid";
+    const statusHistory = [
+      {
+        status: invoiceStatus,
+        createdAt: invoice.updatedAt.toISOString(),
+      },
+      ...(paidAmount > 0
+        ? [{ status: "payment_recorded", createdAt: invoice.updatedAt.toISOString() }]
+        : []),
+      { status: "created", createdAt: invoice.createdAt.toISOString() },
+    ];
     return {
       kind: "invoice",
       trackingCode: invoice.invoiceNo,
       customerName: invoice.customerName || "عميل",
-      status: invoice.status === "active" ? "confirmed" : invoice.status,
-      paymentStatus: invoice.paymentStatus ?? "unpaid",
+      customerPhone: invoice.customerPhone || null,
+      status: invoiceStatus,
+      paymentStatus,
+      paymentMethod: invoice.paymentMethod || null,
+      invoiceDate: String(invoice.date ?? ""),
+      subtotal: Number(invoice.subtotal ?? 0),
+      discountAmount: Number(invoice.discountAmount ?? 0),
+      taxAmount: Number(invoice.taxAmount ?? 0),
+      total: Number(invoice.total ?? 0),
+      paidAmount,
+      remainingAmount,
+      notes: typeof invoice.notes === "string" && invoice.notes.trim() ? invoice.notes : null,
+      items: items.map((item) => ({
+        name: item.productName || "صنف",
+        quantity: Number(item.quantity ?? 0),
+        unitPrice: Number(item.unitPrice ?? 0),
+        total: Number(item.total ?? 0),
+      })),
+      delivery: deliveryRow
+        ? {
+            province: deliveryRow.detail.provinceName || null,
+            status: deliveryRow.order?.status ?? null,
+            statusLabel: deliveryRow.order
+              ? DELIVERY_STATUS_LABELS[deliveryRow.order.status] ?? deliveryRow.order.status
+              : null,
+            trackingCode: deliveryRow.order?.deliveryNo ?? null,
+            company: deliveryRow.detail.deliveryCompany || null,
+          }
+        : null,
       createdAt: invoice.createdAt.toISOString(),
       updatedAt: invoice.updatedAt.toISOString(),
-      statusHistory: [
-        {
-          status: invoice.status === "active" ? "confirmed" : invoice.status,
-          createdAt: invoice.updatedAt.toISOString(),
-        },
-      ],
+      statusHistory,
     };
   }
 

@@ -124,13 +124,14 @@ export default function Track() {
   }
 
   if (secureToken) {
+    const invoiceQr = secureTracking?.kind === "invoice";
     return (
       <div className="container mx-auto px-4 py-12 min-h-dvh">
         <div className="max-w-2xl mx-auto">
           <div className="text-center mb-10">
             <Package className="w-12 h-12 text-primary mx-auto mb-3" />
-            <h1 className="text-3xl font-bold text-foreground mb-2">{t("تتبع الطلب")}</h1>
-            <p className="text-muted-foreground">{t("معلومات تتبع عامة وآمنة")}</p>
+            <h1 className="text-3xl font-bold text-foreground mb-2">{invoiceQr ? "تفاصيل الفاتورة" : t("تتبع الطلب")}</h1>
+            <p className="text-muted-foreground">{invoiceQr ? "ملخص فاتورة آمن للعرض فقط" : t("معلومات تتبع عامة وآمنة")}</p>
           </div>
           {loadingSecure && (
             <div className="text-center py-12 text-muted-foreground animate-pulse">{t("جاري فتح التتبع...")}</div>
@@ -138,10 +139,10 @@ export default function Track() {
           {errorSecure && (
             <div className="text-center py-12 bg-card rounded-xl border border-border/30">
               <XCircle className="w-10 h-10 text-status-danger mx-auto mb-3" />
-              <p className="text-muted-foreground">{errorSecure instanceof Error ? errorSecure.message : t("رمز QR غير صالح")}</p>
+              <p className="text-muted-foreground">{errorSecure instanceof Error ? errorSecure.message : "الفاتورة غير موجودة أو رابط التحقق غير صالح."}</p>
             </div>
           )}
-          {secureTracking && <div className="animate-scale-in"><SecureQrTrackingCard tracking={secureTracking} /></div>}
+          {secureTracking && <div className="animate-scale-in">{invoiceQr ? <PublicSalesInvoiceQrCard invoice={secureTracking} /> : <SecureQrTrackingCard tracking={secureTracking} />}</div>}
         </div>
       </div>
     );
@@ -540,6 +541,125 @@ function trackingStatusLabel(status: string) {
     registered: "تم التسجيل",
   };
   return labels[status] ?? status;
+}
+
+function publicInvoiceStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    confirmed: "مؤكد",
+    active: "مؤكد",
+    cancelled: "ملغى",
+    completed: "مكتمل",
+    delivered: "تم التسليم",
+    pending: "قيد الانتظار",
+    created: "تم إنشاء الفاتورة",
+    payment_recorded: "تم تسجيل دفعة",
+  };
+  return labels[String(status ?? "")] ?? "قيد المعالجة";
+}
+
+function publicInvoicePaymentLabel(status?: string) {
+  if (status === "paid") return "مدفوع بالكامل";
+  if (status === "partial") return "مدفوع جزئياً";
+  if (status === "overpaid") return "دفع أكثر من المطلوب";
+  return "غير مدفوع";
+}
+
+function publicInvoicePaymentMethodLabel(method?: string) {
+  const labels: Record<string, string> = {
+    cash: "نقدي",
+    card: "بطاقة",
+    transfer: "تحويل",
+    credit: "آجل",
+  };
+  return labels[String(method ?? "").toLowerCase()] ?? (method || "غير محددة");
+}
+
+/** Safe, invoice-specific public view. It receives only the whitelisted QR API shape. */
+function PublicSalesInvoiceQrCard({ invoice }: { invoice: any }) {
+  const hasNotes = typeof invoice.notes === "string" && invoice.notes.trim().length > 0;
+  const hasDelivery = Boolean(invoice.delivery && Object.values(invoice.delivery).some(Boolean));
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+  const history = Array.isArray(invoice.statusHistory) ? invoice.statusHistory : [];
+  const summary = [
+    { label: "إجمالي الفاتورة", value: formatCurrency(invoice.total), strong: true },
+    { label: "المدفوع", value: formatCurrency(invoice.paidAmount) },
+    { label: "المتبقي", value: formatCurrency(invoice.remainingAmount), strong: Number(invoice.remainingAmount) > 0 },
+    { label: "حالة الدفع", value: publicInvoicePaymentLabel(invoice.paymentStatus) },
+    { label: "طريقة الدفع", value: publicInvoicePaymentMethodLabel(invoice.paymentMethod) },
+  ];
+
+  return (
+    <article className="space-y-5" dir="rtl">
+      <section className="rounded-2xl border border-border/40 bg-card p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-muted-foreground">رقم الفاتورة</p>
+            <h2 className="mt-1 break-all font-mono text-2xl font-bold tracking-wide text-foreground" dir="ltr">{invoice.trackingCode}</h2>
+          </div>
+          <span className={`shrink-0 rounded-full border px-3 py-1.5 text-sm font-semibold ${STATUS_TONES[invoice.status] ?? "border-primary/30 bg-primary/10 text-primary"}`}>
+            {publicInvoiceStatusLabel(invoice.status)}
+          </span>
+        </div>
+        <div className="mt-5 grid gap-3 border-t border-border/30 pt-4 sm:grid-cols-2">
+          <div><p className="text-xs text-muted-foreground">تاريخ الفاتورة</p><p className="mt-1 font-semibold text-foreground">{formatTrackDate(invoice.invoiceDate || invoice.createdAt)}</p></div>
+          <div><p className="text-xs text-muted-foreground">اسم العميل</p><p className="mt-1 font-semibold text-foreground">{invoice.customerName || "—"}</p></div>
+          {invoice.customerPhone ? <div className="sm:col-span-2"><p className="text-xs text-muted-foreground">رقم الهاتف</p><p className="mt-1 font-semibold text-foreground" dir="ltr">{invoice.customerPhone}</p></div> : null}
+        </div>
+      </section>
+
+      <section aria-labelledby="invoice-financial-summary" className="rounded-2xl border border-border/40 bg-card p-5">
+        <h3 id="invoice-financial-summary" className="text-base font-bold text-foreground">الملخص المالي</h3>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {summary.map((row) => <div key={row.label} className="rounded-xl bg-background/60 px-4 py-3">
+            <p className="text-xs text-muted-foreground">{row.label}</p>
+            <p className={`mt-1 text-base ${row.strong ? "font-bold text-primary" : "font-semibold text-foreground"}`}>{row.value}</p>
+          </div>)}
+        </div>
+        {Number(invoice.discountAmount) > 0 ? <div className="mt-4 flex items-center justify-between border-t border-border/30 pt-3 text-sm"><span className="text-muted-foreground">الخصم</span><span className="font-semibold text-foreground">{formatCurrency(invoice.discountAmount)}</span></div> : null}
+        {Number(invoice.taxAmount) > 0 ? <div className="mt-3 flex items-center justify-between text-sm"><span className="text-muted-foreground">الضريبة</span><span className="font-semibold text-foreground">{formatCurrency(invoice.taxAmount)}</span></div> : null}
+      </section>
+
+      {items.length > 0 ? <section aria-labelledby="invoice-items" className="rounded-2xl border border-border/40 bg-card p-5">
+        <h3 id="invoice-items" className="text-base font-bold text-foreground">تفاصيل الطلب</h3>
+        <div className="mt-4 divide-y divide-border/30">
+          {items.map((item: any, index: number) => <div key={`${item.name}-${index}`} className="py-4 first:pt-0 last:pb-0">
+            <p className="font-semibold text-foreground">{item.name}</p>
+            <dl className="mt-3 grid grid-cols-3 gap-3 text-sm">
+              <div><dt className="text-xs text-muted-foreground">الكمية</dt><dd className="mt-1 font-semibold text-foreground" dir="ltr">{item.quantity}</dd></div>
+              <div><dt className="text-xs text-muted-foreground">سعر الوحدة</dt><dd className="mt-1 font-semibold text-foreground">{formatCurrency(item.unitPrice)}</dd></div>
+              <div><dt className="text-xs text-muted-foreground">الإجمالي</dt><dd className="mt-1 font-bold text-foreground">{formatCurrency(item.total)}</dd></div>
+            </dl>
+          </div>)}
+        </div>
+      </section> : null}
+
+      {hasNotes ? <section aria-labelledby="invoice-notes" className="rounded-2xl border border-border/40 bg-card p-5">
+        <h3 id="invoice-notes" className="text-base font-bold text-foreground">الملاحظات</h3>
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground">{invoice.notes}</p>
+      </section> : null}
+
+      {hasDelivery ? <section aria-labelledby="invoice-delivery" className="rounded-2xl border border-border/40 bg-card p-5">
+        <h3 id="invoice-delivery" className="text-base font-bold text-foreground">معلومات التوصيل</h3>
+        <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+          {invoice.delivery.province ? <div><p className="text-xs text-muted-foreground">المحافظة</p><p className="mt-1 font-semibold text-foreground">{invoice.delivery.province}</p></div> : null}
+          {invoice.delivery.statusLabel ? <div><p className="text-xs text-muted-foreground">حالة التوصيل</p><p className="mt-1 font-semibold text-foreground">{invoice.delivery.statusLabel}</p></div> : null}
+          {invoice.delivery.trackingCode ? <div><p className="text-xs text-muted-foreground">رقم الشحنة</p><p className="mt-1 font-mono font-semibold text-foreground" dir="ltr">{invoice.delivery.trackingCode}</p></div> : null}
+          {invoice.delivery.company ? <div><p className="text-xs text-muted-foreground">شركة التوصيل</p><p className="mt-1 font-semibold text-foreground">{invoice.delivery.company}</p></div> : null}
+        </div>
+      </section> : null}
+
+      {history.length > 0 ? <section aria-labelledby="invoice-history" className="rounded-2xl border border-border/40 bg-card p-5">
+        <h3 id="invoice-history" className="text-base font-bold text-foreground">سجل الحالة</h3>
+        <ol className="mt-4 space-y-3 border-r border-border/50 pr-4">
+          {history.map((event: any, index: number) => <li key={`${event.status}-${event.createdAt}-${index}`} className="relative">
+            <span className={`absolute -right-[1.15rem] top-1.5 h-2.5 w-2.5 rounded-full ${index === 0 ? "bg-primary ring-4 ring-primary/15" : "bg-border"}`} />
+            <p className="text-sm font-semibold text-foreground">{publicInvoiceStatusLabel(event.status)}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{formatTrackDate(event.createdAt)}</p>
+          </li>)}
+        </ol>
+      </section> : null}
+    </article>
+  );
 }
 
 function SecureQrTrackingCard({ tracking }: { tracking: any }) {
