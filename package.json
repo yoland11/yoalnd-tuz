@@ -41,7 +41,9 @@
     "test:graduation-media": "node ./scripts/verify-graduation-media-gallery.mjs",
     "test:research-center": "node ./scripts/verify-research-center.mjs",
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
-    "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs"
+    "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs",
+    "test:save-smoke": "node ./scripts/test-save-smoke.mjs",
+    "verify:critical": "pnpm run typecheck && pnpm run test:save-smoke && git diff --check"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

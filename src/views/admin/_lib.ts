@@ -644,6 +644,46 @@ export function currentPortal(): string {
   return "";
 }
 
+export type AjNApiErrorCode =
+  | "VALIDATION_ERROR"
+  | "AUTH_REQUIRED"
+  | "PERMISSION_DENIED"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "DUPLICATE"
+  | "FOREIGN_KEY_CONFLICT"
+  | "STOCK_INSUFFICIENT"
+  | "PAYMENT_INVALID"
+  | "INVOICE_INVALID"
+  | "BOOKING_INVALID"
+  | "DATABASE_ERROR"
+  | "NETWORK_ERROR"
+  | "RATE_LIMITED"
+  | "STALE_DATA"
+  | "UNKNOWN_ERROR";
+
+export class AjNApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: AjNApiErrorCode = "UNKNOWN_ERROR",
+    readonly requestId?: string,
+    readonly retryable = false,
+    readonly fieldErrors?: Record<string, string>,
+    readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = "AjNApiError";
+  }
+}
+
+const inFlightWrites = new Map<string, Promise<any>>();
+
+function browserRequestId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `REQ-${crypto.randomUUID()}`;
+  return `REQ-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export async function adminFetch<T = any>(
   path: string,
   init: RequestInit = {},
@@ -659,11 +699,33 @@ export async function adminFetch<T = any>(
     const portal = currentPortal();
     if (portal) headers.set("x-portal", portal);
   }
-  const res = await fetch(apiPath(path), {
+  if (!headers.has("x-request-id")) headers.set("x-request-id", browserRequestId());
+  const method = (init.method ?? "GET").toUpperCase();
+  const isWrite = !["GET", "HEAD", "OPTIONS"].includes(method);
+  // This is a browser-side guard only. Financial endpoints retain their own
+  // durable idempotency keys on the server, which protects retries/reloads.
+  const writeKey = isWrite
+    ? `${method}:${apiPath(path)}:${typeof init.body === "string" ? init.body : ""}`
+    : "";
+  const pending = writeKey ? inFlightWrites.get(writeKey) : undefined;
+  if (pending) return pending as Promise<T>;
+  const request = (async (): Promise<T> => {
+  let res: Response;
+  try {
+    res = await fetch(apiPath(path), {
     ...init,
     headers,
     credentials: "include",
-  });
+    });
+  } catch {
+    throw new AjNApiError(
+      "تعذر الاتصال بالخادم",
+      0,
+      "NETWORK_ERROR",
+      headers.get("x-request-id") ?? undefined,
+      true,
+    );
+  }
   if (!res.ok) {
     let msg = res.statusText;
     let payload: any = null;
@@ -679,20 +741,31 @@ export async function adminFetch<T = any>(
             )
             .join("، ")
         : "";
-      msg = j?.error ?? (details || msg);
+      msg = j?.message ?? j?.error ?? (details || msg);
     } catch {
       /* ignore */
     }
-    const err = new Error(`HTTP ${res.status}: ${msg}`) as Error & {
-      status?: number;
-    };
-    (err as any).status = res.status;
-    (err as any).data = payload;
-    throw err;
+    throw new AjNApiError(
+      msg,
+      res.status,
+      payload?.code ?? "UNKNOWN_ERROR",
+      payload?.requestId ?? res.headers.get("x-request-id") ?? undefined,
+      payload?.retryable === true,
+      payload?.fieldErrors,
+      payload,
+    );
   }
   if (res.status === 204) return null as T;
   const ct = res.headers.get("content-type") ?? "";
   return ct.includes("json") ? res.json() : (res.text() as any);
+  })();
+  if (!writeKey) return request;
+  inFlightWrites.set(writeKey, request);
+  try {
+    return await request;
+  } finally {
+    inFlightWrites.delete(writeKey);
+  }
 }
 
 // adminFetch throws Error("HTTP <status>: <arabic message>"). Never show that raw string to a

@@ -156,7 +156,7 @@ check("stages without scanning return null",
 
 // ── Status integrity, authorization and PWA cache safeguards ──
 check("execution stage is preferred over generic booking-operation stage",
-  staffApi.includes("const explicit = String(fallback ?? \"\")") && staffApi.includes("if ((KOSHA_EXECUTION_STAGES as readonly string[]).includes(explicit)) return explicit"), true);
+  /const explicit = String\(fallback \?\? ""\);\s*if \(\(KOSHA_EXECUTION_STAGES as readonly string\[\]\)\.includes\(explicit\)\)\s*return explicit;/.test(staffApi), true);
 check("all field operation mutations use the central booking access guard",
   ["operations", "action === \"stage\"", "action === \"media\"", "action === \"delivery\"", "action === \"collect\""].every((token) => staffApi.includes(token)) && (staffApi.match(/authorizeKoshaPortalBooking\(/g) ?? []).length >= 6, true);
 check("scanner prevents concurrent duplicate submissions", staffOperations.includes("requestInFlight.current") && staffOperations.includes("setSubmitting(true)"), true);

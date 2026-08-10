@@ -22,6 +22,12 @@ import {
   type InvoicePaymentStatus,
 } from "@/lib/invoice-payment-status";
 import { parseRepx, guessCategory, REPORT_CATEGORIES } from "@/server/repx";
+import {
+  createApiErrorPayload,
+  makeRequestId,
+  mapWriteError,
+  type ApiErrorCode,
+} from "@/server/write-safety";
 import { customerLinkResolution, salesInvoicePaymentProjection } from "@/server/sales-invoice-customer-link-logic";
 import { z } from "zod/v4";
 import {
@@ -974,8 +980,30 @@ function text(data: string, status = 200, headers?: HeadersInit): NextResponse {
   return new NextResponse(data, { status, headers });
 }
 
-function error(message: string, status = 400): NextResponse {
-  return json({ error: message }, status);
+function error(
+  message: string,
+  status = 400,
+  options: {
+    code?: ApiErrorCode;
+    requestId?: string;
+    retryable?: boolean;
+    fieldErrors?: Record<string, string>;
+    details?: ValidationIssue[];
+  } = {},
+): NextResponse {
+  const payload = createApiErrorPayload({
+    message,
+    status,
+    code: options.code,
+    requestId: options.requestId ?? makeRequestId(),
+    retryable: options.retryable,
+    fieldErrors: options.fieldErrors,
+  });
+  return json(
+    options.details ? { ...payload, details: options.details } : payload,
+    status,
+    { "x-request-id": payload.requestId },
+  );
 }
 
 function runAfter(label: string, task: () => Promise<unknown>) {
@@ -1007,8 +1035,16 @@ function validationError(
     .slice(0, 4)
     .map((issue) => `${issue.field}: ${issue.message}`)
     .join("، ");
+  const requestId = makeRequestId();
   return json(
     {
+      ...createApiErrorPayload({
+        requestId,
+        status: 400,
+        code: "VALIDATION_ERROR",
+        fieldErrors: Object.fromEntries(details.map((issue) => [issue.field, issue.message])),
+      }),
+      message: summary ? `تحقق من البيانات: ${summary}` : "بيانات غير صحيحة",
       error: summary ? `تحقق من البيانات: ${summary}` : "بيانات غير صحيحة",
       details,
     },
@@ -65771,13 +65807,23 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     if (err instanceof RequestBodyTooLargeError)
       return error("حجم الطلب يتجاوز الحد المسموح", 413);
     if (err instanceof CheckoutError) return error(err.message, err.status);
+    const requestId = makeRequestId(req.headers.get("x-request-id"));
+    const mappedError = mapWriteError(err);
     console.error("API route failed", {
+      requestId,
       method: req.method,
       path: req.nextUrl.pathname,
       code: (err as any)?.code,
+      mappedCode: mappedError.code,
       error: err instanceof Error ? err.message : "unknown",
       stack: err instanceof Error ? err.stack : undefined,
     });
+    if (mappedError.code !== "UNKNOWN_ERROR")
+      return error(mappedError.message, mappedError.status, {
+        code: mappedError.code,
+        requestId,
+        retryable: mappedError.retryable,
+      });
     if (req.method === "POST" && req.nextUrl.pathname === "/api/orders") {
       const code = (err as any)?.code;
       if (code === "23503")
