@@ -788,6 +788,12 @@ export const NAV: NavItem[] = [
     adminOnly: true,
   },
   {
+    href: "/admin/print-queue",
+    label: "طابور الطباعة",
+    icon: Printer,
+    perm: "print.queue.view",
+  },
+  {
     href: "/admin/settings/telegram",
     label: "إعدادات Telegram",
     icon: Bot,
@@ -1009,6 +1015,7 @@ const NAV_GROUPS: NavGroup[] = [
       navItem("/admin/report-designer"),
       navItem("/admin/sync-center"),
       navItem("/admin/settings/printer"),
+      navItem("/admin/print-queue"),
       navItem("/admin/settings/telegram"),
       navItem("/admin/settings"),
     ],

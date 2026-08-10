@@ -335,6 +335,28 @@ importers:
         specifier: ~5.9.2
         version: 5.9.3
 
+  apps/print-agent:
+    dependencies:
+      qrcode:
+        specifier: ^1.5.4
+        version: 1.5.4
+    devDependencies:
+      '@types/node':
+        specifier: ^25.3.3
+        version: 25.9.4
+      '@types/qrcode':
+        specifier: ^1.5.6
+        version: 1.5.6
+      electron:
+        specifier: 39.8.5
+        version: 39.8.5
+      electron-builder:
+        specifier: 26.15.3
+        version: 26.15.3
+      typescript:
+        specifier: ~5.9.2
+        version: 5.9.3
+
   desktop:
     dependencies:
       electron-updater:

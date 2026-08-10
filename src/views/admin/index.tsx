@@ -122,6 +122,7 @@ const TelegramSettingsPage = lazy(() => import("./telegram"));
 const BackupPage = lazy(() => import("./backup"));
 const SettingsPage = lazy(() => import("./settings"));
 const PrinterSettingsPage = lazy(() => import("./printer-settings"));
+const PrintQueuePage = lazy(() => import("./print-queue"));
 const InvoiceDesignerPage = lazy(() => import("./invoice-designer"));
 const InstallmentsPage = lazy(() => import("./installments"));
 const ApprovalCenterPage = lazy(() => import("./operations"));
@@ -1069,6 +1070,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="settings">
                 <PrinterSettingsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/print-queue">
+            {() => (
+              <Guard me={me} perm="print.queue.view">
+                <PrintQueuePage />
               </Guard>
             )}
           </Route>

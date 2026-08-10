@@ -43,6 +43,7 @@
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
     "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs",
     "test:public-invoice-qr": "node ./scripts/verify-public-sales-invoice-qr.mjs",
+    "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:save-smoke": "node ./scripts/test-save-smoke.mjs",
     "verify:critical": "pnpm run typecheck && pnpm run test:save-smoke && git diff --check"
   },

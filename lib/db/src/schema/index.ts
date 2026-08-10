@@ -41,6 +41,7 @@ export * from "./master-cash-box";
 export * from "./customer-receivables";
 export * from "./enterprise";
 export * from "./desktop";
+export * from "./print-queue";
 export * from "./graduation";
 export * from "./graduation-enterprise";
 export * from "./graduation-media";

@@ -575,6 +575,29 @@ import {
   handleResearchPublic,
   RESEARCH_STATUS_LABELS,
 } from "@/server/research-center";
+import {
+  authenticatePrintAgent,
+  cancelPrintJob,
+  claimPrintJob,
+  completePrintJob,
+  createPrintAgent,
+  enqueueSalesInvoicePrint,
+  ensureRemotePrintingTables,
+  failPrintJob,
+  getPrintJob,
+  heartbeatPrintAgent,
+  listAgentJobs,
+  listPrintAgents,
+  listPrintJobs,
+  listPrinters,
+  markPrintJobPrinting,
+  registerPrintAgent,
+  RemotePrintError,
+  retryPrintJob,
+  rotatePrintAgentCredential,
+  savePrinter,
+  updatePrintAgent,
+} from "@/server/remote-printing";
 import { ensureResearchCenterTables } from "@/server/research-center-schema";
 
 export const COOKIE_NAME = "ajn_admin_session";
@@ -641,6 +664,12 @@ export const ALL_PERMISSIONS = [
   "salary_settings_approve",
   "settings",
   "invoices",
+  "print.sales_invoice",
+  "print.reprint",
+  "print.queue.view",
+  "print.queue.manage",
+  "print.printers.manage",
+  "print.agents.manage",
   "sales_invoice.cancel",
   "sales_invoice.view_cancelled",
   "sales_invoice.print_cancelled",
@@ -967,6 +996,7 @@ function clearStoreCategoriesCache() {
 
 const adminLoginByIp = new Map<string, Bucket>();
 const adminLoginByUsername = new Map<string, Bucket>();
+const printAgentRequestsByCredential = new Map<string, Bucket>();
 
 function json(
   data: unknown,
@@ -35398,9 +35428,192 @@ async function handleBouquetDesignerAdmin(req: NextRequest, parts: string[]) {
   return error("إجراء مصمم الباقات غير مدعوم", 405);
 }
 
+function remotePrintFailure(errorValue: unknown): NextResponse {
+  if (errorValue instanceof RemotePrintError)
+    return error(errorValue.message, errorValue.status, { code: errorValue.code });
+  console.error("remote printing API failed", {
+    message: errorValue instanceof Error ? errorValue.message : "unknown error",
+  });
+  return error("تعذر إكمال مهمة الطباعة. حاول مرة أخرى.", 500, { code: "DATABASE_ERROR", retryable: true });
+}
+
+function positiveRouteId(value: string | undefined) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function printIdempotencyKey(req: NextRequest) {
+  const key = req.headers.get("idempotency-key")?.trim() ?? "";
+  return key.length >= 12 && key.length <= 140 ? key : null;
+}
+
+async function handlePrintAgentApi(req: NextRequest, parts: string[]) {
+  try {
+    const action = parts[1];
+    const rateKey = action === "register"
+      ? `register:${ip(req)}`
+      : `agent:${createHash("sha256").update(req.headers.get("x-ajn-print-agent-token") ?? "").digest("hex").slice(0, 24)}`;
+    if (!checkRateLimit(printAgentRequestsByCredential, rateKey, action === "register" ? 12 : 180, 60_000))
+      return error("محاولات كثيرة من جهاز الطباعة، حاول لاحقاً.", 429, { code: "RATE_LIMITED", retryable: true });
+    if (action === "register" && req.method === "POST") {
+      const data = await body(req);
+      const registered = await registerPrintAgent({
+        agentId: data?.agentId,
+        registrationToken: data?.registrationToken,
+        hostname: data?.hostname,
+        appVersion: data?.appVersion,
+        printers: data?.printers,
+      });
+      return json({
+        agent: { id: registered.agent.id, agentId: registered.agent.agentId, name: registered.agent.name, branchId: registered.agent.branchId },
+        // Returned once during registration. The server stores only its SHA-256 hash.
+        agentToken: registered.agentToken,
+      }, 201);
+    }
+
+    const agent = await authenticatePrintAgent(req.headers.get("x-ajn-print-agent-token"));
+    if (action === "heartbeat" && req.method === "POST") {
+      const data = await body(req);
+      const updated = await heartbeatPrintAgent(agent.id, { hostname: data?.hostname, appVersion: data?.appVersion, printers: data?.printers });
+      return json({ agent: { id: updated.id, status: updated.status, lastSeenAt: updated.lastSeenAt } });
+    }
+    if (action === "jobs" && req.method === "GET") {
+      const jobs = await listAgentJobs(agent.id);
+      return json({ jobs: jobs.map((job) => ({ id: job.id, jobNo: job.jobNo, status: job.status, paperSize: job.paperSize, copies: job.copies, payload: job.payload })) });
+    }
+    if (action === "jobs") {
+      const jobId = positiveRouteId(parts[2]);
+      const jobAction = parts[3];
+      if (!jobId) return error("معرّف مهمة الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
+      if (jobAction === "claim" && req.method === "POST") return json({ job: await claimPrintJob(agent.id, jobId) });
+      if (jobAction === "printing" && req.method === "POST") return json({ job: await markPrintJobPrinting(agent.id, jobId) });
+      if (jobAction === "complete" && req.method === "POST") return json({ job: await completePrintJob(agent.id, jobId) });
+      if (jobAction === "fail" && req.method === "POST") {
+        const data = await body(req);
+        return json({ job: await failPrintJob(agent.id, jobId, data?.errorMessage) });
+      }
+    }
+    return error("مسار جهاز الطباعة غير موجود.", 404, { code: "NOT_FOUND" });
+  } catch (errorValue) {
+    return remotePrintFailure(errorValue);
+  }
+}
+
+async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], section: string | undefined) {
+  try {
+    const method = req.method;
+    if (section === "print-jobs") {
+      const isWrite = method !== "GET";
+      const permission = method === "POST" && !parts[2]
+        ? "print.sales_invoice"
+        : parts[3] === "status"
+          ? "print.sales_invoice"
+        : parts[3] === "reprint"
+          ? "print.reprint"
+          : isWrite
+            ? "print.queue.manage"
+            : "print.queue.view";
+      const auth = await requirePermission(req, permission as Permission);
+      if (isResponse(auth)) return auth;
+      const jobId = positiveRouteId(parts[2]);
+      if (method === "GET" && !jobId) {
+        const jobs = await listPrintJobs({ status: req.nextUrl.searchParams.get("status"), limit: req.nextUrl.searchParams.get("limit") });
+        return json({ jobs });
+      }
+      if (method === "GET" && jobId && parts[3] === "status") {
+        const job = await getPrintJob(jobId);
+        if (!job) return error("مهمة الطباعة غير موجودة.", 404, { code: "NOT_FOUND" });
+        if (!hasPermission(auth, "print.queue.view") && job.requestedBy !== auth.id)
+          return error("لا تملك صلاحية عرض هذه المهمة.", 403, { code: "PERMISSION_DENIED" });
+        return json({ job: { id: job.id, jobNo: job.jobNo, status: job.status, errorMessage: job.errorMessage, retryCount: job.retryCount, completedAt: job.completedAt } });
+      }
+      if (method === "POST" && !jobId) {
+        // Direct printing gets a distinct permission, even for an administrator
+        // permission is enforced server-side, not by the mobile button alone.
+        if (!hasPermission(auth, "print.sales_invoice")) return error("لا تملك صلاحية تنفيذ الطباعة المباشرة.", 403, { code: "PERMISSION_DENIED" });
+        const idempotencyKey = printIdempotencyKey(req);
+        if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب للطباعة المباشرة.", 400, { code: "VALIDATION_ERROR" });
+        const data = await body(req);
+        const result = await enqueueSalesInvoicePrint({
+          actor: auth, invoiceId: data?.invoiceId, printerId: data?.printerId, branchId: data?.branchId,
+          paperSize: data?.paperSize, copies: data?.copies, idempotencyKey,
+        });
+        void logAdminActivity(req, result.duplicate ? "print_job_duplicate_request" : "print_job_created", "sales_invoice", Number(data?.invoiceId), { jobId: result.job.id, jobNo: result.job.jobNo, printerId: result.job.printerId, copies: result.job.copies });
+        return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+      }
+      if (!jobId) return error("معرّف مهمة الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
+      if (method === "POST" && parts[3] === "retry") {
+        const job = await retryPrintJob(jobId);
+        void logAdminActivity(req, "print_job_retried", "print_job", job.id, { jobNo: job.jobNo });
+        return json({ job });
+      }
+      if (method === "POST" && parts[3] === "cancel") {
+        const job = await cancelPrintJob(jobId);
+        void logAdminActivity(req, "print_job_cancelled", "print_job", job.id, { jobNo: job.jobNo });
+        return json({ job });
+      }
+      if (method === "POST" && parts[3] === "reprint") {
+        const original = await getPrintJob(jobId);
+        if (!original || original.documentType !== "sales_invoice" || !original.invoiceId) return error("مهمة الطباعة الأصلية غير موجودة.", 404, { code: "NOT_FOUND" });
+        const data = await body(req);
+        const reason = typeof data?.reason === "string" ? data.reason.trim() : "";
+        if (reason.length < 3) return error("سبب إعادة الطباعة مطلوب.", 400, { code: "VALIDATION_ERROR" });
+        const idempotencyKey = printIdempotencyKey(req);
+        if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب لإعادة الطباعة.", 400, { code: "VALIDATION_ERROR" });
+        const result = await enqueueSalesInvoicePrint({ actor: auth, invoiceId: original.invoiceId, printerId: data?.printerId ?? original.printerId, paperSize: data?.paperSize ?? original.paperSize, copies: data?.copies ?? original.copies, idempotencyKey, originalJobId: original.id, reprintReason: reason });
+        void logAdminActivity(req, "print_job_reprinted", "print_job", result.job.id, { originalPrintJobId: original.id, reason });
+        return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+      }
+    }
+    if (section === "print-agents") {
+      const auth = await requirePermission(req, "print.agents.manage");
+      if (isResponse(auth)) return auth;
+      const agentId = positiveRouteId(parts[2]);
+      if (method === "GET" && !agentId) return json({ agents: await listPrintAgents() });
+      if (method === "POST" && !agentId) {
+        const data = await body(req);
+        const result = await createPrintAgent({ name: data?.name, agentId: data?.agentId, branchId: data?.branchId, actorId: auth.id });
+        void logAdminActivity(req, "print_agent_created", "print_agent", result.agent.id, { agentId: result.agent.agentId, branchId: result.agent.branchId });
+        return json({ agent: result.agent, registrationToken: result.registrationToken }, 201);
+      }
+      if (!agentId) return error("معرّف جهاز الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
+      if (method === "PATCH") {
+        const data = await body(req); const agent = await updatePrintAgent(agentId, data ?? {});
+        void logAdminActivity(req, "print_agent_updated", "print_agent", agent.id, { status: agent.status, branchId: agent.branchId });
+        return json({ agent });
+      }
+      if (method === "POST" && parts[3] === "rotate-token") {
+        const result = await rotatePrintAgentCredential(agentId);
+        void logAdminActivity(req, "print_agent_token_rotated", "print_agent", agentId);
+        return json({ agent: result.agent, agentToken: result.agentToken });
+      }
+    }
+    if (section === "printers") {
+      const auth = method === "GET"
+        ? await requireAnyPermission(req, ["print.sales_invoice", "print.printers.manage"])
+        : await requirePermission(req, "print.printers.manage");
+      if (isResponse(auth)) return auth;
+      if (method === "GET") return json({ printers: await listPrinters() });
+      if (method === "POST" || method === "PATCH") {
+        const data = await body(req); const printer = await savePrinter(data ?? {});
+        void logAdminActivity(req, "print_printer_saved", "printer", printer.id, { agentId: printer.agentId, name: printer.name });
+        return json({ printer }, method === "POST" ? 201 : 200);
+      }
+    }
+    return null;
+  } catch (errorValue) {
+    return remotePrintFailure(errorValue);
+  }
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "print-jobs" || section === "print-agents" || section === "printers") {
+    const remotePrinting = await handleRemotePrintingAdmin(req, parts, section);
+    if (remotePrinting) return remotePrinting;
+  }
 
   // Registers are independent read paths. Route them before the broader admin
   // handler chain so an unrelated module cannot turn invoice history into a
@@ -65749,6 +65962,10 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         root === "customer"
           ? ensureCustomerProfileColumns()
           : undefined,
+        root === "print-agent" ||
+        (root === "admin" && ["print-jobs", "print-agents", "printers"].includes(parts[1] ?? ""))
+          ? ensureRemotePrintingTables()
+          : undefined,
         root === "auth" || root === "customer"
           ? ensureCustomerAccountTables()
           : undefined,
@@ -65837,6 +66054,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     const route =
       root === "auth"
         ? await handleAuth(req, parts)
+        : root === "print-agent"
+          ? await handlePrintAgentApi(req, parts)
         : root === "invite"
           ? await handleInvite(req, parts)
           : // Distinct from root "gallery", which is the public marketing gallery.

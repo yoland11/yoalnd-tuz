@@ -29,6 +29,7 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude: []
 
 packages:
+  - apps/*
   - lib/*
   - lib/integrations/*
   - scripts

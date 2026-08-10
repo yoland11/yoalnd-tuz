@@ -1,0 +1,28 @@
+appId: com.ajn.erp.print-agent
+productName: AJN Print Agent
+asar: true
+npmRebuild: false
+directories:
+  output: release
+extraResources:
+  - from: ../../desktop/assets/icon.png
+    to: assets/icon.png
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+win:
+  icon: ../../desktop/assets/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AJN Print Agent
+portable:
+  artifactName: AJN-Print-Agent-Portable.${ext}

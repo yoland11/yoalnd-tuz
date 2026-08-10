@@ -88,6 +88,27 @@ type PrinterSettings = {
   footerText: string;
 };
 
+type RemotePrinter = {
+  id: number;
+  name: string;
+  displayName?: string | null;
+  paperSize: "80mm" | "58mm";
+  defaultCopies: number;
+  isDefault: boolean;
+  isActive: boolean;
+  agent?: { id: number; name: string; agentId: string } | null;
+};
+type RemotePrintJob = { id: number; jobNo: string; status: "queued" | "claimed" | "printing" | "printed" | "failed" | "cancelled" };
+
+function remotePrintIdempotencyKey(invoiceId: number) {
+  const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `sales-print-${invoiceId}-${id}`;
+}
+
+function remotePrintStatusLabel(status: RemotePrintJob["status"]) {
+  return ({ queued: "بانتظار الطباعة", claimed: "تم استلام المهمة", printing: "جاري الطباعة", printed: "تمت الطباعة", failed: "فشل الطباعة", cancelled: "ملغي" } as const)[status];
+}
+
 function finiteNumber(value: unknown, min = 0, max = 100_000_000) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : min;
@@ -1402,6 +1423,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   const [cancelPassword, setCancelPassword] = useState("");
   const [cancelConfirmed, setCancelConfirmed] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [remotePrinting, setRemotePrinting] = useState(false);
+  const [remotePrinterId, setRemotePrinterId] = useState("");
+  const [lastPrintJob, setLastPrintJob] = useState<RemotePrintJob | null>(null);
   const [draft, setDraft] = useState({
     date: "",
     customerName: "",
@@ -1424,6 +1448,18 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   });
   const [printSize, setPrintSize] = useState<SalesInvoicePrintSize>("80mm");
   const { data: currentUser } = useQuery({ queryKey: ["admin", "me", "sales-cancel"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
+  const { data: remotePrinters = [] } = useQuery<RemotePrinter[]>({
+    queryKey: ["admin", "remote-printers", "sales"],
+    queryFn: async () => (await adminFetch<{ printers: RemotePrinter[] }>("/admin/printers")).printers ?? [],
+    enabled: Boolean(currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("print.sales_invoice"))),
+    staleTime: 30_000,
+  });
+  const printJobStatus = useQuery<{ job: RemotePrintJob }>({
+    queryKey: ["admin", "print-job-status", lastPrintJob?.id],
+    queryFn: () => adminFetch(`/admin/print-jobs/${lastPrintJob!.id}/status`),
+    enabled: Boolean(lastPrintJob?.id && !["printed", "failed", "cancelled"].includes(lastPrintJob.status)),
+    refetchInterval: (query) => ["printed", "failed", "cancelled"].includes(query.state.data?.job.status ?? "queued") ? false : 4_000,
+  });
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers", "sales"],
     queryFn: () => adminFetch("/admin/suppliers"),
@@ -1476,6 +1512,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   useEffect(() => {
     if (printerSettings?.defaultPaperSize) setPrintSize(printerSettings.defaultPaperSize);
   }, [printerSettings?.defaultPaperSize]);
+
+  useEffect(() => {
+    if (remotePrinterId || !remotePrinters.length) return;
+    setRemotePrinterId(String(remotePrinters.find((printer) => printer.isDefault)?.id ?? remotePrinters[0]!.id));
+  }, [remotePrinterId, remotePrinters]);
 
   function updateDraft(key: keyof typeof draft, value: string | boolean) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1672,6 +1713,49 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
+  const canDirectPrint = Boolean(currentUser && (currentUser.role === "admin" || currentUser.permissions.includes("print.sales_invoice")));
+  async function directPrintInvoice() {
+    if (!invoice || remotePrinting) return;
+    if (!remotePrinterId) {
+      toast({ title: "لا توجد طابعة مهيأة", description: "أضف جهاز Windows وطابعة حرارية من إعدادات الطباعة أولاً.", variant: "destructive" });
+      return;
+    }
+    setRemotePrinting(true);
+    try {
+      const result = await adminFetch<{ job: RemotePrintJob; duplicate: boolean }>("/admin/print-jobs", {
+        method: "POST",
+        headers: { "idempotency-key": remotePrintIdempotencyKey(invoice.id) },
+        body: JSON.stringify({ invoiceId: invoice.id, printerId: Number(remotePrinterId), paperSize: printSize === "a4" ? "80mm" : printSize, copies: 1 }),
+      });
+      setLastPrintJob(result.job);
+      toast({ title: result.duplicate ? "مهمة الطباعة موجودة بالفعل" : "تم إرسال الفاتورة للطباعة", description: result.job.status === "queued" ? "ستُطبع عند اتصال جهاز الطباعة." : remotePrintStatusLabel(result.job.status) });
+      queryClient.invalidateQueries({ queryKey: ["admin", "print-jobs"] });
+    } catch (error) {
+      toast({ title: "تعذر إرسال الفاتورة للطباعة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setRemotePrinting(false);
+    }
+  }
+
+  async function reprintDirectInvoice() {
+    if (!lastPrintJob || remotePrinting) return;
+    setRemotePrinting(true);
+    try {
+      const result = await adminFetch<{ job: RemotePrintJob; duplicate: boolean }>(`/admin/print-jobs/${lastPrintJob.id}/reprint`, {
+        method: "POST",
+        headers: { "idempotency-key": remotePrintIdempotencyKey(invoiceId) },
+        body: JSON.stringify({ printerId: remotePrinterId ? Number(remotePrinterId) : undefined, paperSize: printSize === "a4" ? "80mm" : printSize, copies: 1, reason: "إعادة طباعة من شاشة الفاتورة" }),
+      });
+      setLastPrintJob(result.job);
+      toast({ title: "تم إرسال إعادة الطباعة", description: result.job.jobNo });
+      queryClient.invalidateQueries({ queryKey: ["admin", "print-jobs"] });
+    } catch (error) {
+      toast({ title: "تعذر إرسال إعادة الطباعة", description: apiErrorMessage(error), variant: "destructive" });
+    } finally {
+      setRemotePrinting(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" dir="rtl">
       <div className="bg-card border border-border/40 rounded-xl w-full max-w-6xl max-h-[92dvh] overflow-hidden shadow-xl">
@@ -1682,7 +1766,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
             <p className="text-xs text-muted-foreground">{invoice?.invoiceNo ?? "جاري التحميل..."}</p>
             {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <label className="sr-only" htmlFor="sales-invoice-print-size">حجم الطباعة</label>
             <select
               id="sales-invoice-print-size"
@@ -1695,9 +1779,30 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
               <option value="58mm">حراري 58mm</option>
               <option value="a4">A4</option>
             </select>
+            {canDirectPrint ? <>
+              <label className="sr-only" htmlFor="sales-remote-printer">طابعة المحل</label>
+              <select
+                id="sales-remote-printer"
+                value={remotePrinterId}
+                onChange={(event) => setRemotePrinterId(event.target.value)}
+                className="h-9 max-w-40 rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground"
+                aria-label="اختيار طابعة المحل"
+                disabled={remotePrinting || !remotePrinters.length}
+              >
+                {!remotePrinters.length ? <option value="">لا توجد طابعة مهيأة</option> : remotePrinters.map((printer) => <option key={printer.id} value={printer.id}>{printer.displayName || printer.name} · {printer.paperSize}</option>)}
+              </select>
+              <Button size="sm" onClick={directPrintInvoice} disabled={!invoice || remotePrinting || !remotePrinterId} className="gap-1.5">
+                <Printer className="h-4 w-4" />
+                {remotePrinting ? "جاري الإرسال..." : "طباعة مباشرة"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={reprintDirectInvoice} disabled={!lastPrintJob || remotePrinting} className="gap-1.5">
+                <RefreshCw className="h-4 w-4" />
+                إعادة طباعة
+              </Button>
+            </> : null}
             <Button variant="outline" size="sm" onClick={printInvoice} disabled={!invoice}>
               <Printer className="w-4 h-4 ml-1" />
-              طباعة الفاتورة
+              طباعة من هذا الجهاز
             </Button>
             <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
               <QrCode className="w-4 h-4 ml-1" />
@@ -1718,6 +1823,13 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
             </Button>
           </div>
         </div>
+
+        {lastPrintJob ? (
+          <div className="mx-5 mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <span>مهمة {lastPrintJob.jobNo}</span>
+            <span className="font-semibold text-foreground">{remotePrintStatusLabel(printJobStatus.data?.job.status ?? lastPrintJob.status)}</span>
+          </div>
+        ) : null}
 
         {isLoading ? (
           <div className="py-20 text-center text-muted-foreground">جاري تحميل تفاصيل الفاتورة...</div>
