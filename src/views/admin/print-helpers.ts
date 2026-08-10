@@ -166,6 +166,158 @@ export function thermalReceiptCss(size: "58mm" | "80mm") {
   `;
 }
 
+export type SalesInvoicePrintSize = "58mm" | "80mm" | "a4";
+
+export type SalesInvoiceReceiptInput = {
+  paperSize: SalesInvoicePrintSize;
+  invoiceNo: string;
+  issuedAt?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
+  employeeName?: string | null;
+  items: Array<{
+    productName: string;
+    quantity: number | string;
+    unitPrice: number | string;
+    total: number | string;
+  }>;
+  subtotal?: number | string | null;
+  discount?: number | string | null;
+  tax?: number | string | null;
+  deliveryFee?: number | string | null;
+  total: number | string;
+  paid: number | string;
+  remaining: number | string;
+  qrDataUrl?: string | null;
+  qrCaption?: string | null;
+  logoUrl?: string | null;
+  companyName?: string | null;
+  companyPhone?: string | null;
+  companyAddress?: string | null;
+  footerText?: string | null;
+  showLogo?: boolean;
+  showQr?: boolean;
+  showCustomerPhone?: boolean;
+  showEmployeeName?: boolean;
+  showAddress?: boolean;
+};
+
+/** Escapes dynamic invoice content before it is written to a print-window HTML document. */
+function escapePrintHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character] ?? character);
+}
+
+function thermalPaymentStatusLabel(status?: string | null, paid?: number | string, remaining?: number | string) {
+  const normalized = String(status ?? "").toLowerCase();
+  if (normalized === "overpaid") return "دفع أكثر من المطلوب";
+  if (normalized === "paid" || Number(remaining) <= 0 && Number(paid) > 0) return "مدفوع بالكامل";
+  if (normalized === "partial" || Number(paid) > 0) return "مدفوع جزئياً";
+  return "غير مدفوع";
+}
+
+function salesInvoiceSheetCss() {
+  return `${sheetReportCss("a4")}
+    @page { size: A4 portrait; margin: 12mm; }
+    .sales-sheet { max-width: 186mm; margin: 0 auto; }
+    .sales-sheet .r-head { text-align:center; border-bottom:2px solid #000; padding-bottom:8px; }
+    .sales-sheet .r-logo { height:46px; max-width:120px; object-fit:contain; filter:grayscale(1) contrast(1.45); }
+    .sales-sheet .r-company { font-size:18px; font-weight:900; }
+    .sales-sheet .r-sub { font-weight:700; margin-top:2px; }
+    .sales-sheet .rule { border:0; border-top:1.5px dashed #000; margin:9px 0; }
+    .sales-sheet .kv-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:6px 16px; }
+    .sales-sheet .kv { display:flex; justify-content:space-between; gap:10px; border-bottom:1px dotted #000; padding:3px 0; font-weight:700; }
+    .sales-sheet .items { width:100%; border-collapse:collapse; margin-top:10px; }
+    .sales-sheet .items th,.sales-sheet .items td { border:1px solid #000; padding:6px; text-align:right; }
+    .sales-sheet .items th { font-weight:900; }
+    .sales-sheet .num { direction:ltr; unicode-bidi:embed; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .sales-sheet .totals { width:72mm; margin:12px 0 0 auto; }
+    .sales-sheet .row,.sales-sheet .payline,.sales-sheet .grand { display:flex; justify-content:space-between; gap:12px; padding:4px 0; font-weight:700; }
+    .sales-sheet .grand { border:2.5px solid #000; padding:7px; font-size:16px; font-weight:900; }
+    .sales-sheet .remain { border:1.5px solid #000; padding:5px; font-weight:900; }
+    .sales-sheet .qr { text-align:center; margin-top:12px; break-inside:avoid; page-break-inside:avoid; }
+    .sales-sheet .qr img { width:112px; height:112px; object-fit:contain; image-rendering:pixelated; }
+    .sales-sheet .thanks { text-align:center; margin-top:10px; font-weight:800; }
+  `;
+}
+
+/**
+ * Sales-only invoice print builder. Thermal layouts use the shared receipt CSS
+ * while A4 remains an intentionally separate sheet mode.
+ */
+export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput) {
+  const isThermal = input.paperSize === "58mm" || input.paperSize === "80mm";
+  const popup = window.open("", "_blank", isThermal ? "width=440,height=760" : "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+
+  const esc = escapePrintHtml;
+  const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
+  const issuedAt = input.issuedAt ? new Date(input.issuedAt) : null;
+  const dateTime = issuedAt && !Number.isNaN(issuedAt.getTime())
+    ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium", timeStyle: "short" }).format(issuedAt)
+    : String(input.issuedAt ?? "");
+  const kv = (label: string, value: unknown, className = "") => value === undefined || value === null || String(value).trim() === ""
+    ? ""
+    : `<div class="kv"><span>${esc(label)}</span><span class="v ${className}">${esc(value)}</span></div>`;
+  const paymentMethodLabel = ({ cash: "نقدي", card: "بطاقة", transfer: "تحويل", credit: "آجل" } as Record<string, string>)[String(input.paymentMethod ?? "").toLowerCase()] ?? input.paymentMethod;
+  const paymentStatus = thermalPaymentStatusLabel(input.paymentStatus, input.paid, input.remaining);
+  const amounts = {
+    subtotal: Number(input.subtotal ?? 0),
+    discount: Number(input.discount ?? 0),
+    tax: Number(input.tax ?? 0),
+    delivery: Number(input.deliveryFee ?? 0),
+  };
+  const metaRows = [
+    kv("رقم الفاتورة", input.invoiceNo, "num big"),
+    kv("التاريخ والوقت", dateTime, "num"),
+    kv("العميل", input.customerName),
+    input.showCustomerPhone !== false ? kv("الهاتف", input.customerPhone, "num") : "",
+    kv("نوع الدفع", paymentMethodLabel),
+    kv("حالة الدفع", paymentStatus),
+    input.showEmployeeName !== false ? kv("الموظف", input.employeeName) : "",
+  ].join("");
+  const itemRows = input.items.map((item, index) => input.paperSize === "58mm"
+    ? `<tr><td class="name" colspan="2">${esc(item.productName)}</td></tr><tr class="ln2"><td class="num">${esc(item.quantity)} × ${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`
+    : `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`,
+  ).join("");
+  const itemHead = input.paperSize === "58mm"
+    ? "<tr><th class=\"name\">الصنف</th><th>الإجمالي</th></tr>"
+    : "<tr><th>#</th><th class=\"name\">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>";
+  const totals = `
+    <div class="totals">
+      ${amounts.subtotal ? `<div class="row"><span>المجموع الفرعي</span><span class="num">${esc(formatCurrency(amounts.subtotal))}</span></div>` : ""}
+      ${amounts.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${esc(formatCurrency(amounts.discount))}</span></div>` : ""}
+      ${amounts.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${esc(formatCurrency(amounts.tax))}</span></div>` : ""}
+      ${amounts.delivery > 0 ? `<div class="row"><span>أجور التوصيل</span><span class="num">${esc(formatCurrency(amounts.delivery))}</span></div>` : ""}
+      <div class="grand"><span>الإجمالي</span><span class="num">${esc(formatCurrency(input.total))}</span></div>
+      <div class="payline"><span>المدفوع</span><span class="num">${esc(formatCurrency(input.paid))}</span></div>
+      <div class="payline remain"><span>المتبقي</span><span class="num">${esc(formatCurrency(input.remaining))}</span></div>
+    </div>`;
+  const header = `<div class="r-head">
+    ${input.showLogo !== false && input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}
+    <div class="r-company">${esc(company)}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">فاتورة مبيعات</div>
+  </div>`;
+  const footer = `<div class="thanks">${esc(input.footerText?.trim() || "شكراً لاختياركم مجموعة علي جان نهاد")}</div>
+    ${input.companyPhone ? `<div class="r-sub center num">${esc(input.companyPhone)}</div>` : ""}
+    ${input.showAddress !== false && input.companyAddress ? `<div class="r-sub center">${esc(input.companyAddress)}</div>` : ""}`;
+  const qr = input.showQr !== false && input.qrDataUrl
+    ? `<div class="qr"><img src="${esc(input.qrDataUrl)}" alt="QR"><div class="cap num">${esc(input.qrCaption || input.invoiceNo)}</div></div>`
+    : "";
+  const body = isThermal
+    ? `<div class="receipt">${header}<hr class="rule"><div class="meta-rows">${metaRows}</div><hr class="rule dashed"><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</div>`
+    : `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
+  const css = isThermal ? thermalReceiptCss(input.paperSize as "58mm" | "80mm") : salesInvoiceSheetCss();
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.close();
+}
+
 export function sheetReportCss(size: "a4" | "a5" = "a4") {
   const page = size === "a5" ? "A5" : "A4";
   const margin = size === "a5" ? "10mm" : "14mm";

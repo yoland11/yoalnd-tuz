@@ -11,6 +11,11 @@ type PrinterSettings = {
   autoPrint: boolean;
   copies: number;
   showLogo: boolean;
+  showQr: boolean;
+  showCustomerPhone: boolean;
+  showEmployeeName: boolean;
+  showAddress: boolean;
+  footerText: string;
 };
 
 export default function PrinterSettingsPage() {
@@ -98,7 +103,55 @@ export default function PrinterSettingsPage() {
               />
               إظهار الشعار في الفاتورة
             </label>
+            <label className="flex items-center gap-2 rounded-xl bg-background/50 border border-border/25 p-3 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={draft.showQr}
+                onChange={(e) => setDraft((current) => current ? { ...current, showQr: e.target.checked } : current)}
+                className="accent-primary"
+              />
+              إظهار رمز QR في الفاتورة
+            </label>
+            <label className="flex items-center gap-2 rounded-xl bg-background/50 border border-border/25 p-3 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={draft.showCustomerPhone}
+                onChange={(e) => setDraft((current) => current ? { ...current, showCustomerPhone: e.target.checked } : current)}
+                className="accent-primary"
+              />
+              إظهار هاتف العميل
+            </label>
+            <label className="flex items-center gap-2 rounded-xl bg-background/50 border border-border/25 p-3 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={draft.showEmployeeName}
+                onChange={(e) => setDraft((current) => current ? { ...current, showEmployeeName: e.target.checked } : current)}
+                className="accent-primary"
+              />
+              إظهار اسم الموظف
+            </label>
+            <label className="flex items-center gap-2 rounded-xl bg-background/50 border border-border/25 p-3 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={draft.showAddress}
+                onChange={(e) => setDraft((current) => current ? { ...current, showAddress: e.target.checked } : current)}
+                className="accent-primary"
+              />
+              إظهار العنوان في التذييل
+            </label>
           </div>
+
+          <label className="block text-xs text-muted-foreground">
+            نص التذييل
+            <textarea
+              value={draft.footerText}
+              maxLength={240}
+              rows={2}
+              onChange={(e) => setDraft((current) => current ? { ...current, footerText: e.target.value } : current)}
+              placeholder="شكراً لاختياركم مجموعة علي جان نهاد"
+              className="mt-1 w-full resize-none rounded-lg border border-border/40 bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </label>
 
           <div className="rounded-xl bg-background/50 border border-border/25 p-4 text-xs text-muted-foreground">
             الفواتير الحرارية تستخدم CSS مخصص للطباعة عبر <span dir="ltr">window.print()</span> مع RTL وهوامش ضيقة حتى لا يتم قص المحتوى.

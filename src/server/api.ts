@@ -11085,6 +11085,11 @@ type PrinterSettings = {
   autoPrint: boolean;
   copies: number;
   showLogo: boolean;
+  showQr: boolean;
+  showCustomerPhone: boolean;
+  showEmployeeName: boolean;
+  showAddress: boolean;
+  footerText: string;
 };
 
 const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
@@ -11092,6 +11097,11 @@ const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   autoPrint: false,
   copies: 1,
   showLogo: true,
+  showQr: true,
+  showCustomerPhone: true,
+  showEmployeeName: true,
+  showAddress: true,
+  footerText: "",
 };
 
 function normalizePrinterSettings(value: unknown): PrinterSettings {
@@ -11111,6 +11121,11 @@ function normalizePrinterSettings(value: unknown): PrinterSettings {
       5,
     ),
     showLogo: raw.showLogo !== false,
+    showQr: raw.showQr !== false,
+    showCustomerPhone: raw.showCustomerPhone !== false,
+    showEmployeeName: raw.showEmployeeName !== false,
+    showAddress: raw.showAddress !== false,
+    footerText: typeof raw.footerText === "string" ? raw.footerText.trim().slice(0, 240) : "",
   };
 }
 

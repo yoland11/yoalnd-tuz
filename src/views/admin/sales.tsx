@@ -19,11 +19,10 @@ import CustomerAccountPrompt from "./customer-account-prompt";
 import { adminFetch, apiErrorMessage, apiErrorStatus, fetchAdminMe, formatCurrency } from "./_lib";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
-import { downloadDataUrl, openQrPrintWindow } from "./print-helpers";
+import { downloadDataUrl, openQrPrintWindow, openSalesInvoicePrintWindow, type SalesInvoicePrintSize } from "./print-helpers";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
-import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import {
@@ -75,6 +74,18 @@ type InvoiceRegisterResponse = {
   invoices?: SalesInvoice[];
   total?: number;
   summary?: InvoiceRegisterSummary;
+};
+
+type PrinterSettings = {
+  defaultPaperSize: SalesInvoicePrintSize;
+  autoPrint: boolean;
+  copies: number;
+  showLogo: boolean;
+  showQr: boolean;
+  showCustomerPhone: boolean;
+  showEmployeeName: boolean;
+  showAddress: boolean;
+  footerText: string;
 };
 
 function finiteNumber(value: unknown, min = 0, max = 100_000_000) {
@@ -1406,6 +1417,12 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   });
   const [items, setItems] = useState<CartItem[]>([]);
   const { data: settings } = usePublicSettings();
+  const { data: printerSettings } = useQuery<PrinterSettings>({
+    queryKey: ["admin", "printer-settings"],
+    queryFn: () => adminFetch("/admin/settings/printer"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const [printSize, setPrintSize] = useState<SalesInvoicePrintSize>("80mm");
   const { data: currentUser } = useQuery({ queryKey: ["admin", "me", "sales-cancel"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers", "sales"],
@@ -1455,6 +1472,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
       };
     }));
   }, [invoice]);
+
+  useEffect(() => {
+    if (printerSettings?.defaultPaperSize) setPrintSize(printerSettings.defaultPaperSize);
+  }, [printerSettings?.defaultPaperSize]);
 
   function updateDraft(key: keyof typeof draft, value: string | boolean) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1613,26 +1634,42 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
 
   function printInvoice() {
     if (!invoice) return;
-    const cancelled = invoice.status === "cancelled";
-    const popup = window.open("", "_blank", "width=520,height=760");
-    if (!popup) {
-      toast({ title: "تعذر فتح نافذة الطباعة", variant: "destructive" });
-      return;
+    const copies = printSize === "a4" ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 2);
+    try {
+      for (let copy = 0; copy < copies; copy += 1) {
+        openSalesInvoicePrintWindow({
+          paperSize: printSize,
+          invoiceNo: invoice.invoiceNo,
+          issuedAt: invoice.createdAt || invoice.date || draft.date,
+          customerName: draft.customerName || invoice.customerName,
+          customerPhone: formatIraqiPhone(draft.customerPhone || invoice.customerPhone || ""),
+          paymentMethod: draft.paymentMethod || invoice.paymentMethod,
+          paymentStatus: invoice.status === "cancelled" ? "unpaid" : paymentStatus,
+          employeeName: invoice.createdByName,
+          items,
+          subtotal,
+          discount: discountAmount,
+          tax: taxAmount,
+          total,
+          paid: paidAmount,
+          remaining: remainingAmount,
+          qrDataUrl: invoice.qr?.dataUrl,
+          qrCaption: invoice.invoiceNo,
+          logoUrl: logoSrc(settings),
+          companyName: settings?.site_name,
+          companyPhone: settings?.phone || settings?.whatsapp,
+          companyAddress: settings?.address,
+          footerText: printerSettings?.footerText,
+          showLogo: printerSettings?.showLogo !== false,
+          showQr: printerSettings?.showQr !== false,
+          showCustomerPhone: printerSettings?.showCustomerPhone !== false,
+          showEmployeeName: printerSettings?.showEmployeeName !== false,
+          showAddress: printerSettings?.showAddress !== false,
+        });
+      }
+    } catch (error) {
+      toast({ title: "تعذر فتح نافذة الطباعة", description: error instanceof Error ? error.message : "تعذر تجهيز الفاتورة", variant: "destructive" });
     }
-    const itemRows = items.map((item) => `
-      <tr><td class="name">${item.productName}</td><td class="num">${item.quantity}</td><td class="num">${formatCurrency(item.unitPrice)}</td><td class="num">${formatCurrency(item.total)}</td></tr>
-    `).join("");
-    popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${invoice.invoiceNo}</title><style>${thermalReceiptCss("80mm")}</style></head><body>
-      <div class="receipt">
-        <div class="r-head"><img class="r-logo" src="${logoSrc(settings)}" alt=""><div class="r-company">${settings?.site_name ?? "مجموعة علي جان نهاد"}</div><div class="r-sub">${cancelled ? "فاتورة ملغاة" : "فاتورة مبيعات"}</div><div class="r-sub num">${invoice.invoiceNo} · ${draft.date}</div></div>
-        <hr class="rule"><div class="kv"><span>العميل</span><span class="v">${draft.customerName || "زبون"}</span></div>
-        <div class="kv"><span>الهاتف</span><span class="v num">${formatIraqiPhone(draft.customerPhone) || "غير مسجل"}</span></div>
-        ${draft.supplierName ? `<div class="kv"><span>المورد</span><span class="v">${draft.supplierName}</span></div>` : ""}${cancelled ? `<div class="kv"><span>حالة الإلغاء</span><span class="v">ملغاة</span></div><div class="kv"><span>تاريخ الإلغاء</span><span class="v num">${invoice.cancelledAt ?? "—"}</span></div><div class="kv"><span>بواسطة</span><span class="v">${invoice.cancelledByName ?? "—"}</span></div><div class="kv"><span>السبب</span><span class="v">${invoice.cancellationReason ?? "—"}</span></div>` : ""}
-        <hr class="rule dashed"><table class="items"><thead><tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>المبلغ</th></tr></thead><tbody>${itemRows}</tbody></table>
-        <div class="totals"><div class="payline"><span>الخصم</span><span class="num">${formatCurrency(discountAmount)}</span></div><div class="grand"><span>الإجمالي</span><span class="num">${formatCurrency(total)}</span></div><div class="payline"><span>المدفوع</span><span class="num">${formatCurrency(paidAmount)}</span></div><div class="payline remain"><span>المتبقي</span><span class="num">${formatCurrency(remainingAmount)}</span></div></div>
-        ${invoice.qr?.dataUrl ? `<div class="qr"><img src="${invoice.qr.dataUrl}" alt="QR"><div class="cap num">${invoice.invoiceNo}</div></div>` : ""}<div class="thanks">شكراً لاختياركم مجموعة علي جان نهاد</div>
-      </div>${printWhenImagesReadyScript()}</body></html>`);
-    popup.document.close();
   }
 
   return (
@@ -1646,9 +1683,21 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
             {invoice?.financiallyReversed && <span className="mt-1 inline-block rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}
           </div>
           <div className="flex items-center gap-2">
+            <label className="sr-only" htmlFor="sales-invoice-print-size">حجم الطباعة</label>
+            <select
+              id="sales-invoice-print-size"
+              value={printSize}
+              onChange={(event) => setPrintSize(event.target.value as SalesInvoicePrintSize)}
+              className="h-9 rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground"
+              aria-label="حجم الطباعة"
+            >
+              <option value="80mm">حراري 80mm</option>
+              <option value="58mm">حراري 58mm</option>
+              <option value="a4">A4</option>
+            </select>
             <Button variant="outline" size="sm" onClick={printInvoice} disabled={!invoice}>
               <Printer className="w-4 h-4 ml-1" />
-              طباعة / PDF
+              طباعة الفاتورة
             </Button>
             <Button variant="outline" size="sm" onClick={printQr} disabled={!invoice?.qr?.dataUrl}>
               <QrCode className="w-4 h-4 ml-1" />
