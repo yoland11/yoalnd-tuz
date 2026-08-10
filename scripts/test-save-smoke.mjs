@@ -45,6 +45,7 @@ check("foreign-key violation maps safely", mapWriteError({ code: "23503" }), (v)
 check("not-null violation maps to validation", mapWriteError({ code: "23502" }), (v) => v.status === 400 && v.code === "VALIDATION_ERROR");
 check("serialization conflict is retryable", mapWriteError({ code: "40001" }), (v) => v.status === 409 && v.code === "STALE_DATA" && v.retryable);
 check("database outage is not exposed as raw driver error", mapWriteError({ code: "08006" }), (v) => v.status === 500 && v.code === "DATABASE_ERROR" && v.retryable);
+check("partial-index conflict maps to a safe actionable response", mapWriteError({ code: "42P10" }), (v) => v.status === 409 && v.code === "CONFLICT" && !v.retryable);
 
 // Fast source assertions protect the high-risk save paths without running them
 // against production. Runtime integration tests belong in a separately
@@ -54,8 +55,11 @@ const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
 const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
-check("sales invoice save keeps a database transaction", api.includes("const saved = await db.transaction(async (tx) =>"));
+check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
+check("sales idempotency target matches its partial unique index", api.includes("where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`"));
+check("purchase idempotency target matches its partial unique index", api.includes("where: sql`${purchaseInvoicesTable.idempotencyKey} IS NOT NULL`"));
+check("sales invoice errors include a safe transaction step trace", api.includes("[SALES_INVOICE_SAVE_FAILED]") && api.includes("invoiceSaveStep"));
 check("sales invoice client sends an idempotency key", sales.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));
 check("shared client preserves error code and request id", client.includes("class AjNApiError") && client.includes("x-request-id"));

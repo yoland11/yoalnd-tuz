@@ -49721,7 +49721,19 @@ async function handleSalesInvoices(
     }
 
     // Header, lines, stock, coupon use, and delivery are a single unit of work.
-    const saved = await db.transaction(async (tx) => {
+    // Keep step telemetry in development/diagnostic mode so a future failure is
+    // traceable without logging customer data or payment secrets.
+    const invoiceRequestId = makeRequestId(req.headers.get("x-request-id"));
+    let invoiceSaveStep = "transaction_start";
+    const traceInvoiceSave = (step: string) => {
+      invoiceSaveStep = step;
+      if (process.env.NODE_ENV !== "production" || process.env.AJN_DIAGNOSTIC_LOGS === "true")
+        console.info("[SALES_INVOICE_SAVE]", { requestId: invoiceRequestId, step, itemCount: items.length, paymentMethod });
+    };
+    let saved: any;
+    try {
+      saved = await db.transaction(async (tx) => {
+      traceInvoiceSave("invoice_insert");
       const inserted = await tx
         .insert(salesInvoicesTable)
         .values({
@@ -49750,7 +49762,12 @@ async function handleSalesInvoices(
           createdBy: a.id,
           createdByName: a.name,
         } as any)
-        .onConflictDoNothing({ target: salesInvoicesTable.idempotencyKey })
+        .onConflictDoNothing({
+          target: salesInvoicesTable.idempotencyKey,
+          // The production index is intentionally partial so legacy rows may
+          // keep a NULL key. PostgreSQL requires the same predicate here.
+          where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`,
+        })
         .returning();
 
       const inv = inserted[0];
@@ -49778,6 +49795,7 @@ async function handleSalesInvoices(
       let insertedItems: any[] = [];
 
       if (items.length > 0) {
+        traceInvoiceSave("invoice_items_insert");
         insertedItems = await tx
           .insert(salesInvoiceItemsTable)
           .values(
@@ -49795,6 +49813,7 @@ async function handleSalesInvoices(
             })),
           )
           .returning();
+        traceInvoiceSave("stock_deduction");
         await deductSalesInvoiceStockInTransaction(
           tx,
           insertedItems,
@@ -49805,6 +49824,7 @@ async function handleSalesInvoices(
       }
 
       if (couponPreview?.ok) {
+        traceInvoiceSave("coupon_usage");
         await recordCouponUsage(
           couponPreview.coupon,
           {
@@ -49821,6 +49841,7 @@ async function handleSalesInvoices(
         ReturnType<typeof persistInvoiceDelivery>
       > | null = null;
       if (deliveryPrep) {
+        traceInvoiceSave("delivery_persist");
         try {
           deliveryResult = await persistInvoiceDelivery({
             salesInvoiceId: inv.id,
@@ -49866,6 +49887,7 @@ async function handleSalesInvoices(
         }
       }
 
+      traceInvoiceSave("transaction_ready_to_commit");
       return {
         inv,
         invoiceNo,
@@ -49873,7 +49895,32 @@ async function handleSalesInvoices(
         items: insertedItems ?? [],
         replayed: false,
       };
-    });
+      });
+    } catch (err) {
+      const mapped = err instanceof CheckoutError
+        ? {
+            status: err.status,
+            code: "INVOICE_INVALID" as ApiErrorCode,
+            message: err.message,
+            retryable: false,
+          }
+        : mapWriteError(err);
+      console.error("[SALES_INVOICE_SAVE_FAILED]", {
+        requestId: invoiceRequestId,
+        step: invoiceSaveStep,
+        actorId: a.id,
+        paymentMethod,
+        itemCount: items.length,
+        code: (err as any)?.code,
+        mappedCode: mapped.code,
+        error: err instanceof Error ? err.message : "unknown",
+      });
+      return error(mapped.message, mapped.status, {
+        code: mapped.code,
+        requestId: invoiceRequestId,
+        retryable: mapped.retryable,
+      });
+    }
     const { inv, invoiceNo, deliveryResult, replayed } = saved;
     const final = inv;
     const finalItems = saved.items;
@@ -50726,7 +50773,11 @@ async function handlePurchaseInvoices(
           createdBy: a.id,
           createdByName: a.name,
         } as any)
-        .onConflictDoNothing({ target: purchaseInvoicesTable.idempotencyKey })
+        .onConflictDoNothing({
+          target: purchaseInvoicesTable.idempotencyKey,
+          // Matches the partial unique index created for retry-safe invoices.
+          where: sql`${purchaseInvoicesTable.idempotencyKey} IS NOT NULL`,
+        })
         .returning();
       const inv = inserted[0];
       if (!inv) {

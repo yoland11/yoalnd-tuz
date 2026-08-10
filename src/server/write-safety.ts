@@ -107,6 +107,10 @@ export function mapWriteError(error: unknown): MappedWriteError {
   if (pgCode === "23502" || pgCode === "22P02" || pgCode === "22007" || pgCode === "22003")
     return { status: 400, code: "VALIDATION_ERROR", message: DEFAULT_MESSAGES.VALIDATION_ERROR, retryable: false };
   if (pgCode === "23514") return { status: 422, code: "VALIDATION_ERROR", message: DEFAULT_MESSAGES.VALIDATION_ERROR, retryable: false };
+  // PostgreSQL raises 42P10 when ON CONFLICT does not reproduce a partial
+  // unique-index predicate. This is a deploy/schema compatibility conflict,
+  // not an opaque 500 or a client retry condition.
+  if (pgCode === "42P10") return { status: 409, code: "CONFLICT", message: "تعذر حفظ العملية بسبب تعارض في قيد قاعدة البيانات", retryable: false };
   if (pgCode === "40001" || pgCode === "40P01") return { status: 409, code: "STALE_DATA", message: DEFAULT_MESSAGES.STALE_DATA, retryable: true };
   if (pgCode === "08000" || pgCode === "08001" || pgCode === "08003" || pgCode === "08006" || pgCode === "57P01" || pgCode === "53300" || value?.name === "PostgresError")
     return { status: 500, code: "DATABASE_ERROR", message: DEFAULT_MESSAGES.DATABASE_ERROR, retryable: true };
