@@ -230,20 +230,44 @@ export async function savePrinter(input: { id?: unknown; agentId: unknown; branc
     isDefault: input.isDefault === true, isActive: input.isActive !== false,
     allowedDocumentTypes: [REMOTE_PRINT_DOCUMENT], updatedAt: new Date(),
   };
-  if (values.isDefault) await db.update(printersTable).set({ isDefault: false, updatedAt: new Date() }).where(and(eq(printersTable.agentId, agentId), eq(printersTable.isDefault, true)));
-  const id = Number(input.id);
-  try {
-    if (Number.isInteger(id) && id > 0) {
-      const [printer] = await db.update(printersTable).set(values).where(eq(printersTable.id, id)).returning();
-      if (!printer) throw new RemotePrintError(404, "NOT_FOUND", "الطابعة غير موجودة.");
-      return printer;
+  return db.transaction(async (tx) => {
+    // The UI identifies a Windows printer by agent + Windows printer name. Do
+    // not require a database id: an agent can report the same printer again
+    // after a restart and saving it must update its configuration.
+    const existing = await tx.query.printersTable.findFirst({
+      where: and(eq(printersTable.agentId, agentId), eq(printersTable.name, name)),
+      columns: { id: true },
+    });
+
+    // A printer default is scoped to its agent. Keep this with the UPSERT so
+    // a failure cannot leave the agent in a partly updated default state.
+    if (values.isDefault) {
+      await tx.update(printersTable)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(and(eq(printersTable.agentId, agentId), eq(printersTable.isDefault, true)));
     }
-    const [printer] = await db.insert(printersTable).values(values).returning();
-    return printer;
-  } catch (error: any) {
-    if (error?.code === "23505") throw new RemotePrintError(409, "CONFLICT", "هذه الطابعة مسجلة مسبقاً على الجهاز.");
-    throw error;
-  }
+
+    const [printer] = await tx.insert(printersTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [printersTable.agentId, printersTable.name],
+        set: {
+          branchId: values.branchId,
+          displayName: values.displayName,
+          driverType: values.driverType,
+          paperSize: values.paperSize,
+          defaultCopies: values.defaultCopies,
+          autoPrintEnabled: values.autoPrintEnabled,
+          allowedDocumentTypes: values.allowedDocumentTypes,
+          isDefault: values.isDefault,
+          isActive: true,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .returning();
+
+    return { printer, operation: existing ? "updated" as const : "created" as const };
+  });
 }
 
 async function resolvePrinter(input: { printerId?: unknown; branchId?: unknown }) {

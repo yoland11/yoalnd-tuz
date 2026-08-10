@@ -35595,9 +35595,9 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
       if (isResponse(auth)) return auth;
       if (method === "GET") return json({ printers: await listPrinters() });
       if (method === "POST" || method === "PATCH") {
-        const data = await body(req); const printer = await savePrinter(data ?? {});
-        void logAdminActivity(req, "print_printer_saved", "printer", printer.id, { agentId: printer.agentId, name: printer.name });
-        return json({ printer }, method === "POST" ? 201 : 200);
+        const data = await body(req); const saved = await savePrinter(data ?? {});
+        void logAdminActivity(req, "print_printer_saved", "printer", saved.printer.id, { agentId: saved.printer.agentId, name: saved.printer.name, operation: saved.operation });
+        return json(saved, 200);
       }
     }
     return null;
