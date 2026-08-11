@@ -11,6 +11,10 @@ const files = {
   template: await readFile(resolve(root, "lib/print-template/src/index.js"), "utf8"),
   agent: await readFile(resolve(root, "apps/print-agent/src/main.ts"), "utf8"),
   receipt: await readFile(resolve(root, "apps/print-agent/src/receipt.ts"), "utf8"),
+  contracts: await readFile(resolve(root, "apps/print-agent/src/contracts.ts"), "utf8"),
+  remoteOptions: await readFile(resolve(root, "src/views/admin/remote-print-options.tsx"), "utf8"),
+  sales: await readFile(resolve(root, "src/views/admin/sales.tsx"), "utf8"),
+  pos: await readFile(resolve(root, "src/views/admin/pos.tsx"), "utf8"),
 };
 const checks = [
   ["database queue tables", /printAgentsTable[\s\S]*printersTable[\s\S]*printJobsTable/.test(files.schema)],
@@ -28,8 +32,11 @@ const checks = [
   ["agent uses Windows printer driver", /getPrintersAsync[\s\S]*webContents\.print/.test(files.agent)],
   ["browser and Agent use one canonical receipt template", /buildSalesInvoiceThermalHtml/.test(files.printHelper) && /buildSalesInvoiceThermalHtml/.test(files.receipt)],
   ["canonical template forces Latin digits", /Intl\.NumberFormat\("en-US"/.test(files.template) && /direction:ltr/.test(files.template)],
-  ["Agent derives the thermal page height from receipt content", /thermalPageSize[\s\S]*scrollHeight/.test(files.agent)],
+  ["Agent derives the thermal page height from receipt content", /printPageSize[\s\S]*scrollHeight/.test(files.agent)],
   ["printer calibration stays optional and bounded", /horizontalOffsetMm[\s\S]*verticalOffsetMm/.test(files.schema) && /Math\.min\(5, Math\.max\(-5/.test(files.server)],
+  ["remote print options share one UI for Sales and POS", /RemotePrintOptionsDialog/.test(files.sales) && /RemotePrintOptionsDialog/.test(files.pos) && /customWidthMm/.test(files.remoteOptions)],
+  ["save-and-print saves before creating the trusted queue job", /createRemoteSalesInvoicePrintJob/.test(files.sales) && /createRemoteSalesInvoicePrintJob/.test(files.pos) && /await adminFetch[\s\S]*sales-invoices/.test(files.pos)],
+  ["agent accepts paper size and orientation options", /RemotePaperSize = "80mm" \| "58mm" \| "a5" \| "a4" \| "custom"/.test(files.server) && /orientation\?: "portrait" \| "landscape"/.test(files.contracts)],
 ];
 let failed = false;
 for (const [name, ok] of checks) {

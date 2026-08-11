@@ -1,6 +1,6 @@
 {
   "name": "@ajn/print-agent",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "AJN ERP Windows remote thermal print agent",
   "author": "AJN",
   "private": true,

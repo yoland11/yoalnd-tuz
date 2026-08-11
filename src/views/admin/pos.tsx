@@ -10,12 +10,20 @@ import { Button } from "@/components/ui/button";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, fetchAdminMe, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
 import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
 import { formatMoney } from "@/lib/money";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
+import {
+  createRemoteSalesInvoicePrintJob,
+  defaultRemotePrintOptions,
+  RemotePrintOptionsDialog,
+  type RemotePrinter,
+  type RemotePrintMode,
+  type RemotePrintOptions,
+} from "./remote-print-options";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -465,6 +473,8 @@ export default function POSPage() {
 
   // Print modal
   const [showPrint, setShowPrint] = useState(false);
+  const [showRemotePrintOptions, setShowRemotePrintOptions] = useState(false);
+  const [pendingRemotePrintMode, setPendingRemotePrintMode] = useState<RemotePrintMode>("direct");
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const { data: products = [] } = useQuery<Product[]>({
@@ -490,6 +500,14 @@ export default function POSPage() {
     queryKey: ["admin", "printer-settings"],
     queryFn: () => adminFetch("/admin/settings/printer"),
     staleTime: 5 * 60 * 1000,
+  });
+  const { data: printCurrentUser } = useQuery({ queryKey: ["admin", "me", "pos-print"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
+  const canRemotePrint = Boolean(printCurrentUser && (printCurrentUser.role === "admin" || printCurrentUser.permissions.includes("print.sales_invoice")));
+  const { data: remotePrinters = [] } = useQuery<RemotePrinter[]>({
+    queryKey: ["admin", "remote-printers", "pos"],
+    queryFn: async () => (await adminFetch<{ printers: RemotePrinter[] }>("/admin/printers")).printers?.filter((printer) => printer.isActive) ?? [],
+    enabled: canRemotePrint,
+    staleTime: 30_000,
   });
 
   // ── Filtered products ──────────────────────────────────────────────────────
@@ -667,7 +685,7 @@ export default function POSPage() {
   }
 
   // ── Save ───────────────────────────────────────────────────────────────────
-  async function saveInvoice(andPrint?: PrintSize) {
+  async function saveInvoice(andPrint?: PrintSize, remotePrintOptions?: RemotePrintOptions | null) {
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
     // Block completion when province delivery is chosen but incomplete.
     if (delivery.method === "province" && !delivery.valid) {
@@ -692,7 +710,7 @@ export default function POSPage() {
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),
       };
-      const res = await adminFetch<{ invoice: { invoiceNo: string; qr?: { dataUrl?: string } }; delivery?: any }>("/admin/sales-invoices", {
+      const res = await adminFetch<{ invoice: { id: number; invoiceNo: string; qr?: { dataUrl?: string } }; delivery?: any }>("/admin/sales-invoices", {
         method: "POST", body: JSON.stringify(payload),
       });
       const invoiceNo = res?.invoice?.invoiceNo;
@@ -704,6 +722,18 @@ export default function POSPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       toast({ title: "✓ تم حفظ الفاتورة", description: invoiceNo });
+      if (remotePrintOptions && res.invoice?.id) {
+        try {
+          const result = await createRemoteSalesInvoicePrintJob(res.invoice.id, remotePrintOptions);
+          toast({
+            title: remotePrintOptions.mode === "direct" ? "تم إرسال الفاتورة للطباعة المباشرة" : "تم إرسال الفاتورة إلى طابور الطباعة",
+            description: result.job.status === "queued" ? "ستُطبع تلقائياً عند اتصال جهاز الطباعة." : result.job.jobNo,
+          });
+          queryClient.invalidateQueries({ queryKey: ["admin", "print-jobs"] });
+        } catch (printError) {
+          toast({ title: "تم حفظ الفاتورة لكن تعذر إرسالها للطباعة", description: printError instanceof Error ? printError.message : "تعذر إنشاء مهمة الطباعة", variant: "destructive" });
+        }
+      }
       const printSize = andPrint ?? (printerSettings?.autoPrint ? printerSettings.defaultPaperSize : undefined);
       if (printSize) {
         if (!qrDataUrl) {
@@ -741,6 +771,21 @@ export default function POSPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function saveAndRemotePrint(mode: RemotePrintMode) {
+    if (!canRemotePrint) {
+      toast({ title: "لا تملك صلاحية الطباعة المباشرة", variant: "destructive" });
+      return;
+    }
+    const defaultPrinter = remotePrinters.find((printer) => printer.isDefault);
+    const defaultOptions = defaultPrinter ? defaultRemotePrintOptions([defaultPrinter]) : null;
+    if (defaultOptions) {
+      void saveInvoice(undefined, { ...defaultOptions, mode });
+      return;
+    }
+    setPendingRemotePrintMode(mode);
+    setShowRemotePrintOptions(true);
   }
 
   // ── Numpad confirm ─────────────────────────────────────────────────────────
@@ -1238,32 +1283,36 @@ export default function POSPage() {
           <div className="space-y-2">
             <div className="grid grid-cols-2 gap-2">
               <Button
-                onClick={() => saveInvoice()}
+                onClick={() => saveAndRemotePrint("direct")}
                 disabled={saving || cart.length === 0}
                 className="bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
               >
                 {saving ? <RefreshCw className="w-4 h-4 ml-2 animate-spin" /> : <Save className="w-4 h-4 ml-2" />}
-                {saving ? "جاري..." : "حفظ (F10)"}
+                {saving ? "جاري..." : "حفظ وطباعة"}
               </Button>
-              <Button
-                onClick={() => setShowPrint(true)}
-                disabled={cart.length === 0 && !lastInvoiceNo}
-                variant="outline"
-                className="h-12 text-base border-primary/40 text-primary hover:bg-primary/10"
-              >
-                <Printer className="w-4 h-4 ml-2" />
-                طباعة (F12)
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={() => saveInvoice()} disabled={saving || cart.length === 0} variant="outline" className="h-12 flex-1 text-base"><Save className="w-4 h-4 ml-2" />حفظ فقط</Button>
+                <select aria-label="إجراء الحفظ والطباعة" defaultValue="" onChange={(event) => { const action = event.target.value; event.currentTarget.value = ""; if (action === "save") void saveInvoice(); if (action === "direct") saveAndRemotePrint("direct"); if (action === "queue") saveAndRemotePrint("queue"); if (action === "options") { setPendingRemotePrintMode("direct"); setShowRemotePrintOptions(true); } }} disabled={saving || cart.length === 0} className="h-12 max-w-14 rounded-md border border-input bg-background px-2 text-sm" title="خيارات الحفظ والطباعة"><option value="">▼</option><option value="save">حفظ فقط</option><option value="direct">حفظ وطباعة مباشرة</option><option value="queue">حفظ وإرسال للطابور</option><option value="options">خيارات الطباعة</option></select>
+              </div>
             </div>
             <button
-              onClick={() => saveInvoice("80mm")}
-              disabled={saving || cart.length === 0}
+              onClick={() => setShowPrint(true)}
+              disabled={cart.length === 0 && !lastInvoiceNo}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-xl border border-border/30 text-sm text-muted-foreground hover:text-foreground hover:border-border hover:bg-muted/30 transition-all disabled:opacity-40"
             >
               <Printer className="w-3.5 h-3.5" />
-              حفظ وطباعة Thermal 80mm
+              طباعة من هذا الجهاز (F12)
             </button>
           </div>
+
+          <RemotePrintOptionsDialog
+            open={showRemotePrintOptions}
+            printers={remotePrinters}
+            initialOptions={(() => { const options = defaultRemotePrintOptions(remotePrinters); return options ? { ...options, mode: pendingRemotePrintMode } : null; })()}
+            pending={saving}
+            onClose={() => setShowRemotePrintOptions(false)}
+            onSubmit={(options) => { setShowRemotePrintOptions(false); void saveInvoice(undefined, options); }}
+          />
 
           {/* Last Invoice Info */}
           {lastInvoiceNo && (

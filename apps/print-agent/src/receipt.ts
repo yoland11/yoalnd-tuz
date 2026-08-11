@@ -17,6 +17,9 @@ export async function salesInvoiceReceiptHtml(payload: PrintPayload) {
     : null;
   return buildSalesInvoiceThermalHtml({
     paperSize: payload.paperSize,
+    orientation: payload.orientation,
+    customWidthMm: payload.customWidthMm,
+    customHeightMm: payload.customHeightMm,
     invoiceNo: invoice.invoiceNo,
     issuedAt: invoice.issuedAt ?? invoice.date,
     customerName: invoice.customerName,

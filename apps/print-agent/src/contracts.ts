@@ -9,7 +9,10 @@ export type PrinterInfo = { name: string; displayName?: string; isDefault?: bool
 export type PrintPayload = {
   schemaVersion: 1;
   documentType: "sales_invoice";
-  paperSize: "80mm" | "58mm";
+  paperSize: "80mm" | "58mm" | "a5" | "a4" | "custom";
+  orientation?: "portrait" | "landscape";
+  customWidthMm?: number;
+  customHeightMm?: number;
   printerName: string;
   horizontalOffsetMm?: string;
   verticalOffsetMm?: string;
@@ -47,4 +50,4 @@ export type PrintPayload = {
   };
 };
 
-export type PrintJob = { id: number; jobNo: string; status: string; paperSize: "80mm" | "58mm"; copies: number; payload: PrintPayload };
+export type PrintJob = { id: number; jobNo: string; status: string; paperSize: PrintPayload["paperSize"]; copies: number; payload: PrintPayload };

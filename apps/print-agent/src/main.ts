@@ -56,15 +56,24 @@ async function heartbeat() {
     setStatus("متصل");
   } catch (error) { setStatus(`غير متصل: ${error instanceof Error ? error.message : "خطأ"}`); }
 }
-async function thermalPageSize(worker: BrowserWindow, paperSize: "58mm" | "80mm") {
-  // Chromium requires a height for a custom Windows page. Derive it from the
+async function printPageSize(worker: BrowserWindow, payload: PrintJob["payload"]) {
+  const paperSize = payload.paperSize;
+  const landscape = payload.orientation === "landscape";
+  if (paperSize === "a4") return landscape ? { width: 297_000, height: 210_000 } : { width: 210_000, height: 297_000 };
+  if (paperSize === "a5") return landscape ? { width: 210_000, height: 148_000 } : { width: 148_000, height: 210_000 };
+  if (paperSize === "custom") {
+    const width = Math.min(210, Math.max(40, Number(payload.customWidthMm) || 80));
+    const height = Math.min(500, Math.max(40, Number(payload.customHeightMm) || 297));
+    return landscape ? { width: Math.round(height * 1000), height: Math.round(width * 1000) } : { width: Math.round(width * 1000), height: Math.round(height * 1000) };
+  }
+  // Chromium requires a height for a thermal Windows page. Derive it from the
   // canonical receipt content instead of using an A4-height page and scaling.
   const contentHeightPx = Number(await worker.webContents.executeJavaScript("Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, 1)"));
   const height = Math.min(500_000, Math.max(10_000, Math.ceil(contentHeightPx * 25_400 / 96)));
   return { width: paperSize === "58mm" ? 58_000 : 80_000, height };
 }
-async function printThermalDocument(worker: BrowserWindow, printerName: string, paperSize: "58mm" | "80mm", copies: number) {
-  const pageSize = await thermalPageSize(worker, paperSize);
+async function printDocument(worker: BrowserWindow, printerName: string, payload: PrintJob["payload"], copies: number) {
+  const pageSize = await printPageSize(worker, payload);
   for (let copy = 0; copy < Math.min(Math.max(copies, 1), 5); copy += 1) {
     const accepted = await new Promise<boolean>((resolve) => worker.webContents.print({
       silent: true,
@@ -84,7 +93,7 @@ async function printJob(job: PrintJob) {
   const worker = printWindow ?? new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } });
   printWindow = worker;
   await worker.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  await printThermalDocument(worker, job.payload.printerName, job.paperSize, job.copies);
+  await printDocument(worker, job.payload.printerName, job.payload, job.copies);
   await api(`/jobs/${job.id}/complete`, { method: "POST", body: "{}" });
 }
 async function testPrint(requestedPrinterName?: string) {
@@ -102,7 +111,7 @@ async function testPrint(requestedPrinterName?: string) {
   const worker = printWindow ?? new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } });
   printWindow = worker;
   await worker.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  await printThermalDocument(worker, printerName, "80mm", 1);
+  await printDocument(worker, printerName, payload, 1);
   return { printerName };
 }
 async function poll() {

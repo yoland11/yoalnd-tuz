@@ -35536,7 +35536,7 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
         const data = await body(req);
         const result = await enqueueSalesInvoicePrint({
           actor: auth, invoiceId: data?.invoiceId, printerId: data?.printerId, branchId: data?.branchId,
-          paperSize: data?.paperSize, copies: data?.copies, idempotencyKey,
+          paperSize: data?.paperSize, orientation: data?.orientation, customWidthMm: data?.customWidthMm, customHeightMm: data?.customHeightMm, copies: data?.copies, idempotencyKey,
         });
         void logAdminActivity(req, result.duplicate ? "print_job_duplicate_request" : "print_job_created", "sales_invoice", Number(data?.invoiceId), { jobId: result.job.id, jobNo: result.job.jobNo, printerId: result.job.printerId, copies: result.job.copies });
         return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
@@ -35560,7 +35560,7 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
         if (reason.length < 3) return error("سبب إعادة الطباعة مطلوب.", 400, { code: "VALIDATION_ERROR" });
         const idempotencyKey = printIdempotencyKey(req);
         if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب لإعادة الطباعة.", 400, { code: "VALIDATION_ERROR" });
-        const result = await enqueueSalesInvoicePrint({ actor: auth, invoiceId: original.invoiceId, printerId: data?.printerId ?? original.printerId, paperSize: data?.paperSize ?? original.paperSize, copies: data?.copies ?? original.copies, idempotencyKey, originalJobId: original.id, reprintReason: reason });
+        const result = await enqueueSalesInvoicePrint({ actor: auth, invoiceId: original.invoiceId, printerId: data?.printerId ?? original.printerId, paperSize: data?.paperSize ?? original.paperSize, orientation: data?.orientation, customWidthMm: data?.customWidthMm, customHeightMm: data?.customHeightMm, copies: data?.copies ?? original.copies, idempotencyKey, originalJobId: original.id, reprintReason: reason });
         void logAdminActivity(req, "print_job_reprinted", "print_job", result.job.id, { originalPrintJobId: original.id, reason });
         return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
       }

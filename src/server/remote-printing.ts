@@ -16,7 +16,8 @@ import { formatIraqiPhone } from "@/lib/phone";
 
 export const REMOTE_PRINT_DOCUMENT = "sales_invoice" as const;
 export const REMOTE_PRINT_MAX_RETRIES = 3;
-export type RemotePaperSize = "80mm" | "58mm";
+export type RemotePaperSize = "80mm" | "58mm" | "a5" | "a4" | "custom";
+export type RemotePrintOrientation = "portrait" | "landscape";
 export type PrintJobStatus = "queued" | "claimed" | "printing" | "printed" | "failed" | "cancelled";
 export type RemotePrintActor = { id: number; fullName: string; username: string; role: string };
 
@@ -90,7 +91,16 @@ export function newSecret(prefix: string) {
 }
 
 function normalizePaperSize(value: unknown): RemotePaperSize {
-  return value === "58mm" ? "58mm" : "80mm";
+  return ["58mm", "80mm", "a5", "a4", "custom"].includes(String(value)) ? value as RemotePaperSize : "80mm";
+}
+
+function normalizeOrientation(value: unknown): RemotePrintOrientation {
+  return value === "landscape" ? "landscape" : "portrait";
+}
+
+function normalizeCustomDimension(value: unknown, fallback: number, maximum: number) {
+  const dimension = Number(value);
+  return Number.isFinite(dimension) ? Math.min(maximum, Math.max(40, Math.round(dimension * 10) / 10)) : fallback;
 }
 
 function normalizeCopies(value: unknown, fallback = 1) {
@@ -348,7 +358,7 @@ async function resolvePrinter(input: { printerId?: unknown; branchId?: unknown }
   return { printer, agent };
 }
 
-async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePaperSize, printer: { horizontalOffsetMm: string; verticalOffsetMm: string }) {
+async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePaperSize, printer: { horizontalOffsetMm: string; verticalOffsetMm: string }, options: { orientation: RemotePrintOrientation; customWidthMm: number; customHeightMm: number }) {
   const publicOrigin = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL || "https://alijan-koshat.vercel.app";
   const [invoice, items, qr, appearance] = await Promise.all([
     db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invoiceId) }),
@@ -363,6 +373,9 @@ async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePape
     schemaVersion: 1,
     documentType: REMOTE_PRINT_DOCUMENT,
     paperSize,
+    orientation: options.orientation,
+    customWidthMm: paperSize === "custom" ? options.customWidthMm : undefined,
+    customHeightMm: paperSize === "custom" ? options.customHeightMm : undefined,
     horizontalOffsetMm: String(printer.horizontalOffsetMm ?? "0"),
     verticalOffsetMm: String(printer.verticalOffsetMm ?? "0"),
     appearance,
@@ -379,7 +392,7 @@ async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePape
   };
 }
 
-export async function enqueueSalesInvoicePrint(input: { actor: RemotePrintActor; invoiceId: unknown; printerId?: unknown; branchId?: unknown; paperSize?: unknown; copies?: unknown; idempotencyKey: string; originalJobId?: number | null; reprintReason?: string | null }) {
+export async function enqueueSalesInvoicePrint(input: { actor: RemotePrintActor; invoiceId: unknown; printerId?: unknown; branchId?: unknown; paperSize?: unknown; orientation?: unknown; customWidthMm?: unknown; customHeightMm?: unknown; copies?: unknown; idempotencyKey: string; originalJobId?: number | null; reprintReason?: string | null }) {
   await ensureRemotePrintingTables();
   const invoiceId = Number(input.invoiceId);
   if (!Number.isInteger(invoiceId) || invoiceId <= 0) throw new RemotePrintError(400, "VALIDATION_ERROR", "معرّف الفاتورة غير صالح.");
@@ -388,8 +401,13 @@ export async function enqueueSalesInvoicePrint(input: { actor: RemotePrintActor;
   if (existing) return { job: existing, duplicate: true };
   const { printer, agent } = await resolvePrinter(input);
   const paperSize = normalizePaperSize(input.paperSize ?? printer.paperSize);
+  const printOptions = {
+    orientation: normalizeOrientation(input.orientation),
+    customWidthMm: normalizeCustomDimension(input.customWidthMm, 80, 210),
+    customHeightMm: normalizeCustomDimension(input.customHeightMm, 297, 500),
+  };
   const copies = normalizeCopies(input.copies, printer.defaultCopies);
-  const payload = await buildSalesInvoicePayload(invoiceId, paperSize, printer);
+  const payload = await buildSalesInvoicePayload(invoiceId, paperSize, printer, printOptions);
   const allowed = Array.isArray(printer.allowedDocumentTypes) ? printer.allowedDocumentTypes : [];
   if (!allowed.includes(REMOTE_PRINT_DOCUMENT)) throw new RemotePrintError(403, "PERMISSION_DENIED", "الطابعة المحددة غير مخصصة لفواتير المبيعات.");
   try {

@@ -1,6 +1,9 @@
 export type SalesInvoiceThermalItem = { productName?: string; name?: string; quantity: number | string; unitPrice: number | string; total: number | string };
 export type SalesInvoiceThermalInput = {
-  paperSize: "58mm" | "80mm";
+  paperSize: "58mm" | "80mm" | "a5" | "a4" | "custom";
+  orientation?: "portrait" | "landscape";
+  customWidthMm?: number | string | null;
+  customHeightMm?: number | string | null;
   invoiceNo: string;
   issuedAt?: string | null;
   customerName?: string | null;
@@ -37,5 +40,5 @@ export function toLatinDigits(value: unknown): string;
 export function formatLatinNumber(value: unknown, options?: Intl.NumberFormatOptions): string;
 export function formatLatinMoney(value: unknown): string;
 export function formatLatinDate(value: unknown): string;
-export function salesInvoiceThermalCss(size: "58mm" | "80mm", horizontalOffsetMm?: number | string | null, verticalOffsetMm?: number | string | null): string;
+export function salesInvoiceThermalCss(size: SalesInvoiceThermalInput["paperSize"], horizontalOffsetMm?: number | string | null, verticalOffsetMm?: number | string | null, orientation?: "portrait" | "landscape", customWidthMm?: number | string | null, customHeightMm?: number | string | null): string;
 export function buildSalesInvoiceThermalHtml(input: SalesInvoiceThermalInput): string;

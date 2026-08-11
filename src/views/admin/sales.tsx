@@ -24,6 +24,14 @@ import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { formatIraqiPhone, formatIraqiPhoneInput } from "@/lib/phone";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import {
+  createRemoteSalesInvoicePrintJob,
+  defaultRemotePrintOptions,
+  RemotePrintOptionsDialog,
+  remotePrintIdempotencyKey,
+  type RemotePrinter,
+  type RemotePrintOptions,
+} from "./remote-print-options";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
 import {
   InvoicePaymentStatusBadge,
@@ -88,22 +96,7 @@ type PrinterSettings = {
   footerText: string;
 };
 
-type RemotePrinter = {
-  id: number;
-  name: string;
-  displayName?: string | null;
-  paperSize: "80mm" | "58mm";
-  defaultCopies: number;
-  isDefault: boolean;
-  isActive: boolean;
-  agent?: { id: number; name: string; agentId: string } | null;
-};
 type RemotePrintJob = { id: number; jobNo: string; status: "queued" | "claimed" | "printing" | "printed" | "failed" | "cancelled" };
-
-function remotePrintIdempotencyKey(invoiceId: number) {
-  const id = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `sales-print-${invoiceId}-${id}`;
-}
 
 function remotePrintStatusLabel(status: RemotePrintJob["status"]) {
   return ({ queued: "بانتظار الطباعة", claimed: "تم استلام المهمة", printing: "جاري الطباعة", printed: "تمت الطباعة", failed: "فشل الطباعة", cancelled: "ملغي" } as const)[status];
@@ -229,6 +222,8 @@ export default function SalesPage() {
   const [searchQ, setSearchQ] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [remotePrintOptionsOpen, setRemotePrintOptionsOpen] = useState(false);
+  const [pendingPrintOptions, setPendingPrintOptions] = useState<RemotePrintOptions | null>(null);
   const { data: invoiceSettings } = usePublicSettings();
   const [delivery, setDelivery] = useState<DeliveryOutput>({
     method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null,
@@ -275,6 +270,14 @@ export default function SalesPage() {
     queryKey: ["admin", "suppliers", "sales"],
     queryFn: () => adminFetch("/admin/suppliers"),
     staleTime: 5 * 60 * 1000,
+  });
+  const { data: printCurrentUser } = useQuery({ queryKey: ["admin", "me", "sales-create-print"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
+  const canCreateRemotePrint = Boolean(printCurrentUser && (printCurrentUser.role === "admin" || printCurrentUser.permissions.includes("print.sales_invoice")));
+  const { data: createRemotePrinters = [] } = useQuery<RemotePrinter[]>({
+    queryKey: ["admin", "remote-printers", "sales-create"],
+    queryFn: async () => (await adminFetch<{ printers: RemotePrinter[] }>("/admin/printers")).printers?.filter((printer) => printer.isActive) ?? [],
+    enabled: canCreateRemotePrint,
+    staleTime: 30_000,
   });
 
   // Invoices list
@@ -427,7 +430,7 @@ export default function SalesPage() {
   const [customerPrompt, setCustomerPrompt] = useState(false);
 
   // ── Save ─────────────────────────────────────────────────────────────────
-  async function saveInvoice(customerIdOverride?: number | null, useCashCustomer = false) {
+  async function saveInvoice(customerIdOverride?: number | null, useCashCustomer = false, printOptions?: RemotePrintOptions | null) {
     if (saving) return;
     if (cart.length === 0) { toast({ title: "الفاتورة فارغة", variant: "destructive" }); return; }
     if (delivery.method === "province" && !delivery.valid) {
@@ -476,6 +479,18 @@ export default function SalesPage() {
       });
       submitKeyRef.current = null;
       toast({ title: "تم حفظ الفاتورة", description: res?.invoice?.invoiceNo ?? "تم الحفظ" });
+      if (printOptions && res?.invoice?.id) {
+        try {
+          const result = await createRemoteSalesInvoicePrintJob(res.invoice.id, printOptions);
+          toast({
+            title: printOptions.mode === "direct" ? "تم إرسال الفاتورة للطباعة المباشرة" : "تم إرسال الفاتورة إلى طابور الطباعة",
+            description: result.job.status === "queued" ? "ستُطبع تلقائياً عند اتصال جهاز الطباعة." : result.job.jobNo,
+          });
+          queryClient.invalidateQueries({ queryKey: ["admin", "print-jobs"] });
+        } catch (printError) {
+          toast({ title: "تم حفظ الفاتورة لكن تعذر إرسالها للطباعة", description: apiErrorMessage(printError), variant: "destructive" });
+        }
+      }
       if (res?.delivery?.order?.id) {
         printDeliveryLabel({
           delivery: res.delivery,
@@ -503,15 +518,16 @@ export default function SalesPage() {
 
   // Gate the save behind the "open a customer account?" prompt when a new name
   // was typed but not chosen from the customer list.
-  function onSaveClick() {
+  function onSaveClick(printOptions?: RemotePrintOptions | null) {
     if (saving) return;
     const name = form.customerName.trim();
     const isCashCustomer = !name || name === "عميل نقدي";
     if (!isCashCustomer && !form.customerId && cart.length > 0) {
+      setPendingPrintOptions(printOptions ?? null);
       setCustomerPrompt(true);
       return;
     }
-    void saveInvoice(undefined, isCashCustomer);
+    void saveInvoice(undefined, isCashCustomer, printOptions);
   }
 
   async function applyCoupon() {
@@ -990,9 +1006,9 @@ export default function SalesPage() {
           </div>
 
           {/* Action Buttons */}
-          <div className="grid grid-cols-1 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <Button
-              onClick={onSaveClick}
+              onClick={() => onSaveClick()}
               disabled={saving || cart.length === 0}
               className="w-full bg-primary text-black hover:bg-primary/90 font-bold h-12 text-base"
             >
@@ -1001,21 +1017,43 @@ export default function SalesPage() {
                 : <><Save className="w-4 h-4 ml-2" />حفظ الفاتورة</>
               }
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRemotePrintOptionsOpen(true)}
+              disabled={saving || cart.length === 0 || !canCreateRemotePrint}
+              className="font-bold h-12 text-base"
+            >
+              <Printer className="w-4 h-4 ml-2" />حفظ وطباعة ▼
+            </Button>
           </div>
+
+          {!canCreateRemotePrint ? <p className="mt-2 text-xs text-muted-foreground">تحتاج صلاحية طباعة فواتير المبيعات لاستخدام الحفظ والطباعة.</p> : null}
+
+          <RemotePrintOptionsDialog
+            open={remotePrintOptionsOpen}
+            printers={createRemotePrinters}
+            initialOptions={defaultRemotePrintOptions(createRemotePrinters)}
+            pending={saving}
+            onClose={() => setRemotePrintOptionsOpen(false)}
+            onSubmit={(options) => { setRemotePrintOptionsOpen(false); onSaveClick(options); }}
+          />
 
           {customerPrompt ? (
             <CustomerAccountPrompt
               name={form.customerName.trim()}
               initialPhone={form.customerPhone}
-              onCancel={() => setCustomerPrompt(false)}
+              onCancel={() => { setCustomerPrompt(false); setPendingPrintOptions(null); }}
               onDecline={() => {
-                setCustomerPrompt(false);
+                setCustomerPrompt(false); setPendingPrintOptions(null);
                 toast({ title: "يلزم اختيار عميل أو اختيار العميل النقدي صراحةً", variant: "destructive" });
               }}
               onConfirm={(customerId, phone) => {
                 setCustomerPrompt(false);
                 setForm((f) => ({ ...f, customerId: String(customerId), customerPhone: phone }));
-                void saveInvoice(customerId);
+                const printOptions = pendingPrintOptions;
+                setPendingPrintOptions(null);
+                void saveInvoice(customerId, false, printOptions);
               }}
             />
           ) : null}
@@ -1725,7 +1763,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     try {
       const result = await adminFetch<{ job: RemotePrintJob; duplicate: boolean }>("/admin/print-jobs", {
         method: "POST",
-        headers: { "idempotency-key": remotePrintIdempotencyKey(invoice.id) },
+        headers: { "idempotency-key": remotePrintIdempotencyKey(invoice.id, "direct") },
         body: JSON.stringify({ invoiceId: invoice.id, printerId: Number(remotePrinterId), paperSize: printSize === "a4" ? "80mm" : printSize, copies: 1 }),
       });
       setLastPrintJob(result.job);
@@ -1744,7 +1782,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     try {
       const result = await adminFetch<{ job: RemotePrintJob; duplicate: boolean }>(`/admin/print-jobs/${lastPrintJob.id}/reprint`, {
         method: "POST",
-        headers: { "idempotency-key": remotePrintIdempotencyKey(invoiceId) },
+        headers: { "idempotency-key": remotePrintIdempotencyKey(invoiceId, "direct") },
         body: JSON.stringify({ printerId: remotePrinterId ? Number(remotePrinterId) : undefined, paperSize: printSize === "a4" ? "80mm" : printSize, copies: 1, reason: "إعادة طباعة من شاشة الفاتورة" }),
       });
       setLastPrintJob(result.job);
