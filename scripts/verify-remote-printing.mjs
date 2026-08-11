@@ -7,6 +7,8 @@ const files = {
   server: await readFile(resolve(root, "src/server/remote-printing.ts"), "utf8"),
   api: await readFile(resolve(root, "src/server/api.ts"), "utf8"),
   queueUi: await readFile(resolve(root, "src/views/admin/print-queue.tsx"), "utf8"),
+  printHelper: await readFile(resolve(root, "src/views/admin/print-helpers.ts"), "utf8"),
+  template: await readFile(resolve(root, "lib/print-template/src/index.js"), "utf8"),
   agent: await readFile(resolve(root, "apps/print-agent/src/main.ts"), "utf8"),
   receipt: await readFile(resolve(root, "apps/print-agent/src/receipt.ts"), "utf8"),
 };
@@ -24,8 +26,10 @@ const checks = [
   ["mobile idempotency header", /idempotency-key/.test(files.api)],
   ["agent encrypted local credential", /safeStorage\.encryptString/.test(files.agent) && /safeStorage\.decryptString/.test(files.agent)],
   ["agent uses Windows printer driver", /getPrintersAsync[\s\S]*webContents\.print/.test(files.agent)],
-  ["receipt keeps decimal quantities", /item\.quantity/.test(files.receipt) && !/Math\.floor\(item\.quantity/.test(files.receipt)],
-  ["receipt omits blank notes", /invoice\.notes\?\.trim\(\)/.test(files.receipt)],
+  ["browser and Agent use one canonical receipt template", /buildSalesInvoiceThermalHtml/.test(files.printHelper) && /buildSalesInvoiceThermalHtml/.test(files.receipt)],
+  ["canonical template forces Latin digits", /Intl\.NumberFormat\("en-US"/.test(files.template) && /direction:ltr/.test(files.template)],
+  ["Agent derives the thermal page height from receipt content", /thermalPageSize[\s\S]*scrollHeight/.test(files.agent)],
+  ["printer calibration stays optional and bounded", /horizontalOffsetMm[\s\S]*verticalOffsetMm/.test(files.schema) && /Math\.min\(5, Math\.max\(-5/.test(files.server)],
 ];
 let failed = false;
 for (const [name, ok] of checks) {

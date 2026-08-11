@@ -44,6 +44,7 @@
     "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs",
     "test:public-invoice-qr": "node ./scripts/verify-public-sales-invoice-qr.mjs",
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
+    "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
     "test:save-smoke": "node ./scripts/test-save-smoke.mjs",
     "verify:critical": "pnpm run typecheck && pnpm run test:save-smoke && git diff --check"
   },
@@ -85,6 +86,7 @@
     "@workspace/api-client-react": "workspace:*",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@workspace/print-template": "workspace:*",
     "@zxing/browser": "^0.2.1",
     "@zxing/library": "^0.23.0",
     "bcryptjs": "^3.0.3",

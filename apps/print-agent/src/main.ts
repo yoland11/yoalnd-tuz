@@ -56,6 +56,26 @@ async function heartbeat() {
     setStatus("متصل");
   } catch (error) { setStatus(`غير متصل: ${error instanceof Error ? error.message : "خطأ"}`); }
 }
+async function thermalPageSize(worker: BrowserWindow, paperSize: "58mm" | "80mm") {
+  // Chromium requires a height for a custom Windows page. Derive it from the
+  // canonical receipt content instead of using an A4-height page and scaling.
+  const contentHeightPx = Number(await worker.webContents.executeJavaScript("Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, 1)"));
+  const height = Math.min(500_000, Math.max(10_000, Math.ceil(contentHeightPx * 25_400 / 96)));
+  return { width: paperSize === "58mm" ? 58_000 : 80_000, height };
+}
+async function printThermalDocument(worker: BrowserWindow, printerName: string, paperSize: "58mm" | "80mm", copies: number) {
+  const pageSize = await thermalPageSize(worker, paperSize);
+  for (let copy = 0; copy < Math.min(Math.max(copies, 1), 5); copy += 1) {
+    const accepted = await new Promise<boolean>((resolve) => worker.webContents.print({
+      silent: true,
+      deviceName: printerName,
+      printBackground: true,
+      pageSize,
+      margins: { marginType: "none" },
+    }, (ok) => resolve(ok)));
+    if (!accepted) throw new Error("رفض Windows مهمة الطباعة أو الطابعة غير جاهزة.");
+  }
+}
 async function printJob(job: PrintJob) {
   const printers = await getPrinters();
   if (!printers.some((printer) => printer.name === job.payload.printerName)) throw new Error("الطابعة المحددة لم تعد موجودة في Windows.");
@@ -64,26 +84,25 @@ async function printJob(job: PrintJob) {
   const worker = printWindow ?? new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } });
   printWindow = worker;
   await worker.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  for (let copy = 0; copy < Math.min(Math.max(job.copies, 1), 5); copy += 1) {
-    const accepted = await new Promise<boolean>((resolve) => worker.webContents.print({ silent: true, deviceName: job.payload.printerName, printBackground: true, pageSize: job.paperSize === "58mm" ? { width: 58000, height: 297000 } : { width: 80000, height: 297000 }, margins: { marginType: "none" } }, (ok) => resolve(ok)));
-    if (!accepted) throw new Error("رفض Windows مهمة الطباعة أو الطابعة غير جاهزة.");
-  }
+  await printThermalDocument(worker, job.payload.printerName, job.paperSize, job.copies);
   await api(`/jobs/${job.id}/complete`, { method: "POST", body: "{}" });
 }
-async function testPrint() {
+async function testPrint(requestedPrinterName?: string) {
   const printers = await getPrinters();
-  const printerName = printers.find((printer) => printer.isDefault)?.name ?? printers[0]?.name;
+  const printerName = requestedPrinterName
+    ? printers.find((printer) => printer.name === requestedPrinterName)?.name
+    : printers.find((printer) => printer.isDefault)?.name ?? printers[0]?.name;
   if (!printerName) throw new Error("لا توجد طابعة Windows متاحة لاختبارها.");
   const payload: PrintJob["payload"] = {
     schemaVersion: 1, documentType: "sales_invoice", paperSize: "80mm", printerName,
-    invoice: { invoiceNo: "AJN PRINT TEST", date: new Date().toLocaleString("ar-IQ"), customerName: "مجموعة علي جان نهاد", customerPhone: null, paymentMethod: "اختبار", paymentStatus: "اختبار", subtotal: "0", discountAmount: "0", taxAmount: "0", total: "0", paidAmount: "0", remainingAmount: "0", notes: "اختبار طباعة عربية و QR", employeeName: null, items: [{ name: "اختبار الطابعة الحرارية", quantity: "0.5", unitPrice: "0", total: "0" }], qrUrl: "https://alijan-koshat.vercel.app" },
+    appearance: { logoUrl: null, companyName: "مجموعة علي جان نهاد", companyPhone: null, companyAddress: null, footerText: "", showLogo: true, showQr: true, showCustomerPhone: true, showEmployeeName: true, showAddress: true },
+    invoice: { invoiceNo: "AJN PRINT TEST 1234567890", date: new Date().toISOString(), issuedAt: new Date().toISOString(), customerName: "مجموعة علي جان نهاد", customerPhone: null, paymentMethod: "اختبار", paymentStatus: "اختبار", subtotal: "0", discountAmount: "0", taxAmount: "0", total: "0", paidAmount: "0", remainingAmount: "0", notes: "اختبار طباعة عربية و QR", employeeName: null, items: [{ name: "اختبار الطابعة الحرارية", quantity: "0.5", unitPrice: "0", total: "0" }], qrUrl: "https://alijan-koshat.vercel.app" },
   };
   const html = await salesInvoiceReceiptHtml(payload);
   const worker = printWindow ?? new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } });
   printWindow = worker;
   await worker.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  const accepted = await new Promise<boolean>((resolve) => worker.webContents.print({ silent: true, deviceName: printerName, printBackground: true, pageSize: { width: 80000, height: 297000 }, margins: { marginType: "none" } }, (ok) => resolve(ok)));
-  if (!accepted) throw new Error("رفض Windows طباعة صفحة الاختبار.");
+  await printThermalDocument(worker, printerName, "80mm", 1);
   return { printerName };
 }
 async function poll() {
@@ -117,5 +136,31 @@ function settingsHtml() { return `<!doctype html><html dir="rtl"><meta charset="
 function openSettings() { if (settingsWindow) { settingsWindow.show(); settingsWindow.focus(); return; } settingsWindow = new BrowserWindow({ width: 600, height: 540, title: "AJN Print Agent", webPreferences: { preload: path.join(import.meta.dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true } }); settingsWindow.on("closed", () => { settingsWindow = null; }); void settingsWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(settingsHtml())}`); }
 function createTray() { tray = new Tray(nativeImage.createFromPath(appIconPath())); tray.setToolTip("AJN Print Agent"); tray.setContextMenu(Menu.buildFromTemplate([{ label: "الحالة: اتصال", enabled: false }, { label: "فتح الإعدادات", click: openSettings }, { label: "اختبار الطباعة", click: () => { void testPrint().then(({ printerName }) => setStatus(`تم إرسال اختبار إلى ${printerName}`)).catch((error) => setStatus(error instanceof Error ? error.message : "تعذرت طباعة الاختبار")); } }, { label: "إعادة الاتصال", click: () => { void heartbeat(); void poll(); } }, { label: "إيقاف التشغيل التلقائي", click: () => app.setLoginItemSettings({ openAtLogin: false }) }, { label: "تشغيل مع Windows", click: () => app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true }) }, { type: "separator" }, { label: "خروج", click: () => app.quit() }])); tray.on("click", openSettings); }
 
-app.whenReady().then(() => { app.setAppUserModelId("com.ajn.erp.print-agent"); if (process.platform === "win32") app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true }); createTray(); ipcMain.handle("agent:status", () => ({ status, configured: Boolean(loadConfig()) })); ipcMain.handle("agent:register", (_event, input) => register(input)); ipcMain.handle("agent:test-print", () => testPrint()); ipcMain.handle("agent:disconnect", () => { clearConfig(); setStatus("بانتظار التسجيل"); }); openSettings(); void heartbeat(); pollTimer = setInterval(() => void poll(), POLL_MS); heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_MS); });
+app.whenReady().then(() => {
+  app.setAppUserModelId("com.ajn.erp.print-agent");
+  const testPrinter = process.argv.find((argument) => argument.startsWith("--test-printer="))?.slice("--test-printer=".length);
+  if (testPrinter) {
+    // Installer validation only: this bypasses registration and never reads or
+    // changes the server queue. It prints the canonical local test receipt.
+    // A Windows driver that never acknowledges the test must not leave a hidden
+    // Electron process running and holding the next installer build open.
+    const testTimeout = setTimeout(() => {
+      printWindow?.destroy();
+      app.exit(2);
+    }, 25_000);
+    void testPrint(testPrinter).then(() => {
+      clearTimeout(testTimeout);
+      printWindow?.destroy();
+      app.exit(0);
+    }).catch((error) => { clearTimeout(testTimeout); console.error(error); app.exit(1); });
+    return;
+  }
+  if (process.platform === "win32") app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+  createTray();
+  ipcMain.handle("agent:status", () => ({ status, configured: Boolean(loadConfig()) }));
+  ipcMain.handle("agent:register", (_event, input) => register(input));
+  ipcMain.handle("agent:test-print", () => testPrint());
+  ipcMain.handle("agent:disconnect", () => { clearConfig(); setStatus("بانتظار التسجيل"); });
+  openSettings(); void heartbeat(); pollTimer = setInterval(() => void poll(), POLL_MS); heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_MS);
+});
 app.on("before-quit", () => { if (pollTimer) clearInterval(pollTimer); if (heartbeatTimer) clearInterval(heartbeatTimer); printWindow?.destroy(); });

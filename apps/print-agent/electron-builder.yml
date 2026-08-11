@@ -25,4 +25,4 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: AJN Print Agent
 portable:
-  artifactName: AJN-Print-Agent-Portable.${ext}
+  artifactName: AJN-Print-Agent-Portable-${version}.${ext}

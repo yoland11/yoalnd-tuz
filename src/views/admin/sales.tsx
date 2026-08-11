@@ -1694,6 +1694,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           total,
           paid: paidAmount,
           remaining: remainingAmount,
+          notes: invoice.notes,
           qrDataUrl: invoice.qr?.dataUrl,
           qrCaption: invoice.invoiceNo,
           logoUrl: logoSrc(settings),

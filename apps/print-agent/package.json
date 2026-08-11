@@ -1,6 +1,6 @@
 {
   "name": "@ajn/print-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AJN ERP Windows remote thermal print agent",
   "author": "AJN",
   "private": true,
@@ -13,6 +13,7 @@
     "dist:win": "pnpm run typecheck && electron-builder --win nsis portable --x64"
   },
   "dependencies": {
+    "@workspace/print-template": "workspace:*",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

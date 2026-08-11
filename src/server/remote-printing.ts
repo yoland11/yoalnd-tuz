@@ -9,7 +9,10 @@ import {
   qrTokensTable,
   salesInvoiceItemsTable,
   salesInvoicesTable,
+  settingsTable,
 } from "@workspace/db";
+import { getCachedPublicSettings } from "@/server/public-settings";
+import { formatIraqiPhone } from "@/lib/phone";
 
 export const REMOTE_PRINT_DOCUMENT = "sales_invoice" as const;
 export const REMOTE_PRINT_MAX_RETRIES = 3;
@@ -51,9 +54,12 @@ export function ensureRemotePrintingTables(): Promise<void> {
         display_name varchar(255), driver_type varchar(20) not null default 'windows', paper_size varchar(10) not null default '80mm',
         default_copies integer not null default 1, auto_print_enabled boolean not null default true,
         allowed_document_types jsonb not null default '["sales_invoice"]'::jsonb, is_default boolean not null default false,
+        horizontal_offset_mm numeric(3,1) not null default 0, vertical_offset_mm numeric(3,1) not null default 0,
         is_active boolean not null default true, created_at timestamp not null default now(), updated_at timestamp not null default now(),
         constraint printers_agent_name_unique unique(agent_id, name)
       )`);
+      await db.execute(sql`alter table printers add column if not exists horizontal_offset_mm numeric(3,1) not null default 0`);
+      await db.execute(sql`alter table printers add column if not exists vertical_offset_mm numeric(3,1) not null default 0`);
       await db.execute(sql`create table if not exists print_jobs (
         id serial primary key, job_no varchar(64) not null unique, document_type varchar(40) not null, document_id integer not null,
         invoice_id integer references sales_invoices(id) on delete restrict, printer_id integer references printers(id) on delete set null,
@@ -90,6 +96,61 @@ function normalizePaperSize(value: unknown): RemotePaperSize {
 function normalizeCopies(value: unknown, fallback = 1) {
   const copies = Number(value ?? fallback);
   return Number.isInteger(copies) ? Math.min(Math.max(copies, 1), 5) : fallback;
+}
+
+function normalizeCalibrationMm(value: unknown) {
+  const amount = Number(value);
+  return String(Math.min(5, Math.max(-5, Number.isFinite(amount) ? Math.round(amount * 10) / 10 : 0)));
+}
+
+type RemotePrinterSettings = {
+  showLogo: boolean;
+  showQr: boolean;
+  showCustomerPhone: boolean;
+  showEmployeeName: boolean;
+  showAddress: boolean;
+  footerText: string;
+};
+
+const DEFAULT_REMOTE_PRINTER_SETTINGS: RemotePrinterSettings = {
+  showLogo: true,
+  showQr: true,
+  showCustomerPhone: true,
+  showEmployeeName: true,
+  showAddress: true,
+  footerText: "",
+};
+
+function normalizeRemotePrinterSettings(value: unknown): RemotePrinterSettings {
+  const raw = value && typeof value === "object" ? value as Partial<RemotePrinterSettings> : {};
+  return {
+    showLogo: raw.showLogo !== false,
+    showQr: raw.showQr !== false,
+    showCustomerPhone: raw.showCustomerPhone !== false,
+    showEmployeeName: raw.showEmployeeName !== false,
+    showAddress: raw.showAddress !== false,
+    footerText: typeof raw.footerText === "string" ? raw.footerText.trim().slice(0, 240) : "",
+  };
+}
+
+function absolutePublicUrl(value: string, publicOrigin: string) {
+  if (!value) return `${publicOrigin}/images/logo-fallback.svg`;
+  try { return new URL(value, publicOrigin).toString(); } catch { return `${publicOrigin}/images/logo-fallback.svg`; }
+}
+
+async function loadRemotePrintAppearance(publicOrigin: string) {
+  const [publicSettings, printerSettingsRow] = await Promise.all([
+    getCachedPublicSettings(),
+    db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "printerSettings") }),
+  ]);
+  const printerSettings = normalizeRemotePrinterSettings(printerSettingsRow?.value ?? DEFAULT_REMOTE_PRINTER_SETTINGS);
+  return {
+    logoUrl: absolutePublicUrl(publicSettings.logo_url, publicOrigin),
+    companyName: publicSettings.site_name,
+    companyPhone: publicSettings.phone || publicSettings.whatsapp || null,
+    companyAddress: publicSettings.address || null,
+    ...printerSettings,
+  };
 }
 
 function trimText(value: unknown, length: number) {
@@ -213,7 +274,7 @@ export async function listPrinters() {
   return rows.map((printer) => ({ ...printer, agent: agentById.get(printer.agentId) ? { id: printer.agentId, name: agentById.get(printer.agentId)!.name, agentId: agentById.get(printer.agentId)!.agentId } : null }));
 }
 
-export async function savePrinter(input: { id?: unknown; agentId: unknown; branchId?: unknown; name: unknown; displayName?: unknown; paperSize?: unknown; driverType?: unknown; defaultCopies?: unknown; autoPrintEnabled?: unknown; isDefault?: unknown; isActive?: unknown; allowedDocumentTypes?: unknown }) {
+export async function savePrinter(input: { id?: unknown; agentId: unknown; branchId?: unknown; name: unknown; displayName?: unknown; paperSize?: unknown; driverType?: unknown; defaultCopies?: unknown; autoPrintEnabled?: unknown; isDefault?: unknown; isActive?: unknown; allowedDocumentTypes?: unknown; horizontalOffsetMm?: unknown; verticalOffsetMm?: unknown }) {
   await ensureRemotePrintingTables();
   const agentId = Number(input.agentId);
   const name = trimText(input.name, 255);
@@ -228,7 +289,7 @@ export async function savePrinter(input: { id?: unknown; agentId: unknown; branc
     paperSize: normalizePaperSize(input.paperSize), driverType: input.driverType === "escpos" ? "escpos" : "windows",
     defaultCopies: normalizeCopies(input.defaultCopies), autoPrintEnabled: input.autoPrintEnabled !== false,
     isDefault: input.isDefault === true, isActive: input.isActive !== false,
-    allowedDocumentTypes: [REMOTE_PRINT_DOCUMENT], updatedAt: new Date(),
+    allowedDocumentTypes: [REMOTE_PRINT_DOCUMENT], horizontalOffsetMm: normalizeCalibrationMm(input.horizontalOffsetMm), verticalOffsetMm: normalizeCalibrationMm(input.verticalOffsetMm), updatedAt: new Date(),
   };
   return db.transaction(async (tx) => {
     // The UI identifies a Windows printer by agent + Windows printer name. Do
@@ -259,6 +320,8 @@ export async function savePrinter(input: { id?: unknown; agentId: unknown; branc
           defaultCopies: values.defaultCopies,
           autoPrintEnabled: values.autoPrintEnabled,
           allowedDocumentTypes: values.allowedDocumentTypes,
+          horizontalOffsetMm: values.horizontalOffsetMm,
+          verticalOffsetMm: values.verticalOffsetMm,
           isDefault: values.isDefault,
           isActive: true,
           updatedAt: values.updatedAt,
@@ -285,23 +348,27 @@ async function resolvePrinter(input: { printerId?: unknown; branchId?: unknown }
   return { printer, agent };
 }
 
-async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePaperSize) {
-  const [invoice, items, qr] = await Promise.all([
+async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePaperSize, printer: { horizontalOffsetMm: string; verticalOffsetMm: string }) {
+  const publicOrigin = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL || "https://alijan-koshat.vercel.app";
+  const [invoice, items, qr, appearance] = await Promise.all([
     db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invoiceId) }),
     db.query.salesInvoiceItemsTable.findMany({ where: eq(salesInvoiceItemsTable.invoiceId, invoiceId), columns: { productName: true, quantity: true, unitPrice: true, total: true } }),
     db.query.qrTokensTable.findFirst({ where: and(eq(qrTokensTable.entityType, "invoice"), eq(qrTokensTable.entityId, invoiceId)) }),
+    loadRemotePrintAppearance(publicOrigin),
   ]);
   if (!invoice || invoice.status === "deleted") throw new RemotePrintError(404, "NOT_FOUND", "الفاتورة غير موجودة.");
   if (invoice.status === "cancelled") throw new RemotePrintError(422, "VALIDATION_ERROR", "لا يمكن الطباعة المباشرة لفاتورة ملغاة.");
   if (!items.length) throw new RemotePrintError(422, "VALIDATION_ERROR", "لا تحتوي الفاتورة على أصناف قابلة للطباعة.");
-  const publicOrigin = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_BASE_URL || "https://alijan-koshat.vercel.app";
   return {
     schemaVersion: 1,
     documentType: REMOTE_PRINT_DOCUMENT,
     paperSize,
+    horizontalOffsetMm: String(printer.horizontalOffsetMm ?? "0"),
+    verticalOffsetMm: String(printer.verticalOffsetMm ?? "0"),
+    appearance,
     invoice: {
-      invoiceNo: invoice.invoiceNo, date: invoice.date, customerName: invoice.customerName,
-      customerPhone: invoice.customerPhone ?? null, paymentMethod: invoice.paymentMethod, paymentStatus: invoice.paymentStatus,
+      invoiceNo: invoice.invoiceNo, date: invoice.date, issuedAt: invoice.createdAt?.toISOString() ?? invoice.date, customerName: invoice.customerName,
+      customerPhone: invoice.customerPhone ? formatIraqiPhone(invoice.customerPhone) : null, paymentMethod: invoice.paymentMethod, paymentStatus: invoice.paymentStatus,
       subtotal: String(invoice.subtotal), discountAmount: String(invoice.discountAmount), taxAmount: String(invoice.taxAmount),
       total: String(invoice.total), paidAmount: String(invoice.paidAmount), remainingAmount: String(invoice.remainingAmount),
       notes: typeof invoice.notes === "string" && invoice.notes.trim() ? invoice.notes.trim() : null,
@@ -322,7 +389,7 @@ export async function enqueueSalesInvoicePrint(input: { actor: RemotePrintActor;
   const { printer, agent } = await resolvePrinter(input);
   const paperSize = normalizePaperSize(input.paperSize ?? printer.paperSize);
   const copies = normalizeCopies(input.copies, printer.defaultCopies);
-  const payload = await buildSalesInvoicePayload(invoiceId, paperSize);
+  const payload = await buildSalesInvoicePayload(invoiceId, paperSize, printer);
   const allowed = Array.isArray(printer.allowedDocumentTypes) ? printer.allowedDocumentTypes : [];
   if (!allowed.includes(REMOTE_PRINT_DOCUMENT)) throw new RemotePrintError(403, "PERMISSION_DENIED", "الطابعة المحددة غير مخصصة لفواتير المبيعات.");
   try {

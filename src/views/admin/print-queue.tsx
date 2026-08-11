@@ -12,7 +12,7 @@ type Agent = {
 };
 type PrinterRow = {
   id: number; agentId: number; name: string; displayName: string | null; paperSize: "80mm" | "58mm";
-  defaultCopies: number; isDefault: boolean; isActive: boolean;
+  defaultCopies: number; horizontalOffsetMm: string; verticalOffsetMm: string; isDefault: boolean; isActive: boolean;
   agent: { id: number; name: string; agentId: string } | null;
 };
 type PrinterSaveResult = { printer: PrinterRow; operation: "created" | "updated" };
@@ -40,6 +40,8 @@ export default function PrintQueuePage() {
   const [selectedDetectedPrinter, setSelectedDetectedPrinter] = useState("");
   const [paperSize, setPaperSize] = useState<"80mm" | "58mm">("80mm");
   const [defaultCopies, setDefaultCopies] = useState(1);
+  const [horizontalOffsetMm, setHorizontalOffsetMm] = useState(0);
+  const [verticalOffsetMm, setVerticalOffsetMm] = useState(0);
   const [isDefault, setIsDefault] = useState(false);
   const [status, setStatus] = useState<Job["status"] | "all">("all");
 
@@ -68,7 +70,7 @@ export default function PrintQueuePage() {
   const savePrinter = useMutation({
     mutationFn: () => adminFetch<PrinterSaveResult>("/admin/printers", {
       method: "POST",
-      body: JSON.stringify({ agentId: Number(selectedAgentId), name: selectedDetectedPrinter, paperSize, defaultCopies, isDefault }),
+      body: JSON.stringify({ agentId: Number(selectedAgentId), name: selectedDetectedPrinter, paperSize, defaultCopies, isDefault, horizontalOffsetMm, verticalOffsetMm }),
     }),
     onSuccess: async (result) => {
       await refresh();
@@ -83,7 +85,7 @@ export default function PrintQueuePage() {
   });
 
   const selectAgent = (agentId: string) => {
-    setSelectedAgentId(agentId); setSelectedDetectedPrinter(""); setPaperSize("80mm"); setDefaultCopies(1); setIsDefault(false);
+    setSelectedAgentId(agentId); setSelectedDetectedPrinter(""); setPaperSize("80mm"); setDefaultCopies(1); setHorizontalOffsetMm(0); setVerticalOffsetMm(0); setIsDefault(false);
   };
   const selectPrinter = (name: string) => {
     const existing = (printers.data?.printers ?? []).find((printer) => printer.agentId === Number(selectedAgentId) && printer.name === name);
@@ -91,6 +93,8 @@ export default function PrintQueuePage() {
     setSelectedDetectedPrinter(name);
     setPaperSize(existing?.paperSize ?? "80mm");
     setDefaultCopies(existing?.defaultCopies ?? 1);
+    setHorizontalOffsetMm(Number(existing?.horizontalOffsetMm ?? 0));
+    setVerticalOffsetMm(Number(existing?.verticalOffsetMm ?? 0));
     setIsDefault(existing?.isDefault ?? !agentHasDefault);
   };
 
@@ -106,6 +110,11 @@ export default function PrintQueuePage() {
       <div className="rounded-xl border border-border/40 bg-card p-4"><div className="mb-3 flex items-center gap-2 font-semibold"><Computer className="h-4 w-4 text-primary" />إضافة جهاز طباعة</div><div className="grid gap-2"><input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="اسم الجهاز: حاسبة المحل الرئيسية" className="rounded-md border border-input bg-background px-3 py-2 text-sm" /><input value={agentCode} onChange={(event) => setAgentCode(event.target.value)} placeholder="Agent ID اختياري: AJN-PRINT-001" className="rounded-md border border-input bg-background px-3 py-2 text-sm" dir="ltr" /><Button onClick={() => createAgent.mutate()} disabled={createAgent.isPending || !agentName.trim()}>{createAgent.isPending ? "جاري الإنشاء..." : "إنشاء رمز التسجيل"}</Button></div></div>
       <div className="rounded-xl border border-border/40 bg-card p-4"><div className="mb-3 flex items-center gap-2 font-semibold"><Printer className="h-4 w-4 text-primary" />إعداد طابعة Windows المكتشفة</div><div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><select value={selectedAgentId} onChange={(event) => selectAgent(event.target.value)} className="rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="">اختر جهاز Windows</option>{(agents.data?.agents ?? []).filter((agent) => agent.liveStatus !== "disabled").map((agent) => <option key={agent.id} value={agent.id}>{agent.name} — {agentLabel[agent.liveStatus]}</option>)}</select><select value={selectedDetectedPrinter} onChange={(event) => selectPrinter(event.target.value)} disabled={!selectedAgent} className="rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="">اختر طابعة Windows</option>{selectedAgent?.detectedPrinters.map((printer) => <option key={printer.name} value={printer.name}>{printer.displayName || printer.name}</option>)}</select><div className="flex gap-2"><select aria-label="عرض الورق" value={paperSize} onChange={(event) => setPaperSize(event.target.value as "80mm" | "58mm")} className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-2 text-sm"><option value="80mm">80mm</option><option value="58mm">58mm</option></select><input aria-label="عدد النسخ الافتراضي" type="number" min={1} max={10} value={defaultCopies} onChange={(event) => setDefaultCopies(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} className="w-16 rounded-md border border-input bg-background px-2 py-2 text-sm" /></div><div className="flex items-center justify-between gap-2"><label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />الطابعة الافتراضية</label><Button onClick={() => savePrinter.mutate()} disabled={savePrinter.isPending || !selectedAgentId || !selectedDetectedPrinter}>{savePrinter.isPending ? "جاري الحفظ..." : selectedExistingPrinter ? "تحديث الطابعة" : "حفظ الطابعة"}</Button></div></div></div>
     </section>
+
+    {selectedExistingPrinter ? <section className="rounded-xl border border-border/40 bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold">معايرة الطابعة الحرارية</h2><p className="mt-1 text-xs text-muted-foreground">للتصحيح الفيزيائي لطابعة XP-80C فقط. اترك القيم 0mm عندما يكون القالب مضبوطاً.</p></div><Button variant="outline" onClick={() => savePrinter.mutate()} disabled={savePrinter.isPending}>{savePrinter.isPending ? "جاري الحفظ..." : "حفظ المعايرة"}</Button></div>
+      <div className="mt-3 grid max-w-lg gap-3 sm:grid-cols-2"><label className="grid gap-1 text-sm"><span>الإزاحة الأفقية (mm)</span><input type="number" min={-5} max={5} step={0.1} value={horizontalOffsetMm} onChange={(event) => setHorizontalOffsetMm(Math.max(-5, Math.min(5, Number(event.target.value) || 0)))} className="rounded-md border border-input bg-background px-3 py-2" /></label><label className="grid gap-1 text-sm"><span>الإزاحة العمودية (mm)</span><input type="number" min={-5} max={5} step={0.1} value={verticalOffsetMm} onChange={(event) => setVerticalOffsetMm(Math.max(-5, Math.min(5, Number(event.target.value) || 0)))} className="rounded-md border border-input bg-background px-3 py-2" /></label></div>
+    </section> : null}
 
     <section className="rounded-xl border border-border/40 bg-card"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/30 p-4"><div className="font-semibold">مهام فواتير المبيعات</div><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} className="rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="all">كل الحالات</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="overflow-x-auto"><table className="min-w-[760px] w-full text-right text-sm"><thead className="bg-muted/30 text-xs text-muted-foreground"><tr><th className="p-3">المهمة</th><th className="p-3">الفاتورة</th><th className="p-3">الحالة</th><th className="p-3">النسخ</th><th className="p-3">الطالب</th><th className="p-3">الوقت</th><th className="p-3">إجراء</th></tr></thead><tbody>{jobs.isLoading ? <tr><td colSpan={7} className="p-8 text-center text-muted-foreground"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr> : !(jobs.data?.jobs ?? []).length ? <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">لا توجد مهام مطابقة.</td></tr> : jobs.data!.jobs.map((job) => <tr key={job.id} className="border-t border-border/20"><td className="p-3 font-mono text-xs" dir="ltr">{job.jobNo}</td><td className="p-3">#{job.invoiceId ?? "—"}</td><td className="p-3"><span className="inline-flex items-center gap-1 font-medium">{job.status === "printed" ? <CheckCircle2 className="h-3.5 w-3.5 text-status-success" /> : job.status === "failed" ? <CircleAlert className="h-3.5 w-3.5 text-status-danger" /> : <Printer className="h-3.5 w-3.5 text-primary" />}{statusLabel[job.status]}</span>{job.errorMessage ? <p className="mt-1 max-w-48 truncate text-[11px] text-status-danger" title={job.errorMessage}>{job.errorMessage}</p> : null}</td><td className="p-3">{job.copies} · {job.paperSize}</td><td className="p-3">{job.requestedByName || "النظام"}</td><td className="p-3 text-xs text-muted-foreground">{time(job.requestedAt)}</td><td className="p-3">{job.status === "failed" ? <Button size="sm" variant="outline" onClick={() => action.mutate({ job, action: "retry" })} disabled={action.isPending} className="gap-1"><RotateCcw className="h-3.5 w-3.5" />إعادة</Button> : job.status === "queued" ? <Button size="sm" variant="ghost" onClick={() => action.mutate({ job, action: "cancel" })} disabled={action.isPending} className="gap-1 text-status-danger"><XCircle className="h-3.5 w-3.5" />إلغاء</Button> : "—"}</td></tr>)}</tbody></table></div></section>
 

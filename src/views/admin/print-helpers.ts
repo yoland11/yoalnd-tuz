@@ -1,4 +1,5 @@
 import { formatCurrency } from "@/lib/money";
+import { buildSalesInvoiceThermalHtml } from "@workspace/print-template";
 
 export type ThermalPaperSize = "58mm" | "80mm" | "a4" | "pdf";
 
@@ -190,6 +191,7 @@ export type SalesInvoiceReceiptInput = {
   total: number | string;
   paid: number | string;
   remaining: number | string;
+  notes?: string | null;
   qrDataUrl?: string | null;
   qrCaption?: string | null;
   logoUrl?: string | null;
@@ -257,6 +259,46 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput) {
   const popup = window.open("", "_blank", isThermal ? "width=440,height=760" : "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
 
+  // Browser printing and AJN Print Agent both render this same document
+  // builder. Keep thermal invoice markup and number formatting out of this
+  // view-local integration layer so the two outputs cannot drift.
+  if (isThermal) {
+    const thermalDocument = buildSalesInvoiceThermalHtml({
+      paperSize: input.paperSize as "58mm" | "80mm",
+      invoiceNo: input.invoiceNo,
+      issuedAt: input.issuedAt,
+      customerName: input.customerName,
+      customerPhone: input.customerPhone,
+      paymentMethod: input.paymentMethod,
+      paymentStatus: input.paymentStatus,
+      employeeName: input.employeeName,
+      items: input.items,
+      subtotal: input.subtotal,
+      discount: input.discount,
+      tax: input.tax,
+      deliveryFee: input.deliveryFee,
+      total: input.total,
+      paid: input.paid,
+      remaining: input.remaining,
+      notes: input.notes,
+      qrImageUrl: input.qrDataUrl,
+      qrCaption: input.qrCaption,
+      logoUrl: input.logoUrl,
+      companyName: input.companyName,
+      companyPhone: input.companyPhone,
+      companyAddress: input.companyAddress,
+      footerText: input.footerText,
+      showLogo: input.showLogo,
+      showQr: input.showQr,
+      showCustomerPhone: input.showCustomerPhone,
+      showEmployeeName: input.showEmployeeName,
+      showAddress: input.showAddress,
+    });
+    popup.document.write(thermalDocument.replace("</body>", `${printWhenImagesReadyScript()}</body>`));
+    popup.document.close();
+    return;
+  }
+
   const esc = escapePrintHtml;
   const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
   const issuedAt = input.issuedAt ? new Date(input.issuedAt) : null;
@@ -283,13 +325,8 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput) {
     kv("حالة الدفع", paymentStatus),
     input.showEmployeeName !== false ? kv("الموظف", input.employeeName) : "",
   ].join("");
-  const itemRows = input.items.map((item, index) => input.paperSize === "58mm"
-    ? `<tr><td class="name" colspan="2">${esc(item.productName)}</td></tr><tr class="ln2"><td class="num">${esc(item.quantity)} × ${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`
-    : `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`,
-  ).join("");
-  const itemHead = input.paperSize === "58mm"
-    ? "<tr><th class=\"name\">الصنف</th><th>الإجمالي</th></tr>"
-    : "<tr><th>#</th><th class=\"name\">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>";
+  const itemRows = input.items.map((item, index) => `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`).join("");
+  const itemHead = "<tr><th>#</th><th class=\"name\">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>";
   const totals = `
     <div class="totals">
       ${amounts.subtotal ? `<div class="row"><span>المجموع الفرعي</span><span class="num">${esc(formatCurrency(amounts.subtotal))}</span></div>` : ""}
@@ -310,10 +347,8 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput) {
   const qr = input.showQr !== false && input.qrDataUrl
     ? `<div class="qr"><img src="${esc(input.qrDataUrl)}" alt="QR"><div class="cap num">${esc(input.qrCaption || input.invoiceNo)}</div></div>`
     : "";
-  const body = isThermal
-    ? `<div class="receipt">${header}<hr class="rule"><div class="meta-rows">${metaRows}</div><hr class="rule dashed"><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</div>`
-    : `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
-  const css = isThermal ? thermalReceiptCss(input.paperSize as "58mm" | "80mm") : salesInvoiceSheetCss();
+  const body = `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
+  const css = salesInvoiceSheetCss();
   popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`);
   popup.document.close();
 }
