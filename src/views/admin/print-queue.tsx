@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, CircleAlert, Computer, Copy, Loader2, Printer, RefreshCw, RotateCcw, XCircle } from "lucide-react";
+import { CheckCircle2, CircleAlert, Computer, Copy, Loader2, Printer, RefreshCw, RotateCcw, Trash2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, apiErrorMessage } from "./_lib";
 
@@ -44,6 +54,7 @@ export default function PrintQueuePage() {
   const [verticalOffsetMm, setVerticalOffsetMm] = useState(0);
   const [isDefault, setIsDefault] = useState(false);
   const [status, setStatus] = useState<Job["status"] | "all">("all");
+  const [agentToRemove, setAgentToRemove] = useState<Agent | null>(null);
 
   const agents = useQuery<{ agents: Agent[] }>({ queryKey: ["admin", "print-agents"], queryFn: () => adminFetch("/admin/print-agents"), refetchInterval: 30_000 });
   const printers = useQuery<{ printers: PrinterRow[] }>({ queryKey: ["admin", "remote-printers"], queryFn: () => adminFetch("/admin/printers"), refetchInterval: 30_000 });
@@ -83,6 +94,16 @@ export default function PrintQueuePage() {
     onSuccess: () => { void refresh(); toast({ title: "تم تحديث مهمة الطباعة" }); },
     onError: (error) => toast({ title: "تعذر تحديث المهمة", description: apiErrorMessage(error), variant: "destructive" }),
   });
+  const removeAgent = useMutation({
+    mutationFn: (agentId: number) => adminFetch(`/admin/print-agents/${agentId}`, { method: "PATCH", body: JSON.stringify({ disabled: true }) }),
+    onSuccess: async () => {
+      if (selectedAgentId === String(agentToRemove?.id)) selectAgent("");
+      setAgentToRemove(null);
+      await refresh();
+      toast({ title: "تم إلغاء تسجيل جهاز Windows", description: "لن يتمكن الجهاز من استقبال مهام طباعة جديدة." });
+    },
+    onError: (error) => toast({ title: "تعذر حذف الجهاز", description: apiErrorMessage(error), variant: "destructive" }),
+  });
 
   const selectAgent = (agentId: string) => {
     setSelectedAgentId(agentId); setSelectedDetectedPrinter(""); setPaperSize("80mm"); setDefaultCopies(1); setHorizontalOffsetMm(0); setVerticalOffsetMm(0); setIsDefault(false);
@@ -118,6 +139,23 @@ export default function PrintQueuePage() {
 
     <section className="rounded-xl border border-border/40 bg-card"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/30 p-4"><div className="font-semibold">مهام فواتير المبيعات</div><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} className="rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="all">كل الحالات</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="overflow-x-auto"><table className="min-w-[760px] w-full text-right text-sm"><thead className="bg-muted/30 text-xs text-muted-foreground"><tr><th className="p-3">المهمة</th><th className="p-3">الفاتورة</th><th className="p-3">الحالة</th><th className="p-3">النسخ</th><th className="p-3">الطالب</th><th className="p-3">الوقت</th><th className="p-3">إجراء</th></tr></thead><tbody>{jobs.isLoading ? <tr><td colSpan={7} className="p-8 text-center text-muted-foreground"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr> : !(jobs.data?.jobs ?? []).length ? <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">لا توجد مهام مطابقة.</td></tr> : jobs.data!.jobs.map((job) => <tr key={job.id} className="border-t border-border/20"><td className="p-3 font-mono text-xs" dir="ltr">{job.jobNo}</td><td className="p-3">#{job.invoiceId ?? "—"}</td><td className="p-3"><span className="inline-flex items-center gap-1 font-medium">{job.status === "printed" ? <CheckCircle2 className="h-3.5 w-3.5 text-status-success" /> : job.status === "failed" ? <CircleAlert className="h-3.5 w-3.5 text-status-danger" /> : <Printer className="h-3.5 w-3.5 text-primary" />}{statusLabel[job.status]}</span>{job.errorMessage ? <p className="mt-1 max-w-48 truncate text-[11px] text-status-danger" title={job.errorMessage}>{job.errorMessage}</p> : null}</td><td className="p-3">{job.copies} · {job.paperSize}</td><td className="p-3">{job.requestedByName || "النظام"}</td><td className="p-3 text-xs text-muted-foreground">{time(job.requestedAt)}</td><td className="p-3">{job.status === "failed" ? <Button size="sm" variant="outline" onClick={() => action.mutate({ job, action: "retry" })} disabled={action.isPending} className="gap-1"><RotateCcw className="h-3.5 w-3.5" />إعادة</Button> : job.status === "queued" ? <Button size="sm" variant="ghost" onClick={() => action.mutate({ job, action: "cancel" })} disabled={action.isPending} className="gap-1 text-status-danger"><XCircle className="h-3.5 w-3.5" />إلغاء</Button> : "—"}</td></tr>)}</tbody></table></div></section>
 
-    <section className="rounded-xl border border-border/40 bg-card p-4"><h2 className="mb-3 font-semibold">أجهزة Windows</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{(agents.data?.agents ?? []).map((agent) => <article key={agent.id} className="rounded-lg border border-border/35 bg-background/40 p-3"><div className="flex items-center justify-between gap-2"><strong>{agent.name}</strong><span className="text-xs font-semibold">{agentLabel[agent.liveStatus]}</span></div><p className="mt-1 font-mono text-xs text-muted-foreground" dir="ltr">{agent.agentId}</p><p className="mt-2 text-xs text-muted-foreground">{agent.hostname || "بانتظار التسجيل"} · آخر اتصال {time(agent.lastSeenAt)}</p><p className="mt-1 text-xs text-muted-foreground">{agent.detectedPrinters.length} طابعة مكتشفة</p></article>)}{!agents.isLoading && !(agents.data?.agents ?? []).length ? <p className="text-sm text-muted-foreground">أضف جهازاً ثم ثبّت AJN Print Agent عليه.</p> : null}</div></section>
+    <section className="rounded-xl border border-border/40 bg-card p-4"><div className="mb-3 flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold">أجهزة Windows</h2><p className="mt-1 text-xs text-muted-foreground">حذف الجهاز يلغي تسجيله ويمنع اتصاله، مع الاحتفاظ بسجل مهام الطباعة.</p></div></div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{(agents.data?.agents ?? []).filter((agent) => agent.liveStatus !== "disabled").map((agent) => <article key={agent.id} className="rounded-lg border border-border/35 bg-background/40 p-3"><div className="flex items-center justify-between gap-2"><strong>{agent.name}</strong><span className="text-xs font-semibold">{agentLabel[agent.liveStatus]}</span></div><p className="mt-1 font-mono text-xs text-muted-foreground" dir="ltr">{agent.agentId}</p><p className="mt-2 text-xs text-muted-foreground">{agent.hostname || "بانتظار التسجيل"} · آخر اتصال {time(agent.lastSeenAt)}</p><div className="mt-3 flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">{agent.detectedPrinters.length} طابعة مكتشفة</p><Button type="button" variant="ghost" size="sm" className="gap-1 text-destructive hover:text-destructive" onClick={() => setAgentToRemove(agent)}><Trash2 className="h-3.5 w-3.5" />حذف الجهاز</Button></div></article>)}{!agents.isLoading && !(agents.data?.agents ?? []).filter((agent) => agent.liveStatus !== "disabled").length ? <p className="text-sm text-muted-foreground">أضف جهازاً ثم ثبّت AJN Print Agent عليه.</p> : null}</div></section>
+
+    <AlertDialog open={Boolean(agentToRemove)} onOpenChange={(open) => !open && !removeAgent.isPending && setAgentToRemove(null)}>
+      <AlertDialogContent dir="rtl">
+        <AlertDialogHeader className="text-right">
+          <AlertDialogTitle>حذف جهاز Windows؟</AlertDialogTitle>
+          <AlertDialogDescription>
+            سيتم إلغاء تسجيل «{agentToRemove?.name}» فوراً ولن يستطيع استقبال مهام جديدة. تبقى مهام الطباعة السابقة محفوظة في السجل.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="gap-2 sm:space-x-0">
+          <AlertDialogCancel disabled={removeAgent.isPending}>إلغاء</AlertDialogCancel>
+          <AlertDialogAction onClick={() => agentToRemove && removeAgent.mutate(agentToRemove.id)} disabled={removeAgent.isPending} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            {removeAgent.isPending ? "جارٍ الحذف..." : "حذف الجهاز"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </main>;
 }
