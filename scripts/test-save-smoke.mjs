@@ -55,6 +55,7 @@ const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
 const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 const bundleSchema = readFileSync("lib/db/src/schema/product-bundles.ts", "utf8");
+const bundlePage = readFileSync("src/views/admin/product-bundles.tsx", "utf8");
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
@@ -68,6 +69,8 @@ check("shared client coalesces duplicate in-flight writes", client.includes("inF
 check("bundle sale resolves components server-side", api.includes("resolveSalesInvoiceBundleLines") && api.includes("salesInvoiceBundleSnapshotsTable"));
 check("bundle stock uses the same conditional invoice transaction", api.includes("sales_invoice_bundle_stock_deducted") && api.includes("stock::numeric >="));
 check("bundle snapshot schema preserves original components", bundleSchema.includes("salesInvoiceBundleSnapshotsTable") && bundleSchema.includes("components"));
+check("used bundles archive instead of deleting invoice history", api.includes('operation: "archived"') && api.includes("sales_invoice_bundle_snapshots"));
+check("bundle management has live component search and duplicate protection", bundlePage.includes("componentSearch") && bundlePage.includes("selectedIds.has"));
 
 const safeTestDb = process.env.AJN_ENV === "test"
   && process.env.ALLOW_TEST_WRITES === "true"

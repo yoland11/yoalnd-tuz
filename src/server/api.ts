@@ -35647,6 +35647,54 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
   const auth = await requirePermission(req, "products");
   if (isResponse(auth)) return auth;
   const id = int(parts[2]);
+  if (req.method === "PATCH" && id && parts[3] === "status") {
+    const parsed = z.object({ isActive: z.boolean() }).safeParse(await body(req));
+    if (!parsed.success) return validationError("product-bundle.status", parsed);
+    const [bundle] = await db
+      .update(productBundlesTable)
+      .set({ isActive: parsed.data.isActive, updatedAt: new Date() })
+      .where(and(eq(productBundlesTable.id, id), isNull(productBundlesTable.archivedAt)))
+      .returning();
+    if (!bundle) return error("العرض غير موجود أو مؤرشف", 404);
+    void logAdminActivity(req, parsed.data.isActive ? "product_bundle_activated" : "product_bundle_deactivated", "product_bundle", id);
+    return json({ bundle, operation: parsed.data.isActive ? "activated" : "deactivated" });
+  }
+  if (req.method === "DELETE" && id) {
+    const outcome = await db.transaction(async (tx) => {
+      const [bundle] = await tx
+        .select()
+        .from(productBundlesTable)
+        .where(eq(productBundlesTable.id, id))
+        .limit(1);
+      if (!bundle) throw new CheckoutError("العرض غير موجود", 404);
+      const used: any = await tx.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM sales_invoice_bundle_snapshots WHERE bundle_id = ${id}
+          UNION ALL
+          SELECT 1 FROM sales_invoice_items WHERE bundle_id = ${id}
+        ) AS used
+      `);
+      const hasHistory = Boolean((used.rows ?? used ?? [])[0]?.used);
+      if (hasHistory) {
+        const [archived] = await tx
+          .update(productBundlesTable)
+          .set({
+            archivedAt: new Date(),
+            isActive: false,
+            showInStore: false,
+            showInSalesInvoices: false,
+            updatedAt: new Date(),
+          })
+          .where(eq(productBundlesTable.id, id))
+          .returning();
+        return { bundle: archived, operation: "archived" as const };
+      }
+      await tx.delete(productBundlesTable).where(eq(productBundlesTable.id, id));
+      return { bundle, operation: "deleted" as const };
+    });
+    void logAdminActivity(req, `product_bundle_${outcome.operation}`, "product_bundle", id);
+    return json(outcome);
+  }
   if (req.method === "GET") {
     const [bundles, items] = await Promise.all([
       db.select().from(productBundlesTable).orderBy(desc(productBundlesTable.updatedAt)),
@@ -35682,7 +35730,7 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
       };
       let saved: any;
       if (id) {
-        [saved] = await tx.update(productBundlesTable).set(values).where(eq(productBundlesTable.id, id)).returning();
+        [saved] = await tx.update(productBundlesTable).set(values).where(and(eq(productBundlesTable.id, id), isNull(productBundlesTable.archivedAt))).returning();
         if (!saved) throw new CheckoutError("العرض غير موجود", 404);
         await tx.delete(productBundleItemsTable).where(eq(productBundleItemsTable.bundleId, id));
       } else {
@@ -48341,6 +48389,7 @@ async function resolveSalesInvoiceBundleLines(
     if (
       !bundle ||
       !bundle.isActive ||
+      bundle.archivedAt ||
       !bundle.showInSalesInvoices ||
       (bundle.startsAt && bundle.startsAt > now) ||
       (bundle.endsAt && bundle.endsAt < now) ||

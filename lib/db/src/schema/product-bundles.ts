@@ -26,6 +26,9 @@ export const productBundlesTable = pgTable("product_bundles", {
   endsAt: timestamp("ends_at"),
   showInStore: boolean("show_in_store").notNull().default(false),
   showInSalesInvoices: boolean("show_in_sales_invoices").notNull().default(true),
+  // Used offers remain part of the financial record. Archiving only removes
+  // them from new sales/catalogues; immutable invoice snapshots stay intact.
+  archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
