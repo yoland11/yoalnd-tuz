@@ -7,6 +7,7 @@ import { BUCKET_LABEL, STAGE_LABEL, isKoshaPendingPricing, money, staffApi, type
 import { KoshaOpsBoardPage, KoshaOpsReportsPage } from "./operations";
 import { countOps, flushQueue } from "./offline";
 import StaffBookingDetail from "./booking-detail";
+import { KoshatWorkOrderDetail, MyKoshatWorkOrders } from "./work-orders";
 
 const STAGE_BADGE: Record<string, string> = {
   booked: "bg-muted text-muted-foreground",
@@ -471,8 +472,9 @@ function StaffPortalContent() {
     );
   }
 
-  const onDetail = /^\/staff\/koshas\/booking\//.test(location);
+  const onDetail = /^\/staff\/koshas\/(booking|work-orders)\//.test(location);
   const tabs = [
+    canStaff && { href: "/staff/koshas/work-orders", label: "مهامي", icon: ClipboardList, match: location.startsWith("/staff/koshas/work-orders") },
     canStaff && { href: "/staff/koshas", label: "الرئيسية", icon: Home, match: location === "/staff/koshas" },
     canStaff && { href: "/staff/koshas/list/all", label: "الحجوزات", icon: ClipboardList, match: location.startsWith("/staff/koshas/list") },
     canStaff && { href: "/staff/koshas/reports", label: "تقاريري", icon: BarChart3, match: location === "/staff/koshas/reports" },
@@ -500,6 +502,8 @@ function StaffPortalContent() {
 
       <main className="pb-20">
         <Switch>
+          <Route path="/staff/koshas/work-orders/:id">{(p) => <KoshatWorkOrderDetail id={Number(p.id)} />}</Route>
+          <Route path="/staff/koshas/work-orders"><MyKoshatWorkOrders /></Route>
           <Route path="/staff/koshas/booking/:id">{(p) => <StaffBookingDetail id={Number(p.id)} source={new URLSearchParams(window.location.search).get("source") === "service" ? "service" : "kosha"} onBack={() => window.history.back()} />}</Route>
           <Route path="/staff/koshas/list/:bucket">{(p) => <BookingsList bucket={(p.bucket as Bucket | "all") ?? "all"} showOperations={canSeeAllOperations} />}</Route>
           <Route path="/staff/koshas/list"><BookingsList bucket="all" showOperations={canSeeAllOperations} /></Route>

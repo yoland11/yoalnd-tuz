@@ -30,6 +30,7 @@ const AdminKoshaBookingsPage = lazy(() =>
     default: module.AdminKoshaBookingsPage,
   })),
 );
+const KoshatTasksPage = lazy(() => import("./koshat-tasks"));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
 const ProductBundlesPage = lazy(() => import("./product-bundles"));
@@ -614,6 +615,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="accounting">
                 <FinanceDashboardPage me={me} />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/koshat-tasks">
+            {() => (
+              <Guard me={me} anyPerm={["koshat_tasks.view_all", "koshat_tasks.assign", "orders"]}>
+                <KoshatTasksPage />
               </Guard>
             )}
           </Route>

@@ -1,242 +1,59 @@
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { ArrowLeft, Award, CalendarDays, Camera, ChevronLeft, CirclePlay, Crown, Gem, Gift, Heart, Images, MapPin, Package, PartyPopper, ShieldCheck, ShoppingBag, Sparkles, Star, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
-import { ChevronLeft, MapPin, MessageCircle, Phone } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { handleDefaultLogoError, logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { buildWhatsAppLink } from "@/lib/order-stages";
-import { ProductColorDots } from "@/components/product-colors";
-import { useT } from "@/lib/i18n";
+import { useGetFeaturedProducts, useListServices } from "@workspace/api-client-react";
+import { usePublicSettings } from "@/lib/public-settings";
 import { useContentLocalizer } from "@/lib/content-i18n";
-import { FeaturedKoshasSection } from "@/views/koshas";
 import { formatCurrency } from "@/lib/money";
+import { FeaturedKoshasSection } from "@/views/koshas";
 
-export default function Home() {
-  const { data: featuredProducts, isLoading } = useGetFeaturedProducts();
-  const { data: services = [], isLoading: loadingServices } = useListServices();
-  const { data: settings } = usePublicSettings();
-  const t = useT();
-  const cl = useContentLocalizer();
-  const siteName = settings?.site_name ?? "مجموعة علي جان";
-  const waLink = settings?.whatsapp ? buildWhatsAppLink(settings.whatsapp, "مرحباً، أريد الاستفسار عن خدمات AJN") : "";
+const heroSlides = [
+  { image: "/images/hero.png", label: "حفلات زفاف", title: "تفاصيل تُرى وتُحَس" },
+  { image: "/images/kosha.png", label: "كوشات", title: "منصة تحتفي بلحظتك" },
+  { image: "/images/photo.png", label: "تصوير", title: "صور تبقى بعد انتهاء الحفل" },
+];
+const quickLinks = [
+  [Camera, "التصوير", "نروي القصة كما حدثت", "/services"], [Crown, "الكوشات", "مساحات مصممة للمشهد", "/koshas"], [Award, "التخرج", "احتفال يليق بالإنجاز", "/graduation"], [Sparkles, "الباقات", "ابدأ بخيار متكامل", "/services"],
+  [ShoppingBag, "المتجر", "تفاصيل تُهدى وتُحتفظ", "/store"], [Gift, "الهدايا", "اختيارات ذات معنى", "/store"],
+] as const;
+const gallery = ["/images/kosha.png", "/images/photo.png", "/images/setup.png", "/images/gifts.png", "/images/album.png"];
 
-  return (
-    <div className="flex flex-col w-full">
-      {/* Hero Section */}
-      <section className="relative h-[80dvh] min-h-[600px] w-full flex items-center justify-center overflow-hidden">
-<div className="absolute inset-0 z-0">
-          <img 
-            src="/images/hero.png" 
-            alt="مجموعة علي جان" 
-            width={1600}
-            height={1000}
-            fetchPriority="high"
-            className="w-full h-full object-cover object-center"
-          />
-          {/* Fixed dark scrim (independent of light/dark theme) so the white hero text & buttons always read on any photo. */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/55 to-black/45" />
-        </div>
-        
-        <div className="relative z-10 container mx-auto px-4 text-center">
-          <img src={logoSrc(settings)} alt={siteName} width={160} height={96} fetchPriority="high" decoding="async" onError={handleDefaultLogoError} className="h-20 md:h-24 w-40 mx-auto mb-5 object-contain drop-shadow-lg animate-fade-up" />
-          <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-4 tracking-tight drop-shadow-lg text-balance animate-fade-up [animation-delay:80ms]">
-            {siteName}
-          </h1>
-          <p className="text-xl md:text-2xl text-primary font-medium mb-10 max-w-2xl mx-auto drop-shadow animate-fade-up [animation-delay:160ms]">
-            {t("للمناسبات والتجهيزات")}
-          </p>
-          <div className="flex flex-wrap justify-center gap-3 mb-8 text-sm text-white/85 animate-fade-up [animation-delay:220ms]">
-            {settings?.phone && (
-              <a href={`tel:${settings.phone}`} className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <Phone className="w-4 h-4" /> {settings.phone}
-              </a>
-            )}
-            {waLink && (
-              <a href={waLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MessageCircle className="w-4 h-4" /> {t("واتساب")}
-              </a>
-            )}
-            {settings?.map_url && (
-              <a href={settings.map_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 hover:text-primary transition-colors">
-                <MapPin className="w-4 h-4" /> {t("موقع المحل")}
-              </a>
-            )}
-          </div>
-          
-          <div className="flex flex-wrap justify-center gap-4 max-w-3xl mx-auto animate-fade-up [animation-delay:280ms]">
-            <Link href="/services">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("الخدمات")}
-              </Button>
-            </Link>
-            <Link href="/store">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("المتجر")}
-              </Button>
-            </Link>
-            <Link href="/track">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("تتبع الطلب")}
-              </Button>
-            </Link>
-            <Link href="/gallery">
-              <Button size="lg" variant="outline" className="ajn-hero-btn w-40">
-                {t("أعمالنا")}
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Services Overview */}
-      <section className="py-20 bg-card border-y border-border">
-        <div className="container mx-auto px-4">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("خدماتنا المتميزة")}</h2>
-            <div className="h-1 w-20 bg-primary mx-auto rounded-full" />
-            <p className="text-muted-foreground mt-4 max-w-2xl mx-auto">
-              {t("نقدم مجموعة متكاملة من خدمات تنسيق وتجهيز المناسبات بأعلى مستويات الجودة والفخامة")}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {loadingServices ? (
-              Array(3).fill(0).map((_, i) => (
-                <Skeleton key={i} className="h-64 rounded-lg" />
-              ))
-            ) : services.slice(0, 3).map((service: any, i: number) => (
-              <Link key={service.id} href={`/services/${service.id}`}>
-                <div className="group relative h-64 overflow-hidden rounded-lg cursor-pointer border border-border animate-fade-up" style={{ animationDelay: `${i * 80}ms` }}>
-                  <img
-                    src={service.image || serviceImageFor(service.type)}
-                    alt={cl.name(service) || service.name}
-                    width={640}
-                    height={420}
-                    loading="lazy"
-                    decoding="async"
-                    className="w-full h-full transition-transform duration-700 group-hover:scale-105"
-                    style={{ objectFit: (service as any).imageMetadata?.objectFit ?? "cover" }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-end p-6">
-                    <h3 className="text-xl font-bold text-white">{cl.name(service) || service.name}</h3>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-          
-          <div className="mt-10 text-center">
-            <Link href="/services">
-              <Button variant="ghost" className="text-primary hover:text-primary hover:bg-primary/10">
-                {t("عرض جميع الخدمات")}
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      <FeaturedKoshasSection />
-
-      {/* Featured Products */}
-{/* Featured Products */}
-<section className="py-20 bg-background">
-  <div className="container mx-auto px-4">
-    <div className="flex justify-between items-end mb-10">
-      <div>
-        <h2 className="text-3xl font-bold text-foreground mb-4 text-balance">{t("وصل حديثاً")}</h2>
-        <div className="h-1 w-20 bg-primary rounded-full" />
-      </div>
-      <Link href="/store">
-        <Button variant="link" className="text-primary hidden sm:flex">
-          {t("تسوق الآن")}
-        </Button>
-      </Link>
-    </div>
-
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
-      {isLoading ? (
-        Array(4).fill(0).map((_, i) => (
-          <Card key={i} className="bg-card border-border overflow-hidden">
-            <Skeleton className="h-48 w-full rounded-none" />
-            <CardContent className="p-4">
-              <Skeleton className="h-4 w-2/3 mb-2" />
-              <Skeleton className="h-4 w-1/3" />
-            </CardContent>
-          </Card>
-        ))
-      ) : (
-        (Array.isArray(featuredProducts)
-          ? featuredProducts
-          : (featuredProducts as any)?.items || (featuredProducts as any)?.data || []
-        )
-          .slice(0, 4)
-          .map((product: any, i: number) => (
-            <Link key={product.id} href={`/store/${product.id}`} className="animate-fade-up" style={{ animationDelay: `${i * 60}ms` }}>
-              <Card className="bg-card border-border overflow-hidden group cursor-pointer hover:border-primary/50 transition-colors h-full flex flex-col">
-                <div className="relative aspect-square overflow-hidden bg-muted">
-                  <img
-                    src={
-                      (Array.isArray(product.images) ? product.images[0] : null) ||
-                      product.imageUrl ||
-                      product.image_url ||
-                      "/images/hero.png"
-                    }
-                    alt={cl.name(product) || product.name || "منتج"}
-                    width={400}
-                    height={400}
-                    loading="lazy"
-                    decoding="async"
-                    className="w-full h-full transition-transform duration-500 group-hover:scale-110"
-                    style={{ objectFit: product.imageMetadata?.[0]?.objectFit ?? "cover" }}
-                  />
-                </div>
-                <CardContent className="p-4 flex flex-col flex-1">
-                  <h3 className="font-medium text-sm md:text-base line-clamp-2 mb-2 text-foreground group-hover:text-primary transition-colors">
-                    {cl.name(product) || product.name || "منتج"}
-                  </h3>
-                  <ProductColorDots colors={product.colors} />
-                  <div className="mt-auto flex items-center justify-between">
-                    <span className="font-bold text-primary">
-                      {formatCurrency(product.price)}
-                    </span>
-                    <ChevronLeft className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
-          ))
-      )}
-    </div>
-  </div>
-</section>
-      {/* About snippet */}
-      <section className="py-24 bg-card border-t border-border relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '32px 32px' }} />
-        <div className="container mx-auto px-4 text-center relative z-10 max-w-3xl">
-          <h2 className="text-3xl font-bold text-primary mb-6 text-balance">{t("قصتنا")}</h2>
-          <p className="text-lg text-muted-foreground leading-relaxed mb-8 [text-wrap:pretty] max-w-prose mx-auto">
-            {t("تأسست {name} في {city} لترتقي بمفهوم المناسبات والتجهيزات. نجمع بين أصالة الثقافة العراقية في الاحتفالات ولمسات الفخامة العصرية، لنصنع ذكريات لا تُنسى في أهم لحظات حياتكم.")
-              .replace("{name}", siteName)
-              .replace("{city}", settings?.city || "طوزخورماتو")}
-          </p>
-          <div className="flex justify-center gap-4">
-            <div className="w-16 h-[1px] bg-primary/40 mt-4" />
-            <div className="w-2 h-2 rounded-full bg-primary mt-3" />
-            <div className="w-16 h-[1px] bg-primary/40 mt-4" />
-          </div>
-        </div>
-      </section>
-    </div>
-  );
+function SectionHeading({ hint, title, link }: { hint: string; title: string; link?: { text: string; href: string } }) {
+  return <div className="ajn-home-heading"><div><p>{hint}</p><h2>{title}</h2></div>{link && <Link href={link.href} className="ajn-home-text-link">{link.text}<ArrowLeft className="h-4 w-4" /></Link>}</div>;
 }
 
-function serviceImageFor(type?: string | null): string {
-  const key = String(type ?? "");
-  if (key.includes("photo")) return "/images/photo.png";
-  if (key.includes("kosha")) return "/images/kosha.png";
-  if (key.includes("gift")) return "/images/gifts.png";
-  if (key.includes("album")) return "/images/album.png";
-  if (key.includes("research")) return "/images/research.png";
-  return "/images/setup.png";
+export default function Home() {
+  const { data: settings } = usePublicSettings();
+  const { data: services = [], isLoading: loadingServices } = useListServices();
+  const { data: featuredProducts, isLoading: loadingProducts } = useGetFeaturedProducts();
+  const cl = useContentLocalizer(); const [slide, setSlide] = useState(0);
+  const products = useMemo(() => (Array.isArray(featuredProducts) ? featuredProducts : (featuredProducts as any)?.items || (featuredProducts as any)?.data || []).slice(0, 4), [featuredProducts]);
+  useEffect(() => { const timer = window.setInterval(() => setSlide((value) => (value + 1) % heroSlides.length), 5500); return () => window.clearInterval(timer); }, []);
+  return <div className="ajn-home" dir="rtl">
+    <section className="ajn-home-hero" aria-label="AJN Group">
+      <div className="ajn-home-hero-media" aria-hidden="true">{heroSlides.map((item, index) => <img key={item.image} src={item.image} alt="" className={index === slide ? "is-active" : ""} />)}<div className="ajn-home-hero-scrim" /></div>
+      <div className="ajn-home-hero-content"><div className="ajn-home-hero-copy"><p className="ajn-home-kicker"><span /> مجموعة علي جان</p><h1>نصنع لحظاتك<br /><em>بإتقان واحتراف</em></h1><p className="ajn-home-intro">من أول فكرة إلى آخر تفصيلة، نصمم احتفالاً متكاملاً يعكس ذوقك ويجعل حضورك لا يُنسى.</p><div className="ajn-home-hero-actions"><Link href="/services"><Button size="lg" className="ajn-home-primary">احجز موعدك الآن</Button></Link><Link href="/gallery"><Button size="lg" variant="outline" className="ajn-home-ghost">استكشف أعمالنا</Button></Link></div><div className="ajn-home-stats">{[["٢٥٠٠+","مناسبة منفذة"],["١٢٠٠+","عميل سعيد"],["٢٠+","فرداً في الفريق"]].map(([value,label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</div></div><div className="ajn-home-slide-card"><span>{heroSlides[slide].label}</span><h2>{heroSlides[slide].title}</h2><div className="ajn-home-dots">{heroSlides.map((item,index)=><button key={item.label} onClick={()=>setSlide(index)} aria-label={`عرض ${item.label}`} className={slide===index?"is-active":""}/>)}</div></div></div>
+      <a href="#services" className="ajn-home-scroll" aria-label="انتقل إلى الخدمات"><span />اسحب للاستكشاف</a>
+    </section>
+
+    <section id="services" className="ajn-home-section ajn-home-services"><div className="container mx-auto px-4"><SectionHeading hint="كل ما تحتاجه في مناسبة واحدة" title="خدمات متصلة، بأسلوبك أنت" link={{text:"كل الخدمات",href:"/services"}}/><div className="ajn-home-service-grid">{quickLinks.map(([Icon,title,text,href],index)=><Link key={title} href={href} className="ajn-home-service-card"><span className="ajn-home-service-index">0{index+1}</span><Icon /><div><h3>{title}</h3><p>{text}</p></div><ArrowLeft className="ajn-home-service-arrow" /></Link>)}</div>{loadingServices ? <div className="mt-8 grid gap-4 sm:grid-cols-3">{[1,2,3].map((i)=><Skeleton key={i} className="h-44 rounded-2xl"/>)}</div> : services.length ? <div className="ajn-home-service-strip">{services.slice(0,3).map((service:any)=><Link href={`/services/${service.id}`} key={service.id}><img src={service.image || "/images/setup.png"} alt={cl.name(service)||service.name} loading="lazy"/><span>{cl.name(service)||service.name}</span></Link>)}</div>:null}</div></section>
+
+    <section className="ajn-home-section ajn-home-packages"><div className="container mx-auto px-4"><SectionHeading hint="خيارات مصممة للبدء بثقة" title="اختياراتنا المميزة" link={{text:"تصفح الكوشات",href:"/koshas"}}/><div className="ajn-home-product-grid">{loadingProducts ? [1,2,3,4].map(i=><Skeleton className="h-[27rem] rounded-2xl" key={i}/>) : products.map((product:any,index:number)=><article className={`ajn-home-product-card ${index===0?"is-featured":""}`} key={product.id}><Link href={`/store/${product.id}`}><div className="ajn-home-product-photo"><img src={(Array.isArray(product.images)?product.images[0]:null)||product.imageUrl||"/images/gifts.png"} alt={cl.name(product)||product.name} loading="lazy"/>{index===0&&<span>اختيار الموسم</span>}<button aria-label="أضف للمفضلة" onClick={(event)=>event.preventDefault()}><Heart className="h-4 w-4"/></button></div></Link><div className="ajn-home-product-body"><p>AJN SELECT</p><h3>{cl.name(product)||product.name}</h3><span className="ajn-home-product-price">{formatCurrency(Number(product.price||0))}</span><div className="ajn-home-product-actions"><Link href={`/store/${product.id}`}><Button size="sm">التفاصيل</Button></Link><Link href="/cart"><Button size="sm" variant="outline">احجز الآن</Button></Link></div></div></article>)}</div></div></section>
+
+    <FeaturedKoshasSection />
+
+    <section className="ajn-home-section ajn-home-story"><div className="container mx-auto px-4"><div className="ajn-home-story-layout"><div className="ajn-home-story-image"><img src="/images/setup.png" alt="فريق AJN أثناء تجهيز مناسبة" loading="lazy"/><span><Gem />عناية بالتفاصيل</span></div><div><p className="ajn-home-kicker"><span /> لماذا AJN</p><h2>الرفاهية لا تأتي من كثرة التفاصيل، بل من اختيارها الصحيح.</h2><p className="ajn-home-intro">فريق واحد يجمع الإبداع والتجهيز والتنفيذ في رحلة منظمة، لتبقى أنت قريباً من فرحتك وليس من تفاصيلها التشغيلية.</p><div className="ajn-home-reasons">{[[Users,"فريق متخصص","خبرات موزعة على كل مرحلة"],[ShieldCheck,"تنفيذ موثوق","متابعة واضحة من الحجز للتسليم"],[Star,"ذوق مميز","تصميمات تترك انطباعاً حقيقياً"]].map(([Icon,title,text]:any)=><div key={title}><Icon /><span><b>{title}</b><small>{text}</small></span></div>)}</div><Link href="/services"><Button className="ajn-home-dark-button">تعرف على طريقة عملنا</Button></Link></div></div></div></section>
+
+    <section className="ajn-home-section ajn-home-gallery"><div className="container mx-auto px-4"><SectionHeading hint="من حفلاتنا القريبة" title="لحظات نفخر بأن نكون جزءاً منها" link={{text:"زيارة المعرض",href:"/gallery"}}/><div className="ajn-home-mosaic">{gallery.map((image,index)=><Link href="/gallery" key={image} className={`ajn-home-mosaic-item is-${index+1}`}><img src={image} alt="من أعمال AJN" loading="lazy"/><span><Images className="h-4 w-4"/>عرض المشروع</span></Link>)}</div></div></section>
+
+    <section className="ajn-home-film"><img src="/images/hero.png" alt="" loading="lazy"/><div><span>AJN FILM</span><h2>شاهد كيف تتحول الفكرة إلى ليلة كاملة</h2><Link href="/gallery"><button className="ajn-home-play" aria-label="شاهد أعمالنا"><CirclePlay /></button></Link></div></section>
+
+    <section className="ajn-home-section ajn-home-process"><div className="container mx-auto px-4"><SectionHeading hint="خطوات واضحة، تجربة هادئة" title="من الفكرة إلى الاحتفال"/><ol>{[["اختر","الخدمة أو الباقة المناسبة"],["نسّق","التاريخ والتفاصيل مع فريقنا"],["اعتمد","الخطة والدفع بثقة"],["احتفل","وننفذ كل شيء في موعده"]].map(([step,text],index)=><li key={step}><span>0{index+1}</span><b>{step}</b><p>{text}</p></li>)}</ol></div></section>
+
+    <section className="ajn-home-section ajn-home-reviews"><div className="container mx-auto px-4"><div className="ajn-home-review"><div><p className="ajn-home-kicker"><span /> تجارب موثقة</p><blockquote>“كل شيء كان مدروساً، من أول تنسيق إلى آخر صورة. شعرنا أن المناسبة تشبهنا فعلاً.”</blockquote><p className="ajn-home-review-author">— زينة وكرم <span>حفل زفاف</span></p></div><div className="ajn-home-rating"><strong>٤.٩</strong><div>★★★★★</div><span>من تقييمات عملائنا</span></div></div></div></section>
+
+    <section className="ajn-home-section ajn-home-faq"><div className="container mx-auto px-4"><SectionHeading hint="إجابات قبل أن تبدأ" title="أسئلة شائعة"/><div className="ajn-home-faq-list">{[["كيف أبدأ الحجز؟","اختر الخدمة أو الباقة، ثم أرسل طلب الموعد. يتواصل معك الفريق لتأكيد التفاصيل."],["هل يمكن تخصيص الباقات؟","نعم، نرتب الخيارات والتفاصيل بما يتناسب مع فكرتك وموقع المناسبة."],["أين أتابع حجزي؟","يمكنك متابعة الحجز من بوابة العميل باستخدام بياناتك أو رمز التتبع."]].map(([question,answer])=><details key={question}><summary>{question}<ChevronLeft className="h-5 w-5"/></summary><p>{answer}</p></details>)}</div></div></section>
+  </div>;
 }

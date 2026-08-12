@@ -14,6 +14,7 @@ import { EmptyState } from "./_layout";
 import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
 import { formatMoney } from "@/lib/money";
 import { AccountSummaryCard } from "./payment-collection";
+import { AssignWorkOrderDialog } from "./koshat-tasks";
 
 type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
   id?: number;
@@ -1361,6 +1362,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [assigningWorkOrder, setAssigningWorkOrder] = useState(false);
   const [trackingStatus, setTrackingStatus] = useState(booking.trackingStatus ?? "booked");
   useEffect(() => {
     setTrackingStatus(booking.trackingStatus ?? "booked");
@@ -1432,7 +1434,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
             <h2 className="text-xl font-bold text-foreground">تفاصيل الحجز</h2>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">{booking.koshaName ?? "كوشة"}{booking.packageName ? ` • ${booking.packageName}` : ""}</p>
           </div>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></button>
+          <div className="flex items-center gap-2"><Button size="sm" onClick={() => setAssigningWorkOrder(true)}>إسناد مهمة للموظفين</Button><button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="إغلاق"><X className="h-5 w-5" /></button></div>
         </div>
 
         <KoshaDetailSection title="بيانات الحجز">
@@ -1552,6 +1554,7 @@ function KoshaBookingDetailsModal({ booking, onClose }: { booking: KoshaBooking;
           <button type="button" className="absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق"><X className="h-5 w-5" /></button>
         </div>
       )}
+      {assigningWorkOrder && <AssignWorkOrderDialog booking={booking} onClose={() => setAssigningWorkOrder(false)} />}
     </div>
   );
 }

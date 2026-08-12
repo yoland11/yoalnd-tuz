@@ -174,7 +174,16 @@ export const staffApi = {
   paymentRequests: (status = "pending") => adminFetch<Array<PaymentReq & { booking: { id: number; customerName: string; totalAmount: number; remainingAmount: number } | null }>>(`${base}/payment-requests?status=${status}`),
   approve: (id: number) => adminFetch(`${base}/payment-requests/${id}/approve`, { method: "POST", body: "{}" }),
   reject: (id: number) => adminFetch(`${base}/payment-requests/${id}/reject`, { method: "POST", body: "{}" }),
+  workOrders: () => adminFetch<KoshatWorkOrder[]>(`${base}/work-orders`),
+  workOrder: (id: number) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}`),
+  acceptWorkOrder: (id: number) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/accept`, { method: "POST", body: "{}" }),
+  declineWorkOrder: (id: number, reason: string, note?: string) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/decline`, { method: "POST", body: JSON.stringify({ reason, note }) }),
+  acknowledgeWorkOrder: (id: number) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/acknowledge`, { method: "POST", body: "{}" }),
+  startWorkOrder: (id: number, coords?: { lat?: number; lng?: number }) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/start`, { method: "POST", body: JSON.stringify(coords ?? {}) }),
+  updateWorkOrderStatus: (id: number, status: string) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/status`, { method: "POST", body: JSON.stringify({ status }) }),
 };
+
+export type KoshatWorkOrder = { id:number; workOrderNo:string; bookingId:number; status:string; customerName:string; phone:string; koshaName:string; eventDate:string|null; eventTime:string|null; location:string|null; leaderId:number|null; leaderName:string|null; members:Array<{staffId:number;name:string;role:string;status:string}>; requiredArrivalAt:string|null; eventStartAt:string|null; expectedDismantleAt:string|null; specialInstructions:string|null; requireAcknowledgment:boolean; instructionsAcknowledgedAt:string|null; startedAt:string|null; isLate:boolean; minutesToArrival:number|null; assets?:Array<{id:number;name:string;name_ar:string;asset_code:string|null;checked_out_at:string|null;returned_at:string|null}> };
 
 // ── Field operations (checklist, damage, item scans, board, reports) ──────────
 

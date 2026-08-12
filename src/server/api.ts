@@ -699,6 +699,18 @@ export const ALL_PERMISSIONS = [
   "task_assign",
   "task_approve",
   "koshas",
+  "koshat_tasks.view",
+  "koshat_tasks.assign",
+  "koshat_tasks.reassign",
+  "koshat_tasks.accept",
+  "koshat_tasks.start",
+  "koshat_tasks.update_status",
+  "koshat_tasks.manage_members",
+  "koshat_tasks.checkout_assets",
+  "koshat_tasks.return_assets",
+  "koshat_tasks.report_damage",
+  "koshat_tasks.complete",
+  "koshat_tasks.view_all",
   "photography",
   "photography.portal.view",
   "photography.booking.view",
@@ -985,6 +997,7 @@ let photographyShootTablesPromise: Promise<void> | null = null;
 let photographyPostTablesPromise: Promise<void> | null = null;
 let photographyGalleryTablesPromise: Promise<void> | null = null;
 let koshaOperationsTablesPromise: Promise<void> | null = null;
+let koshaWorkOrderTablesPromise: Promise<void> | null = null;
 let productionTablesPromise: Promise<void> | null = null;
 let variantTablesPromise: Promise<void> | null = null;
 const storeCategoriesCache = new Map<
@@ -1948,6 +1961,14 @@ function hasPermission(
     user.permissions.includes("graduation")
   )
     return true;
+  // Existing field-crew accounts retain their established portal capability,
+  // while administrative task controls remain explicitly grantable.
+  if (perm.startsWith("koshat_tasks.") && user.permissions.includes("koshas"))
+    return [
+      "koshat_tasks.view", "koshat_tasks.accept", "koshat_tasks.start",
+      "koshat_tasks.update_status", "koshat_tasks.checkout_assets",
+      "koshat_tasks.return_assets", "koshat_tasks.report_damage",
+    ].includes(perm);
   // Tailoring module gate implies its granular sub-permissions; graduation
   // managers/admins also inherit tailoring access.
   if (
@@ -2704,7 +2725,7 @@ async function sendPushToSubscriptions(
 }
 
 async function createNotification(input: {
-  audienceType?: "admin" | "customer";
+  audienceType?: "admin" | "customer" | "staff";
   staffId?: number | null;
   customerId?: number | null;
   type: string;
@@ -11178,6 +11199,59 @@ function normalizePrinterSettings(value: unknown): PrinterSettings {
     showBundleComponents: raw.showBundleComponents === true,
     footerText: typeof raw.footerText === "string" ? raw.footerText.trim().slice(0, 240) : "",
   };
+}
+
+/** Independent operational record; additive to the legacy booking execution layer. */
+async function ensureKoshaWorkOrderTables(): Promise<void> {
+  await ensureKoshaTables();
+  if (!koshaWorkOrderTablesPromise) {
+    koshaWorkOrderTablesPromise = db.execute(sql`
+      create table if not exists "kosha_work_orders" (
+        "id" serial primary key, "work_order_no" varchar(40) not null unique,
+        "booking_id" integer not null unique references "kosha_bookings"("id") on delete restrict,
+        "leader_id" integer references "staff"("id") on delete set null,
+        "status" varchar(40) not null default 'UNASSIGNED', "priority" varchar(20) not null default 'normal',
+        "required_arrival_at" timestamp, "event_start_at" timestamp, "expected_dismantle_at" timestamp,
+        "assigned_at" timestamp, "accepted_at" timestamp, "started_at" timestamp,
+        "started_by" integer references "staff"("id") on delete set null, "started_lat" numeric(10,7), "started_lng" numeric(10,7),
+        "arrived_at" timestamp, "completed_at" timestamp, "special_instructions" text,
+        "require_acknowledgment" boolean not null default false, "instructions_acknowledged_at" timestamp,
+        "instructions_acknowledged_by" integer references "staff"("id") on delete set null,
+        "cancelled_at" timestamp, "created_by" integer references "staff"("id") on delete set null,
+        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "kosha_work_order_members" (
+        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
+        "staff_id" integer not null references "staff"("id") on delete restrict, "role" varchar(20) not null default 'MEMBER',
+        "status" varchar(30) not null default 'ASSIGNED', "accepted_at" timestamp, "declined_at" timestamp,
+        "decline_reason" varchar(40), "decline_note" text, "removed_at" timestamp, "created_at" timestamp not null default now(),
+        unique("work_order_id", "staff_id")
+      );
+      create table if not exists "kosha_work_order_events" (
+        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
+        "staff_id" integer references "staff"("id") on delete set null, "staff_name" text not null default '',
+        "type" varchar(50) not null, "title" text not null, "details" text, "metadata" jsonb not null default '{}'::jsonb,
+        "created_at" timestamp not null default now()
+      );
+      create table if not exists "kosha_work_order_checklist" (
+        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
+        "label" text not null, "product_id" integer references "products"("id") on delete set null, "sort_order" integer not null default 0,
+        "is_completed" boolean not null default false, "completed_by" integer references "staff"("id") on delete set null,
+        "completed_at" timestamp, "note" text, "photo_url" text, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
+      );
+      create table if not exists "kosha_work_order_assets" (
+        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
+        "product_id" integer not null references "products"("id") on delete restrict, "asset_code" varchar(160),
+        "checked_out_by" integer references "staff"("id") on delete set null, "checked_out_at" timestamp,
+        "returned_by" integer references "staff"("id") on delete set null, "returned_at" timestamp,
+        "return_condition" varchar(30), "note" text, "created_at" timestamp not null default now(), unique("work_order_id", "product_id")
+      );
+      create index if not exists "kosha_work_orders_status_time_idx" on "kosha_work_orders"("status", "required_arrival_at");
+      create index if not exists "kosha_work_order_members_staff_idx" on "kosha_work_order_members"("staff_id", "status");
+      create index if not exists "kosha_work_order_events_order_idx" on "kosha_work_order_events"("work_order_id", "created_at");
+    `).then(() => undefined).catch((err) => { koshaWorkOrderTablesPromise = null; throw err; });
+  }
+  await koshaWorkOrderTablesPromise;
 }
 
 async function getPrinterSettings(): Promise<PrinterSettings> {
@@ -35790,9 +35864,239 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
   }
 }
 
+const KOSHAT_WORK_ORDER_STATUSES = [
+  "UNASSIGNED", "ASSIGNED", "ACCEPTED", "PREPARING", "WAREHOUSE_CHECKOUT",
+  "ON_THE_WAY", "ARRIVED", "INSTALLING", "READY", "EVENT_IN_PROGRESS",
+  "DISMANTLING", "RETURNING", "WAREHOUSE_RETURN", "COMPLETED", "CANCELLED", "REASSIGNED",
+] as const;
+const KOSHAT_STATUS_TRANSITIONS: Record<string, string[]> = {
+  UNASSIGNED: ["ASSIGNED", "CANCELLED"], ASSIGNED: ["ACCEPTED", "REASSIGNED", "CANCELLED"],
+  ACCEPTED: ["PREPARING", "REASSIGNED", "CANCELLED"], PREPARING: ["WAREHOUSE_CHECKOUT", "REASSIGNED", "CANCELLED"],
+  WAREHOUSE_CHECKOUT: ["ON_THE_WAY"], ON_THE_WAY: ["ARRIVED"], ARRIVED: ["INSTALLING"],
+  INSTALLING: ["READY"], READY: ["EVENT_IN_PROGRESS", "DISMANTLING"], EVENT_IN_PROGRESS: ["DISMANTLING"],
+  DISMANTLING: ["RETURNING"], RETURNING: ["WAREHOUSE_RETURN"], WAREHOUSE_RETURN: ["COMPLETED"],
+  REASSIGNED: ["ASSIGNED", "CANCELLED"],
+};
+
+function koshatWorkOrderNumber(bookingId: number) {
+  return `KWO-${new Date().getFullYear()}-${String(bookingId).padStart(4, "0")}`;
+}
+
+async function recordKoshatWorkOrderEvent(input: {
+  workOrderId: number; actor: AdminUser; type: string; title: string; details?: string | null; metadata?: Record<string, unknown>;
+}) {
+  await db.execute(sql`insert into kosha_work_order_events (work_order_id, staff_id, staff_name, type, title, details, metadata)
+    values (${input.workOrderId}, ${input.actor.id}, ${input.actor.fullName || input.actor.username}, ${input.type}, ${input.title}, ${input.details ?? null}, ${JSON.stringify(input.metadata ?? {})}::jsonb)`);
+}
+
+async function loadKoshatWorkOrder(id: number, viewerId?: number) {
+  const rows: any[] = ((await db.execute(sql`
+    select wo.*, b.customer_name, b.phone, b.event_date, b.event_time, b.hall_location, b.area, b.notes as booking_notes,
+      coalesce(k.name, b.package_name, 'كوشة') as kosha_name,
+      leader.full_name as leader_name,
+      coalesce(json_agg(json_build_object('id', m.id, 'staffId', m.staff_id, 'name', s.full_name, 'username', s.username, 'role', m.role, 'status', m.status, 'acceptedAt', m.accepted_at, 'declinedAt', m.declined_at, 'declineReason', m.decline_reason, 'removedAt', m.removed_at) order by case when m.role = 'LEADER' then 0 else 1 end, m.id) filter (where m.id is not null), '[]'::json) as members
+    from kosha_work_orders wo
+    join kosha_bookings b on b.id = wo.booking_id
+    left join koshas k on k.id = b.kosha_id
+    left join staff leader on leader.id = wo.leader_id
+    left join kosha_work_order_members m on m.work_order_id = wo.id
+    left join staff s on s.id = m.staff_id
+    where wo.id = ${id}
+    group by wo.id, b.id, k.name, leader.full_name
+  `)) as any).rows ?? [];
+  const row = rows[0];
+  if (!row) return null;
+  const [events, checklist, assets] = await Promise.all([
+    db.execute(sql`select e.*, s.full_name as actor_name from kosha_work_order_events e left join staff s on s.id=e.staff_id where e.work_order_id=${id} order by e.created_at desc, e.id desc limit 100`),
+    db.execute(sql`select c.*, p.name, p.name_ar from kosha_work_order_checklist c left join products p on p.id=c.product_id where c.work_order_id=${id} order by c.sort_order, c.id`),
+    db.execute(sql`select a.*, p.name, p.name_ar, p.barcode from kosha_work_order_assets a join products p on p.id=a.product_id where a.work_order_id=${id} order by a.id`),
+  ]);
+  const now = Date.now();
+  const arrival = row.required_arrival_at ? new Date(row.required_arrival_at).getTime() : null;
+  return {
+    id: Number(row.id), workOrderNo: row.work_order_no, bookingId: Number(row.booking_id), status: row.status, priority: row.priority,
+    leaderId: row.leader_id ? Number(row.leader_id) : null, leaderName: row.leader_name ?? null,
+    customerName: row.customer_name, phone: row.phone, koshaName: row.kosha_name, eventDate: row.event_date, eventTime: row.event_time,
+    location: row.hall_location || row.area || null, bookingNotes: row.booking_notes || null,
+    requiredArrivalAt: row.required_arrival_at, eventStartAt: row.event_start_at, expectedDismantleAt: row.expected_dismantle_at,
+    specialInstructions: row.special_instructions, requireAcknowledgment: row.require_acknowledgment,
+    instructionsAcknowledgedAt: row.instructions_acknowledged_at, startedAt: row.started_at, arrivedAt: row.arrived_at, completedAt: row.completed_at,
+    members: row.members, events: ((events as any).rows ?? []), checklist: ((checklist as any).rows ?? []), assets: ((assets as any).rows ?? []),
+    isLate: Boolean(arrival && now > arrival && !["ON_THE_WAY", "ARRIVED", "INSTALLING", "READY", "EVENT_IN_PROGRESS", "DISMANTLING", "RETURNING", "WAREHOUSE_RETURN", "COMPLETED", "CANCELLED"].includes(row.status)),
+    minutesToArrival: arrival ? Math.round((arrival - now) / 60000) : null,
+    viewerId: viewerId ?? null,
+  };
+}
+
+async function handleKoshaWorkOrders(req: NextRequest, parts: string[], scope: "admin" | "staff"): Promise<NextResponse> {
+  await ensureKoshaWorkOrderTables();
+  const auth = scope === "staff" ? await requirePermission(req, "koshas") : await getAdminUser(req);
+  if (!auth) return error("غير مخول", 401);
+  if (isResponse(auth)) return auth;
+  const actionOffset = scope === "staff" ? 3 : 2;
+  const id = int(parts[actionOffset]);
+  const action = parts[actionOffset + 1];
+  const isAdmin = auth.role === "admin" || auth.role === "manager";
+  const can = (permission: Permission) => isAdmin || hasPermission(auth, permission);
+  const deny = (permission: Permission) => !can(permission) ? error("ليس لديك صلاحية تنفيذ هذا الإجراء", 403) : null;
+
+  if (req.method === "GET" && !id && !action) {
+    const permission = scope === "admin" ? "koshat_tasks.view_all" : "koshat_tasks.view";
+    const denied = deny(permission); if (denied) return denied;
+    const filter = req.nextUrl.searchParams;
+    const status = filter.get("status"); const from = filter.get("from"); const to = filter.get("to"); const staffId = Number(filter.get("staffId") ?? 0) || null;
+    const where = scope === "staff"
+      ? sql`exists (select 1 from kosha_work_order_members own where own.work_order_id=wo.id and own.staff_id=${auth.id} and own.removed_at is null)`
+      : sql`true`;
+    const rows: any[] = ((await db.execute(sql`
+      select wo.id, wo.work_order_no, wo.booking_id, wo.status, wo.priority, wo.required_arrival_at, wo.event_start_at, wo.expected_dismantle_at,
+        b.customer_name, b.event_date, b.event_time, b.hall_location, b.area, coalesce(k.name,b.package_name,'كوشة') as kosha_name,
+        s.full_name as leader_name,
+        coalesce((select count(*)::int from kosha_work_order_assets a where a.work_order_id=wo.id and a.checked_out_at is not null and a.returned_at is null),0) as unreturned_assets
+      from kosha_work_orders wo join kosha_bookings b on b.id=wo.booking_id left join koshas k on k.id=b.kosha_id left join staff s on s.id=wo.leader_id
+      where ${where} and (${status ?? ""} = '' or wo.status = ${status ?? ""})
+        and (${from ?? ""} = '' or wo.required_arrival_at >= ${from ?? ""}::timestamp)
+        and (${to ?? ""} = '' or wo.required_arrival_at < (${to ?? ""}::date + interval '1 day'))
+        and (${staffId}::int is null or exists (select 1 from kosha_work_order_members fm where fm.work_order_id=wo.id and fm.staff_id=${staffId} and fm.removed_at is null))
+      order by wo.required_arrival_at nulls last, wo.created_at desc
+    `)) as any).rows ?? [];
+    return json(rows);
+  }
+
+  if (req.method === "GET" && action === "staff") {
+    const denied = deny("koshat_tasks.assign"); if (denied) return denied;
+    const rows: any[] = ((await db.execute(sql`
+      select id, full_name, username, role, department, permissions from staff
+      where is_active=true and coalesce(permissions,'[]'::jsonb) ? 'koshas'
+      order by full_name, username
+    `)) as any).rows ?? [];
+    const date = req.nextUrl.searchParams.get("date") ?? "";
+    const availability = await Promise.all(rows.map(async (staff) => {
+      const conflicts: any[] = date ? (((await db.execute(sql`select wo.id, wo.work_order_no, wo.status from kosha_work_order_members m join kosha_work_orders wo on wo.id=m.work_order_id where m.staff_id=${staff.id} and m.removed_at is null and wo.required_arrival_at::date=${date}::date and wo.status not in ('COMPLETED','CANCELLED')`) as any).rows ?? [])) : [];
+      return { id: Number(staff.id), fullName: staff.full_name, username: staff.username, department: staff.department, availability: conflicts.length > 1 ? "conflict" : conflicts.length ? "nearby" : "available", conflicts };
+    }));
+    return json(availability);
+  }
+
+  if (req.method === "GET" && id) {
+    const denied = deny("koshat_tasks.view"); if (denied) return denied;
+    const workOrder = await loadKoshatWorkOrder(id, auth.id); if (!workOrder) return error("أمر العمل غير موجود", 404);
+    if (scope === "staff" && !workOrder.members.some((member: any) => Number(member.staffId) === auth.id && !member.removedAt)) return error("لا تملك الوصول إلى هذا الأمر", 403);
+    return json(workOrder);
+  }
+
+  if (req.method === "POST" && !id) {
+    const denied = deny("koshat_tasks.assign"); if (denied) return denied;
+    const payload = await body(req); const bookingId = Number(payload.bookingId); const leaderId = Number(payload.leaderId);
+    const memberIds: number[] = [...new Set<number>((Array.isArray(payload.memberIds) ? payload.memberIds : []).map(Number).filter(Number.isInteger))].filter((staffId) => staffId !== leaderId);
+    if (!Number.isInteger(bookingId) || !Number.isInteger(leaderId)) return error("الحجز وقائد المهمة مطلوبان", 422);
+    const [booking, eligible] = await Promise.all([
+      db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, bookingId) }),
+      db.execute(sql`select id from staff where id in (${sql.join([leaderId, ...memberIds].map((value) => sql`${value}`), sql`,`)}) and is_active=true and coalesce(permissions,'[]'::jsonb) ? 'koshas'`),
+    ]);
+    if (!booking) return error("الحجز غير موجود", 404);
+    if (((eligible as any).rows ?? []).length !== memberIds.length + 1) return error("اختَر موظفين نشطين يملكون صلاحية بوابة الكوشات فقط", 422);
+    let created: any;
+    try {
+      await db.transaction(async (tx) => {
+        const result: any = await tx.execute(sql`insert into kosha_work_orders (work_order_no, booking_id, leader_id, status, priority, required_arrival_at, event_start_at, expected_dismantle_at, special_instructions, require_acknowledgment, assigned_at, created_by)
+          values (${koshatWorkOrderNumber(bookingId)}, ${bookingId}, ${leaderId}, 'ASSIGNED', ${String(payload.priority ?? 'normal')}, ${payload.requiredArrivalAt || null}::timestamp, ${payload.eventStartAt || null}::timestamp, ${payload.expectedDismantleAt || null}::timestamp, ${nullableText(payload.specialInstructions)}, ${payload.requireAcknowledgment === true}, now(), ${auth.id}) returning id`);
+        created = result.rows[0];
+        await tx.execute(sql`insert into kosha_work_order_members (work_order_id, staff_id, role) values ${sql.join([sql`(${created.id}, ${leaderId}, 'LEADER')`, ...memberIds.map((staffId) => sql`(${created.id}, ${staffId}, 'MEMBER')`)], sql`,`)}`);
+        await tx.execute(sql`insert into kosha_work_order_events (work_order_id, staff_id, staff_name, type, title, metadata) values (${created.id}, ${auth.id}, ${auth.fullName || auth.username}, 'assigned', 'تم إنشاء أمر العمل وإسناد الفريق', ${JSON.stringify({ bookingId, leaderId, memberIds })}::jsonb)`);
+      });
+    } catch (err: any) {
+      if (err?.code === "23505") return error("يوجد أمر عمل مرتبط بهذا الحجز بالفعل", 409);
+      throw err;
+    }
+    await addEntityTimeline({ entityType: "kosha_booking", entityId: bookingId, type: "koshat_work_order_created", title: "تم إنشاء أمر عمل كوشة", actor: erpActorFromAdmin(auth), metadata: { workOrderId: created.id } });
+    await logAdminActivity(req, "koshat_work_order_assigned", "kosha_work_order", Number(created.id), { bookingId, leaderId, memberIds });
+    await Promise.all([leaderId, ...memberIds].map((staffId) => createNotification({ audienceType: "staff", staffId, type: "koshat_task_assigned", title: "لديك مهمة كوشة جديدة", body: `${booking.customerName} · ${booking.eventDate ?? ''} ${booking.eventTime ?? ''}`, entityType: "kosha_work_order", entityId: Number(created.id), href: `/staff/koshas/work-orders/${created.id}` })));
+    return json(await loadKoshatWorkOrder(Number(created.id)), 201);
+  }
+
+  if (!id) return error("معرف أمر العمل مطلوب", 400);
+  const workOrder = await loadKoshatWorkOrder(id, auth.id); if (!workOrder) return error("أمر العمل غير موجود", 404);
+  const isLeader = workOrder.leaderId === auth.id;
+  const ownMember = workOrder.members.find((member: any) => Number(member.staffId) === auth.id && !member.removedAt);
+  if (scope === "staff" && !ownMember) return error("لا تملك الوصول إلى هذا الأمر", 403);
+
+  if (req.method === "POST" && action === "accept") {
+    if (!isLeader || !can("koshat_tasks.accept")) return error("قائد المهمة فقط يمكنه قبولها", 403);
+    await db.transaction(async (tx) => { await tx.execute(sql`update kosha_work_orders set status='ACCEPTED', accepted_at=coalesce(accepted_at, now()), updated_at=now() where id=${id} and status='ASSIGNED'`); await tx.execute(sql`update kosha_work_order_members set status='ACCEPTED', accepted_at=now() where work_order_id=${id} and staff_id=${auth.id}`); });
+    await recordKoshatWorkOrderEvent({ workOrderId:id, actor:auth, type:"accepted", title:"قبل قائد المهمة أمر العمل" });
+    await addEntityTimeline({ entityType:"kosha_booking", entityId:workOrder.bookingId, type:"koshat_task_accepted", title:"تم قبول أمر عمل الكوشة", actor:erpActorFromAdmin(auth), metadata:{workOrderId:id} });
+    return json(await loadKoshatWorkOrder(id, auth.id));
+  }
+  if (req.method === "POST" && action === "decline") {
+    if (!isLeader || !can("koshat_tasks.accept")) return error("قائد المهمة فقط يمكنه الاعتذار", 403);
+    const payload=await body(req); const reason=String(payload.reason ?? "other");
+    if (!["another_task","outside_area","on_leave","emergency","other"].includes(reason)) return error("سبب الاعتذار غير صحيح",422);
+    await db.transaction(async (tx)=>{ await tx.execute(sql`update kosha_work_order_members set status='DECLINED', declined_at=now(), decline_reason=${reason}, decline_note=${nullableText(payload.note)} where work_order_id=${id} and staff_id=${auth.id}`); await tx.execute(sql`update kosha_work_orders set status='REASSIGNED', updated_at=now() where id=${id}`); });
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"declined",title:"اعتذر قائد المهمة",details:reason,metadata:{note:payload.note ?? null}});
+    await createNotification({type:"koshat_task_declined",title:"اعتذار عن مهمة كوشة",body:`${auth.fullName || auth.username}: ${reason}`,entityType:"kosha_work_order",entityId:id,href:`/admin/koshat-tasks?workOrder=${id}`});
+    return json(await loadKoshatWorkOrder(id, auth.id));
+  }
+  if (req.method === "POST" && action === "reassign") {
+    const denied = deny("koshat_tasks.reassign"); if (denied) return denied;
+    const payload = await body(req); const nextLeaderId = Number(payload.leaderId);
+    if (!Number.isInteger(nextLeaderId) || nextLeaderId === workOrder.leaderId) return error("اختر قائد مهمة جديداً", 422);
+    const nextLeader: any = await db.query.staffTable.findFirst({ where: and(eq(staffTable.id, nextLeaderId), eq(staffTable.isActive, true)) });
+    if (!nextLeader || !Array.isArray(nextLeader.permissions) || !nextLeader.permissions.includes("koshas")) return error("قائد المهمة الجديد يجب أن يكون نشطاً ولديه صلاحية بوابة الكوشات",422);
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`update kosha_work_order_members set role='MEMBER', removed_at=now(), status='REASSIGNED' where work_order_id=${id} and staff_id=${workOrder.leaderId}`);
+      await tx.execute(sql`insert into kosha_work_order_members (work_order_id,staff_id,role,status,removed_at,created_at) values (${id},${nextLeaderId},'LEADER','ASSIGNED',null,now()) on conflict (work_order_id,staff_id) do update set role='LEADER',status='ASSIGNED',removed_at=null,declined_at=null,decline_reason=null,decline_note=null`);
+      await tx.execute(sql`update kosha_work_orders set leader_id=${nextLeaderId},status='ASSIGNED',assigned_at=now(),accepted_at=null,updated_at=now() where id=${id}`);
+    });
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"reassigned",title:"تمت إعادة إسناد قيادة المهمة",details:nullableText(payload.reason),metadata:{assignedFrom:workOrder.leaderId,assignedTo:nextLeaderId,reassignedAt:new Date().toISOString()}});
+    await addEntityTimeline({entityType:"kosha_booking",entityId:workOrder.bookingId,type:"koshat_task_reassigned",title:"تمت إعادة إسناد أمر عمل الكوشة",actor:erpActorFromAdmin(auth),metadata:{workOrderId:id,assignedFrom:workOrder.leaderId,assignedTo:nextLeaderId,reason:payload.reason ?? null}});
+    await createNotification({audienceType:"staff",staffId:nextLeaderId,type:"koshat_task_reassigned",title:"تم إسناد مهمة كوشة إليك",body:workOrder.workOrderNo,entityType:"kosha_work_order",entityId:id,href:`/staff/koshas/work-orders/${id}`});
+    return json(await loadKoshatWorkOrder(id,auth.id));
+  }
+  if (req.method === "POST" && action === "acknowledge") {
+    if (!isLeader) return error("قائد المهمة فقط يمكنه تأكيد التعليمات",403);
+    await db.execute(sql`update kosha_work_orders set instructions_acknowledged_at=now(), instructions_acknowledged_by=${auth.id}, updated_at=now() where id=${id}`);
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"instructions_acknowledged",title:"تمت قراءة التعليمات الخاصة"});
+    return json(await loadKoshatWorkOrder(id, auth.id));
+  }
+  if (req.method === "POST" && action === "start") {
+    if (!isLeader || !can("koshat_tasks.start")) return error("قائد المهمة فقط يمكنه بدء العمل",403);
+    const payload=await body(req);
+    if (workOrder.requireAcknowledgment && !workOrder.instructionsAcknowledgedAt) return error("يجب تأكيد قراءة التعليمات أولاً",422);
+    await db.execute(sql`update kosha_work_orders set started_at=coalesce(started_at,now()), started_by=${auth.id}, started_lat=${Number(payload.lat) || null}, started_lng=${Number(payload.lng) || null}, status=case when status='ACCEPTED' then 'PREPARING' else status end, updated_at=now() where id=${id}`);
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"started",title:"بدأ قائد المهمة العمل",metadata:{lat:Number(payload.lat)||null,lng:Number(payload.lng)||null}});
+    return json(await loadKoshatWorkOrder(id,auth.id));
+  }
+  if (req.method === "POST" && action === "status") {
+    if (!(isLeader && can("koshat_tasks.update_status")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية تغيير حالة التنفيذ",403);
+    const payload=await body(req); const next=String(payload.status ?? "");
+    if (!(KOSHAT_WORK_ORDER_STATUSES as readonly string[]).includes(next) || !(KOSHAT_STATUS_TRANSITIONS[workOrder.status] ?? []).includes(next)) return error("انتقال حالة التنفيذ غير مسموح",422);
+    if (next === "COMPLETED") { const open:any=((await db.execute(sql`select count(*)::int as count from kosha_work_order_assets where work_order_id=${id} and checked_out_at is not null and returned_at is null`)) as any).rows?.[0]; if (Number(open?.count ?? 0)>0) return error("لا يمكن إكمال المهمة قبل إعادة كل الأصول المسجلة",422); }
+    await db.execute(sql`update kosha_work_orders set status=${next}, arrived_at=case when ${next}='ARRIVED' then coalesce(arrived_at,now()) else arrived_at end, completed_at=case when ${next}='COMPLETED' then now() else completed_at end, updated_at=now() where id=${id}`);
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"status_changed",title:`تحديث حالة التنفيذ إلى ${next}`,metadata:{from:workOrder.status,to:next}});
+    await addEntityTimeline({entityType:"kosha_booking",entityId:workOrder.bookingId,type:"koshat_status_changed",title:`حالة أمر الكوشة: ${next}`,actor:erpActorFromAdmin(auth),metadata:{workOrderId:id,from:workOrder.status,to:next}});
+    return json(await loadKoshatWorkOrder(id,auth.id));
+  }
+  if (req.method === "POST" && action === "assets") {
+    if (!(isLeader && can("koshat_tasks.checkout_assets")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية إخراج الأصول",403);
+    const payload=await body(req); const productId=Number(payload.productId); if(!Number.isInteger(productId)) return error("الأصل مطلوب",422);
+    await db.transaction(async(tx)=>{ await tx.execute(sql`insert into kosha_work_order_assets (work_order_id,product_id,asset_code,checked_out_by,checked_out_at,note) values (${id},${productId},${nullableText(payload.assetCode)},${auth.id},now(),${nullableText(payload.note)}) on conflict (work_order_id,product_id) do update set checked_out_by=excluded.checked_out_by,checked_out_at=coalesce(kosha_work_order_assets.checked_out_at,excluded.checked_out_at),asset_code=coalesce(excluded.asset_code,kosha_work_order_assets.asset_code),note=excluded.note`); await tx.execute(sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},-1,'kosha_work_order_checkout','kosha_work_order',${id},'kosha_checkout',${`kwo:${id}:checkout:${productId}`},${auth.id},${auth.fullName||auth.username},${JSON.stringify({bookingId:workOrder.bookingId,workOrderId:id})}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`); });
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"asset_checked_out",title:"تم إخراج أصل للمهمة",metadata:{productId}}); return json(await loadKoshatWorkOrder(id,auth.id));
+  }
+  if (req.method === "POST" && action === "return") {
+    if (!(isLeader && can("koshat_tasks.return_assets")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية إعادة الأصول",403);
+    const payload=await body(req); const productId=Number(payload.productId); if(!Number.isInteger(productId)) return error("الأصل مطلوب",422);
+    await db.transaction(async(tx)=>{ const changed:any=await tx.execute(sql`update kosha_work_order_assets set returned_by=${auth.id},returned_at=now(),return_condition=${String(payload.condition ?? 'good')},note=${nullableText(payload.note)} where work_order_id=${id} and product_id=${productId} and checked_out_at is not null and returned_at is null returning id`); if(!changed.rows?.length) throw new CheckoutError("الأصل غير مسجل كخارج من هذه المهمة",409); await tx.execute(sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},1,'kosha_work_order_return','kosha_work_order',${id},'kosha_return',${`kwo:${id}:return:${productId}`},${auth.id},${auth.fullName||auth.username},${JSON.stringify({bookingId:workOrder.bookingId,workOrderId:id,condition:payload.condition ?? 'good'})}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`); });
+    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"asset_returned",title:"تمت إعادة أصل إلى المستودع",metadata:{productId,condition:payload.condition ?? 'good'}}); return json(await loadKoshatWorkOrder(id,auth.id));
+  }
+  return error("المسار غير موجود",404);
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "koshat-tasks") return handleKoshaWorkOrders(req, parts, "admin");
 
   if (section === "product-bundles") {
     const bundles = await handleProductBundles(req, parts);
@@ -59736,6 +60040,7 @@ async function handleStaffPortal(
   if (parts[1] === "photography")
     return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;
+  if (parts[2] === "work-orders") return handleKoshaWorkOrders(req, parts, "staff");
   // Portal entry guard — every /staff/koshas endpoint already requires the
   // "koshas" permission per-resource; this records cross-portal access denials
   // and returns the standardized portal message without changing who is allowed.
