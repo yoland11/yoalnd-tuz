@@ -42,10 +42,10 @@ import {
 // ── Types ──────────────────────────────────────────────────────────────────
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
-  stock: string; barcode?: string; images?: string[];
+  stock: string; barcode?: string; images?: string[]; bundleId?: number; availableQuantity?: number;
 };
 type CartItem = {
-  productId: number; productName: string; barcode: string;
+  productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
   total: number; costPrice: number;
 };
@@ -93,6 +93,7 @@ type PrinterSettings = {
   showCustomerPhone: boolean;
   showEmployeeName: boolean;
   showAddress: boolean;
+  showBundleComponents?: boolean;
   footerText: string;
 };
 
@@ -271,6 +272,11 @@ export default function SalesPage() {
     queryFn: () => adminFetch("/admin/suppliers"),
     staleTime: 5 * 60 * 1000,
   });
+  const { data: productBundles = [] } = useQuery<any[]>({
+    queryKey: ["admin", "product-bundles", "sales"],
+    queryFn: async () => (await adminFetch<{ bundles: any[] }>("/admin/product-bundles")).bundles ?? [],
+    staleTime: 30_000,
+  });
   const { data: printCurrentUser } = useQuery({ queryKey: ["admin", "me", "sales-create-print"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
   const canCreateRemotePrint = Boolean(printCurrentUser && (printCurrentUser.role === "admin" || printCurrentUser.permissions.includes("print.sales_invoice")));
   const { data: createRemotePrinters = [] } = useQuery<RemotePrinter[]>({
@@ -308,9 +314,20 @@ export default function SalesPage() {
   });
 
   // Filtered products for search
+  const saleCatalog: Product[] = [
+    ...products,
+    ...productBundles
+      .filter((bundle) => bundle.isActive && bundle.showInSalesInvoices)
+      .map((bundle) => ({
+        id: -Number(bundle.id), bundleId: Number(bundle.id), name: bundle.name,
+        nameAr: bundle.name, price: String(bundle.offerPrice ?? bundle.normalPrice ?? 0),
+        costPrice: "0", stock: String(bundle.availableQuantity ?? 0), barcode: bundle.barcode ?? "",
+        availableQuantity: Number(bundle.availableQuantity ?? 0),
+      })),
+  ];
   const q = searchQ.toLowerCase();
   const filteredProducts = q
-    ? products.filter(p =>
+    ? saleCatalog.filter(p =>
         p.nameAr?.toLowerCase().includes(q) ||
         p.name?.toLowerCase().includes(q) ||
         p.barcode?.toLowerCase().includes(q)
@@ -322,7 +339,7 @@ export default function SalesPage() {
     const price = finiteNumber(p.price);
     const cost = finiteNumber(p.costPrice);
     setCart(prev => {
-      const idx = prev.findIndex(i => i.productId === p.id);
+      const idx = prev.findIndex(i => i.productId === p.id && i.bundleId === (p.bundleId ?? null));
       if (idx >= 0) {
         const updated = [...prev];
         const item = { ...updated[idx] };
@@ -332,7 +349,7 @@ export default function SalesPage() {
         return updated;
       }
       return [...prev, {
-        productId: p.id, productName: p.nameAr || p.name,
+        productId: p.bundleId ? 0 : p.id, bundleId: p.bundleId ?? null, productName: p.nameAr || p.name,
         barcode: p.barcode || "", quantity: 1,
         unitPrice: price, discount: 0, discountPct: 0,
         total: price, costPrice: cost,
@@ -467,7 +484,7 @@ export default function SalesPage() {
         notes: form.notes,
         delivery: delivery.payload ?? undefined,
         items: cart.map(i => ({
-          productId: i.productId, productName: i.productName, barcode: i.barcode,
+          productId: i.bundleId ? null : i.productId, bundleId: i.bundleId ?? null, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),

@@ -144,6 +144,9 @@ import {
   otpCodesTable,
   paymentVouchersTable,
   productsTable,
+  productBundlesTable,
+  productBundleItemsTable,
+  salesInvoiceBundleSnapshotsTable,
   rentalOrdersTable,
   receiptVouchersTable,
   receiptVoucherAllocationsTable,
@@ -11119,6 +11122,7 @@ type PrinterSettings = {
   showCustomerPhone: boolean;
   showEmployeeName: boolean;
   showAddress: boolean;
+  showBundleComponents: boolean;
   footerText: string;
 };
 
@@ -11131,6 +11135,7 @@ const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   showCustomerPhone: true,
   showEmployeeName: true,
   showAddress: true,
+  showBundleComponents: false,
   footerText: "",
 };
 
@@ -11155,6 +11160,7 @@ function normalizePrinterSettings(value: unknown): PrinterSettings {
     showCustomerPhone: raw.showCustomerPhone !== false,
     showEmployeeName: raw.showEmployeeName !== false,
     showAddress: raw.showAddress !== false,
+    showBundleComponents: raw.showBundleComponents === true,
     footerText: typeof raw.footerText === "string" ? raw.footerText.trim().slice(0, 240) : "",
   };
 }
@@ -35606,9 +35612,102 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
   }
 }
 
+const productBundleWriteSchema = z.object({
+  name: z.string().trim().min(1).max(500),
+  description: z.string().trim().max(5_000).nullable().optional(),
+  image: z.string().trim().max(4_000).nullable().optional(),
+  barcode: z.string().trim().max(100).nullable().optional(),
+  normalPrice: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  offerPrice: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  isActive: z.boolean().default(true),
+  startsAt: z.string().datetime().nullable().optional(),
+  endsAt: z.string().datetime().nullable().optional(),
+  showInStore: z.boolean().default(false),
+  showInSalesInvoices: z.boolean().default(true),
+  items: z.array(z.object({ productId: z.coerce.number().int().positive(), quantity: z.coerce.number().finite().positive().max(1_000_000) })).min(1).max(200),
+});
+
+async function productBundleAvailability(rows: any[]) {
+  const productIds = [...new Set(rows.flatMap((bundle) => (bundle.items ?? []).map((item: any) => Number(item.productId))).filter(Boolean))];
+  if (!productIds.length) return rows.map((bundle) => ({ ...bundle, availableQuantity: 0 }));
+  const ownerIds = await stockOwnerProductIdsInTransaction(db as any, productIds);
+  const owners = [...new Set([...ownerIds.values()])];
+  const stocks = await db.select({ id: productsTable.id, stock: productsTable.stock }).from(productsTable).where(inArray(productsTable.id, owners));
+  const stockByOwner = new Map(stocks.map((row) => [row.id, money(row.stock)]));
+  return rows.map((bundle) => {
+    const capacities = (bundle.items ?? []).map((item: any) => {
+      const owner = ownerIds.get(Number(item.productId)) ?? Number(item.productId);
+      return Math.floor((stockByOwner.get(owner) ?? 0) / money(item.quantity));
+    });
+    return { ...bundle, availableQuantity: capacities.length ? Math.max(0, Math.min(...capacities)) : 0 };
+  });
+}
+
+async function handleProductBundles(req: NextRequest, parts: string[]) {
+  const auth = await requirePermission(req, "products");
+  if (isResponse(auth)) return auth;
+  const id = int(parts[2]);
+  if (req.method === "GET") {
+    const [bundles, items] = await Promise.all([
+      db.select().from(productBundlesTable).orderBy(desc(productBundlesTable.updatedAt)),
+      db.select({ bundleId: productBundleItemsTable.bundleId, productId: productBundleItemsTable.productId, quantity: productBundleItemsTable.quantity, productName: productsTable.name, productNameAr: productsTable.nameAr, stock: productsTable.stock, sharedStockProductId: productsTable.sharedStockProductId, costPrice: productsTable.costPrice }).from(productBundleItemsTable).innerJoin(productsTable, eq(productsTable.id, productBundleItemsTable.productId)),
+    ]);
+    const itemsByBundle = new Map<number, any[]>();
+    for (const item of items) {
+      const list = itemsByBundle.get(item.bundleId) ?? [];
+      list.push(item); itemsByBundle.set(item.bundleId, list);
+    }
+    const rows = bundles.filter((bundle) => !id || bundle.id === id).map((bundle) => ({ ...bundle, items: itemsByBundle.get(bundle.id) ?? [] }));
+    const hydrated = await productBundleAvailability(rows);
+    return json(id ? (hydrated[0] ?? null) : { bundles: hydrated });
+  }
+  if (req.method !== "POST" && req.method !== "PUT" && req.method !== "PATCH") return null;
+  const parsed = productBundleWriteSchema.safeParse(await body(req));
+  if (!parsed.success) return validationError("product-bundle.save", parsed);
+  const input = parsed.data;
+  if (input.startsAt && input.endsAt && new Date(input.startsAt) > new Date(input.endsAt))
+    return error("تاريخ بداية العرض يجب أن يسبق تاريخ انتهائه", 400);
+  const productIds = input.items.map((item) => item.productId);
+  if (new Set(productIds).size !== productIds.length) return error("لا يمكن تكرار المنتج داخل العرض", 400);
+  const existingProducts = await db.select({ id: productsTable.id }).from(productsTable).where(inArray(productsTable.id, productIds));
+  if (existingProducts.length !== productIds.length) return error("أحد منتجات العرض غير موجود", 404);
+  try {
+    const bundle = await db.transaction(async (tx) => {
+      const values = {
+        name: input.name, description: input.description ?? null, image: input.image ?? null,
+        barcode: input.barcode || null, normalPrice: String(input.normalPrice), offerPrice: String(input.offerPrice),
+        isActive: input.isActive, startsAt: input.startsAt ? new Date(input.startsAt) : null,
+        endsAt: input.endsAt ? new Date(input.endsAt) : null, showInStore: input.showInStore,
+        showInSalesInvoices: input.showInSalesInvoices, updatedAt: new Date(),
+      };
+      let saved: any;
+      if (id) {
+        [saved] = await tx.update(productBundlesTable).set(values).where(eq(productBundlesTable.id, id)).returning();
+        if (!saved) throw new CheckoutError("العرض غير موجود", 404);
+        await tx.delete(productBundleItemsTable).where(eq(productBundleItemsTable.bundleId, id));
+      } else {
+        [saved] = await tx.insert(productBundlesTable).values(values).returning();
+      }
+      await tx.insert(productBundleItemsTable).values(input.items.map((item) => ({ bundleId: saved.id, productId: item.productId, quantity: String(item.quantity) })));
+      return saved;
+    });
+    void logAdminActivity(req, id ? "product_bundle_updated" : "product_bundle_created", "product_bundle", bundle.id, { componentCount: input.items.length });
+    return json({ bundle, operation: id ? "updated" : "created" }, id ? 200 : 201);
+  } catch (cause: any) {
+    if (cause instanceof CheckoutError) return error(cause.message, cause.status);
+    if (cause?.code === "23505") return error("رمز العرض مستخدم مسبقاً", 409);
+    throw cause;
+  }
+}
+
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
+
+  if (section === "product-bundles") {
+    const bundles = await handleProductBundles(req, parts);
+    if (bundles) return bundles;
+  }
 
   if (section === "print-jobs" || section === "print-agents" || section === "printers") {
     const remotePrinting = await handleRemotePrintingAdmin(req, parts, section);
@@ -48110,6 +48209,10 @@ function salesInvoiceItems(value: unknown) {
       const discount = Math.min(money(item?.discount), gross);
       const productName = textFallback(item?.productName, item?.productNameAr);
       return {
+        bundleId:
+          Number.isFinite(Number(item?.bundleId)) && Number(item.bundleId) > 0
+            ? Number(item.bundleId)
+            : null,
         productId:
           Number.isFinite(Number(item?.productId)) && Number(item.productId) > 0
             ? Number(item.productId)
@@ -48166,6 +48269,7 @@ async function ensureAssetCategoriesTables(): Promise<void> {
 }
 
 const salesInvoiceItemSchema = z.object({
+  bundleId: z.coerce.number().int().positive().nullable().optional(),
   productId: z.coerce.number().int().positive().nullable().optional(),
   productName: z.string().trim().min(1).max(500),
   barcode: z.string().trim().max(100).optional().nullable(),
@@ -48178,6 +48282,91 @@ const salesInvoiceItemSchema = z.object({
   // backward compatibility with the existing admin client.
   total: z.coerce.number().finite().min(0).max(100_000_000).optional(),
 });
+
+type BundleComponentDraft = {
+  productId: number;
+  productName: string;
+  quantityPerBundle: number;
+  costPrice: number;
+};
+type BundleLineDraft = { bundleId: number; components: BundleComponentDraft[] };
+
+/** Server-resolved bundle prices/components prevent clients from forging stock. */
+async function resolveSalesInvoiceBundleLines(
+  items: ReturnType<typeof salesInvoiceItems>,
+) {
+  const bundleIds = [
+    ...new Set(
+      items
+        .map((item) => item.bundleId)
+        .filter((id): id is number => Number.isInteger(id) && Number(id) > 0),
+    ),
+  ];
+  if (!bundleIds.length) return { items, bundles: new Map<number, BundleLineDraft>() };
+  const now = new Date();
+  const [bundles, rows] = await Promise.all([
+    db.select().from(productBundlesTable).where(inArray(productBundlesTable.id, bundleIds)),
+    db
+      .select({
+        bundleId: productBundleItemsTable.bundleId,
+        productId: productBundleItemsTable.productId,
+        quantity: productBundleItemsTable.quantity,
+        name: productsTable.name,
+        nameAr: productsTable.nameAr,
+        costPrice: productsTable.costPrice,
+        isActive: productsTable.isActive,
+      })
+      .from(productBundleItemsTable)
+      .innerJoin(productsTable, eq(productsTable.id, productBundleItemsTable.productId))
+      .where(inArray(productBundleItemsTable.bundleId, bundleIds)),
+  ]);
+  const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]));
+  const components = new Map<number, BundleComponentDraft[]>();
+  for (const row of rows) {
+    if (!row.isActive || money(row.quantity) <= 0) continue;
+    const list = components.get(row.bundleId) ?? [];
+    list.push({
+      productId: row.productId,
+      productName: textFallback(row.nameAr, row.name),
+      quantityPerBundle: money(row.quantity),
+      costPrice: money(row.costPrice),
+    });
+    components.set(row.bundleId, list);
+  }
+  const resolved = new Map<number, BundleLineDraft>();
+  const nextItems = items.map((item) => {
+    if (!item.bundleId) return item;
+    const bundle = byId.get(item.bundleId);
+    const componentRows = components.get(item.bundleId) ?? [];
+    if (
+      !bundle ||
+      !bundle.isActive ||
+      !bundle.showInSalesInvoices ||
+      (bundle.startsAt && bundle.startsAt > now) ||
+      (bundle.endsAt && bundle.endsAt < now) ||
+      !componentRows.length
+    )
+      throw new CheckoutError("العرض المحدد غير متاح حالياً", 422);
+    const unitPrice = money(bundle.offerPrice || bundle.normalPrice);
+    const gross = item.quantity * unitPrice;
+    const discount = Math.min(item.discount, gross);
+    resolved.set(bundle.id, { bundleId: bundle.id, components: componentRows });
+    return {
+      ...item,
+      productId: null,
+      productName: bundle.name,
+      barcode: bundle.barcode ?? null,
+      unitPrice,
+      costPrice: componentRows.reduce(
+        (sum, component) => sum + component.costPrice * component.quantityPerBundle,
+        0,
+      ),
+      discount,
+      total: Math.max(gross - discount, 0),
+    };
+  });
+  return { items: nextItems, bundles: resolved };
+}
 
 const salesInvoiceCreateSchema = z.object({
   date: z
@@ -48310,10 +48499,36 @@ async function deductSalesInvoiceStockInTransaction(
   invoiceId: number,
   invoiceNumber: string,
   actorInfo: { id: number | null; name: string },
+  bundleComponentsByItemId = new Map<number, BundleComponentDraft[]>(),
 ) {
+  const stockLines: Array<{
+    id: number;
+    productId: number | null;
+    productName: string;
+    quantity: string | number;
+    bundleId: number | null;
+  }> = items.flatMap<{
+    id: number;
+    productId: number | null;
+    productName: string;
+    quantity: string | number;
+    bundleId: number | null;
+  }>((item) => {
+    const bundleComponents = bundleComponentsByItemId.get(item.id);
+    if (bundleComponents) {
+      return bundleComponents.map((component) => ({
+        id: item.id,
+        productId: component.productId,
+        productName: component.productName,
+        quantity: Number(item.quantity) * component.quantityPerBundle,
+        bundleId: (item as any).bundleId ?? null,
+      }));
+    }
+    return [{ ...item, bundleId: null }];
+  });
   const productIds = [
     ...new Set(
-      items.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0),
+      stockLines.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0),
     ),
   ];
   const ownerIds = await stockOwnerProductIdsInTransaction(tx, productIds);
@@ -48322,7 +48537,7 @@ async function deductSalesInvoiceStockInTransaction(
     { id: number; name: string; quantity: number }
   >();
   const itemOwners = new Map<number, number>();
-  for (const item of items) {
+  for (const item of stockLines) {
     if (!item.productId) continue;
     const stockOwnerId = ownerIds.get(item.productId);
     const resolved = stockOwnerId
@@ -48360,13 +48575,15 @@ async function deductSalesInvoiceStockInTransaction(
       throw new CheckoutError(`المخزون غير كافٍ للمنتج: ${owner.name}`, 409);
   }
 
-  const movements = items
+  const movements = stockLines
     .filter((item) => item.productId && Number(item.quantity) > 0)
     .map((item) => ({
       productId: item.productId,
       stockSourceProductId: itemOwners.get(item.productId!) ?? item.productId,
       quantityChange: String(-Number(item.quantity)),
-      reason: "sales_invoice_stock_deducted",
+      reason: item.bundleId
+        ? "sales_invoice_bundle_stock_deducted"
+        : "sales_invoice_stock_deducted",
       relatedType: "sales_invoice",
       relatedId: invoiceId,
       salesInvoiceId: invoiceId,
@@ -48381,6 +48598,7 @@ async function deductSalesInvoiceStockInTransaction(
         invoiceNumber,
         invoiceItemId: item.id,
         productId: item.productId,
+        bundleId: item.bundleId,
         warehouseId: null,
         quantity: Number(item.quantity),
         movementType: "sale",
@@ -48389,6 +48607,7 @@ async function deductSalesInvoiceStockInTransaction(
       createdByName: actorInfo.name,
     }));
   if (movements.length) await tx.insert(stockMovementsTable).values(movements);
+  return itemOwners;
 }
 
 async function stockOwnerProductIdInTransaction(tx: any, productId: number) {
@@ -49260,6 +49479,24 @@ async function handleSalesInvoices(
         const productItems = items.filter(
           (item) => Number(item.productId ?? 0) > 0 && money(item.quantity) > 0,
         );
+        // A bundle has one customer-facing invoice line but many stock lines.
+        // Restore the immutable sale snapshot, never the bundle's current BOM.
+        const bundleSnapshotItems = items.some((item) => Number((item as any).bundleId ?? 0) > 0)
+          ? (await tx
+              .select()
+              .from(salesInvoiceBundleSnapshotsTable)
+              .where(eq(salesInvoiceBundleSnapshotsTable.invoiceId, id)))
+              .flatMap((snapshot) =>
+                (Array.isArray(snapshot.components) ? snapshot.components : []).map((component: any) => ({
+                  id: snapshot.salesInvoiceItemId,
+                  productId: Number(component.productId),
+                  productName: String(component.productName ?? snapshot.bundleName),
+                  quantity: String(component.totalQuantity ?? 0),
+                })),
+              )
+              .filter((item) => item.productId > 0 && money(item.quantity) > 0)
+          : [];
+        const stockItems = [...productItems, ...bundleSnapshotItems];
         const priorReturns: any = await tx.execute(sql`
         SELECT * FROM stock_movements
         WHERE quantity_change::numeric > 0
@@ -49292,7 +49529,7 @@ async function handleSalesInvoices(
         const stockWasApplied =
           Number((invoice as any).stockApplied ?? 1) === 1;
         const stockAlreadyRestored =
-          productItems.length > 0 &&
+          stockItems.length > 0 &&
           (!stockWasApplied || priorReturnRows.length > 0);
         const priorReturnMovementIds = priorReturnRows.map((row) =>
           Number(row.id),
@@ -49310,10 +49547,10 @@ async function handleSalesInvoices(
         let legacyRecoveryUsed = false;
 
         let candidateRows: any[] = [];
-        if (productItems.length && stockWasApplied) {
-          const itemIds = productItems.map((item) => Number(item.id));
+        if (stockItems.length && stockWasApplied) {
+          const itemIds = stockItems.map((item) => Number(item.id));
           const productIds = [
-            ...new Set(productItems.map((item) => Number(item.productId))),
+            ...new Set(stockItems.map((item) => Number(item.productId))),
           ];
           const candidates: any = await tx.execute(sql`
           SELECT movement.*,
@@ -49383,7 +49620,7 @@ async function handleSalesInvoices(
             money(movement.quantity_change),
           ]),
         );
-        for (const item of stockWasApplied ? productItems : []) {
+        for (const item of stockWasApplied ? stockItems : []) {
           const productId = Number(item.productId);
           const soldQuantity = money(item.quantity);
           const stockProductId = await stockOwnerProductIdInTransaction(
@@ -49910,7 +50147,9 @@ async function handleSalesInvoices(
     if (!parsed.success) return validationError("sales-invoice.create", parsed);
     const b = parsed.data;
     const a = actor(auth);
-    const items = salesInvoiceItems(b.items);
+    let items = salesInvoiceItems(b.items);
+    const bundleResolution = await resolveSalesInvoiceBundleLines(items);
+    items = bundleResolution.items;
     const idempotencyKey =
       req.headers.get("x-idempotency-key")?.trim().slice(0, 120) || null;
     if (items.length === 0)
@@ -50090,6 +50329,7 @@ async function handleSalesInvoices(
             items.map((item: any) => ({
               invoiceId: inv.id,
               productId: item.productId ?? null,
+              bundleId: item.bundleId ?? null,
               productName: item.productName ?? "",
               barcode: item.barcode ?? null,
               quantity: String(item.quantity),
@@ -50102,13 +50342,43 @@ async function handleSalesInvoices(
           )
           .returning();
         traceInvoiceSave("stock_deduction");
-        await deductSalesInvoiceStockInTransaction(
+        const bundleComponentsByItemId = new Map<number, BundleComponentDraft[]>();
+        insertedItems.forEach((insertedItem, index) => {
+          const bundleId = Number(items[index]?.bundleId ?? 0);
+          const bundle = bundleResolution.bundles.get(bundleId);
+          if (bundle) bundleComponentsByItemId.set(insertedItem.id, bundle.components);
+        });
+        const stockOwners = await deductSalesInvoiceStockInTransaction(
           tx,
           insertedItems,
           inv.id,
           invoiceNo,
           a,
+          bundleComponentsByItemId,
         );
+        const snapshots = insertedItems.flatMap((insertedItem, index) => {
+          const line = items[index];
+          const bundle = bundleResolution.bundles.get(Number(line?.bundleId ?? 0));
+          if (!bundle || !line) return [];
+          return [{
+            invoiceId: inv.id,
+            salesInvoiceItemId: insertedItem.id,
+            bundleId: bundle.bundleId,
+            bundleName: line.productName,
+            bundleBarcode: line.barcode ?? null,
+            bundleQuantity: String(line.quantity),
+            components: bundle.components.map((component) => ({
+              productId: component.productId,
+              stockSourceProductId: stockOwners.get(component.productId) ?? component.productId,
+              productName: component.productName,
+              quantityPerBundle: String(component.quantityPerBundle),
+              totalQuantity: String(component.quantityPerBundle * line.quantity),
+              costPrice: String(component.costPrice),
+            })),
+          }];
+        });
+        if (snapshots.length)
+          await tx.insert(salesInvoiceBundleSnapshotsTable).values(snapshots);
       }
 
       if (couponPreview?.ok) {

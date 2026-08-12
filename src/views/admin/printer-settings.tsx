@@ -15,6 +15,7 @@ type PrinterSettings = {
   showCustomerPhone: boolean;
   showEmployeeName: boolean;
   showAddress: boolean;
+  showBundleComponents: boolean;
   footerText: string;
 };
 
@@ -138,6 +139,10 @@ export default function PrinterSettingsPage() {
                 className="accent-primary"
               />
               إظهار العنوان في التذييل
+            </label>
+            <label className="flex items-center gap-2 rounded-xl bg-background/50 border border-border/25 p-3 text-sm text-foreground">
+              <input type="checkbox" checked={draft.showBundleComponents} onChange={(e) => setDraft((current) => current ? { ...current, showBundleComponents: e.target.checked } : current)} className="accent-primary" />
+              إظهار مكونات العرض في الفاتورة المطبوعة
             </label>
           </div>
 

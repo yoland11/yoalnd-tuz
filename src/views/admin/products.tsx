@@ -289,6 +289,7 @@ export default function ProductsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-foreground">إدارة المتجر</h1>
         <div className="flex items-center gap-2">
+          <Button variant="outline" asChild><Link href="/admin/product-bundles"><Boxes className="w-4 h-4 ml-2" />العروض والبكجات</Link></Button>
           <div className="flex bg-card rounded-lg border border-border/40 p-0.5">
             <button onClick={() => setView("list")}
               className={`px-3 py-1.5 rounded text-xs ${view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>المنتجات</button>

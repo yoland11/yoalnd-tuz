@@ -97,6 +97,9 @@ export const salesInvoiceItemsTable = pgTable("sales_invoice_items", {
     .notNull()
     .references(() => salesInvoicesTable.id, { onDelete: "cascade" }),
   productId: integer("product_id").references(() => productsTable.id),
+  // The database FK is added by migration 0092. Keep this scalar here to avoid
+  // a schema-module cycle with bundle sale snapshots.
+  bundleId: integer("bundle_id"),
   productName: text("product_name").notNull(),
   barcode: varchar("barcode", { length: 100 }),
   quantity: numeric("quantity", { precision: 12, scale: 3 })

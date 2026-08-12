@@ -32,6 +32,7 @@ const AdminKoshaBookingsPage = lazy(() =>
 );
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
+const ProductBundlesPage = lazy(() => import("./product-bundles"));
 const BouquetDesignerAdminPage = lazy(() => import("./bouquet-designer"));
 const CategoriesPage = lazy(() => import("./categories"));
 const BarcodesPage = lazy(() => import("./barcodes"));
@@ -615,6 +616,9 @@ export default function Admin() {
                 <FinanceDashboardPage me={me} />
               </Guard>
             )}
+          </Route>
+          <Route path="/admin/product-bundles">
+            {() => <Guard me={me} perm="products"><ProductBundlesPage /></Guard>}
           </Route>
           <Route path="/admin/installments">
             {() => <Guard me={me} perm="installments.view"><InstallmentsPage /></Guard>}
