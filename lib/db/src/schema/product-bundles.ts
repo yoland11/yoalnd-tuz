@@ -21,6 +21,8 @@ export const productBundlesTable = pgTable("product_bundles", {
   barcode: varchar("barcode", { length: 100 }),
   normalPrice: numeric("normal_price", { precision: 14, scale: 2 }).notNull().default("0"),
   offerPrice: numeric("offer_price", { precision: 14, scale: 2 }).notNull().default("0"),
+  // This is a sellable-offer charge, not a component price or stock cost.
+  deliveryFee: numeric("delivery_fee", { precision: 14, scale: 2 }).notNull().default("0"),
   isActive: boolean("is_active").notNull().default(true),
   startsAt: timestamp("starts_at"),
   endsAt: timestamp("ends_at"),
@@ -50,6 +52,8 @@ export const salesInvoiceBundleSnapshotsTable = pgTable("sales_invoice_bundle_sn
   bundleName: text("bundle_name").notNull(),
   bundleBarcode: varchar("bundle_barcode", { length: 100 }),
   bundleQuantity: numeric("bundle_quantity", { precision: 14, scale: 3 }).notNull(),
+  // Immutable financial context for the bundle line at the time of sale.
+  deliveryFeePerBundle: numeric("delivery_fee_per_bundle", { precision: 14, scale: 2 }).notNull().default("0"),
   components: jsonb("components").$type<Array<{
     productId: number;
     stockSourceProductId: number;

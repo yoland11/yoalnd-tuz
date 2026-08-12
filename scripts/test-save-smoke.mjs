@@ -71,6 +71,7 @@ check("bundle stock uses the same conditional invoice transaction", api.includes
 check("bundle snapshot schema preserves original components", bundleSchema.includes("salesInvoiceBundleSnapshotsTable") && bundleSchema.includes("components"));
 check("used bundles archive instead of deleting invoice history", api.includes('operation: "archived"') && api.includes("sales_invoice_bundle_snapshots"));
 check("bundle management has live component search and duplicate protection", bundlePage.includes("componentSearch") && bundlePage.includes("selectedIds.has"));
+check("bundle delivery fee is server-derived and kept separate from component stock", api.includes("offerDeliveryFee = bundleResolution.offerDeliveryFee") && api.includes("deliveryFeePerBundle") && bundleSchema.includes("deliveryFee"));
 
 const safeTestDb = process.env.AJN_ENV === "test"
   && process.env.ALLOW_TEST_WRITES === "true"

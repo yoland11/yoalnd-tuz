@@ -187,6 +187,7 @@ export type SalesInvoiceReceiptInput = {
   subtotal?: number | string | null;
   discount?: number | string | null;
   tax?: number | string | null;
+  offerDeliveryFee?: number | string | null;
   deliveryFee?: number | string | null;
   total: number | string;
   paid: number | string;
@@ -286,6 +287,7 @@ export function createSalesInvoiceThermalPdfElement(input: SalesInvoiceReceiptIn
     subtotal: input.subtotal,
     discount: input.discount,
     tax: input.tax,
+    offerDeliveryFee: input.offerDeliveryFee,
     deliveryFee: input.deliveryFee,
     total: input.total,
     paid: input.paid,
@@ -338,6 +340,7 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
       subtotal: input.subtotal,
       discount: input.discount,
       tax: input.tax,
+      offerDeliveryFee: input.offerDeliveryFee,
       deliveryFee: input.deliveryFee,
       total: input.total,
       paid: input.paid,
@@ -376,6 +379,7 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
     subtotal: Number(input.subtotal ?? 0),
     discount: Number(input.discount ?? 0),
     tax: Number(input.tax ?? 0),
+    offerDelivery: Number(input.offerDeliveryFee ?? 0),
     delivery: Number(input.deliveryFee ?? 0),
   };
   const metaRows = [
@@ -394,6 +398,7 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
       ${amounts.subtotal ? `<div class="row"><span>المجموع الفرعي</span><span class="num">${esc(formatCurrency(amounts.subtotal))}</span></div>` : ""}
       ${amounts.discount > 0 ? `<div class="row"><span>الخصم</span><span class="num">- ${esc(formatCurrency(amounts.discount))}</span></div>` : ""}
       ${amounts.tax > 0 ? `<div class="row"><span>الضريبة</span><span class="num">${esc(formatCurrency(amounts.tax))}</span></div>` : ""}
+      ${amounts.offerDelivery > 0 ? `<div class="row"><span>أجور توصيل العرض</span><span class="num">${esc(formatCurrency(amounts.offerDelivery))}</span></div>` : ""}
       ${amounts.delivery > 0 ? `<div class="row"><span>أجور التوصيل</span><span class="num">${esc(formatCurrency(amounts.delivery))}</span></div>` : ""}
       <div class="grand"><span>الإجمالي</span><span class="num">${esc(formatCurrency(input.total))}</span></div>
       <div class="payline"><span>المدفوع</span><span class="num">${esc(formatCurrency(input.paid))}</span></div>

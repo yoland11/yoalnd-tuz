@@ -31,6 +31,7 @@ export async function salesInvoiceReceiptHtml(payload: PrintPayload) {
     subtotal: invoice.subtotal,
     discount: invoice.discountAmount,
     tax: invoice.taxAmount,
+    offerDeliveryFee: invoice.offerDeliveryFee,
     deliveryFee: invoice.deliveryFee,
     total: invoice.total,
     paid: invoice.paidAmount,

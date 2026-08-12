@@ -35644,6 +35644,7 @@ const productBundleWriteSchema = z.object({
   barcode: z.string().trim().max(100).nullable().optional(),
   normalPrice: z.coerce.number().finite().min(0).max(100_000_000).default(0),
   offerPrice: z.coerce.number().finite().min(0).max(100_000_000).default(0),
+  deliveryFee: z.coerce.number().finite().min(0).max(100_000_000).default(0),
   isActive: z.boolean().default(true),
   startsAt: z.string().datetime().nullable().optional(),
   endsAt: z.string().datetime().nullable().optional(),
@@ -35651,6 +35652,20 @@ const productBundleWriteSchema = z.object({
   showInSalesInvoices: z.boolean().default(true),
   items: z.array(z.object({ productId: z.coerce.number().int().positive(), quantity: z.coerce.number().finite().positive().max(1_000_000) })).min(1).max(200),
 });
+
+let productBundleDeliveryFeeMigrated = false;
+async function ensureProductBundleDeliveryFeeColumns() {
+  if (productBundleDeliveryFeeMigrated) return;
+  await db.execute(sql`
+    ALTER TABLE product_bundles
+      ADD COLUMN IF NOT EXISTS delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0;
+    ALTER TABLE sales_invoice_bundle_snapshots
+      ADD COLUMN IF NOT EXISTS delivery_fee_per_bundle NUMERIC(14,2) NOT NULL DEFAULT 0;
+    ALTER TABLE sales_invoices
+      ADD COLUMN IF NOT EXISTS offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0;
+  `);
+  productBundleDeliveryFeeMigrated = true;
+}
 
 async function productBundleAvailability(rows: any[]) {
   const productIds = [...new Set(rows.flatMap((bundle) => (bundle.items ?? []).map((item: any) => Number(item.productId))).filter(Boolean))];
@@ -35671,6 +35686,7 @@ async function productBundleAvailability(rows: any[]) {
 async function handleProductBundles(req: NextRequest, parts: string[]) {
   const auth = await requirePermission(req, "products");
   if (isResponse(auth)) return auth;
+  await ensureProductBundleDeliveryFeeColumns();
   const id = int(parts[2]);
   if (req.method === "PATCH" && id && parts[3] === "status") {
     const parsed = z.object({ isActive: z.boolean() }).safeParse(await body(req));
@@ -35749,6 +35765,7 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
       const values = {
         name: input.name, description: input.description ?? null, image: input.image ?? null,
         barcode: input.barcode || null, normalPrice: String(input.normalPrice), offerPrice: String(input.offerPrice),
+        deliveryFee: String(input.deliveryFee),
         isActive: input.isActive, startsAt: input.startsAt ? new Date(input.startsAt) : null,
         endsAt: input.endsAt ? new Date(input.endsAt) : null, showInStore: input.showInStore,
         showInSalesInvoices: input.showInSalesInvoices, updatedAt: new Date(),
@@ -48147,7 +48164,8 @@ async function ensureSalesInvoicesTables() {
         customer_name TEXT NOT NULL DEFAULT '', customer_phone VARCHAR(30), customer_id INTEGER REFERENCES customers(id),
         subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
         coupon_code VARCHAR(60), coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, total NUMERIC(14,2) NOT NULL DEFAULT 0,
+        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
+        total NUMERIC(14,2) NOT NULL DEFAULT 0,
         paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0, remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
         payment_method VARCHAR(20) NOT NULL DEFAULT 'cash', payment_status VARCHAR(20) NOT NULL DEFAULT 'paid',
         status VARCHAR(20) NOT NULL DEFAULT 'active', is_internal INTEGER NOT NULL DEFAULT 0,
@@ -48165,6 +48183,7 @@ async function ensureSalesInvoicesTables() {
       ALTER TABLE sales_invoices
         ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(60),
         ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
         ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
         ADD COLUMN IF NOT EXISTS supplier_name TEXT,
         ADD COLUMN IF NOT EXISTS stock_applied INTEGER NOT NULL DEFAULT 1,
@@ -48362,7 +48381,11 @@ type BundleComponentDraft = {
   quantityPerBundle: number;
   costPrice: number;
 };
-type BundleLineDraft = { bundleId: number; components: BundleComponentDraft[] };
+type BundleLineDraft = {
+  bundleId: number;
+  deliveryFeePerBundle: number;
+  components: BundleComponentDraft[];
+};
 
 /** Server-resolved bundle prices/components prevent clients from forging stock. */
 async function resolveSalesInvoiceBundleLines(
@@ -48375,7 +48398,7 @@ async function resolveSalesInvoiceBundleLines(
         .filter((id): id is number => Number.isInteger(id) && Number(id) > 0),
     ),
   ];
-  if (!bundleIds.length) return { items, bundles: new Map<number, BundleLineDraft>() };
+  if (!bundleIds.length) return { items, bundles: new Map<number, BundleLineDraft>(), offerDeliveryFee: 0 };
   const now = new Date();
   const [bundles, rows] = await Promise.all([
     db.select().from(productBundlesTable).where(inArray(productBundlesTable.id, bundleIds)),
@@ -48424,7 +48447,11 @@ async function resolveSalesInvoiceBundleLines(
     const unitPrice = money(bundle.offerPrice || bundle.normalPrice);
     const gross = item.quantity * unitPrice;
     const discount = Math.min(item.discount, gross);
-    resolved.set(bundle.id, { bundleId: bundle.id, components: componentRows });
+    resolved.set(bundle.id, {
+      bundleId: bundle.id,
+      deliveryFeePerBundle: money(bundle.deliveryFee),
+      components: componentRows,
+    });
     return {
       ...item,
       productId: null,
@@ -48439,7 +48466,11 @@ async function resolveSalesInvoiceBundleLines(
       total: Math.max(gross - discount, 0),
     };
   });
-  return { items: nextItems, bundles: resolved };
+  const offerDeliveryFee = nextItems.reduce((sum, item) => {
+    const bundle = item.bundleId ? resolved.get(item.bundleId) : null;
+    return sum + (bundle ? item.quantity * bundle.deliveryFeePerBundle : 0);
+  }, 0);
+  return { items: nextItems, bundles: resolved, offerDeliveryFee };
 }
 
 const salesInvoiceCreateSchema = z.object({
@@ -49050,6 +49081,7 @@ async function handleSalesInvoices(
   // The register is read-only; do not run stock DDL before returning history.
   if (!(method === "GET" && !id)) {
     await ensureSalesInvoicesTables();
+    await ensureProductBundleDeliveryFeeColumns();
     await ensureStockTrackingTables();
   }
   const resultRows = (result: any) => result?.rows ?? result ?? [];
@@ -50282,8 +50314,9 @@ async function handleSalesInvoices(
       }
     }
 
+    const offerDeliveryFee = bundleResolution.offerDeliveryFee;
     const total = Math.max(
-      subtotal - discountAmount + taxAmount + deliveryFee + deliveryCodFee,
+      subtotal - discountAmount + taxAmount + offerDeliveryFee + deliveryFee + deliveryCodFee,
       0,
     );
     const paymentMethod = b.paymentMethod ?? "cash";
@@ -50351,6 +50384,7 @@ async function handleSalesInvoices(
           couponCode: couponPreview?.ok ? couponPreview.coupon.code : null,
           couponDiscountAmount: String(couponDiscountAmount),
           taxAmount: String(taxAmount),
+          offerDeliveryFee: String(offerDeliveryFee),
           total: String(total),
           paidAmount: String(paidAmount),
           remainingAmount: String(remainingAmount),
@@ -50441,6 +50475,7 @@ async function handleSalesInvoices(
             bundleName: line.productName,
             bundleBarcode: line.barcode ?? null,
             bundleQuantity: String(line.quantity),
+            deliveryFeePerBundle: String(bundle.deliveryFeePerBundle),
             components: bundle.components.map((component) => ({
               productId: component.productId,
               stockSourceProductId: stockOwners.get(component.productId) ?? component.productId,

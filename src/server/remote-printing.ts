@@ -383,6 +383,7 @@ async function buildSalesInvoicePayload(invoiceId: number, paperSize: RemotePape
       invoiceNo: invoice.invoiceNo, date: invoice.date, issuedAt: invoice.createdAt?.toISOString() ?? invoice.date, customerName: invoice.customerName,
       customerPhone: invoice.customerPhone ? formatIraqiPhone(invoice.customerPhone) : null, paymentMethod: invoice.paymentMethod, paymentStatus: invoice.paymentStatus,
       subtotal: String(invoice.subtotal), discountAmount: String(invoice.discountAmount), taxAmount: String(invoice.taxAmount),
+      offerDeliveryFee: String(invoice.offerDeliveryFee ?? "0"),
       total: String(invoice.total), paidAmount: String(invoice.paidAmount), remainingAmount: String(invoice.remainingAmount),
       notes: typeof invoice.notes === "string" && invoice.notes.trim() ? invoice.notes.trim() : null,
       employeeName: invoice.createdByName || null,

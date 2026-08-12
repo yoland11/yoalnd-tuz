@@ -10,10 +10,10 @@ import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 type ComponentRow = { productId: number; quantity: string };
 type BundleForm = {
   id?: number; name: string; image: string; description: string; barcode: string;
-  normalPrice: string; offerPrice: string; startsAt: string; endsAt: string;
+  normalPrice: string; offerPrice: string; deliveryFee: string; startsAt: string; endsAt: string;
   isActive: boolean; showInStore: boolean; showInSalesInvoices: boolean; items: ComponentRow[];
 };
-const blank = (): BundleForm => ({ name: "", image: "", description: "", barcode: "", normalPrice: "0", offerPrice: "0", startsAt: "", endsAt: "", isActive: true, showInStore: false, showInSalesInvoices: true, items: [] });
+const blank = (): BundleForm => ({ name: "", image: "", description: "", barcode: "", normalPrice: "0", offerPrice: "0", deliveryFee: "0", startsAt: "", endsAt: "", isActive: true, showInStore: false, showInSalesInvoices: true, items: [] });
 const inputDateTime = (value?: string | null) => value ? new Date(value).toISOString().slice(0, 16) : "";
 const isoOrNull = (value: string) => value ? new Date(value).toISOString() : null;
 
@@ -45,7 +45,7 @@ export default function ProductBundlesPage() {
   function edit(bundle: any) {
     setForm({
       id: bundle.id, name: bundle.name ?? "", image: bundle.image ?? "", description: bundle.description ?? "", barcode: bundle.barcode ?? "",
-      normalPrice: String(bundle.normalPrice ?? 0), offerPrice: String(bundle.offerPrice ?? 0),
+      normalPrice: String(bundle.normalPrice ?? 0), offerPrice: String(bundle.offerPrice ?? 0), deliveryFee: String(bundle.deliveryFee ?? 0),
       startsAt: inputDateTime(bundle.startsAt), endsAt: inputDateTime(bundle.endsAt),
       isActive: bundle.isActive !== false, showInStore: Boolean(bundle.showInStore), showInSalesInvoices: bundle.showInSalesInvoices !== false,
       items: (bundle.items ?? []).map((item: any) => ({ productId: Number(item.productId), quantity: String(item.quantity) })),
@@ -62,7 +62,7 @@ export default function ProductBundlesPage() {
     setSaving(true);
     try {
       const endpoint = form.id ? `/admin/product-bundles/${form.id}` : "/admin/product-bundles";
-      await adminFetch(endpoint, { method: form.id ? "PUT" : "POST", body: JSON.stringify({ ...form, id: undefined, startsAt: isoOrNull(form.startsAt), endsAt: isoOrNull(form.endsAt), normalPrice: Number(form.normalPrice), offerPrice: Number(form.offerPrice), items: form.items.map((item) => ({ productId: item.productId, quantity: Number(item.quantity) })) }) });
+      await adminFetch(endpoint, { method: form.id ? "PUT" : "POST", body: JSON.stringify({ ...form, id: undefined, startsAt: isoOrNull(form.startsAt), endsAt: isoOrNull(form.endsAt), normalPrice: Number(form.normalPrice), offerPrice: Number(form.offerPrice), deliveryFee: Number(form.deliveryFee), items: form.items.map((item) => ({ productId: item.productId, quantity: Number(item.quantity) })) }) });
       toast({ title: form.id ? "تم تحديث العرض" : "تم حفظ العرض والبكج بنجاح", description: "الفواتير السابقة تستخدم لقطات المكونات المحفوظة عند البيع." });
       setForm(blank()); await refresh();
     } catch (error) { toast({ title: "تعذر حفظ العرض", description: apiErrorMessage(error), variant: "destructive" }); } finally { setSaving(false); }
@@ -84,7 +84,7 @@ export default function ProductBundlesPage() {
         <div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-semibold"><PackagePlus className="h-5 w-5 text-primary" />{form.id ? "تعديل العرض" : "إضافة عرض"}</h2>{form.id ? <Button size="sm" variant="ghost" onClick={() => setForm(blank())}><X className="ml-1 h-4 w-4" />إلغاء التعديل</Button> : null}</div>
         <div className="grid gap-3 sm:grid-cols-2"><Field label="اسم العرض"><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="عرض الحنة" /></Field><Field label="الباركود"><input value={form.barcode} onChange={(event) => setForm({ ...form, barcode: event.target.value })} placeholder="اختياري" dir="ltr" /></Field></div>
         <Field label="الوصف"><textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="وصف مختصر للعرض" rows={2} /></Field>
-        <div className="grid gap-3 sm:grid-cols-2"><Field label="السعر الطبيعي"><input type="number" min="0" value={form.normalPrice} onChange={(event) => setForm({ ...form, normalPrice: event.target.value })} dir="ltr" /></Field><Field label="سعر العرض"><input type="number" min="0" value={form.offerPrice} onChange={(event) => setForm({ ...form, offerPrice: event.target.value })} dir="ltr" /></Field></div>
+        <div className="grid gap-3 sm:grid-cols-3"><Field label="السعر الطبيعي"><input type="number" min="0" value={form.normalPrice} onChange={(event) => setForm({ ...form, normalPrice: event.target.value })} dir="ltr" /></Field><Field label="سعر العرض"><input type="number" min="0" value={form.offerPrice} onChange={(event) => setForm({ ...form, offerPrice: event.target.value })} dir="ltr" /></Field><Field label="أجور التوصيل (اختياري)"><input type="number" min="0" value={form.deliveryFee} onChange={(event) => setForm({ ...form, deliveryFee: event.target.value })} dir="ltr" /></Field></div>
         <div className="grid gap-3 sm:grid-cols-2"><Field label="يبدأ في"><input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} /></Field><Field label="ينتهي في"><input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} /></Field></div>
         <div className="rounded-lg border border-border/40 bg-background/40 p-3"><p className="mb-2 text-sm font-medium">صورة العرض</p><ImageUploadEditor kind="product" currentImage={form.image || null} label="اختيار أو تغيير الصورة" onComplete={(results) => { const result = results[0]; const stored = result?.metadata.largeUrl || result?.metadata.originalUrl || result?.dataUrl; if (stored) setForm((current) => ({ ...current, image: stored })); }} onRemove={() => setForm((current) => ({ ...current, image: "" }))} /></div>
         <div className="space-y-2 rounded-lg border border-border/40 p-3"><div className="flex items-center justify-between"><p className="text-sm font-semibold">مكوّنات العرض</p><span className="text-xs text-muted-foreground">لا يمكن تكرار المنتج</span></div><div className="relative"><Search className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground" /><input value={componentSearch} onChange={(event) => setComponentSearch(event.target.value)} placeholder="ابحث بالاسم أو الباركود أو التصنيف…" className="pr-9" />{componentSearch && <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded-lg border border-border bg-popover shadow-lg">{componentResults.map((product) => <button key={product.id} type="button" onClick={() => addComponent(product)} className="flex w-full items-center justify-between gap-3 border-b border-border/30 px-3 py-2.5 text-right text-sm last:border-0 hover:bg-muted/60"><span className="min-w-0"><strong className="block truncate">{productName(product)}</strong><span className="block truncate text-xs text-muted-foreground">{product.category || product.subcategory || "بدون تصنيف"}{product.barcode ? ` · ${product.barcode}` : ""}</span></span><span className="shrink-0 text-left text-xs"><b className="block">مخزون: {product.stock}</b><span className="text-muted-foreground">{formatCurrency(product.price)}</span></span></button>)}{!componentResults.length ? <p className="p-3 text-sm text-muted-foreground">لا توجد منتجات مطابقة أو أنها مضافة بالفعل.</p> : null}</div>}</div>

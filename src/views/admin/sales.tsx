@@ -56,15 +56,16 @@ import {
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
   stock: string; barcode?: string; images?: string[]; bundleId?: number; availableQuantity?: number;
+  offerDeliveryFee?: number;
 };
 type CartItem = {
   productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
-  total: number; costPrice: number;
+  total: number; costPrice: number; offerDeliveryFee?: number;
 };
 type SalesInvoice = {
   id: number; invoiceNo: string; date: string; customerName: string; customerPhone?: string;
-  subtotal: string; discountAmount: string; taxAmount: string; total: string;
+  subtotal: string; discountAmount: string; taxAmount: string; offerDeliveryFee?: string; total: string;
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
   financiallyReversed?: boolean;
@@ -388,6 +389,7 @@ export default function SalesPage() {
         nameAr: bundle.name, price: String(bundle.offerPrice ?? bundle.normalPrice ?? 0),
         costPrice: "0", stock: String(bundle.availableQuantity ?? 0), barcode: bundle.barcode ?? "",
         availableQuantity: Number(bundle.availableQuantity ?? 0),
+        offerDeliveryFee: finiteNumber(bundle.deliveryFee),
       })),
   ];
   const q = searchQ.toLowerCase();
@@ -404,7 +406,7 @@ export default function SalesPage() {
     const price = finiteNumber(p.price);
     const cost = finiteNumber(p.costPrice);
     setCart(prev => {
-      const idx = prev.findIndex(i => i.productId === p.id && i.bundleId === (p.bundleId ?? null));
+      const idx = prev.findIndex(i => i.productId === (p.bundleId ? 0 : p.id) && i.bundleId === (p.bundleId ?? null));
       if (idx >= 0) {
         const updated = [...prev];
         const item = { ...updated[idx] };
@@ -417,7 +419,7 @@ export default function SalesPage() {
         productId: p.bundleId ? 0 : p.id, bundleId: p.bundleId ?? null, productName: p.nameAr || p.name,
         barcode: p.barcode || "", quantity: 1,
         unitPrice: price, discount: 0, discountPct: 0,
-        total: price, costPrice: cost,
+        total: price, costPrice: cost, offerDeliveryFee: finiteNumber(p.offerDeliveryFee),
       }];
     });
     setSearchQ("");
@@ -470,9 +472,10 @@ export default function SalesPage() {
   const totalDiscount = Math.min(subtotal, cart.reduce((s, i) => s + finiteNumber(i.discount), 0) + finiteNumber(form.discountAmount) + couponDiscount);
   const taxPct = finiteNumber(form.taxPct, 0, 100);
   const taxAmount = +(Math.max(0, subtotal - totalDiscount) * taxPct / 100).toFixed(2);
+  const offerDeliveryFee = +cart.reduce((sum, item) => sum + finiteNumber(item.quantity) * finiteNumber(item.offerDeliveryFee), 0).toFixed(2);
   const deliveryFee = finiteNumber(delivery.deliveryFee);
   const codFee = finiteNumber(delivery.codFee);
-  const grandTotal = +Math.max(0, subtotal - totalDiscount + taxAmount + deliveryFee + codFee).toFixed(2);
+  const grandTotal = +Math.max(0, subtotal - totalDiscount + taxAmount + offerDeliveryFee + deliveryFee + codFee).toFixed(2);
   // Cash-on-delivery is collected on delivery, so the sale is not auto-paid.
   const paidAmt = delivery.codEnabled ? finiteNumber(form.paidAmount)
                   : isCashPaymentMethod(form.paymentMethod) ? grandTotal : Math.min(grandTotal, finiteNumber(form.paidAmount));
@@ -526,6 +529,7 @@ export default function SalesPage() {
       subtotal: invoice.subtotal,
       discount: invoice.discountAmount,
       tax: invoice.taxAmount,
+      offerDeliveryFee: invoice.offerDeliveryFee,
       total: invoice.total,
       paid: invoice.paidAmount,
       remaining: invoice.remainingAmount,
@@ -640,6 +644,7 @@ export default function SalesPage() {
       }
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "product-bundles"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setCart([]);
@@ -1087,6 +1092,12 @@ export default function SalesPage() {
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">قيمة الضريبة</span>
                 <span>{formatCurrency(taxAmount)}</span>
+              </div>
+            )}
+            {offerDeliveryFee > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">أجور توصيل العرض</span>
+                <span>{formatCurrency(offerDeliveryFee)}</span>
               </div>
             )}
             {deliveryFee > 0 && (
@@ -1916,6 +1927,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           subtotal,
           discount: discountAmount,
           tax: taxAmount,
+          offerDeliveryFee: invoice.offerDeliveryFee,
           total,
           paid: paidAmount,
           remaining: remainingAmount,

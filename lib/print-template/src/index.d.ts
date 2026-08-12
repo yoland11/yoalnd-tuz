@@ -15,6 +15,7 @@ export type SalesInvoiceThermalInput = {
   subtotal?: number | string | null;
   discount?: number | string | null;
   tax?: number | string | null;
+  offerDeliveryFee?: number | string | null;
   deliveryFee?: number | string | null;
   total: number | string;
   paid: number | string;

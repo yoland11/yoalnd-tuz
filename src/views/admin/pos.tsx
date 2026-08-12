@@ -12,7 +12,7 @@ import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { useToast } from "@/hooks/use-toast";
 import { adminFetch, fetchAdminMe, formatCurrency } from "./_lib";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
+import { openSalesInvoicePrintWindow, printWhenImagesReadyScript, thermalBaseCss, thermalReceiptCss } from "./print-helpers";
 import { formatMoney } from "@/lib/money";
 import DeliverySection, { type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
@@ -30,6 +30,7 @@ import {
 type Product = {
   id: number; name: string; nameAr: string; price: string; costPrice?: string;
   stock: string; barcode?: string; images?: string[];
+  bundleId?: number | null; offerDeliveryFee?: number;
   categoryId?: number | null; subcategoryId?: number | null; subcategoryIds?: number[];
   category?: string | null; subcategory?: string | null;
   categoryName?: string; subcategoryName?: string;
@@ -38,9 +39,9 @@ type Product = {
 type Category = { id: number; name: string; nameAr: string; slug?: string; parentId?: number | null };
 
 type CartItem = {
-  productId: number; productName: string; barcode: string;
+  productId: number; bundleId?: number | null; productName: string; barcode: string;
   quantity: number; unitPrice: number; discount: number; discountPct: number;
-  total: number; costPrice: number; stock: number;
+  total: number; costPrice: number; stock: number; offerDeliveryFee?: number;
 };
 
 type HeldInvoice = {
@@ -60,7 +61,7 @@ type PrinterSettings = {
   copies: number;
   showLogo: boolean;
 };
-type Totals = { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number; deliveryFee?: number; codFee?: number };
+type Totals = { subtotal: number; discount: number; tax: number; grand: number; paid: number; remaining: number; offerDeliveryFee?: number; deliveryFee?: number; codFee?: number };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,7 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (p: Product)
       <div className="p-2 flex-1 space-y-0.5">
         <p className="text-xs font-semibold text-foreground line-clamp-2 leading-tight">{product.nameAr || product.name}</p>
         <p className="text-sm font-bold text-primary">{formatCurrency(product.price)}</p>
+        {(product.offerDeliveryFee ?? 0) > 0 && <p className="text-[10px] text-muted-foreground">+ توصيل {formatCurrency(product.offerDeliveryFee)}</p>}
         <p className={`text-[11px] ${stock < 5 ? "text-status-warning" : "text-muted-foreground"}`}>
           {outOfStock ? "نفذ المخزون" : `${stock} متبقي`}
         </p>
@@ -324,6 +326,34 @@ function openPrintWindow(
 
   // ─── Dedicated thermal receipt (58mm / 80mm) — not a scaled A4 sheet ───
   if (size === "58mm" || size === "80mm") {
+    openSalesInvoicePrintWindow({
+      paperSize: size as "58mm" | "80mm",
+      invoiceNo,
+      issuedAt: form.date,
+      customerName: form.customerName,
+      customerPhone: form.customerPhone,
+      paymentMethod: form.paymentMethod,
+      paymentStatus: totals.paid >= totals.grand ? "paid" : totals.paid > 0 ? "partial" : "unpaid",
+      employeeName: null,
+      items: cart,
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      tax: totals.tax,
+      offerDeliveryFee: totals.offerDeliveryFee,
+      deliveryFee: totals.deliveryFee,
+      total: totals.grand,
+      paid: totals.paid,
+      remaining: totals.remaining,
+      notes: form.notes,
+      qrDataUrl: options.qrDataUrl,
+      logoUrl: logo,
+      companyName,
+      companyPhone,
+      companyAddress,
+      showLogo: options.showLogo !== false,
+    });
+    return;
+
     const itemHead = size === "58mm"
       ? `<tr><th class="name">الصنف</th><th>المبلغ</th></tr>`
       : `<tr><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>`;
@@ -333,7 +363,7 @@ function openPrintWindow(
     ).join("");
 
     html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>فاتورة ${esc(invoiceNo)}</title>
-    <style>${thermalReceiptCss(size)}</style></head><body>
+    <style>${thermalReceiptCss(size as "58mm" | "80mm")}</style></head><body>
     <div class="receipt">
       <div class="r-head">
         ${logo ? `<img src="${logo}" class="r-logo" alt="" />` : ""}
@@ -367,7 +397,7 @@ function openPrintWindow(
     </body></html>`;
 
     const w = window.open("", "_blank", "width=420,height=720");
-    if (w) { w.document.write(html); w.document.close(); }
+    w?.document.write(html); w?.document.close();
     return;
   }
 
@@ -417,6 +447,7 @@ function openPrintWindow(
     ${totals.tax > 0 ? `<tr><td>الضريبة</td><td>${formatCurrency(totals.tax)}</td></tr>` : ""}
     ${(totals.deliveryFee ?? 0) > 0 ? `<tr><td>التوصيل</td><td>${formatCurrency(totals.deliveryFee ?? 0)}</td></tr>` : ""}
     ${(totals.codFee ?? 0) > 0 ? `<tr><td>رسوم الدفع عند الاستلام</td><td>${formatCurrency(totals.codFee ?? 0)}</td></tr>` : ""}
+    ${(totals.offerDeliveryFee ?? 0) > 0 ? `<tr><td>أجور توصيل العرض</td><td>${formatCurrency(totals.offerDeliveryFee ?? 0)}</td></tr>` : ""}
     <tr class="grand"><td>الإجمالي الكلي</td><td>${formatCurrency(totals.grand)}</td></tr>
     <tr><td>المدفوع</td><td>${formatCurrency(totals.paid)}</td></tr>
     ${totals.remaining > 0 ? `<tr><td>المتبقي</td><td>${formatCurrency(totals.remaining)}</td></tr>` : ""}
@@ -429,7 +460,7 @@ function openPrintWindow(
   </body></html>`;
 
   const w = window.open("", "_blank", "width=760,height=900");
-  if (w) { w.document.write(html); w.document.close(); }
+  w?.document.write(html); w?.document.close();
 }
 
 // ─── Main POS Page ─────────────────────────────────────────────────────────────
@@ -501,6 +532,11 @@ export default function POSPage() {
     queryFn: () => adminFetch("/admin/settings/printer"),
     staleTime: 5 * 60 * 1000,
   });
+  const { data: productBundles = [] } = useQuery<any[]>({
+    queryKey: ["admin", "product-bundles", "pos"],
+    queryFn: async () => (await adminFetch<{ bundles: any[] }>("/admin/product-bundles")).bundles ?? [],
+    staleTime: 30_000,
+  });
   const { data: printCurrentUser } = useQuery({ queryKey: ["admin", "me", "pos-print"], queryFn: () => fetchAdminMe(), staleTime: 5 * 60 * 1000 });
   const canRemotePrint = Boolean(printCurrentUser && (printCurrentUser.role === "admin" || printCurrentUser.permissions.includes("print.sales_invoice")));
   const { data: remotePrinters = [] } = useQuery<RemotePrinter[]>({
@@ -520,7 +556,24 @@ export default function POSPage() {
     }
     return product.categoryId === category.id || Boolean(category.slug && product.category === category.slug);
   }, []);
-  const visibleProducts = products.filter(p => {
+  const saleCatalog: Product[] = [
+    ...products,
+    ...productBundles
+      .filter((bundle) => bundle.isActive && bundle.showInSalesInvoices && !bundle.archivedAt)
+      .map((bundle) => ({
+        id: -Number(bundle.id),
+        bundleId: Number(bundle.id),
+        name: bundle.name,
+        nameAr: bundle.name,
+        price: String(bundle.offerPrice ?? bundle.normalPrice ?? 0),
+        costPrice: "0",
+        stock: String(bundle.availableQuantity ?? 0),
+        barcode: bundle.barcode ?? "",
+        images: bundle.image ? [bundle.image] : [],
+        offerDeliveryFee: Number(bundle.deliveryFee ?? 0),
+      })),
+  ];
+  const visibleProducts = saleCatalog.filter(p => {
     const matchCat = categoryMatches(p, selectedCategory);
     const matchQ = !q || p.nameAr?.toLowerCase().includes(q) || p.name?.toLowerCase().includes(q) || p.barcode?.includes(q);
     return matchCat && matchQ;
@@ -534,15 +587,16 @@ export default function POSPage() {
   const totalDisc  = itemDisc + extraDisc + couponDisc;
   const taxPct     = parseFloat(form.taxPct || "0");
   const taxAmount  = +((subtotal - totalDisc) * taxPct / 100).toFixed(2);
+  const offerDeliveryFee = +cart.reduce((sum, item) => sum + item.quantity * (item.offerDeliveryFee ?? 0), 0).toFixed(2);
   const deliveryFee = delivery.deliveryFee || 0;
   const codFee      = delivery.codFee || 0;
-  const grandTotal = +(subtotal - totalDisc + taxAmount + deliveryFee + codFee).toFixed(2);
+  const grandTotal = +(subtotal - totalDisc + taxAmount + offerDeliveryFee + deliveryFee + codFee).toFixed(2);
   // Cash-on-delivery is collected on delivery, so the sale is not auto-paid.
   const paidAmt    = delivery.codEnabled ? parseFloat(form.paidAmount || "0")
                      : isCashPaymentMethod(form.paymentMethod) ? grandTotal : parseFloat(form.paidAmount || "0");
   const remaining  = +(grandTotal - paidAmt).toFixed(2);
   const autoStatus = paidAmt >= grandTotal ? "paid" : paidAmt > 0 ? "partial" : "unpaid";
-  const totals     = { subtotal, discount: totalDisc, tax: taxAmount, grand: grandTotal, paid: paidAmt, remaining, deliveryFee, codFee };
+  const totals     = { subtotal, discount: totalDisc, tax: taxAmount, grand: grandTotal, paid: paidAmt, remaining, offerDeliveryFee, deliveryFee, codFee };
 
   // ── Cart operations ────────────────────────────────────────────────────────
   const addToCart = useCallback((p: Product) => {
@@ -550,7 +604,7 @@ export default function POSPage() {
     const cost  = parseFloat(p.costPrice || "0") || 0;
     const stock = parseFloat(p.stock) || 0;
     setCart(prev => {
-      const idx = prev.findIndex(i => i.productId === p.id);
+      const idx = prev.findIndex(i => i.productId === (p.bundleId ? 0 : p.id) && i.bundleId === (p.bundleId ?? null));
       if (idx >= 0) {
         const updated = [...prev];
         const item = { ...updated[idx] };
@@ -560,10 +614,10 @@ export default function POSPage() {
         return updated;
       }
       return [...prev, {
-        productId: p.id, productName: p.nameAr || p.name,
+        productId: p.bundleId ? 0 : p.id, bundleId: p.bundleId ?? null, productName: p.nameAr || p.name,
         barcode: p.barcode || "", quantity: 1,
         unitPrice: price, discount: 0, discountPct: 0,
-        total: price, costPrice: cost, stock,
+        total: price, costPrice: cost, stock, offerDeliveryFee: p.offerDeliveryFee ?? 0,
       }];
     });
     setSearchQ("");
@@ -605,7 +659,7 @@ export default function POSPage() {
   // ── Barcode / search Enter ─────────────────────────────────────────────────
   function handleBarcodeKey(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter" || !searchQ) return;
-    const scopedProducts = products.filter((product) => categoryMatches(product, selectedCategory));
+    const scopedProducts = saleCatalog.filter((product) => categoryMatches(product, selectedCategory));
     const exact = scopedProducts.find(p => p.barcode === searchQ);
     if (exact) { addToCart(exact); return; }
     const filtered = scopedProducts.filter(p =>
@@ -705,7 +759,7 @@ export default function POSPage() {
         isInternal: 0, notes: form.notes,
         delivery: delivery.payload ?? undefined,
         items: cart.map(i => ({
-          productId: i.productId, productName: i.productName, barcode: i.barcode,
+          productId: i.bundleId ? null : i.productId, bundleId: i.bundleId ?? null, productName: i.productName, barcode: i.barcode,
           quantity: i.quantity, unitPrice: i.unitPrice, discount: i.discount,
           discountPct: i.discountPct, total: i.total, costPrice: i.costPrice,
         })),
@@ -719,6 +773,7 @@ export default function POSPage() {
       if (!invoiceNo) throw new Error("تم حفظ الفاتورة لكن لم يرجع رقمها من الخادم");
       queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "products-all"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "product-bundles"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alerts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       toast({ title: "✓ تم حفظ الفاتورة", description: invoiceNo });
@@ -1153,6 +1208,12 @@ export default function POSPage() {
               <div className="flex justify-between text-sm text-muted-foreground">
                 <span>ضريبة {taxPct}%</span>
                 <span>{formatCurrency(taxAmount)}</span>
+              </div>
+            )}
+            {offerDeliveryFee > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>أجور توصيل العرض</span>
+                <span>{formatCurrency(offerDeliveryFee)}</span>
               </div>
             )}
             {deliveryFee > 0 && (

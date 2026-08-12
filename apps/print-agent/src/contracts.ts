@@ -39,6 +39,7 @@ export type PrintPayload = {
     subtotal: string;
     discountAmount: string;
     taxAmount: string;
+    offerDeliveryFee?: string;
     deliveryFee?: string;
     total: string;
     paidAmount: string;

@@ -46,6 +46,11 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   taxAmount: numeric("tax_amount", { precision: 14, scale: 2 })
     .notNull()
     .default("0"),
+  // Sum of delivery charges configured on the sold offers. Province delivery
+  // remains in delivery_details and is intentionally kept separate.
+  offerDeliveryFee: numeric("offer_delivery_fee", { precision: 14, scale: 2 })
+    .notNull()
+    .default("0"),
   total: numeric("total", { precision: 14, scale: 2 }).notNull().default("0"),
   paidAmount: numeric("paid_amount", { precision: 14, scale: 2 })
     .notNull()
