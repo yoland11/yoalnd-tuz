@@ -1046,6 +1046,19 @@ export function hasPerm(
   return false;
 }
 
+/**
+ * Sales-invoice printing is delegated through a granular permission, while
+ * the two top-level administration roles retain their existing full access.
+ * Keep this deliberately scoped instead of broadening every permission check
+ * for role aliases that may exist in imported staff data.
+ */
+export function canPrintSalesInvoice(user: AdminMe | null | undefined): boolean {
+  if (!user || !user.isActive) return false;
+  const role = String(user.role ?? "").trim().toLowerCase();
+  return ["admin", "super_admin", "main_manager"].includes(role)
+    || user.permissions.includes("print.sales_invoice");
+}
+
 export { fileToDataUrl };
 
 export async function compressImageFile(

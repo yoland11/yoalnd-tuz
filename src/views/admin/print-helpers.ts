@@ -254,10 +254,72 @@ function salesInvoiceSheetCss() {
  * Sales-only invoice print builder. Thermal layouts use the shared receipt CSS
  * while A4 remains an intentionally separate sheet mode.
  */
-export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput) {
-  const isThermal = input.paperSize === "58mm" || input.paperSize === "80mm";
-  const popup = window.open("", "_blank", isThermal ? "width=440,height=760" : "width=980,height=760");
+function salesInvoicePrintWindowFeatures(paperSize: SalesInvoicePrintSize) {
+  const isThermal = paperSize === "58mm" || paperSize === "80mm";
+  return isThermal ? "width=440,height=760" : "width=980,height=760";
+}
+
+/**
+ * Open the browser print surface during the original user gesture. This keeps
+ * local printing reliable on mobile after the invoice save request finishes.
+ */
+export function prepareSalesInvoicePrintWindow(paperSize: SalesInvoicePrintSize): Window {
+  const popup = window.open("", "_blank", salesInvoicePrintWindowFeatures(paperSize));
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.write("<!doctype html><html dir=\"rtl\"><head><meta charset=\"utf-8\"><title>AJN</title></head><body style=\"font-family:Tahoma,Arial,sans-serif;padding:24px\">جارٍ حفظ الفاتورة وتجهيز الطباعة...</body></html>");
+  popup.document.close();
+  return popup;
+}
+
+/** Builds a hidden thermal receipt node for the real PDF export path. */
+export function createSalesInvoiceThermalPdfElement(input: SalesInvoiceReceiptInput): HTMLDivElement {
+  const documentHtml = buildSalesInvoiceThermalHtml({
+    paperSize: input.paperSize === "58mm" ? "58mm" : "80mm",
+    invoiceNo: input.invoiceNo,
+    issuedAt: input.issuedAt,
+    customerName: input.customerName,
+    customerPhone: input.customerPhone,
+    paymentMethod: input.paymentMethod,
+    paymentStatus: input.paymentStatus,
+    employeeName: input.employeeName,
+    items: input.items,
+    subtotal: input.subtotal,
+    discount: input.discount,
+    tax: input.tax,
+    deliveryFee: input.deliveryFee,
+    total: input.total,
+    paid: input.paid,
+    remaining: input.remaining,
+    notes: input.notes,
+    qrImageUrl: input.qrDataUrl,
+    qrCaption: input.qrCaption,
+    logoUrl: input.logoUrl,
+    companyName: input.companyName,
+    companyPhone: input.companyPhone,
+    companyAddress: input.companyAddress,
+    footerText: input.footerText,
+    showLogo: input.showLogo,
+    showQr: input.showQr,
+    showCustomerPhone: input.showCustomerPhone,
+    showEmployeeName: input.showEmployeeName,
+    showAddress: input.showAddress,
+  });
+  const parsed = new DOMParser().parseFromString(documentHtml, "text/html");
+  const wrapper = document.createElement("div");
+  wrapper.dir = "rtl";
+  wrapper.style.width = input.paperSize === "58mm" ? "58mm" : "80mm";
+  wrapper.style.background = "#fff";
+  wrapper.innerHTML = `<style>${parsed.head.querySelector("style")?.textContent ?? ""}</style>${parsed.body.innerHTML}`;
+  return wrapper;
+}
+
+export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, existingWindow?: Window | null) {
+  const isThermal = input.paperSize === "58mm" || input.paperSize === "80mm";
+  const popup = existingWindow && !existingWindow.closed
+    ? existingWindow
+    : window.open("", "_blank", salesInvoicePrintWindowFeatures(input.paperSize));
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.open();
 
   // Browser printing and AJN Print Agent both render this same document
   // builder. Keep thermal invoice markup and number formatting out of this

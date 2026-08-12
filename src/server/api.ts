@@ -1971,6 +1971,21 @@ async function requirePermission(
   return user;
 }
 
+function canPrintSalesInvoice(user: AdminUser | null): boolean {
+  if (!user || !user.isActive) return false;
+  const role = String(user.role ?? "").trim().toLowerCase();
+  return ["admin", "super_admin", "main_manager"].includes(role)
+    || hasPermission(user, "print.sales_invoice");
+}
+
+async function requireSalesInvoicePrintPermission(req: NextRequest): Promise<AdminUser | NextResponse> {
+  const user = await getAdminUser(req);
+  if (!user) return error("غير مخول", 401);
+  if (!canPrintSalesInvoice(user))
+    return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
+  return user;
+}
+
 async function requireAnyPermission(
   req: NextRequest,
   perms: Permission[],
@@ -35510,7 +35525,9 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
     const method = req.method;
     if (section === "print-jobs") {
       const isWrite = method !== "GET";
-      const permission = method === "POST" && !parts[2]
+      const isSalesInvoicePrintRequest = method === "POST" && !parts[2];
+      const isSalesInvoicePrintStatusRequest = method === "GET" && parts[3] === "status";
+      const permission = isSalesInvoicePrintRequest
         ? "print.sales_invoice"
         : parts[3] === "status"
           ? "print.sales_invoice"
@@ -35519,7 +35536,9 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
           : isWrite
             ? "print.queue.manage"
             : "print.queue.view";
-      const auth = await requirePermission(req, permission as Permission);
+      const auth = isSalesInvoicePrintRequest || isSalesInvoicePrintStatusRequest
+        ? await requireSalesInvoicePrintPermission(req)
+        : await requirePermission(req, permission as Permission);
       if (isResponse(auth)) return auth;
       const jobId = positiveRouteId(parts[2]);
       if (method === "GET" && !jobId) {
@@ -35534,9 +35553,9 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
         return json({ job: { id: job.id, jobNo: job.jobNo, status: job.status, errorMessage: job.errorMessage, retryCount: job.retryCount, completedAt: job.completedAt } });
       }
       if (method === "POST" && !jobId) {
-        // Direct printing gets a distinct permission, even for an administrator
-        // permission is enforced server-side, not by the mobile button alone.
-        if (!hasPermission(auth, "print.sales_invoice")) return error("لا تملك صلاحية تنفيذ الطباعة المباشرة.", 403, { code: "PERMISSION_DENIED" });
+        // Printing remains server-authorized; the mobile action sheet never
+        // grants access by itself.
+        if (!canPrintSalesInvoice(auth)) return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
         const idempotencyKey = printIdempotencyKey(req);
         if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب للطباعة المباشرة.", 400, { code: "VALIDATION_ERROR" });
         const data = await body(req);
@@ -35596,7 +35615,13 @@ async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], sect
     }
     if (section === "printers") {
       const auth = method === "GET"
-        ? await requireAnyPermission(req, ["print.sales_invoice", "print.printers.manage"])
+        ? await (async () => {
+            const user = await getAdminUser(req);
+            if (!user) return error("غير مخول", 401);
+            if (!canPrintSalesInvoice(user) && !hasPermission(user, "print.printers.manage"))
+              return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
+            return user;
+          })()
         : await requirePermission(req, "print.printers.manage");
       if (isResponse(auth)) return auth;
       if (method === "GET") return json({ printers: await listPrinters() });
