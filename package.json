@@ -42,6 +42,7 @@
     "test:research-center": "node ./scripts/verify-research-center.mjs",
     "test:bride-dashboard": "node ./scripts/verify-bride-dashboard.mjs",
     "test:large-image-upload": "node ./scripts/verify-large-image-upload.mjs",
+    "test:image-data-url": "node ./scripts/verify-image-data-url-conversion.mjs",
     "test:public-invoice-qr": "node ./scripts/verify-public-sales-invoice-qr.mjs",
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",

@@ -258,25 +258,43 @@ export function ImageUploadEditor({
       for (let index = 0; index < queue.length; index++) {
         const file = queue[index];
         const inspected = index === 0 ? source : { ...(await inspectImageFile(file)), fileName: file.name };
-        const dataUrl = await processImageFile(file, {
-          ...processingOptions(editor, cropRatio, settings, watermarkText),
-          compressionMode,
-          maxBytes: outputByteTarget(kind),
-          preserveTransparency: /png|webp|svg/i.test(file.type),
-        });
-        const size = await dataUrlSize(dataUrl);
-        const edited = await dataUrlToFile(dataUrl, `${file.name.replace(/\.[^.]+$/, "")}-edited.${dataUrl.startsWith("data:image/png") ? "png" : "webp"}`);
+        let dataUrl: string;
+        try {
+          dataUrl = await processImageFile(file, {
+            ...processingOptions(editor, cropRatio, settings, watermarkText),
+            compressionMode,
+            maxBytes: outputByteTarget(kind),
+            preserveTransparency: /png|webp|svg/i.test(file.type),
+          });
+        } catch {
+          throw new ImageUploadError("تعذر ضغط الصورة");
+        }
+        let size: number;
+        let edited: File;
+        try {
+          size = await dataUrlSize(dataUrl);
+          edited = await dataUrlToFile(dataUrl, `${file.name.replace(/\.[^.]+$/, "")}-edited.${dataUrl.startsWith("data:image/png") ? "png" : "webp"}`);
+          if (edited.size <= 0) throw new Error("empty image file");
+        } catch {
+          throw new ImageUploadError("تعذر إنشاء ملف الصورة");
+        }
         setProcessingStage("جاري رفع النسخة المحسّنة...");
-        const stored = await uploadImageWithVariants(edited, {
-          folder: imageUploadFolder(kind),
-          maxBytes: outputByteTarget(kind),
-          outputMaxBytes: outputByteTarget(kind),
-          maxSize: Math.max(editor.width, editor.height),
-          compressionMode,
-          preserveTransparency: /png|webp/i.test(edited.type),
-          signal: controller.signal,
-          onProgress: setTransfer,
-        });
+        let stored: Awaited<ReturnType<typeof uploadImageWithVariants>>;
+        try {
+          stored = await uploadImageWithVariants(edited, {
+            folder: imageUploadFolder(kind),
+            maxBytes: outputByteTarget(kind),
+            outputMaxBytes: outputByteTarget(kind),
+            maxSize: Math.max(editor.width, editor.height),
+            compressionMode,
+            preserveTransparency: /png|webp/i.test(edited.type),
+            signal: controller.signal,
+            onProgress: setTransfer,
+          });
+        } catch (cause) {
+          if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+          throw new ImageUploadError("تعذر رفع الصورة");
+        }
         const displayValue = size > outputByteTarget(kind) ? stored.largeUrl : dataUrl;
         results.push({
           dataUrl: displayValue,
@@ -303,7 +321,12 @@ export function ImageUploadEditor({
         });
         setProgress(Math.round(((index + 1) / queue.length) * 100));
       }
-      await onComplete(results);
+      try {
+        await onComplete(results);
+      } catch {
+        // Do not replace a working server-backed image when settings persistence fails.
+        throw new ImageUploadError("تعذر حفظ الصورة في الإعدادات");
+      }
     } catch (cause) {
       setProgress(0);
       setTransfer(null);

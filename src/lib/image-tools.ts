@@ -55,9 +55,35 @@ export function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Convert an editor data URL without issuing a network request. `fetch(data:)`
+ * is blocked by AJN's intentionally strict connect-src CSP, and a data URL is
+ * already local browser data—not an upload endpoint.
+ */
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,(.*)$/is.exec(dataUrl);
+  if (!match) throw new Error("تعذر إنشاء ملف الصورة");
+  const type = match[1] || "application/octet-stream";
+  const encoded = match[3] ?? "";
+  try {
+    if (match[2]) {
+      const binary = atob(encoded.replace(/\s/g, ""));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const blob = new Blob([bytes], { type });
+      if (blob.size <= 0) throw new Error("empty image blob");
+      return blob;
+    }
+    const blob = new Blob([decodeURIComponent(encoded)], { type });
+    if (blob.size <= 0) throw new Error("empty image blob");
+    return blob;
+  } catch {
+    throw new Error("تعذر إنشاء ملف الصورة");
+  }
+}
+
 export async function dataUrlToFile(dataUrl: string, name: string): Promise<File> {
-  const response = await fetch(dataUrl);
-  const blob = await response.blob();
+  const blob = dataUrlToBlob(dataUrl);
   return new File([blob], name, { type: blob.type || "image/webp" });
 }
 
@@ -70,8 +96,7 @@ export function formatBytes(bytes?: number): string {
 
 export async function dataUrlSize(dataUrl: string): Promise<number> {
   if (!dataUrl.startsWith("data:")) return 0;
-  const response = await fetch(dataUrl);
-  return (await response.blob()).size;
+  return dataUrlToBlob(dataUrl).size;
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {
