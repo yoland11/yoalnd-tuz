@@ -10,3 +10,6 @@ release
 *.zip
 *.blockmap
 .git
+backups
+reports
+supabase/.temp

@@ -198,9 +198,29 @@ try {
     SUPABASE_URL: "https://storage.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "s".repeat(48),
     SUPABASE_STORAGE_BUCKET: "ajn-assets",
     AJN_CUSTOMER_PRIVATE_BUCKET: "ajn-private", RATE_LIMIT_BACKEND: "postgres", ADMIN_BOOTSTRAP_ENABLED: "false",
-    ULTRAMSG_INSTANCE_ID: "instance-123", ULTRAMSG_TOKEN: "u".repeat(48),
+    ULTRAMSG_INSTANCE_ID: "instance-123", ULTRAMSG_TOKEN: "provider-token-123",
   };
+  assert.ok(validProduction.ULTRAMSG_TOKEN.length < 32);
   assert.deepEqual(productionEnvironmentIssues(validProduction), []);
+  const missingUltraMsgTokenIssues = productionEnvironmentIssues({
+    ...validProduction,
+    ULTRAMSG_TOKEN: "",
+  });
+  assert.ok(missingUltraMsgTokenIssues.includes("ULTRAMSG_TOKEN is required"));
+  const placeholderUltraMsgTokenIssues = productionEnvironmentIssues({
+    ...validProduction,
+    ULTRAMSG_TOKEN: "replace-with-ultramsg-token",
+  });
+  assert.ok(placeholderUltraMsgTokenIssues.includes("ULTRAMSG_TOKEN contains a placeholder value"));
+  assert.ok(!placeholderUltraMsgTokenIssues.some((issue) => issue.includes("at least 32 characters")));
+  for (const key of ["AUTH_SECRET", "CRON_SECRET", "SUPABASE_SERVICE_ROLE_KEY"] as const) {
+    const shortSecretIssues = productionEnvironmentIssues({
+      ...validProduction,
+      [key]: "short-secret",
+    });
+    assert.ok(shortSecretIssues.includes(`${key} must contain at least 32 characters`));
+  }
+  pass("production environment accepts provider-issued UltraMsg tokens without weakening AJN strong-secret validation");
   const unsafeIssues = productionEnvironmentIssues({
     ...validProduction, DATABASE_URL: "postgresql://postgres:password@localhost:5432/ajn_test",
     TEST_DATABASE_URL: "postgresql://postgres:password@localhost:5432/ajn_test", RATE_LIMIT_BACKEND: "memory",

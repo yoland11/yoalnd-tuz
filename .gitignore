@@ -87,6 +87,7 @@ desktop/release/
 # Build artifacts
 .next/
 node_modules/
+supabase/.temp/
 desktop/release/
 desktop/dist/
 dist/

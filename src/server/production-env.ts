@@ -96,7 +96,7 @@ export function productionEnvironmentIssues(env: Environment = process.env) {
     "SUPABASE_CUSTOMER_PRIVATE_BUCKET",
   ]);
   requireValue(issues, env, "ULTRAMSG_INSTANCE_ID");
-  requireValue(issues, env, "ULTRAMSG_TOKEN", { secret: true });
+  requireValue(issues, env, "ULTRAMSG_TOKEN");
 
   const databaseUrl = value(env, "DATABASE_URL");
   if (databaseUrl) {

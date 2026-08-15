@@ -19,6 +19,7 @@ for (const migration of [
   "0082_installment_management.sql",
   "0095_production_safety.sql",
   "0096_phase2_production_hardening.sql",
+  "0097_release_readiness.sql",
 ])
   await pool.query(
     await readFile(
