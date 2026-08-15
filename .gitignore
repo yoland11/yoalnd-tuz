@@ -18,6 +18,25 @@ node_modules
 !.env.example
 Replit Secrets
 
+# databases, dumps, and local backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+*.bak
+*.sql.gz
+backups/
+backup/
+local-backups/
+
+# production audit/checkpoint artifacts stay local
+reports/ajn-production-*.json
+reports/ajn-production-*.md
+reports/ajn-migration-rehearsal-comparison.json
+reports/pre-deploy-checkpoint.md
+
 # IDEs and editors
 /.idea
 .project
@@ -38,7 +57,9 @@ Replit Secrets
 /.sass-cache
 /connect.lock
 /coverage
+/.turbo
 /libpeerconnection.log
+*.log
 npm-debug.log
 yarn-error.log
 testem.log
@@ -62,6 +83,7 @@ Thumbs.db
 desktop/release/
 .vercel
 .env*
+!.env.example
 # Build artifacts
 .next/
 node_modules/

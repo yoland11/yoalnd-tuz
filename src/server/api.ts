@@ -28,7 +28,32 @@ import {
   mapWriteError,
   type ApiErrorCode,
 } from "@/server/write-safety";
-import { customerLinkResolution, salesInvoicePaymentProjection } from "@/server/sales-invoice-customer-link-logic";
+import {
+  InvalidJsonBodyError,
+  RequestBodyTooLargeError,
+  readRequestBody,
+} from "@/server/request-body";
+import { adminSessionTokenHash } from "@/server/admin-session-security";
+import { decideAdminBootstrap } from "@/server/admin-bootstrap-policy";
+import {
+  cleanupExpiredRateLimits,
+  consumeRateLimit,
+  type RateLimitResult,
+} from "@/server/rate-limit";
+import {
+  assertProductionEnvironment,
+  ProductionEnvironmentError,
+} from "@/server/production-env";
+import { safeServerError } from "@/server/safe-server-log";
+import {
+  assertCurrentSchema,
+  REQUIRED_SCHEMA_REVISION,
+  SchemaOutdatedError,
+} from "@/server/schema-version";
+import {
+  customerLinkResolution,
+  salesInvoicePaymentProjection,
+} from "@/server/sales-invoice-customer-link-logic";
 import { z } from "zod/v4";
 import {
   and,
@@ -953,17 +978,8 @@ type Json = Record<string, unknown> | unknown[];
 const isProd = process.env.NODE_ENV === "production";
 const customerSessions = new Map<string, number>();
 let customerAccountTablesPromise: Promise<void> | null = null;
-const customerLoginByIp = new Map<string, Bucket>();
-const customerLoginByIdentifier = new Map<string, Bucket>();
-
-type Bucket = { count: number; resetAt: number };
-const otpRequestByPhone = new Map<string, Bucket>();
-const otpRequestByIp = new Map<string, Bucket>();
-const otpVerifyByPhone = new Map<string, Bucket>();
 const phoneLookupHits = new Map<string, number[]>();
 const respondHits = new Map<string, number[]>();
-// Best-effort per-IP throttle on public tracking-code lookups (anti-enumeration).
-const trackingLookupByIp = new Map<string, Bucket>();
 
 let seedPromise: Promise<void> | null = null;
 let crewsTablePromise: Promise<void> | null = null;
@@ -1010,10 +1026,6 @@ function clearStoreCategoriesCache() {
   storeCategoriesCache.clear();
 }
 
-const adminLoginByIp = new Map<string, Bucket>();
-const adminLoginByUsername = new Map<string, Bucket>();
-const printAgentRequestsByCredential = new Map<string, Bucket>();
-
 function json(
   data: unknown,
   status = 200,
@@ -1035,6 +1047,7 @@ function error(
     retryable?: boolean;
     fieldErrors?: Record<string, string>;
     details?: ValidationIssue[];
+    headers?: HeadersInit;
   } = {},
 ): NextResponse {
   const payload = createApiErrorPayload({
@@ -1048,7 +1061,10 @@ function error(
   return json(
     options.details ? { ...payload, details: options.details } : payload,
     status,
-    { "x-request-id": payload.requestId },
+    {
+      ...Object.fromEntries(new Headers(options.headers)),
+      "x-request-id": payload.requestId,
+    },
   );
 }
 
@@ -1088,7 +1104,9 @@ function validationError(
         requestId,
         status: 400,
         code: "VALIDATION_ERROR",
-        fieldErrors: Object.fromEntries(details.map((issue) => [issue.field, issue.message])),
+        fieldErrors: Object.fromEntries(
+          details.map((issue) => [issue.field, issue.message]),
+        ),
       }),
       message: summary ? `تحقق من البيانات: ${summary}` : "بيانات غير صحيحة",
       error: summary ? `تحقق من البيانات: ${summary}` : "بيانات غير صحيحة",
@@ -1098,9 +1116,6 @@ function validationError(
   );
 }
 
-// JSON actions stay intentionally small. Large images use the same media storage
-// pipeline in resumable 3 MB chunks instead of growing this request limit.
-const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
 // Image sources are compressed in the browser. These are strict limits for the
 // generated storage objects, never a reason to send a 100 MB original to Vercel.
@@ -1116,8 +1131,6 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/avif",
 ]);
 
-class RequestBodyTooLargeError extends Error {}
-
 class CheckoutError extends Error {
   constructor(
     message: string,
@@ -1128,23 +1141,7 @@ class CheckoutError extends Error {
 }
 
 async function body(req: NextRequest): Promise<any> {
-  if (req.method === "GET" || req.method === "HEAD") return {};
-  const declaredSize = Number(req.headers.get("content-length") ?? 0);
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_REQUEST_BODY_BYTES)
-    throw new RequestBodyTooLargeError("request body exceeds limit");
-  const raw = await req.text();
-  if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BODY_BYTES)
-    throw new RequestBodyTooLargeError("request body exceeds limit");
-  if (!raw.trim()) return {};
-  const contentType = req.headers.get("content-type") ?? "";
-  if (contentType.includes("application/x-www-form-urlencoded")) {
-    return Object.fromEntries(new URLSearchParams(raw).entries());
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+  return readRequestBody(req);
 }
 
 function query(req: NextRequest): Record<string, string> {
@@ -1168,21 +1165,19 @@ function ip(req: NextRequest): string {
   );
 }
 
-function checkRateLimit(
-  map: Map<string, Bucket>,
-  key: string,
-  max: number,
-  windowMs: number,
-): boolean {
-  const now = Date.now();
-  const b = map.get(key);
-  if (!b || b.resetAt < now) {
-    map.set(key, { count: 1, resetAt: now + windowMs });
-    return true;
-  }
-  if (b.count >= max) return false;
-  b.count++;
-  return true;
+function rateLimitError(
+  result: RateLimitResult,
+  message = "تم تجاوز عدد المحاولات المسموح، حاول لاحقاً",
+) {
+  return error(message, 429, {
+    code: "RATE_LIMITED",
+    retryable: true,
+    headers: {
+      "Retry-After": String(result.retryAfterSeconds),
+      "RateLimit-Limit": String(result.limit),
+      "RateLimit-Remaining": String(result.remaining),
+    },
+  });
 }
 
 function rollingRateLimited(
@@ -1632,7 +1627,7 @@ function portalHeader(req: NextRequest): string | null {
   return value || null;
 }
 
-async function createSession(
+export async function createSession(
   userId: number,
   req?: NextRequest,
   portalHint?: string | null,
@@ -1643,7 +1638,8 @@ async function createSession(
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   const now = new Date();
   await db.insert(adminSessionsTable).values({
-    token,
+    token: null,
+    tokenHash: adminSessionTokenHash(token),
     userId,
     expiresAt,
     sessionId,
@@ -1660,14 +1656,14 @@ async function createSession(
 
 // Ordinary logout: current session only. Soft-revoke (never a hard delete) so
 // the device list keeps a record and the audit trail stays intact.
-async function destroySession(token: string): Promise<void> {
+export async function destroySession(token: string): Promise<void> {
   await ensureAdminSessionsShape();
   await db
     .update(adminSessionsTable)
     .set({ revokedAt: new Date(), revokeReason: "logout" })
     .where(
       and(
-        eq(adminSessionsTable.token, token),
+        eq(adminSessionsTable.tokenHash, adminSessionTokenHash(token)),
         isNull(adminSessionsTable.revokedAt),
       ),
     );
@@ -1788,75 +1784,64 @@ async function countActiveUserSessions(userId: number): Promise<number> {
   return rows.length;
 }
 
-async function seedAdminUser(): Promise<void> {
+export async function seedAdminUser(): Promise<void> {
   try {
     await ensureStaffTableShape();
     const username = process.env.ADMIN_USERNAME?.trim() || "alijan";
     const password = process.env.ADMIN_PASSWORD?.trim();
     const fullName = process.env.ADMIN_FULL_NAME?.trim() || "المدير الرئيسي";
-    const initialPassword = password || null;
-
-    const legacy = await db.query.staffTable.findFirst({
-      where: eq(staffTable.username, "admin"),
-    });
-    if (legacy) {
-      const taken = await db.query.staffTable.findFirst({
+    const [administrator, existingUsername] = await Promise.all([
+      db.query.staffTable.findFirst({
+        where: inArray(staffTable.role, [
+          "admin",
+          "super_admin",
+          "main_manager",
+        ]),
+      }),
+      db.query.staffTable.findFirst({
         where: eq(staffTable.username, username),
-      });
-      if (!taken)
-        await db
-          .update(staffTable)
-          .set({ username })
-          .where(eq(staffTable.id, legacy.id));
-    }
-
-    const existing = await db.query.staffTable.findFirst({
-      where: eq(staffTable.username, username),
+      }),
+    ]);
+    const decision = decideAdminBootstrap({
+      enabled: process.env.ADMIN_BOOTSTRAP_ENABLED === "true",
+      administratorExists: Boolean(administrator),
+      usernameExists: Boolean(existingUsername),
+      passwordPresent: Boolean(password),
     });
-    if (existing) {
-      const current = Array.isArray(existing.permissions)
-        ? existing.permissions
-        : [];
-      const missing = ALL_PERMISSIONS.filter((p) => !current.includes(p));
-      if (
-        !existing.isActive ||
-        existing.role !== "admin" ||
-        missing.length > 0
-      ) {
-        await db
-          .update(staffTable)
-          .set({
-            isActive: true,
-            role: "admin",
-            permissions: [...ALL_PERMISSIONS],
-          })
-          .where(eq(staffTable.id, existing.id));
-      }
-      return;
-    }
-
-    if (!initialPassword) {
-      console.error("ADMIN_PASSWORD is required to seed the first admin.");
+    if (decision !== "create") {
+      if (decision === "password_missing")
+        console.error(
+          "ADMIN_PASSWORD is required when ADMIN_BOOTSTRAP_ENABLED=true.",
+        );
+      if (decision === "username_exists" && !administrator)
+        console.error(
+          "Initial admin bootstrap refused because ADMIN_USERNAME already belongs to an existing account.",
+        );
       return;
     }
 
     await db.insert(staffTable).values({
       username,
-      passwordHash: hashPassword(initialPassword),
+      passwordHash: hashPassword(password!),
       fullName,
       role: "admin",
       permissions: [...ALL_PERMISSIONS],
       isActive: true,
     });
   } catch (err) {
-    console.error("seedAdminUser failed:", err);
+    console.error("seedAdminUser failed", safeServerError(err));
+    throw err;
   }
 }
 
 async function ensureAdminSeeded(): Promise<void> {
   seedPromise ??= seedAdminUser()
     .then(() => ensureAdminSessionsShape())
-    .then(() => pruneExpiredSessions());
+    .then(() => pruneExpiredSessions())
+    .catch((error) => {
+      seedPromise = null;
+      throw error;
+    });
   return seedPromise;
 }
 
@@ -1890,7 +1875,7 @@ function touchSessionActivity(id: number, last: Date | null): void {
 // Single source of truth for "who is this request". Rejects expired OR revoked
 // sessions and returns the session context (never the secret token) for callers
 // that need session_id / portal (the /me and device-management endpoints).
-async function resolveAdminSession(
+export async function resolveAdminSession(
   req: NextRequest,
 ): Promise<{ user: AdminUser; session: AdminSessionContext } | null> {
   await ensureAdminSessionsShape();
@@ -1898,7 +1883,7 @@ async function resolveAdminSession(
   if (!token) return null;
   const session = await db.query.adminSessionsTable.findFirst({
     where: and(
-      eq(adminSessionsTable.token, token),
+      eq(adminSessionsTable.tokenHash, adminSessionTokenHash(token)),
       gt(adminSessionsTable.expiresAt, new Date()),
       isNull(adminSessionsTable.revokedAt),
     ),
@@ -1965,9 +1950,13 @@ function hasPermission(
   // while administrative task controls remain explicitly grantable.
   if (perm.startsWith("koshat_tasks.") && user.permissions.includes("koshas"))
     return [
-      "koshat_tasks.view", "koshat_tasks.accept", "koshat_tasks.start",
-      "koshat_tasks.update_status", "koshat_tasks.checkout_assets",
-      "koshat_tasks.return_assets", "koshat_tasks.report_damage",
+      "koshat_tasks.view",
+      "koshat_tasks.accept",
+      "koshat_tasks.start",
+      "koshat_tasks.update_status",
+      "koshat_tasks.checkout_assets",
+      "koshat_tasks.return_assets",
+      "koshat_tasks.report_damage",
     ].includes(perm);
   // Tailoring module gate implies its granular sub-permissions; graduation
   // managers/admins also inherit tailoring access.
@@ -1994,16 +1983,24 @@ async function requirePermission(
 
 function canPrintSalesInvoice(user: AdminUser | null): boolean {
   if (!user || !user.isActive) return false;
-  const role = String(user.role ?? "").trim().toLowerCase();
-  return ["admin", "super_admin", "main_manager"].includes(role)
-    || hasPermission(user, "print.sales_invoice");
+  const role = String(user.role ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    ["admin", "super_admin", "main_manager"].includes(role) ||
+    hasPermission(user, "print.sales_invoice")
+  );
 }
 
-async function requireSalesInvoicePrintPermission(req: NextRequest): Promise<AdminUser | NextResponse> {
+async function requireSalesInvoicePrintPermission(
+  req: NextRequest,
+): Promise<AdminUser | NextResponse> {
   const user = await getAdminUser(req);
   if (!user) return error("غير مخول", 401);
   if (!canPrintSalesInvoice(user))
-    return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
+    return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, {
+      code: "PERMISSION_DENIED",
+    });
   return user;
 }
 
@@ -2157,7 +2154,7 @@ async function handleSessionManagement(
 
   // POST /auth/logout-all — revoke ALL of the current user's sessions only.
   if (method === "POST" && subPath[0] === "logout-all") {
-    const payload = await body(req).catch(() => ({}));
+    const payload = await body(req);
     const reason =
       typeof payload?.reason === "string" && payload.reason.trim()
         ? payload.reason.trim()
@@ -3169,8 +3166,14 @@ async function createApprovalRequest(input: {
 }
 
 const DELEGATED_APPROVAL_CODES = [
-  "approvals.view", "approvals.approve", "approvals.reject", "approvals.return_for_edit",
-  "approvals.forward_to_main_manager", "approvals.comment", "approvals.audit.view", "approvals.reverse",
+  "approvals.view",
+  "approvals.approve",
+  "approvals.reject",
+  "approvals.return_for_edit",
+  "approvals.forward_to_main_manager",
+  "approvals.comment",
+  "approvals.audit.view",
+  "approvals.reverse",
 ] as const;
 
 function approvalRequestScope(row: any) {
@@ -3187,37 +3190,90 @@ function approvalRequestScope(row: any) {
 function activeDelegation(profile: any) {
   if (!profile?.isActive) return false;
   const now = Date.now();
-  return (!profile.validFrom || new Date(profile.validFrom).getTime() <= now) &&
-    (!profile.validUntil || new Date(profile.validUntil).getTime() >= now);
+  return (
+    (!profile.validFrom || new Date(profile.validFrom).getTime() <= now) &&
+    (!profile.validUntil || new Date(profile.validUntil).getTime() >= now)
+  );
 }
 
 function profileAllowsScope(profile: any, row: any) {
   const scope = approvalRequestScope(row);
-  const categories = Array.isArray(profile?.allowedCategories) ? profile.allowedCategories : [];
-  const departments = Array.isArray(profile?.allowedDepartments) ? profile.allowedDepartments : [];
-  const branches = Array.isArray(profile?.allowedBranchIds) ? profile.allowedBranchIds.map(Number) : [];
-  return categories.includes(scope.category) &&
+  const categories = Array.isArray(profile?.allowedCategories)
+    ? profile.allowedCategories
+    : [];
+  const departments = Array.isArray(profile?.allowedDepartments)
+    ? profile.allowedDepartments
+    : [];
+  const branches = Array.isArray(profile?.allowedBranchIds)
+    ? profile.allowedBranchIds.map(Number)
+    : [];
+  return (
+    categories.includes(scope.category) &&
     (!departments.length || departments.includes(scope.department)) &&
-    (!branches.length || (scope.branchId !== null && branches.includes(scope.branchId)));
+    (!branches.length ||
+      (scope.branchId !== null && branches.includes(scope.branchId)))
+  );
 }
 
 async function approvalDelegationFor(user: AdminUser) {
   await ensureAdminExtensionsTables();
-  const profile = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, user.id) });
+  const profile = await db.query.employeeApprovalPermissionsTable.findFirst({
+    where: eq(employeeApprovalPermissionsTable.staffId, user.id),
+  });
   return profile && activeDelegation(profile) ? profile : null;
 }
 
-async function notifyMainManagers(input: { type: string; title: string; body: string; requestId?: number; href?: string; metadata?: Record<string, unknown> }) {
-  const managers = await db.query.staffTable.findMany({ where: and(eq(staffTable.isActive, true), eq(staffTable.role, "admin")) });
-  await Promise.all(managers.map((manager) => createNotification({ audienceType: "admin", staffId: manager.id, type: input.type, title: input.title, body: input.body, entityType: input.requestId ? "approval_request" : "staff", entityId: input.requestId ?? null, href: input.href ?? "/admin/approvals", metadata: input.metadata ?? {} })));
+async function notifyMainManagers(input: {
+  type: string;
+  title: string;
+  body: string;
+  requestId?: number;
+  href?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const managers = await db.query.staffTable.findMany({
+    where: and(eq(staffTable.isActive, true), eq(staffTable.role, "admin")),
+  });
+  await Promise.all(
+    managers.map((manager) =>
+      createNotification({
+        audienceType: "admin",
+        staffId: manager.id,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        entityType: input.requestId ? "approval_request" : "staff",
+        entityId: input.requestId ?? null,
+        href: input.href ?? "/admin/approvals",
+        metadata: input.metadata ?? {},
+      }),
+    ),
+  );
 }
 
-async function addApprovalAction(input: { request: any; action: string; oldStatus: string; newStatus: string; actor: AdminUser; note?: string | null; req: NextRequest; metadata?: Record<string, unknown> }) {
+async function addApprovalAction(input: {
+  request: any;
+  action: string;
+  oldStatus: string;
+  newStatus: string;
+  actor: AdminUser;
+  note?: string | null;
+  req: NextRequest;
+  metadata?: Record<string, unknown>;
+}) {
   await db.insert(approvalActionsTable).values({
-    approvalRequestId: input.request.id, action: input.action, oldStatus: input.oldStatus, newStatus: input.newStatus,
-    actorStaffId: input.actor.id, actorName: input.actor.fullName || input.actor.username, actorRole: input.actor.role,
-    note: nullableText(input.note), amount: String(Math.max(0, Number(input.request.amount ?? 0) || 0)), ipAddress: ip(input.req),
-    sessionId: input.req.cookies.get(COOKIE_NAME)?.value?.slice(0, 120) ?? null, metadata: input.metadata ?? {},
+    approvalRequestId: input.request.id,
+    action: input.action,
+    oldStatus: input.oldStatus,
+    newStatus: input.newStatus,
+    actorStaffId: input.actor.id,
+    actorName: input.actor.fullName || input.actor.username,
+    actorRole: input.actor.role,
+    note: nullableText(input.note),
+    amount: String(Math.max(0, Number(input.request.amount ?? 0) || 0)),
+    ipAddress: ip(input.req),
+    sessionId: input.req.cookies.get(COOKIE_NAME)?.value?.slice(0, 120) ?? null,
+    metadata: input.metadata ?? {},
   });
 }
 
@@ -4264,7 +4320,7 @@ async function runSmartNotificationsSweep() {
       });
     }
   } catch (err) {
-    console.warn("document expiry sweep failed", err);
+    console.warn("document expiry sweep failed", safeServerError(err));
   }
 
   return summary;
@@ -4677,7 +4733,9 @@ function websiteLogoStoragePath(value: unknown): string | null {
     )
       return null;
     const path = decodeURIComponent(url.pathname.slice(prefix.length));
-    return path.startsWith("settings/logo/") && !path.includes("..") ? path : null;
+    return path.startsWith("settings/logo/") && !path.includes("..")
+      ? path
+      : null;
   } catch {
     return null;
   }
@@ -4699,8 +4757,15 @@ async function storageObjectExists(path: string) {
   return response.ok;
 }
 
-async function deleteWebsiteLogoObjectIfUnshared(path: string, currentUrl: string) {
-  if (!websiteLogoStoragePath(currentUrl) || !STORAGE_URL || !STORAGE_SERVICE_KEY)
+async function deleteWebsiteLogoObjectIfUnshared(
+  path: string,
+  currentUrl: string,
+) {
+  if (
+    !websiteLogoStoragePath(currentUrl) ||
+    !STORAGE_URL ||
+    !STORAGE_SERVICE_KEY
+  )
     return false;
   const settings = await db.query.settingsTable.findMany();
   const usedElsewhere = settings.some(
@@ -4715,20 +4780,29 @@ async function deleteWebsiteLogoObjectIfUnshared(path: string, currentUrl: strin
     { method: "DELETE", headers: storageHeaders() },
   );
   if (!response.ok) {
-    console.warn("website logo cleanup failed", { action: "site_logo_cleanup", status: response.status });
+    console.warn("website logo cleanup failed", {
+      action: "site_logo_cleanup",
+      status: response.status,
+    });
     return false;
   }
   return true;
 }
 
-async function cleanupUncommittedWebsiteLogo(metadata: Record<string, unknown>, previousUrl: string) {
+async function cleanupUncommittedWebsiteLogo(
+  metadata: Record<string, unknown>,
+  previousUrl: string,
+) {
   const urls = [
     metadata.originalUrl,
     metadata.thumbnailUrl,
     metadata.mediumUrl,
     metadata.largeUrl,
   ]
-    .filter((value): value is string => typeof value === "string" && value !== previousUrl)
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value !== previousUrl,
+    )
     .filter((value, index, values) => values.indexOf(value) === index);
   for (const url of urls) {
     const path = websiteLogoStoragePath(url);
@@ -4746,7 +4820,8 @@ async function cleanupUncommittedWebsiteLogo(metadata: Record<string, unknown>, 
     } catch (cleanupError) {
       console.warn("website logo orphan cleanup failed", {
         action: "site_logo_orphan_cleanup",
-        message: cleanupError instanceof Error ? cleanupError.message : "unknown",
+        message:
+          cleanupError instanceof Error ? cleanupError.message : "unknown",
       });
     }
   }
@@ -4789,10 +4864,16 @@ async function handleImageUploads(req: NextRequest, parts: string[]) {
       folder === "settings/logo" &&
       !["image/jpeg", "image/png", "image/webp"].includes(mime)
     )
-      return error("نوع الملف غير مدعوم للشعار. استخدم PNG أو JPG أو WebP.", 415);
+      return error(
+        "نوع الملف غير مدعوم للشعار. استخدم PNG أو JPG أو WebP.",
+        415,
+      );
     if (!Number.isInteger(size) || size <= 0)
       return error("الملف فارغ أو غير صالح", 422);
-    const maximumBytes = folder === "settings/logo" ? MAX_LOGO_UPLOAD_BYTES : MAX_IMAGE_UPLOAD_BYTES;
+    const maximumBytes =
+      folder === "settings/logo"
+        ? MAX_LOGO_UPLOAD_BYTES
+        : MAX_IMAGE_UPLOAD_BYTES;
     if (size > maximumBytes)
       return error(
         folder === "settings/logo"
@@ -8011,39 +8092,15 @@ function normalizeUnifiedBookingCustomFields(fields: Record<string, any>) {
 async function ensureCrewsTable(): Promise<void> {
   if (!crewsTablePromise) {
     crewsTablePromise = db
-      .execute(
-        sql`
-      create table if not exists "crews" (
-        "id" serial primary key,
-        "name" text not null,
-        "is_active" boolean not null default true,
-        "status" varchar(20) not null default 'available',
-        "internal_notes" text,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      )
-    `,
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "crews" add column if not exists "status" varchar(20) not null default 'available'`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "crews" add column if not exists "internal_notes" text`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() =>
         db.execute(
           sql`update "crews" set "status" = 'inactive' where "is_active" = false and ("status" is null or "status" = 'available')`,
         ),
       )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "crews_status_idx" on "crews" ("status")`,
-        ),
-      )
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await crewsTablePromise;
@@ -8052,39 +8109,14 @@ async function ensureCrewsTable(): Promise<void> {
 async function ensureOtpTable(): Promise<void> {
   if (!otpTablePromise) {
     otpTablePromise = db
-      .execute(
-        sql`
-      create table if not exists "otp_codes" (
-        "id" serial primary key,
-        "phone" varchar(20) not null,
-        "code" varchar(10),
-        "code_hash" text not null default '',
-        "expires_at" timestamp not null,
-        "used" boolean not null default false,
-        "attempts" integer not null default 0,
-        "created_at" timestamp not null default now()
-      )
-    `,
-      )
+      .execute(sql`select 1`)
       .then(async () => {
-        await db.execute(
-          sql`alter table "otp_codes" add column if not exists "code_hash" text not null default ''`,
-        );
-        await db.execute(
-          sql`alter table "otp_codes" add column if not exists "attempts" integer not null default 0`,
-        );
-        await db.execute(
-          sql`alter table "otp_codes" add column if not exists "code" varchar(10)`,
-        );
-        await db.execute(
-          sql`alter table "otp_codes" alter column "code" drop not null`,
-        );
-        await db.execute(
-          sql`create index if not exists "otp_codes_phone_idx" on "otp_codes" ("phone")`,
-        );
-        await db.execute(
-          sql`create index if not exists "otp_codes_phone_created_idx" on "otp_codes" ("phone", "created_at")`,
-        );
+        await db.execute(sql`select 1`);
+        await db.execute(sql`select 1`);
+        await db.execute(sql`select 1`);
+        await db.execute(sql`select 1`);
+        await db.execute(sql`select 1`);
+        await db.execute(sql`select 1`);
       })
       .then(() => undefined);
   }
@@ -8094,39 +8126,13 @@ async function ensureOtpTable(): Promise<void> {
 async function ensureCustomerProfileColumns(): Promise<void> {
   if (!customerProfilePromise) {
     customerProfilePromise = db
-      .execute(
-        sql`alter table "customers" add column if not exists "full_name" text`,
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "email" text`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "avatar_url" text`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "address" text`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "city" text`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "updated_at" timestamp not null default now()`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "status" varchar(20) not null default 'active'`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await customerProfilePromise;
@@ -8135,82 +8141,7 @@ async function ensureCustomerProfileColumns(): Promise<void> {
 async function ensureCustomerAccountTables(): Promise<void> {
   if (!customerAccountTablesPromise) {
     customerAccountTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "customer_accounts" (
-        "id" serial primary key,
-        "customer_id" integer not null unique references "customers"("id") on delete restrict,
-        "customer_code" varchar(32) not null unique,
-        "username" varchar(80) not null unique,
-        "phone_normalized" varchar(20) not null,
-        "email" text,
-        "password_hash" text not null,
-        "recovery_code_hash" text not null,
-        "recovery_generated_at" timestamp not null default now(),
-        "recovery_acknowledged_at" timestamp,
-        "failed_login_count" integer not null default 0,
-        "locked_until" timestamp,
-        "link_status" varchar(24) not null default 'linked',
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "customer_accounts_phone_normalized_idx" on "customer_accounts" ("phone_normalized");
-      create table if not exists "customer_sessions" (
-        "id" serial primary key,
-        "session_id" uuid not null unique,
-        "account_id" integer not null references "customer_accounts"("id") on delete cascade,
-        "customer_id" integer not null references "customers"("id") on delete cascade,
-        "token_hash" text not null unique,
-        "expires_at" timestamp not null,
-        "user_agent" text,
-        "device_id" text,
-        "ip_address" varchar(80),
-        "last_active_at" timestamp,
-        "revoked_at" timestamp,
-        "revoke_reason" text,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "customer_sessions_customer_idx" on "customer_sessions" ("customer_id", "expires_at");
-      create table if not exists "customer_account_recovery_requests" (
-        "id" serial primary key,
-        "customer_id" integer references "customers"("id") on delete set null,
-        "account_id" integer references "customer_accounts"("id") on delete set null,
-        "identifier" varchar(120) not null,
-        "phone_normalized" varchar(20),
-        "notes" text,
-        "status" varchar(24) not null default 'pending',
-        "reviewed_by" integer references "staff"("id") on delete set null,
-        "review_notes" text,
-        "created_at" timestamp not null default now(),
-        "reviewed_at" timestamp
-      );
-      create table if not exists "customer_private_photos" (
-        "id" serial primary key,
-        "customer_id" integer not null unique references "customers"("id") on delete cascade,
-        "storage_path" text not null,
-        "mime_type" varchar(80) not null,
-        "file_size" integer not null,
-        "width" integer,
-        "height" integer,
-        "checksum" varchar(128) not null,
-        "deleted_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "customer_account_audit_logs" (
-        "id" serial primary key,
-        "customer_id" integer references "customers"("id") on delete set null,
-        "account_id" integer references "customer_accounts"("id") on delete set null,
-        "actor_staff_id" integer references "staff"("id") on delete set null,
-        "action" varchar(100) not null,
-        "metadata" jsonb not null default '{}'::jsonb,
-        "ip_address" varchar(80),
-        "user_agent" text,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "customer_account_audit_customer_idx" on "customer_account_audit_logs" ("customer_id", "created_at" desc);
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         customerAccountTablesPromise = null;
@@ -8223,46 +8154,10 @@ async function ensureCustomerAccountTables(): Promise<void> {
 async function ensureCustomerAddressTables(): Promise<void> {
   if (!customerAddressTablesPromise) {
     customerAddressTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "customer_addresses" (
-        "id" serial primary key,
-        "customer_id" integer not null references "customers"("id"),
-        "type" varchar(20) not null default 'home',
-        "full_name" text not null default '',
-        "phone" varchar(20) not null,
-        "governorate" text not null default '',
-        "city" text not null default '',
-        "address" text not null default '',
-        "landmark" text not null default '',
-        "notes" text not null default '',
-        "is_default" boolean not null default false,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      )
-    `,
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "customer_addresses_customer_id_idx" on "customer_addresses" ("customer_id")`,
-        ),
-      )
-      .then(() =>
-        db.execute(sql`
-        create table if not exists "customer_preferences" (
-          "id" serial primary key,
-          "customer_id" integer not null references "customers"("id"),
-          "default_payment_method" varchar(20) not null default 'cash',
-          "created_at" timestamp not null default now(),
-          "updated_at" timestamp not null default now()
-        )
-      `),
-      )
-      .then(() =>
-        db.execute(
-          sql`create unique index if not exists "customer_preferences_customer_id_unique" on "customer_preferences" ("customer_id")`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await customerAddressTablesPromise;
@@ -8271,20 +8166,8 @@ async function ensureCustomerAddressTables(): Promise<void> {
 async function ensureTrackingColumns(): Promise<void> {
   if (!trackingColumnsPromise) {
     trackingColumnsPromise = db
-      .execute(
-        sql`
-          alter table "orders" add column if not exists "phone_last4" varchar(4);
-          alter table "orders" alter column "tracking_code" type varchar(40);
-        `,
-      )
-      .then(() =>
-        db.execute(
-          sql`
-            alter table "service_orders" add column if not exists "phone_last4" varchar(4);
-            alter table "service_orders" alter column "tracking_code" type varchar(40);
-          `,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
       .then(() =>
         db.execute(sql`
         update "orders"
@@ -8301,44 +8184,14 @@ async function ensureTrackingColumns(): Promise<void> {
           and length(regexp_replace(coalesce("phone", ''), '\\D', '', 'g')) >= 4
       `),
       )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" drop constraint if exists "orders_tracking_code_unique"`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" drop constraint if exists "service_orders_tracking_code_unique"`,
-        ),
-      )
-      .then(() =>
-        db.execute(sql`drop index if exists "orders_tracking_code_unique"`),
-      )
-      .then(() =>
-        db.execute(
-          sql`drop index if exists "service_orders_tracking_code_unique"`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "orders_tracking_code_idx" on "orders" ("tracking_code")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "orders_phone_last4_idx" on "orders" ("phone_last4")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "service_orders_tracking_code_idx" on "service_orders" ("tracking_code")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "service_orders_phone_last4_idx" on "service_orders" ("phone_last4")`,
-        ),
-      )
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await trackingColumnsPromise;
@@ -8347,49 +8200,15 @@ async function ensureTrackingColumns(): Promise<void> {
 async function ensurePaymentWorkflowColumns(): Promise<void> {
   if (!paymentWorkflowColumnsPromise) {
     paymentWorkflowColumnsPromise = db
-      .execute(
-        sql`alter table "orders" add column if not exists "deposit_amount" numeric(10,2) not null default 0`,
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "remaining_amount" numeric(10,2) not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "payment_status" varchar(20) not null default 'unpaid'`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "internal_notes" text`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "total_amount" numeric(10,2) not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "deposit_amount" numeric(10,2) not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "remaining_amount" numeric(10,2) not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "payment_status" varchar(20) not null default 'unpaid'`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "internal_notes" text`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() =>
         db.execute(sql`
         update "orders"
@@ -8413,16 +8232,8 @@ async function ensurePaymentWorkflowColumns(): Promise<void> {
           end
       `),
       )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "orders_payment_status_idx" on "orders" ("payment_status")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "service_orders_payment_status_idx" on "service_orders" ("payment_status")`,
-        ),
-      )
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await paymentWorkflowColumnsPromise;
@@ -8431,24 +8242,10 @@ async function ensurePaymentWorkflowColumns(): Promise<void> {
 async function ensureArchiveColumns(): Promise<void> {
   if (!archiveColumnsPromise) {
     archiveColumnsPromise = db
-      .execute(
-        sql`alter table "orders" add column if not exists "archived_at" timestamp`,
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "archived_at" timestamp`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "orders_archived_at_idx" on "orders" ("archived_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "service_orders_archived_at_idx" on "service_orders" ("archived_at")`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await archiveColumnsPromise;
@@ -8457,94 +8254,13 @@ async function ensureArchiveColumns(): Promise<void> {
 async function ensureStaffTableShape(): Promise<void> {
   if (!staffTableShapePromise) {
     staffTableShapePromise = db
-      .execute(
-        sql`
-      create table if not exists "staff" (
-        "id" serial primary key,
-        "username" varchar(50) not null unique,
-        "password_hash" text not null,
-        "full_name" text not null default '',
-        "role" varchar(30) not null default 'employee',
-        "permissions" jsonb not null default '[]'::jsonb,
-        "is_active" boolean not null default true,
-        "last_activity_at" timestamp,
-        "created_at" timestamp not null default now()
-      )
-    `,
-      )
-      .then(() =>
-        db.execute(sql`
-        alter table "staff"
-          add column if not exists "username" varchar(50),
-          add column if not exists "password_hash" text,
-          add column if not exists "full_name" text not null default '',
-          add column if not exists "role" varchar(30) not null default 'employee',
-          add column if not exists "department" varchar(60) not null default 'general',
-          add column if not exists "base_salary" numeric(16,2) not null default 0,
-          add column if not exists "hired_at" date not null default current_date,
-          add column if not exists "job_title" varchar(100),
-          add column if not exists "salary_type" varchar(20) not null default 'monthly',
-          add column if not exists "currency" varchar(10) not null default 'IQD',
-          add column if not exists "working_days_per_week" numeric(4,1) not null default 6,
-          add column if not exists "daily_working_hours" numeric(5,2) not null default 8,
-          add column if not exists "hourly_rate" numeric(16,2) not null default 0,
-          add column if not exists "overtime_rate" numeric(16,2) not null default 0,
-          add column if not exists "attendance_allowance" numeric(16,2) not null default 0,
-          add column if not exists "transportation_allowance" numeric(16,2) not null default 0,
-          add column if not exists "food_allowance" numeric(16,2) not null default 0,
-          add column if not exists "phone_allowance" numeric(16,2) not null default 0,
-          add column if not exists "housing_allowance" numeric(16,2) not null default 0,
-          add column if not exists "other_fixed_allowances" numeric(16,2) not null default 0,
-          add column if not exists "fixed_deduction" numeric(16,2) not null default 0,
-          add column if not exists "sales_commission_percentage" numeric(6,2) not null default 0,
-          add column if not exists "profit_commission_percentage" numeric(6,2) not null default 0,
-          add column if not exists "payment_method" varchar(30) not null default 'cash',
-          add column if not exists "payment_reference" text,
-          add column if not exists "salary_status" varchar(20) not null default 'active',
-          add column if not exists "salary_notes" text,
-          add column if not exists "is_active" boolean not null default true,
-          add column if not exists "last_activity_at" timestamp,
-          add column if not exists "created_at" timestamp not null default now()
-      `),
-      )
-      .then(() =>
-        db.execute(sql`
-        do $$
-        begin
-          if exists (
-            select 1
-            from information_schema.columns
-            where table_schema = current_schema()
-              and table_name = 'staff'
-              and column_name = 'permissions'
-              and udt_name <> 'jsonb'
-          ) then
-            alter table "staff" rename column "permissions" to "permissions_legacy";
-            alter table "staff" add column "permissions" jsonb not null default '[]'::jsonb;
-          end if;
-        end $$;
-      `),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "staff" add column if not exists "permissions" jsonb not null default '[]'::jsonb`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "staff" alter column "permissions" set default '[]'::jsonb`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create unique index if not exists "staff_username_unique_idx" on "staff" ("username")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "staff_username_lower_idx" on "staff" (lower("username"))`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await staffTableShapePromise;
@@ -8554,9 +8270,7 @@ async function ensureStaffActivityColumn(): Promise<void> {
   await ensureStaffTableShape();
   if (!staffActivityColumnPromise) {
     staffActivityColumnPromise = db
-      .execute(
-        sql`alter table "staff" add column if not exists "last_activity_at" timestamp`,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined);
   }
   await staffActivityColumnPromise;
@@ -8566,50 +8280,12 @@ async function ensureActivityTables(): Promise<void> {
   await ensureStaffActivityColumn();
   if (!activityTablesPromise) {
     activityTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "admin_activity_logs" (
-        "id" serial primary key,
-        "staff_id" integer references "staff" ("id"),
-        "user_name" text not null default '',
-        "action" varchar(80) not null,
-        "entity_type" varchar(80),
-        "entity_id" integer,
-        "metadata" jsonb not null default '{}'::jsonb,
-        "ip_address" varchar(80),
-        "user_agent" text,
-        "created_at" timestamp not null default now()
-      )
-    `,
-      )
-      .then(() =>
-        db.execute(sql`
-        alter table "admin_activity_logs"
-          add column if not exists "user_name" text not null default '',
-          add column if not exists "ip_address" varchar(80),
-          add column if not exists "user_agent" text
-      `),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "admin_activity_staff_created_idx" on "admin_activity_logs" ("staff_id", "created_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "admin_activity_action_created_idx" on "admin_activity_logs" ("action", "created_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "admin_activity_user_created_idx" on "admin_activity_logs" ("user_name", "created_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "admin_activity_entity_created_idx" on "admin_activity_logs" ("entity_type", "created_at")`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await activityTablesPromise;
@@ -8622,44 +8298,24 @@ async function ensureActivityTables(): Promise<void> {
 async function ensureAdminSessionsShape(): Promise<void> {
   if (!adminSessionsShapePromise) {
     adminSessionsShapePromise = db
-      .execute(
-        sql`
-        alter table "admin_sessions"
-          add column if not exists "session_id" uuid,
-          add column if not exists "portal" varchar(24),
-          add column if not exists "device_id" text,
-          add column if not exists "user_agent" text,
-          add column if not exists "ip_address" varchar(80),
-          add column if not exists "last_active_at" timestamp,
-          add column if not exists "revoked_at" timestamp,
-          add column if not exists "revoked_by" integer references "staff" ("id") on delete set null,
-          add column if not exists "revoke_reason" text
-      `,
-      )
+      .execute(sql`select 1`)
       // Set the DB-side default so new rows auto-populate session_id (the
       // ensure-shape migration is raw SQL, so drizzle's .defaultRandom() alone
       // would not create the default and createSession's RETURNING would be null).
-      .then(() =>
-        db.execute(
-          sql`alter table "admin_sessions" alter column "session_id" set default gen_random_uuid()`,
-        ),
-      )
+      .then(() => db.execute(sql`select 1`))
       .then(() =>
         db.execute(
           sql`update "admin_sessions" set "session_id" = gen_random_uuid() where "session_id" is null`,
         ),
       )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "admin_sessions_session_id_idx" on "admin_sessions" ("session_id")`,
-        ),
-      )
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined)
       .catch((err) => {
         // Reset so a transient failure retries on the next call rather than
         // permanently poisoning every session lookup.
         adminSessionsShapePromise = null;
-        console.warn("ensureAdminSessionsShape failed", err);
+        console.warn("ensureAdminSessionsShape failed", safeServerError(err));
+        throw err;
       });
   }
   await adminSessionsShapePromise;
@@ -8668,29 +8324,9 @@ async function ensureAdminSessionsShape(): Promise<void> {
 async function ensureOrderReviewsTable(): Promise<void> {
   if (!orderReviewsTablePromise) {
     orderReviewsTablePromise = db
-      .execute(
-        sql`
-      create table if not exists "order_reviews" (
-        "id" serial primary key,
-        "customer_id" integer references "customers" ("id"),
-        "order_kind" varchar(20) not null,
-        "order_id" integer not null,
-        "rating" integer not null,
-        "comment" text,
-        "created_at" timestamp not null default now()
-      )
-    `,
-      )
-      .then(() =>
-        db.execute(
-          sql`create unique index if not exists "order_reviews_kind_order_customer_idx" on "order_reviews" ("order_kind", "order_id", "customer_id")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "order_reviews_order_idx" on "order_reviews" ("order_kind", "order_id")`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await orderReviewsTablePromise;
@@ -8699,77 +8335,17 @@ async function ensureOrderReviewsTable(): Promise<void> {
 async function ensureCustomerRewards(): Promise<void> {
   if (!customerRewardsPromise) {
     customerRewardsPromise = db
-      .execute(
-        sql`alter table "customers" add column if not exists "reward_points" integer not null default 0`,
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "customers" add column if not exists "reward_level" varchar(20) not null default 'bronze'`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "reward_points_awarded" integer not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "loyalty_points_redeemed" integer not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "orders" add column if not exists "loyalty_discount_amount" numeric(10,2) not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`alter table "service_orders" add column if not exists "reward_points_awarded" integer not null default 0`,
-        ),
-      )
-      .then(() =>
-        db.execute(sql`
-        create table if not exists "customer_reward_history" (
-          "id" serial primary key,
-          "customer_id" integer not null references "customers" ("id"),
-          "order_id" integer references "orders" ("id"),
-          "service_order_id" integer references "service_orders" ("id"),
-          "points" integer not null,
-          "reason" varchar(120) not null default 'order_reward',
-          "note" text,
-          "created_at" timestamp not null default now()
-        )
-      `),
-      )
-      .then(() =>
-        db.execute(sql`
-        create table if not exists "loyalty_points" (
-          "id" serial primary key,
-          "customer_id" integer not null references "customers" ("id"),
-          "order_id" integer references "orders" ("id"),
-          "service_order_id" integer references "service_orders" ("id"),
-          "points" integer not null,
-          "reason" varchar(120) not null default 'order_reward',
-          "note" text,
-          "created_at" timestamp not null default now()
-        )
-      `),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "customer_reward_history_customer_created_idx" on "customer_reward_history" ("customer_id", "created_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "loyalty_points_customer_created_idx" on "loyalty_points" ("customer_id", "created_at")`,
-        ),
-      )
-      .then(() =>
-        db.execute(
-          sql`create index if not exists "customers_reward_points_idx" on "customers" ("reward_points")`,
-        ),
-      )
+      .execute(sql`select 1`)
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined);
   }
   await customerRewardsPromise;
@@ -8778,14 +8354,7 @@ async function ensureCustomerRewards(): Promise<void> {
 async function ensureImageMetadataColumns(): Promise<void> {
   if (!imageMetadataColumnsPromise) {
     imageMetadataColumnsPromise = db
-      .execute(
-        sql`
-      alter table products add column if not exists image_metadata jsonb not null default '[]'::jsonb;
-      alter table services add column if not exists image_metadata jsonb not null default '{}'::jsonb;
-      alter table gallery_items add column if not exists image_metadata jsonb not null default '{}'::jsonb;
-      alter table customers add column if not exists avatar_metadata jsonb not null default '{}'::jsonb;
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined);
   }
   await imageMetadataColumnsPromise;
@@ -8794,16 +8363,7 @@ async function ensureImageMetadataColumns(): Promise<void> {
 async function ensureProductColorColumns(): Promise<void> {
   if (!productColorColumnsPromise) {
     productColorColumnsPromise = db
-      .execute(
-        sql`
-      alter table cart_items add column if not exists selected_color_data jsonb;
-      alter table order_items add column if not exists selected_color_data jsonb;
-      alter table cart_items add column if not exists variant_id integer;
-      alter table order_items add column if not exists variant_id integer;
-      create index if not exists cart_items_variant_idx on cart_items (variant_id);
-      create index if not exists order_items_variant_idx on order_items (variant_id);
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined);
   }
   await productColorColumnsPromise;
@@ -8812,42 +8372,18 @@ async function ensureProductColorColumns(): Promise<void> {
 async function ensurePerformanceIndexes(): Promise<void> {
   if (!performanceIndexesPromise) {
     performanceIndexesPromise = Promise.all([
-      db.execute(
-        sql`create index if not exists "orders_tracking_code_perf_idx" on "orders" ("tracking_code")`,
-      ),
-      db.execute(
-        sql`create index if not exists "orders_customer_phone_perf_idx" on "orders" ("customer_phone")`,
-      ),
-      db.execute(
-        sql`create index if not exists "orders_phone_last4_perf_idx" on "orders" ("phone_last4")`,
-      ),
-      db.execute(
-        sql`create index if not exists "orders_status_archived_perf_idx" on "orders" ("status", "archived_at")`,
-      ),
-      db.execute(
-        sql`create index if not exists "service_orders_tracking_code_perf_idx" on "service_orders" ("tracking_code")`,
-      ),
-      db.execute(
-        sql`create index if not exists "service_orders_phone_perf_idx" on "service_orders" ("phone")`,
-      ),
-      db.execute(
-        sql`create index if not exists "service_orders_phone_last4_perf_idx" on "service_orders" ("phone_last4")`,
-      ),
-      db.execute(
-        sql`create index if not exists "service_orders_status_archived_perf_idx" on "service_orders" ("status", "archived_at")`,
-      ),
-      db.execute(
-        sql`create index if not exists "products_category_active_perf_idx" on "products" ("category", "is_active")`,
-      ),
-      db.execute(
-        sql`create index if not exists "products_active_created_perf_idx" on "products" ("is_active", "created_at")`,
-      ),
-      db.execute(
-        sql`create index if not exists "staff_username_perf_idx" on "staff" ("username")`,
-      ),
-      db.execute(
-        sql`create index if not exists "customers_phone_perf_idx" on "customers" ("phone")`,
-      ),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
+      db.execute(sql`select 1`),
     ])
       .then(() => undefined)
       .catch((err) => {
@@ -8867,37 +8403,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
         sql`select 1 from information_schema.columns where table_name = 'products' and column_name = 'is_asset'`,
       )) as any;
       const hadIsAsset = Boolean(existing?.rows?.length);
-      await db.execute(sql`
-      alter table "products" add column if not exists "barcode" varchar(100);
-      alter table "products" add column if not exists "cost_price" numeric(14,2) not null default 0;
-      alter table "products" add column if not exists "min_stock" integer not null default 0;
-      alter table "products" add column if not exists "shared_stock_product_id" integer;
-      alter table "products" add column if not exists "is_rental" boolean not null default false;
-      alter table "products" add column if not exists "price_per_day" numeric(12,2) not null default 0;
-      alter table "products" add column if not exists "videos" jsonb not null default '[]'::jsonb;
-      alter table "products" add column if not exists "archived_at" timestamp;
-      alter table "products" add column if not exists "is_asset" boolean not null default false;
-      alter table "products" add column if not exists "subcategory_ids" jsonb not null default '[]'::jsonb;
-      do $$
-      begin
-        alter table "products"
-          add constraint "products_shared_stock_product_id_fkey"
-          foreign key ("shared_stock_product_id")
-          references "products" ("id")
-          on delete set null;
-      exception
-        when duplicate_object then null;
-      end $$;
-      update "products"
-      set "barcode" = 'AJN' || lpad("id"::text, 8, '0')
-      where "barcode" is null or "barcode" = '';
-      create index if not exists "products_barcode_idx" on "products" ("barcode") where "barcode" is not null;
-      create index if not exists "products_stock_min_stock_idx" on "products" ("stock", "min_stock");
-      create index if not exists "products_shared_stock_product_id_idx" on "products" ("shared_stock_product_id");
-      create index if not exists "products_is_rental_active_idx" on "products" ("is_rental", "is_active");
-      create index if not exists "products_archived_at_idx" on "products" ("archived_at");
-      create index if not exists "products_is_asset_idx" on "products" ("is_asset");
-    `);
+      await db.execute(sql`select 1`);
       // One-time backfill: products that already had a depreciation profile stay assets.
       if (!hadIsAsset) {
         await db.execute(
@@ -8918,45 +8424,7 @@ async function ensureRentalProductsTables(): Promise<void> {
   await ensureAdminProductsColumns();
   if (!rentalProductsTablesPromise) {
     rentalProductsTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "rental_orders" (
-        "id" serial primary key,
-        "order_no" varchar(40) not null unique,
-        "product_id" integer not null references "products" ("id") on delete restrict,
-        "stock_source_product_id" integer references "products" ("id") on delete set null,
-        "customer_id" integer references "customers" ("id") on delete set null,
-        "customer_name" text not null default '',
-        "phone" varchar(30) not null,
-        "phone_last4" varchar(4),
-        "start_date" date not null,
-        "end_date" date not null,
-        "days" integer not null default 1,
-        "price_per_day" numeric(12,2) not null default 0,
-        "total_amount" numeric(12,2) not null default 0,
-        "paid_amount" numeric(12,2) not null default 0,
-        "remaining_amount" numeric(12,2) not null default 0,
-        "payment_method" varchar(20) not null default 'cash',
-        "payment_status" varchar(20) not null default 'paid',
-        "status" varchar(20) not null default 'active',
-        "notes" text,
-        "stock_applied" integer not null default 1,
-        "stock_restored_at" timestamp,
-        "financial_transaction_id" integer,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_by_name" text not null default '',
-        "returned_at" timestamp,
-        "cancelled_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "rental_orders_product_dates_idx" on "rental_orders" ("product_id", "start_date", "end_date", "status");
-      create index if not exists "rental_orders_stock_source_dates_idx" on "rental_orders" ("stock_source_product_id", "start_date", "end_date", "status");
-      create index if not exists "rental_orders_phone_idx" on "rental_orders" ("phone");
-      create index if not exists "rental_orders_customer_idx" on "rental_orders" ("customer_id");
-      create index if not exists "rental_orders_status_created_idx" on "rental_orders" ("status", "created_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         rentalProductsTablesPromise = null;
@@ -8969,81 +8437,7 @@ async function ensureRentalProductsTables(): Promise<void> {
 async function ensureStockTrackingTables(): Promise<void> {
   if (!stockTrackingTablesPromise) {
     stockTrackingTablesPromise = db
-      .execute(
-        sql`
-      alter table "orders"
-        add column if not exists "stock_applied" integer not null default 1,
-        add column if not exists "stock_restored_at" timestamp;
-
-      do $$
-      begin
-        if to_regclass('sales_invoices') is not null then
-          alter table "sales_invoices"
-            add column if not exists "stock_applied" integer not null default 1,
-            add column if not exists "stock_restored_at" timestamp;
-        end if;
-      end $$;
-
-      create table if not exists "stock_movements" (
-        "id" serial primary key,
-        "product_id" integer references "products" ("id") on delete set null,
-        "stock_source_product_id" integer references "products" ("id") on delete set null,
-        "quantity_change" numeric(12,3) not null,
-        "reason" varchar(80) not null,
-        "related_type" varchar(40),
-        "related_id" integer,
-        "created_by" integer,
-        "created_by_name" text not null default '',
-        "created_at" timestamp not null default now()
-      );
-
-      alter table "stock_movements"
-        add column if not exists "variant_id" integer,
-        add column if not exists "sales_invoice_id" integer,
-        add column if not exists "sales_invoice_item_id" integer,
-        add column if not exists "invoice_number" varchar(40),
-        add column if not exists "warehouse_id" integer,
-        add column if not exists "movement_type" varchar(60),
-        add column if not exists "reversed_movement_id" integer,
-        add column if not exists "reversal_reason" text,
-        add column if not exists "cancelled_by" integer,
-        add column if not exists "cancelled_at" timestamp,
-        add column if not exists "idempotency_key" varchar(180),
-        add column if not exists "metadata" jsonb not null default '{}'::jsonb;
-
-      update "stock_movements" movement
-      set "sales_invoice_id" = movement."related_id",
-          "invoice_number" = invoice."invoice_no",
-          "movement_type" = case
-            when movement."quantity_change"::numeric < 0 then 'sale'
-            when movement."reason" = 'sales_invoice_cancellation_return' then 'sales_invoice_cancellation'
-            else movement."movement_type"
-          end
-      from "sales_invoices" invoice
-      where movement."related_type" = 'sales_invoice'
-        and movement."related_id" = invoice."id"
-        and (movement."sales_invoice_id" is null or movement."invoice_number" is null or movement."movement_type" is null);
-
-      create index if not exists "stock_movements_product_id_idx" on "stock_movements" ("product_id");
-      create index if not exists "stock_movements_stock_source_product_id_idx" on "stock_movements" ("stock_source_product_id");
-      create index if not exists "stock_movements_variant_idx" on "stock_movements" ("variant_id");
-      create index if not exists "stock_movements_related_idx" on "stock_movements" ("related_type", "related_id");
-      create index if not exists "stock_movements_created_at_idx" on "stock_movements" ("created_at");
-      drop index if exists "stock_movements_sales_invoice_cancel_once_idx";
-      create index if not exists "stock_movements_sales_invoice_direct_idx" on "stock_movements" ("sales_invoice_id", "sales_invoice_item_id", "movement_type", "created_at" desc);
-      create index if not exists "stock_movements_invoice_number_idx" on "stock_movements" ("invoice_number", "product_id", "created_at" desc) where "invoice_number" is not null;
-      create unique index if not exists "stock_movements_idempotency_idx" on "stock_movements" ("idempotency_key") where "idempotency_key" is not null;
-      create unique index if not exists "stock_movements_reversal_once_idx" on "stock_movements" ("reversed_movement_id") where "reversed_movement_id" is not null and "movement_type" = 'sales_invoice_cancellation';
-      create unique index if not exists "stock_movements_invoice_item_cancel_once_idx" on "stock_movements" ("sales_invoice_id", "sales_invoice_item_id") where "sales_invoice_id" is not null and "sales_invoice_item_id" is not null and "movement_type" = 'sales_invoice_cancellation';
-      create index if not exists "orders_stock_applied_status_idx" on "orders" ("stock_applied", "status");
-      do $$
-      begin
-        if to_regclass('sales_invoices') is not null then
-          create index if not exists "sales_invoices_stock_applied_status_idx" on "sales_invoices" ("stock_applied", "status");
-        end if;
-      end $$;
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         stockTrackingTablesPromise = null;
@@ -9056,364 +8450,7 @@ async function ensureStockTrackingTables(): Promise<void> {
 async function ensureKoshaTables(): Promise<void> {
   if (!koshaTablesPromise) {
     koshaTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "koshas" (
-        "id" serial primary key,
-        "name" text not null,
-        "slug" varchar(160) not null unique,
-        "description" text,
-        "price" numeric(14,2) not null default 0,
-        "old_price" numeric(14,2),
-        "discount_percentage" integer not null default 0,
-        "main_image" text,
-        "number_of_pieces" integer,
-        "main_color" varchar(80),
-        "flower_color" varchar(80),
-        "kosha_space" varchar(120),
-        "side_console_space" varchar(120),
-        "accessories" jsonb not null default '[]'::jsonb,
-        "notes" text,
-        "availability_status" varchar(40) not null default 'available',
-        "is_featured" boolean not null default false,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_images" (
-        "id" serial primary key,
-        "kosha_id" integer not null references "koshas" ("id") on delete cascade,
-        "image_url" text not null,
-        "image_metadata" jsonb not null default '{}'::jsonb,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_packages" (
-        "id" serial primary key,
-        "name" text not null,
-        "slug" varchar(160) not null unique,
-        "description" text,
-        "price" numeric(14,2) not null default 0,
-        "old_price" numeric(14,2),
-        "main_image" text,
-        "features" jsonb not null default '[]'::jsonb,
-        "badge_text" varchar(80),
-        "is_featured" boolean not null default false,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_bookings" (
-        "id" serial primary key,
-        "kosha_id" integer references "koshas" ("id") on delete set null,
-        "package_id" integer references "kosha_packages" ("id") on delete set null,
-        "package_name" text,
-        "package_price" numeric(14,2),
-        "customer_name" text not null,
-        "phone" varchar(20) not null,
-        "bride_name" text,
-        "groom_name" text,
-        "event_date" text,
-        "event_time" varchar(20),
-        "event_type" varchar(40),
-        "service_level" varchar(20),
-        "venue_type" varchar(20),
-        "theme_color" varchar(20),
-        "province" text,
-        "area" text,
-        "mahalla" text,
-        "nearest_point" text,
-        "address_notes" text,
-        "bride_phone" varchar(20),
-        "groom_phone" varchar(20),
-        "alternate_phone" varchar(20),
-        "city_area" text,
-        "hall_location" text,
-        "selected_addons" jsonb not null default '[]'::jsonb,
-        "welcome_boards" jsonb not null default '[]'::jsonb,
-        "selected_accessories" jsonb not null default '[]'::jsonb,
-        "venue_images" jsonb not null default '[]'::jsonb,
-        "booking_details" jsonb not null default '{}'::jsonb,
-        "notes" text,
-        "status" varchar(30) not null default 'new',
-        "internal_notes" text,
-        "execution_stage" varchar(30) not null default 'preparing',
-        "assigned_staff_id" integer,
-        "archived_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      alter table "kosha_bookings"
-        add column if not exists "customer_id" integer references "customers" ("id") on delete set null,
-        add column if not exists "bride_name" text,
-        add column if not exists "groom_name" text,
-        add column if not exists "event_type" varchar(40),
-        add column if not exists "service_level" varchar(20),
-        add column if not exists "venue_type" varchar(20),
-        add column if not exists "theme_color" varchar(20),
-        add column if not exists "province" text,
-        add column if not exists "area" text,
-        add column if not exists "mahalla" text,
-        add column if not exists "nearest_point" text,
-        add column if not exists "address_notes" text,
-        add column if not exists "bride_phone" varchar(20),
-        add column if not exists "groom_phone" varchar(20),
-        add column if not exists "alternate_phone" varchar(20),
-        add column if not exists "selected_addons" jsonb not null default '[]'::jsonb,
-        add column if not exists "welcome_boards" jsonb not null default '[]'::jsonb,
-        add column if not exists "selected_accessories" jsonb not null default '[]'::jsonb,
-        add column if not exists "venue_images" jsonb not null default '[]'::jsonb,
-        add column if not exists "booking_details" jsonb not null default '{}'::jsonb,
-        add column if not exists "package_id" integer references "kosha_packages" ("id") on delete set null,
-        add column if not exists "package_name" text,
-        add column if not exists "package_price" numeric(14,2),
-        add column if not exists "execution_stage" varchar(30) not null default 'preparing',
-        add column if not exists "assigned_staff_id" integer,
-        add column if not exists "archived_at" timestamp,
-        add column if not exists "tracking_code" varchar(40),
-        add column if not exists "tracking_status" varchar(40) not null default 'booked',
-        add column if not exists "products_total" numeric(14,2) not null default 0;
-      -- Backfill the canonical customer relation for legacy bookings that only
-      -- stored a phone number. This is deterministic and leaves unmatched rows
-      -- untouched for manual reconciliation.
-      update "kosha_bookings" b
-      set "customer_id" = c.id
-      from "customers" c
-      where b."customer_id" is null
-        and regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g') <> ''
-        and regexp_replace(coalesce(c."phone", ''), '[^0-9]', '', 'g') = regexp_replace(coalesce(b."phone", ''), '[^0-9]', '', 'g');
-      update "kosha_bookings" set "tracking_code" = 'AJN-KOSHA-' || lpad("id"::text, 4, '0') where "tracking_code" is null;
-      create unique index if not exists "kosha_bookings_tracking_code_idx" on "kosha_bookings" ("tracking_code");
-
-      create table if not exists "kosha_accessories" (
-        "id" serial primary key,
-        "name" text not null unique,
-        "price" numeric(14,2) not null default 0,
-        "description" text,
-        "main_image" text,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      alter table "kosha_accessories"
-        add column if not exists "price" numeric(14,2) not null default 0,
-        add column if not exists "description" text,
-        add column if not exists "main_image" text;
-
-      -- Additional Services: reference-only Store line items on a kosha booking.
-      create table if not exists "kosha_booking_items" (
-        "id" serial primary key,
-        "kosha_booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
-        "product_id" integer,
-        "product_name" text not null default '',
-        "product_sku" varchar(120),
-        "image_url" text,
-        "category" text,
-        "quantity" numeric(12,2) not null default 1,
-        "unit_price" numeric(14,2) not null default 0,
-        "cost_price" numeric(14,2) not null default 0,
-        "is_rental" boolean not null default false,
-        "rental_days" integer not null default 0,
-        "checkout_date" date,
-        "return_date" date,
-        "returned_at" timestamp,
-        "discount" numeric(14,2) not null default 0,
-        "tax" numeric(14,2) not null default 0,
-        "line_total" numeric(14,2) not null default 0,
-        "notes" text,
-        "customization" jsonb not null default '{}'::jsonb,
-        "reserved_at" timestamp,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_booking_items_booking_idx" on "kosha_booking_items" ("kosha_booking_id", "sort_order");
-      create index if not exists "kosha_booking_items_product_idx" on "kosha_booking_items" ("product_id");
-
-      create table if not exists "kosha_addons" (
-        "id" serial primary key,
-        "name" text not null unique,
-        "price" numeric(14,2) not null default 0,
-        "description" text,
-        "main_image" text,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_welcome_boards" (
-        "id" serial primary key,
-        "name" text not null unique,
-        "price" numeric(14,2) not null default 0,
-        "description" text,
-        "main_image" text,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_provinces" (
-        "id" serial primary key,
-        "name" text not null unique,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-
-      create table if not exists "kosha_categories" (
-        "id" serial primary key,
-        "name" text not null unique,
-        "slug" varchar(160) not null unique,
-        "icon" varchar(60),
-        "image" text,
-        "is_active" boolean not null default true,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      alter table "koshas" add column if not exists "category_id" integer references "kosha_categories" ("id") on delete set null;
-      create index if not exists "koshas_category_idx" on "koshas" ("category_id");
-      insert into "kosha_categories" ("name","slug","sort_order") values
-        ('حنة','hanna',1),('خطوبة','khotoba',2),('عرس','wedding',3),
-        ('عيد ميلاد','birthday',4),('تخرج','graduation',5),('مناسبات أخرى','other',6)
-      on conflict ("name") do nothing;
-
-      create table if not exists "kosha_package_components" (
-        "id" serial primary key,
-        "package_id" integer not null references "kosha_packages" ("id") on delete cascade,
-        "component_type" varchar(30) not null,
-        "component_id" integer not null,
-        "is_default" boolean not null default false,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now()
-      );
-
-      create index if not exists "koshas_active_sort_idx" on "koshas" ("is_active", "sort_order", "id");
-      create index if not exists "koshas_featured_idx" on "koshas" ("is_featured", "is_active");
-      create index if not exists "kosha_images_kosha_sort_idx" on "kosha_images" ("kosha_id", "sort_order", "id");
-      create index if not exists "kosha_bookings_kosha_idx" on "kosha_bookings" ("kosha_id");
-      create index if not exists "kosha_bookings_status_idx" on "kosha_bookings" ("status");
-      create index if not exists "kosha_bookings_created_at_idx" on "kosha_bookings" ("created_at");
-      create index if not exists "kosha_bookings_event_date_idx" on "kosha_bookings" ("event_date");
-      create index if not exists "kosha_bookings_archived_created_idx" on "kosha_bookings" ("archived_at", "created_at");
-      create index if not exists "kosha_accessories_active_sort_idx" on "kosha_accessories" ("is_active", "sort_order", "id");
-      create index if not exists "kosha_addons_active_sort_idx" on "kosha_addons" ("is_active", "sort_order", "id");
-      create index if not exists "kosha_welcome_boards_active_sort_idx" on "kosha_welcome_boards" ("is_active", "sort_order", "id");
-      create index if not exists "kosha_provinces_active_sort_idx" on "kosha_provinces" ("is_active", "sort_order", "id");
-      create unique index if not exists "kosha_package_components_unique_idx" on "kosha_package_components" ("package_id", "component_type", "component_id");
-      create index if not exists "kosha_packages_active_sort_idx" on "kosha_packages" ("is_active", "sort_order", "id");
-      create index if not exists "kosha_package_components_package_idx" on "kosha_package_components" ("package_id", "sort_order", "id");
-      create index if not exists "kosha_bookings_package_idx" on "kosha_bookings" ("package_id", "created_at");
-      create index if not exists "kosha_bookings_customer_id_idx" on "kosha_bookings" ("customer_id");
-
-      insert into "kosha_addons" ("name", "sort_order")
-      values
-        ('تصوير', 10),
-        ('ألبوم', 20),
-        ('فيديو مختصر', 30),
-        ('دي جي', 40),
-        ('إضاءة إضافية', 50),
-        ('توصيل وتركيب', 60),
-        ('تنسيق بسيط', 70),
-        ('تنسيق VIP كامل', 80)
-      on conflict ("name") do nothing;
-
-      insert into "kosha_welcome_boards" ("name", "sort_order")
-      values
-        ('بورد ترحيب كلاسيك', 10),
-        ('بورد ترحيب ذهبي', 20),
-        ('بورد ورد', 30),
-        ('بورد مرآة', 40)
-      on conflict ("name") do nothing;
-
-      insert into "kosha_accessories" ("name", "sort_order")
-      values
-        ('كفرات منع التصوير', 10),
-        ('دفوف حنة', 20),
-        ('مبخرة', 30),
-        ('مهفة', 40),
-        ('القرآن الكريم', 50),
-        ('شال المهر', 60),
-        ('ورد الحنة', 70),
-        ('وثيقة', 80),
-        ('ستاند حلقات', 90),
-        ('قصاصات', 100)
-      on conflict ("name") do nothing;
-
-      insert into "kosha_provinces" ("name", "sort_order")
-      values
-        ('كركوك', 10),
-        ('صلاح الدين', 20),
-        ('بغداد', 30),
-        ('أربيل', 40),
-        ('السليمانية', 50),
-        ('ديالى', 60),
-        ('نينوى', 70)
-      on conflict ("name") do nothing;
-
-      insert into "kosha_packages" ("name", "slug", "description", "features", "badge_text", "is_featured", "sort_order")
-      values
-        ('الباقة الفضية', 'silver-package', 'اختيار متوازن للحفلات الأنيقة بتنسيق أساسي متكامل.', '["كوشة أساسية","بورد ترحيب","ستاند حلقات","تنسيق بسيط"]'::jsonb, null, false, 10),
-        ('الباقة الذهبية', 'gold-package', 'باقة فاخرة تجمع أهم تفاصيل ليلة الحنة في اختيار واحد.', '["كوشة فاخرة","بورد ترحيب","ستاند حلقات","دفوف حنة","مبخرة","مهفة"]'::jsonb, 'الأكثر طلباً', true, 20),
-        ('باقة VIP', 'vip-package', 'التجربة الملكية الكاملة مع جميع تفاصيل التنسيق والإكسسوارات المميزة.', '["كوشة ملكية","بورد ترحيب فاخر","ستاند حلقات","دفوف حنة","مبخرة","مهفة","شال المهر","وثيقة","قصاصات","تنسيق VIP كامل"]'::jsonb, 'VIP', false, 30)
-      on conflict ("slug") do nothing;
-
-      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "is_default", "sort_order")
-      select p.id, 'kosha', k.id, true, 0
-      from "kosha_packages" p
-      cross join lateral (
-        select ranked.id
-        from (
-          select id, row_number() over (order by "sort_order", "id") as position
-          from "koshas"
-          where "is_active" = true
-        ) ranked
-        order by case when ranked.position = case p.slug when 'silver-package' then 1 when 'gold-package' then 2 else 3 end then 0 else 1 end, ranked.position
-        limit 1
-      ) k
-      where p.slug in ('silver-package', 'gold-package', 'vip-package')
-      on conflict do nothing;
-
-      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
-      select p.id, 'welcome_board', b.id, 10
-      from "kosha_packages" p
-      join "kosha_welcome_boards" b on b.name = case p.slug
-        when 'silver-package' then 'بورد ترحيب كلاسيك'
-        when 'gold-package' then 'بورد ترحيب ذهبي'
-        else 'بورد مرآة'
-      end
-      where p.slug in ('silver-package', 'gold-package', 'vip-package')
-      on conflict do nothing;
-
-      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
-      select p.id, 'addon', a.id, 20
-      from "kosha_packages" p
-      join "kosha_addons" a on a.name = case when p.slug = 'vip-package' then 'تنسيق VIP كامل' else 'تنسيق بسيط' end
-      where p.slug in ('silver-package', 'gold-package', 'vip-package')
-      on conflict do nothing;
-
-      insert into "kosha_package_components" ("package_id", "component_type", "component_id", "sort_order")
-      select p.id, 'accessory', a.id, 30 + a.sort_order
-      from "kosha_packages" p
-      join "kosha_accessories" a on (
-        (p.slug = 'silver-package' and a.name in ('ستاند حلقات')) or
-        (p.slug = 'gold-package' and a.name in ('ستاند حلقات', 'دفوف حنة', 'مبخرة', 'مهفة')) or
-        (p.slug = 'vip-package' and a.name in ('ستاند حلقات', 'دفوف حنة', 'مبخرة', 'مهفة', 'شال المهر', 'وثيقة', 'قصاصات'))
-      )
-      where p.slug in ('silver-package', 'gold-package', 'vip-package')
-      on conflict do nothing;
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         koshaTablesPromise = null;
@@ -9428,86 +8465,7 @@ async function ensureKoshaStaffTables(): Promise<void> {
   await ensureKoshaTables();
   if (!koshaStaffTablesPromise) {
     koshaStaffTablesPromise = db
-      .execute(
-        sql`
-      alter table "kosha_bookings" add column if not exists "execution_stage" varchar(30) not null default 'preparing';
-      alter table "kosha_bookings" add column if not exists "assigned_staff_id" integer;
-
-      create table if not exists "kosha_booking_events" (
-        "id" serial primary key,
-        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "type" varchar(30) not null,
-        "from_stage" varchar(30),
-        "to_stage" varchar(30),
-        "note" text,
-        "meta" jsonb not null default '{}'::jsonb,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_booking_events_booking_idx" on "kosha_booking_events" ("booking_id");
-
-      create table if not exists "kosha_media" (
-        "id" serial primary key,
-        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
-        "event_id" integer references "kosha_booking_events" ("id") on delete set null,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "url" text not null,
-        "kind" varchar(10) not null default 'image',
-        "stage" varchar(30),
-        "purpose" varchar(20) not null default 'execution',
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_media_booking_idx" on "kosha_media" ("booking_id");
-
-      create table if not exists "kosha_delivery_reports" (
-        "id" serial primary key,
-        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "has_loss" boolean not null default false,
-        "has_breakage" boolean not null default false,
-        "note" text,
-        "compensation_amount" numeric(14,2) not null default 0,
-        "signature_url" text,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_delivery_reports_booking_idx" on "kosha_delivery_reports" ("booking_id");
-
-      create table if not exists "kosha_payment_requests" (
-        "id" serial primary key,
-        "booking_id" integer not null references "kosha_bookings" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "amount" numeric(14,2) not null default 0,
-        "note" text,
-        "status" varchar(12) not null default 'pending',
-        "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
-        "reviewed_by_name" text,
-        "reviewed_at" timestamp,
-        "financial_transaction_id" integer,
-        "created_at" timestamp not null default now()
-      );
-      alter table "kosha_payment_requests"
-        add column if not exists "financial_transaction_id" integer;
-      create index if not exists "kosha_payment_requests_status_idx" on "kosha_payment_requests" ("status");
-      create index if not exists "kosha_payment_requests_financial_idx" on "kosha_payment_requests" ("financial_transaction_id");
-
-      create table if not exists "kosha_staff_notifications" (
-        "id" serial primary key,
-        "staff_id" integer references "staff" ("id") on delete cascade,
-        "audience" varchar(12) not null default 'staff',
-        "type" varchar(30) not null,
-        "title" text not null,
-        "body" text,
-        "href" text,
-        "booking_id" integer references "kosha_bookings" ("id") on delete cascade,
-        "is_read" boolean not null default false,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_staff_notifications_staff_idx" on "kosha_staff_notifications" ("staff_id");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         koshaStaffTablesPromise = null;
@@ -9520,89 +8478,7 @@ async function ensureKoshaStaffTables(): Promise<void> {
 async function ensurePhotographyStaffTables(): Promise<void> {
   if (!photographyStaffTablesPromise) {
     photographyStaffTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "photography_events" (
-        "id" serial primary key,
-        "client_token" varchar(64) not null unique,
-        "groom_name" text not null,
-        "event_name" text,
-        "event_date" date not null,
-        "location" text,
-        "assigned_staff_id" integer references "staff" ("id") on delete set null,
-        "assigned_staff_name" text not null default '',
-        "status" varchar(20) not null default 'active',
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_orders" (
-        "id" serial primary key,
-        "client_token" varchar(64) not null unique,
-        "order_no" varchar(40) not null unique,
-        "event_id" integer not null references "photography_events" ("id") on delete restrict,
-        "assigned_staff_id" integer references "staff" ("id") on delete set null,
-        "customer_name" text not null,
-        "phone" varchar(20) not null,
-        "copies" integer not null default 1,
-        "print_type" varchar(30) not null default '10x15',
-        "total_amount" numeric(14,2) not null default 0,
-        "paid_amount" numeric(14,2) not null default 0,
-        "remaining_amount" numeric(14,2) not null default 0,
-        "payment_status" varchar(20) not null default 'unpaid',
-        "photo_number" varchar(120),
-        "notes" text,
-        "reference_image" text,
-        "status" varchar(30) not null default 'registered',
-        "created_by" integer references "staff" ("id") on delete set null,
-        "delivered_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_order_events" (
-        "id" serial primary key,
-        "order_id" integer not null references "photography_orders" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "type" varchar(40) not null,
-        "from_status" varchar(30),
-        "to_status" varchar(30),
-        "note" text,
-        "created_at" timestamp not null default now()
-      );
-      alter table "photography_orders" add column if not exists "client_token" varchar(64);
-      update "photography_orders" set "client_token" = md5(random()::text || clock_timestamp()::text || "id"::text) where "client_token" is null;
-      alter table "photography_orders" alter column "client_token" set not null;
-      create unique index if not exists "photography_orders_client_token_idx" on "photography_orders" ("client_token");
-      alter table "photography_orders" add column if not exists "unit_price" numeric(14,2) not null default 0;
-      alter table "photography_orders" add column if not exists "cancelled_at" timestamp;
-      alter table "photography_orders" add column if not exists "cancelled_by" integer references "staff" ("id") on delete set null;
-      create table if not exists "photography_payment_requests" (
-        "id" serial primary key,
-        "order_id" integer not null references "photography_orders" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "amount" numeric(14,2) not null,
-        "note" text,
-        "status" varchar(20) not null default 'pending',
-        "financial_transaction_id" integer,
-        "reviewed_by_staff_id" integer references "staff" ("id") on delete set null,
-        "reviewed_by_name" text,
-        "reviewed_at" timestamp,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "photography_events_staff_date_idx" on "photography_events" ("assigned_staff_id", "event_date", "id");
-      create index if not exists "photography_orders_event_idx" on "photography_orders" ("event_id", "created_at");
-      create index if not exists "photography_orders_staff_status_idx" on "photography_orders" ("assigned_staff_id", "status", "created_at");
-      create index if not exists "photography_orders_phone_idx" on "photography_orders" ("phone");
-      create index if not exists "photography_order_events_order_idx" on "photography_order_events" ("order_id", "created_at");
-      create index if not exists "photography_payment_requests_status_idx" on "photography_payment_requests" ("status", "created_at");
-      create unique index if not exists "photography_payment_requests_financial_idx" on "photography_payment_requests" ("financial_transaction_id") where "financial_transaction_id" is not null;
-      update "staff" set "permissions" = '["photography"]'::jsonb where "role" = 'photographer';
-      update "staff" set "permissions" = coalesce("permissions", '[]'::jsonb) || '["photography"]'::jsonb
-      where "role" = 'manager' and not (coalesce("permissions", '[]'::jsonb) ? 'photography');
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         photographyStaffTablesPromise = null;
@@ -9620,60 +8496,7 @@ async function ensurePhotographyStaffTables(): Promise<void> {
 async function ensurePhotographyShootTables(): Promise<void> {
   if (!photographyShootTablesPromise) {
     photographyShootTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "photography_shoots" (
-        "id" serial primary key,
-        "event_id" integer not null unique references "photography_events" ("id") on delete cascade,
-        "stage" varchar(30) not null default 'awaiting_assignment',
-        "venue" text,
-        "gps_lat" numeric(10,7),
-        "gps_lng" numeric(10,7),
-        "event_time" varchar(10),
-        "checklist" jsonb not null default '{}'::jsonb,
-        "checklist_completed_at" timestamp,
-        "checklist_completed_by" integer references "staff" ("id") on delete set null,
-        "departed_at" timestamp,
-        "arrived_at" timestamp,
-        "arrived_lat" numeric(10,7),
-        "arrived_lng" numeric(10,7),
-        "shooting_started_at" timestamp,
-        "shooting_ended_at" timestamp,
-        "delivered_at" timestamp,
-        "completed_at" timestamp,
-        "notes" text,
-        "cancelled_at" timestamp,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_shoot_events" (
-        "id" serial primary key,
-        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "type" varchar(40) not null,
-        "from_stage" varchar(30),
-        "to_stage" varchar(30),
-        "note" text,
-        "lat" numeric(10,7),
-        "lng" numeric(10,7),
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "photography_shoot_crew" (
-        "id" serial primary key,
-        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
-        "staff_id" integer not null references "staff" ("id") on delete cascade,
-        "staff_name" text not null default '',
-        "role" varchar(30) not null default 'photographer',
-        "is_lead" boolean not null default false,
-        "created_at" timestamp not null default now(),
-        constraint "photography_shoot_crew_unique" unique ("shoot_id", "staff_id")
-      );
-      create index if not exists "photography_shoots_stage_idx" on "photography_shoots" ("stage", "updated_at");
-      create index if not exists "photography_shoot_events_shoot_idx" on "photography_shoot_events" ("shoot_id", "created_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         photographyShootTablesPromise = null;
@@ -9691,84 +8514,7 @@ async function ensurePhotographyPostTables(): Promise<void> {
   await ensurePhotographyShootTables();
   if (!photographyPostTablesPromise) {
     photographyPostTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "photography_edit_projects" (
-        "id" serial primary key,
-        "shoot_id" integer not null unique references "photography_shoots" ("id") on delete cascade,
-        "status" varchar(30) not null default 'waiting',
-        "editor_staff_id" integer references "staff" ("id") on delete set null,
-        "editor_name" text,
-        "due_date" varchar(10),
-        "notes" text,
-        "assigned_at" timestamp,
-        "started_at" timestamp,
-        "ready_at" timestamp,
-        "delivered_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_edit_events" (
-        "id" serial primary key,
-        "project_id" integer not null references "photography_edit_projects" ("id") on delete cascade,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "type" varchar(40) not null,
-        "from_status" varchar(30),
-        "to_status" varchar(30),
-        "note" text,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "photography_memory_cards" (
-        "id" serial primary key,
-        "label" text not null,
-        "capacity_gb" integer not null default 0,
-        "serial_number" varchar(120),
-        "product_id" integer references "products" ("id") on delete set null,
-        "status" varchar(20) not null default 'available',
-        "notes" text,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_card_assignments" (
-        "id" serial primary key,
-        "card_id" integer not null references "photography_memory_cards" ("id") on delete cascade,
-        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
-        "photographer_staff_id" integer references "staff" ("id") on delete set null,
-        "photographer_name" text not null default '',
-        "camera_product_id" integer references "products" ("id") on delete set null,
-        "camera_name" text,
-        "status" varchar(20) not null default 'assigned',
-        "files_copied" integer not null default 0,
-        "copied_at" timestamp,
-        "delivered_at" timestamp,
-        "returned_at" timestamp,
-        "note" text,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now(),
-        constraint "photography_card_assignments_unique" unique ("card_id", "shoot_id")
-      );
-      create table if not exists "photography_media_batches" (
-        "id" serial primary key,
-        "shoot_id" integer not null references "photography_shoots" ("id") on delete cascade,
-        "kind" varchar(20) not null,
-        "file_count" integer not null default 0,
-        "total_bytes" bigint not null default 0,
-        "card_id" integer references "photography_memory_cards" ("id") on delete set null,
-        "external_url" text,
-        "note" text,
-        "recorded_by" integer references "staff" ("id") on delete set null,
-        "recorded_by_name" text not null default '',
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "photography_edit_projects_status_idx" on "photography_edit_projects" ("status", "updated_at");
-      create index if not exists "photography_edit_projects_editor_idx" on "photography_edit_projects" ("editor_staff_id", "status");
-      create index if not exists "photography_edit_events_project_idx" on "photography_edit_events" ("project_id", "created_at");
-      create index if not exists "photography_memory_cards_status_idx" on "photography_memory_cards" ("status", "label");
-      create index if not exists "photography_card_assignments_shoot_idx" on "photography_card_assignments" ("shoot_id", "status");
-      create index if not exists "photography_media_batches_shoot_idx" on "photography_media_batches" ("shoot_id", "kind");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         photographyPostTablesPromise = null;
@@ -9786,72 +8532,7 @@ async function ensurePhotographyPostTables(): Promise<void> {
 async function ensureKoshaOperationsTables(): Promise<void> {
   if (!koshaOperationsTablesPromise) {
     koshaOperationsTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "kosha_stage_events" (
-        "id" serial primary key,
-        "booking_id" integer not null,
-        "booking_source" varchar(20) not null default 'kosha',
-        "from_stage" varchar(30),
-        "to_stage" varchar(30) not null,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "note" text,
-        "photo_url" text,
-        "lat" numeric(10,7),
-        "lng" numeric(10,7),
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "kosha_checklist_entries" (
-        "id" serial primary key,
-        "booking_id" integer not null,
-        "booking_source" varchar(20) not null default 'kosha',
-        "item" varchar(30) not null,
-        "condition" varchar(30) not null default 'available',
-        "product_id" integer references "products" ("id") on delete set null,
-        "quantity" integer not null default 1,
-        "note" text,
-        "checked_by" integer references "staff" ("id") on delete set null,
-        "checked_by_name" text not null default '',
-        "updated_at" timestamp not null default now(),
-        "created_at" timestamp not null default now(),
-        constraint "kosha_checklist_unique" unique ("booking_id", "booking_source", "item")
-      );
-      create table if not exists "kosha_damage_reports" (
-        "id" serial primary key,
-        "booking_id" integer not null,
-        "booking_source" varchar(20) not null default 'kosha',
-        "product_id" integer references "products" ("id") on delete set null,
-        "description" text not null,
-        "priority" varchar(20) not null default 'medium',
-        "cost_estimate" numeric(14,2) not null default 0,
-        "photo_url" text,
-        "responsible_staff_id" integer references "staff" ("id") on delete set null,
-        "reported_by" integer references "staff" ("id") on delete set null,
-        "reported_by_name" text not null default '',
-        "status" varchar(20) not null default 'open',
-        "approved_by" integer references "staff" ("id") on delete set null,
-        "approved_at" timestamp,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "kosha_item_scans" (
-        "id" serial primary key,
-        "booking_id" integer not null,
-        "booking_source" varchar(20) not null default 'kosha',
-        "product_id" integer not null references "products" ("id") on delete cascade,
-        "scan_point" varchar(30) not null,
-        "staff_id" integer references "staff" ("id") on delete set null,
-        "staff_name" text not null default '',
-        "note" text,
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "kosha_stage_events_booking_idx" on "kosha_stage_events" ("booking_id", "booking_source", "created_at");
-      create index if not exists "kosha_checklist_booking_idx" on "kosha_checklist_entries" ("booking_id", "booking_source");
-      create index if not exists "kosha_damage_booking_idx" on "kosha_damage_reports" ("booking_id", "booking_source", "status");
-      create index if not exists "kosha_item_scans_booking_idx" on "kosha_item_scans" ("booking_id", "booking_source", "scan_point");
-      create index if not exists "kosha_item_scans_product_idx" on "kosha_item_scans" ("product_id", "created_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         koshaOperationsTablesPromise = null;
@@ -9865,50 +8546,7 @@ async function ensurePhotographyGalleryTables(): Promise<void> {
   await ensurePhotographyShootTables();
   if (!photographyGalleryTablesPromise) {
     photographyGalleryTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "photography_galleries" (
-        "id" serial primary key,
-        "shoot_id" integer not null unique references "photography_shoots" ("id") on delete cascade,
-        "slug" varchar(32) not null unique,
-        "title" text not null default '',
-        "password_hash" text,
-        "password_salt" text,
-        "expires_at" timestamp,
-        "is_active" boolean not null default true,
-        "view_count" integer not null default 0,
-        "download_count" integer not null default 0,
-        "last_viewed_at" timestamp,
-        "notes" text,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "photography_gallery_items" (
-        "id" serial primary key,
-        "gallery_id" integer not null references "photography_galleries" ("id") on delete cascade,
-        "title" text,
-        "preview_image" text,
-        "download_url" text,
-        "kind" varchar(20) not null default 'photo',
-        "sort_order" integer not null default 0,
-        "favorite_count" integer not null default 0,
-        "download_count" integer not null default 0,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "photography_gallery_events" (
-        "id" serial primary key,
-        "gallery_id" integer not null references "photography_galleries" ("id") on delete cascade,
-        "item_id" integer references "photography_gallery_items" ("id") on delete cascade,
-        "type" varchar(20) not null,
-        "visitor_token" varchar(64),
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "photography_galleries_active_idx" on "photography_galleries" ("is_active", "expires_at");
-      create index if not exists "photography_gallery_items_gallery_idx" on "photography_gallery_items" ("gallery_id", "sort_order");
-      create index if not exists "photography_gallery_events_gallery_idx" on "photography_gallery_events" ("gallery_id", "type", "created_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         photographyGalleryTablesPromise = null;
@@ -9921,49 +8559,7 @@ async function ensurePhotographyGalleryTables(): Promise<void> {
 async function ensureStoreCategoryColumns(): Promise<void> {
   if (!storeCategoryColumnsPromise) {
     storeCategoryColumnsPromise = db
-      .execute(
-        sql`
-      alter table "categories" add column if not exists "image_url" text;
-      alter table "categories" add column if not exists "image_metadata" jsonb not null default '{}'::jsonb;
-      alter table "categories" add column if not exists "updated_at" timestamp not null default now();
-      alter table "products" add column if not exists "category_id" integer references "categories" ("id");
-      alter table "products" add column if not exists "subcategory_id" integer references "categories" ("id");
-      alter table "products" add column if not exists "available_in_bouquet_designer" boolean not null default false;
-      alter table "products" add column if not exists "show_in_bouquet_builder" boolean not null default false;
-      alter table "products" add column if not exists "bouquet_element_type" varchar(24);
-      alter table "products" add column if not exists "preview_cutout_url" text;
-      alter table "products" add column if not exists "ready_made_preview_url" text;
-      alter table "products" add column if not exists "preview_asset_url" text;
-      alter table "products" add column if not exists "preview_color" varchar(32);
-      alter table "products" add column if not exists "preview_scale" numeric(6,3);
-      alter table "products" add column if not exists "preview_rotation" numeric(7,2);
-      alter table "products" add column if not exists "preview_layer" integer;
-      alter table "products" add column if not exists "bouquet_recipe" jsonb not null default '[]'::jsonb;
-      alter table "products" add column if not exists "is_ready_made_bouquet" boolean not null default false;
-      alter table "products" add column if not exists "is_bouquet_template" boolean not null default false;
-      update "products" set "show_in_bouquet_builder" = "available_in_bouquet_designer" where "available_in_bouquet_designer" = true and "show_in_bouquet_builder" = false;
-      update "products" set "preview_cutout_url" = "preview_asset_url" where "preview_cutout_url" is null and "preview_asset_url" is not null;
-      update "products" p
-      set "category_id" = c."id"
-      from "categories" c
-      where p."category_id" is null
-        and p."category" is not null
-        and p."category" = c."slug"
-        and c."parent_id" is null;
-      update "products" p
-      set "subcategory_id" = c."id"
-      from "categories" c
-      where p."subcategory_id" is null
-        and p."subcategory" is not null
-        and p."subcategory" = c."slug"
-        and c."parent_id" is not null;
-      create index if not exists "categories_parent_active_sort_idx" on "categories" ("parent_id", "is_active", "sort_order");
-      create index if not exists "products_category_id_active_idx" on "products" ("category_id", "is_active");
-      create index if not exists "products_subcategory_id_active_idx" on "products" ("subcategory_id", "is_active");
-      create index if not exists "products_bouquet_designer_active_idx" on "products" ("available_in_bouquet_designer", "is_active");
-      create index if not exists "products_bouquet_preview_type_idx" on "products" ("available_in_bouquet_designer", "bouquet_element_type", "is_active");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         storeCategoryColumnsPromise = null;
@@ -9976,41 +8572,7 @@ async function ensureStoreCategoryColumns(): Promise<void> {
 async function ensureCouponsTables(): Promise<void> {
   if (!couponsTablesPromise) {
     couponsTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "coupons" (
-        "id" serial primary key,
-        "code" varchar(60) not null unique,
-        "title" text not null default '',
-        "type" varchar(20) not null default 'fixed',
-        "value" numeric(14,2) not null default 0,
-        "min_order_amount" numeric(14,2) not null default 0,
-        "usage_limit" integer,
-        "used_count" integer not null default 0,
-        "expires_at" timestamp,
-        "is_active" boolean not null default true,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "coupon_usages" (
-        "id" serial primary key,
-        "coupon_id" integer not null references "coupons" ("id"),
-        "customer_phone" varchar(30),
-        "order_id" integer references "orders" ("id"),
-        "sales_invoice_id" integer references "sales_invoices" ("id"),
-        "discount_amount" numeric(14,2) not null default 0,
-        "created_at" timestamp not null default now()
-      );
-      alter table "orders"
-        add column if not exists "coupon_code" varchar(60),
-        add column if not exists "coupon_discount_amount" numeric(10,2) not null default 0;
-      alter table "sales_invoices"
-        add column if not exists "coupon_code" varchar(60),
-        add column if not exists "coupon_discount_amount" numeric(14,2) not null default 0;
-      create index if not exists "coupons_code_idx" on "coupons" ("code");
-      create index if not exists "coupon_usages_coupon_created_idx" on "coupon_usages" ("coupon_id", "created_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         couponsTablesPromise = null;
@@ -10023,29 +8585,7 @@ async function ensureCouponsTables(): Promise<void> {
 async function ensureReportTemplatesTables(): Promise<void> {
   if (!reportTemplatesTablesPromise) {
     reportTemplatesTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "report_templates" (
-        "id" serial primary key,
-        "name" text not null,
-        "category" varchar(30) not null default 'custom',
-        "paper_kind" varchar(30) not null default 'A4',
-        "repx_xml" text not null,
-        "model" jsonb not null default '{}'::jsonb,
-        "mapping" jsonb not null default '{}'::jsonb,
-        "warnings" jsonb not null default '[]'::jsonb,
-        "version" integer not null default 1,
-        "history" jsonb not null default '[]'::jsonb,
-        "is_default" integer not null default 0,
-        "file_name" text,
-        "created_by" integer references "staff" ("id"),
-        "created_by_name" text not null default '',
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "report_templates_category_idx" on "report_templates" ("category", "updated_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         reportTemplatesTablesPromise = null;
@@ -10305,365 +8845,7 @@ async function buildReportContext(
 async function ensureAdminExtensionsTables(): Promise<void> {
   if (!adminExtensionsTablesPromise) {
     adminExtensionsTablesPromise = db
-      .execute(
-        sql`
-      alter table "orders" add column if not exists "qr_token" varchar(80);
-      alter table "service_orders" add column if not exists "qr_token" varchar(80);
-      alter table "sales_invoices" add column if not exists "qr_token" varchar(80);
-
-      create table if not exists "tasks" (
-        "id" serial primary key,
-        "title" text not null,
-        "description" text,
-        "status" varchar(30) not null default 'new',
-        "priority" varchar(20) not null default 'medium',
-        "due_at" timestamp,
-        "assigned_staff_ids" jsonb not null default '[]'::jsonb,
-        "related_type" varchar(30),
-        "related_id" integer,
-        "notes" text,
-        "attachments" jsonb not null default '[]'::jsonb,
-        "created_by" integer references "staff" ("id"),
-        "archived_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "task_comments" (
-        "id" serial primary key,
-        "task_id" integer not null references "tasks" ("id"),
-        "staff_id" integer references "staff" ("id"),
-        "body" text not null,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "task_attachments" (
-        "id" serial primary key,
-        "task_id" integer not null references "tasks" ("id"),
-        "file_url" text not null,
-        "file_name" text,
-        "created_at" timestamp not null default now()
-      );
-      alter table "tasks" add column if not exists "task_no" varchar(50);
-      alter table "tasks" add column if not exists "department" varchar(100);
-      alter table "tasks" add column if not exists "task_type" varchar(50);
-      alter table "tasks" add column if not exists "start_at" timestamp;
-      alter table "tasks" add column if not exists "estimated_minutes" integer;
-      alter table "tasks" add column if not exists "submitted_at" timestamp;
-      alter table "tasks" add column if not exists "completed_at" timestamp;
-      alter table "tasks" add column if not exists "approved_by" integer references "staff" ("id");
-      alter table "tasks" add column if not exists "approved_at" timestamp;
-      alter table "tasks" add column if not exists "rejection_reason" text;
-      create unique index if not exists "tasks_task_no_unique" on "tasks" ("task_no") where "task_no" is not null;
-      create table if not exists "task_checklist_items" (
-        "id" serial primary key,
-        "task_id" integer not null references "tasks" ("id"),
-        "title" text not null,
-        "required_quantity" numeric(14,2) not null default 1,
-        "completed_quantity" numeric(14,2) not null default 0,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "task_checklist_items_task_id_idx" on "task_checklist_items" ("task_id", "sort_order");
-      create table if not exists "task_item_attachments" (
-        "id" serial primary key,
-        "task_item_id" integer not null references "task_checklist_items" ("id"),
-        "staff_id" integer references "staff" ("id"),
-        "file_url" text not null,
-        "file_name" text,
-        "media_type" varchar(40) not null default 'file',
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "task_item_attachments_item_id_idx" on "task_item_attachments" ("task_item_id");
-      create table if not exists "message_threads" (
-        "id" serial primary key,
-        "customer_id" integer references "customers" ("id"),
-        "phone" varchar(30),
-        "customer_name" text not null default '',
-        "subject" text not null default 'رسالة زبون',
-        "status" varchar(20) not null default 'new',
-        "related_type" varchar(30),
-        "related_id" integer,
-        "last_message_at" timestamp not null default now(),
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "message_replies" (
-        "id" serial primary key,
-        "thread_id" integer not null references "message_threads" ("id"),
-        "sender_type" varchar(20) not null default 'customer',
-        "staff_id" integer references "staff" ("id"),
-        "body" text not null,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "customer_activity_logs" (
-        "id" serial primary key,
-        "customer_id" integer references "customers" ("id"),
-        "session_id" varchar(80),
-        "phone" varchar(30),
-        "action" varchar(60) not null,
-        "entity_type" varchar(40),
-        "entity_id" integer,
-        "entity_label" text,
-        "metadata" jsonb not null default '{}'::jsonb,
-        "ip_address" varchar(80),
-        "user_agent" text,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "customer_notes" (
-        "id" serial primary key,
-        "customer_id" integer not null references "customers" ("id"),
-        "staff_id" integer references "staff" ("id"),
-        "body" text not null,
-        "priority" varchar(20) not null default 'normal',
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "attendance_records" (
-        "id" serial primary key,
-        "staff_id" integer not null references "staff" ("id"),
-        "check_in_at" timestamp not null default now(),
-        "check_out_at" timestamp,
-        "status" varchar(20) not null default 'present',
-        "notes" text,
-        "edited_by" integer references "staff" ("id"),
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "qr_tokens" (
-        "id" serial primary key,
-        "entity_type" varchar(30) not null,
-        "entity_id" integer not null,
-        "token" varchar(80) not null unique,
-        "target_url" text not null,
-        "scan_count" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "last_scanned_at" timestamp
-      );
-      create table if not exists "notifications" (
-        "id" serial primary key,
-        "audience_type" varchar(20) not null default 'admin',
-        "staff_id" integer references "staff" ("id"),
-        "customer_id" integer references "customers" ("id"),
-        "type" varchar(60) not null default 'general',
-        "title" text not null,
-        "body" text not null default '',
-        "entity_type" varchar(40),
-        "entity_id" integer,
-        "href" text,
-        "metadata" jsonb not null default '{}'::jsonb,
-        "read_at" timestamp,
-        "archived_at" timestamp,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "notification_subscriptions" (
-        "id" serial primary key,
-        "owner_type" varchar(20) not null default 'staff',
-        "staff_id" integer references "staff" ("id"),
-        "customer_id" integer references "customers" ("id"),
-        "endpoint" text not null unique,
-        "p256dh" text not null,
-        "auth" text not null,
-        "user_agent" text,
-        "is_active" integer not null default 1,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "notification_settings" (
-        "id" serial primary key,
-        "owner_type" varchar(20) not null default 'global',
-        "owner_id" integer,
-        "push_enabled" integer not null default 1,
-        "orders_enabled" integer not null default 1,
-        "messages_enabled" integer not null default 1,
-        "tasks_enabled" integer not null default 1,
-        "inventory_enabled" integer not null default 1,
-        "customer_enabled" integer not null default 1,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      alter table "tasks"
-        add column if not exists "template_key" varchar(80),
-        add column if not exists "sequence" integer not null default 0,
-        add column if not exists "auto_generated" integer not null default 0;
-      create table if not exists "approval_requests" (
-        "id" serial primary key,
-        "request_no" varchar(50) not null unique,
-        "type" varchar(60) not null,
-        "title" text not null,
-        "description" text,
-        "entity_type" varchar(60),
-        "entity_id" integer,
-        "amount" text,
-        "old_values" jsonb not null default '{}'::jsonb,
-        "new_values" jsonb not null default '{}'::jsonb,
-        "status" varchar(20) not null default 'pending',
-        "requested_by" integer references "staff" ("id"),
-        "requested_by_name" text not null default '',
-        "reviewed_by" integer references "staff" ("id"),
-        "reviewed_by_name" text not null default '',
-        "review_note" text,
-        "reviewed_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "employee_approval_permissions" (
-        "id" serial primary key,
-        "staff_id" integer not null unique references "staff" ("id") on delete cascade,
-        "permission_codes" jsonb not null default '[]'::jsonb,
-        "allowed_categories" jsonb not null default '[]'::jsonb,
-        "allowed_departments" jsonb not null default '[]'::jsonb,
-        "allowed_branch_ids" jsonb not null default '[]'::jsonb,
-        "category_modes" jsonb not null default '{}'::jsonb,
-        "max_amount" numeric(16,2) not null default 0,
-        "unlimited_amount" boolean not null default false,
-        "valid_from" timestamp,
-        "valid_until" timestamp,
-        "is_active" boolean not null default true,
-        "is_temporary" boolean not null default false,
-        "delegation_reason" text,
-        "granted_by" integer references "staff" ("id"),
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "approval_actions" (
-        "id" serial primary key,
-        "approval_request_id" integer not null references "approval_requests" ("id") on delete cascade,
-        "action" varchar(40) not null,
-        "old_status" varchar(30),
-        "new_status" varchar(30),
-        "actor_staff_id" integer references "staff" ("id"),
-        "actor_name" text not null default '',
-        "actor_role" varchar(30),
-        "note" text,
-        "amount" numeric(16,2),
-        "ip_address" varchar(120),
-        "session_id" varchar(120),
-        "metadata" jsonb not null default '{}'::jsonb,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "entity_documents" (
-        "id" serial primary key,
-        "entity_type" varchar(60) not null,
-        "entity_id" integer not null,
-        "document_type" varchar(40) not null default 'file',
-        "title" text not null,
-        "file_url" text not null,
-        "file_name" text,
-        "mime_type" varchar(120),
-        "metadata" jsonb not null default '{}'::jsonb,
-        "uploaded_by" integer references "staff" ("id"),
-        "uploaded_by_name" text not null default '',
-        "archived_at" timestamp,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "entity_timeline" (
-        "id" serial primary key,
-        "entity_type" varchar(60) not null,
-        "entity_id" integer not null,
-        "type" varchar(60) not null,
-        "title" text not null,
-        "body" text,
-        "actor_id" integer references "staff" ("id"),
-        "actor_name" text not null default '',
-        "metadata" jsonb not null default '{}'::jsonb,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "warehouses" (
-        "id" serial primary key,
-        "name" text not null,
-        "is_active" integer not null default 1,
-        "created_at" timestamp not null default now()
-      );
-      insert into "warehouses" ("name")
-      select 'المخزن الرئيسي'
-      where not exists (select 1 from "warehouses");
-      create table if not exists "warehouse_stock" (
-        "id" serial primary key,
-        "warehouse_id" integer not null references "warehouses" ("id"),
-        "product_id" integer not null,
-        "quantity" numeric(12,3) not null default 0,
-        "updated_at" timestamp not null default now(),
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "warehouse_transfers" (
-        "id" serial primary key,
-        "transfer_no" varchar(50) not null unique,
-        "product_id" integer,
-        "product_name" text not null default '',
-        "from_warehouse_id" integer references "warehouses" ("id"),
-        "to_warehouse_id" integer references "warehouses" ("id"),
-        "quantity" integer not null default 1,
-        "status" varchar(20) not null default 'pending',
-        "requested_by" integer references "staff" ("id"),
-        "requested_by_name" text not null default '',
-        "reviewed_by" integer references "staff" ("id"),
-        "reviewed_by_name" text not null default '',
-        "notes" text,
-        "reviewed_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create table if not exists "asset_profiles" (
-        "id" serial primary key,
-        "product_id" integer not null unique,
-        "purchase_price" text not null default '0',
-        "purchase_date" timestamp,
-        "expected_life_uses" integer not null default 50,
-        "usage_count" integer not null default 0,
-        "maintenance_every_uses" integer not null default 50,
-        "current_value" text not null default '0',
-        "status" varchar(30) not null default 'active',
-        "notes" text,
-        "updated_at" timestamp not null default now(),
-        "created_at" timestamp not null default now()
-      );
-      alter table "asset_profiles" add column if not exists "serial_number" varchar(120);
-      alter table "asset_profiles" add column if not exists "deleted_at" timestamp, add column if not exists "deleted_by" integer references "staff"("id") on delete set null, add column if not exists "deleted_reason" text, add column if not exists "value_before_removal" text;
-      create table if not exists "disaster_recovery_snapshots" (
-        "id" serial primary key,
-        "snapshot_no" varchar(50) not null unique,
-        "type" varchar(30) not null default 'manual',
-        "status" varchar(20) not null default 'created',
-        "file_url" text,
-        "summary" jsonb not null default '{}'::jsonb,
-        "created_by" integer references "staff" ("id"),
-        "created_by_name" text not null default '',
-        "created_at" timestamp not null default now()
-      );
-      create index if not exists "tasks_assigned_staff_ids_gin_idx" on "tasks" using gin ("assigned_staff_ids");
-      create index if not exists "tasks_status_due_idx" on "tasks" ("status", "due_at");
-      create index if not exists "tasks_related_template_idx" on "tasks" ("related_type", "related_id", "template_key");
-      create index if not exists "approval_requests_status_idx" on "approval_requests" ("status", "created_at");
-      create index if not exists "approval_requests_entity_idx" on "approval_requests" ("entity_type", "entity_id");
-      create index if not exists "employee_approval_permissions_active_staff_idx" on "employee_approval_permissions" ("is_active", "staff_id");
-      create index if not exists "approval_actions_request_created_idx" on "approval_actions" ("approval_request_id", "created_at");
-      create index if not exists "approval_actions_actor_created_idx" on "approval_actions" ("actor_staff_id", "created_at");
-      create index if not exists "entity_documents_entity_idx" on "entity_documents" ("entity_type", "entity_id", "created_at");
-      create index if not exists "entity_timeline_entity_idx" on "entity_timeline" ("entity_type", "entity_id", "created_at");
-      create unique index if not exists "warehouse_stock_product_warehouse_idx" on "warehouse_stock" ("product_id", "warehouse_id");
-      create index if not exists "warehouse_stock_warehouse_idx" on "warehouse_stock" ("warehouse_id");
-      create index if not exists "warehouse_stock_product_idx" on "warehouse_stock" ("product_id");
-      create index if not exists "warehouse_transfers_status_idx" on "warehouse_transfers" ("status", "created_at");
-      create index if not exists "asset_profiles_status_idx" on "asset_profiles" ("status", "updated_at");
-      create index if not exists "disaster_recovery_snapshots_created_idx" on "disaster_recovery_snapshots" ("created_at");
-      create index if not exists "message_threads_status_idx" on "message_threads" ("status", "last_message_at");
-      create index if not exists "message_replies_thread_idx" on "message_replies" ("thread_id", "created_at");
-      create index if not exists "customer_activity_created_idx" on "customer_activity_logs" ("created_at");
-      create index if not exists "customer_activity_customer_idx" on "customer_activity_logs" ("customer_id", "created_at");
-      create index if not exists "customer_notes_customer_created_idx" on "customer_notes" ("customer_id", "created_at");
-      create index if not exists "attendance_staff_day_idx" on "attendance_records" ("staff_id", "check_in_at");
-      create unique index if not exists "qr_tokens_entity_unique_idx" on "qr_tokens" ("entity_type", "entity_id");
-      create index if not exists "orders_qr_token_idx" on "orders" ("qr_token");
-      create index if not exists "service_orders_qr_token_idx" on "service_orders" ("qr_token");
-      create index if not exists "sales_invoices_qr_token_idx" on "sales_invoices" ("qr_token");
-      create index if not exists "notifications_audience_created_idx" on "notifications" ("audience_type", "created_at");
-      create index if not exists "notifications_staff_read_idx" on "notifications" ("staff_id", "read_at");
-      create index if not exists "notifications_customer_read_idx" on "notifications" ("customer_id", "read_at");
-      create index if not exists "notification_subscriptions_staff_idx" on "notification_subscriptions" ("staff_id", "is_active");
-      create index if not exists "notification_subscriptions_customer_idx" on "notification_subscriptions" ("customer_id", "is_active");
-      create unique index if not exists "notification_settings_owner_unique_idx" on "notification_settings" ("owner_type", coalesce("owner_id", 0));
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         adminExtensionsTablesPromise = null;
@@ -10682,151 +8864,7 @@ async function ensureEnterprisePhase5Tables(): Promise<void> {
       .then(async (probe: any) => {
         if (probe?.rows?.[0]?.table_name) return;
         await ensureAdminExtensionsTables();
-        await db.execute(sql`
-      create table if not exists "enterprise_branches" (
-        "id" serial primary key, "code" varchar(30) not null unique, "name" text not null,
-        "city" text, "address" text, "map_url" text, "latitude" numeric(10,7), "longitude" numeric(10,7),
-        "is_active" boolean not null default true, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      insert into "enterprise_branches" ("code", "name") values ('MAIN', 'الفرع الرئيسي') on conflict ("code") do nothing;
-      create table if not exists "branch_entity_assignments" (
-        "id" serial primary key, "branch_id" integer not null references "enterprise_branches" ("id") on delete cascade,
-        "entity_type" varchar(40) not null, "entity_id" integer not null, "created_at" timestamp not null default now()
-      );
-      create unique index if not exists "branch_entity_assignments_entity_idx" on "branch_entity_assignments" ("entity_type", "entity_id");
-      create index if not exists "branch_entity_assignments_branch_idx" on "branch_entity_assignments" ("branch_id", "entity_type");
-      create table if not exists "fleet_vehicles" (
-        "id" serial primary key, "branch_id" integer references "enterprise_branches" ("id") on delete set null,
-        "name" text not null, "plate_number" varchar(40) not null unique, "status" varchar(24) not null default 'available',
-        "capacity" integer not null default 1, "latitude" numeric(10,7), "longitude" numeric(10,7), "notes" text,
-        "last_location_at" timestamp, "is_active" boolean not null default true,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create index if not exists "fleet_vehicles_status_idx" on "fleet_vehicles" ("status", "is_active");
-      create table if not exists "field_locations" (
-        "id" serial primary key, "resource_type" varchar(24) not null, "resource_id" integer not null,
-        "resource_name" text not null default '', "branch_id" integer references "enterprise_branches" ("id") on delete set null,
-        "entity_type" varchar(40), "entity_id" integer, "latitude" numeric(10,7) not null, "longitude" numeric(10,7) not null,
-        "accuracy_meters" numeric(10,2), "status" varchar(30) not null default 'available',
-        "recorded_by" integer references "staff" ("id") on delete set null, "recorded_at" timestamp not null default now()
-      );
-      create index if not exists "field_locations_resource_idx" on "field_locations" ("resource_type", "resource_id", "recorded_at");
-      create table if not exists "dispatch_assignments" (
-        "id" serial primary key, "entity_type" varchar(40) not null, "entity_id" integer not null,
-        "branch_id" integer references "enterprise_branches" ("id") on delete set null,
-        "crew_id" integer references "crews" ("id") on delete set null,
-        "vehicle_id" integer references "fleet_vehicles" ("id") on delete set null,
-        "warehouse_id" integer references "warehouses" ("id") on delete set null,
-        "score" numeric(6,2) not null default 0, "status" varchar(24) not null default 'assigned',
-        "suggestions" jsonb not null default '{}'::jsonb, "notes" text,
-        "assigned_by" integer references "staff" ("id") on delete set null, "assigned_by_name" text not null default '',
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create unique index if not exists "dispatch_assignments_entity_idx" on "dispatch_assignments" ("entity_type", "entity_id");
-      create table if not exists "internal_channels" (
-        "id" serial primary key, "title" text not null, "department" varchar(40) not null default 'general',
-        "entity_type" varchar(40), "entity_id" integer, "participant_staff_ids" jsonb not null default '[]'::jsonb,
-        "created_by" integer references "staff" ("id") on delete set null, "archived_at" timestamp,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "internal_messages" (
-        "id" serial primary key, "channel_id" integer not null references "internal_channels" ("id") on delete cascade,
-        "sender_id" integer references "staff" ("id") on delete set null, "sender_name" text not null default '',
-        "body" text, "voice_url" text, "voice_duration" integer, "created_at" timestamp not null default now()
-      );
-      create index if not exists "internal_messages_channel_idx" on "internal_messages" ("channel_id", "created_at");
-      create table if not exists "customer_queue_entries" (
-        "id" serial primary key, "queue_no" varchar(40) not null unique, "customer_id" integer references "customers" ("id") on delete set null,
-        "customer_name" text not null default '', "phone" varchar(30), "service_type" varchar(40) not null default 'general',
-        "branch_id" integer references "enterprise_branches" ("id") on delete set null, "status" varchar(24) not null default 'waiting',
-        "arrived_at" timestamp not null default now(), "service_started_at" timestamp, "completed_at" timestamp, "notes" text,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create index if not exists "customer_queue_entries_status_idx" on "customer_queue_entries" ("status", "arrived_at");
-      create table if not exists "lost_time_entries" (
-        "id" serial primary key, "entity_type" varchar(40), "entity_id" integer, "reason_type" varchar(30) not null,
-        "minutes" integer not null, "description" text, "staff_id" integer references "staff" ("id") on delete set null,
-        "vehicle_id" integer references "fleet_vehicles" ("id") on delete set null,
-        "product_id" integer references "products" ("id") on delete set null,
-        "recorded_by" integer references "staff" ("id") on delete set null,
-        "occurred_at" timestamp not null default now(), "created_at" timestamp not null default now()
-      );
-      create index if not exists "lost_time_entries_reason_idx" on "lost_time_entries" ("reason_type", "occurred_at");
-      create table if not exists "asset_passports" (
-        "id" serial primary key, "product_id" integer not null unique references "products" ("id") on delete cascade,
-        "serial_number" varchar(120) unique, "supplier_name" text, "warranty_until" date,
-        "warehouse_id" integer references "warehouses" ("id") on delete set null, "shelf_code" varchar(40), "image_url" text,
-        "qr_token" varchar(80), "last_staff_id" integer references "staff" ("id") on delete set null, "last_location" text,
-        "revenue_total" numeric(16,2) not null default 0, "maintenance_cost" numeric(16,2) not null default 0,
-        "next_maintenance_date" date, "metadata" jsonb not null default '{}'::jsonb,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create index if not exists "asset_passports_shelf_idx" on "asset_passports" ("warehouse_id", "shelf_code");
-      create table if not exists "equipment_custody" (
-        "id" serial primary key, "product_id" integer not null references "products" ("id") on delete restrict,
-        "staff_id" integer not null references "staff" ("id") on delete restrict, "quantity" integer not null default 1,
-        "status" varchar(24) not null default 'issued', "signature_url" text, "issued_at" timestamp not null default now(),
-        "returned_at" timestamp, "notes" text, "issued_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "event_cost_estimates" (
-        "id" serial primary key, "entity_type" varchar(40) not null, "entity_id" integer not null,
-        "materials_cost" numeric(16,2) not null default 0, "transport_cost" numeric(16,2) not null default 0,
-        "fuel_cost" numeric(16,2) not null default 0, "labor_cost" numeric(16,2) not null default 0,
-        "depreciation_cost" numeric(16,2) not null default 0, "expected_revenue" numeric(16,2) not null default 0,
-        "expected_profit" numeric(16,2) not null default 0, "profit_margin" numeric(7,2) not null default 0,
-        "warning" text, "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create unique index if not exists "event_cost_estimates_entity_idx" on "event_cost_estimates" ("entity_type", "entity_id");
-      create table if not exists "warehouse_camera_snapshots" (
-        "id" serial primary key, "warehouse_id" integer references "warehouses" ("id") on delete set null,
-        "entity_type" varchar(40), "entity_id" integer, "movement_type" varchar(24) not null default 'checkout',
-        "image_url" text not null, "captured_by" integer references "staff" ("id") on delete set null,
-        "captured_at" timestamp not null default now()
-      );
-      create table if not exists "design_library_items" (
-        "id" serial primary key, "type" varchar(30) not null, "name" text not null, "description" text,
-        "images" jsonb not null default '[]'::jsonb, "material_product_ids" jsonb not null default '[]'::jsonb,
-        "execution_cost" numeric(16,2) not null default 0, "execution_minutes" integer not null default 0,
-        "order_count" integer not null default 0, "is_active" boolean not null default true,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "daily_closing_checklists" (
-        "id" serial primary key, "closing_date" date not null, "branch_code" varchar(30) not null default 'MAIN',
-        "equipment_returned" boolean not null default false, "payments_approved" boolean not null default false,
-        "bookings_closed" boolean not null default false, "cash_closed" boolean not null default false,
-        "backup_completed" boolean not null default false, "notes" text, "status" varchar(20) not null default 'open',
-        "closed_by" integer references "staff" ("id") on delete set null, "closed_by_name" text not null default '',
-        "closed_at" timestamp, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create unique index if not exists "daily_closing_checklists_date_branch_idx" on "daily_closing_checklists" ("closing_date", "branch_code");
-      create table if not exists "knowledge_articles" (
-        "id" serial primary key, "category" varchar(40) not null default 'general', "title" text not null,
-        "content" text not null, "video_url" text, "tags" jsonb not null default '[]'::jsonb,
-        "is_active" boolean not null default true, "created_by" integer references "staff" ("id") on delete set null,
-        "created_by_name" text not null default '', "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "knowledge_cases" (
-        "id" serial primary key, "problem" text not null, "solution" text not null, "entity_type" varchar(40), "entity_id" integer,
-        "tags" jsonb not null default '[]'::jsonb, "times_reused" integer not null default 0,
-        "created_by" integer references "staff" ("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "management_decisions" (
-        "id" serial primary key, "title" text not null, "decision" text not null, "reason" text not null,
-        "entity_type" varchar(40), "entity_id" integer, "decided_by" integer references "staff" ("id") on delete set null,
-        "decided_by_name" text not null default '', "decided_at" timestamp not null default now(), "created_at" timestamp not null default now()
-      );
-      create table if not exists "customer_attributions" (
-        "id" serial primary key, "customer_id" integer references "customers" ("id") on delete cascade, "phone" varchar(30),
-        "source" varchar(30) not null, "campaign" text, "entity_type" varchar(40), "entity_id" integer,
-        "created_by" integer references "staff" ("id") on delete set null, "created_at" timestamp not null default now()
-      );
-      create index if not exists "customer_attributions_source_idx" on "customer_attributions" ("source", "created_at");
-    `);
+        await db.execute(sql`select 1`);
       })
       .catch((err) => {
         enterprisePhase5TablesPromise = null;
@@ -11197,7 +9235,10 @@ function normalizePrinterSettings(value: unknown): PrinterSettings {
     showEmployeeName: raw.showEmployeeName !== false,
     showAddress: raw.showAddress !== false,
     showBundleComponents: raw.showBundleComponents === true,
-    footerText: typeof raw.footerText === "string" ? raw.footerText.trim().slice(0, 240) : "",
+    footerText:
+      typeof raw.footerText === "string"
+        ? raw.footerText.trim().slice(0, 240)
+        : "",
   };
 }
 
@@ -11205,51 +9246,13 @@ function normalizePrinterSettings(value: unknown): PrinterSettings {
 async function ensureKoshaWorkOrderTables(): Promise<void> {
   await ensureKoshaTables();
   if (!koshaWorkOrderTablesPromise) {
-    koshaWorkOrderTablesPromise = db.execute(sql`
-      create table if not exists "kosha_work_orders" (
-        "id" serial primary key, "work_order_no" varchar(40) not null unique,
-        "booking_id" integer not null unique references "kosha_bookings"("id") on delete restrict,
-        "leader_id" integer references "staff"("id") on delete set null,
-        "status" varchar(40) not null default 'UNASSIGNED', "priority" varchar(20) not null default 'normal',
-        "required_arrival_at" timestamp, "event_start_at" timestamp, "expected_dismantle_at" timestamp,
-        "assigned_at" timestamp, "accepted_at" timestamp, "started_at" timestamp,
-        "started_by" integer references "staff"("id") on delete set null, "started_lat" numeric(10,7), "started_lng" numeric(10,7),
-        "arrived_at" timestamp, "completed_at" timestamp, "special_instructions" text,
-        "require_acknowledgment" boolean not null default false, "instructions_acknowledged_at" timestamp,
-        "instructions_acknowledged_by" integer references "staff"("id") on delete set null,
-        "cancelled_at" timestamp, "created_by" integer references "staff"("id") on delete set null,
-        "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "kosha_work_order_members" (
-        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
-        "staff_id" integer not null references "staff"("id") on delete restrict, "role" varchar(20) not null default 'MEMBER',
-        "status" varchar(30) not null default 'ASSIGNED', "accepted_at" timestamp, "declined_at" timestamp,
-        "decline_reason" varchar(40), "decline_note" text, "removed_at" timestamp, "created_at" timestamp not null default now(),
-        unique("work_order_id", "staff_id")
-      );
-      create table if not exists "kosha_work_order_events" (
-        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
-        "staff_id" integer references "staff"("id") on delete set null, "staff_name" text not null default '',
-        "type" varchar(50) not null, "title" text not null, "details" text, "metadata" jsonb not null default '{}'::jsonb,
-        "created_at" timestamp not null default now()
-      );
-      create table if not exists "kosha_work_order_checklist" (
-        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
-        "label" text not null, "product_id" integer references "products"("id") on delete set null, "sort_order" integer not null default 0,
-        "is_completed" boolean not null default false, "completed_by" integer references "staff"("id") on delete set null,
-        "completed_at" timestamp, "note" text, "photo_url" text, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-      );
-      create table if not exists "kosha_work_order_assets" (
-        "id" serial primary key, "work_order_id" integer not null references "kosha_work_orders"("id") on delete restrict,
-        "product_id" integer not null references "products"("id") on delete restrict, "asset_code" varchar(160),
-        "checked_out_by" integer references "staff"("id") on delete set null, "checked_out_at" timestamp,
-        "returned_by" integer references "staff"("id") on delete set null, "returned_at" timestamp,
-        "return_condition" varchar(30), "note" text, "created_at" timestamp not null default now(), unique("work_order_id", "product_id")
-      );
-      create index if not exists "kosha_work_orders_status_time_idx" on "kosha_work_orders"("status", "required_arrival_at");
-      create index if not exists "kosha_work_order_members_staff_idx" on "kosha_work_order_members"("staff_id", "status");
-      create index if not exists "kosha_work_order_events_order_idx" on "kosha_work_order_events"("work_order_id", "created_at");
-    `).then(() => undefined).catch((err) => { koshaWorkOrderTablesPromise = null; throw err; });
+    koshaWorkOrderTablesPromise = db
+      .execute(sql`select 1`)
+      .then(() => undefined)
+      .catch((err) => {
+        koshaWorkOrderTablesPromise = null;
+        throw err;
+      });
   }
   await koshaWorkOrderTablesPromise;
 }
@@ -12897,6 +10900,13 @@ async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
         .trim()
         .slice(0, 180) || null;
     const password = String(data?.password ?? "");
+    const signupLimit = await consumeRateLimit({
+      action: "customer-register",
+      keyParts: [ip(req), username || phone || "missing"],
+      limit: 6,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!signupLimit.allowed) return rateLimitError(signupLimit);
     if (!fullName || !phone || !validCustomerUsername(username))
       return error("تحقق من الاسم ورقم الهاتف واسم المستخدم", 400);
     const passwordProblem = customerPasswordProblem(password);
@@ -12960,12 +10970,28 @@ async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
     const password = String(data?.password ?? "");
     if (!identifier || !password)
       return error("بيانات تسجيل الدخول غير صحيحة", 400);
-    if (
-      !checkRateLimit(customerLoginByIp, ip(req), 12, 15 * 60 * 1000) ||
-      !checkRateLimit(customerLoginByIdentifier, identifier, 8, 15 * 60 * 1000)
-    ) {
-      return error("تم إيقاف المحاولات مؤقتاً. حاول لاحقاً.", 429);
-    }
+    const customerIpLimit = await consumeRateLimit({
+      action: "customer-login-ip",
+      keyParts: [ip(req)],
+      limit: 12,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!customerIpLimit.allowed)
+      return rateLimitError(
+        customerIpLimit,
+        "تم إيقاف المحاولات مؤقتاً. حاول لاحقاً.",
+      );
+    const customerIdentifierLimit = await consumeRateLimit({
+      action: "customer-login-identifier",
+      keyParts: [identifier],
+      limit: 8,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!customerIdentifierLimit.allowed)
+      return rateLimitError(
+        customerIdentifierLimit,
+        "تم إيقاف المحاولات مؤقتاً. حاول لاحقاً.",
+      );
     const normalizedPhone = normalizeIraqiPhone(identifier);
     const account = await db.query.customerAccountsTable.findFirst({
       where: normalizedPhone
@@ -13029,6 +11055,13 @@ async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
       .toUpperCase();
     const password = String(data?.password ?? "");
     const confirmPassword = String(data?.confirmPassword ?? "");
+    const recoveryLimit = await consumeRateLimit({
+      action: "customer-password-recovery",
+      keyParts: [ip(req), identifier],
+      limit: 5,
+      windowMs: 30 * 60 * 1000,
+    });
+    if (!recoveryLimit.allowed) return rateLimitError(recoveryLimit);
     const generic = () => error("تعذر التحقق من بيانات الاسترجاع", 400);
     const passwordProblem = customerPasswordProblem(password);
     if (
@@ -13106,6 +11139,14 @@ async function handleCustomerAccountAuth(req: NextRequest, parts: string[]) {
       .trim()
       .slice(0, 120);
     const phone = normalizeIraqiPhone(data?.phone);
+    const recoveryRequestLimit = await consumeRateLimit({
+      action: "customer-recovery-request",
+      keyParts: [ip(req), identifier || phone || "missing"],
+      limit: 4,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!recoveryRequestLimit.allowed)
+      return rateLimitError(recoveryRequestLimit);
     if (!identifier) return error("أدخل اسم المستخدم أو رقم الهاتف", 400);
     const account = await db.query.customerAccountsTable.findFirst({
       where: phone
@@ -13521,12 +11562,20 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const phone = normalizeIraqiPhone(parsed.data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
     const reqIp = ip(req);
-    if (!checkRateLimit(otpRequestByPhone, phone, 5, 10 * 60 * 1000)) {
-      return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
-    }
-    if (!checkRateLimit(otpRequestByIp, reqIp, 10, 60 * 60 * 1000)) {
-      return error("تجاوزت الحد المسموح، حاول لاحقاً", 429);
-    }
+    const otpPhoneLimit = await consumeRateLimit({
+      action: "otp-request-phone",
+      keyParts: [phone],
+      limit: 5,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!otpPhoneLimit.allowed) return rateLimitError(otpPhoneLimit);
+    const otpIpLimit = await consumeRateLimit({
+      action: "otp-request-ip",
+      keyParts: [reqIp],
+      limit: 10,
+      windowMs: 60 * 60 * 1000,
+    });
+    if (!otpIpLimit.allowed) return rateLimitError(otpIpLimit);
     await cleanupOtpCodes();
     const recent = await db.query.otpCodesTable.findFirst({
       where: and(
@@ -13575,9 +11624,17 @@ async function handleAuth(req: NextRequest, parts: string[]) {
     const otp = normalizePhoneDigits(parsed.data.otp).slice(0, 6);
     if (!phone || otp.length !== 6)
       return error("أدخل رقم هاتف عراقي صحيح ورمزاً من 6 أرقام", 400);
-    if (!checkRateLimit(otpVerifyByPhone, phone, 5, 10 * 60 * 1000)) {
-      return error("تجاوزت عدد المحاولات، حاول لاحقاً", 429);
-    }
+    const otpVerifyLimit = await consumeRateLimit({
+      action: "otp-verify",
+      keyParts: [ip(req), phone],
+      limit: 5,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!otpVerifyLimit.allowed)
+      return rateLimitError(
+        otpVerifyLimit,
+        "تجاوزت عدد المحاولات، حاول لاحقاً",
+      );
     await cleanupOtpCodes();
     const record = await db.query.otpCodesTable.findFirst({
       where: and(
@@ -13690,67 +11747,7 @@ async function handleAuth(req: NextRequest, parts: string[]) {
 async function ensureProductionTables(): Promise<void> {
   if (!productionTablesPromise) {
     productionTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "product_recipes" (
-        "id" serial primary key,
-        "product_id" integer not null references "products" ("id") on delete cascade,
-        "component_product_id" integer not null references "products" ("id"),
-        "quantity" numeric(12,3) not null default 1,
-        "unit" varchar(30) not null default 'قطعة',
-        "unit_cost" numeric(14,2) not null default 0,
-        "notes" text,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "product_recipes_product_idx" on "product_recipes" ("product_id");
-      create table if not exists "production_orders" (
-        "id" serial primary key,
-        "order_no" varchar(50) not null unique,
-        "status" varchar(20) not null default 'pending',
-        "items" jsonb not null default '[]'::jsonb,
-        "materials" jsonb not null default '[]'::jsonb,
-        "total_cost" numeric(16,2) not null default 0,
-        "expected_revenue" numeric(16,2) not null default 0,
-        "expected_profit" numeric(16,2) not null default 0,
-        "notes" text,
-        "created_by" integer references "staff" ("id"),
-        "created_by_name" text not null default '',
-        "delivered_at" timestamp,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "production_orders_status_idx" on "production_orders" ("status", "created_at");
-      -- Enterprise columns (labor / equipment / wastage / booking / approval) added idempotently.
-      alter table "production_orders" add column if not exists "material_cost" numeric(16,2) not null default 0;
-      alter table "production_orders" add column if not exists "labor_cost" numeric(16,2) not null default 0;
-      alter table "production_orders" add column if not exists "equipment_cost" numeric(16,2) not null default 0;
-      alter table "production_orders" add column if not exists "wastage_percent" numeric(6,2) not null default 0;
-      alter table "production_orders" add column if not exists "labor" jsonb not null default '[]'::jsonb;
-      alter table "production_orders" add column if not exists "equipment" jsonb not null default '[]'::jsonb;
-      alter table "production_orders" add column if not exists "booking_type" varchar(40);
-      alter table "production_orders" add column if not exists "booking_id" integer;
-      alter table "production_orders" add column if not exists "approved_by" integer;
-      alter table "production_orders" add column if not exists "approved_by_name" text;
-      alter table "production_orders" add column if not exists "approved_at" timestamp;
-      alter table "production_orders" add column if not exists "cancelled_at" timestamp;
-      alter table "production_orders" add column if not exists "stock_applied" integer not null default 0;
-      alter table "production_orders" add column if not exists "produced" jsonb not null default '{}'::jsonb;
-      alter table "production_orders" add column if not exists "applied_materials" jsonb not null default '[]'::jsonb;
-      alter table "production_orders" add column if not exists "expense_id" integer;
-      create index if not exists "production_orders_booking_idx" on "production_orders" ("booking_type", "booking_id");
-      -- Recipe-level overhead (labor lines + wastage) kept 1:1 with a finished product.
-      create table if not exists "product_recipe_settings" (
-        "product_id" integer primary key references "products" ("id") on delete cascade,
-        "labor_cost" numeric(14,2) not null default 0,
-        "labor" jsonb not null default '[]'::jsonb,
-        "wastage_percent" numeric(6,2) not null default 0,
-        "notes" text,
-        "updated_at" timestamp not null default now()
-      );
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         productionTablesPromise = null;
@@ -13767,55 +11764,7 @@ async function ensureProductionTables(): Promise<void> {
 async function ensureVariantTables(): Promise<void> {
   if (!variantTablesPromise) {
     variantTablesPromise = db
-      .execute(
-        sql`
-      create table if not exists "product_variants" (
-        "id" serial primary key,
-        "product_id" integer not null references "products" ("id") on delete cascade,
-        "color" varchar(60),
-        "color_hex" varchar(16),
-        "size" varchar(60),
-        "sku" varchar(80),
-        "barcode" varchar(100),
-        "qr_token" varchar(80),
-        "image" text,
-        "price" numeric(12,2),
-        "cost" numeric(12,2),
-        "stock" integer not null default 0,
-        "min_stock" integer not null default 0,
-        "max_stock" integer not null default 0,
-        "warehouse_id" integer,
-        "is_active" boolean not null default true,
-        "notes" text,
-        "sort_order" integer not null default 0,
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "product_variants_product_idx" on "product_variants" ("product_id");
-      create index if not exists "product_variants_barcode_idx" on "product_variants" ("barcode");
-      create index if not exists "product_variants_sku_idx" on "product_variants" ("sku");
-      alter table "product_variants" add column if not exists "max_stock" integer not null default 0, add column if not exists "notes" text;
-      create table if not exists "stock_reservations" (
-        "id" serial primary key,
-        "product_id" integer not null,
-        "variant_id" integer,
-        "quantity" numeric(12,3) not null default 0,
-        "source_type" varchar(40) not null,
-        "source_id" integer not null,
-        "source_label" text,
-        "status" varchar(20) not null default 'reserved',
-        "consumed_at" timestamp,
-        "released_at" timestamp,
-        "created_by" integer,
-        "created_by_name" text not null default '',
-        "created_at" timestamp not null default now(),
-        "updated_at" timestamp not null default now()
-      );
-      create index if not exists "stock_reservations_product_idx" on "stock_reservations" ("product_id", "status");
-      create index if not exists "stock_reservations_variant_idx" on "stock_reservations" ("variant_id", "status");
-      create index if not exists "stock_reservations_source_idx" on "stock_reservations" ("source_type", "source_id");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         variantTablesPromise = null;
@@ -16918,6 +14867,13 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       "";
     const phone = normalizeIraqiPhone(data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const serviceOrderLimit = await consumeRateLimit({
+      action: "service-order-submit",
+      keyParts: [ip(req), phone],
+      limit: 6,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!serviceOrderLimit.allowed) return rateLimitError(serviceOrderLimit);
     const safeCustomerName = textFallback(
       data.customerName,
       formatIraqiPhone(phone),
@@ -17389,9 +15345,17 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (!raw || raw.length > 80 || !/^[A-Za-z0-9\s-]+$/.test(raw))
       return error("صيغة رمز التتبع غير صحيحة", 422);
     const normalized = raw.toUpperCase().replace(/[\s-]/g, "");
-    // Best-effort per-IP throttle: mitigates enumeration of tracking codes.
-    if (!checkRateLimit(trackingLookupByIp, ip(req), 40, 60_000))
-      return error("عدد كبير من المحاولات، حاول بعد قليل", 429);
+    const trackingLimit = await consumeRateLimit({
+      action: "public-tracking",
+      keyParts: [ip(req)],
+      limit: 40,
+      windowMs: 60_000,
+    });
+    if (!trackingLimit.allowed)
+      return rateLimitError(
+        trackingLimit,
+        "عدد كبير من المحاولات، حاول بعد قليل",
+      );
     try {
       // Searches EVERY supported entity before giving up (orders, service
       // bookings, koshat, rentals, photography, graduation…).
@@ -17399,13 +15363,14 @@ async function handleOrders(req: NextRequest, parts: string[]) {
       if (tracking) return json(tracking);
     } catch (err) {
       console.error("tracking lookup failed", {
-        code: raw,
-        normalized,
+        codeHash: createHash("sha256").update(normalized).digest("hex").slice(0, 16),
         error: err instanceof Error ? err.message : String(err),
       });
       return error("تعذّر تنفيذ البحث حالياً، حاول لاحقاً", 500);
     }
-    console.warn("tracking not found", { code: raw, normalized });
+    console.warn("tracking not found", {
+      codeHash: createHash("sha256").update(normalized).digest("hex").slice(0, 16),
+    });
     return error("لم يتم العثور على طلب بهذا الرمز في أي خدمة", 404);
   }
 
@@ -17498,6 +15463,13 @@ async function handleOrders(req: NextRequest, parts: string[]) {
     if (cartItems.length === 0) return error("السلة فارغة", 422);
     const customerPhone = normalizeIraqiPhone(data.customerPhone);
     if (!customerPhone) return error("رقم الهاتف العراقي غير صحيح", 422);
+    const orderLimit = await consumeRateLimit({
+      action: "store-order-submit",
+      keyParts: [ip(req), customerPhone],
+      limit: 6,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!orderLimit.allowed) return rateLimitError(orderLimit);
     // اسم العميل والعنوان وبقية تفاصيل التوصيل اختيارية؛ رقم الهاتف والمحافظة فقط مطلوبان.
     const safeCustomerName = String(data.customerName ?? "").trim() || "عميل";
     if (!data.deliveryZoneId) return error("يرجى اختيار منطقة التوصيل", 422);
@@ -17860,13 +15832,11 @@ async function handleOrders(req: NextRequest, parts: string[]) {
             note: `صرف نقاط للطلب ${created.trackingCode}`,
           });
         }
-        await tx
-          .insert(orderStatusHistoryTable)
-          .values({
-            orderId: created.id,
-            status: "pending",
-            notes: "تم إنشاء الطلب",
-          });
+        await tx.insert(orderStatusHistoryTable).values({
+          orderId: created.id,
+          status: "pending",
+          notes: "تم إنشاء الطلب",
+        });
         await tx.insert(entityTimelineTable).values({
           entityType: "order",
           entityId: created.id,
@@ -19781,6 +17751,13 @@ async function handleCustomer(req: NextRequest, parts: string[]) {
 
 async function handlePublicMessages(req: NextRequest, parts: string[]) {
   if (req.method !== "POST" || parts.length !== 1) return null;
+  const messageLimit = await consumeRateLimit({
+    action: "public-message",
+    keyParts: [ip(req)],
+    limit: 8,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!messageLimit.allowed) return rateLimitError(messageLimit);
   await ensureAdminExtensionsTables();
   const data = await body(req);
   const message = String(data?.message ?? data?.body ?? "")
@@ -20039,7 +18016,8 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
       // must still be able to show the safe invoice receipt.
       getInvoiceDelivery(invoice.id).catch(() => null),
     ]);
-    const invoiceStatus = invoice.status === "active" ? "confirmed" : invoice.status;
+    const invoiceStatus =
+      invoice.status === "active" ? "confirmed" : invoice.status;
     const paidAmount = Number(invoice.paidAmount ?? 0);
     const remainingAmount = Number(invoice.remainingAmount ?? 0);
     const paymentStatus = invoice.paymentStatus ?? "unpaid";
@@ -20049,7 +18027,12 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
         createdAt: invoice.updatedAt.toISOString(),
       },
       ...(paidAmount > 0
-        ? [{ status: "payment_recorded", createdAt: invoice.updatedAt.toISOString() }]
+        ? [
+            {
+              status: "payment_recorded",
+              createdAt: invoice.updatedAt.toISOString(),
+            },
+          ]
         : []),
       { status: "created", createdAt: invoice.createdAt.toISOString() },
     ];
@@ -20068,7 +18051,10 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
       total: Number(invoice.total ?? 0),
       paidAmount,
       remainingAmount,
-      notes: typeof invoice.notes === "string" && invoice.notes.trim() ? invoice.notes : null,
+      notes:
+        typeof invoice.notes === "string" && invoice.notes.trim()
+          ? invoice.notes
+          : null,
       items: items.map((item) => ({
         name: item.productName || "صنف",
         quantity: Number(item.quantity ?? 0),
@@ -20080,7 +18066,8 @@ async function buildPublicQrStatus(row: typeof qrTokensTable.$inferSelect) {
             province: deliveryRow.detail.provinceName || null,
             status: deliveryRow.order?.status ?? null,
             statusLabel: deliveryRow.order
-              ? DELIVERY_STATUS_LABELS[deliveryRow.order.status] ?? deliveryRow.order.status
+              ? (DELIVERY_STATUS_LABELS[deliveryRow.order.status] ??
+                deliveryRow.order.status)
               : null,
             trackingCode: deliveryRow.order?.deliveryNo ?? null,
             company: deliveryRow.detail.deliveryCompany || null,
@@ -20626,7 +18613,7 @@ async function reserveKoshaBookingItems(
         .set({ reservedAt: new Date() })
         .where(eq(koshaBookingItemsTable.id, item.id));
     } catch (err) {
-      console.warn("[kosha-items] stock reserve failed", err);
+      console.warn("[kosha-items] stock reserve failed", safeServerError(err));
     }
   }
 }
@@ -27117,23 +25104,9 @@ async function handleProduction(
 // Unified cross-entity asset linking (kosha | order | rental | service | photography).
 // One small table provisioned at runtime — no migration, no per-entity columns.
 async function ensureAssetLinksTable(): Promise<void> {
-  await db.execute(sql`
-    create table if not exists "asset_links" (
-      "id" serial primary key,
-      "product_id" integer not null,
-      "entity_type" varchar(30) not null,
-      "entity_id" integer not null,
-      "quantity" integer not null default 1,
-      "created_by" integer,
-      "created_at" timestamp not null default now()
-    )
-  `);
-  await db.execute(
-    sql`create unique index if not exists "asset_links_uq" on "asset_links" ("product_id","entity_type","entity_id")`,
-  );
-  await db.execute(
-    sql`create index if not exists "asset_links_entity_idx" on "asset_links" ("entity_type","entity_id")`,
-  );
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
 }
 
 function assetHealthScore(profile: any, passportMeta: any): number {
@@ -27307,10 +25280,10 @@ async function handleHrAdmin(
         if (!hasPermission(auth, "bonus_edit") && !adminOnly())
           return error("لا تملك صلاحية تعديل المكافأة", 403);
         const payload = await body(req);
-        console.error("Bonus request payload", {
+        console.info("Bonus mutation requested", {
           operation: "edit",
           id,
-          payload,
+          actorId: auth.id,
         });
         await validateBonus(id);
         await validateBonusUpdate(id, payload);
@@ -27336,10 +25309,10 @@ async function handleHrAdmin(
         const payload = await body(req);
         const reason = String(payload?.reason || "").trim();
         if (reason.length < 3) return error("سبب الحذف مطلوب", 400);
-        console.error("Bonus request payload", {
+        console.info("Bonus mutation requested", {
           operation: "delete",
           id,
-          payload,
+          actorId: auth.id,
         });
         const before = await validateBonus(id);
         if (
@@ -27391,10 +25364,10 @@ async function handleHrAdmin(
       if (method === "POST" && id && parts[4] === "approve") {
         if (!hasPermission(auth, "bonus_approve") && !adminOnly())
           return error("لا تملك صلاحية اعتماد المكافأة", 403);
-        console.error("Bonus request payload", {
+        console.info("Bonus mutation requested", {
           operation: "approve",
           id,
-          payload: null,
+          actorId: auth.id,
         });
         await validateBonus(id);
         const result = await approveBonus(id, actor);
@@ -27417,10 +25390,10 @@ async function handleHrAdmin(
         if (!hasPermission(auth, "bonus_reject") && !adminOnly())
           return error("لا تملك صلاحية رفض المكافأة", 403);
         const payload = await body(req);
-        console.error("Bonus request payload", {
+        console.info("Bonus mutation requested", {
           operation: "reject",
           id,
-          payload,
+          actorId: auth.id,
         });
         const reason = String(payload?.reason || "").trim();
         if (!reason) return error("سبب الرفض مطلوب", 400);
@@ -27533,9 +25506,9 @@ async function handleHrAdmin(
         if (!hasPermission(auth, "bonus_create") && !adminOnly())
           return error("ليس لديك صلاحية إنشاء المكافأة", 403);
         const payload = await body(req);
-        console.error("Bonus request payload", {
+        console.info("Bonus mutation requested", {
           operation: "create",
-          payload,
+          actorId: auth.id,
         });
         const event = await createBonus(payload, actor);
         void logAdminActivity(
@@ -31200,46 +29173,7 @@ let custodyGroupTablesPromise: Promise<void> | null = null;
 async function ensureCustodyGroupTables() {
   if (!custodyGroupTablesPromise)
     custodyGroupTablesPromise = db
-      .execute(
-        sql`
-    create table if not exists employee_custody_groups (
-      id serial primary key, name text not null, staff_id integer not null references staff(id) on delete restrict,
-      department text, group_type varchar(40) not null default 'general', description text,
-      status varchar(20) not null default 'active', last_inspection_date date, next_inspection_date date,
-      notes text, created_by integer references staff(id) on delete set null,
-      created_at timestamp not null default now(), updated_at timestamp not null default now()
-    );
-    create table if not exists employee_custody_group_assets (
-      id serial primary key, group_id integer not null references employee_custody_groups(id) on delete cascade,
-      product_id integer not null references products(id) on delete restrict, is_active boolean not null default true,
-      added_by integer references staff(id) on delete set null, added_at timestamp not null default now(),
-      removed_at timestamp, notes text, unique(group_id, product_id)
-    );
-    create unique index if not exists employee_custody_active_asset_unique
-      on employee_custody_group_assets(product_id) where is_active;
-    create index if not exists employee_custody_group_assets_group_idx on employee_custody_group_assets(group_id,is_active);
-    create table if not exists employee_custody_reservations (
-      id serial primary key, group_id integer not null references employee_custody_groups(id) on delete restrict,
-      product_id integer not null references products(id) on delete restrict, staff_id integer not null references staff(id) on delete restrict,
-      booking_type varchar(20) not null, booking_id integer not null, start_at timestamp not null, end_at timestamp not null,
-      status varchar(24) not null default 'reserved', checkout_at timestamp, returned_at timestamp,
-      depreciation_applied_at timestamp, condition_out varchar(20), condition_in varchar(20),
-      damage_reason text, damage_photo_url text, signature_url text, created_by integer references staff(id) on delete set null,
-      created_at timestamp not null default now(), updated_at timestamp not null default now(),
-      unique(booking_type,booking_id,product_id)
-    );
-    create index if not exists employee_custody_reservations_product_time_idx on employee_custody_reservations(product_id,start_at,end_at);
-    create index if not exists employee_custody_reservations_booking_idx on employee_custody_reservations(booking_type,booking_id,status);
-    create table if not exists employee_custody_audit (
-      id serial primary key, group_id integer references employee_custody_groups(id) on delete set null,
-      product_id integer references products(id) on delete set null, staff_id integer references staff(id) on delete set null,
-      booking_type varchar(20), booking_id integer, action varchar(50) not null,
-      previous_value jsonb not null default '{}'::jsonb, new_value jsonb not null default '{}'::jsonb,
-      actor_id integer references staff(id) on delete set null, actor_name text not null default '', created_at timestamp not null default now()
-    );
-    create index if not exists employee_custody_audit_group_idx on employee_custody_audit(group_id,created_at desc);
-  `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((error) => {
         custodyGroupTablesPromise = null;
@@ -32087,17 +30021,15 @@ async function handleBookingOperations(
           ),
         });
         if (!existing)
-          await db
-            .insert(equipmentCustodyTable)
-            .values({
-              productId: Number(row.product_id),
-              staffId: Number(row.staff_id),
-              quantity: 1,
-              status: "issued",
-              issuedBy: auth.id,
-              signatureUrl: nullableText(detail.signatureUrl),
-              notes: `حجز ${reference.entityType} #${reference.id} · مجموعة عهدة ${row.group_name}`,
-            });
+          await db.insert(equipmentCustodyTable).values({
+            productId: Number(row.product_id),
+            staffId: Number(row.staff_id),
+            quantity: 1,
+            status: "issued",
+            issuedBy: auth.id,
+            signatureUrl: nullableText(detail.signatureUrl),
+            notes: `حجز ${reference.entityType} #${reference.id} · مجموعة عهدة ${row.group_name}`,
+          });
         await db.execute(
           sql`update employee_custody_reservations set status='checked_out',checkout_at=now(),condition_out=${detail.conditionOut ?? "good"},signature_url=${nullableText(detail.signatureUrl)},updated_at=now() where id=${row.id}`,
         );
@@ -33067,17 +30999,7 @@ let soundCenterIndexesPromise: Promise<void> | null = null;
 async function ensureSoundCenterIndexes() {
   if (!soundCenterIndexesPromise) {
     soundCenterIndexesPromise = db
-      .execute(
-        sql`
-      create index if not exists service_orders_sound_source_ref_idx
-        on service_orders ((custom_fields ->> 'externalReference'))
-        where custom_fields ->> 'bookingType' = 'sound';
-      create index if not exists service_orders_sound_booking_type_idx
-        on service_orders ((custom_fields ->> 'bookingType'), created_at desc);
-      create index if not exists service_orders_tracking_phone_idx
-        on service_orders (tracking_code, phone);
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         soundCenterIndexesPromise = null;
@@ -33298,13 +31220,11 @@ async function handleSoundCenter(
         { serviceId: soundService.id, ...values },
         { executor: tx, skipCustomerSync: true },
       );
-      await tx
-        .insert(serviceOrderStatusHistoryTable)
-        .values({
-          serviceOrderId: booking.id,
-          status: booking.status,
-          notes: `إنشاء تلقائي من ${input.sourceType}:${sourceId}`,
-        });
+      await tx.insert(serviceOrderStatusHistoryTable).values({
+        serviceOrderId: booking.id,
+        status: booking.status,
+        notes: `إنشاء تلقائي من ${input.sourceType}:${sourceId}`,
+      });
       return { booking, created: true };
     });
     await addEntityTimeline({
@@ -34005,57 +31925,7 @@ async function ensureAssetSalesTables() {
   if (!assetSalesTablesReady) {
     assetSalesTablesReady = (async () => {
       await ensureMasterCashBoxTables();
-      await db.execute(sql`
-        CREATE TABLE IF NOT EXISTS "asset_sales" (
-          "id" serial PRIMARY KEY,
-          "sale_no" varchar(50) NOT NULL,
-          "product_id" integer NOT NULL REFERENCES "products"("id") ON DELETE RESTRICT,
-          "customer_id" integer REFERENCES "customers"("id") ON DELETE SET NULL,
-          "buyer_name" text NOT NULL,
-          "buyer_phone" varchar(30),
-          "sale_date" date NOT NULL,
-          "purchase_cost" numeric(16,2) NOT NULL,
-          "book_value" numeric(16,2) NOT NULL,
-          "accumulated_depreciation" numeric(16,2) NOT NULL,
-          "market_value" numeric(16,2),
-          "sale_price" numeric(16,2) NOT NULL,
-          "paid_amount" numeric(16,2) NOT NULL DEFAULT 0,
-          "receivable_amount" numeric(16,2) NOT NULL DEFAULT 0,
-          "profit_amount" numeric(16,2) NOT NULL DEFAULT 0,
-          "loss_amount" numeric(16,2) NOT NULL DEFAULT 0,
-          "payment_method" varchar(20) NOT NULL,
-          "collection_method" varchar(20),
-          "financial_account_id" integer REFERENCES "financial_accounts"("id") ON DELETE RESTRICT,
-          "payment_status" varchar(20) NOT NULL DEFAULT 'paid',
-          "invoice_number" varchar(120),
-          "reason" text NOT NULL,
-          "notes" text,
-          "disposal_reference" varchar(80) NOT NULL,
-          "accounting_reference" varchar(80),
-          "financial_transaction_id" integer REFERENCES "financial_transactions"("id") ON DELETE RESTRICT,
-          "sold_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-          "sold_by_name" text NOT NULL DEFAULT '',
-          "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
-          "created_at" timestamp NOT NULL DEFAULT now(),
-          "updated_at" timestamp NOT NULL DEFAULT now()
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS "asset_sales_sale_no_idx" ON "asset_sales" ("sale_no");
-        CREATE UNIQUE INDEX IF NOT EXISTS "asset_sales_product_idx" ON "asset_sales" ("product_id");
-        CREATE INDEX IF NOT EXISTS "asset_sales_date_idx" ON "asset_sales" ("sale_date");
-        CREATE INDEX IF NOT EXISTS "asset_sales_buyer_idx" ON "asset_sales" ("buyer_phone");
-        CREATE INDEX IF NOT EXISTS "asset_sales_account_idx" ON "asset_sales" ("financial_account_id");
-        CREATE OR REPLACE FUNCTION ajn_prevent_asset_sale_delete() RETURNS trigger AS $immutable$
-        BEGIN
-          RAISE EXCEPTION 'Asset sale records are immutable and cannot be deleted';
-        END;
-        $immutable$ LANGUAGE plpgsql;
-        DO $triggers$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'asset_sales_no_delete') THEN
-            CREATE TRIGGER asset_sales_no_delete BEFORE DELETE ON asset_sales
-            FOR EACH ROW EXECUTE FUNCTION ajn_prevent_asset_sale_delete();
-          END IF;
-        END $triggers$;
-      `);
+      await db.execute(sql`select 1`);
       for (const [code, nameAr, accountType] of [
         ["1010", "الحساب البنكي الرئيسي", "asset"],
         ["1500", "الأصول الثابتة", "asset"],
@@ -34706,15 +32576,13 @@ async function handleAssetSales(
         .set(profileValues)
         .where(eq(assetProfilesTable.id, context.profile.id));
     else
-      await tx
-        .insert(assetProfilesTable)
-        .values({
-          productId: productId!,
-          purchasePrice: String(context.purchaseCost),
-          currentValue: String(context.bookValue),
-          status: "sold",
-          notes: profileValues.notes,
-        });
+      await tx.insert(assetProfilesTable).values({
+        productId: productId!,
+        purchasePrice: String(context.purchaseCost),
+        currentValue: String(context.bookValue),
+        status: "sold",
+        notes: profileValues.notes,
+      });
     const saleMetadata = {
       ...assetMetadataObject(context.passport?.metadata),
       depreciationPaused: true,
@@ -35081,29 +32949,7 @@ let bouquetDesignerTablesPromise: Promise<void> | null = null;
 async function ensureBouquetDesignerTables() {
   if (!bouquetDesignerTablesPromise) {
     bouquetDesignerTablesPromise = db
-      .execute(
-        sql`
-      alter table products add column if not exists preview_position jsonb;
-      alter table products add column if not exists accessory_type varchar(60);
-      alter table products add column if not exists maximum_quantity_per_bouquet integer;
-      create table if not exists bouquet_templates (
-        id serial primary key, name text not null, description text, product_id integer references products(id) on delete set null,
-        preview_asset_url text, configuration jsonb not null default '{}'::jsonb, default_colors jsonb not null default '{}'::jsonb,
-        is_default boolean not null default false, is_active boolean not null default true, archived_at timestamp,
-        display_order integer not null default 0, created_at timestamp not null default now(), updated_at timestamp not null default now()
-      );
-      create table if not exists bouquet_template_items (
-        id serial primary key, template_id integer not null references bouquet_templates(id) on delete cascade,
-        product_id integer not null references products(id) on delete restrict, quantity integer not null default 1,
-        role varchar(32) not null default 'FLOWER', position jsonb not null default '{}'::jsonb,
-        display_order integer not null default 0, created_at timestamp not null default now()
-      );
-      create table if not exists bouquet_preview_settings (
-        id serial primary key, default_template_id integer references bouquet_templates(id) on delete set null,
-        background_url text, settings jsonb not null default '{}'::jsonb, updated_by integer, updated_at timestamp not null default now()
-      );
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         bouquetDesignerTablesPromise = null;
@@ -35525,11 +33371,16 @@ async function handleBouquetDesignerAdmin(req: NextRequest, parts: string[]) {
 
 function remotePrintFailure(errorValue: unknown): NextResponse {
   if (errorValue instanceof RemotePrintError)
-    return error(errorValue.message, errorValue.status, { code: errorValue.code });
+    return error(errorValue.message, errorValue.status, {
+      code: errorValue.code,
+    });
   console.error("remote printing API failed", {
     message: errorValue instanceof Error ? errorValue.message : "unknown error",
   });
-  return error("تعذر إكمال مهمة الطباعة. حاول مرة أخرى.", 500, { code: "DATABASE_ERROR", retryable: true });
+  return error("تعذر إكمال مهمة الطباعة. حاول مرة أخرى.", 500, {
+    code: "DATABASE_ERROR",
+    retryable: true,
+  });
 }
 
 function positiveRouteId(value: string | undefined) {
@@ -35545,11 +33396,24 @@ function printIdempotencyKey(req: NextRequest) {
 async function handlePrintAgentApi(req: NextRequest, parts: string[]) {
   try {
     const action = parts[1];
-    const rateKey = action === "register"
-      ? `register:${ip(req)}`
-      : `agent:${createHash("sha256").update(req.headers.get("x-ajn-print-agent-token") ?? "").digest("hex").slice(0, 24)}`;
-    if (!checkRateLimit(printAgentRequestsByCredential, rateKey, action === "register" ? 12 : 180, 60_000))
-      return error("محاولات كثيرة من جهاز الطباعة، حاول لاحقاً.", 429, { code: "RATE_LIMITED", retryable: true });
+    const rateKey =
+      action === "register"
+        ? `register:${ip(req)}`
+        : `agent:${createHash("sha256")
+            .update(req.headers.get("x-ajn-print-agent-token") ?? "")
+            .digest("hex")
+            .slice(0, 24)}`;
+    const printAgentLimit = await consumeRateLimit({
+      action: `print-agent-${action || "unknown"}`,
+      keyParts: [rateKey],
+      limit: action === "register" ? 12 : 180,
+      windowMs: 60_000,
+    });
+    if (!printAgentLimit.allowed)
+      return rateLimitError(
+        printAgentLimit,
+        "محاولات كثيرة من جهاز الطباعة، حاول لاحقاً.",
+      );
     if (action === "register" && req.method === "POST") {
       const data = await body(req);
       const registered = await registerPrintAgent({
@@ -35559,33 +33423,70 @@ async function handlePrintAgentApi(req: NextRequest, parts: string[]) {
         appVersion: data?.appVersion,
         printers: data?.printers,
       });
-      return json({
-        agent: { id: registered.agent.id, agentId: registered.agent.agentId, name: registered.agent.name, branchId: registered.agent.branchId },
-        // Returned once during registration. The server stores only its SHA-256 hash.
-        agentToken: registered.agentToken,
-      }, 201);
+      return json(
+        {
+          agent: {
+            id: registered.agent.id,
+            agentId: registered.agent.agentId,
+            name: registered.agent.name,
+            branchId: registered.agent.branchId,
+          },
+          // Returned once during registration. The server stores only its SHA-256 hash.
+          agentToken: registered.agentToken,
+        },
+        201,
+      );
     }
 
-    const agent = await authenticatePrintAgent(req.headers.get("x-ajn-print-agent-token"));
+    const agent = await authenticatePrintAgent(
+      req.headers.get("x-ajn-print-agent-token"),
+    );
     if (action === "heartbeat" && req.method === "POST") {
       const data = await body(req);
-      const updated = await heartbeatPrintAgent(agent.id, { hostname: data?.hostname, appVersion: data?.appVersion, printers: data?.printers });
-      return json({ agent: { id: updated.id, status: updated.status, lastSeenAt: updated.lastSeenAt } });
+      const updated = await heartbeatPrintAgent(agent.id, {
+        hostname: data?.hostname,
+        appVersion: data?.appVersion,
+        printers: data?.printers,
+      });
+      return json({
+        agent: {
+          id: updated.id,
+          status: updated.status,
+          lastSeenAt: updated.lastSeenAt,
+        },
+      });
     }
     if (action === "jobs" && req.method === "GET") {
       const jobs = await listAgentJobs(agent.id);
-      return json({ jobs: jobs.map((job) => ({ id: job.id, jobNo: job.jobNo, status: job.status, paperSize: job.paperSize, copies: job.copies, payload: job.payload })) });
+      return json({
+        jobs: jobs.map((job) => ({
+          id: job.id,
+          jobNo: job.jobNo,
+          status: job.status,
+          paperSize: job.paperSize,
+          copies: job.copies,
+          payload: job.payload,
+        })),
+      });
     }
     if (action === "jobs") {
       const jobId = positiveRouteId(parts[2]);
       const jobAction = parts[3];
-      if (!jobId) return error("معرّف مهمة الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
-      if (jobAction === "claim" && req.method === "POST") return json({ job: await claimPrintJob(agent.id, jobId) });
-      if (jobAction === "printing" && req.method === "POST") return json({ job: await markPrintJobPrinting(agent.id, jobId) });
-      if (jobAction === "complete" && req.method === "POST") return json({ job: await completePrintJob(agent.id, jobId) });
+      if (!jobId)
+        return error("معرّف مهمة الطباعة غير صالح.", 400, {
+          code: "VALIDATION_ERROR",
+        });
+      if (jobAction === "claim" && req.method === "POST")
+        return json({ job: await claimPrintJob(agent.id, jobId) });
+      if (jobAction === "printing" && req.method === "POST")
+        return json({ job: await markPrintJobPrinting(agent.id, jobId) });
+      if (jobAction === "complete" && req.method === "POST")
+        return json({ job: await completePrintJob(agent.id, jobId) });
       if (jobAction === "fail" && req.method === "POST") {
         const data = await body(req);
-        return json({ job: await failPrintJob(agent.id, jobId, data?.errorMessage) });
+        return json({
+          job: await failPrintJob(agent.id, jobId, data?.errorMessage),
+        });
       }
     }
     return error("مسار جهاز الطباعة غير موجود.", 404, { code: "NOT_FOUND" });
@@ -35594,114 +33495,257 @@ async function handlePrintAgentApi(req: NextRequest, parts: string[]) {
   }
 }
 
-async function handleRemotePrintingAdmin(req: NextRequest, parts: string[], section: string | undefined) {
+async function handleRemotePrintingAdmin(
+  req: NextRequest,
+  parts: string[],
+  section: string | undefined,
+) {
   try {
     const method = req.method;
     if (section === "print-jobs") {
       const isWrite = method !== "GET";
       const isSalesInvoicePrintRequest = method === "POST" && !parts[2];
-      const isSalesInvoicePrintStatusRequest = method === "GET" && parts[3] === "status";
+      const isSalesInvoicePrintStatusRequest =
+        method === "GET" && parts[3] === "status";
       const permission = isSalesInvoicePrintRequest
         ? "print.sales_invoice"
         : parts[3] === "status"
           ? "print.sales_invoice"
-        : parts[3] === "reprint"
-          ? "print.reprint"
-          : isWrite
-            ? "print.queue.manage"
-            : "print.queue.view";
-      const auth = isSalesInvoicePrintRequest || isSalesInvoicePrintStatusRequest
-        ? await requireSalesInvoicePrintPermission(req)
-        : await requirePermission(req, permission as Permission);
+          : parts[3] === "reprint"
+            ? "print.reprint"
+            : isWrite
+              ? "print.queue.manage"
+              : "print.queue.view";
+      const auth =
+        isSalesInvoicePrintRequest || isSalesInvoicePrintStatusRequest
+          ? await requireSalesInvoicePrintPermission(req)
+          : await requirePermission(req, permission as Permission);
       if (isResponse(auth)) return auth;
       const jobId = positiveRouteId(parts[2]);
       if (method === "GET" && !jobId) {
-        const jobs = await listPrintJobs({ status: req.nextUrl.searchParams.get("status"), limit: req.nextUrl.searchParams.get("limit") });
+        const jobs = await listPrintJobs({
+          status: req.nextUrl.searchParams.get("status"),
+          limit: req.nextUrl.searchParams.get("limit"),
+        });
         return json({ jobs });
       }
       if (method === "GET" && jobId && parts[3] === "status") {
         const job = await getPrintJob(jobId);
-        if (!job) return error("مهمة الطباعة غير موجودة.", 404, { code: "NOT_FOUND" });
-        if (!hasPermission(auth, "print.queue.view") && job.requestedBy !== auth.id)
-          return error("لا تملك صلاحية عرض هذه المهمة.", 403, { code: "PERMISSION_DENIED" });
-        return json({ job: { id: job.id, jobNo: job.jobNo, status: job.status, errorMessage: job.errorMessage, retryCount: job.retryCount, completedAt: job.completedAt } });
+        if (!job)
+          return error("مهمة الطباعة غير موجودة.", 404, { code: "NOT_FOUND" });
+        if (
+          !hasPermission(auth, "print.queue.view") &&
+          job.requestedBy !== auth.id
+        )
+          return error("لا تملك صلاحية عرض هذه المهمة.", 403, {
+            code: "PERMISSION_DENIED",
+          });
+        return json({
+          job: {
+            id: job.id,
+            jobNo: job.jobNo,
+            status: job.status,
+            errorMessage: job.errorMessage,
+            retryCount: job.retryCount,
+            completedAt: job.completedAt,
+          },
+        });
       }
       if (method === "POST" && !jobId) {
         // Printing remains server-authorized; the mobile action sheet never
         // grants access by itself.
-        if (!canPrintSalesInvoice(auth)) return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
+        if (!canPrintSalesInvoice(auth))
+          return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, {
+            code: "PERMISSION_DENIED",
+          });
         const idempotencyKey = printIdempotencyKey(req);
-        if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب للطباعة المباشرة.", 400, { code: "VALIDATION_ERROR" });
+        if (!idempotencyKey)
+          return error("مفتاح منع التكرار مطلوب للطباعة المباشرة.", 400, {
+            code: "VALIDATION_ERROR",
+          });
         const data = await body(req);
         const result = await enqueueSalesInvoicePrint({
-          actor: auth, invoiceId: data?.invoiceId, printerId: data?.printerId, branchId: data?.branchId,
-          paperSize: data?.paperSize, orientation: data?.orientation, customWidthMm: data?.customWidthMm, customHeightMm: data?.customHeightMm, copies: data?.copies, idempotencyKey,
+          actor: auth,
+          invoiceId: data?.invoiceId,
+          printerId: data?.printerId,
+          branchId: data?.branchId,
+          paperSize: data?.paperSize,
+          orientation: data?.orientation,
+          customWidthMm: data?.customWidthMm,
+          customHeightMm: data?.customHeightMm,
+          copies: data?.copies,
+          idempotencyKey,
         });
-        void logAdminActivity(req, result.duplicate ? "print_job_duplicate_request" : "print_job_created", "sales_invoice", Number(data?.invoiceId), { jobId: result.job.id, jobNo: result.job.jobNo, printerId: result.job.printerId, copies: result.job.copies });
-        return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+        void logAdminActivity(
+          req,
+          result.duplicate
+            ? "print_job_duplicate_request"
+            : "print_job_created",
+          "sales_invoice",
+          Number(data?.invoiceId),
+          {
+            jobId: result.job.id,
+            jobNo: result.job.jobNo,
+            printerId: result.job.printerId,
+            copies: result.job.copies,
+          },
+        );
+        return json(
+          { job: result.job, duplicate: result.duplicate },
+          result.duplicate ? 200 : 201,
+        );
       }
-      if (!jobId) return error("معرّف مهمة الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
+      if (!jobId)
+        return error("معرّف مهمة الطباعة غير صالح.", 400, {
+          code: "VALIDATION_ERROR",
+        });
       if (method === "POST" && parts[3] === "retry") {
         const job = await retryPrintJob(jobId);
-        void logAdminActivity(req, "print_job_retried", "print_job", job.id, { jobNo: job.jobNo });
+        void logAdminActivity(req, "print_job_retried", "print_job", job.id, {
+          jobNo: job.jobNo,
+        });
         return json({ job });
       }
       if (method === "POST" && parts[3] === "cancel") {
         const job = await cancelPrintJob(jobId);
-        void logAdminActivity(req, "print_job_cancelled", "print_job", job.id, { jobNo: job.jobNo });
+        void logAdminActivity(req, "print_job_cancelled", "print_job", job.id, {
+          jobNo: job.jobNo,
+        });
         return json({ job });
       }
       if (method === "POST" && parts[3] === "reprint") {
         const original = await getPrintJob(jobId);
-        if (!original || original.documentType !== "sales_invoice" || !original.invoiceId) return error("مهمة الطباعة الأصلية غير موجودة.", 404, { code: "NOT_FOUND" });
+        if (
+          !original ||
+          original.documentType !== "sales_invoice" ||
+          !original.invoiceId
+        )
+          return error("مهمة الطباعة الأصلية غير موجودة.", 404, {
+            code: "NOT_FOUND",
+          });
         const data = await body(req);
-        const reason = typeof data?.reason === "string" ? data.reason.trim() : "";
-        if (reason.length < 3) return error("سبب إعادة الطباعة مطلوب.", 400, { code: "VALIDATION_ERROR" });
+        const reason =
+          typeof data?.reason === "string" ? data.reason.trim() : "";
+        if (reason.length < 3)
+          return error("سبب إعادة الطباعة مطلوب.", 400, {
+            code: "VALIDATION_ERROR",
+          });
         const idempotencyKey = printIdempotencyKey(req);
-        if (!idempotencyKey) return error("مفتاح منع التكرار مطلوب لإعادة الطباعة.", 400, { code: "VALIDATION_ERROR" });
-        const result = await enqueueSalesInvoicePrint({ actor: auth, invoiceId: original.invoiceId, printerId: data?.printerId ?? original.printerId, paperSize: data?.paperSize ?? original.paperSize, orientation: data?.orientation, customWidthMm: data?.customWidthMm, customHeightMm: data?.customHeightMm, copies: data?.copies ?? original.copies, idempotencyKey, originalJobId: original.id, reprintReason: reason });
-        void logAdminActivity(req, "print_job_reprinted", "print_job", result.job.id, { originalPrintJobId: original.id, reason });
-        return json({ job: result.job, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
+        if (!idempotencyKey)
+          return error("مفتاح منع التكرار مطلوب لإعادة الطباعة.", 400, {
+            code: "VALIDATION_ERROR",
+          });
+        const result = await enqueueSalesInvoicePrint({
+          actor: auth,
+          invoiceId: original.invoiceId,
+          printerId: data?.printerId ?? original.printerId,
+          paperSize: data?.paperSize ?? original.paperSize,
+          orientation: data?.orientation,
+          customWidthMm: data?.customWidthMm,
+          customHeightMm: data?.customHeightMm,
+          copies: data?.copies ?? original.copies,
+          idempotencyKey,
+          originalJobId: original.id,
+          reprintReason: reason,
+        });
+        void logAdminActivity(
+          req,
+          "print_job_reprinted",
+          "print_job",
+          result.job.id,
+          { originalPrintJobId: original.id, reason },
+        );
+        return json(
+          { job: result.job, duplicate: result.duplicate },
+          result.duplicate ? 200 : 201,
+        );
       }
     }
     if (section === "print-agents") {
       const auth = await requirePermission(req, "print.agents.manage");
       if (isResponse(auth)) return auth;
       const agentId = positiveRouteId(parts[2]);
-      if (method === "GET" && !agentId) return json({ agents: await listPrintAgents() });
+      if (method === "GET" && !agentId)
+        return json({ agents: await listPrintAgents() });
       if (method === "POST" && !agentId) {
         const data = await body(req);
-        const result = await createPrintAgent({ name: data?.name, agentId: data?.agentId, branchId: data?.branchId, actorId: auth.id });
-        void logAdminActivity(req, "print_agent_created", "print_agent", result.agent.id, { agentId: result.agent.agentId, branchId: result.agent.branchId });
-        return json({ agent: result.agent, registrationToken: result.registrationToken }, 201);
+        const result = await createPrintAgent({
+          name: data?.name,
+          agentId: data?.agentId,
+          branchId: data?.branchId,
+          actorId: auth.id,
+        });
+        void logAdminActivity(
+          req,
+          "print_agent_created",
+          "print_agent",
+          result.agent.id,
+          { agentId: result.agent.agentId, branchId: result.agent.branchId },
+        );
+        return json(
+          { agent: result.agent, registrationToken: result.registrationToken },
+          201,
+        );
       }
-      if (!agentId) return error("معرّف جهاز الطباعة غير صالح.", 400, { code: "VALIDATION_ERROR" });
+      if (!agentId)
+        return error("معرّف جهاز الطباعة غير صالح.", 400, {
+          code: "VALIDATION_ERROR",
+        });
       if (method === "PATCH") {
-        const data = await body(req); const agent = await updatePrintAgent(agentId, data ?? {});
-        void logAdminActivity(req, "print_agent_updated", "print_agent", agent.id, { status: agent.status, branchId: agent.branchId });
+        const data = await body(req);
+        const agent = await updatePrintAgent(agentId, data ?? {});
+        void logAdminActivity(
+          req,
+          "print_agent_updated",
+          "print_agent",
+          agent.id,
+          { status: agent.status, branchId: agent.branchId },
+        );
         return json({ agent });
       }
       if (method === "POST" && parts[3] === "rotate-token") {
         const result = await rotatePrintAgentCredential(agentId);
-        void logAdminActivity(req, "print_agent_token_rotated", "print_agent", agentId);
+        void logAdminActivity(
+          req,
+          "print_agent_token_rotated",
+          "print_agent",
+          agentId,
+        );
         return json({ agent: result.agent, agentToken: result.agentToken });
       }
     }
     if (section === "printers") {
-      const auth = method === "GET"
-        ? await (async () => {
-            const user = await getAdminUser(req);
-            if (!user) return error("غير مخول", 401);
-            if (!canPrintSalesInvoice(user) && !hasPermission(user, "print.printers.manage"))
-              return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, { code: "PERMISSION_DENIED" });
-            return user;
-          })()
-        : await requirePermission(req, "print.printers.manage");
+      const auth =
+        method === "GET"
+          ? await (async () => {
+              const user = await getAdminUser(req);
+              if (!user) return error("غير مخول", 401);
+              if (
+                !canPrintSalesInvoice(user) &&
+                !hasPermission(user, "print.printers.manage")
+              )
+                return error("لا تملك صلاحية طباعة فواتير المبيعات.", 403, {
+                  code: "PERMISSION_DENIED",
+                });
+              return user;
+            })()
+          : await requirePermission(req, "print.printers.manage");
       if (isResponse(auth)) return auth;
       if (method === "GET") return json({ printers: await listPrinters() });
       if (method === "POST" || method === "PATCH") {
-        const data = await body(req); const saved = await savePrinter(data ?? {});
-        void logAdminActivity(req, "print_printer_saved", "printer", saved.printer.id, { agentId: saved.printer.agentId, name: saved.printer.name, operation: saved.operation });
+        const data = await body(req);
+        const saved = await savePrinter(data ?? {});
+        void logAdminActivity(
+          req,
+          "print_printer_saved",
+          "printer",
+          saved.printer.id,
+          {
+            agentId: saved.printer.agentId,
+            name: saved.printer.name,
+            operation: saved.operation,
+          },
+        );
         return json(saved, 200);
       }
     }
@@ -35724,36 +33768,58 @@ const productBundleWriteSchema = z.object({
   endsAt: z.string().datetime().nullable().optional(),
   showInStore: z.boolean().default(false),
   showInSalesInvoices: z.boolean().default(true),
-  items: z.array(z.object({ productId: z.coerce.number().int().positive(), quantity: z.coerce.number().finite().positive().max(1_000_000) })).min(1).max(200),
+  items: z
+    .array(
+      z.object({
+        productId: z.coerce.number().int().positive(),
+        quantity: z.coerce.number().finite().positive().max(1_000_000),
+      }),
+    )
+    .min(1)
+    .max(200),
 });
 
 let productBundleDeliveryFeeMigrated = false;
 async function ensureProductBundleDeliveryFeeColumns() {
   if (productBundleDeliveryFeeMigrated) return;
-  await db.execute(sql`
-    ALTER TABLE product_bundles
-      ADD COLUMN IF NOT EXISTS delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0;
-    ALTER TABLE sales_invoice_bundle_snapshots
-      ADD COLUMN IF NOT EXISTS delivery_fee_per_bundle NUMERIC(14,2) NOT NULL DEFAULT 0;
-    ALTER TABLE sales_invoices
-      ADD COLUMN IF NOT EXISTS offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0;
-  `);
+  await db.execute(sql`select 1`);
   productBundleDeliveryFeeMigrated = true;
 }
 
 async function productBundleAvailability(rows: any[]) {
-  const productIds = [...new Set(rows.flatMap((bundle) => (bundle.items ?? []).map((item: any) => Number(item.productId))).filter(Boolean))];
-  if (!productIds.length) return rows.map((bundle) => ({ ...bundle, availableQuantity: 0 }));
-  const ownerIds = await stockOwnerProductIdsInTransaction(db as any, productIds);
+  const productIds = [
+    ...new Set(
+      rows
+        .flatMap((bundle) =>
+          (bundle.items ?? []).map((item: any) => Number(item.productId)),
+        )
+        .filter(Boolean),
+    ),
+  ];
+  if (!productIds.length)
+    return rows.map((bundle) => ({ ...bundle, availableQuantity: 0 }));
+  const ownerIds = await stockOwnerProductIdsInTransaction(
+    db as any,
+    productIds,
+  );
   const owners = [...new Set([...ownerIds.values()])];
-  const stocks = await db.select({ id: productsTable.id, stock: productsTable.stock }).from(productsTable).where(inArray(productsTable.id, owners));
+  const stocks = await db
+    .select({ id: productsTable.id, stock: productsTable.stock })
+    .from(productsTable)
+    .where(inArray(productsTable.id, owners));
   const stockByOwner = new Map(stocks.map((row) => [row.id, money(row.stock)]));
   return rows.map((bundle) => {
     const capacities = (bundle.items ?? []).map((item: any) => {
-      const owner = ownerIds.get(Number(item.productId)) ?? Number(item.productId);
+      const owner =
+        ownerIds.get(Number(item.productId)) ?? Number(item.productId);
       return Math.floor((stockByOwner.get(owner) ?? 0) / money(item.quantity));
     });
-    return { ...bundle, availableQuantity: capacities.length ? Math.max(0, Math.min(...capacities)) : 0 };
+    return {
+      ...bundle,
+      availableQuantity: capacities.length
+        ? Math.max(0, Math.min(...capacities))
+        : 0,
+    };
   });
 }
 
@@ -35763,16 +33829,34 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
   await ensureProductBundleDeliveryFeeColumns();
   const id = int(parts[2]);
   if (req.method === "PATCH" && id && parts[3] === "status") {
-    const parsed = z.object({ isActive: z.boolean() }).safeParse(await body(req));
-    if (!parsed.success) return validationError("product-bundle.status", parsed);
+    const parsed = z
+      .object({ isActive: z.boolean() })
+      .safeParse(await body(req));
+    if (!parsed.success)
+      return validationError("product-bundle.status", parsed);
     const [bundle] = await db
       .update(productBundlesTable)
       .set({ isActive: parsed.data.isActive, updatedAt: new Date() })
-      .where(and(eq(productBundlesTable.id, id), isNull(productBundlesTable.archivedAt)))
+      .where(
+        and(
+          eq(productBundlesTable.id, id),
+          isNull(productBundlesTable.archivedAt),
+        ),
+      )
       .returning();
     if (!bundle) return error("العرض غير موجود أو مؤرشف", 404);
-    void logAdminActivity(req, parsed.data.isActive ? "product_bundle_activated" : "product_bundle_deactivated", "product_bundle", id);
-    return json({ bundle, operation: parsed.data.isActive ? "activated" : "deactivated" });
+    void logAdminActivity(
+      req,
+      parsed.data.isActive
+        ? "product_bundle_activated"
+        : "product_bundle_deactivated",
+      "product_bundle",
+      id,
+    );
+    return json({
+      bundle,
+      operation: parsed.data.isActive ? "activated" : "deactivated",
+    });
   }
   if (req.method === "DELETE" && id) {
     const outcome = await db.transaction(async (tx) => {
@@ -35804,77 +33888,176 @@ async function handleProductBundles(req: NextRequest, parts: string[]) {
           .returning();
         return { bundle: archived, operation: "archived" as const };
       }
-      await tx.delete(productBundlesTable).where(eq(productBundlesTable.id, id));
+      await tx
+        .delete(productBundlesTable)
+        .where(eq(productBundlesTable.id, id));
       return { bundle, operation: "deleted" as const };
     });
-    void logAdminActivity(req, `product_bundle_${outcome.operation}`, "product_bundle", id);
+    void logAdminActivity(
+      req,
+      `product_bundle_${outcome.operation}`,
+      "product_bundle",
+      id,
+    );
     return json(outcome);
   }
   if (req.method === "GET") {
     const [bundles, items] = await Promise.all([
-      db.select().from(productBundlesTable).orderBy(desc(productBundlesTable.updatedAt)),
-      db.select({ bundleId: productBundleItemsTable.bundleId, productId: productBundleItemsTable.productId, quantity: productBundleItemsTable.quantity, productName: productsTable.name, productNameAr: productsTable.nameAr, stock: productsTable.stock, sharedStockProductId: productsTable.sharedStockProductId, costPrice: productsTable.costPrice }).from(productBundleItemsTable).innerJoin(productsTable, eq(productsTable.id, productBundleItemsTable.productId)),
+      db
+        .select()
+        .from(productBundlesTable)
+        .orderBy(desc(productBundlesTable.updatedAt)),
+      db
+        .select({
+          bundleId: productBundleItemsTable.bundleId,
+          productId: productBundleItemsTable.productId,
+          quantity: productBundleItemsTable.quantity,
+          productName: productsTable.name,
+          productNameAr: productsTable.nameAr,
+          stock: productsTable.stock,
+          sharedStockProductId: productsTable.sharedStockProductId,
+          costPrice: productsTable.costPrice,
+        })
+        .from(productBundleItemsTable)
+        .innerJoin(
+          productsTable,
+          eq(productsTable.id, productBundleItemsTable.productId),
+        ),
     ]);
     const itemsByBundle = new Map<number, any[]>();
     for (const item of items) {
       const list = itemsByBundle.get(item.bundleId) ?? [];
-      list.push(item); itemsByBundle.set(item.bundleId, list);
+      list.push(item);
+      itemsByBundle.set(item.bundleId, list);
     }
-    const rows = bundles.filter((bundle) => !id || bundle.id === id).map((bundle) => ({ ...bundle, items: itemsByBundle.get(bundle.id) ?? [] }));
+    const rows = bundles
+      .filter((bundle) => !id || bundle.id === id)
+      .map((bundle) => ({
+        ...bundle,
+        items: itemsByBundle.get(bundle.id) ?? [],
+      }));
     const hydrated = await productBundleAvailability(rows);
     return json(id ? (hydrated[0] ?? null) : { bundles: hydrated });
   }
-  if (req.method !== "POST" && req.method !== "PUT" && req.method !== "PATCH") return null;
+  if (req.method !== "POST" && req.method !== "PUT" && req.method !== "PATCH")
+    return null;
   const parsed = productBundleWriteSchema.safeParse(await body(req));
   if (!parsed.success) return validationError("product-bundle.save", parsed);
   const input = parsed.data;
-  if (input.startsAt && input.endsAt && new Date(input.startsAt) > new Date(input.endsAt))
+  if (
+    input.startsAt &&
+    input.endsAt &&
+    new Date(input.startsAt) > new Date(input.endsAt)
+  )
     return error("تاريخ بداية العرض يجب أن يسبق تاريخ انتهائه", 400);
   const productIds = input.items.map((item) => item.productId);
-  if (new Set(productIds).size !== productIds.length) return error("لا يمكن تكرار المنتج داخل العرض", 400);
-  const existingProducts = await db.select({ id: productsTable.id }).from(productsTable).where(inArray(productsTable.id, productIds));
-  if (existingProducts.length !== productIds.length) return error("أحد منتجات العرض غير موجود", 404);
+  if (new Set(productIds).size !== productIds.length)
+    return error("لا يمكن تكرار المنتج داخل العرض", 400);
+  const existingProducts = await db
+    .select({ id: productsTable.id })
+    .from(productsTable)
+    .where(inArray(productsTable.id, productIds));
+  if (existingProducts.length !== productIds.length)
+    return error("أحد منتجات العرض غير موجود", 404);
   try {
     const bundle = await db.transaction(async (tx) => {
       const values = {
-        name: input.name, description: input.description ?? null, image: input.image ?? null,
-        barcode: input.barcode || null, normalPrice: String(input.normalPrice), offerPrice: String(input.offerPrice),
+        name: input.name,
+        description: input.description ?? null,
+        image: input.image ?? null,
+        barcode: input.barcode || null,
+        normalPrice: String(input.normalPrice),
+        offerPrice: String(input.offerPrice),
         deliveryFee: String(input.deliveryFee),
-        isActive: input.isActive, startsAt: input.startsAt ? new Date(input.startsAt) : null,
-        endsAt: input.endsAt ? new Date(input.endsAt) : null, showInStore: input.showInStore,
-        showInSalesInvoices: input.showInSalesInvoices, updatedAt: new Date(),
+        isActive: input.isActive,
+        startsAt: input.startsAt ? new Date(input.startsAt) : null,
+        endsAt: input.endsAt ? new Date(input.endsAt) : null,
+        showInStore: input.showInStore,
+        showInSalesInvoices: input.showInSalesInvoices,
+        updatedAt: new Date(),
       };
       let saved: any;
       if (id) {
-        [saved] = await tx.update(productBundlesTable).set(values).where(and(eq(productBundlesTable.id, id), isNull(productBundlesTable.archivedAt))).returning();
+        [saved] = await tx
+          .update(productBundlesTable)
+          .set(values)
+          .where(
+            and(
+              eq(productBundlesTable.id, id),
+              isNull(productBundlesTable.archivedAt),
+            ),
+          )
+          .returning();
         if (!saved) throw new CheckoutError("العرض غير موجود", 404);
-        await tx.delete(productBundleItemsTable).where(eq(productBundleItemsTable.bundleId, id));
+        await tx
+          .delete(productBundleItemsTable)
+          .where(eq(productBundleItemsTable.bundleId, id));
       } else {
-        [saved] = await tx.insert(productBundlesTable).values(values).returning();
+        [saved] = await tx
+          .insert(productBundlesTable)
+          .values(values)
+          .returning();
       }
-      await tx.insert(productBundleItemsTable).values(input.items.map((item) => ({ bundleId: saved.id, productId: item.productId, quantity: String(item.quantity) })));
+      await tx.insert(productBundleItemsTable).values(
+        input.items.map((item) => ({
+          bundleId: saved.id,
+          productId: item.productId,
+          quantity: String(item.quantity),
+        })),
+      );
       return saved;
     });
-    void logAdminActivity(req, id ? "product_bundle_updated" : "product_bundle_created", "product_bundle", bundle.id, { componentCount: input.items.length });
-    return json({ bundle, operation: id ? "updated" : "created" }, id ? 200 : 201);
+    void logAdminActivity(
+      req,
+      id ? "product_bundle_updated" : "product_bundle_created",
+      "product_bundle",
+      bundle.id,
+      { componentCount: input.items.length },
+    );
+    return json(
+      { bundle, operation: id ? "updated" : "created" },
+      id ? 200 : 201,
+    );
   } catch (cause: any) {
-    if (cause instanceof CheckoutError) return error(cause.message, cause.status);
+    if (cause instanceof CheckoutError)
+      return error(cause.message, cause.status);
     if (cause?.code === "23505") return error("رمز العرض مستخدم مسبقاً", 409);
     throw cause;
   }
 }
 
 const KOSHAT_WORK_ORDER_STATUSES = [
-  "UNASSIGNED", "ASSIGNED", "ACCEPTED", "PREPARING", "WAREHOUSE_CHECKOUT",
-  "ON_THE_WAY", "ARRIVED", "INSTALLING", "READY", "EVENT_IN_PROGRESS",
-  "DISMANTLING", "RETURNING", "WAREHOUSE_RETURN", "COMPLETED", "CANCELLED", "REASSIGNED",
+  "UNASSIGNED",
+  "ASSIGNED",
+  "ACCEPTED",
+  "PREPARING",
+  "WAREHOUSE_CHECKOUT",
+  "ON_THE_WAY",
+  "ARRIVED",
+  "INSTALLING",
+  "READY",
+  "EVENT_IN_PROGRESS",
+  "DISMANTLING",
+  "RETURNING",
+  "WAREHOUSE_RETURN",
+  "COMPLETED",
+  "CANCELLED",
+  "REASSIGNED",
 ] as const;
 const KOSHAT_STATUS_TRANSITIONS: Record<string, string[]> = {
-  UNASSIGNED: ["ASSIGNED", "CANCELLED"], ASSIGNED: ["ACCEPTED", "REASSIGNED", "CANCELLED"],
-  ACCEPTED: ["PREPARING", "REASSIGNED", "CANCELLED"], PREPARING: ["WAREHOUSE_CHECKOUT", "REASSIGNED", "CANCELLED"],
-  WAREHOUSE_CHECKOUT: ["ON_THE_WAY"], ON_THE_WAY: ["ARRIVED"], ARRIVED: ["INSTALLING"],
-  INSTALLING: ["READY"], READY: ["EVENT_IN_PROGRESS", "DISMANTLING"], EVENT_IN_PROGRESS: ["DISMANTLING"],
-  DISMANTLING: ["RETURNING"], RETURNING: ["WAREHOUSE_RETURN"], WAREHOUSE_RETURN: ["COMPLETED"],
+  UNASSIGNED: ["ASSIGNED", "CANCELLED"],
+  ASSIGNED: ["ACCEPTED", "REASSIGNED", "CANCELLED"],
+  ACCEPTED: ["PREPARING", "REASSIGNED", "CANCELLED"],
+  PREPARING: ["WAREHOUSE_CHECKOUT", "REASSIGNED", "CANCELLED"],
+  WAREHOUSE_CHECKOUT: ["ON_THE_WAY"],
+  ON_THE_WAY: ["ARRIVED"],
+  ARRIVED: ["INSTALLING"],
+  INSTALLING: ["READY"],
+  READY: ["EVENT_IN_PROGRESS", "DISMANTLING"],
+  EVENT_IN_PROGRESS: ["DISMANTLING"],
+  DISMANTLING: ["RETURNING"],
+  RETURNING: ["WAREHOUSE_RETURN"],
+  WAREHOUSE_RETURN: ["COMPLETED"],
   REASSIGNED: ["ASSIGNED", "CANCELLED"],
 };
 
@@ -35883,14 +34066,21 @@ function koshatWorkOrderNumber(bookingId: number) {
 }
 
 async function recordKoshatWorkOrderEvent(input: {
-  workOrderId: number; actor: AdminUser; type: string; title: string; details?: string | null; metadata?: Record<string, unknown>;
+  workOrderId: number;
+  actor: AdminUser;
+  type: string;
+  title: string;
+  details?: string | null;
+  metadata?: Record<string, unknown>;
 }) {
   await db.execute(sql`insert into kosha_work_order_events (work_order_id, staff_id, staff_name, type, title, details, metadata)
     values (${input.workOrderId}, ${input.actor.id}, ${input.actor.fullName || input.actor.username}, ${input.type}, ${input.title}, ${input.details ?? null}, ${JSON.stringify(input.metadata ?? {})}::jsonb)`);
 }
 
 async function loadKoshatWorkOrder(id: number, viewerId?: number) {
-  const rows: any[] = ((await db.execute(sql`
+  const rows: any[] =
+    (
+      (await db.execute(sql`
     select wo.*, b.customer_name, b.phone, b.event_date, b.event_time, b.hall_location, b.area, b.notes as booking_notes,
       coalesce(k.name, b.package_name, 'كوشة') as kosha_name,
       leader.full_name as leader_name,
@@ -35903,52 +34093,112 @@ async function loadKoshatWorkOrder(id: number, viewerId?: number) {
     left join staff s on s.id = m.staff_id
     where wo.id = ${id}
     group by wo.id, b.id, k.name, leader.full_name
-  `)) as any).rows ?? [];
+  `)) as any
+    ).rows ?? [];
   const row = rows[0];
   if (!row) return null;
   const [events, checklist, assets] = await Promise.all([
-    db.execute(sql`select e.*, s.full_name as actor_name from kosha_work_order_events e left join staff s on s.id=e.staff_id where e.work_order_id=${id} order by e.created_at desc, e.id desc limit 100`),
-    db.execute(sql`select c.*, p.name, p.name_ar from kosha_work_order_checklist c left join products p on p.id=c.product_id where c.work_order_id=${id} order by c.sort_order, c.id`),
-    db.execute(sql`select a.*, p.name, p.name_ar, p.barcode from kosha_work_order_assets a join products p on p.id=a.product_id where a.work_order_id=${id} order by a.id`),
+    db.execute(
+      sql`select e.*, s.full_name as actor_name from kosha_work_order_events e left join staff s on s.id=e.staff_id where e.work_order_id=${id} order by e.created_at desc, e.id desc limit 100`,
+    ),
+    db.execute(
+      sql`select c.*, p.name, p.name_ar from kosha_work_order_checklist c left join products p on p.id=c.product_id where c.work_order_id=${id} order by c.sort_order, c.id`,
+    ),
+    db.execute(
+      sql`select a.*, p.name, p.name_ar, p.barcode from kosha_work_order_assets a join products p on p.id=a.product_id where a.work_order_id=${id} order by a.id`,
+    ),
   ]);
   const now = Date.now();
-  const arrival = row.required_arrival_at ? new Date(row.required_arrival_at).getTime() : null;
+  const arrival = row.required_arrival_at
+    ? new Date(row.required_arrival_at).getTime()
+    : null;
   return {
-    id: Number(row.id), workOrderNo: row.work_order_no, bookingId: Number(row.booking_id), status: row.status, priority: row.priority,
-    leaderId: row.leader_id ? Number(row.leader_id) : null, leaderName: row.leader_name ?? null,
-    customerName: row.customer_name, phone: row.phone, koshaName: row.kosha_name, eventDate: row.event_date, eventTime: row.event_time,
-    location: row.hall_location || row.area || null, bookingNotes: row.booking_notes || null,
-    requiredArrivalAt: row.required_arrival_at, eventStartAt: row.event_start_at, expectedDismantleAt: row.expected_dismantle_at,
-    specialInstructions: row.special_instructions, requireAcknowledgment: row.require_acknowledgment,
-    instructionsAcknowledgedAt: row.instructions_acknowledged_at, startedAt: row.started_at, arrivedAt: row.arrived_at, completedAt: row.completed_at,
-    members: row.members, events: ((events as any).rows ?? []), checklist: ((checklist as any).rows ?? []), assets: ((assets as any).rows ?? []),
-    isLate: Boolean(arrival && now > arrival && !["ON_THE_WAY", "ARRIVED", "INSTALLING", "READY", "EVENT_IN_PROGRESS", "DISMANTLING", "RETURNING", "WAREHOUSE_RETURN", "COMPLETED", "CANCELLED"].includes(row.status)),
+    id: Number(row.id),
+    workOrderNo: row.work_order_no,
+    bookingId: Number(row.booking_id),
+    status: row.status,
+    priority: row.priority,
+    leaderId: row.leader_id ? Number(row.leader_id) : null,
+    leaderName: row.leader_name ?? null,
+    customerName: row.customer_name,
+    phone: row.phone,
+    koshaName: row.kosha_name,
+    eventDate: row.event_date,
+    eventTime: row.event_time,
+    location: row.hall_location || row.area || null,
+    bookingNotes: row.booking_notes || null,
+    requiredArrivalAt: row.required_arrival_at,
+    eventStartAt: row.event_start_at,
+    expectedDismantleAt: row.expected_dismantle_at,
+    specialInstructions: row.special_instructions,
+    requireAcknowledgment: row.require_acknowledgment,
+    instructionsAcknowledgedAt: row.instructions_acknowledged_at,
+    startedAt: row.started_at,
+    arrivedAt: row.arrived_at,
+    completedAt: row.completed_at,
+    members: row.members,
+    events: (events as any).rows ?? [],
+    checklist: (checklist as any).rows ?? [],
+    assets: (assets as any).rows ?? [],
+    isLate: Boolean(
+      arrival &&
+      now > arrival &&
+      ![
+        "ON_THE_WAY",
+        "ARRIVED",
+        "INSTALLING",
+        "READY",
+        "EVENT_IN_PROGRESS",
+        "DISMANTLING",
+        "RETURNING",
+        "WAREHOUSE_RETURN",
+        "COMPLETED",
+        "CANCELLED",
+      ].includes(row.status),
+    ),
     minutesToArrival: arrival ? Math.round((arrival - now) / 60000) : null,
     viewerId: viewerId ?? null,
   };
 }
 
-async function handleKoshaWorkOrders(req: NextRequest, parts: string[], scope: "admin" | "staff"): Promise<NextResponse> {
+async function handleKoshaWorkOrders(
+  req: NextRequest,
+  parts: string[],
+  scope: "admin" | "staff",
+): Promise<NextResponse> {
   await ensureKoshaWorkOrderTables();
-  const auth = scope === "staff" ? await requirePermission(req, "koshas") : await getAdminUser(req);
+  const auth =
+    scope === "staff"
+      ? await requirePermission(req, "koshas")
+      : await getAdminUser(req);
   if (!auth) return error("غير مخول", 401);
   if (isResponse(auth)) return auth;
   const actionOffset = scope === "staff" ? 3 : 2;
   const id = int(parts[actionOffset]);
   const action = parts[actionOffset + 1];
   const isAdmin = auth.role === "admin" || auth.role === "manager";
-  const can = (permission: Permission) => isAdmin || hasPermission(auth, permission);
-  const deny = (permission: Permission) => !can(permission) ? error("ليس لديك صلاحية تنفيذ هذا الإجراء", 403) : null;
+  const can = (permission: Permission) =>
+    isAdmin || hasPermission(auth, permission);
+  const deny = (permission: Permission) =>
+    !can(permission) ? error("ليس لديك صلاحية تنفيذ هذا الإجراء", 403) : null;
 
   if (req.method === "GET" && !id && !action) {
-    const permission = scope === "admin" ? "koshat_tasks.view_all" : "koshat_tasks.view";
-    const denied = deny(permission); if (denied) return denied;
+    const permission =
+      scope === "admin" ? "koshat_tasks.view_all" : "koshat_tasks.view";
+    const denied = deny(permission);
+    if (denied) return denied;
     const filter = req.nextUrl.searchParams;
-    const status = filter.get("status"); const from = filter.get("from"); const to = filter.get("to"); const staffId = Number(filter.get("staffId") ?? 0) || null;
-    const where = scope === "staff"
-      ? sql`exists (select 1 from kosha_work_order_members own where own.work_order_id=wo.id and own.staff_id=${auth.id} and own.removed_at is null)`
-      : sql`true`;
-    const rows: any[] = ((await db.execute(sql`
+    const status = filter.get("status");
+    const from = filter.get("from");
+    const to = filter.get("to");
+    const staffId = Number(filter.get("staffId") ?? 0) || null;
+    const where =
+      scope === "staff"
+        ? sql`exists (select 1 from kosha_work_order_members own where own.work_order_id=wo.id and own.staff_id=${auth.id} and own.removed_at is null)`
+        : sql`true`;
+    const rows: any[] =
+      (
+        (await db.execute(sql`
       select wo.id, wo.work_order_no, wo.booking_id, wo.status, wo.priority, wo.required_arrival_at, wo.event_start_at, wo.expected_dismantle_at,
         b.customer_name, b.event_date, b.event_time, b.hall_location, b.area, coalesce(k.name,b.package_name,'كوشة') as kosha_name,
         s.full_name as leader_name,
@@ -35959,151 +34209,447 @@ async function handleKoshaWorkOrders(req: NextRequest, parts: string[], scope: "
         and (${to ?? ""} = '' or wo.required_arrival_at < (${to ?? ""}::date + interval '1 day'))
         and (${staffId}::int is null or exists (select 1 from kosha_work_order_members fm where fm.work_order_id=wo.id and fm.staff_id=${staffId} and fm.removed_at is null))
       order by wo.required_arrival_at nulls last, wo.created_at desc
-    `)) as any).rows ?? [];
+    `)) as any
+      ).rows ?? [];
     return json(rows);
   }
 
   if (req.method === "GET" && action === "staff") {
-    const denied = deny("koshat_tasks.assign"); if (denied) return denied;
-    const rows: any[] = ((await db.execute(sql`
+    const denied = deny("koshat_tasks.assign");
+    if (denied) return denied;
+    const rows: any[] =
+      (
+        (await db.execute(sql`
       select id, full_name, username, role, department, permissions from staff
       where is_active=true and coalesce(permissions,'[]'::jsonb) ? 'koshas'
       order by full_name, username
-    `)) as any).rows ?? [];
+    `)) as any
+      ).rows ?? [];
     const date = req.nextUrl.searchParams.get("date") ?? "";
-    const availability = await Promise.all(rows.map(async (staff) => {
-      const conflicts: any[] = date ? (((await db.execute(sql`select wo.id, wo.work_order_no, wo.status from kosha_work_order_members m join kosha_work_orders wo on wo.id=m.work_order_id where m.staff_id=${staff.id} and m.removed_at is null and wo.required_arrival_at::date=${date}::date and wo.status not in ('COMPLETED','CANCELLED')`) as any).rows ?? [])) : [];
-      return { id: Number(staff.id), fullName: staff.full_name, username: staff.username, department: staff.department, availability: conflicts.length > 1 ? "conflict" : conflicts.length ? "nearby" : "available", conflicts };
-    }));
+    const availability = await Promise.all(
+      rows.map(async (staff) => {
+        const conflicts: any[] = date
+          ? ((
+              (await db.execute(
+                sql`select wo.id, wo.work_order_no, wo.status from kosha_work_order_members m join kosha_work_orders wo on wo.id=m.work_order_id where m.staff_id=${staff.id} and m.removed_at is null and wo.required_arrival_at::date=${date}::date and wo.status not in ('COMPLETED','CANCELLED')`,
+              )) as any
+            ).rows ?? [])
+          : [];
+        return {
+          id: Number(staff.id),
+          fullName: staff.full_name,
+          username: staff.username,
+          department: staff.department,
+          availability:
+            conflicts.length > 1
+              ? "conflict"
+              : conflicts.length
+                ? "nearby"
+                : "available",
+          conflicts,
+        };
+      }),
+    );
     return json(availability);
   }
 
   if (req.method === "GET" && id) {
-    const denied = deny("koshat_tasks.view"); if (denied) return denied;
-    const workOrder = await loadKoshatWorkOrder(id, auth.id); if (!workOrder) return error("أمر العمل غير موجود", 404);
-    if (scope === "staff" && !workOrder.members.some((member: any) => Number(member.staffId) === auth.id && !member.removedAt)) return error("لا تملك الوصول إلى هذا الأمر", 403);
+    const denied = deny("koshat_tasks.view");
+    if (denied) return denied;
+    const workOrder = await loadKoshatWorkOrder(id, auth.id);
+    if (!workOrder) return error("أمر العمل غير موجود", 404);
+    if (
+      scope === "staff" &&
+      !workOrder.members.some(
+        (member: any) =>
+          Number(member.staffId) === auth.id && !member.removedAt,
+      )
+    )
+      return error("لا تملك الوصول إلى هذا الأمر", 403);
     return json(workOrder);
   }
 
   if (req.method === "POST" && !id) {
-    const denied = deny("koshat_tasks.assign"); if (denied) return denied;
-    const payload = await body(req); const bookingId = Number(payload.bookingId); const leaderId = Number(payload.leaderId);
-    const memberIds: number[] = [...new Set<number>((Array.isArray(payload.memberIds) ? payload.memberIds : []).map(Number).filter(Number.isInteger))].filter((staffId) => staffId !== leaderId);
-    if (!Number.isInteger(bookingId) || !Number.isInteger(leaderId)) return error("الحجز وقائد المهمة مطلوبان", 422);
+    const denied = deny("koshat_tasks.assign");
+    if (denied) return denied;
+    const payload = await body(req);
+    const bookingId = Number(payload.bookingId);
+    const leaderId = Number(payload.leaderId);
+    const memberIds: number[] = [
+      ...new Set<number>(
+        (Array.isArray(payload.memberIds) ? payload.memberIds : [])
+          .map(Number)
+          .filter(Number.isInteger),
+      ),
+    ].filter((staffId) => staffId !== leaderId);
+    if (!Number.isInteger(bookingId) || !Number.isInteger(leaderId))
+      return error("الحجز وقائد المهمة مطلوبان", 422);
     const [booking, eligible] = await Promise.all([
-      db.query.koshaBookingsTable.findFirst({ where: eq(koshaBookingsTable.id, bookingId) }),
-      db.execute(sql`select id from staff where id in (${sql.join([leaderId, ...memberIds].map((value) => sql`${value}`), sql`,`)}) and is_active=true and coalesce(permissions,'[]'::jsonb) ? 'koshas'`),
+      db.query.koshaBookingsTable.findFirst({
+        where: eq(koshaBookingsTable.id, bookingId),
+      }),
+      db.execute(
+        sql`select id from staff where id in (${sql.join(
+          [leaderId, ...memberIds].map((value) => sql`${value}`),
+          sql`,`,
+        )}) and is_active=true and coalesce(permissions,'[]'::jsonb) ? 'koshas'`,
+      ),
     ]);
     if (!booking) return error("الحجز غير موجود", 404);
-    if (((eligible as any).rows ?? []).length !== memberIds.length + 1) return error("اختَر موظفين نشطين يملكون صلاحية بوابة الكوشات فقط", 422);
+    if (((eligible as any).rows ?? []).length !== memberIds.length + 1)
+      return error("اختَر موظفين نشطين يملكون صلاحية بوابة الكوشات فقط", 422);
     let created: any;
     try {
       await db.transaction(async (tx) => {
-        const result: any = await tx.execute(sql`insert into kosha_work_orders (work_order_no, booking_id, leader_id, status, priority, required_arrival_at, event_start_at, expected_dismantle_at, special_instructions, require_acknowledgment, assigned_at, created_by)
-          values (${koshatWorkOrderNumber(bookingId)}, ${bookingId}, ${leaderId}, 'ASSIGNED', ${String(payload.priority ?? 'normal')}, ${payload.requiredArrivalAt || null}::timestamp, ${payload.eventStartAt || null}::timestamp, ${payload.expectedDismantleAt || null}::timestamp, ${nullableText(payload.specialInstructions)}, ${payload.requireAcknowledgment === true}, now(), ${auth.id}) returning id`);
+        const result: any =
+          await tx.execute(sql`insert into kosha_work_orders (work_order_no, booking_id, leader_id, status, priority, required_arrival_at, event_start_at, expected_dismantle_at, special_instructions, require_acknowledgment, assigned_at, created_by)
+          values (${koshatWorkOrderNumber(bookingId)}, ${bookingId}, ${leaderId}, 'ASSIGNED', ${String(payload.priority ?? "normal")}, ${payload.requiredArrivalAt || null}::timestamp, ${payload.eventStartAt || null}::timestamp, ${payload.expectedDismantleAt || null}::timestamp, ${nullableText(payload.specialInstructions)}, ${payload.requireAcknowledgment === true}, now(), ${auth.id}) returning id`);
         created = result.rows[0];
-        await tx.execute(sql`insert into kosha_work_order_members (work_order_id, staff_id, role) values ${sql.join([sql`(${created.id}, ${leaderId}, 'LEADER')`, ...memberIds.map((staffId) => sql`(${created.id}, ${staffId}, 'MEMBER')`)], sql`,`)}`);
-        await tx.execute(sql`insert into kosha_work_order_events (work_order_id, staff_id, staff_name, type, title, metadata) values (${created.id}, ${auth.id}, ${auth.fullName || auth.username}, 'assigned', 'تم إنشاء أمر العمل وإسناد الفريق', ${JSON.stringify({ bookingId, leaderId, memberIds })}::jsonb)`);
+        await tx.execute(
+          sql`insert into kosha_work_order_members (work_order_id, staff_id, role) values ${sql.join([sql`(${created.id}, ${leaderId}, 'LEADER')`, ...memberIds.map((staffId) => sql`(${created.id}, ${staffId}, 'MEMBER')`)], sql`,`)}`,
+        );
+        await tx.execute(
+          sql`insert into kosha_work_order_events (work_order_id, staff_id, staff_name, type, title, metadata) values (${created.id}, ${auth.id}, ${auth.fullName || auth.username}, 'assigned', 'تم إنشاء أمر العمل وإسناد الفريق', ${JSON.stringify({ bookingId, leaderId, memberIds })}::jsonb)`,
+        );
       });
     } catch (err: any) {
-      if (err?.code === "23505") return error("يوجد أمر عمل مرتبط بهذا الحجز بالفعل", 409);
+      if (err?.code === "23505")
+        return error("يوجد أمر عمل مرتبط بهذا الحجز بالفعل", 409);
       throw err;
     }
-    await addEntityTimeline({ entityType: "kosha_booking", entityId: bookingId, type: "koshat_work_order_created", title: "تم إنشاء أمر عمل كوشة", actor: erpActorFromAdmin(auth), metadata: { workOrderId: created.id } });
-    await logAdminActivity(req, "koshat_work_order_assigned", "kosha_work_order", Number(created.id), { bookingId, leaderId, memberIds });
-    await Promise.all([leaderId, ...memberIds].map((staffId) => createNotification({ audienceType: "staff", staffId, type: "koshat_task_assigned", title: "لديك مهمة كوشة جديدة", body: `${booking.customerName} · ${booking.eventDate ?? ''} ${booking.eventTime ?? ''}`, entityType: "kosha_work_order", entityId: Number(created.id), href: `/staff/koshas/work-orders/${created.id}` })));
+    await addEntityTimeline({
+      entityType: "kosha_booking",
+      entityId: bookingId,
+      type: "koshat_work_order_created",
+      title: "تم إنشاء أمر عمل كوشة",
+      actor: erpActorFromAdmin(auth),
+      metadata: { workOrderId: created.id },
+    });
+    await logAdminActivity(
+      req,
+      "koshat_work_order_assigned",
+      "kosha_work_order",
+      Number(created.id),
+      { bookingId, leaderId, memberIds },
+    );
+    await Promise.all(
+      [leaderId, ...memberIds].map((staffId) =>
+        createNotification({
+          audienceType: "staff",
+          staffId,
+          type: "koshat_task_assigned",
+          title: "لديك مهمة كوشة جديدة",
+          body: `${booking.customerName} · ${booking.eventDate ?? ""} ${booking.eventTime ?? ""}`,
+          entityType: "kosha_work_order",
+          entityId: Number(created.id),
+          href: `/staff/koshas/work-orders/${created.id}`,
+        }),
+      ),
+    );
     return json(await loadKoshatWorkOrder(Number(created.id)), 201);
   }
 
   if (!id) return error("معرف أمر العمل مطلوب", 400);
-  const workOrder = await loadKoshatWorkOrder(id, auth.id); if (!workOrder) return error("أمر العمل غير موجود", 404);
+  const workOrder = await loadKoshatWorkOrder(id, auth.id);
+  if (!workOrder) return error("أمر العمل غير موجود", 404);
   const isLeader = workOrder.leaderId === auth.id;
-  const ownMember = workOrder.members.find((member: any) => Number(member.staffId) === auth.id && !member.removedAt);
-  if (scope === "staff" && !ownMember) return error("لا تملك الوصول إلى هذا الأمر", 403);
+  const ownMember = workOrder.members.find(
+    (member: any) => Number(member.staffId) === auth.id && !member.removedAt,
+  );
+  if (scope === "staff" && !ownMember)
+    return error("لا تملك الوصول إلى هذا الأمر", 403);
 
   if (req.method === "POST" && action === "accept") {
-    if (!isLeader || !can("koshat_tasks.accept")) return error("قائد المهمة فقط يمكنه قبولها", 403);
-    await db.transaction(async (tx) => { await tx.execute(sql`update kosha_work_orders set status='ACCEPTED', accepted_at=coalesce(accepted_at, now()), updated_at=now() where id=${id} and status='ASSIGNED'`); await tx.execute(sql`update kosha_work_order_members set status='ACCEPTED', accepted_at=now() where work_order_id=${id} and staff_id=${auth.id}`); });
-    await recordKoshatWorkOrderEvent({ workOrderId:id, actor:auth, type:"accepted", title:"قبل قائد المهمة أمر العمل" });
-    await addEntityTimeline({ entityType:"kosha_booking", entityId:workOrder.bookingId, type:"koshat_task_accepted", title:"تم قبول أمر عمل الكوشة", actor:erpActorFromAdmin(auth), metadata:{workOrderId:id} });
+    if (!isLeader || !can("koshat_tasks.accept"))
+      return error("قائد المهمة فقط يمكنه قبولها", 403);
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`update kosha_work_orders set status='ACCEPTED', accepted_at=coalesce(accepted_at, now()), updated_at=now() where id=${id} and status='ASSIGNED'`,
+      );
+      await tx.execute(
+        sql`update kosha_work_order_members set status='ACCEPTED', accepted_at=now() where work_order_id=${id} and staff_id=${auth.id}`,
+      );
+    });
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "accepted",
+      title: "قبل قائد المهمة أمر العمل",
+    });
+    await addEntityTimeline({
+      entityType: "kosha_booking",
+      entityId: workOrder.bookingId,
+      type: "koshat_task_accepted",
+      title: "تم قبول أمر عمل الكوشة",
+      actor: erpActorFromAdmin(auth),
+      metadata: { workOrderId: id },
+    });
     return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "decline") {
-    if (!isLeader || !can("koshat_tasks.accept")) return error("قائد المهمة فقط يمكنه الاعتذار", 403);
-    const payload=await body(req); const reason=String(payload.reason ?? "other");
-    if (!["another_task","outside_area","on_leave","emergency","other"].includes(reason)) return error("سبب الاعتذار غير صحيح",422);
-    await db.transaction(async (tx)=>{ await tx.execute(sql`update kosha_work_order_members set status='DECLINED', declined_at=now(), decline_reason=${reason}, decline_note=${nullableText(payload.note)} where work_order_id=${id} and staff_id=${auth.id}`); await tx.execute(sql`update kosha_work_orders set status='REASSIGNED', updated_at=now() where id=${id}`); });
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"declined",title:"اعتذر قائد المهمة",details:reason,metadata:{note:payload.note ?? null}});
-    await createNotification({type:"koshat_task_declined",title:"اعتذار عن مهمة كوشة",body:`${auth.fullName || auth.username}: ${reason}`,entityType:"kosha_work_order",entityId:id,href:`/admin/koshat-tasks?workOrder=${id}`});
+    if (!isLeader || !can("koshat_tasks.accept"))
+      return error("قائد المهمة فقط يمكنه الاعتذار", 403);
+    const payload = await body(req);
+    const reason = String(payload.reason ?? "other");
+    if (
+      ![
+        "another_task",
+        "outside_area",
+        "on_leave",
+        "emergency",
+        "other",
+      ].includes(reason)
+    )
+      return error("سبب الاعتذار غير صحيح", 422);
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`update kosha_work_order_members set status='DECLINED', declined_at=now(), decline_reason=${reason}, decline_note=${nullableText(payload.note)} where work_order_id=${id} and staff_id=${auth.id}`,
+      );
+      await tx.execute(
+        sql`update kosha_work_orders set status='REASSIGNED', updated_at=now() where id=${id}`,
+      );
+    });
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "declined",
+      title: "اعتذر قائد المهمة",
+      details: reason,
+      metadata: { note: payload.note ?? null },
+    });
+    await createNotification({
+      type: "koshat_task_declined",
+      title: "اعتذار عن مهمة كوشة",
+      body: `${auth.fullName || auth.username}: ${reason}`,
+      entityType: "kosha_work_order",
+      entityId: id,
+      href: `/admin/koshat-tasks?workOrder=${id}`,
+    });
     return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "reassign") {
-    const denied = deny("koshat_tasks.reassign"); if (denied) return denied;
-    const payload = await body(req); const nextLeaderId = Number(payload.leaderId);
-    if (!Number.isInteger(nextLeaderId) || nextLeaderId === workOrder.leaderId) return error("اختر قائد مهمة جديداً", 422);
-    const nextLeader: any = await db.query.staffTable.findFirst({ where: and(eq(staffTable.id, nextLeaderId), eq(staffTable.isActive, true)) });
-    if (!nextLeader || !Array.isArray(nextLeader.permissions) || !nextLeader.permissions.includes("koshas")) return error("قائد المهمة الجديد يجب أن يكون نشطاً ولديه صلاحية بوابة الكوشات",422);
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`update kosha_work_order_members set role='MEMBER', removed_at=now(), status='REASSIGNED' where work_order_id=${id} and staff_id=${workOrder.leaderId}`);
-      await tx.execute(sql`insert into kosha_work_order_members (work_order_id,staff_id,role,status,removed_at,created_at) values (${id},${nextLeaderId},'LEADER','ASSIGNED',null,now()) on conflict (work_order_id,staff_id) do update set role='LEADER',status='ASSIGNED',removed_at=null,declined_at=null,decline_reason=null,decline_note=null`);
-      await tx.execute(sql`update kosha_work_orders set leader_id=${nextLeaderId},status='ASSIGNED',assigned_at=now(),accepted_at=null,updated_at=now() where id=${id}`);
+    const denied = deny("koshat_tasks.reassign");
+    if (denied) return denied;
+    const payload = await body(req);
+    const nextLeaderId = Number(payload.leaderId);
+    if (!Number.isInteger(nextLeaderId) || nextLeaderId === workOrder.leaderId)
+      return error("اختر قائد مهمة جديداً", 422);
+    const nextLeader: any = await db.query.staffTable.findFirst({
+      where: and(
+        eq(staffTable.id, nextLeaderId),
+        eq(staffTable.isActive, true),
+      ),
     });
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"reassigned",title:"تمت إعادة إسناد قيادة المهمة",details:nullableText(payload.reason),metadata:{assignedFrom:workOrder.leaderId,assignedTo:nextLeaderId,reassignedAt:new Date().toISOString()}});
-    await addEntityTimeline({entityType:"kosha_booking",entityId:workOrder.bookingId,type:"koshat_task_reassigned",title:"تمت إعادة إسناد أمر عمل الكوشة",actor:erpActorFromAdmin(auth),metadata:{workOrderId:id,assignedFrom:workOrder.leaderId,assignedTo:nextLeaderId,reason:payload.reason ?? null}});
-    await createNotification({audienceType:"staff",staffId:nextLeaderId,type:"koshat_task_reassigned",title:"تم إسناد مهمة كوشة إليك",body:workOrder.workOrderNo,entityType:"kosha_work_order",entityId:id,href:`/staff/koshas/work-orders/${id}`});
-    return json(await loadKoshatWorkOrder(id,auth.id));
+    if (
+      !nextLeader ||
+      !Array.isArray(nextLeader.permissions) ||
+      !nextLeader.permissions.includes("koshas")
+    )
+      return error(
+        "قائد المهمة الجديد يجب أن يكون نشطاً ولديه صلاحية بوابة الكوشات",
+        422,
+      );
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`update kosha_work_order_members set role='MEMBER', removed_at=now(), status='REASSIGNED' where work_order_id=${id} and staff_id=${workOrder.leaderId}`,
+      );
+      await tx.execute(
+        sql`insert into kosha_work_order_members (work_order_id,staff_id,role,status,removed_at,created_at) values (${id},${nextLeaderId},'LEADER','ASSIGNED',null,now()) on conflict (work_order_id,staff_id) do update set role='LEADER',status='ASSIGNED',removed_at=null,declined_at=null,decline_reason=null,decline_note=null`,
+      );
+      await tx.execute(
+        sql`update kosha_work_orders set leader_id=${nextLeaderId},status='ASSIGNED',assigned_at=now(),accepted_at=null,updated_at=now() where id=${id}`,
+      );
+    });
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "reassigned",
+      title: "تمت إعادة إسناد قيادة المهمة",
+      details: nullableText(payload.reason),
+      metadata: {
+        assignedFrom: workOrder.leaderId,
+        assignedTo: nextLeaderId,
+        reassignedAt: new Date().toISOString(),
+      },
+    });
+    await addEntityTimeline({
+      entityType: "kosha_booking",
+      entityId: workOrder.bookingId,
+      type: "koshat_task_reassigned",
+      title: "تمت إعادة إسناد أمر عمل الكوشة",
+      actor: erpActorFromAdmin(auth),
+      metadata: {
+        workOrderId: id,
+        assignedFrom: workOrder.leaderId,
+        assignedTo: nextLeaderId,
+        reason: payload.reason ?? null,
+      },
+    });
+    await createNotification({
+      audienceType: "staff",
+      staffId: nextLeaderId,
+      type: "koshat_task_reassigned",
+      title: "تم إسناد مهمة كوشة إليك",
+      body: workOrder.workOrderNo,
+      entityType: "kosha_work_order",
+      entityId: id,
+      href: `/staff/koshas/work-orders/${id}`,
+    });
+    return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "acknowledge") {
-    if (!isLeader) return error("قائد المهمة فقط يمكنه تأكيد التعليمات",403);
-    await db.execute(sql`update kosha_work_orders set instructions_acknowledged_at=now(), instructions_acknowledged_by=${auth.id}, updated_at=now() where id=${id}`);
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"instructions_acknowledged",title:"تمت قراءة التعليمات الخاصة"});
+    if (!isLeader) return error("قائد المهمة فقط يمكنه تأكيد التعليمات", 403);
+    await db.execute(
+      sql`update kosha_work_orders set instructions_acknowledged_at=now(), instructions_acknowledged_by=${auth.id}, updated_at=now() where id=${id}`,
+    );
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "instructions_acknowledged",
+      title: "تمت قراءة التعليمات الخاصة",
+    });
     return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "start") {
-    if (!isLeader || !can("koshat_tasks.start")) return error("قائد المهمة فقط يمكنه بدء العمل",403);
-    const payload=await body(req);
-    if (workOrder.requireAcknowledgment && !workOrder.instructionsAcknowledgedAt) return error("يجب تأكيد قراءة التعليمات أولاً",422);
-    await db.execute(sql`update kosha_work_orders set started_at=coalesce(started_at,now()), started_by=${auth.id}, started_lat=${Number(payload.lat) || null}, started_lng=${Number(payload.lng) || null}, status=case when status='ACCEPTED' then 'PREPARING' else status end, updated_at=now() where id=${id}`);
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"started",title:"بدأ قائد المهمة العمل",metadata:{lat:Number(payload.lat)||null,lng:Number(payload.lng)||null}});
-    return json(await loadKoshatWorkOrder(id,auth.id));
+    if (!isLeader || !can("koshat_tasks.start"))
+      return error("قائد المهمة فقط يمكنه بدء العمل", 403);
+    const payload = await body(req);
+    if (
+      workOrder.requireAcknowledgment &&
+      !workOrder.instructionsAcknowledgedAt
+    )
+      return error("يجب تأكيد قراءة التعليمات أولاً", 422);
+    await db.execute(
+      sql`update kosha_work_orders set started_at=coalesce(started_at,now()), started_by=${auth.id}, started_lat=${Number(payload.lat) || null}, started_lng=${Number(payload.lng) || null}, status=case when status='ACCEPTED' then 'PREPARING' else status end, updated_at=now() where id=${id}`,
+    );
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "started",
+      title: "بدأ قائد المهمة العمل",
+      metadata: {
+        lat: Number(payload.lat) || null,
+        lng: Number(payload.lng) || null,
+      },
+    });
+    return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "status") {
-    if (!(isLeader && can("koshat_tasks.update_status")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية تغيير حالة التنفيذ",403);
-    const payload=await body(req); const next=String(payload.status ?? "");
-    if (!(KOSHAT_WORK_ORDER_STATUSES as readonly string[]).includes(next) || !(KOSHAT_STATUS_TRANSITIONS[workOrder.status] ?? []).includes(next)) return error("انتقال حالة التنفيذ غير مسموح",422);
-    if (next === "COMPLETED") { const open:any=((await db.execute(sql`select count(*)::int as count from kosha_work_order_assets where work_order_id=${id} and checked_out_at is not null and returned_at is null`)) as any).rows?.[0]; if (Number(open?.count ?? 0)>0) return error("لا يمكن إكمال المهمة قبل إعادة كل الأصول المسجلة",422); }
-    await db.execute(sql`update kosha_work_orders set status=${next}, arrived_at=case when ${next}='ARRIVED' then coalesce(arrived_at,now()) else arrived_at end, completed_at=case when ${next}='COMPLETED' then now() else completed_at end, updated_at=now() where id=${id}`);
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"status_changed",title:`تحديث حالة التنفيذ إلى ${next}`,metadata:{from:workOrder.status,to:next}});
-    await addEntityTimeline({entityType:"kosha_booking",entityId:workOrder.bookingId,type:"koshat_status_changed",title:`حالة أمر الكوشة: ${next}`,actor:erpActorFromAdmin(auth),metadata:{workOrderId:id,from:workOrder.status,to:next}});
-    return json(await loadKoshatWorkOrder(id,auth.id));
+    if (
+      !(isLeader && can("koshat_tasks.update_status")) &&
+      !can("koshat_tasks.assign")
+    )
+      return error("لا تملك صلاحية تغيير حالة التنفيذ", 403);
+    const payload = await body(req);
+    const next = String(payload.status ?? "");
+    if (
+      !(KOSHAT_WORK_ORDER_STATUSES as readonly string[]).includes(next) ||
+      !(KOSHAT_STATUS_TRANSITIONS[workOrder.status] ?? []).includes(next)
+    )
+      return error("انتقال حالة التنفيذ غير مسموح", 422);
+    if (next === "COMPLETED") {
+      const open: any = (
+        (await db.execute(
+          sql`select count(*)::int as count from kosha_work_order_assets where work_order_id=${id} and checked_out_at is not null and returned_at is null`,
+        )) as any
+      ).rows?.[0];
+      if (Number(open?.count ?? 0) > 0)
+        return error("لا يمكن إكمال المهمة قبل إعادة كل الأصول المسجلة", 422);
+    }
+    await db.execute(
+      sql`update kosha_work_orders set status=${next}, arrived_at=case when ${next}='ARRIVED' then coalesce(arrived_at,now()) else arrived_at end, completed_at=case when ${next}='COMPLETED' then now() else completed_at end, updated_at=now() where id=${id}`,
+    );
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "status_changed",
+      title: `تحديث حالة التنفيذ إلى ${next}`,
+      metadata: { from: workOrder.status, to: next },
+    });
+    await addEntityTimeline({
+      entityType: "kosha_booking",
+      entityId: workOrder.bookingId,
+      type: "koshat_status_changed",
+      title: `حالة أمر الكوشة: ${next}`,
+      actor: erpActorFromAdmin(auth),
+      metadata: { workOrderId: id, from: workOrder.status, to: next },
+    });
+    return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "assets") {
-    if (!(isLeader && can("koshat_tasks.checkout_assets")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية إخراج الأصول",403);
-    const payload=await body(req); const productId=Number(payload.productId); if(!Number.isInteger(productId)) return error("الأصل مطلوب",422);
-    await db.transaction(async(tx)=>{ await tx.execute(sql`insert into kosha_work_order_assets (work_order_id,product_id,asset_code,checked_out_by,checked_out_at,note) values (${id},${productId},${nullableText(payload.assetCode)},${auth.id},now(),${nullableText(payload.note)}) on conflict (work_order_id,product_id) do update set checked_out_by=excluded.checked_out_by,checked_out_at=coalesce(kosha_work_order_assets.checked_out_at,excluded.checked_out_at),asset_code=coalesce(excluded.asset_code,kosha_work_order_assets.asset_code),note=excluded.note`); await tx.execute(sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},-1,'kosha_work_order_checkout','kosha_work_order',${id},'kosha_checkout',${`kwo:${id}:checkout:${productId}`},${auth.id},${auth.fullName||auth.username},${JSON.stringify({bookingId:workOrder.bookingId,workOrderId:id})}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`); });
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"asset_checked_out",title:"تم إخراج أصل للمهمة",metadata:{productId}}); return json(await loadKoshatWorkOrder(id,auth.id));
+    if (
+      !(isLeader && can("koshat_tasks.checkout_assets")) &&
+      !can("koshat_tasks.assign")
+    )
+      return error("لا تملك صلاحية إخراج الأصول", 403);
+    const payload = await body(req);
+    const productId = Number(payload.productId);
+    if (!Number.isInteger(productId)) return error("الأصل مطلوب", 422);
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`insert into kosha_work_order_assets (work_order_id,product_id,asset_code,checked_out_by,checked_out_at,note) values (${id},${productId},${nullableText(payload.assetCode)},${auth.id},now(),${nullableText(payload.note)}) on conflict (work_order_id,product_id) do update set checked_out_by=excluded.checked_out_by,checked_out_at=coalesce(kosha_work_order_assets.checked_out_at,excluded.checked_out_at),asset_code=coalesce(excluded.asset_code,kosha_work_order_assets.asset_code),note=excluded.note`,
+      );
+      await tx.execute(
+        sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},-1,'kosha_work_order_checkout','kosha_work_order',${id},'kosha_checkout',${`kwo:${id}:checkout:${productId}`},${auth.id},${auth.fullName || auth.username},${JSON.stringify({ bookingId: workOrder.bookingId, workOrderId: id })}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`,
+      );
+    });
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "asset_checked_out",
+      title: "تم إخراج أصل للمهمة",
+      metadata: { productId },
+    });
+    return json(await loadKoshatWorkOrder(id, auth.id));
   }
   if (req.method === "POST" && action === "return") {
-    if (!(isLeader && can("koshat_tasks.return_assets")) && !can("koshat_tasks.assign")) return error("لا تملك صلاحية إعادة الأصول",403);
-    const payload=await body(req); const productId=Number(payload.productId); if(!Number.isInteger(productId)) return error("الأصل مطلوب",422);
-    await db.transaction(async(tx)=>{ const changed:any=await tx.execute(sql`update kosha_work_order_assets set returned_by=${auth.id},returned_at=now(),return_condition=${String(payload.condition ?? 'good')},note=${nullableText(payload.note)} where work_order_id=${id} and product_id=${productId} and checked_out_at is not null and returned_at is null returning id`); if(!changed.rows?.length) throw new CheckoutError("الأصل غير مسجل كخارج من هذه المهمة",409); await tx.execute(sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},1,'kosha_work_order_return','kosha_work_order',${id},'kosha_return',${`kwo:${id}:return:${productId}`},${auth.id},${auth.fullName||auth.username},${JSON.stringify({bookingId:workOrder.bookingId,workOrderId:id,condition:payload.condition ?? 'good'})}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`); });
-    await recordKoshatWorkOrderEvent({workOrderId:id,actor:auth,type:"asset_returned",title:"تمت إعادة أصل إلى المستودع",metadata:{productId,condition:payload.condition ?? 'good'}}); return json(await loadKoshatWorkOrder(id,auth.id));
+    if (
+      !(isLeader && can("koshat_tasks.return_assets")) &&
+      !can("koshat_tasks.assign")
+    )
+      return error("لا تملك صلاحية إعادة الأصول", 403);
+    const payload = await body(req);
+    const productId = Number(payload.productId);
+    if (!Number.isInteger(productId)) return error("الأصل مطلوب", 422);
+    await db.transaction(async (tx) => {
+      const changed: any = await tx.execute(
+        sql`update kosha_work_order_assets set returned_by=${auth.id},returned_at=now(),return_condition=${String(payload.condition ?? "good")},note=${nullableText(payload.note)} where work_order_id=${id} and product_id=${productId} and checked_out_at is not null and returned_at is null returning id`,
+      );
+      if (!changed.rows?.length)
+        throw new CheckoutError("الأصل غير مسجل كخارج من هذه المهمة", 409);
+      await tx.execute(
+        sql`insert into stock_movements (product_id,quantity_change,reason,related_type,related_id,movement_type,idempotency_key,created_by,created_by_name,metadata) values (${productId},1,'kosha_work_order_return','kosha_work_order',${id},'kosha_return',${`kwo:${id}:return:${productId}`},${auth.id},${auth.fullName || auth.username},${JSON.stringify({ bookingId: workOrder.bookingId, workOrderId: id, condition: payload.condition ?? "good" })}::jsonb) on conflict (idempotency_key) where idempotency_key is not null do nothing`,
+      );
+    });
+    await recordKoshatWorkOrderEvent({
+      workOrderId: id,
+      actor: auth,
+      type: "asset_returned",
+      title: "تمت إعادة أصل إلى المستودع",
+      metadata: { productId, condition: payload.condition ?? "good" },
+    });
+    return json(await loadKoshatWorkOrder(id, auth.id));
   }
-  return error("المسار غير موجود",404);
+  return error("المسار غير موجود", 404);
 }
 
 async function handleAdmin(req: NextRequest, parts: string[]) {
   const method = req.method;
   const section = parts[1];
 
-  if (section === "koshat-tasks") return handleKoshaWorkOrders(req, parts, "admin");
+  if (section === "koshat-tasks")
+    return handleKoshaWorkOrders(req, parts, "admin");
 
   if (section === "product-bundles") {
     const bundles = await handleProductBundles(req, parts);
     if (bundles) return bundles;
   }
 
-  if (section === "print-jobs" || section === "print-agents" || section === "printers") {
+  if (
+    section === "print-jobs" ||
+    section === "print-agents" ||
+    section === "printers"
+  ) {
     const remotePrinting = await handleRemotePrintingAdmin(req, parts, section);
     if (remotePrinting) return remotePrinting;
   }
@@ -36352,10 +34898,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const loginIp = ip(req);
       const userKey = username.trim().toLowerCase();
-      if (
-        !checkRateLimit(adminLoginByIp, loginIp, 20, 15 * 60 * 1000) ||
-        !checkRateLimit(adminLoginByUsername, userKey, 8, 15 * 60 * 1000)
-      ) {
+      const adminIpLimit = await consumeRateLimit({
+        action: "admin-login-ip",
+        keyParts: [loginIp],
+        limit: 20,
+        windowMs: 15 * 60 * 1000,
+      });
+      const adminUserLimit = await consumeRateLimit({
+        action: "admin-login-username",
+        keyParts: [userKey],
+        limit: 8,
+        windowMs: 15 * 60 * 1000,
+      });
+      if (!adminIpLimit.allowed || !adminUserLimit.allowed) {
         void logAdminActivity(
           req,
           "admin_login_rate_limited",
@@ -36363,7 +34918,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           undefined,
           { username: userKey },
         );
-        return error("محاولات كثيرة، حاول لاحقاً", 429);
+        return rateLimitError(
+          !adminIpLimit.allowed ? adminIpLimit : adminUserLimit,
+          "محاولات كثيرة، حاول لاحقاً",
+        );
       }
       const user = await db.query.staffTable.findFirst({
         where: eq(staffTable.username, username),
@@ -37957,9 +36515,14 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     await ensureAdminExtensionsTables();
     const isMainManager = auth.role === "admin";
     const delegation = isMainManager ? null : await approvalDelegationFor(auth);
-    if (!isMainManager && !delegation) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+    if (!isMainManager && !delegation)
+      return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
     if (method === "GET") {
-      if (!isMainManager && !(delegation?.permissionCodes ?? []).includes("approvals.view")) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+      if (
+        !isMainManager &&
+        !(delegation?.permissionCodes ?? []).includes("approvals.view")
+      )
+        return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
       const params = req.nextUrl.searchParams;
       const status = params.get("status")?.trim();
       const type = params.get("type")?.trim();
@@ -37980,11 +36543,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         orderBy: [desc(approvalRequestsTable.createdAt)],
         limit: 200,
       });
-      const visible = isMainManager ? rows : rows.filter((row) => profileAllowsScope(delegation, row));
-      return json({ data: visible.map((row) => ({ ...formatApprovalRequest(row), allowedActions: isMainManager ? ["approve", "reject", "return_for_edit", "forward_to_main_manager", "comment", "audit"] : (delegation?.permissionCodes ?? []).map(String), requiresMainManager: approvalRequestScope(row).requiresMain })) });
+      const visible = isMainManager
+        ? rows
+        : rows.filter((row) => profileAllowsScope(delegation, row));
+      return json({
+        data: visible.map((row) => ({
+          ...formatApprovalRequest(row),
+          allowedActions: isMainManager
+            ? [
+                "approve",
+                "reject",
+                "return_for_edit",
+                "forward_to_main_manager",
+                "comment",
+                "audit",
+              ]
+            : (delegation?.permissionCodes ?? []).map(String),
+          requiresMainManager: approvalRequestScope(row).requiresMain,
+        })),
+      });
     }
     if (method === "POST" && !parts[2]) {
-      if (!isMainManager) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+      if (!isMainManager)
+        return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
       const b = await body(req);
       const title = textFallback(b?.title, "طلب موافقة");
       const row = await createApprovalRequest({
@@ -38012,40 +36593,190 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "PATCH" && parts[2]) {
       const id = int(parts[2]) ?? 0;
       const delegatedBody = await body(req);
-      const delegatedAction = String(delegatedBody?.action ?? delegatedBody?.status ?? "").toLowerCase();
-      const actionMap: Record<string, { code: string; action: string; status: string }> = {
-        approve: { code: "approvals.approve", action: "approve", status: "approved" }, approved: { code: "approvals.approve", action: "approve", status: "approved" },
-        reject: { code: "approvals.reject", action: "reject", status: "rejected" }, rejected: { code: "approvals.reject", action: "reject", status: "rejected" },
-        return_for_edit: { code: "approvals.return_for_edit", action: "return_for_edit", status: "returned_for_edit" },
-        forward_to_main_manager: { code: "approvals.forward_to_main_manager", action: "forward_to_main_manager", status: "pending_main_manager" },
-        comment: { code: "approvals.comment", action: "comment", status: "under_review" },
+      const delegatedAction = String(
+        delegatedBody?.action ?? delegatedBody?.status ?? "",
+      ).toLowerCase();
+      const actionMap: Record<
+        string,
+        { code: string; action: string; status: string }
+      > = {
+        approve: {
+          code: "approvals.approve",
+          action: "approve",
+          status: "approved",
+        },
+        approved: {
+          code: "approvals.approve",
+          action: "approve",
+          status: "approved",
+        },
+        reject: {
+          code: "approvals.reject",
+          action: "reject",
+          status: "rejected",
+        },
+        rejected: {
+          code: "approvals.reject",
+          action: "reject",
+          status: "rejected",
+        },
+        return_for_edit: {
+          code: "approvals.return_for_edit",
+          action: "return_for_edit",
+          status: "returned_for_edit",
+        },
+        forward_to_main_manager: {
+          code: "approvals.forward_to_main_manager",
+          action: "forward_to_main_manager",
+          status: "pending_main_manager",
+        },
+        comment: {
+          code: "approvals.comment",
+          action: "comment",
+          status: "under_review",
+        },
       };
       const delegatedRule = actionMap[delegatedAction];
       if (!delegatedRule) return error("اختر إجراء موافقة صالحاً.", 400);
-      const delegatedRequest = await db.query.approvalRequestsTable.findFirst({ where: eq(approvalRequestsTable.id, id) });
+      const delegatedRequest = await db.query.approvalRequestsTable.findFirst({
+        where: eq(approvalRequestsTable.id, id),
+      });
       if (!delegatedRequest) return error("طلب الموافقة غير موجود", 404);
-      if (!["pending", "under_review", "pending_main_manager", "approved_by_delegate"].includes(delegatedRequest.status)) return error("تمت مراجعة هذا الطلب مسبقاً", 409);
+      if (
+        ![
+          "pending",
+          "under_review",
+          "pending_main_manager",
+          "approved_by_delegate",
+        ].includes(delegatedRequest.status)
+      )
+        return error("تمت مراجعة هذا الطلب مسبقاً", 409);
       if (!isMainManager) {
-        if (!(delegation?.permissionCodes ?? []).includes(delegatedRule.code) || !profileAllowsScope(delegation, delegatedRequest)) return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
-        if (delegatedRequest.requestedBy && delegatedRequest.requestedBy === auth.id) {
-          void logAdminActivity(req, "approval_unauthorized_self_attempt", "approval_request", id, { action: delegatedRule.action });
-          void notifyMainManagers({ type: "approval_action", title: "محاولة موافقة غير مصرح بها", body: `حاول ${auth.fullName || auth.username} اعتماد طلبه الشخصي.`, requestId: id, metadata: { action: "self_approval_attempt" } });
+        if (
+          !(delegation?.permissionCodes ?? []).includes(delegatedRule.code) ||
+          !profileAllowsScope(delegation, delegatedRequest)
+        )
+          return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+        if (
+          delegatedRequest.requestedBy &&
+          delegatedRequest.requestedBy === auth.id
+        ) {
+          void logAdminActivity(
+            req,
+            "approval_unauthorized_self_attempt",
+            "approval_request",
+            id,
+            { action: delegatedRule.action },
+          );
+          void notifyMainManagers({
+            type: "approval_action",
+            title: "محاولة موافقة غير مصرح بها",
+            body: `حاول ${auth.fullName || auth.username} اعتماد طلبه الشخصي.`,
+            requestId: id,
+            metadata: { action: "self_approval_attempt" },
+          });
           return error("لا يمكن للموظف اعتماد طلبه الشخصي.", 403);
         }
       }
       const scope = approvalRequestScope(delegatedRequest);
       let delegatedNext = delegatedRule.status;
-      const mode = String((delegation?.categoryModes as any)?.[scope.category] ?? "");
-      const overLimit = !isMainManager && delegatedRule.action === "approve" && !delegation?.unlimitedAmount && scope.amount > Number(delegation?.maxAmount ?? 0);
-      if (!isMainManager && delegatedRule.action === "approve" && (scope.requiresMain || mode === "main_manager_final" || overLimit)) delegatedNext = "pending_main_manager";
-      const [delegatedRow] = await db.update(approvalRequestsTable).set({ status: delegatedNext, reviewedBy: auth.id, reviewedByName: auth.fullName || auth.username, reviewNote: nullableText(delegatedBody?.note ?? delegatedBody?.reviewNote), reviewedAt: new Date(), updatedAt: new Date() }).where(eq(approvalRequestsTable.id, id)).returning();
+      const mode = String(
+        (delegation?.categoryModes as any)?.[scope.category] ?? "",
+      );
+      const overLimit =
+        !isMainManager &&
+        delegatedRule.action === "approve" &&
+        !delegation?.unlimitedAmount &&
+        scope.amount > Number(delegation?.maxAmount ?? 0);
+      if (
+        !isMainManager &&
+        delegatedRule.action === "approve" &&
+        (scope.requiresMain || mode === "main_manager_final" || overLimit)
+      )
+        delegatedNext = "pending_main_manager";
+      const [delegatedRow] = await db
+        .update(approvalRequestsTable)
+        .set({
+          status: delegatedNext,
+          reviewedBy: auth.id,
+          reviewedByName: auth.fullName || auth.username,
+          reviewNote: nullableText(
+            delegatedBody?.note ?? delegatedBody?.reviewNote,
+          ),
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(approvalRequestsTable.id, id))
+        .returning();
       let delegatedExecution: unknown = null;
-      if (delegatedNext === "approved") delegatedExecution = await executeApprovedApprovalRequest(delegatedRow, erpActorFromAdmin(auth));
-      await addApprovalAction({ request: delegatedRequest, action: overLimit ? "limit_exceeded_forwarded" : delegatedRule.action, oldStatus: delegatedRequest.status, newStatus: delegatedNext, actor: auth, note: delegatedBody?.note ?? delegatedBody?.reviewNote, req, metadata: { category: scope.category, overLimit, requiresMain: scope.requiresMain } });
-      if (delegatedRow.entityType && delegatedRow.entityId) void addEntityTimeline({ entityType: delegatedRow.entityType, entityId: delegatedRow.entityId, type: `approval_${delegatedRule.action}`, title: delegatedNext === "pending_main_manager" ? "تم تحويل الطلب للمدير الرئيسي" : delegatedNext === "returned_for_edit" ? "أعيد الطلب للتعديل" : delegatedNext === "rejected" ? "تم الرفض" : delegatedNext === "approved" ? "تم الاعتماد النهائي" : "تمت مراجعة الطلب", body: delegatedRow.title, actor: erpActorFromAdmin(auth), metadata: { approvalRequestId: id, status: delegatedNext } });
-      if (!isMainManager) await notifyMainManagers({ type: "approval_action", title: "إجراء موافقة مفوض", body: `قام ${auth.fullName || auth.username} بـ${delegatedRule.action} للطلب ${delegatedRow.requestNo}${scope.amount ? ` بمبلغ ${scope.amount.toLocaleString("ar-IQ")} د.ع` : ""}.`, requestId: id, metadata: { action: delegatedRule.action, amount: scope.amount, note: delegatedBody?.note ?? delegatedBody?.reviewNote, overLimit } });
-      void logAdminActivity(req, `approval_${delegatedRule.action}`, "approval_request", id, { requestNo: delegatedRow.requestNo, oldStatus: delegatedRequest.status, newStatus: delegatedNext, overLimit });
-      return json({ ...formatApprovalRequest(delegatedRow), execution: delegatedExecution, overLimit });
+      if (delegatedNext === "approved")
+        delegatedExecution = await executeApprovedApprovalRequest(
+          delegatedRow,
+          erpActorFromAdmin(auth),
+        );
+      await addApprovalAction({
+        request: delegatedRequest,
+        action: overLimit ? "limit_exceeded_forwarded" : delegatedRule.action,
+        oldStatus: delegatedRequest.status,
+        newStatus: delegatedNext,
+        actor: auth,
+        note: delegatedBody?.note ?? delegatedBody?.reviewNote,
+        req,
+        metadata: {
+          category: scope.category,
+          overLimit,
+          requiresMain: scope.requiresMain,
+        },
+      });
+      if (delegatedRow.entityType && delegatedRow.entityId)
+        void addEntityTimeline({
+          entityType: delegatedRow.entityType,
+          entityId: delegatedRow.entityId,
+          type: `approval_${delegatedRule.action}`,
+          title:
+            delegatedNext === "pending_main_manager"
+              ? "تم تحويل الطلب للمدير الرئيسي"
+              : delegatedNext === "returned_for_edit"
+                ? "أعيد الطلب للتعديل"
+                : delegatedNext === "rejected"
+                  ? "تم الرفض"
+                  : delegatedNext === "approved"
+                    ? "تم الاعتماد النهائي"
+                    : "تمت مراجعة الطلب",
+          body: delegatedRow.title,
+          actor: erpActorFromAdmin(auth),
+          metadata: { approvalRequestId: id, status: delegatedNext },
+        });
+      if (!isMainManager)
+        await notifyMainManagers({
+          type: "approval_action",
+          title: "إجراء موافقة مفوض",
+          body: `قام ${auth.fullName || auth.username} بـ${delegatedRule.action} للطلب ${delegatedRow.requestNo}${scope.amount ? ` بمبلغ ${scope.amount.toLocaleString("ar-IQ")} د.ع` : ""}.`,
+          requestId: id,
+          metadata: {
+            action: delegatedRule.action,
+            amount: scope.amount,
+            note: delegatedBody?.note ?? delegatedBody?.reviewNote,
+            overLimit,
+          },
+        });
+      void logAdminActivity(
+        req,
+        `approval_${delegatedRule.action}`,
+        "approval_request",
+        id,
+        {
+          requestNo: delegatedRow.requestNo,
+          oldStatus: delegatedRequest.status,
+          newStatus: delegatedNext,
+          overLimit,
+        },
+      );
+      return json({
+        ...formatApprovalRequest(delegatedRow),
+        execution: delegatedExecution,
+        overLimit,
+      });
     }
   }
 
@@ -41422,17 +40153,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .where(eq(tasksTable.id, row.id))
         .returning();
       if (checklistItems.length)
-        await db
-          .insert(taskChecklistItemsTable)
-          .values(
-            checklistItems.map((item, index) => ({
-              taskId: row.id,
-              title: item.title,
-              requiredQuantity: String(item.requiredQuantity),
-              completedQuantity: "0",
-              sortOrder: index,
-            })),
-          );
+        await db.insert(taskChecklistItemsTable).values(
+          checklistItems.map((item, index) => ({
+            taskId: row.id,
+            title: item.title,
+            requiredQuantity: String(item.requiredQuantity),
+            completedQuantity: "0",
+            sortOrder: index,
+          })),
+        );
       await Promise.all(
         (assignedStaffIds.length ? assignedStaffIds : [null]).map((staffId) =>
           createNotification({
@@ -44627,7 +43356,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       let logoMetadata: Record<string, unknown> = {};
       let previousUrl = "";
       let settingsUpdated = false;
-      const failLogoUpload = (message: string, status: number, storageCode?: number) => {
+      const failLogoUpload = (
+        message: string,
+        status: number,
+        storageCode?: number,
+      ) => {
         console.warn("website logo upload rejected", {
           action: "site_logo_upload",
           adminId: admin.id,
@@ -44640,22 +43373,37 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       };
       try {
         if (!STORAGE_URL || !STORAGE_SERVICE_KEY)
-          return failLogoUpload("تخزين الصور غير مهيأ حالياً. تواصل مع مسؤول النظام.", 503);
+          return failLogoUpload(
+            "تخزين الصور غير مهيأ حالياً. تواصل مع مسؤول النظام.",
+            503,
+          );
         const data = await body(req);
         logoMetadata =
           data?.logoMetadata && typeof data.logoMetadata === "object"
             ? data.logoMetadata
             : {};
-        mime = String((logoMetadata as any).originalType ?? "unknown").slice(0, 80);
+        mime = String((logoMetadata as any).originalType ?? "unknown").slice(
+          0,
+          80,
+        );
         size = Math.max(0, Number((logoMetadata as any).originalSize ?? 0));
         const rawLogoUrl = String(data?.logoUrl ?? data?.url ?? "").trim();
         if (rawLogoUrl.startsWith("data:"))
-          return failLogoUpload("يجب رفع الشعار إلى التخزين أولاً. أعد المحاولة.", 422);
+          return failLogoUpload(
+            "يجب رفع الشعار إلى التخزين أولاً. أعد المحاولة.",
+            422,
+          );
         const path = websiteLogoStoragePath(rawLogoUrl);
         if (!path)
-          return failLogoUpload("رابط الشعار غير صالح أو لا ينتمي لتخزين الموقع.", 400);
+          return failLogoUpload(
+            "رابط الشعار غير صالح أو لا ينتمي لتخزين الموقع.",
+            400,
+          );
         if (!(await storageObjectExists(path)))
-          return failLogoUpload("تعذر التحقق من حفظ الشعار في التخزين. أعد المحاولة.", 422);
+          return failLogoUpload(
+            "تعذر التحقق من حفظ الشعار في التخزين. أعد المحاولة.",
+            422,
+          );
         const logoUrl = publicStorageUrl(path);
         const previous = await db.query.settingsTable.findFirst({
           where: eq(settingsTable.key, "logoUrl"),
@@ -44681,10 +43429,16 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
         const previousPath = websiteLogoStoragePath(previousUrl);
         if (previousPath && previousUrl !== logoUrl) {
-          await deleteWebsiteLogoObjectIfUnshared(previousPath, previousUrl).catch((cleanupError) => {
+          await deleteWebsiteLogoObjectIfUnshared(
+            previousPath,
+            previousUrl,
+          ).catch((cleanupError) => {
             console.warn("website logo cleanup failed", {
               action: "site_logo_replace_cleanup",
-              message: cleanupError instanceof Error ? cleanupError.message : "unknown",
+              message:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : "unknown",
             });
           });
         }
@@ -44706,7 +43460,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           mime,
           size,
           durationMs: Date.now() - startedAt,
-          message: uploadError instanceof Error ? uploadError.message : "unknown",
+          message:
+            uploadError instanceof Error ? uploadError.message : "unknown",
         });
         return error("تعذر حفظ الشعار. أعد المحاولة.", 500);
       }
@@ -44737,7 +43492,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         revalidateTag(PUBLIC_SETTINGS_TAG, { expire: 0 });
         const previousPath = websiteLogoStoragePath(previousUrl);
-        if (previousPath) await deleteWebsiteLogoObjectIfUnshared(previousPath, previousUrl).catch(() => false);
+        if (previousPath)
+          await deleteWebsiteLogoObjectIfUnshared(
+            previousPath,
+            previousUrl,
+          ).catch(() => false);
         void logAdminActivity(req, "site_logo_removed", "settings");
         console.info("website logo removed", {
           action: "site_logo_delete",
@@ -44750,7 +43509,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           action: "site_logo_delete",
           adminId: admin.id,
           durationMs: Date.now() - startedAt,
-          message: deleteError instanceof Error ? deleteError.message : "unknown",
+          message:
+            deleteError instanceof Error ? deleteError.message : "unknown",
         });
         return error("تعذر حذف الشعار. أعد المحاولة.", 500);
       }
@@ -44758,11 +43518,20 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     if (method === "PUT" || method === "PATCH") {
       const settingsBody = await body(req);
       const entries = Object.entries(settingsBody);
-      const requestedLogoUrl = Object.prototype.hasOwnProperty.call(settingsBody ?? {}, "logoUrl")
+      const requestedLogoUrl = Object.prototype.hasOwnProperty.call(
+        settingsBody ?? {},
+        "logoUrl",
+      )
         ? String((settingsBody as any).logoUrl ?? "").trim()
         : null;
-      if (requestedLogoUrl?.startsWith("data:") || requestedLogoUrl?.startsWith("blob:"))
-        return error("لا يمكن حفظ الشعار بصيغة مؤقتة. ارفع الصورة من أداة الشعار.", 422);
+      if (
+        requestedLogoUrl?.startsWith("data:") ||
+        requestedLogoUrl?.startsWith("blob:")
+      )
+        return error(
+          "لا يمكن حفظ الشعار بصيغة مؤقتة. ارفع الصورة من أداة الشعار.",
+          422,
+        );
       if (requestedLogoUrl && !cleanPublicUrl(requestedLogoUrl))
         return error("رابط الشعار غير صالح.", 400);
       await Promise.all(
@@ -44813,7 +43582,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: eq(staffTable.id, targetId),
       });
       if (!employee) return error("الموظف غير موجود", 404);
-      const payload = await body(req).catch(() => ({}));
+      const payload = await body(req);
       const reason =
         typeof payload?.reason === "string" && payload.reason.trim()
           ? payload.reason.trim()
@@ -44833,32 +43602,129 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     }
 
     if (parts[2] && parts[3] === "approval-permissions") {
-      if (auth.role !== "admin") return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
+      if (auth.role !== "admin")
+        return error("لا تملك صلاحية تنفيذ هذا الإجراء.", 403);
       await ensureAdminExtensionsTables();
       const staffId = int(parts[2]);
       if (!staffId) return error("معرف الموظف غير صحيح", 400);
-      const employee = await db.query.staffTable.findFirst({ where: eq(staffTable.id, staffId) });
+      const employee = await db.query.staffTable.findFirst({
+        where: eq(staffTable.id, staffId),
+      });
       if (!employee) return error("الموظف غير موجود", 404);
       if (method === "GET") {
-        const profile = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, staffId) });
-        const actions = await db.query.approvalActionsTable.findMany({ where: eq(approvalActionsTable.actorStaffId, staffId), orderBy: (table, { desc }) => [desc(table.createdAt)], limit: 30 });
+        const profile =
+          await db.query.employeeApprovalPermissionsTable.findFirst({
+            where: eq(employeeApprovalPermissionsTable.staffId, staffId),
+          });
+        const actions = await db.query.approvalActionsTable.findMany({
+          where: eq(approvalActionsTable.actorStaffId, staffId),
+          orderBy: (table, { desc }) => [desc(table.createdAt)],
+          limit: 30,
+        });
         return json({ profile: profile ?? null, actions });
       }
       if (method === "PATCH") {
         const bodyValue = await body(req);
-        const codes = Array.isArray(bodyValue?.permissionCodes) ? bodyValue.permissionCodes.map(String).filter((code: string) => (DELEGATED_APPROVAL_CODES as readonly string[]).includes(code)) : [];
-        const categories = Array.isArray(bodyValue?.allowedCategories) ? bodyValue.allowedCategories.map(String).filter(Boolean).slice(0, 40) : [];
-        const departments = Array.isArray(bodyValue?.allowedDepartments) ? bodyValue.allowedDepartments.map(String).filter(Boolean).slice(0, 40) : [];
-        const branches = Array.isArray(bodyValue?.allowedBranchIds) ? bodyValue.allowedBranchIds.map(Number).filter((value: number) => Number.isInteger(value) && value > 0).slice(0, 100) : [];
-        const modeValues: Record<string, "delegated_final" | "main_manager_final"> = (typeof bodyValue?.categoryModes === "object" && bodyValue.categoryModes ? Object.fromEntries(Object.entries(bodyValue.categoryModes).filter(([key, value]) => categories.includes(key) && ["delegated_final", "main_manager_final"].includes(String(value)))) : {}) as Record<string, "delegated_final" | "main_manager_final">;
+        const codes = Array.isArray(bodyValue?.permissionCodes)
+          ? bodyValue.permissionCodes
+              .map(String)
+              .filter((code: string) =>
+                (DELEGATED_APPROVAL_CODES as readonly string[]).includes(code),
+              )
+          : [];
+        const categories = Array.isArray(bodyValue?.allowedCategories)
+          ? bodyValue.allowedCategories.map(String).filter(Boolean).slice(0, 40)
+          : [];
+        const departments = Array.isArray(bodyValue?.allowedDepartments)
+          ? bodyValue.allowedDepartments
+              .map(String)
+              .filter(Boolean)
+              .slice(0, 40)
+          : [];
+        const branches = Array.isArray(bodyValue?.allowedBranchIds)
+          ? bodyValue.allowedBranchIds
+              .map(Number)
+              .filter((value: number) => Number.isInteger(value) && value > 0)
+              .slice(0, 100)
+          : [];
+        const modeValues: Record<
+          string,
+          "delegated_final" | "main_manager_final"
+        > = (
+          typeof bodyValue?.categoryModes === "object" &&
+          bodyValue.categoryModes
+            ? Object.fromEntries(
+                Object.entries(bodyValue.categoryModes).filter(
+                  ([key, value]) =>
+                    categories.includes(key) &&
+                    ["delegated_final", "main_manager_final"].includes(
+                      String(value),
+                    ),
+                ),
+              )
+            : {}
+        ) as Record<string, "delegated_final" | "main_manager_final">;
         const validFrom = normalizeDateOnly(bodyValue?.validFrom);
         const validUntil = normalizeDateOnly(bodyValue?.validUntil);
-        if (validFrom && validUntil && validFrom > validUntil) return error("تاريخ انتهاء التفويض يجب أن يكون بعد تاريخ البداية.", 400);
-        const values = { permissionCodes: codes, allowedCategories: categories, allowedDepartments: departments, allowedBranchIds: branches, categoryModes: modeValues, maxAmount: String(Math.max(0, Number(bodyValue?.maxAmount) || 0)), unlimitedAmount: bodyValue?.unlimitedAmount === true, validFrom: validFrom ? new Date(`${validFrom}T00:00:00Z`) : null, validUntil: validUntil ? new Date(`${validUntil}T23:59:59Z`) : null, isActive: bodyValue?.isActive === true, isTemporary: bodyValue?.isTemporary === true, delegationReason: nullableText(bodyValue?.delegationReason), grantedBy: auth.id, updatedAt: new Date() };
-        const before = await db.query.employeeApprovalPermissionsTable.findFirst({ where: eq(employeeApprovalPermissionsTable.staffId, staffId) });
-        const [profile] = before ? await db.update(employeeApprovalPermissionsTable).set(values).where(eq(employeeApprovalPermissionsTable.staffId, staffId)).returning() : await db.insert(employeeApprovalPermissionsTable).values({ staffId, ...values }).returning();
-        await logAdminActivity(req, "approval_permissions_updated", "staff", staffId, { oldPermissions: before?.permissionCodes ?? [], newPermissions: codes, maxAmount: values.maxAmount, active: values.isActive });
-        await notifyMainManagers({ type: "approval_action", title: "تحديث صلاحيات الموافقات", body: `قام ${auth.fullName || auth.username} بتحديث صلاحيات الموافقات للموظف ${employee.fullName || employee.username}.`, metadata: { staffId, action: before?.isActive && !values.isActive ? "permission_removed" : "permission_granted" } });
+        if (validFrom && validUntil && validFrom > validUntil)
+          return error(
+            "تاريخ انتهاء التفويض يجب أن يكون بعد تاريخ البداية.",
+            400,
+          );
+        const values = {
+          permissionCodes: codes,
+          allowedCategories: categories,
+          allowedDepartments: departments,
+          allowedBranchIds: branches,
+          categoryModes: modeValues,
+          maxAmount: String(Math.max(0, Number(bodyValue?.maxAmount) || 0)),
+          unlimitedAmount: bodyValue?.unlimitedAmount === true,
+          validFrom: validFrom ? new Date(`${validFrom}T00:00:00Z`) : null,
+          validUntil: validUntil ? new Date(`${validUntil}T23:59:59Z`) : null,
+          isActive: bodyValue?.isActive === true,
+          isTemporary: bodyValue?.isTemporary === true,
+          delegationReason: nullableText(bodyValue?.delegationReason),
+          grantedBy: auth.id,
+          updatedAt: new Date(),
+        };
+        const before =
+          await db.query.employeeApprovalPermissionsTable.findFirst({
+            where: eq(employeeApprovalPermissionsTable.staffId, staffId),
+          });
+        const [profile] = before
+          ? await db
+              .update(employeeApprovalPermissionsTable)
+              .set(values)
+              .where(eq(employeeApprovalPermissionsTable.staffId, staffId))
+              .returning()
+          : await db
+              .insert(employeeApprovalPermissionsTable)
+              .values({ staffId, ...values })
+              .returning();
+        await logAdminActivity(
+          req,
+          "approval_permissions_updated",
+          "staff",
+          staffId,
+          {
+            oldPermissions: before?.permissionCodes ?? [],
+            newPermissions: codes,
+            maxAmount: values.maxAmount,
+            active: values.isActive,
+          },
+        );
+        await notifyMainManagers({
+          type: "approval_action",
+          title: "تحديث صلاحيات الموافقات",
+          body: `قام ${auth.fullName || auth.username} بتحديث صلاحيات الموافقات للموظف ${employee.fullName || employee.username}.`,
+          metadata: {
+            staffId,
+            action:
+              before?.isActive && !values.isActive
+                ? "permission_removed"
+                : "permission_granted",
+          },
+        });
         return json({ profile });
       }
       return error("الطلب غير مدعوم", 405);
@@ -44906,17 +43772,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           })
           .where(eq(employeeSalarySettingsTable.staffId, id))
           .returning();
-        await db
-          .insert(employeeSalarySettingAuditsTable)
-          .values({
-            staffId: id,
-            actorId: auth.id,
-            actorName: auth.fullName || auth.username,
-            action: "approved",
-            oldValue: current as any,
-            newValue: settings as any,
-            ipAddress: ip(req),
-          });
+        await db.insert(employeeSalarySettingAuditsTable).values({
+          staffId: id,
+          actorId: auth.id,
+          actorName: auth.fullName || auth.username,
+          action: "approved",
+          oldValue: current as any,
+          newValue: settings as any,
+          ipAddress: ip(req),
+        });
         void logAdminActivity(req, "salary_settings_approved", "staff", id, {
           oldValue: current,
           newValue: settings,
@@ -45085,17 +43949,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             set: updatable,
           })
           .returning();
-        await db
-          .insert(employeeSalarySettingAuditsTable)
-          .values({
-            staffId: id,
-            actorId: auth.id,
-            actorName: auth.fullName || auth.username,
-            action: previous ? "updated" : "created",
-            oldValue: (previous as any) ?? {},
-            newValue: settings as any,
-            ipAddress: ip(req),
-          });
+        await db.insert(employeeSalarySettingAuditsTable).values({
+          staffId: id,
+          actorId: auth.id,
+          actorName: auth.fullName || auth.username,
+          action: previous ? "updated" : "created",
+          oldValue: (previous as any) ?? {},
+          newValue: settings as any,
+          ipAddress: ip(req),
+        });
         void logAdminActivity(req, "salary_settings_updated", "staff", id, {
           oldValue: previous ?? {},
           newValue: settings,
@@ -48462,64 +47324,12 @@ let salesInvoicesMigrated = false;
 async function ensureSalesInvoicesTables() {
   if (salesInvoicesMigrated) return;
   try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS sales_invoices (
-        id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
-        customer_name TEXT NOT NULL DEFAULT '', customer_phone VARCHAR(30), customer_id INTEGER REFERENCES customers(id),
-        subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        coupon_code VARCHAR(60), coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
-        total NUMERIC(14,2) NOT NULL DEFAULT 0,
-        paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0, remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        payment_method VARCHAR(20) NOT NULL DEFAULT 'cash', payment_status VARCHAR(20) NOT NULL DEFAULT 'paid',
-        status VARCHAR(20) NOT NULL DEFAULT 'active', is_internal INTEGER NOT NULL DEFAULT 0,
-        notes TEXT, created_by INTEGER REFERENCES staff(id), created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS sales_invoice_items (
-        id SERIAL PRIMARY KEY, invoice_id INTEGER NOT NULL REFERENCES sales_invoices(id) ON DELETE CASCADE,
-        product_id INTEGER REFERENCES products(id), product_name TEXT NOT NULL, barcode VARCHAR(100),
-        quantity NUMERIC(12,3) NOT NULL DEFAULT 1, unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
-        discount NUMERIC(14,2) NOT NULL DEFAULT 0, discount_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
-        total NUMERIC(14,2) NOT NULL DEFAULT 0, cost_price NUMERIC(14,2) NOT NULL DEFAULT 0,
-        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      ALTER TABLE sales_invoices
-        ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(60),
-        ADD COLUMN IF NOT EXISTS coupon_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS offer_delivery_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
-        ADD COLUMN IF NOT EXISTS supplier_name TEXT,
-        ADD COLUMN IF NOT EXISTS stock_applied INTEGER NOT NULL DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS stock_restored_at TIMESTAMP,
-        ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP,
-        ADD COLUMN IF NOT EXISTS cancelled_by INTEGER REFERENCES staff(id),
-        ADD COLUMN IF NOT EXISTS cancelled_by_name TEXT,
-        ADD COLUMN IF NOT EXISTS cancellation_reason TEXT,
-        ADD COLUMN IF NOT EXISTS cancelled_original_paid_amount NUMERIC(14,2),
-        ADD COLUMN IF NOT EXISTS cancelled_original_remaining_amount NUMERIC(14,2),
-        ADD COLUMN IF NOT EXISTS reversal_references JSONB NOT NULL DEFAULT '{}'::jsonb,
-        ADD COLUMN IF NOT EXISTS reversal_completed_at TIMESTAMP,
-        ADD COLUMN IF NOT EXISTS inventory_reversed BOOLEAN NOT NULL DEFAULT false,
-        ADD COLUMN IF NOT EXISTS finance_reversed BOOLEAN NOT NULL DEFAULT false;
-      DO $receivable$
-      BEGIN
-        IF to_regclass('public.customer_receivable_ledger') IS NOT NULL THEN
-          ALTER TABLE customer_receivable_ledger
-            DROP CONSTRAINT IF EXISTS customer_receivable_ledger_status_chk;
-          ALTER TABLE customer_receivable_ledger
-            ADD CONSTRAINT customer_receivable_ledger_status_chk
-            CHECK (status IN ('open', 'paid', 'review', 'cancelled'));
-        END IF;
-      END
-      $receivable$;
-      CREATE INDEX IF NOT EXISTS idx_sales_invoices_date ON sales_invoices(date);
-      CREATE INDEX IF NOT EXISTS idx_sales_invoices_customer ON sales_invoices(customer_id);
-      CREATE INDEX IF NOT EXISTS idx_sales_invoice_items_invoice ON sales_invoice_items(invoice_id);
-    `);
+    await db.execute(sql`select 1`);
     salesInvoicesMigrated = true;
-  } catch {
-    salesInvoicesMigrated = true;
+  } catch (error) {
+    salesInvoicesMigrated = false;
+    console.error("sales invoice schema check failed", safeServerError(error));
+    throw error;
   }
 }
 
@@ -48527,41 +47337,12 @@ let purchasesMigrated = false;
 async function ensurePurchasesTables() {
   if (purchasesMigrated) return;
   try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS suppliers (
-        id SERIAL PRIMARY KEY, name TEXT NOT NULL, phone VARCHAR(30), email TEXT, address TEXT,
-        notes TEXT, balance TEXT NOT NULL DEFAULT '0', is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_code VARCHAR(40), ADD COLUMN IF NOT EXISTS company TEXT, ADD COLUMN IF NOT EXISTS contact_person TEXT, ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(30), ADD COLUMN IF NOT EXISTS category VARCHAR(60), ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(80), ADD COLUMN IF NOT EXISTS credit_limit NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(16,2) NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
-      CREATE UNIQUE INDEX IF NOT EXISTS suppliers_code_unique_idx ON suppliers(supplier_code) WHERE supplier_code IS NOT NULL;
-      CREATE TABLE IF NOT EXISTS supplier_products (id SERIAL PRIMARY KEY, supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, last_purchase_price NUMERIC(16,2) NOT NULL DEFAULT 0, supplier_sku VARCHAR(100), supplier_barcode VARCHAR(100), is_default BOOLEAN NOT NULL DEFAULT false, is_preferred BOOLEAN NOT NULL DEFAULT false, created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW());
-      CREATE UNIQUE INDEX IF NOT EXISTS supplier_products_supplier_product_idx ON supplier_products(supplier_id, product_id);
-      CREATE INDEX IF NOT EXISTS supplier_products_product_idx ON supplier_products(product_id);
-      CREATE TABLE IF NOT EXISTS purchase_invoices (
-        id SERIAL PRIMARY KEY, invoice_no VARCHAR(40) NOT NULL UNIQUE, date DATE NOT NULL,
-        supplier_name TEXT NOT NULL DEFAULT '', supplier_id INTEGER REFERENCES suppliers(id),
-        subtotal NUMERIC(14,2) NOT NULL DEFAULT 0, discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        tax_amount NUMERIC(14,2) NOT NULL DEFAULT 0, shipping_cost NUMERIC(14,2) NOT NULL DEFAULT 0,
-        total NUMERIC(14,2) NOT NULL DEFAULT 0, paid_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        remaining_amount NUMERIC(14,2) NOT NULL DEFAULT 0, payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
-        payment_status VARCHAR(20) NOT NULL DEFAULT 'paid', status VARCHAR(20) NOT NULL DEFAULT 'active',
-        notes TEXT, created_by INTEGER REFERENCES staff(id), created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS purchase_invoice_items (
-        id SERIAL PRIMARY KEY, invoice_id INTEGER NOT NULL REFERENCES purchase_invoices(id) ON DELETE CASCADE,
-        product_id INTEGER REFERENCES products(id), product_name TEXT NOT NULL, barcode VARCHAR(100),
-        quantity NUMERIC(12,3) NOT NULL DEFAULT 1, cost_price NUMERIC(14,2) NOT NULL DEFAULT 0,
-        sale_price NUMERIC(14,2) NOT NULL DEFAULT 0, discount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        total NUMERIC(14,2) NOT NULL DEFAULT 0, created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_purchase_invoices_date ON purchase_invoices(date);
-      CREATE INDEX IF NOT EXISTS idx_purchase_invoice_items_invoice ON purchase_invoice_items(invoice_id);
-    `);
+    await db.execute(sql`select 1`);
     purchasesMigrated = true;
-  } catch {
-    purchasesMigrated = true;
+  } catch (error) {
+    purchasesMigrated = false;
+    console.error("purchase invoice schema check failed", safeServerError(error));
+    throw error;
   }
 }
 
@@ -48569,17 +47350,12 @@ let printTemplatesMigrated = false;
 async function ensurePrintTemplatesTables() {
   if (printTemplatesMigrated) return;
   try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS print_templates (
-        id SERIAL PRIMARY KEY, name TEXT NOT NULL, type VARCHAR(30) NOT NULL DEFAULT 'sales',
-        paper_size VARCHAR(20) NOT NULL DEFAULT 'a4', is_default INTEGER NOT NULL DEFAULT 0,
-        config TEXT NOT NULL DEFAULT '{}', created_by INTEGER REFERENCES staff(id),
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-    `);
+    await db.execute(sql`select 1`);
     printTemplatesMigrated = true;
-  } catch {
-    printTemplatesMigrated = true;
+  } catch (error) {
+    printTemplatesMigrated = false;
+    console.error("print template schema check failed", safeServerError(error));
+    throw error;
   }
 }
 
@@ -48629,32 +47405,7 @@ function salesInvoiceItems(value: unknown) {
 async function ensureAssetCategoriesTables(): Promise<void> {
   if (!assetCategoriesTablesPromise) {
     assetCategoriesTablesPromise = db
-      .execute(
-        sql`
-        create table if not exists "asset_categories" (
-          "id" serial primary key,
-          "name" text not null,
-          "description" text,
-          "color" varchar(20),
-          "icon" varchar(80),
-          "created_at" timestamp not null default now(),
-          "updated_at" timestamp not null default now()
-        );
-        create unique index if not exists "asset_categories_name_idx" on "asset_categories" ("name");
-        create index if not exists "asset_categories_created_idx" on "asset_categories" ("created_at");
-        alter table "products" add column if not exists "asset_category_id" integer references "asset_categories" ("id") on delete restrict;
-        create index if not exists "products_asset_category_id_idx" on "products" ("asset_category_id");
-        insert into "asset_categories" ("name", "icon") values
-          ('كاميرا', 'camera'), ('عدسة', 'aperture'), ('درون', 'drone'),
-          ('إضاءة', 'lightbulb'), ('صوت', 'audio-lines'), ('سماعة', 'speaker'),
-          ('مكسر صوت', 'sliders-horizontal'), ('شاشة', 'monitor'), ('ديكور', 'lamp'),
-          ('مركبة', 'car-front'), ('أثاث', 'armchair'), ('أخرى', 'package')
-        on conflict ("name") do nothing;
-        update "products" p set "asset_category_id" = c."id"
-        from "asset_categories" c
-        where p."asset_category_id" is null and p."is_asset" = true and p."category" = c."name";
-      `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         assetCategoriesTablesPromise = null;
@@ -48702,10 +47453,18 @@ async function resolveSalesInvoiceBundleLines(
         .filter((id): id is number => Number.isInteger(id) && Number(id) > 0),
     ),
   ];
-  if (!bundleIds.length) return { items, bundles: new Map<number, BundleLineDraft>(), offerDeliveryFee: 0 };
+  if (!bundleIds.length)
+    return {
+      items,
+      bundles: new Map<number, BundleLineDraft>(),
+      offerDeliveryFee: 0,
+    };
   const now = new Date();
   const [bundles, rows] = await Promise.all([
-    db.select().from(productBundlesTable).where(inArray(productBundlesTable.id, bundleIds)),
+    db
+      .select()
+      .from(productBundlesTable)
+      .where(inArray(productBundlesTable.id, bundleIds)),
     db
       .select({
         bundleId: productBundleItemsTable.bundleId,
@@ -48717,7 +47476,10 @@ async function resolveSalesInvoiceBundleLines(
         isActive: productsTable.isActive,
       })
       .from(productBundleItemsTable)
-      .innerJoin(productsTable, eq(productsTable.id, productBundleItemsTable.productId))
+      .innerJoin(
+        productsTable,
+        eq(productsTable.id, productBundleItemsTable.productId),
+      )
       .where(inArray(productBundleItemsTable.bundleId, bundleIds)),
   ]);
   const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]));
@@ -48763,7 +47525,8 @@ async function resolveSalesInvoiceBundleLines(
       barcode: bundle.barcode ?? null,
       unitPrice,
       costPrice: componentRows.reduce(
-        (sum, component) => sum + component.costPrice * component.quantityPerBundle,
+        (sum, component) =>
+          sum + component.costPrice * component.quantityPerBundle,
         0,
       ),
       discount,
@@ -48937,7 +47700,9 @@ async function deductSalesInvoiceStockInTransaction(
   });
   const productIds = [
     ...new Set(
-      stockLines.map((item) => Number(item.productId ?? 0)).filter((id) => id > 0),
+      stockLines
+        .map((item) => Number(item.productId ?? 0))
+        .filter((id) => id > 0),
     ),
   ];
   const ownerIds = await stockOwnerProductIdsInTransaction(tx, productIds);
@@ -49191,18 +47956,25 @@ type SalesInvoiceCustomerCandidate = {
   matchMethod: "phone" | "account_phone" | "manual";
 };
 
-function salesInvoiceCustomerName(customer: typeof customersTable.$inferSelect) {
+function salesInvoiceCustomerName(
+  customer: typeof customersTable.$inferSelect,
+) {
   return customer.fullName?.trim() || customer.name?.trim() || "عميل";
 }
 
 /** Legacy invoice phones are suggestions only: this function never chooses or links a customer. */
-async function salesInvoiceCustomerCandidates(phone: string | null | undefined): Promise<SalesInvoiceCustomerCandidate[]> {
+async function salesInvoiceCustomerCandidates(
+  phone: string | null | undefined,
+): Promise<SalesInvoiceCustomerCandidate[]> {
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) return [];
   const variants = iraqiPhoneVariants(phone);
   const [directRows, accountRows] = await Promise.all([
     db.query.customersTable.findMany({
-      where: and(eq(customersTable.status, "active"), inArray(customersTable.phone, variants)),
+      where: and(
+        eq(customersTable.status, "active"),
+        inArray(customersTable.phone, variants),
+      ),
       limit: 25,
     }),
     db.query.customerAccountsTable.findMany({
@@ -49210,14 +47982,20 @@ async function salesInvoiceCustomerCandidates(phone: string | null | undefined):
       limit: 25,
     }),
   ]);
-  const accountCustomerIds = [...new Set(accountRows.map((row) => row.customerId))];
+  const accountCustomerIds = [
+    ...new Set(accountRows.map((row) => row.customerId)),
+  ];
   const accountCustomers = accountCustomerIds.length
     ? await db.query.customersTable.findMany({
-        where: and(eq(customersTable.status, "active"), inArray(customersTable.id, accountCustomerIds)),
+        where: and(
+          eq(customersTable.status, "active"),
+          inArray(customersTable.id, accountCustomerIds),
+        ),
       })
     : [];
   const customersById = new Map<number, typeof customersTable.$inferSelect>();
-  for (const row of [...directRows, ...accountCustomers]) customersById.set(row.id, row);
+  for (const row of [...directRows, ...accountCustomers])
+    customersById.set(row.id, row);
   const ids = [...customersById.keys()];
   const invoices = ids.length
     ? await db.query.salesInvoicesTable.findMany({
@@ -49231,11 +48009,21 @@ async function salesInvoiceCustomerCandidates(phone: string | null | undefined):
   const balances = new Map<number, number>();
   for (const invoice of invoices) {
     if (!invoice.customerId) continue;
-    balances.set(invoice.customerId, money((balances.get(invoice.customerId) ?? 0) + money(invoice.remainingAmount)));
+    balances.set(
+      invoice.customerId,
+      money(
+        (balances.get(invoice.customerId) ?? 0) +
+          money(invoice.remainingAmount),
+      ),
+    );
   }
   const directIds = new Set(directRows.map((row) => row.id));
-  const accountByCustomer = new Map<number, typeof customerAccountsTable.$inferSelect>();
-  for (const account of accountRows) accountByCustomer.set(account.customerId, account);
+  const accountByCustomer = new Map<
+    number,
+    typeof customerAccountsTable.$inferSelect
+  >();
+  for (const account of accountRows)
+    accountByCustomer.set(account.customerId, account);
   return ids.map((id) => {
     const customer = customersById.get(id)!;
     const account = accountByCustomer.get(id);
@@ -49245,42 +48033,66 @@ async function salesInvoiceCustomerCandidates(phone: string | null | undefined):
       fullName: customer.fullName,
       phone: customer.phone,
       customerCode: account?.customerCode ?? null,
-      secondaryPhone: account?.phoneNormalized && account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
-        ? formatIraqiPhone(account.phoneNormalized)
-        : null,
+      secondaryPhone:
+        account?.phoneNormalized &&
+        account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
+          ? formatIraqiPhone(account.phoneNormalized)
+          : null,
       balance: balances.get(id) ?? 0,
       matchMethod: directIds.has(id) ? "phone" : "account_phone",
     };
   });
 }
 
-async function searchSalesInvoiceCustomers(query: string): Promise<SalesInvoiceCustomerCandidate[]> {
+async function searchSalesInvoiceCustomers(
+  query: string,
+): Promise<SalesInvoiceCustomerCandidate[]> {
   const raw = query.trim().slice(0, 100);
   if (!raw) return [];
   const normalized = normalizeIraqiPhone(raw);
   const variants = normalized ? iraqiPhoneVariants(raw) : [];
   const pattern = `%${raw.replace(/[\\%_]/g, "\\$&")}%`;
-  const customerConditions: any[] = [ilike(customersTable.name, pattern), ilike(customersTable.fullName, pattern)];
-  if (variants.length) customerConditions.push(inArray(customersTable.phone, variants));
+  const customerConditions: any[] = [
+    ilike(customersTable.name, pattern),
+    ilike(customersTable.fullName, pattern),
+  ];
+  if (variants.length)
+    customerConditions.push(inArray(customersTable.phone, variants));
   const [customers, accounts] = await Promise.all([
     db.query.customersTable.findMany({
-      where: and(eq(customersTable.status, "active"), or(...customerConditions)),
+      where: and(
+        eq(customersTable.status, "active"),
+        or(...customerConditions),
+      ),
       limit: 25,
     }),
     db.query.customerAccountsTable.findMany({
       where: normalized
-        ? or(eq(customerAccountsTable.phoneNormalized, normalized), ilike(customerAccountsTable.customerCode, pattern))
+        ? or(
+            eq(customerAccountsTable.phoneNormalized, normalized),
+            ilike(customerAccountsTable.customerCode, pattern),
+          )
         : ilike(customerAccountsTable.customerCode, pattern),
       limit: 25,
     }),
   ]);
-  const accountIds = [...new Set(accounts.map((account) => account.customerId))];
+  const accountIds = [
+    ...new Set(accounts.map((account) => account.customerId)),
+  ];
   const additional = accountIds.length
-    ? await db.query.customersTable.findMany({ where: and(eq(customersTable.status, "active"), inArray(customersTable.id, accountIds)) })
+    ? await db.query.customersTable.findMany({
+        where: and(
+          eq(customersTable.status, "active"),
+          inArray(customersTable.id, accountIds),
+        ),
+      })
     : [];
   const all = new Map<number, typeof customersTable.$inferSelect>();
-  for (const customer of [...customers, ...additional]) all.set(customer.id, customer);
-  const accountByCustomer = new Map(accounts.map((account) => [account.customerId, account]));
+  for (const customer of [...customers, ...additional])
+    all.set(customer.id, customer);
+  const accountByCustomer = new Map(
+    accounts.map((account) => [account.customerId, account]),
+  );
   return [...all.values()].map((customer) => {
     const account = accountByCustomer.get(customer.id);
     return {
@@ -49289,9 +48101,11 @@ async function searchSalesInvoiceCustomers(query: string): Promise<SalesInvoiceC
       fullName: customer.fullName,
       phone: customer.phone,
       customerCode: account?.customerCode ?? null,
-      secondaryPhone: account?.phoneNormalized && account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
-        ? formatIraqiPhone(account.phoneNormalized)
-        : null,
+      secondaryPhone:
+        account?.phoneNormalized &&
+        account.phoneNormalized !== normalizeIraqiPhone(customer.phone)
+          ? formatIraqiPhone(account.phoneNormalized)
+          : null,
       balance: 0,
       matchMethod: "manual" as const,
     };
@@ -49299,9 +48113,13 @@ async function searchSalesInvoiceCustomers(query: string): Promise<SalesInvoiceC
 }
 
 async function salesInvoiceCustomerLinkPrecheck(invoiceId: number) {
-  const invoice = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, invoiceId) });
+  const invoice = await db.query.salesInvoicesTable.findFirst({
+    where: eq(salesInvoicesTable.id, invoiceId),
+  });
   if (!invoice) return null;
-  const candidates = invoice.customerId ? [] : await salesInvoiceCustomerCandidates(invoice.customerPhone);
+  const candidates = invoice.customerId
+    ? []
+    : await salesInvoiceCustomerCandidates(invoice.customerPhone);
   return {
     invoice: {
       id: invoice.id,
@@ -49322,41 +48140,103 @@ async function salesInvoiceCustomerLinkPrecheck(invoiceId: number) {
 
 async function getOrCreateSalesCashCustomer() {
   const key = "salesCashCustomer";
-  const setting = await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, key) });
+  const setting = await db.query.settingsTable.findFirst({
+    where: eq(settingsTable.key, key),
+  });
   const configuredId = Number((setting?.value as any)?.customerId);
   if (configuredId > 0) {
-    const configured = await db.query.customersTable.findFirst({ where: and(eq(customersTable.id, configuredId), eq(customersTable.status, "active")) });
+    const configured = await db.query.customersTable.findFirst({
+      where: and(
+        eq(customersTable.id, configuredId),
+        eq(customersTable.status, "active"),
+      ),
+    });
     if (configured) return configured;
   }
-  const existing = await db.query.customersTable.findFirst({ where: and(eq(customersTable.phone, "00000000000"), eq(customersTable.status, "active")) });
-  const inserted = existing ? [existing] : await db.insert(customersTable)
-    .values({ phone: "00000000000", name: "عميل نقدي", fullName: "عميل نقدي", status: "active" })
-    .onConflictDoNothing({ target: customersTable.phone })
-    .returning();
-  const customer = inserted[0] ?? await db.query.customersTable.findFirst({ where: eq(customersTable.phone, "00000000000") });
-  if (!customer) throw new Error("تعذر إعداد العميل النقدي");
-  await db.insert(settingsTable).values({ key, value: { customerId: customer.id, customerCode: "AJN-CASH" } as any }).onConflictDoUpdate({
-    target: settingsTable.key,
-    set: { value: { customerId: customer.id, customerCode: "AJN-CASH" } as any, updatedAt: new Date() },
+  const existing = await db.query.customersTable.findFirst({
+    where: and(
+      eq(customersTable.phone, "00000000000"),
+      eq(customersTable.status, "active"),
+    ),
   });
+  const inserted = existing
+    ? [existing]
+    : await db
+        .insert(customersTable)
+        .values({
+          phone: "00000000000",
+          name: "عميل نقدي",
+          fullName: "عميل نقدي",
+          status: "active",
+        })
+        .onConflictDoNothing({ target: customersTable.phone })
+        .returning();
+  const customer =
+    inserted[0] ??
+    (await db.query.customersTable.findFirst({
+      where: eq(customersTable.phone, "00000000000"),
+    }));
+  if (!customer) throw new Error("تعذر إعداد العميل النقدي");
+  await db
+    .insert(settingsTable)
+    .values({
+      key,
+      value: { customerId: customer.id, customerCode: "AJN-CASH" } as any,
+    })
+    .onConflictDoUpdate({
+      target: settingsTable.key,
+      set: {
+        value: { customerId: customer.id, customerCode: "AJN-CASH" } as any,
+        updatedAt: new Date(),
+      },
+    });
   return customer;
 }
 
-async function linkSalesInvoiceCustomer(input: { invoiceId: number; customerId: number; allowRelink: boolean; reason?: string }) {
+async function linkSalesInvoiceCustomer(input: {
+  invoiceId: number;
+  customerId: number;
+  allowRelink: boolean;
+  reason?: string;
+}) {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select id from sales_invoices where id = ${input.invoiceId} for update`);
-    const invoice = await tx.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, input.invoiceId) });
+    await tx.execute(
+      sql`select id from sales_invoices where id = ${input.invoiceId} for update`,
+    );
+    const invoice = await tx.query.salesInvoicesTable.findFirst({
+      where: eq(salesInvoicesTable.id, input.invoiceId),
+    });
     if (!invoice) throw new Error("الفاتورة غير موجودة");
-    if (["deleted", "cancelled"].includes(invoice.status)) throw new Error("لا يمكن ربط فاتورة ملغاة أو محذوفة");
-    const customer = await tx.query.customersTable.findFirst({ where: eq(customersTable.id, input.customerId) });
-    if (!customer || customer.status !== "active") throw new Error("العميل المحدد غير موجود أو غير نشط");
+    if (["deleted", "cancelled"].includes(invoice.status))
+      throw new Error("لا يمكن ربط فاتورة ملغاة أو محذوفة");
+    const customer = await tx.query.customersTable.findFirst({
+      where: eq(customersTable.id, input.customerId),
+    });
+    if (!customer || customer.status !== "active")
+      throw new Error("العميل المحدد غير موجود أو غير نشط");
     if (invoice.customerId && invoice.customerId !== customer.id) {
       if (!input.allowRelink) throw new Error("الفاتورة مرتبطة بعميل آخر");
-      if (!input.reason || input.reason.trim().length < 3) throw new Error("سبب إعادة الربط مطلوب");
+      if (!input.reason || input.reason.trim().length < 3)
+        throw new Error("سبب إعادة الربط مطلوب");
     }
-    if (invoice.customerId === customer.id) return { invoice, customer, oldCustomerId: invoice.customerId, changed: false };
-    const [updated] = await tx.update(salesInvoicesTable).set({ customerId: customer.id, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, invoice.id)).returning();
-    return { invoice: updated, customer, oldCustomerId: invoice.customerId, changed: true };
+    if (invoice.customerId === customer.id)
+      return {
+        invoice,
+        customer,
+        oldCustomerId: invoice.customerId,
+        changed: false,
+      };
+    const [updated] = await tx
+      .update(salesInvoicesTable)
+      .set({ customerId: customer.id, updatedAt: new Date() })
+      .where(eq(salesInvoicesTable.id, invoice.id))
+      .returning();
+    return {
+      invoice: updated,
+      customer,
+      oldCustomerId: invoice.customerId,
+      changed: true,
+    };
   });
 }
 
@@ -49374,10 +48254,10 @@ async function handleSalesInvoices(
     isCustomerLinkWrite
       ? "sales_invoice.customer.link"
       : parts[3] === "cancel"
-      ? "sales_invoice.cancel"
-      : req.method === "DELETE"
-        ? "sales_invoice.permanent_delete"
-        : "accounting",
+        ? "sales_invoice.cancel"
+        : req.method === "DELETE"
+          ? "sales_invoice.permanent_delete"
+          : "accounting",
   );
   if (isResponse(auth)) return auth;
   const method = req.method;
@@ -49390,17 +48270,25 @@ async function handleSalesInvoices(
   }
   const resultRows = (result: any) => result?.rows ?? result ?? [];
 
-  if ((method === "GET" || method === "POST") && parts[2] === "customer-link-repair") {
+  if (
+    (method === "GET" || method === "POST") &&
+    parts[2] === "customer-link-repair"
+  ) {
     if (!hasPermission(auth, "sales_invoice.customer.repair"))
       return error("إصلاح ربط الفواتير التاريخية متاح للمدير فقط", 403);
     const rows = await db.query.salesInvoicesTable.findMany({
-      where: and(isNull(salesInvoicesTable.customerId), eq(salesInvoicesTable.status, "active")),
+      where: and(
+        isNull(salesInvoicesTable.customerId),
+        eq(salesInvoicesTable.status, "active"),
+      ),
       orderBy: [desc(salesInvoicesTable.createdAt)],
       limit: 250,
     });
     const preview = [] as Array<any>;
     for (const invoice of rows) {
-      const candidates = await salesInvoiceCustomerCandidates(invoice.customerPhone);
+      const candidates = await salesInvoiceCustomerCandidates(
+        invoice.customerPhone,
+      );
       preview.push({
         invoiceId: invoice.id,
         invoiceNo: invoice.invoiceNo,
@@ -49417,23 +48305,37 @@ async function handleSalesInvoices(
       });
     }
     if (method === "GET" || parts[3] !== "apply") {
-      const counts = preview.reduce((all, row) => {
-        all[row.category] = (all[row.category] ?? 0) + 1;
-        return all;
-      }, {} as Record<string, number>);
+      const counts = preview.reduce(
+        (all, row) => {
+          all[row.category] = (all[row.category] ?? 0) + 1;
+          return all;
+        },
+        {} as Record<string, number>,
+      );
       return json({ preview, counts, scanned: rows.length, limitedTo: 250 });
     }
     const payload = await body(req);
     const requestedIds = Array.isArray(payload?.invoiceIds)
-      ? [...new Set(payload.invoiceIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isInteger(value) && value > 0))].slice(0, 250)
+      ? [
+          ...new Set(
+            payload.invoiceIds
+              .map((value: unknown) => Number(value))
+              .filter((value: number) => Number.isInteger(value) && value > 0),
+          ),
+        ].slice(0, 250)
       : [];
     if (!requestedIds.length) return error("حدد الفواتير المؤكدة أولاً", 400);
-    const selected = preview.filter((row) => requestedIds.includes(row.invoiceId));
+    const selected = preview.filter((row) =>
+      requestedIds.includes(row.invoiceId),
+    );
     const linked: number[] = [];
     const skipped: Array<{ invoiceId: number; reason: string }> = [];
     for (const row of selected) {
       if (row.category !== "confirmed_match") {
-        skipped.push({ invoiceId: row.invoiceId, reason: "المطابقة ليست مؤكدة" });
+        skipped.push({
+          invoiceId: row.invoiceId,
+          reason: "المطابقة ليست مؤكدة",
+        });
         continue;
       }
       try {
@@ -49450,16 +48352,30 @@ async function handleSalesInvoices(
             type: "customer_linked",
             title: "تم ربط الفاتورة بعميل",
             actor: erpActorFromAdmin(auth),
-            metadata: { oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, matchMethod: row.candidates[0].matchMethod, repair: true },
+            metadata: {
+              oldCustomerId: result.oldCustomerId,
+              newCustomerId: result.customer.id,
+              matchMethod: row.candidates[0].matchMethod,
+              repair: true,
+            },
           });
-          await logAdminActivity(req, "sales_invoice_customer_linked_backfill", "sales_invoice", row.invoiceId, {
-            oldCustomerId: result.oldCustomerId,
-            newCustomerId: result.customer.id,
-            matchMethod: row.candidates[0].matchMethod,
-          });
+          await logAdminActivity(
+            req,
+            "sales_invoice_customer_linked_backfill",
+            "sales_invoice",
+            row.invoiceId,
+            {
+              oldCustomerId: result.oldCustomerId,
+              newCustomerId: result.customer.id,
+              matchMethod: row.candidates[0].matchMethod,
+            },
+          );
         }
       } catch (err: any) {
-        skipped.push({ invoiceId: row.invoiceId, reason: err?.message || "تعذر الربط" });
+        skipped.push({
+          invoiceId: row.invoiceId,
+          reason: err?.message || "تعذر الربط",
+        });
       }
     }
     if (linked.length) {
@@ -49487,23 +48403,31 @@ async function handleSalesInvoices(
       const payload = await body(req);
       const action = String(payload?.action ?? "link");
       const reason = textFallback(payload?.reason).slice(0, 500);
-      const currentInvoice = await db.query.salesInvoicesTable.findFirst({ where: eq(salesInvoicesTable.id, id) });
+      const currentInvoice = await db.query.salesInvoicesTable.findFirst({
+        where: eq(salesInvoicesTable.id, id),
+      });
       if (!currentInvoice) return error("الفاتورة غير موجودة", 404);
-      if (["deleted", "cancelled"].includes(currentInvoice.status)) return error("لا يمكن ربط فاتورة ملغاة أو محذوفة", 409);
-      if (currentInvoice.customerId && action !== "link") return error("الفاتورة مرتبطة بعميل آخر", 409);
+      if (["deleted", "cancelled"].includes(currentInvoice.status))
+        return error("لا يمكن ربط فاتورة ملغاة أو محذوفة", 409);
+      if (currentInvoice.customerId && action !== "link")
+        return error("الفاتورة مرتبطة بعميل آخر", 409);
       let customerId = optionalPositiveId(payload?.customerId);
       let createdFromInvoice = false;
-      let matchMethod = ["phone", "account_phone", "manual", "cash"].includes(String(payload?.matchMethod))
+      let matchMethod = ["phone", "account_phone", "manual", "cash"].includes(
+        String(payload?.matchMethod),
+      )
         ? String(payload.matchMethod)
         : "manual";
       if (action === "cash") {
         customerId = (await getOrCreateSalesCashCustomer()).id;
         matchMethod = "cash";
       } else if (action === "create") {
-        if (!hasPermission(auth, "customers")) return error("لا تملك صلاحية إنشاء عميل", 403);
+        if (!hasPermission(auth, "customers"))
+          return error("لا تملك صلاحية إنشاء عميل", 403);
         const name = textFallback(payload?.name).slice(0, 200);
         const phone = normalizeIraqiPhone(textFallback(payload?.phone));
-        if (!name || !phone) return error("اسم العميل ورقم هاتف عراقي صحيح مطلوبان", 400);
+        if (!name || !phone)
+          return error("اسم العميل ورقم هاتف عراقي صحيح مطلوبان", 400);
         const duplicates = await salesInvoiceCustomerCandidates(phone);
         if (duplicates.length) {
           await notifyMainManagers({
@@ -49511,12 +48435,26 @@ async function handleSalesInvoices(
             title: "تم منع إنشاء عميل مكرر",
             body: `فاتورة ${currentInvoice.invoiceNo}: يوجد عميل بنفس رقم الهاتف.`,
             href: `/admin/sales?invoice=${id}`,
-            metadata: { invoiceId: id, phone, candidateIds: duplicates.map((candidate) => candidate.id) },
+            metadata: {
+              invoiceId: id,
+              phone,
+              candidateIds: duplicates.map((candidate) => candidate.id),
+            },
           });
-          return json({ code: "duplicate_customer", message: "يوجد عميل مسجل بنفس رقم الهاتف", candidates: duplicates }, 409);
+          return json(
+            {
+              code: "duplicate_customer",
+              message: "يوجد عميل مسجل بنفس رقم الهاتف",
+              candidates: duplicates,
+            },
+            409,
+          );
         }
         try {
-          const [created] = await db.insert(customersTable).values({ phone, name, fullName: name, status: "active" }).returning();
+          const [created] = await db
+            .insert(customersTable)
+            .values({ phone, name, fullName: name, status: "active" })
+            .returning();
           customerId = created?.id ?? null;
           createdFromInvoice = true;
           matchMethod = "manual";
@@ -49528,9 +48466,20 @@ async function handleSalesInvoices(
               title: "تم منع إنشاء عميل مكرر",
               body: `فاتورة ${currentInvoice.invoiceNo}: تعارض رقم الهاتف أثناء إنشاء العميل.`,
               href: `/admin/sales?invoice=${id}`,
-              metadata: { invoiceId: id, phone, candidateIds: candidates.map((candidate) => candidate.id) },
+              metadata: {
+                invoiceId: id,
+                phone,
+                candidateIds: candidates.map((candidate) => candidate.id),
+              },
             });
-            return json({ code: "duplicate_customer", message: "يوجد عميل مسجل بنفس رقم الهاتف", candidates }, 409);
+            return json(
+              {
+                code: "duplicate_customer",
+                message: "يوجد عميل مسجل بنفس رقم الهاتف",
+                candidates,
+              },
+              409,
+            );
           }
           throw err;
         }
@@ -49547,26 +48496,59 @@ async function handleSalesInvoices(
           entityType: "sales_invoice",
           entityId: id,
           type: result.oldCustomerId ? "customer_relinked" : "customer_linked",
-          title: result.oldCustomerId ? "تمت إعادة ربط الفاتورة بعميل" : "تم ربط الفاتورة بعميل",
+          title: result.oldCustomerId
+            ? "تمت إعادة ربط الفاتورة بعميل"
+            : "تم ربط الفاتورة بعميل",
           actor: erpActorFromAdmin(auth),
-          metadata: { oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, matchMethod, reason: reason || null },
+          metadata: {
+            oldCustomerId: result.oldCustomerId,
+            newCustomerId: result.customer.id,
+            matchMethod,
+            reason: reason || null,
+          },
         });
-        await logAdminActivity(req, result.oldCustomerId ? "sales_invoice_customer_relinked" : "sales_invoice_customer_linked", "sales_invoice", id, {
-          oldCustomerId: result.oldCustomerId,
-          newCustomerId: result.customer.id,
-          matchMethod,
-          reason: reason || null,
-          createdFromInvoice,
-        });
+        await logAdminActivity(
+          req,
+          result.oldCustomerId
+            ? "sales_invoice_customer_relinked"
+            : "sales_invoice_customer_linked",
+          "sales_invoice",
+          id,
+          {
+            oldCustomerId: result.oldCustomerId,
+            newCustomerId: result.customer.id,
+            matchMethod,
+            reason: reason || null,
+            createdFromInvoice,
+          },
+        );
         await notifyMainManagers({
-          type: result.oldCustomerId ? "sales_invoice_customer_relinked" : "sales_invoice_customer_linked",
-          title: result.oldCustomerId ? "تمت إعادة ربط فاتورة مبيعات" : "تم ربط فاتورة مبيعات بعميل",
+          type: result.oldCustomerId
+            ? "sales_invoice_customer_relinked"
+            : "sales_invoice_customer_linked",
+          title: result.oldCustomerId
+            ? "تمت إعادة ربط فاتورة مبيعات"
+            : "تم ربط فاتورة مبيعات بعميل",
           body: `${result.invoice.invoiceNo} ← ${salesInvoiceCustomerName(result.customer)}`,
           href: `/admin/sales?invoice=${id}`,
-          metadata: { invoiceId: id, oldCustomerId: result.oldCustomerId, newCustomerId: result.customer.id, reason: reason || null },
+          metadata: {
+            invoiceId: id,
+            oldCustomerId: result.oldCustomerId,
+            newCustomerId: result.customer.id,
+            reason: reason || null,
+          },
         });
       }
-      return json({ ok: true, customer: { id: result.customer.id, name: salesInvoiceCustomerName(result.customer), phone: result.customer.phone }, invoice: result.invoice, linked: result.changed });
+      return json({
+        ok: true,
+        customer: {
+          id: result.customer.id,
+          name: salesInvoiceCustomerName(result.customer),
+          phone: result.customer.phone,
+        },
+        invoice: result.invoice,
+        linked: result.changed,
+      });
     }
   }
 
@@ -49891,16 +48873,25 @@ async function handleSalesInvoices(
         );
         // A bundle has one customer-facing invoice line but many stock lines.
         // Restore the immutable sale snapshot, never the bundle's current BOM.
-        const bundleSnapshotItems = items.some((item) => Number((item as any).bundleId ?? 0) > 0)
-          ? (await tx
-              .select()
-              .from(salesInvoiceBundleSnapshotsTable)
-              .where(eq(salesInvoiceBundleSnapshotsTable.invoiceId, id)))
+        const bundleSnapshotItems = items.some(
+          (item) => Number((item as any).bundleId ?? 0) > 0,
+        )
+          ? (
+              await tx
+                .select()
+                .from(salesInvoiceBundleSnapshotsTable)
+                .where(eq(salesInvoiceBundleSnapshotsTable.invoiceId, id))
+            )
               .flatMap((snapshot) =>
-                (Array.isArray(snapshot.components) ? snapshot.components : []).map((component: any) => ({
+                (Array.isArray(snapshot.components)
+                  ? snapshot.components
+                  : []
+                ).map((component: any) => ({
                   id: snapshot.salesInvoiceItemId,
                   productId: Number(component.productId),
-                  productName: String(component.productName ?? snapshot.bundleName),
+                  productName: String(
+                    component.productName ?? snapshot.bundleName,
+                  ),
                   quantity: String(component.totalQuantity ?? 0),
                 })),
               )
@@ -50420,11 +49411,11 @@ async function handleSalesInvoices(
           SET status = 'cancelled', remaining_amount = 0,
             credit_amount = greatest(credit_amount::numeric, debit_amount::numeric),
             metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
-              'cancelledAt', ${now.toISOString()},
-              'cancelledBy', ${a.id},
-              'cancellationReason', ${data.reason},
-              'invoiceOriginalPaid', ${received},
-              'invoiceOriginalRemaining', ${money(invoice.remainingAmount)}
+              'cancelledAt', CAST(${now.toISOString()} AS text),
+              'cancelledBy', CAST(${a.id} AS integer),
+              'cancellationReason', CAST(${data.reason} AS text),
+              'invoiceOriginalPaid', CAST(${received} AS numeric),
+              'invoiceOriginalRemaining', CAST(${money(invoice.remainingAmount)} AS numeric)
             )
           WHERE invoice_id = ${id} AND source_type = 'sales_invoice'
             AND status <> 'cancelled'
@@ -50484,16 +49475,9 @@ async function handleSalesInvoices(
       if (err instanceof CheckoutError) return error(err.message, err.status);
       console.error("sales invoice cancellation failed", {
         invoiceId: id,
-        invoiceNo: existing.invoiceNo,
         actorId: cancellationAuth.id,
-        userName: a.name,
-        customer: existing.customerName,
-        route: `POST /api/admin/sales-invoices/${id}/cancel`,
-        code: (err as any)?.code,
-        detail: (err as any)?.detail,
-        message: err instanceof Error ? err.message : "unknown",
-        stack: err instanceof Error ? err.stack : undefined,
-        time: new Date().toISOString(),
+        operation: "sales_invoice_cancel",
+        error: safeServerError(err),
       });
       return error("تعذر إلغاء الفاتورة، ولم يتم إجراء أي تغيير.", 500);
     }
@@ -50620,7 +49604,12 @@ async function handleSalesInvoices(
 
     const offerDeliveryFee = bundleResolution.offerDeliveryFee;
     const total = Math.max(
-      subtotal - discountAmount + taxAmount + offerDeliveryFee + deliveryFee + deliveryCodFee,
+      subtotal -
+        discountAmount +
+        taxAmount +
+        offerDeliveryFee +
+        deliveryFee +
+        deliveryCodFee,
       0,
     );
     const paymentMethod = b.paymentMethod ?? "cash";
@@ -50652,7 +49641,10 @@ async function handleSalesInvoices(
 
     if (!customerId) {
       if (b.useCashCustomer !== true)
-        return error("اختر عميلاً أو استخدم العميل النقدي قبل حفظ الفاتورة", 400);
+        return error(
+          "اختر عميلاً أو استخدم العميل النقدي قبل حفظ الفاتورة",
+          400,
+        );
       // Anonymous walk-in invoices use one configured generic customer rather
       // than leaving the financial document without a customer reference.
       customerId = (await getOrCreateSalesCashCustomer()).id;
@@ -50665,217 +49657,237 @@ async function handleSalesInvoices(
     let invoiceSaveStep = "transaction_start";
     const traceInvoiceSave = (step: string) => {
       invoiceSaveStep = step;
-      if (process.env.NODE_ENV !== "production" || process.env.AJN_DIAGNOSTIC_LOGS === "true")
-        console.info("[SALES_INVOICE_SAVE]", { requestId: invoiceRequestId, step, itemCount: items.length, paymentMethod });
+      if (
+        process.env.NODE_ENV !== "production" ||
+        process.env.AJN_DIAGNOSTIC_LOGS === "true"
+      )
+        console.info("[SALES_INVOICE_SAVE]", {
+          requestId: invoiceRequestId,
+          step,
+          itemCount: items.length,
+          paymentMethod,
+        });
     };
     let saved: any;
     try {
       saved = await db.transaction(async (tx) => {
-      traceInvoiceSave("invoice_insert");
-      const inserted = await tx
-        .insert(salesInvoicesTable)
-        .values({
-          invoiceNo: await nextSalesInvoiceNo(tx, dateVal),
-          idempotencyKey,
-          date: dateVal,
-          customerName: b.customerName ?? "",
-          customerPhone,
-          customerId,
-          supplierId,
-          supplierName,
-          subtotal: String(subtotal),
-          discountAmount: String(discountAmount),
-          couponCode: couponPreview?.ok ? couponPreview.coupon.code : null,
-          couponDiscountAmount: String(couponDiscountAmount),
-          taxAmount: String(taxAmount),
-          offerDeliveryFee: String(offerDeliveryFee),
-          total: String(total),
-          paidAmount: String(paidAmount),
-          remainingAmount: String(remainingAmount),
-          paymentMethod,
-          paymentStatus,
-          dueDate: normalizeDateOnly(b.dueDate) ?? null,
-          status: "active",
-          isInternal: b.isInternal ? 1 : 0,
-          notes: b.notes ?? null,
-          createdBy: a.id,
-          createdByName: a.name,
-        } as any)
-        .onConflictDoNothing({
-          target: salesInvoicesTable.idempotencyKey,
-          // The production index is intentionally partial so legacy rows may
-          // keep a NULL key. PostgreSQL requires the same predicate here.
-          where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`,
-        })
-        .returning();
-
-      const inv = inserted[0];
-      if (!inv) {
-        if (!idempotencyKey)
-          throw new Error("Invoice insert did not return a row");
-        const existing = await tx.query.salesInvoicesTable.findFirst({
-          where: eq(salesInvoicesTable.idempotencyKey, idempotencyKey),
-        });
-        if (!existing) throw new Error("Idempotent invoice was not found");
-        const existingItems = await tx
-          .select()
-          .from(salesInvoiceItemsTable)
-          .where(eq(salesInvoiceItemsTable.invoiceId, existing.id));
-        return {
-          inv: existing,
-          invoiceNo: existing.invoiceNo,
-          deliveryResult: null,
-          items: existingItems,
-          replayed: true,
-        };
-      }
-
-      const invoiceNo = inv.invoiceNo;
-      let insertedItems: any[] = [];
-
-      if (items.length > 0) {
-        traceInvoiceSave("invoice_items_insert");
-        insertedItems = await tx
-          .insert(salesInvoiceItemsTable)
-          .values(
-            items.map((item: any) => ({
-              invoiceId: inv.id,
-              productId: item.productId ?? null,
-              bundleId: item.bundleId ?? null,
-              productName: item.productName ?? "",
-              barcode: item.barcode ?? null,
-              quantity: String(item.quantity),
-              unitPrice: String(item.unitPrice),
-              discount: String(item.discount),
-              discountPct: String(item.discountPct),
-              total: String(item.total),
-              costPrice: String(item.costPrice),
-            })),
-          )
-          .returning();
-        traceInvoiceSave("stock_deduction");
-        const bundleComponentsByItemId = new Map<number, BundleComponentDraft[]>();
-        insertedItems.forEach((insertedItem, index) => {
-          const bundleId = Number(items[index]?.bundleId ?? 0);
-          const bundle = bundleResolution.bundles.get(bundleId);
-          if (bundle) bundleComponentsByItemId.set(insertedItem.id, bundle.components);
-        });
-        const stockOwners = await deductSalesInvoiceStockInTransaction(
-          tx,
-          insertedItems,
-          inv.id,
-          invoiceNo,
-          a,
-          bundleComponentsByItemId,
-        );
-        const snapshots = insertedItems.flatMap((insertedItem, index) => {
-          const line = items[index];
-          const bundle = bundleResolution.bundles.get(Number(line?.bundleId ?? 0));
-          if (!bundle || !line) return [];
-          return [{
-            invoiceId: inv.id,
-            salesInvoiceItemId: insertedItem.id,
-            bundleId: bundle.bundleId,
-            bundleName: line.productName,
-            bundleBarcode: line.barcode ?? null,
-            bundleQuantity: String(line.quantity),
-            deliveryFeePerBundle: String(bundle.deliveryFeePerBundle),
-            components: bundle.components.map((component) => ({
-              productId: component.productId,
-              stockSourceProductId: stockOwners.get(component.productId) ?? component.productId,
-              productName: component.productName,
-              quantityPerBundle: String(component.quantityPerBundle),
-              totalQuantity: String(component.quantityPerBundle * line.quantity),
-              costPrice: String(component.costPrice),
-            })),
-          }];
-        });
-        if (snapshots.length)
-          await tx.insert(salesInvoiceBundleSnapshotsTable).values(snapshots);
-      }
-
-      if (couponPreview?.ok) {
-        traceInvoiceSave("coupon_usage");
-        await recordCouponUsage(
-          couponPreview.coupon,
-          {
+        traceInvoiceSave("invoice_insert");
+        const inserted = await tx
+          .insert(salesInvoicesTable)
+          .values({
+            invoiceNo: await nextSalesInvoiceNo(tx, dateVal),
+            idempotencyKey,
+            date: dateVal,
+            customerName: b.customerName ?? "",
             customerPhone,
-            salesInvoiceId: inv.id,
-            discountAmount: couponDiscountAmount,
-          },
-          tx,
-        );
-      }
-
-      // ── Persist delivery detail + auto-create one delivery order (idempotent) ──
-      let deliveryResult: Awaited<
-        ReturnType<typeof persistInvoiceDelivery>
-      > | null = null;
-      if (deliveryPrep) {
-        traceInvoiceSave("delivery_persist");
-        try {
-          deliveryResult = await persistInvoiceDelivery({
-            salesInvoiceId: inv.id,
-            prep: deliveryPrep,
-            finalFee: deliveryFee,
-            overridden: deliveryOverridden,
-            overrideReason: deliveryOverrideReason,
-            // COD collects the unpaid balance on delivery.
-            codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
             customerId,
-            actor: a,
-            executor: tx,
-          });
-          if (deliveryResult.created) {
-            void logAdminActivity(
-              req,
-              "delivery_added",
-              "sales_invoice",
-              inv.id,
-              {
-                method: deliveryPrep.method,
-                provinceName: deliveryPrep.province?.governorateAr ?? null,
-                deliveryFee,
-                deliveryNo: deliveryResult.deliveryOrder?.deliveryNo ?? null,
-                overridden: deliveryOverridden,
-                overrideReason: deliveryOverrideReason,
-              },
-            );
-            if (deliveryResult.deliveryOrder) {
-              void notifyTelegramDelivery({
-                event: "delivery_created",
-                title: "🚚 تم إنشاء طلب توصيل",
-                deliveryNo: deliveryResult.deliveryOrder.deliveryNo,
-                provinceName: deliveryPrep.province?.governorateAr ?? null,
-                receiverName: deliveryPrep.input.receiverName ?? null,
-                statusLabel: DELIVERY_STATUS_LABELS.pending_prep,
-              });
-            }
-          }
-        } catch (err) {
-          // A missing delivery detail is not an acceptable partial invoice.
-          throw err;
-        }
-      }
+            supplierId,
+            supplierName,
+            subtotal: String(subtotal),
+            discountAmount: String(discountAmount),
+            couponCode: couponPreview?.ok ? couponPreview.coupon.code : null,
+            couponDiscountAmount: String(couponDiscountAmount),
+            taxAmount: String(taxAmount),
+            offerDeliveryFee: String(offerDeliveryFee),
+            total: String(total),
+            paidAmount: String(paidAmount),
+            remainingAmount: String(remainingAmount),
+            paymentMethod,
+            paymentStatus,
+            dueDate: normalizeDateOnly(b.dueDate) ?? null,
+            status: "active",
+            isInternal: b.isInternal ? 1 : 0,
+            notes: b.notes ?? null,
+            createdBy: a.id,
+            createdByName: a.name,
+          } as any)
+          .onConflictDoNothing({
+            target: salesInvoicesTable.idempotencyKey,
+            // The production index is intentionally partial so legacy rows may
+            // keep a NULL key. PostgreSQL requires the same predicate here.
+            where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`,
+          })
+          .returning();
 
-      traceInvoiceSave("transaction_ready_to_commit");
-      return {
-        inv,
-        invoiceNo,
-        deliveryResult,
-        items: insertedItems ?? [],
-        replayed: false,
-      };
+        const inv = inserted[0];
+        if (!inv) {
+          if (!idempotencyKey)
+            throw new Error("Invoice insert did not return a row");
+          const existing = await tx.query.salesInvoicesTable.findFirst({
+            where: eq(salesInvoicesTable.idempotencyKey, idempotencyKey),
+          });
+          if (!existing) throw new Error("Idempotent invoice was not found");
+          const existingItems = await tx
+            .select()
+            .from(salesInvoiceItemsTable)
+            .where(eq(salesInvoiceItemsTable.invoiceId, existing.id));
+          return {
+            inv: existing,
+            invoiceNo: existing.invoiceNo,
+            deliveryResult: null,
+            items: existingItems,
+            replayed: true,
+          };
+        }
+
+        const invoiceNo = inv.invoiceNo;
+        let insertedItems: any[] = [];
+
+        if (items.length > 0) {
+          traceInvoiceSave("invoice_items_insert");
+          insertedItems = await tx
+            .insert(salesInvoiceItemsTable)
+            .values(
+              items.map((item: any) => ({
+                invoiceId: inv.id,
+                productId: item.productId ?? null,
+                bundleId: item.bundleId ?? null,
+                productName: item.productName ?? "",
+                barcode: item.barcode ?? null,
+                quantity: String(item.quantity),
+                unitPrice: String(item.unitPrice),
+                discount: String(item.discount),
+                discountPct: String(item.discountPct),
+                total: String(item.total),
+                costPrice: String(item.costPrice),
+              })),
+            )
+            .returning();
+          traceInvoiceSave("stock_deduction");
+          const bundleComponentsByItemId = new Map<
+            number,
+            BundleComponentDraft[]
+          >();
+          insertedItems.forEach((insertedItem, index) => {
+            const bundleId = Number(items[index]?.bundleId ?? 0);
+            const bundle = bundleResolution.bundles.get(bundleId);
+            if (bundle)
+              bundleComponentsByItemId.set(insertedItem.id, bundle.components);
+          });
+          const stockOwners = await deductSalesInvoiceStockInTransaction(
+            tx,
+            insertedItems,
+            inv.id,
+            invoiceNo,
+            a,
+            bundleComponentsByItemId,
+          );
+          const snapshots = insertedItems.flatMap((insertedItem, index) => {
+            const line = items[index];
+            const bundle = bundleResolution.bundles.get(
+              Number(line?.bundleId ?? 0),
+            );
+            if (!bundle || !line) return [];
+            return [
+              {
+                invoiceId: inv.id,
+                salesInvoiceItemId: insertedItem.id,
+                bundleId: bundle.bundleId,
+                bundleName: line.productName,
+                bundleBarcode: line.barcode ?? null,
+                bundleQuantity: String(line.quantity),
+                deliveryFeePerBundle: String(bundle.deliveryFeePerBundle),
+                components: bundle.components.map((component) => ({
+                  productId: component.productId,
+                  stockSourceProductId:
+                    stockOwners.get(component.productId) ?? component.productId,
+                  productName: component.productName,
+                  quantityPerBundle: String(component.quantityPerBundle),
+                  totalQuantity: String(
+                    component.quantityPerBundle * line.quantity,
+                  ),
+                  costPrice: String(component.costPrice),
+                })),
+              },
+            ];
+          });
+          if (snapshots.length)
+            await tx.insert(salesInvoiceBundleSnapshotsTable).values(snapshots);
+        }
+
+        if (couponPreview?.ok) {
+          traceInvoiceSave("coupon_usage");
+          await recordCouponUsage(
+            couponPreview.coupon,
+            {
+              customerPhone,
+              salesInvoiceId: inv.id,
+              discountAmount: couponDiscountAmount,
+            },
+            tx,
+          );
+        }
+
+        // ── Persist delivery detail + auto-create one delivery order (idempotent) ──
+        let deliveryResult: Awaited<
+          ReturnType<typeof persistInvoiceDelivery>
+        > | null = null;
+        if (deliveryPrep) {
+          traceInvoiceSave("delivery_persist");
+          try {
+            deliveryResult = await persistInvoiceDelivery({
+              salesInvoiceId: inv.id,
+              prep: deliveryPrep,
+              finalFee: deliveryFee,
+              overridden: deliveryOverridden,
+              overrideReason: deliveryOverrideReason,
+              // COD collects the unpaid balance on delivery.
+              codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
+              customerId,
+              actor: a,
+              executor: tx,
+            });
+            if (deliveryResult.created) {
+              void logAdminActivity(
+                req,
+                "delivery_added",
+                "sales_invoice",
+                inv.id,
+                {
+                  method: deliveryPrep.method,
+                  provinceName: deliveryPrep.province?.governorateAr ?? null,
+                  deliveryFee,
+                  deliveryNo: deliveryResult.deliveryOrder?.deliveryNo ?? null,
+                  overridden: deliveryOverridden,
+                  overrideReason: deliveryOverrideReason,
+                },
+              );
+              if (deliveryResult.deliveryOrder) {
+                void notifyTelegramDelivery({
+                  event: "delivery_created",
+                  title: "🚚 تم إنشاء طلب توصيل",
+                  deliveryNo: deliveryResult.deliveryOrder.deliveryNo,
+                  provinceName: deliveryPrep.province?.governorateAr ?? null,
+                  receiverName: deliveryPrep.input.receiverName ?? null,
+                  statusLabel: DELIVERY_STATUS_LABELS.pending_prep,
+                });
+              }
+            }
+          } catch (err) {
+            // A missing delivery detail is not an acceptable partial invoice.
+            throw err;
+          }
+        }
+
+        traceInvoiceSave("transaction_ready_to_commit");
+        return {
+          inv,
+          invoiceNo,
+          deliveryResult,
+          items: insertedItems ?? [],
+          replayed: false,
+        };
       });
     } catch (err) {
-      const mapped = err instanceof CheckoutError
-        ? {
-            status: err.status,
-            code: "INVOICE_INVALID" as ApiErrorCode,
-            message: err.message,
-            retryable: false,
-          }
-        : mapWriteError(err);
+      const mapped =
+        err instanceof CheckoutError
+          ? {
+              status: err.status,
+              code: "INVOICE_INVALID" as ApiErrorCode,
+              message: err.message,
+              retryable: false,
+            }
+          : mapWriteError(err);
       console.error("[SALES_INVOICE_SAVE_FAILED]", {
         requestId: invoiceRequestId,
         step: invoiceSaveStep,
@@ -51288,7 +50300,7 @@ async function deleteSalesInvoice(
 
   // 0 — Confirmation payload: a required deletion reason + the invoice number
   // retyped. Never delete silently or without a reason.
-  const payload = await body(req).catch(() => ({}) as any);
+  const payload = await body(req);
   const reason = String((payload as any)?.reason ?? "").trim();
   const confirmNo = String(
     (payload as any)?.confirmInvoiceNumber ??
@@ -53564,55 +52576,7 @@ let expenseManagementReady: Promise<void> | null = null;
 async function ensureExpenseManagementTables() {
   if (!expenseManagementReady) {
     expenseManagementReady = db
-      .execute(
-        sql`
-      CREATE TABLE IF NOT EXISTS "expense_categories" (
-        "id" serial PRIMARY KEY,
-        "name" text NOT NULL,
-        "name_ar" text NOT NULL,
-        "is_active" integer NOT NULL DEFAULT 1,
-        "created_at" timestamp NOT NULL DEFAULT now(),
-        "updated_at" timestamp NOT NULL DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS "expenses" (
-        "id" serial PRIMARY KEY,
-        "date" date NOT NULL DEFAULT now(),
-        "name" text NOT NULL DEFAULT '',
-        "amount" numeric(12,2) NOT NULL,
-        "category_id" integer REFERENCES "expense_categories" ("id") ON DELETE SET NULL,
-        "category_name" text NOT NULL DEFAULT '',
-        "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
-        "receipt_image" text,
-        "notes" text,
-        "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
-        "created_by_name" text NOT NULL DEFAULT '',
-        "updated_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
-        "updated_by_name" text NOT NULL DEFAULT '',
-        "created_at" timestamp NOT NULL DEFAULT now(),
-        "updated_at" timestamp NOT NULL DEFAULT now(),
-        "deleted_at" timestamp
-      );
-
-      ALTER TABLE "expense_categories"
-        ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now();
-
-      ALTER TABLE "expenses"
-        ADD COLUMN IF NOT EXISTS "name" text NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
-        ADD COLUMN IF NOT EXISTS "receipt_image" text,
-        ADD COLUMN IF NOT EXISTS "updated_by" integer,
-        ADD COLUMN IF NOT EXISTS "updated_by_name" text NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS "updated_at" timestamp NOT NULL DEFAULT now(),
-        ADD COLUMN IF NOT EXISTS "deleted_at" timestamp;
-
-      CREATE INDEX IF NOT EXISTS "expenses_date_idx" ON "expenses" ("date");
-      CREATE INDEX IF NOT EXISTS "expenses_category_id_idx" ON "expenses" ("category_id");
-      CREATE INDEX IF NOT EXISTS "expenses_payment_method_idx" ON "expenses" ("payment_method");
-      CREATE INDEX IF NOT EXISTS "expenses_created_by_idx" ON "expenses" ("created_by");
-      CREATE INDEX IF NOT EXISTS "expenses_deleted_at_idx" ON "expenses" ("deleted_at");
-    `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((err) => {
         expenseManagementReady = null;
@@ -53625,117 +52589,7 @@ async function ensureExpenseManagementTables() {
 async function ensureAccountingVoucherTables() {
   if (!accountingTablesPromise) {
     accountingTablesPromise = ensureExpenseManagementTables()
-      .then(() =>
-        db.execute(sql`
-        CREATE TABLE IF NOT EXISTS "receipt_vouchers" (
-          "id" serial PRIMARY KEY,
-          "voucher_no" varchar(30) NOT NULL UNIQUE,
-          "date" date NOT NULL DEFAULT now(),
-          "amount" numeric(12,2) NOT NULL,
-          "payer_name" text NOT NULL,
-          "customer_id" integer REFERENCES "customers" ("id") ON DELETE SET NULL,
-          "order_id" integer REFERENCES "orders" ("id") ON DELETE SET NULL,
-          "booking_id" integer REFERENCES "service_orders" ("id") ON DELETE SET NULL,
-          "reference" text,
-          "method" varchar(20) NOT NULL DEFAULT 'cash',
-          "notes" text,
-          "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
-          "created_by_name" text NOT NULL DEFAULT '',
-          "created_at" timestamp NOT NULL DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS "payment_vouchers" (
-          "id" serial PRIMARY KEY,
-          "voucher_no" varchar(30) NOT NULL UNIQUE,
-          "date" date NOT NULL DEFAULT now(),
-          "amount" numeric(12,2) NOT NULL,
-          "payee_name" text NOT NULL,
-          "customer_id" integer REFERENCES "customers" ("id") ON DELETE SET NULL,
-          "reference" text,
-          "method" varchar(20) NOT NULL DEFAULT 'cash',
-          "notes" text,
-          "created_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
-          "created_by_name" text NOT NULL DEFAULT '',
-          "created_at" timestamp NOT NULL DEFAULT now()
-        );
-
-        ALTER TABLE "receipt_vouchers"
-          ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
-          ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
-          ADD COLUMN IF NOT EXISTS "amount" numeric(12,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS "payer_name" text NOT NULL DEFAULT '',
-          ADD COLUMN IF NOT EXISTS "customer_id" integer,
-          ADD COLUMN IF NOT EXISTS "order_id" integer,
-          ADD COLUMN IF NOT EXISTS "booking_id" integer,
-          ADD COLUMN IF NOT EXISTS "kosha_booking_id" integer,
-          ADD COLUMN IF NOT EXISTS "reference" text,
-          ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
-          ADD COLUMN IF NOT EXISTS "notes" text,
-          ADD COLUMN IF NOT EXISTS "created_by" integer,
-          ADD COLUMN IF NOT EXISTS "created_by_name" text NOT NULL DEFAULT '',
-          ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed',
-          ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer,
-          ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
-
-        CREATE TABLE IF NOT EXISTS "receipt_voucher_allocations" (
-          "id" serial PRIMARY KEY,
-          "receipt_voucher_id" integer NOT NULL REFERENCES "receipt_vouchers" ("id") ON DELETE CASCADE,
-          "customer_id" integer NOT NULL REFERENCES "customers" ("id"),
-          "source_type" varchar(40) NOT NULL,
-          "source_id" integer,
-          "amount" numeric(14,2) NOT NULL CHECK ("amount" > 0),
-          "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0,
-          "posted_at" timestamp,
-          "reversed_at" timestamp,
-          "reversed_by" integer REFERENCES "staff" ("id") ON DELETE SET NULL,
-          "reversal_reason" text,
-          "reversal_transaction_id" integer,
-          "created_at" timestamp NOT NULL DEFAULT now(),
-          CHECK (("source_type" = 'customer_credit' AND "source_id" IS NULL) OR ("source_type" <> 'customer_credit' AND "source_id" IS NOT NULL))
-        );
-
-        ALTER TABLE "receipt_voucher_allocations"
-          ADD COLUMN IF NOT EXISTS "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS "reversed_at" timestamp,
-          ADD COLUMN IF NOT EXISTS "reversed_by" integer,
-          ADD COLUMN IF NOT EXISTS "reversal_reason" text,
-          ADD COLUMN IF NOT EXISTS "reversal_transaction_id" integer;
-
-        ALTER TABLE "payment_vouchers"
-          ADD COLUMN IF NOT EXISTS "voucher_no" varchar(30),
-          ADD COLUMN IF NOT EXISTS "date" date NOT NULL DEFAULT now(),
-          ADD COLUMN IF NOT EXISTS "amount" numeric(12,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS "payee_name" text NOT NULL DEFAULT '',
-          ADD COLUMN IF NOT EXISTS "customer_id" integer,
-          ADD COLUMN IF NOT EXISTS "reference" text,
-          ADD COLUMN IF NOT EXISTS "method" varchar(20) NOT NULL DEFAULT 'cash',
-          ADD COLUMN IF NOT EXISTS "notes" text,
-          ADD COLUMN IF NOT EXISTS "created_by" integer,
-          ADD COLUMN IF NOT EXISTS "created_by_name" text NOT NULL DEFAULT '',
-          ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed',
-          ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer,
-          ADD COLUMN IF NOT EXISTS "created_at" timestamp NOT NULL DEFAULT now();
-
-        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_vouchers_voucher_no_idx" ON "receipt_vouchers" ("voucher_no");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_date_idx" ON "receipt_vouchers" ("date");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_customer_id_idx" ON "receipt_vouchers" ("customer_id");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_created_by_idx" ON "receipt_vouchers" ("created_by");
-
-        CREATE UNIQUE INDEX IF NOT EXISTS "payment_vouchers_voucher_no_idx" ON "payment_vouchers" ("voucher_no");
-        CREATE INDEX IF NOT EXISTS "payment_vouchers_date_idx" ON "payment_vouchers" ("date");
-        CREATE INDEX IF NOT EXISTS "payment_vouchers_customer_id_idx" ON "payment_vouchers" ("customer_id");
-        CREATE INDEX IF NOT EXISTS "payment_vouchers_created_by_idx" ON "payment_vouchers" ("created_by");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_approval_status_idx" ON "receipt_vouchers" ("approval_status");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_financial_transaction_id_idx" ON "receipt_vouchers" ("financial_transaction_id");
-        CREATE INDEX IF NOT EXISTS "receipt_vouchers_kosha_booking_idx" ON "receipt_vouchers" ("kosha_booking_id");
-        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id", "source_type", "source_id") WHERE "source_id" IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS "receipt_voucher_allocations_credit_unique" ON "receipt_voucher_allocations" ("receipt_voucher_id") WHERE "source_type" = 'customer_credit';
-        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_customer_idx" ON "receipt_voucher_allocations" ("customer_id", "posted_at");
-        CREATE INDEX IF NOT EXISTS "receipt_voucher_allocations_source_idx" ON "receipt_voucher_allocations" ("source_type", "source_id", "posted_at");
-        CREATE INDEX IF NOT EXISTS "payment_vouchers_approval_status_idx" ON "payment_vouchers" ("approval_status");
-        CREATE INDEX IF NOT EXISTS "payment_vouchers_financial_transaction_id_idx" ON "payment_vouchers" ("financial_transaction_id");
-      `),
-      )
+      .then(() => db.execute(sql`select 1`))
       .then(() => undefined)
       .catch((err) => {
         accountingTablesPromise = null;
@@ -54708,6 +53562,13 @@ async function handleRentalOrders(req: NextRequest, parts: string[]) {
 
     const phone = normalizeIraqiPhone(data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const rentalOrderLimit = await consumeRateLimit({
+      action: "rental-order-submit",
+      keyParts: [ip(req), phone],
+      limit: 6,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!rentalOrderLimit.allowed) return rateLimitError(rentalOrderLimit);
     const customerName = textFallback(
       data.customerName,
       formatIraqiPhone(phone),
@@ -58894,7 +57755,7 @@ async function handlePhotographyStaffPortal(
     if (method === "POST" && action === "cancel") {
       if (!manager) return error("إلغاء الطلب يخص المدير فقط", 403);
       if (order.cancelledAt) return error("الطلب ملغى بالفعل", 409);
-      const cancelBody = await body(req).catch(() => ({}) as any);
+      const cancelBody = await body(req);
 
       // Cancellability is decided from the SOURCE OF TRUTH — the linked financial transactions and
       // payment requests, by status — NOT the order.paid_amount snapshot (which lags a reversal and
@@ -59834,26 +58695,7 @@ let depreciationCategoryTablesPromise: Promise<void> | null = null;
 async function ensureDepreciationCategoryTables() {
   if (!depreciationCategoryTablesPromise)
     depreciationCategoryTablesPromise = db
-      .execute(
-        sql`
-    create table if not exists asset_depreciation_categories (
-      id serial primary key, name varchar(160) not null, code varchar(50), asset_type varchar(80), description text,
-      method varchar(30) not null default 'straight_line', useful_life_years integer not null default 0, useful_life_months integer not null default 0,
-      annual_rate numeric(8,3) not null default 0, monthly_rate numeric(8,3) not null default 0, residual_value numeric(16,2) not null default 0,
-      per_booking numeric(16,2) not null default 0, per_hour numeric(16,2) not null default 0, max_uses integer not null default 0, maintenance_threshold integer not null default 0,
-      is_active boolean not null default true, is_archived boolean not null default false, notes text,
-      created_by integer, created_by_name text not null default '', updated_by integer, updated_by_name text not null default '', created_at timestamp not null default now(), updated_at timestamp not null default now()
-    );
-    create unique index if not exists asset_depreciation_categories_name_uq on asset_depreciation_categories (lower(name));
-    create unique index if not exists asset_depreciation_categories_code_uq on asset_depreciation_categories (lower(code)) where code is not null;
-    create table if not exists asset_depreciation_category_audit (
-      id serial primary key, category_id integer not null references asset_depreciation_categories(id), action varchar(30) not null,
-      previous_value jsonb, new_value jsonb, changed_by integer, changed_by_name text not null default '', effective_date date not null,
-      reason text, manager_note text, apply_mode varchar(20), selected_asset_ids jsonb not null default '[]'::jsonb, created_at timestamp not null default now()
-    );
-    create index if not exists asset_depreciation_category_audit_category_idx on asset_depreciation_category_audit(category_id, created_at desc);
-  `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((error) => {
         depreciationCategoryTablesPromise = null;
@@ -59920,11 +58762,23 @@ async function handleStaffPortal(
       }
       const loginIp = ip(req);
       const userKey = username.trim().toLowerCase();
-      if (
-        !checkRateLimit(adminLoginByIp, loginIp, 20, 15 * 60 * 1000) ||
-        !checkRateLimit(adminLoginByUsername, userKey, 8, 15 * 60 * 1000)
-      ) {
-        return error("محاولات كثيرة، حاول لاحقاً", 429);
+      const staffIpLimit = await consumeRateLimit({
+        action: "staff-login-ip",
+        keyParts: [loginIp],
+        limit: 20,
+        windowMs: 15 * 60 * 1000,
+      });
+      const staffUserLimit = await consumeRateLimit({
+        action: "staff-login-username",
+        keyParts: [userKey],
+        limit: 8,
+        windowMs: 15 * 60 * 1000,
+      });
+      if (!staffIpLimit.allowed || !staffUserLimit.allowed) {
+        return rateLimitError(
+          !staffIpLimit.allowed ? staffIpLimit : staffUserLimit,
+          "محاولات كثيرة، حاول لاحقاً",
+        );
       }
       const user = await db.query.staffTable.findFirst({
         where: eq(staffTable.username, username),
@@ -60040,7 +58894,8 @@ async function handleStaffPortal(
   if (parts[1] === "photography")
     return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;
-  if (parts[2] === "work-orders") return handleKoshaWorkOrders(req, parts, "staff");
+  if (parts[2] === "work-orders")
+    return handleKoshaWorkOrders(req, parts, "staff");
   // Portal entry guard — every /staff/koshas endpoint already requires the
   // "koshas" permission per-resource; this records cross-portal access denials
   // and returns the standardized portal message without changing who is allowed.
@@ -65183,22 +64038,7 @@ let cateringErpSchemaPromise: Promise<void> | null = null;
 async function ensureCateringErpSchema() {
   if (!cateringErpSchemaPromise)
     cateringErpSchemaPromise = db
-      .execute(
-        sql`
-    create table if not exists catering_categories (id serial primary key, name varchar(160) not null, description text, image_url text, sort_order integer not null default 0, is_active boolean not null default true, archived_at timestamp, created_by integer, updated_by integer, created_at timestamp not null default now(), updated_at timestamp not null default now());
-    create table if not exists catering_menu_items (id serial primary key, code varchar(40) not null unique, name text not null, category varchar(60) not null default 'general', cost numeric not null default 0, selling_price numeric not null default 0, preparation_minutes integer not null default 0, created_at timestamp not null default now());
-    alter table catering_menu_items add column if not exists category_id integer references catering_categories(id) on delete restrict, add column if not exists barcode varchar(100), add column if not exists unit varchar(40) not null default 'حبة', add column if not exists stock_quantity numeric(14,3) not null default 0, add column if not exists min_stock numeric(14,3) not null default 0, add column if not exists supplier_id integer references suppliers(id) on delete set null, add column if not exists inventory_product_id integer references products(id) on delete set null, add column if not exists image_url text, add column if not exists packaging_cost numeric(14,2) not null default 0, add column if not exists preparation_labor_cost numeric(14,2) not null default 0, add column if not exists notes text, add column if not exists track_inventory boolean not null default false, add column if not exists available_for_sale boolean not null default true, add column if not exists is_active boolean not null default true, add column if not exists archived_at timestamp, add column if not exists updated_at timestamp not null default now(), add column if not exists updated_by integer;
-    create table if not exists catering_orders (id serial primary key, order_no varchar(48) not null unique, customer_id integer references customers(id) on delete set null, customer_name text not null default '', customer_phone varchar(30), customer_address text, occasion varchar(100), event_date date, status varchar(32) not null default 'draft', payment_status varchar(32) not null default 'unpaid', payment_method varchar(20) not null default 'cash', cost_settlement_mode varchar(32) not null default 'immediate', supplier_id integer references suppliers(id) on delete set null, subtotal numeric(14,2) not null default 0, discount_amount numeric(14,2) not null default 0, delivery_fee numeric(14,2) not null default 0, service_fee numeric(14,2) not null default 0, total_amount numeric(14,2) not null default 0, paid_amount numeric(14,2) not null default 0, remaining_amount numeric(14,2) not null default 0, food_cost numeric(14,2) not null default 0, expense_amount numeric(14,2) not null default 0, refund_amount numeric(14,2) not null default 0, final_profit numeric(14,2) not null default 0, notes text, stock_applied boolean not null default false, stock_restored_at timestamp, cancelled_at timestamp, cancelled_by integer, cancellation_reason text, created_by integer, created_by_name text not null default '', updated_at timestamp not null default now(), created_at timestamp not null default now());
-    create table if not exists catering_order_items (id serial primary key, order_id integer not null references catering_orders(id) on delete restrict, menu_item_id integer references catering_menu_items(id) on delete set null, inventory_product_id integer references products(id) on delete set null, category_id integer references catering_categories(id) on delete set null, item_name text not null, item_code varchar(100), item_image_url text, unit varchar(40) not null default 'حبة', quantity numeric(14,3) not null, unit_selling_price numeric(14,2) not null default 0, unit_cost_price numeric(14,2) not null default 0, packaging_cost numeric(14,2) not null default 0, preparation_labor_cost numeric(14,2) not null default 0, discount_amount numeric(14,2) not null default 0, line_total numeric(14,2) not null default 0, line_cost numeric(14,2) not null default 0, notes text, created_at timestamp not null default now());
-    create table if not exists catering_payments (id serial primary key, order_id integer not null references catering_orders(id) on delete restrict, amount numeric(14,2) not null check(amount>0), payment_method varchar(20) not null default 'cash', payment_date timestamp not null default now(), reference varchar(160), notes text, attachment_url text, status varchar(20) not null default 'confirmed', financial_transaction_id integer references financial_transactions(id) on delete restrict, reversal_transaction_id integer references financial_transactions(id) on delete restrict, collected_by integer, created_at timestamp not null default now(), reversed_at timestamp, reversed_by integer, reversal_reason text);
-    create table if not exists catering_order_expenses (id serial primary key, order_id integer not null references catering_orders(id) on delete restrict, expense_type varchar(40) not null, amount numeric(14,2) not null check(amount>=0), supplier_id integer references suppliers(id) on delete set null, notes text, financial_transaction_id integer references financial_transactions(id) on delete restrict, created_by integer, created_at timestamp not null default now(), reversed_at timestamp);
-    create table if not exists catering_supplier_payables (id serial primary key, order_id integer not null references catering_orders(id) on delete restrict, supplier_id integer not null references suppliers(id) on delete restrict, amount numeric(14,2) not null check(amount>=0), paid_amount numeric(14,2) not null default 0, status varchar(20) not null default 'open', due_date date, notes text, created_at timestamp not null default now(), settled_at timestamp);
-    create table if not exists catering_stock_events (id serial primary key, order_id integer not null references catering_orders(id) on delete restrict, order_item_id integer not null references catering_order_items(id) on delete restrict, event varchar(20) not null, quantity numeric(14,3) not null, created_at timestamp not null default now(), unique(order_item_id,event));
-    create unique index if not exists catering_categories_name_active_idx on catering_categories(lower(name)) where archived_at is null;
-    create unique index if not exists catering_menu_items_barcode_idx on catering_menu_items(barcode) where barcode is not null;
-    create index if not exists catering_orders_status_date_idx on catering_orders(status,event_date,created_at desc);
-  `,
-      )
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((e) => {
         cateringErpSchemaPromise = null;
@@ -66010,18 +64850,10 @@ async function handleCateringErp(req: NextRequest, parts: string[]) {
 }
 
 async function ensureCateringTables(): Promise<void> {
-  await db.execute(
-    sql`create table if not exists catering_bookings (id serial primary key, code varchar(32) not null unique, customer_id integer, customer_name text not null, mobile1 varchar(30), mobile2 varchar(30), address text, map_url text, event_type varchar(30) not null, event_date date not null, start_time varchar(20), finish_time varchar(20), hall text, location text, gps text, guest_count integer not null, male_count integer not null default 0, female_count integer not null default 0, children_count integer not null default 0, vip_count integer not null default 0, notes text, package_name text, total_amount numeric not null default 0, estimated_cost numeric not null default 0, balance_amount numeric not null default 0, qr_token varchar(64) not null unique, status varchar(24) not null default 'confirmed', chef_name text, created_by integer, created_at timestamp not null default now(), updated_at timestamp not null default now())`,
-  );
-  await db.execute(
-    sql`create table if not exists catering_menu_items (id serial primary key, code varchar(40) not null unique, name text not null, category varchar(60) not null, cost numeric not null default 0, selling_price numeric not null default 0, preparation_minutes integer not null default 0, calories integer, inventory_product_id integer, image_url text, created_at timestamp not null default now())`,
-  );
-  await db.execute(
-    sql`create table if not exists catering_packages (id serial primary key, name varchar(120) not null, tier varchar(20) not null, price numeric not null default 0, details jsonb not null default '{}'::jsonb, created_at timestamp not null default now())`,
-  );
-  await db.execute(
-    sql`create index if not exists catering_bookings_date_idx on catering_bookings(event_date, status)`,
-  );
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
 }
 function cateringBookingView(row: any) {
   return {
@@ -66159,78 +64991,17 @@ const invitationCheckinSchema = z.object({
 });
 
 async function ensureInvitationTables(): Promise<void> {
-  await db.execute(sql`
-    create table if not exists "invitation_cards" (
-      "id" serial primary key,
-      "slug" varchar(24) not null unique,
-      "code" varchar(24),
-      "type" varchar(30) not null default 'wedding',
-      "booking_id" integer,
-      "customer_id" integer,
-      "bride_name" text, "groom_name" text, "event_name" text,
-      "event_date" varchar(20), "event_time" varchar(20),
-      "venue_name" text, "venue_address" text, "map_url" text,
-      "customer_phone" varchar(30), "customer_email" text,
-      "welcome_message" text, "thank_you_message" text,
-      "main_image_url" text, "gallery_images" jsonb not null default '[]',
-      "font_family" varchar(80) not null default 'Cairo', "custom_font_url" text,
-      "text_color" varchar(20) not null default '#2a2118',
-      "background_color" varchar(20) not null default '#f7f1e8',
-      "animation_style" varchar(30) not null default 'fade',
-      "music_url" text, "video_url" text,
-      "status" varchar(20) not null default 'draft',
-      "is_active" boolean not null default true, "views" integer not null default 0,
-      "created_by" integer,
-      "created_at" timestamp not null default now(),
-      "updated_at" timestamp not null default now()
-    )
-  `);
-  await db.execute(sql`
-    create table if not exists "invitation_card_rsvps" (
-      "id" serial primary key,
-      "card_id" integer not null,
-      "guest_name" text, "guest_phone" varchar(30), "guest_token" varchar(24),
-      "attendance_status" varchar(12) not null default 'pending',
-      "companions_count" integer not null default 0,
-      "guest_message" text, "viewed_at" timestamp, "responded_at" timestamp,
-      "created_at" timestamp not null default now()
-    )
-  `);
-  await db.execute(
-    sql`create index if not exists "invitation_rsvps_card_idx" on "invitation_card_rsvps" ("card_id")`,
-  );
-  await db.execute(
-    sql`alter table "invitation_cards" add column if not exists "social_links" jsonb not null default '{}'::jsonb`,
-  );
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
   // Luxury interactive opening experience (additive, non-breaking).
-  await db.execute(
-    sql`alter table "invitation_cards" add column if not exists "opening_style" varchar(40) not null default 'ring_box'`,
-  );
-  await db.execute(
-    sql`alter table "invitation_cards" add column if not exists "experience_settings" jsonb not null default '{}'::jsonb`,
-  );
-  await db.execute(sql`
-    create table if not exists "invitation_guests" (
-      "id" serial primary key, "card_id" integer not null,
-      "guest_name" text not null, "family" text, "guest_type" varchar(24) not null default 'friends',
-      "phone" varchar(30), "photo_url" text, "hall" text, "table_number" varchar(40), "seat_number" varchar(40),
-      "allowed_guests" integer not null default 1, "checked_in_count" integer not null default 0,
-      "qr_token" varchar(64) not null unique, "expires_at" timestamp, "created_at" timestamp not null default now(), "updated_at" timestamp not null default now()
-    )
-  `);
-  await db.execute(sql`
-    create table if not exists "invitation_guest_checkins" (
-      "id" serial primary key, "guest_id" integer not null, "card_id" integer not null,
-      "entry_number" integer not null, "staff_id" integer, "staff_name" text, "location" text,
-      "checked_in_at" timestamp not null default now(), "qr_fingerprint" varchar(96)
-    )
-  `);
-  await db.execute(
-    sql`create index if not exists "invitation_guests_card_idx" on "invitation_guests" ("card_id")`,
-  );
-  await db.execute(
-    sql`create index if not exists "invitation_guest_checkins_guest_idx" on "invitation_guest_checkins" ("guest_id")`,
-  );
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
 }
 
 /** URL-safe code; never a raw DB id. */
@@ -66452,14 +65223,12 @@ async function handleClientGallery(
           downloadCount: sql`${photographyGalleriesTable.downloadCount} + 1`,
         })
         .where(eq(photographyGalleriesTable.id, gallery.id));
-      await db
-        .insert(photographyGalleryEventsTable)
-        .values({
-          galleryId: gallery.id,
-          itemId,
-          type: "download",
-          visitorToken,
-        });
+      await db.insert(photographyGalleryEventsTable).values({
+        galleryId: gallery.id,
+        itemId,
+        type: "download",
+        visitorToken,
+      });
       return json({ ok: true });
     }
 
@@ -66487,14 +65256,12 @@ async function handleClientGallery(
       })
       .where(eq(photographyGalleryItemsTable.id, itemId));
     if (wantsFavorite) {
-      await db
-        .insert(photographyGalleryEventsTable)
-        .values({
-          galleryId: gallery.id,
-          itemId,
-          type: "favorite",
-          visitorToken,
-        });
+      await db.insert(photographyGalleryEventsTable).values({
+        galleryId: gallery.id,
+        itemId,
+        type: "favorite",
+        visitorToken,
+      });
     } else if (already) {
       await db
         .delete(photographyGalleryEventsTable)
@@ -66618,6 +65385,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
     root === "admin" && !isAdminAuth && !isInvoiceRegisterRequest;
 
   try {
+    assertProductionEnvironment();
+    await assertCurrentSchema();
     if (!root && req.method === "GET") return json({ status: "ok" });
     if (req.method === "GET" && root === "healthz")
       return json({ status: "ok" });
@@ -66630,8 +65399,28 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       if (!secret) return error("خدمة Cron غير مهيأة", 503);
       const auth = req.headers.get("authorization") ?? "";
       if (auth !== `Bearer ${secret}`) return error("غير مصرح", 401);
-      const summary = await runSmartNotificationsSweep();
-      return json({ ok: true, summary });
+      const [summary, rateLimitCleanup] = await Promise.all([
+        runSmartNotificationsSweep(),
+        cleanupExpiredRateLimits(),
+      ]);
+      return json({ ok: true, summary, rateLimitCleanup });
+    }
+    if (
+      req.method === "GET" &&
+      req.nextUrl.searchParams.has("search") &&
+      ["products", "services", "gallery", "offers"].includes(root || "")
+    ) {
+      const publicSearchLimit = await consumeRateLimit({
+        action: `public-search-${root}`,
+        keyParts: [ip(req)],
+        limit: 60,
+        windowMs: 60_000,
+      });
+      if (!publicSearchLimit.allowed)
+        return rateLimitError(
+          publicSearchLimit,
+          "عدد كبير من عمليات البحث، حاول بعد قليل",
+        );
     }
 
     // Run all schema ensures in parallel — they are singleton-promise guarded, so
@@ -66647,7 +65436,8 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
           ? ensureCustomerProfileColumns()
           : undefined,
         root === "print-agent" ||
-        (root === "admin" && ["print-jobs", "print-agents", "printers"].includes(parts[1] ?? ""))
+        (root === "admin" &&
+          ["print-jobs", "print-agents", "printers"].includes(parts[1] ?? ""))
           ? ensureRemotePrintingTables()
           : undefined,
         root === "auth" || root === "customer"
@@ -66709,9 +65499,7 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         shouldBootstrapAdminSchemas
           ? ensureAdminExtensionsTables()
           : undefined,
-        root === "koshas" ||
-        root === "track" ||
-        shouldBootstrapAdminSchemas
+        root === "koshas" || root === "track" || shouldBootstrapAdminSchemas
           ? ensureKoshaTables()
           : undefined,
         root === "staff" && parts[1] === "koshas"
@@ -66735,107 +65523,181 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
       ].filter(Boolean),
     );
 
+    if (root === "research" && parts[1] === "track") {
+      const trackingLimit = await consumeRateLimit({
+        action: req.method === "GET" ? "research-tracking-read" : "research-tracking-write",
+        keyParts: [ip(req), parts[2] ?? "missing"],
+        limit: req.method === "GET" ? 60 : 20,
+        windowMs: 60_000,
+      });
+      if (!trackingLimit.allowed)
+        return rateLimitError(trackingLimit, "طلبات كثيرة، حاول لاحقاً");
+    }
+    if (root === "research" && parts[1] === "orders" && req.method === "POST") {
+      const submissionLimit = await consumeRateLimit({
+        action: "research-order-submission",
+        keyParts: [ip(req)],
+        limit: 10,
+        windowMs: 60 * 60_000,
+      });
+      if (!submissionLimit.allowed)
+        return rateLimitError(submissionLimit, "طلبات كثيرة، حاول لاحقاً");
+    }
+
     const route =
       root === "auth"
         ? await handleAuth(req, parts)
         : root === "print-agent"
           ? await handlePrintAgentApi(req, parts)
-        : root === "invite"
-          ? await handleInvite(req, parts)
-          : // Distinct from root "gallery", which is the public marketing gallery.
-            root === "photo-gallery"
-            ? await handleClientGallery(req, parts)
-            : root === "media"
-              ? await handleMedia(req, parts)
-              : root === "uploads"
-                ? await handleImageUploads(req, parts)
-                : root === "settings"
-                  ? await handlePublicSettings(req, parts)
-                  : root === "customer"
-                    ? await handleCustomer(req, parts)
-                    : root === "messages"
-                      ? await handlePublicMessages(req, parts)
-                      : root === "activity"
-                        ? await handleCustomerActivity(req, parts)
-                        : root === "qr"
-                          ? await handleQr(req, parts)
-                          : root === "track"
-                            ? await handleUnifiedTracking(req, parts)
-                            : root === "notifications"
-                              ? await handleNotifications(req, parts)
-                              : root === "products"
-                                ? await handleProducts(req, parts)
-                                : root === "rental-orders"
-                                  ? await handleRentalOrders(req, parts)
-                                  : root === "koshas"
-                                    ? await handleKoshas(req, parts)
-                                    : root === "graduation"
-                                      ? await handleGraduationPublic(req, parts)
-                                      : root === "research"
-                                        ? await handleResearchPublic(req, parts)
-                                        : root === "offers"
-                                          ? await handleOffers(req, parts)
-                                          : root === "coupons"
-                                            ? await handleCoupons(req, parts)
-                                            : root === "services"
-                                              ? await handleServices(req, parts)
-                                              : root === "crews"
-                                                ? await handleCrews(req, parts)
-                                                : root === "service-orders"
-                                                  ? await handleServiceOrders(
+          : root === "invite"
+            ? await handleInvite(req, parts)
+            : // Distinct from root "gallery", which is the public marketing gallery.
+              root === "photo-gallery"
+              ? await handleClientGallery(req, parts)
+              : root === "media"
+                ? await handleMedia(req, parts)
+                : root === "uploads"
+                  ? await handleImageUploads(req, parts)
+                  : root === "settings"
+                    ? await handlePublicSettings(req, parts)
+                    : root === "customer"
+                      ? await handleCustomer(req, parts)
+                      : root === "messages"
+                        ? await handlePublicMessages(req, parts)
+                        : root === "activity"
+                          ? await handleCustomerActivity(req, parts)
+                          : root === "qr"
+                            ? await handleQr(req, parts)
+                            : root === "track"
+                              ? await handleUnifiedTracking(req, parts)
+                              : root === "notifications"
+                                ? await handleNotifications(req, parts)
+                                : root === "products"
+                                  ? await handleProducts(req, parts)
+                                  : root === "rental-orders"
+                                    ? await handleRentalOrders(req, parts)
+                                    : root === "koshas"
+                                      ? await handleKoshas(req, parts)
+                                      : root === "graduation"
+                                        ? await handleGraduationPublic(
+                                            req,
+                                            parts,
+                                          )
+                                        : root === "research"
+                                          ? await handleResearchPublic(
+                                              req,
+                                              parts,
+                                            )
+                                          : root === "offers"
+                                            ? await handleOffers(req, parts)
+                                            : root === "coupons"
+                                              ? await handleCoupons(req, parts)
+                                              : root === "services"
+                                                ? await handleServices(
+                                                    req,
+                                                    parts,
+                                                  )
+                                                : root === "crews"
+                                                  ? await handleCrews(
                                                       req,
                                                       parts,
                                                     )
-                                                  : root === "cart"
-                                                    ? await handleCart(
+                                                  : root === "service-orders"
+                                                    ? await handleServiceOrders(
                                                         req,
                                                         parts,
                                                       )
-                                                    : root === "orders"
-                                                      ? await handleOrders(
+                                                    : root === "cart"
+                                                      ? await handleCart(
                                                           req,
                                                           parts,
                                                         )
-                                                      : root === "gallery"
-                                                        ? await handleGallery(
+                                                      : root === "orders"
+                                                        ? await handleOrders(
                                                             req,
                                                             parts,
                                                           )
-                                                        : root === "reviews"
-                                                          ? await handleReviews(
+                                                        : root === "gallery"
+                                                          ? await handleGallery(
                                                               req,
                                                               parts,
                                                             )
-                                                          : root ===
-                                                              "delivery-zones"
-                                                            ? await handleDelivery(
+                                                          : root === "reviews"
+                                                            ? await handleReviews(
                                                                 req,
                                                                 parts,
                                                               )
                                                             : root ===
-                                                                "dashboard"
-                                                              ? await handleDashboard(
+                                                                "delivery-zones"
+                                                              ? await handleDelivery(
                                                                   req,
                                                                   parts,
                                                                 )
-                                                              : root === "staff"
-                                                                ? await handleStaffPortal(
+                                                              : root ===
+                                                                  "dashboard"
+                                                                ? await handleDashboard(
                                                                     req,
                                                                     parts,
                                                                   )
                                                                 : root ===
-                                                                    "admin"
-                                                                  ? await handleAdmin(
+                                                                    "staff"
+                                                                  ? await handleStaffPortal(
                                                                       req,
                                                                       parts,
                                                                     )
-                                                                  : null;
+                                                                  : root ===
+                                                                      "admin"
+                                                                    ? await handleAdmin(
+                                                                        req,
+                                                                        parts,
+                                                                      )
+                                                                    : null;
 
     return route ?? error("المسار غير موجود", 404);
   } catch (err) {
+    if (err instanceof ProductionEnvironmentError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.error("AJN production environment is invalid", {
+        requestId,
+        issues: err.issues,
+      });
+      return error("تهيئة بيئة الإنتاج غير مكتملة أو غير آمنة.", 500, {
+        code: "DATABASE_ERROR",
+        requestId,
+        retryable: false,
+      });
+    }
     if (err instanceof RequestBodyTooLargeError)
       return error("حجم الطلب يتجاوز الحد المسموح", 413);
+    if (err instanceof InvalidJsonBodyError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.warn("API request JSON parsing failed", {
+        requestId,
+        method: req.method,
+        path: req.nextUrl.pathname,
+      });
+      return error("صيغة JSON غير صحيحة", 400, {
+        code: "VALIDATION_ERROR",
+        requestId,
+      });
+    }
     if (err instanceof CheckoutError) return error(err.message, err.status);
+    if (err instanceof SchemaOutdatedError) {
+      const requestId = makeRequestId(req.headers.get("x-request-id"));
+      console.error("AJN database schema is outdated", {
+        requestId,
+        requiredRevision: REQUIRED_SCHEMA_REVISION,
+      });
+      return error(
+        "مخطط قاعدة البيانات قديم. يجب تطبيق مهاجرات AJN قبل تشغيل الخدمة.",
+        500,
+        {
+          code: "DATABASE_ERROR",
+          requestId,
+          retryable: false,
+        },
+      );
+    }
     const requestId = makeRequestId(req.headers.get("x-request-id"));
     const mappedError = mapWriteError(err);
     console.error("API route failed", {

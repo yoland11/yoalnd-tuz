@@ -102,13 +102,13 @@ export function publicSettingsPayload(settings: Record<string, any>) {
   };
 }
 
-async function loadPublicSettings() {
-  try {
-    return publicSettingsPayload(await loadSiteSettings());
-  } catch (err) {
-    console.warn("public settings load failed", err);
-    return publicSettingsPayload(DEFAULT_SITE_SETTINGS);
-  }
+export async function loadPublicSettings(
+  loader: () => Promise<Record<string, any>> = loadSiteSettings,
+) {
+  // An empty settings table is legitimate because loadSiteSettings merges the
+  // defaults. Database/query failures must propagate to the AJN API boundary;
+  // returning defaults here would make an outage look healthy.
+  return publicSettingsPayload(await loader());
 }
 
 export const getCachedPublicSettings = unstable_cache(

@@ -9,15 +9,16 @@
   "scripts": {
     "dev": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "pnpm run typecheck && electron-builder --dir",
-    "dist:win": "pnpm run typecheck && electron-builder --win nsis portable --x64"
+    "compile": "tsc -p tsconfig.json",
+    "build": "pnpm run compile && electron-builder --dir",
+    "dist:win": "pnpm run compile && electron-builder --win nsis portable --x64"
   },
   "dependencies": {
     "@workspace/print-template": "workspace:*",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "electron": "39.8.5",
+    "electron": "39.8.10",
     "electron-builder": "26.15.3",
     "typescript": "~5.9.2",
     "@types/node": "^25.3.3",

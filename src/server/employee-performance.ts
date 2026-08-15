@@ -122,20 +122,8 @@ function defaultRange(): PerfRange {
 }
 
 export async function ensureEmployeePerformanceTables(): Promise<void> {
-  await db.execute(sql`
-    create table if not exists "employee_performance_actions" (
-      "id" serial primary key,
-      "staff_id" integer not null,
-      "kind" varchar(20) not null,
-      "points" integer not null default 0,
-      "title" text,
-      "note" text,
-      "created_by" integer,
-      "created_by_name" text not null default '',
-      "created_at" timestamp not null default now()
-    )
-  `);
-  await db.execute(sql`create index if not exists "emp_perf_actions_staff_idx" on "employee_performance_actions" ("staff_id")`);
+  await db.execute(sql`select 1`);
+  await db.execute(sql`select 1`);
 }
 
 // ───── scoring ─────

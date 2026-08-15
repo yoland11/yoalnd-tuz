@@ -7,6 +7,7 @@ import {
 } from "@workspace/db";
 import { getGraduationMeasurementStatus } from "@/lib/graduation-measurements";
 import { getGraduationProductionMeasurementBlock } from "@/server/graduation-measurements";
+import { readRequestBody } from "@/server/request-body";
 
 /**
  * Tailors Portal (بوابة الخياطين) server module.
@@ -47,22 +48,7 @@ let historyReady: Promise<void> | null = null;
 async function ensureTailoringTables() {
   if (!historyReady) {
     historyReady = db
-      .execute(sql`
-        CREATE TABLE IF NOT EXISTS graduation_measurement_history (
-          id serial PRIMARY KEY,
-          graduation_order_id integer NOT NULL REFERENCES graduation_orders(id) ON DELETE CASCADE,
-          previous jsonb NOT NULL DEFAULT '{}'::jsonb,
-          next jsonb NOT NULL DEFAULT '{}'::jsonb,
-          action varchar(40) NOT NULL DEFAULT 'edit',
-          changed_by integer,
-          changed_by_name text NOT NULL DEFAULT '',
-          reason text,
-          notes text,
-          created_at timestamp NOT NULL DEFAULT now()
-        );
-        CREATE INDEX IF NOT EXISTS graduation_measurement_history_order_idx
-          ON graduation_measurement_history(graduation_order_id, created_at DESC);
-      `)
+      .execute(sql`select 1`)
       .then(() => undefined)
       .catch((e) => {
         historyReady = null;
@@ -479,7 +465,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await fetchAssignedOrder(id, user);
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const previous = rec(order.measurements);
     const next = buildNextMeasurements(previous, body, user);
     await persistMeasurements(id, next);
@@ -559,7 +545,7 @@ export async function handleTailorPortal(
     const gid = Number(parts[1]);
     if (!Number.isFinite(gid)) return error("معرّف غير صحيح", 400);
     if (!(await canAccessGroup(gid, user))) return error("هذه المجموعة غير مخصصة لك", 403);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const items = Array.isArray(body.items) ? body.items : [];
     if (!items.length) return error("لا توجد صفوف للحفظ", 400);
     // Only orders that actually belong to this group may be written.
@@ -607,7 +593,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await fetchAssignedOrder(id, user);
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const url = typeof body.dataUrl === "string" ? body.dataUrl : "";
     if (!url) return error("لا توجد صورة", 400);
     const garment = rec(order.garmentDetails);
@@ -625,7 +611,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await fetchAssignedOrder(id, user);
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const alt = rec(body.alteration);
     const garment = rec(order.garmentDetails);
     const list: any[] = Array.isArray(garment.alterations) ? garment.alterations : [];
@@ -657,7 +643,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await fetchAssignedOrder(id, user);
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const action = String(body.action ?? "");
     let nextStage = order.productionStage;
     if (action === "mark_ready") nextStage = "ready";
@@ -718,7 +704,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await fetchAssignedOrder(id, user);
     if (!order) return error("هذا الطلب غير مخصص لك", 403);
-    const tiers = rec(rec(await req.json().catch(() => ({}))).notes);
+    const tiers = rec(rec(await readRequestBody(req)).notes);
     const garment = rec(order.garmentDetails);
     const notesTiers = {
       internal: String(tiers.internal ?? ""), admin: String(tiers.admin ?? ""),
@@ -737,7 +723,7 @@ export async function handleTailorPortal(
     if (!Number.isFinite(id)) return error("معرّف غير صحيح", 400);
     const order = await db.query.graduationOrdersTable.findFirst({ where: eq(graduationOrdersTable.id, id) });
     if (!order) return error("الطلب غير موجود", 404);
-    const body = rec(await req.json().catch(() => ({})));
+    const body = rec(await readRequestBody(req));
     const decision = String(body.decision ?? "");
     if (!["approve", "return"].includes(decision)) return error("قرار غير صحيح", 400);
     const previous = rec(order.measurements);

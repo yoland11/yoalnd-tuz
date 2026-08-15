@@ -29,6 +29,7 @@ import {
   stockMovementsTable,
 } from "@workspace/db";
 import { normalizeGraduationConfig, GRADUATION_STAGES } from "@/lib/graduation";
+import { readRequestBody } from "@/server/request-body";
 import {
   getGraduationMeasurementFilter,
   getGraduationMeasurementStatus,
@@ -169,11 +170,7 @@ function fail(message: string, status = 400, details?: unknown) {
 }
 
 async function body(req: NextRequest) {
-  try {
-    return await req.json();
-  } catch {
-    return {};
-  }
+  return readRequestBody(req);
 }
 
 function record(value: unknown): JsonMap {

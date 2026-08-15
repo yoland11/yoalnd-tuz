@@ -22,6 +22,7 @@ import {
   type DeliveryZone,
 } from "@workspace/db";
 import { normalizeIraqiPhone } from "@/lib/phone";
+import { safeServerError } from "@/server/safe-server-log";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -310,147 +311,12 @@ let deliveryDetailsMigrated = false;
 export async function ensureDeliveryDetailsTables() {
   if (deliveryDetailsMigrated) return;
   try {
-    await db.execute(sql`
-      ALTER TABLE delivery_zones
-        ADD COLUMN IF NOT EXISTS express_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS same_day_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS cod_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS free_delivery_threshold NUMERIC(14,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS delivery_company TEXT,
-        ADD COLUMN IF NOT EXISTS max_weight NUMERIC(10,2) NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS notes TEXT,
-        ADD COLUMN IF NOT EXISTS priced_regions JSONB NOT NULL DEFAULT '[]'::jsonb;
-
-      ALTER TABLE customer_addresses
-        ADD COLUMN IF NOT EXISTS province_id INTEGER REFERENCES delivery_zones(id),
-        ADD COLUMN IF NOT EXISTS district TEXT NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS area TEXT NOT NULL DEFAULT '',
-        ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS maps_url TEXT;
-
-      CREATE TABLE IF NOT EXISTS delivery_details (
-        id SERIAL PRIMARY KEY,
-        sales_invoice_id INTEGER REFERENCES sales_invoices(id) ON DELETE CASCADE,
-        order_id INTEGER REFERENCES orders(id),
-        customer_id INTEGER REFERENCES customers(id),
-        customer_address_id INTEGER REFERENCES customer_addresses(id),
-        province_id INTEGER REFERENCES delivery_zones(id),
-        method VARCHAR(20) NOT NULL DEFAULT 'pickup',
-        province_name TEXT NOT NULL DEFAULT '',
-        city TEXT NOT NULL DEFAULT '',
-        district TEXT NOT NULL DEFAULT '',
-        area TEXT NOT NULL DEFAULT '',
-        landmark TEXT NOT NULL DEFAULT '',
-        full_address TEXT NOT NULL DEFAULT '',
-        maps_url TEXT,
-        receiver_name TEXT NOT NULL DEFAULT '',
-        receiver_phone VARCHAR(20),
-        receiver_alt_phone VARCHAR(20),
-        delivery_company TEXT,
-        delivery_type VARCHAR(20) NOT NULL DEFAULT 'standard',
-        delivery_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        base_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        fee_overridden BOOLEAN NOT NULL DEFAULT false,
-        fee_override_reason TEXT,
-        fee_paid_by VARCHAR(20) NOT NULL DEFAULT 'customer',
-        cod_enabled BOOLEAN NOT NULL DEFAULT false,
-        cod_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-        cod_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        cod_collected_at TIMESTAMP,
-        expected_ship_date DATE,
-        expected_arrival_date DATE,
-        preferred_time VARCHAR(40),
-        notes TEXT,
-        is_fragile BOOLEAN NOT NULL DEFAULT false,
-        needs_refrigeration BOOLEAN NOT NULL DEFAULT false,
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS delivery_details_sales_invoice_unique
-        ON delivery_details(sales_invoice_id) WHERE sales_invoice_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS delivery_details_province_idx ON delivery_details(province_id);
-      CREATE INDEX IF NOT EXISTS delivery_details_customer_idx ON delivery_details(customer_id);
-
-      CREATE TABLE IF NOT EXISTS delivery_orders (
-        id SERIAL PRIMARY KEY,
-        delivery_no VARCHAR(40) NOT NULL UNIQUE,
-        delivery_details_id INTEGER REFERENCES delivery_details(id) ON DELETE CASCADE,
-        sales_invoice_id INTEGER REFERENCES sales_invoices(id) ON DELETE CASCADE,
-        order_id INTEGER REFERENCES orders(id),
-        customer_id INTEGER REFERENCES customers(id),
-        customer_address_id INTEGER REFERENCES customer_addresses(id),
-        province_id INTEGER REFERENCES delivery_zones(id),
-        financial_transaction_id INTEGER,
-        qr_token VARCHAR(80),
-        status VARCHAR(30) NOT NULL DEFAULT 'pending_prep',
-        status_updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        delivered_at TIMESTAMP,
-        returned_at TIMESTAMP,
-        label_printed_at TIMESTAMP,
-        label_print_count INTEGER NOT NULL DEFAULT 0,
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS delivery_orders_details_unique
-        ON delivery_orders(delivery_details_id) WHERE delivery_details_id IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS delivery_orders_status_idx ON delivery_orders(status);
-      CREATE INDEX IF NOT EXISTS delivery_orders_province_idx ON delivery_orders(province_id);
-
-      CREATE TABLE IF NOT EXISTS delivery_order_status_history (
-        id SERIAL PRIMARY KEY,
-        delivery_order_id INTEGER NOT NULL REFERENCES delivery_orders(id) ON DELETE CASCADE,
-        status VARCHAR(30) NOT NULL,
-        reason TEXT,
-        notes TEXT,
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS delivery_order_history_order_idx
-        ON delivery_order_status_history(delivery_order_id);
-
-      -- Phase 3: return metadata on the delivery order.
-      ALTER TABLE delivery_orders
-        ADD COLUMN IF NOT EXISTS return_reason TEXT,
-        ADD COLUMN IF NOT EXISTS returned_items JSONB NOT NULL DEFAULT '[]'::jsonb,
-        ADD COLUMN IF NOT EXISTS cancel_reason TEXT,
-        ADD COLUMN IF NOT EXISTS cod_settled_at TIMESTAMP;
-
-      -- Phase 3: COD settlement ledger. One settlement per delivery order.
-      CREATE TABLE IF NOT EXISTS delivery_cod_settlements (
-        id SERIAL PRIMARY KEY,
-        delivery_order_id INTEGER NOT NULL REFERENCES delivery_orders(id) ON DELETE CASCADE,
-        sales_invoice_id INTEGER REFERENCES sales_invoices(id) ON DELETE SET NULL,
-        customer_id INTEGER REFERENCES customers(id),
-        delivery_company TEXT,
-        expected_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        received_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-        settlement_date DATE NOT NULL,
-        reference_no TEXT,
-        account VARCHAR(20) NOT NULL DEFAULT 'cash',
-        accounting_mode VARCHAR(20) NOT NULL DEFAULT 'revenue',
-        notes TEXT,
-        attachment_url TEXT,
-        receipt_voucher_id INTEGER,
-        financial_transaction_id INTEGER,
-        status VARCHAR(20) NOT NULL DEFAULT 'completed',
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS delivery_cod_settlements_order_unique
-        ON delivery_cod_settlements(delivery_order_id);
-    `);
+    await db.execute(sql`select 1`);
     await seedProvinces();
     deliveryDetailsMigrated = true;
   } catch (err) {
-    console.warn("delivery details provisioning failed", err);
-    deliveryDetailsMigrated = true;
+    console.warn("delivery details provisioning failed", safeServerError(err));
+    throw err;
   }
 }
 

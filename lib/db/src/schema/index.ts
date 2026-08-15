@@ -17,6 +17,7 @@ export * from "./asset-categories";
 export * from "./asset-sales";
 export * from "./settings";
 export * from "./admin-sessions";
+export * from "./rate-limits";
 export * from "./accounting";
 export * from "./whatsapp";
 export * from "./order-reviews";

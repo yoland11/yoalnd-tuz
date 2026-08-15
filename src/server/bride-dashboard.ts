@@ -15,6 +15,7 @@ import {
   staffTable,
   tasksTable,
 } from "@workspace/db";
+import { readRequestBody } from "@/server/request-body";
 
 type Customer = { id: number; name?: string | null; fullName?: string | null; phone?: string | null };
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status });
@@ -32,29 +33,7 @@ const workspaceItem = z.object({
 
 let ready: Promise<void> | null = null;
 async function ensureBrideTables() {
-  if (!ready) ready = db.execute(sql`
-    CREATE TABLE IF NOT EXISTS bride_dashboard_requests (
-      id serial PRIMARY KEY, booking_id integer NOT NULL REFERENCES kosha_bookings(id) ON DELETE RESTRICT,
-      customer_id integer NOT NULL REFERENCES customers(id) ON DELETE RESTRICT, request_type varchar(40) NOT NULL,
-      department varchar(40) NOT NULL DEFAULT 'support', body text NOT NULL, status varchar(20) NOT NULL DEFAULT 'new',
-      task_id integer REFERENCES tasks(id) ON DELETE SET NULL, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS bride_dashboard_requests_customer_idx ON bride_dashboard_requests(customer_id, created_at DESC);
-    CREATE TABLE IF NOT EXISTS wedding_workspace_members (
-      id serial PRIMARY KEY, booking_id integer NOT NULL REFERENCES kosha_bookings(id) ON DELETE CASCADE,
-      customer_id integer NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-      role varchar(24) NOT NULL DEFAULT 'family', permissions jsonb NOT NULL DEFAULT '[]'::jsonb,
-      created_at timestamp NOT NULL DEFAULT now(), UNIQUE(booking_id, customer_id)
-    );
-    CREATE TABLE IF NOT EXISTS wedding_workspace_items (
-      id serial PRIMARY KEY, booking_id integer NOT NULL REFERENCES kosha_bookings(id) ON DELETE CASCADE,
-      customer_id integer NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
-      kind varchar(32) NOT NULL, title text NOT NULL, status varchar(40) NOT NULL DEFAULT 'pending',
-      data jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS wedding_workspace_items_booking_idx ON wedding_workspace_items(booking_id, kind, updated_at DESC);
-    CREATE INDEX IF NOT EXISTS wedding_workspace_members_customer_idx ON wedding_workspace_members(customer_id, booking_id);
-  `).then(() => undefined);
+  if (!ready) ready = db.execute(sql`select 1`).then(() => undefined);
   return ready;
 }
 async function bookingFor(customer: Customer, bookingId?: number) {
@@ -115,7 +94,7 @@ export async function handleBrideDashboard(req: NextRequest, parts: string[], cu
     });
   }
   if (resource === "requests" && req.method === "POST") {
-    const parsed = input.safeParse(await req.json().catch(() => ({}))); if (!parsed.success) return fail("تحقق من بيانات الطلب");
+    const parsed = input.safeParse(await readRequestBody(req)); if (!parsed.success) return fail("تحقق من بيانات الطلب");
     if (parsed.data.bookingId !== booking.id) return fail("لا يمكنك إرسال طلب لحجز آخر", 403);
     const title = parsed.data.type === "design_change" ? "طلب تعديل تصميم من بوابة العروس" : parsed.data.type === "service_request" ? "طلب خدمة من بوابة العروس" : "ملاحظة من بوابة العروس";
     const result = await db.transaction(async (tx) => {
@@ -135,7 +114,7 @@ export async function handleBrideDashboard(req: NextRequest, parts: string[], cu
     return json({ thread: { id: thread.id, subject: thread.subject, status: thread.status }, messages });
   }
   if (resource === "chat" && req.method === "POST") {
-    const parsed = chatInput.safeParse(await req.json().catch(() => ({})));
+    const parsed = chatInput.safeParse(await readRequestBody(req));
     if (!parsed.success) return fail("الرسالة غير صالحة");
     const result = await db.transaction(async (tx) => {
       let thread = await tx.query.messageThreadsTable.findFirst({ where: and(eq(messageThreadsTable.customerId, customer.id), eq(messageThreadsTable.relatedType, "kosha_booking"), eq(messageThreadsTable.relatedId, booking.id)), orderBy: [desc(messageThreadsTable.lastMessageAt)] });
@@ -151,7 +130,7 @@ export async function handleBrideDashboard(req: NextRequest, parts: string[], cu
     return json(result, 201);
   }
   if (resource === "workspace" && parts[3] === "items" && req.method === "POST") {
-    const parsed = workspaceItem.safeParse(await req.json().catch(() => ({})));
+    const parsed = workspaceItem.safeParse(await readRequestBody(req));
     if (!parsed.success) return fail("تحقق من بيانات العنصر");
     if (parsed.data.bookingId !== booking.id) return fail("لا يمكنك إضافة بيانات إلى حجز آخر", 403);
     const rows = await db.execute(sql`
@@ -164,7 +143,7 @@ export async function handleBrideDashboard(req: NextRequest, parts: string[], cu
   if (resource === "workspace" && parts[3] === "items" && parts[4] && req.method === "PATCH") {
     const itemId = Number(parts[4]);
     if (!Number.isFinite(itemId)) return fail("معرف غير صحيح");
-    const parsed = workspaceItem.omit({ bookingId: true, kind: true }).partial().safeParse(await req.json().catch(() => ({})));
+    const parsed = workspaceItem.omit({ bookingId: true, kind: true }).partial().safeParse(await readRequestBody(req));
     if (!parsed.success) return fail("تحقق من بيانات العنصر");
     const rows = await db.execute(sql`
       UPDATE wedding_workspace_items

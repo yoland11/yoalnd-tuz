@@ -27,6 +27,7 @@ import {
   productsTable,
 } from "@workspace/db";
 import { ensureGraduationEnterpriseTables } from "@/server/graduation-enterprise-schema";
+import { readRequestBody } from "@/server/request-body";
 import type { GraduationAdminUser } from "@/server/graduation";
 
 type JsonMap = Record<string, any>;
@@ -112,11 +113,7 @@ function error(message: string, status = 400, details?: unknown) {
 }
 
 async function requestBody(req: NextRequest) {
-  try {
-    return await req.json();
-  } catch {
-    return {};
-  }
+  return readRequestBody(req);
 }
 
 function record(value: unknown): JsonMap {

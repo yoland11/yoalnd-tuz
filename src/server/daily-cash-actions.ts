@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import {
   adminSessionsTable,
   db,
@@ -15,6 +15,7 @@ import {
   upsertDailyCashReportSchema,
   type DailyCashActor,
 } from "@/server/daily-cash";
+import { adminSessionTokenHash } from "@/server/admin-session-security";
 
 const ADMIN_COOKIE_NAME = "ajn_admin_session";
 
@@ -22,7 +23,11 @@ async function requireAccountingActor(): Promise<DailyCashActor> {
   const token = (await cookies()).get(ADMIN_COOKIE_NAME)?.value;
   if (!token) throw new Error("غير مخول");
   const session = await db.query.adminSessionsTable.findFirst({
-    where: and(eq(adminSessionsTable.token, token), gt(adminSessionsTable.expiresAt, new Date())),
+    where: and(
+      eq(adminSessionsTable.tokenHash, adminSessionTokenHash(token)),
+      gt(adminSessionsTable.expiresAt, new Date()),
+      isNull(adminSessionsTable.revokedAt),
+    ),
   });
   if (!session) throw new Error("غير مخول");
   const user = await db.query.staffTable.findFirst({ where: eq(staffTable.id, session.userId) });

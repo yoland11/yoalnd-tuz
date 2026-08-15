@@ -1,9 +1,12 @@
-import { pgTable, serial, text, integer, timestamp, index, varchar, uuid } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, timestamp, index, uniqueIndex, varchar, uuid } from "drizzle-orm/pg-core";
 import { staffTable } from "./staff";
 
 export const adminSessionsTable = pgTable("admin_sessions", {
   id: serial("id").primaryKey(),
-  token: text("token").notNull().unique(),
+  // Kept nullable only for migration compatibility. New sessions never store
+  // the replayable token; existing raw-token sessions are revoked by migration.
+  token: text("token").unique(),
+  tokenHash: varchar("token_hash", { length: 64 }),
   userId: integer("user_id").notNull().references(() => staffTable.id, { onDelete: "cascade" }),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -24,6 +27,7 @@ export const adminSessionsTable = pgTable("admin_sessions", {
   revokeReason: text("revoke_reason"),
 }, (t) => ({
   tokenIdx: index("admin_sessions_token_idx").on(t.token),
+  tokenHashIdx: uniqueIndex("admin_sessions_token_hash_idx").on(t.tokenHash),
   userIdx: index("admin_sessions_user_idx").on(t.userId),
   sessionIdIdx: index("admin_sessions_session_id_idx").on(t.sessionId),
 }));

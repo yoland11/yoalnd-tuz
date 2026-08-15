@@ -6,6 +6,7 @@ import {
   photographyShootEventsTable,
   photographyShootsTable,
 } from "@workspace/db";
+import { readRequestBody } from "@/server/request-body";
 
 /**
  * Photographer work approval workflow (بوابة المصورين).
@@ -59,30 +60,7 @@ export const PHOTO_APPROVAL_STATUSES = [
 let ready: Promise<void> | null = null;
 export async function ensurePhotographyApprovalTables() {
   if (!ready) {
-    ready = db.execute(sql`
-      CREATE TABLE IF NOT EXISTS photography_shoot_approvals (
-        id serial PRIMARY KEY,
-        shoot_id integer NOT NULL UNIQUE REFERENCES photography_shoots(id) ON DELETE CASCADE,
-        status varchar(30) NOT NULL DEFAULT 'draft',
-        locked boolean NOT NULL DEFAULT false,
-        manager_note text,
-        last_edited_by integer, last_edited_by_name text NOT NULL DEFAULT '', last_edited_at timestamp,
-        submitted_by integer, submitted_at timestamp,
-        approved_by integer, approved_by_name text NOT NULL DEFAULT '', approved_at timestamp,
-        returned_by integer, returned_at timestamp,
-        created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS photography_work_versions (
-        id serial PRIMARY KEY,
-        shoot_id integer NOT NULL REFERENCES photography_shoots(id) ON DELETE CASCADE,
-        version integer NOT NULL,
-        change_type varchar(30) NOT NULL DEFAULT 'edit',
-        snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
-        edited_by integer, edited_by_name text NOT NULL DEFAULT '', note text,
-        created_at timestamp NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS photography_work_versions_shoot_idx ON photography_work_versions(shoot_id, version DESC);
-    `).then(() => undefined).catch((e) => { ready = null; throw e; });
+    ready = db.execute(sql`select 1`).then(() => undefined).catch((e) => { ready = null; throw e; });
   }
   await ready;
 }
@@ -217,7 +195,7 @@ export async function handlePhotographyApproval(
     return json({ approval, versions: (versionsRes as any).rows ?? versionsRes ?? [] });
   }
 
-  const body = rec(await req.json().catch(() => ({})));
+  const body = rec(await readRequestBody(req));
 
   // Save draft / save changes.
   if (method === "POST" && (subAction === "save" || !subAction)) {

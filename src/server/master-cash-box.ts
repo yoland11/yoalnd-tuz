@@ -120,176 +120,11 @@ export async function ensureMasterCashBoxTables() {
   if (!masterCashTablesReady) {
     masterCashTablesReady = db
       .execute(
-        sql`
-      CREATE TABLE IF NOT EXISTS "master_cash_box" (
-        "id" serial PRIMARY KEY,
-        "code" varchar(30) NOT NULL DEFAULT 'MASTER',
-        "name" text NOT NULL DEFAULT 'الصندوق الرئيسي',
-        "opening_balance" numeric(16,2) NOT NULL DEFAULT 0,
-        "current_balance" numeric(16,2) NOT NULL DEFAULT 0,
-        "total_revenue" numeric(16,2) NOT NULL DEFAULT 0,
-        "total_expenses" numeric(16,2) NOT NULL DEFAULT 0,
-        "net_profit" numeric(16,2) NOT NULL DEFAULT 0,
-        "available_balance" numeric(16,2) NOT NULL DEFAULT 0,
-        "version" integer NOT NULL DEFAULT 0,
-        "updated_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "updated_by_name" text NOT NULL DEFAULT '',
-        "created_at" timestamp NOT NULL DEFAULT now(),
-        "updated_at" timestamp NOT NULL DEFAULT now()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS "master_cash_box_code_idx" ON "master_cash_box" ("code");
-
-      CREATE TABLE IF NOT EXISTS "financial_accounts" (
-        "id" serial PRIMARY KEY,
-        "code" varchar(30) NOT NULL,
-        "name_ar" text NOT NULL,
-        "account_type" varchar(20) NOT NULL,
-        "department" varchar(40),
-        "is_system" boolean NOT NULL DEFAULT true,
-        "is_active" boolean NOT NULL DEFAULT true,
-        "created_at" timestamp NOT NULL DEFAULT now(),
-        "updated_at" timestamp NOT NULL DEFAULT now()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS "financial_accounts_code_idx" ON "financial_accounts" ("code");
-
-      CREATE TABLE IF NOT EXISTS "financial_transactions" (
-        "id" serial PRIMARY KEY,
-        "transaction_no" varchar(50) NOT NULL,
-        "transaction_date" date NOT NULL,
-        "transaction_time" timestamp NOT NULL DEFAULT now(),
-        "direction" varchar(20) NOT NULL,
-        "amount" numeric(16,2) NOT NULL,
-        "department" varchar(40) NOT NULL DEFAULT 'general',
-        "transaction_type" varchar(60) NOT NULL,
-        "reference_no" varchar(120),
-        "description" text NOT NULL DEFAULT '',
-        "payment_method" varchar(20) NOT NULL DEFAULT 'cash',
-        "source_type" varchar(60),
-        "source_id" varchar(80),
-        "source_event" varchar(60) NOT NULL DEFAULT 'primary',
-        "idempotency_key" varchar(180) NOT NULL,
-        "approval_status" varchar(20) NOT NULL DEFAULT 'draft',
-        "requested_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "requested_by_name" text NOT NULL DEFAULT '',
-        "submitted_at" timestamp,
-        "approved_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "approved_by_name" text NOT NULL DEFAULT '',
-        "approved_at" timestamp,
-        "rejected_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "rejected_by_name" text NOT NULL DEFAULT '',
-        "rejected_at" timestamp,
-        "rejection_reason" text,
-        "executed_by" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "executed_by_name" text NOT NULL DEFAULT '',
-        "executed_at" timestamp,
-        "balance_before" numeric(16,2),
-        "balance_after" numeric(16,2),
-        "customer_id" integer REFERENCES "customers"("id") ON DELETE SET NULL,
-        "customer_name" text,
-        "customer_phone" varchar(30),
-        "due_date" date,
-        "inventory_item_id" integer REFERENCES "products"("id") ON DELETE SET NULL,
-        "responsible_user_id" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "responsible_user_name" text,
-        "notes" text,
-        "attachments" jsonb NOT NULL DEFAULT '[]'::jsonb,
-        "created_at" timestamp NOT NULL DEFAULT now(),
-        "updated_at" timestamp NOT NULL DEFAULT now()
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS "financial_transactions_no_idx" ON "financial_transactions" ("transaction_no");
-      CREATE UNIQUE INDEX IF NOT EXISTS "financial_transactions_idempotency_idx" ON "financial_transactions" ("idempotency_key");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_date_idx" ON "financial_transactions" ("transaction_date");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_status_idx" ON "financial_transactions" ("approval_status");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_department_idx" ON "financial_transactions" ("department");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_direction_idx" ON "financial_transactions" ("direction");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_source_idx" ON "financial_transactions" ("source_type", "source_id");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_customer_idx" ON "financial_transactions" ("customer_id");
-      CREATE INDEX IF NOT EXISTS "financial_transactions_due_date_idx" ON "financial_transactions" ("due_date");
-
-      CREATE TABLE IF NOT EXISTS "financial_ledger_entries" (
-        "id" serial PRIMARY KEY,
-        "transaction_id" integer NOT NULL REFERENCES "financial_transactions"("id") ON DELETE RESTRICT,
-        "account_id" integer NOT NULL REFERENCES "financial_accounts"("id") ON DELETE RESTRICT,
-        "entry_side" varchar(10) NOT NULL,
-        "amount" numeric(16,2) NOT NULL,
-        "description" text NOT NULL DEFAULT '',
-        "created_at" timestamp NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS "financial_ledger_entries_transaction_idx" ON "financial_ledger_entries" ("transaction_id");
-      CREATE INDEX IF NOT EXISTS "financial_ledger_entries_account_idx" ON "financial_ledger_entries" ("account_id");
-      CREATE UNIQUE INDEX IF NOT EXISTS "financial_ledger_entries_unique_idx" ON "financial_ledger_entries" ("transaction_id", "account_id", "entry_side");
-
-      CREATE TABLE IF NOT EXISTS "financial_audit_logs" (
-        "id" serial PRIMARY KEY,
-        "transaction_id" integer REFERENCES "financial_transactions"("id") ON DELETE RESTRICT,
-        "action" varchar(60) NOT NULL,
-        "actor_id" integer REFERENCES "staff"("id") ON DELETE SET NULL,
-        "actor_name" text NOT NULL DEFAULT '',
-        "old_values" jsonb NOT NULL DEFAULT '{}'::jsonb,
-        "new_values" jsonb NOT NULL DEFAULT '{}'::jsonb,
-        "reason" text,
-        "created_at" timestamp NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS "financial_audit_logs_transaction_idx" ON "financial_audit_logs" ("transaction_id");
-      CREATE INDEX IF NOT EXISTS "financial_audit_logs_actor_idx" ON "financial_audit_logs" ("actor_id");
-      CREATE INDEX IF NOT EXISTS "financial_audit_logs_created_at_idx" ON "financial_audit_logs" ("created_at");
-
-      INSERT INTO "master_cash_box" ("code", "name") VALUES ('MASTER', 'الصندوق الرئيسي')
-      ON CONFLICT ("code") DO NOTHING;
-
-      ALTER TABLE IF EXISTS "expenses" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed';
-      ALTER TABLE IF EXISTS "expenses" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
-      ALTER TABLE IF EXISTS "receipt_vouchers" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed';
-      ALTER TABLE IF EXISTS "receipt_vouchers" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
-      ALTER TABLE IF EXISTS "receipt_voucher_allocations" ADD COLUMN IF NOT EXISTS "reversed_amount" numeric(14,2) NOT NULL DEFAULT 0;
-      ALTER TABLE IF EXISTS "payment_vouchers" ADD COLUMN IF NOT EXISTS "approval_status" varchar(20) NOT NULL DEFAULT 'executed';
-      ALTER TABLE IF EXISTS "payment_vouchers" ADD COLUMN IF NOT EXISTS "financial_transaction_id" integer;
-      ALTER TABLE IF EXISTS "orders" ADD COLUMN IF NOT EXISTS "due_date" date;
-      ALTER TABLE IF EXISTS "service_orders" ADD COLUMN IF NOT EXISTS "due_date" date;
-      ALTER TABLE IF EXISTS "sales_invoices" ADD COLUMN IF NOT EXISTS "due_date" date;
-      ALTER TABLE IF EXISTS "kosha_bookings" ADD COLUMN IF NOT EXISTS "total_amount" numeric(14,2) NOT NULL DEFAULT 0;
-      ALTER TABLE IF EXISTS "kosha_bookings" ADD COLUMN IF NOT EXISTS "paid_amount" numeric(14,2) NOT NULL DEFAULT 0;
-      ALTER TABLE IF EXISTS "kosha_bookings" ADD COLUMN IF NOT EXISTS "remaining_amount" numeric(14,2) NOT NULL DEFAULT 0;
-      ALTER TABLE IF EXISTS "kosha_bookings" ADD COLUMN IF NOT EXISTS "payment_status" varchar(20) NOT NULL DEFAULT 'unpaid';
-      ALTER TABLE IF EXISTS "kosha_bookings" ADD COLUMN IF NOT EXISTS "due_date" date;
-
-      CREATE OR REPLACE FUNCTION ajn_prevent_financial_delete() RETURNS trigger AS $immutable$
-      BEGIN
-        RAISE EXCEPTION 'Financial records are immutable and cannot be deleted';
-      END;
-      $immutable$ LANGUAGE plpgsql;
-
-      DO $triggers$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'financial_transactions_no_delete') THEN
-          CREATE TRIGGER financial_transactions_no_delete BEFORE DELETE ON financial_transactions
-          FOR EACH ROW EXECUTE FUNCTION ajn_prevent_financial_delete();
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'financial_ledger_entries_no_delete') THEN
-          CREATE TRIGGER financial_ledger_entries_no_delete BEFORE DELETE ON financial_ledger_entries
-          FOR EACH ROW EXECUTE FUNCTION ajn_prevent_financial_delete();
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'financial_audit_logs_no_delete') THEN
-          CREATE TRIGGER financial_audit_logs_no_delete BEFORE DELETE ON financial_audit_logs
-          FOR EACH ROW EXECUTE FUNCTION ajn_prevent_financial_delete();
-        END IF;
-      END $triggers$;
-    `,
+        sql`select 1`,
       )
       .then(async () => {
         // Reversal / adjustment linkage columns (additive, idempotent).
-        await db.execute(sql`
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_transaction_id" integer;
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reference_no" varchar(120);
-        CREATE INDEX IF NOT EXISTS "financial_transactions_reference_no_idx" ON "financial_transactions" ("reference_no");
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_txn_id" integer;
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversal_reason" text;
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by" integer;
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_by_name" text;
-        ALTER TABLE "financial_transactions" ADD COLUMN IF NOT EXISTS "reversed_at" timestamp;
-        ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
-        ALTER TABLE "service_orders" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
-        ALTER TABLE "sales_invoices" ADD COLUMN IF NOT EXISTS "financially_reversed" boolean NOT NULL DEFAULT false;
-      `);
+        await db.execute(sql`select 1`);
         for (const [code, nameAr, accountType, department] of ACCOUNT_SEEDS) {
           await db
             .insert(financialAccountsTable)
@@ -785,16 +620,14 @@ async function postReceiptVoucherAllocations(tx: any, voucherId: number, amount:
   return allocations;
 }
 
-export async function approveAndExecuteFinancialTransaction(
+type FinancialTransactionExecutor = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function executePendingFinancialTransaction(
+  tx: FinancialTransactionExecutor,
   id: number,
   actor: FinancialActor,
   note?: string | null,
 ) {
-  await ensureMasterCashBoxTables();
-  if (!canApproveFinancialTransactions(actor))
-    throw new Error("اعتماد المعاملات متاح للمدير فقط");
-
-  const result = await db.transaction(async (tx) => {
     const [transaction] = await tx
       .select()
       .from(financialTransactionsTable)
@@ -997,8 +830,121 @@ export async function approveAndExecuteFinancialTransaction(
       }] : []),
     ]);
     return saved;
+}
+
+export async function approveAndExecuteFinancialTransaction(
+  id: number,
+  actor: FinancialActor,
+  note?: string | null,
+) {
+  await ensureMasterCashBoxTables();
+  if (!canApproveFinancialTransactions(actor))
+    throw new Error("اعتماد المعاملات متاح للمدير فقط");
+  return db.transaction((tx) =>
+    executePendingFinancialTransaction(tx, id, actor, note),
+  );
+}
+
+/**
+ * Creates and posts a trusted source collection inside the caller's existing
+ * transaction. Source handlers must already have authenticated/authorized the
+ * actor. The deterministic idempotency key is also the reconciliation anchor.
+ */
+export async function createAndExecuteSourceFinancialTransaction(
+  tx: FinancialTransactionExecutor,
+  input: Omit<
+    z.input<typeof financialTransactionInputSchema>,
+    "approvalStatus"
+  > & { idempotencyKey: string },
+  actor: FinancialActor,
+) {
+  const data = financialTransactionInputSchema.parse({
+    ...input,
+    approvalStatus: "pending",
   });
-  return result;
+  const idempotencyKey = input.idempotencyKey;
+  const [existing] = await tx
+    .select()
+    .from(financialTransactionsTable)
+    .where(eq(financialTransactionsTable.idempotencyKey, idempotencyKey))
+    .limit(1);
+  if (existing) {
+    if (
+      existing.sourceType !== data.sourceType ||
+      existing.sourceId !== String(data.sourceId) ||
+      money(existing.amount) !== money(data.amount)
+    )
+      throw new Error("تعارض مفتاح التكرار مع حركة مالية مختلفة");
+    if (existing.approvalStatus === "executed") {
+      const ledger = await tx
+        .select({ id: financialLedgerEntriesTable.id })
+        .from(financialLedgerEntriesTable)
+        .where(eq(financialLedgerEntriesTable.transactionId, existing.id));
+      if (ledger.length < 2)
+        throw new Error("الحركة المالية المنفذة لا تحتوي قيداً محاسبياً مكتملاً");
+      return existing;
+    }
+    if (existing.approvalStatus !== "pending")
+      throw new Error("الحركة المالية المرتبطة ليست قابلة للتنفيذ");
+    return executePendingFinancialTransaction(
+      tx,
+      existing.id,
+      actor,
+      "تنفيذ تحصيل المصدر داخل معاملة ذرية",
+    );
+  }
+
+  const now = new Date();
+  const [created] = await tx
+    .insert(financialTransactionsTable)
+    .values({
+      transactionNo: `FIN-TMP-${randomUUID()}`,
+      transactionDate: data.transactionDate ?? todayBaghdad(),
+      direction: data.direction,
+      amount: String(money(data.amount)),
+      department: data.department,
+      transactionType: data.transactionType,
+      referenceNo: data.referenceNo,
+      description: data.description,
+      paymentMethod: data.paymentMethod === "card" ? "pos" : data.paymentMethod,
+      sourceType: data.sourceType,
+      sourceId: data.sourceId == null ? null : String(data.sourceId),
+      sourceEvent: data.sourceEvent,
+      idempotencyKey,
+      approvalStatus: "pending",
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+      submittedAt: now,
+      customerId: data.customerId,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+      dueDate: data.dueDate,
+      notes: data.notes,
+      attachments: data.attachments,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  const [numbered] = await tx
+    .update(financialTransactionsTable)
+    .set({ transactionNo: transactionNumber(created.id, now) })
+    .where(eq(financialTransactionsTable.id, created.id))
+    .returning();
+  await tx.insert(financialAuditLogsTable).values({
+    transactionId: numbered.id,
+    action: "submitted",
+    actorId: actor.id,
+    actorName: actor.name,
+    oldValues: {},
+    newValues: snapshot(numbered as any),
+    reason: "تحصيل مصدر ذرّي",
+  });
+  return executePendingFinancialTransaction(
+    tx,
+    numbered.id,
+    actor,
+    "تنفيذ تحصيل المصدر داخل معاملة ذرية",
+  );
 }
 
 export async function rejectFinancialTransaction(

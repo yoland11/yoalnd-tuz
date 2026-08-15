@@ -1,4 +1,4 @@
-﻿BEGIN;
+BEGIN;
 
 ALTER TABLE public.products
   ALTER COLUMN stock TYPE numeric(14,3)

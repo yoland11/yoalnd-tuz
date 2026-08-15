@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db } from "@workspace/db";
+import { safeServerError } from "@/server/safe-server-log";
 
 /**
  * Storage for scanned identity documents.
@@ -152,99 +153,11 @@ let scannerMigrated = false;
 export async function ensureScannerTables() {
   if (scannerMigrated) return;
   try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS scanned_documents (
-        id SERIAL PRIMARY KEY,
-        document_type VARCHAR(40) NOT NULL,
-        owner_type VARCHAR(40),
-        owner_id INTEGER,
-        owner_name TEXT,
-        notes TEXT,
-        front_image TEXT,
-        back_image TEXT,
-        width_mm NUMERIC(8,2),
-        height_mm NUMERIC(8,2),
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        deleted_at TIMESTAMP,
-        deleted_by INTEGER REFERENCES staff(id),
-        delete_reason TEXT
-      );
-      CREATE INDEX IF NOT EXISTS scanned_documents_owner_idx
-        ON scanned_documents(owner_type, owner_id);
-      CREATE INDEX IF NOT EXISTS scanned_documents_created_idx
-        ON scanned_documents(created_at DESC);
-
-      -- Enterprise metadata. Every column is additive so existing rows survive.
-      ALTER TABLE scanned_documents
-        ADD COLUMN IF NOT EXISTS title TEXT,
-        ADD COLUMN IF NOT EXISTS document_number TEXT,
-        ADD COLUMN IF NOT EXISTS full_name TEXT,
-        ADD COLUMN IF NOT EXISTS national_id TEXT,
-        ADD COLUMN IF NOT EXISTS passport_number TEXT,
-        ADD COLUMN IF NOT EXISTS phone VARCHAR(30),
-        ADD COLUMN IF NOT EXISTS issue_date DATE,
-        ADD COLUMN IF NOT EXISTS expiry_date DATE,
-        ADD COLUMN IF NOT EXISTS ocr_text TEXT,
-        ADD COLUMN IF NOT EXISTS ocr_language VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb,
-        ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active',
-        ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS qr_token VARCHAR(80),
-        ADD COLUMN IF NOT EXISTS page_count INTEGER NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        ADD COLUMN IF NOT EXISTS updated_by INTEGER,
-        ADD COLUMN IF NOT EXISTS updated_by_name TEXT;
-
-      CREATE INDEX IF NOT EXISTS scanned_documents_expiry_idx
-        ON scanned_documents(expiry_date) WHERE expiry_date IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS scanned_documents_number_idx
-        ON scanned_documents(document_number);
-      CREATE UNIQUE INDEX IF NOT EXISTS scanned_documents_qr_idx
-        ON scanned_documents(qr_token) WHERE qr_token IS NOT NULL;
-
-      /*
-       * Pages. An image lives EITHER at storage_path (an object path, never a
-       * public URL) OR inline as base64 when object storage is unavailable.
-       * Both are read back only through the authenticated proxy endpoint.
-       */
-      CREATE TABLE IF NOT EXISTS scanned_document_pages (
-        id SERIAL PRIMARY KEY,
-        document_id INTEGER NOT NULL REFERENCES scanned_documents(id) ON DELETE CASCADE,
-        page_index INTEGER NOT NULL DEFAULT 0,
-        side VARCHAR(20) NOT NULL DEFAULT 'page',
-        storage_path TEXT,
-        inline_data TEXT,
-        mime_type VARCHAR(60) NOT NULL DEFAULT 'image/jpeg',
-        width_px INTEGER,
-        height_px INTEGER,
-        width_mm NUMERIC(8,2),
-        height_mm NUMERIC(8,2),
-        ocr_text TEXT,
-        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS scanned_document_pages_doc_idx
-        ON scanned_document_pages(document_id, page_index);
-
-      -- Version history keeps metadata snapshots only; page images are not duplicated.
-      CREATE TABLE IF NOT EXISTS scanned_document_versions (
-        id SERIAL PRIMARY KEY,
-        document_id INTEGER NOT NULL REFERENCES scanned_documents(id) ON DELETE CASCADE,
-        version INTEGER NOT NULL,
-        snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
-        change_summary TEXT,
-        created_by INTEGER REFERENCES staff(id),
-        created_by_name TEXT NOT NULL DEFAULT '',
-        created_at TIMESTAMP NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS scanned_document_versions_doc_idx
-        ON scanned_document_versions(document_id, version DESC);
-    `);
+    await db.execute(sql`select 1`);
     scannerMigrated = true;
   } catch (err) {
-    console.warn("scanned_documents provisioning failed", err);
-    scannerMigrated = true;
+    console.warn("scanned_documents provisioning failed", safeServerError(err));
+    throw err;
   }
 }
 
@@ -252,10 +165,12 @@ export async function ensureScannerTables() {
 
 const STORAGE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const STORAGE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? "media";
+const LEGACY_PUBLIC_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? process.env.SUPABASE_BUCKET ?? "media";
+const PRIVATE_DOCUMENT_BUCKET = process.env.AJN_DOCUMENT_PRIVATE_BUCKET ?? process.env.AJN_CUSTOMER_PRIVATE_BUCKET ?? process.env.SUPABASE_CUSTOMER_PRIVATE_BUCKET ?? "";
 
-/** Documents live under their own prefix, away from public media. */
-const SECURE_PREFIX = "secure-documents";
+/** V2 objects are private. The legacy prefix remains readable for compatibility. */
+const SECURE_PREFIX = "secure-documents-v2";
+const LEGACY_SECURE_PREFIX = "secure-documents";
 
 function extensionFor(mime: string): string {
   if (mime.includes("png")) return "png";
@@ -277,13 +192,13 @@ export async function uploadDocumentAsset(
 ): Promise<{ storagePath: string | null; inlineData: string | null; mime: string }> {
   const decoded = decodeDataUrl(dataUrl);
   const mime = decoded?.mime ?? "image/jpeg";
-  if (!decoded || !STORAGE_URL || !STORAGE_SERVICE_KEY) {
+  if (!decoded || !STORAGE_URL || !STORAGE_SERVICE_KEY || !PRIVATE_DOCUMENT_BUCKET) {
     return { storagePath: null, inlineData: dataUrl, mime };
   }
   const path = `${SECURE_PREFIX}/${documentId}/${Date.now()}-${randomUUID()}.${extensionFor(mime)}`;
   try {
     const res = await fetch(
-      `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`,
+      `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${PRIVATE_DOCUMENT_BUCKET}/${path}`,
       {
         method: "POST",
         headers: {
@@ -301,7 +216,7 @@ export async function uploadDocumentAsset(
     }
     return { storagePath: path, inlineData: null, mime };
   } catch (err) {
-    console.warn("document asset upload failed", err);
+    console.warn("document asset upload failed", safeServerError(err));
     return { storagePath: null, inlineData: dataUrl, mime };
   }
 }
@@ -311,9 +226,12 @@ export async function readDocumentAsset(
   storagePath: string,
 ): Promise<{ mime: string; bytes: Buffer } | null> {
   if (!STORAGE_URL || !STORAGE_SERVICE_KEY) return null;
+  if (storagePath.includes("..") || (!storagePath.startsWith(`${SECURE_PREFIX}/`) && !storagePath.startsWith(`${LEGACY_SECURE_PREFIX}/`))) return null;
+  const bucket = storagePath.startsWith(`${SECURE_PREFIX}/`) ? PRIVATE_DOCUMENT_BUCKET : LEGACY_PUBLIC_BUCKET;
+  if (!bucket) return null;
   try {
     const res = await fetch(
-      `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${storagePath}`,
+      `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${bucket}/${storagePath}`,
       { headers: { apikey: STORAGE_SERVICE_KEY, authorization: `Bearer ${STORAGE_SERVICE_KEY}` } },
     );
     if (!res.ok) return null;

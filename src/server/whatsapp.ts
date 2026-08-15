@@ -248,7 +248,14 @@ async function sendUltraMsg(to: string, body: string): Promise<SendResult> {
 }
 
 function safeSendError(errorValue: unknown): string {
-  return String(errorValue ?? "unknown").slice(0, 300);
+  return String(errorValue ?? "unknown")
+    .replace(/(token|authorization|api[_-]?key|secret)(["'=:\s]+)[^\s&,}\]]+/gi, "$1$2[REDACTED]")
+    .replace(/\b\d{6}\b/g, "[REDACTED_CODE]")
+    .slice(0, 300);
+}
+
+function maskedPhone(value: string) {
+  return value.length > 4 ? `***${value.slice(-4)}` : "***";
 }
 
 export async function sendOtpViaUltraMsg(phone: string, code: string): Promise<SendResult> {
@@ -257,12 +264,12 @@ export async function sendOtpViaUltraMsg(phone: string, code: string): Promise<S
   try {
     const result = await sendUltraMsg(to, `رمز الدخول الخاص بك هو: ${code}`);
     if (!result.ok) {
-      logger.warn({ event: "otp", to, err: safeSendError(result.error) }, "UltraMsg OTP send failed");
+      logger.warn({ event: "otp", to: maskedPhone(to), err: safeSendError(result.error) }, "UltraMsg OTP send failed");
     }
     return result;
   } catch (err: any) {
     const message = safeSendError(err?.message ?? err);
-    logger.warn({ event: "otp", to, err: message }, "UltraMsg OTP send failed");
+    logger.warn({ event: "otp", to: maskedPhone(to), err: message }, "UltraMsg OTP send failed");
     return { ok: false, error: message };
   }
 }
@@ -351,7 +358,7 @@ export async function whatsappSend(
   if (!isWhatsAppProviderConfigured(s.provider)) {
     const error = "Pending Configuration: provider credentials are missing";
     await logEntry(to, event, message, "pending_config", error, s.provider);
-    logger.warn({ event, to, provider: s.provider }, "WhatsApp notification pending configuration");
+    logger.warn({ event, to: maskedPhone(to), provider: s.provider }, "WhatsApp notification pending configuration");
     return { ok: false, error };
   }
   try {
@@ -361,7 +368,7 @@ export async function whatsappSend(
   }
   await logEntry(to, event, message, result.ok ? "sent" : "failed", result.error, s.provider);
   if (!result.ok) {
-    logger.warn({ event, to, err: safeSendError(result.error) }, "whatsapp send failed");
+    logger.warn({ event, to: maskedPhone(to), err: safeSendError(result.error) }, "whatsapp send failed");
   }
   return result;
 }

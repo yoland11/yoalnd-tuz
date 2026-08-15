@@ -3,11 +3,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import QRCode from "qrcode";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
+import { readRequestBody } from "@/server/request-body";
 import {
   adminActivityLogsTable,
   customersTable,
   db,
   entityTimelineTable,
+  financialLedgerEntriesTable,
+  financialTransactionsTable,
   notificationsTable,
   researchAiGenerationsTable,
   researchAssignmentsTable,
@@ -28,7 +31,10 @@ import {
   staffTable,
 } from "@workspace/db";
 import { normalizeIraqiPhone } from "@/lib/phone";
-import { syncSourcePaymentTarget, type FinancialActor } from "@/server/master-cash-box";
+import {
+  createAndExecuteSourceFinancialTransaction,
+  type FinancialActor,
+} from "@/server/master-cash-box";
 import { ensureResearchCenterTables } from "@/server/research-center-schema";
 
 export type ResearchAdminUser = {
@@ -51,8 +57,25 @@ const CHAPTERS = [
   ["references", "المراجع"], ["appendix", "الملاحق"],
 ] as const;
 const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || process.env.SUPABASE_BUCKET || "ajn-assets";
+const RESEARCH_PRIVATE_BUCKET = process.env.AJN_RESEARCH_PRIVATE_BUCKET || process.env.AJN_CUSTOMER_PRIVATE_BUCKET || process.env.SUPABASE_CUSTOMER_PRIVATE_BUCKET || "";
 const STORAGE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const STORAGE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || "";
+const MAX_RESEARCH_FILE_BYTES = 6 * 1024 * 1024;
+const RESEARCH_FILE_TYPES: Record<string, { extensions: readonly string[]; signature: (bytes: Buffer) => boolean }> = {
+  "application/pdf": { extensions: ["pdf"], signature: (bytes) => bytes.subarray(0, 5).toString() === "%PDF-" },
+  "application/msword": { extensions: ["doc"], signature: (bytes) => bytes.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) },
+  "application/vnd.ms-excel": { extensions: ["xls"], signature: (bytes) => bytes.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) },
+  "application/vnd.ms-powerpoint": { extensions: ["ppt"], signature: (bytes) => bytes.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) },
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { extensions: ["docx"], signature: (bytes) => bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) },
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { extensions: ["xlsx"], signature: (bytes) => bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) },
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": { extensions: ["pptx"], signature: (bytes) => bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) },
+  "image/jpeg": { extensions: ["jpg", "jpeg"], signature: (bytes) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+  "image/png": { extensions: ["png"], signature: (bytes) => bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) },
+  "image/webp": { extensions: ["webp"], signature: (bytes) => bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP" },
+  "text/plain": { extensions: ["txt"], signature: (bytes) => !bytes.subarray(0, 1024).includes(0) },
+  "text/csv": { extensions: ["csv"], signature: (bytes) => !bytes.subarray(0, 1024).includes(0) },
+  "application/csv": { extensions: ["csv"], signature: (bytes) => !bytes.subarray(0, 1024).includes(0) },
+};
 
 const optionalString = z.preprocess((value) => String(value ?? "").trim() || undefined, z.string().optional());
 // Manual university entry sends "" (or the "manual" sentinel) — coerce those to
@@ -71,7 +94,7 @@ const orderSchema = z.object({
   keywords: z.union([z.array(z.string()), z.string()]).transform((value) => Array.isArray(value) ? value.map(String).filter(Boolean) : value.split(/[,،]/).map((item) => item.trim()).filter(Boolean)).default([]),
   requiredPages: z.coerce.number().int().min(1).max(2000), deadline: optionalString, citationStyle: z.enum(["APA7", "IEEE", "MLA", "Harvard", "Chicago"]).default("APA7"),
   urgency: z.enum(["normal", "urgent", "critical"]).default("normal"), estimatedPrice: z.coerce.number().min(0).default(0), deposit: z.coerce.number().min(0).default(0), notes: optionalString,
-  files: z.array(z.object({ title: z.string().trim().min(1), fileName: z.string().trim().min(1), fileUrl: z.string().min(1), mimeType: optionalString, fileType: z.string().default("customer_upload") })).default([]),
+  files: z.array(z.object({ title: z.string().trim().min(1).max(300), fileName: z.string().trim().min(1).max(255), fileUrl: z.string().min(1).max(9_000_000), mimeType: optionalString, fileType: z.string().trim().max(80).default("customer_upload") })).max(10).default([]),
 });
 const patchSchema = z.object({
   title: z.string().trim().min(5).max(500).optional(), status: z.enum(RESEARCH_STATUSES).optional(), progress: z.coerce.number().int().min(0).max(100).optional(), deadline: optionalString,
@@ -120,7 +143,7 @@ function structuredError(message: string, opts: { status?: number; fieldErrors?:
 function fieldError(field: string, message: string, errorCode = "VALIDATION_ERROR") {
   return structuredError(message, { fieldErrors: { [field]: message }, errorCode });
 }
-async function requestBody(req: NextRequest) { return req.json().catch(() => ({})); }
+async function requestBody(req: NextRequest) { return readRequestBody(req); }
 function actorName(user?: ResearchAdminUser | null) { return user ? user.fullName || user.username : "الموقع"; }
 function allowed(user: ResearchAdminUser, permission: string) { return user.role === "admin" || user.permissions.includes("research") || user.permissions.includes(permission); }
 function denied(user: ResearchAdminUser, permission: string) { return allowed(user, permission) ? null : error("لا تملك صلاحية تنفيذ هذا الإجراء", 403); }
@@ -149,16 +172,76 @@ async function ensureCustomerTx(tx: Executor, normalized: string, name: string) 
   const [created] = await tx.insert(customersTable).values({ phone: normalized, name, fullName: name }).returning();
   return created;
 }
-async function persistFile(value: string, fileName: string, orderId: number) {
-  if (!value.startsWith("data:")) return value;
-  if (!STORAGE_URL || !STORAGE_SERVICE_KEY) throw new Error("خدمة تخزين الملفات غير مهيأة");
-  const match = value.match(/^data:([^;]+);base64,(.+)$/);
+export function validateResearchFileData(value: string, fileName: string, claimedMime?: string | null) {
+  if (!value.startsWith("data:")) {
+    if (!STORAGE_URL) throw new Error("رابط الملف غير مسموح");
+    let candidate: URL;
+    let storage: URL;
+    try {
+      candidate = new URL(value);
+      storage = new URL(STORAGE_URL);
+    } catch {
+      throw new Error("رابط الملف غير صالح");
+    }
+    const expectedPrefix = `/storage/v1/object/public/${STORAGE_BUCKET}/research/`;
+    if (candidate.protocol !== "https:" || candidate.host !== storage.host || !candidate.pathname.startsWith(expectedPrefix))
+      throw new Error("يسمح فقط بروابط ملفات AJN المخزنة مسبقاً");
+    return { existingUrl: candidate.toString(), bytes: null, mime: null, extension: null };
+  }
+  const match = value.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/);
   if (!match) throw new Error("صيغة الملف غير مدعومة");
-  const ext = fileName.split(".").pop()?.replace(/[^a-z0-9]/gi, "").slice(0, 10) || "bin";
-  const path = `research/${orderId}/${Date.now()}-${randomUUID()}.${ext}`;
-  const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${STORAGE_BUCKET}/${path}`, { method: "POST", headers: { authorization: `Bearer ${STORAGE_SERVICE_KEY}`, apikey: STORAGE_SERVICE_KEY, "content-type": match[1], "x-upsert": "false" }, body: Buffer.from(match[2], "base64") });
+  const mime = match[1].trim().toLowerCase();
+  const definition = RESEARCH_FILE_TYPES[mime];
+  if (!definition) throw new Error("نوع الملف غير مدعوم");
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  if (!definition.extensions.includes(extension)) throw new Error("امتداد الملف لا يطابق نوعه");
+  if (claimedMime && claimedMime.trim().toLowerCase() !== mime)
+    throw new Error("نوع الملف المرسل لا يطابق محتواه");
+  const bytes = Buffer.from(match[2], "base64");
+  if (!bytes.length || bytes.length > MAX_RESEARCH_FILE_BYTES)
+    throw new Error("حجم الملف يجب ألا يتجاوز 6 ميغابايت");
+  if (!definition.signature(bytes)) throw new Error("توقيع الملف لا يطابق نوعه");
+  return { existingUrl: null, bytes, mime, extension: definition.extensions[0] };
+}
+
+async function persistFile(value: string, fileName: string, orderId: number, claimedMime?: string | null) {
+  const validated = validateResearchFileData(value, fileName, claimedMime);
+  if (validated.existingUrl) return validated.existingUrl;
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !RESEARCH_PRIVATE_BUCKET) throw new Error("خدمة تخزين الملفات الخاصة غير مهيأة");
+  const path = `research/${orderId}/${Date.now()}-${randomUUID()}.${validated.extension}`;
+  const response = await fetch(`${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/${RESEARCH_PRIVATE_BUCKET}/${path}`, { method: "POST", headers: { authorization: `Bearer ${STORAGE_SERVICE_KEY}`, apikey: STORAGE_SERVICE_KEY, "content-type": validated.mime!, "x-upsert": "false" }, body: validated.bytes! });
   if (!response.ok) throw new Error("تعذر حفظ الملف في التخزين");
-  return `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`;
+  return `private:${path}`;
+}
+
+function encodedStoragePath(path: string) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+async function authorizedResearchFileUrl(stored: string) {
+  if (!stored.startsWith("private:")) return stored;
+  if (!STORAGE_URL || !STORAGE_SERVICE_KEY || !RESEARCH_PRIVATE_BUCKET)
+    throw new Error("خدمة تخزين الملفات الخاصة غير مهيأة");
+  const path = stored.slice("private:".length);
+  if (!path.startsWith("research/") || path.includes(".."))
+    throw new Error("مسار ملف البحث غير صالح");
+  const response = await fetch(
+    `${STORAGE_URL.replace(/\/$/, "")}/storage/v1/object/sign/${RESEARCH_PRIVATE_BUCKET}/${encodedStoragePath(path)}`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${STORAGE_SERVICE_KEY}`,
+        apikey: STORAGE_SERVICE_KEY,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ expiresIn: 900 }),
+    },
+  );
+  if (!response.ok) throw new Error("تعذر إصدار رابط آمن لملف البحث");
+  const payload = await response.json() as { signedURL?: string; signedUrl?: string };
+  const signed = payload.signedURL || payload.signedUrl;
+  if (!signed) throw new Error("تعذر إصدار رابط آمن لملف البحث");
+  return new URL(signed, `${STORAGE_URL.replace(/\/$/, "")}/`).toString();
 }
 
 async function createInvoiceTx(tx: Executor, order: any, customer: any, user?: ResearchAdminUser | null) {
@@ -183,23 +266,58 @@ async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null
   // 32-char token (128-bit) — unique enough and fits every qr_token column
   // (research_orders varchar(96) and the shared sales_invoices qr_token).
   const token = randomUUID().replace(/-/g, "");
+  let failureStage = "transaction_start";
   try {
     // Customer, order, chapters, invoice and attachments are created atomically:
     // any failure rolls the whole thing back (no orphan orders/invoices/customers).
     const { customer, order, invoice } = await db.transaction(async (tx) => {
+      failureStage = "customer";
       const customer = await ensureCustomerTx(tx, normalizedPhone, data.customerName);
+      failureStage = "order";
       const [draft] = await tx.insert(researchOrdersTable).values({ researchNo: `RS-TMP-${randomUUID()}`, qrToken: token, customerId: customer.id, title: data.title, researchType: data.researchType, universityId: data.universityId ?? null, universityName: data.universityName, college: data.college || "", department: data.department || "", supervisorName: data.supervisorName || null, language: data.language, researchField: data.researchField, keywords: data.keywords, requiredPages: data.requiredPages, deadline: data.deadline || null, citationStyle: data.citationStyle, urgency: data.urgency, notes: data.notes || null, estimatedPrice: String(data.estimatedPrice), totalAmount: String(total), paidAmount: "0", remainingAmount: String(total), paymentStatus: total ? "unpaid" : "paid", chapterCount: CHAPTERS.length, createdBy: user?.id ?? null, createdByName: actorName(user) }).returning();
       const researchNo = `AJN-RS-${new Date().getFullYear()}-${String(draft.id).padStart(6, "0")}`;
       const [order] = await tx.update(researchOrdersTable).set({ researchNo, updatedAt: new Date() }).where(eq(researchOrdersTable.id, draft.id)).returning();
+      failureStage = "chapters";
       await tx.insert(researchChaptersTable).values(CHAPTERS.map(([chapterType, title], sortOrder) => ({ researchOrderId: order.id, chapterType, title, sortOrder })));
+      failureStage = "invoice";
       const invoice = await createInvoiceTx(tx, order, customer, user);
       await tx.update(researchOrdersTable).set({ invoiceId: invoice.id }).where(eq(researchOrdersTable.id, order.id));
       for (const file of data.files) {
-        const fileUrl = await persistFile(file.fileUrl, file.fileName, order.id);
+        const fileUrl = await persistFile(file.fileUrl, file.fileName, order.id, file.mimeType);
         await tx.insert(researchFilesTable).values({ researchOrderId: order.id, fileType: file.fileType, title: file.title, fileUrl, fileName: file.fileName, mimeType: file.mimeType || null, isCustomerVisible: true, uploadedBy: user?.id ?? null, uploadedByName: actorName(user) });
       }
       await tx.insert(researchStatusEventsTable).values({ researchOrderId: order.id, toStatus: "new", changedBy: user?.id ?? null, changedByName: actorName(user) });
-      return { customer, order: { ...order, invoiceId: invoice.id }, invoice };
+      if (data.deposit > 0 && user) {
+        failureStage = "deposit_finance";
+        const remaining = Math.max(0, total - data.deposit);
+        const paymentStatus = remaining <= 0 ? "paid" : "partial";
+        await tx.update(researchOrdersTable).set({ paidAmount: String(data.deposit), remainingAmount: String(remaining), paymentStatus, updatedAt: new Date() }).where(eq(researchOrdersTable.id, order.id));
+        await tx.update(salesInvoicesTable).set({ paidAmount: String(data.deposit), remainingAmount: String(remaining), paymentMethod: "cash", paymentStatus, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, invoice.id));
+        await createAndExecuteSourceFinancialTransaction(tx, {
+          direction: "revenue",
+          amount: data.deposit,
+          department: "research",
+          transactionType: "research_payment",
+          description: `عربون طلب البحث ${order.researchNo}`,
+          paymentMethod: "cash",
+          sourceType: "research_order",
+          sourceId: String(order.id),
+          sourceEvent: "payment",
+          idempotencyKey: `research-payment:${order.id}:${data.deposit.toFixed(2)}:v1`,
+          customerId: customer.id,
+          customerName: data.customerName,
+          dueDate: data.deadline || null,
+          attachments: [],
+        }, financialActor(user));
+      }
+      const postedDeposit = user ? data.deposit : 0;
+      const remaining = Math.max(0, total - postedDeposit);
+      const paymentStatus = remaining <= 0 ? "paid" : postedDeposit > 0 ? "partial" : "unpaid";
+      return {
+        customer,
+        order: { ...order, invoiceId: invoice.id, paidAmount: String(postedDeposit), remainingAmount: String(remaining), paymentStatus },
+        invoice: { ...invoice, paidAmount: String(postedDeposit), remainingAmount: String(remaining), paymentStatus },
+      };
     });
     // Post-commit side effects (activity log, notifications). Failures here must
     // not roll back a committed order, so they are best-effort.
@@ -208,43 +326,79 @@ async function createResearchOrder(raw: unknown, user?: ResearchAdminUser | null
       db.insert(notificationsTable).values({ audienceType: "admin", type: "research_order_new", title: "طلب بحث أكاديمي جديد", body: `${order.researchNo} - ${order.title}`, entityType: "research_order", entityId: order.id, href: "/admin/research/orders" }),
       notifyCustomer(customer.id, order.id, token, "research_created", "تم استلام طلب البحث", `${order.researchNo} قيد المراجعة`),
     ]);
-    // The deposit posts to the cash box via its own idempotent, locked flow —
-    // kept out of the creation transaction to avoid nested/duplicate cash entries.
-    if (data.deposit > 0 && user) {
-      try {
-        await applyPayment(order.id, data.deposit, "cash", user);
-      } catch (paymentError) {
-        console.error("[research.createOrder] deposit payment failed", { orderId: order.id, error: paymentError });
-      }
-    }
     return { order: { ...order, trackingUrl: `/research/track/${token}` }, invoice };
   } catch (err: any) {
-    // Log the full technical error server-side; never leak internals to the client.
-    console.error("[research.createOrder] failed", err);
-    if (err?.code === "23505") return { response: structuredError("تعذر إنشاء طلب مكرر، حدّث الصفحة ثم حاول مجدداً", { status: 409, errorCode: "DUPLICATE_ORDER" }) };
+    const databaseCode = String(err?.code || err?.cause?.code || "UNKNOWN").replace(/[^A-Z0-9_-]/gi, "").slice(0, 32);
+    // Drizzle query errors contain SQL parameters, so never log the raw object.
+    console.error("[research.createOrder] failed", {
+      databaseCode,
+      operation: "research_order_create",
+      stage: failureStage,
+      actorId: user?.id ?? null,
+    });
+    if (databaseCode === "23505") return { response: structuredError("تعذر إنشاء طلب مكرر، حدّث الصفحة ثم حاول مجدداً", { status: 409, errorCode: "DUPLICATE_ORDER" }) };
     return { response: structuredError("تعذر إنشاء طلب البحث بسبب خطأ غير متوقع", { status: 500, errorCode: "RESEARCH_ORDER_CREATE_FAILED" }) };
   }
 }
 
-async function applyPayment(orderId: number, amount: number, paymentMethod: string, user: ResearchAdminUser) {
+async function applyPayment(orderId: number, amount: number, paymentMethod: string, user: ResearchAdminUser, suppliedIdempotencyKey?: unknown) {
   if (!Number.isFinite(amount) || amount <= 0) return { response: error("مبلغ الدفعة غير صحيح", 400) };
+  const clientKey = String(suppliedIdempotencyKey ?? "").trim();
+  if (clientKey && !/^[A-Za-z0-9:_-]{8,120}$/.test(clientKey))
+    return { response: error("معرف إعادة المحاولة غير صحيح", 400) };
   const payment = await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(82177, ${orderId})`);
     const [lockedOrder] = await tx.select().from(researchOrdersTable).where(eq(researchOrdersTable.id, orderId)).limit(1);
     if (!lockedOrder) return null;
+    const financialKey = clientKey ? `research-payment:${orderId}:${clientKey}` : null;
+    if (financialKey) {
+      const [existing] = await tx.select().from(financialTransactionsTable).where(eq(financialTransactionsTable.idempotencyKey, financialKey)).limit(1);
+      if (existing) {
+        if (existing.sourceType !== "research_order" || existing.sourceId !== String(orderId) || numeric(existing.amount) !== amount)
+          throw new Error("تعارض معرف إعادة محاولة دفعة البحث");
+        const ledger = await tx.select({ id: financialLedgerEntriesTable.id }).from(financialLedgerEntriesTable).where(eq(financialLedgerEntriesTable.transactionId, existing.id));
+        if (existing.approvalStatus !== "executed" || ledger.length < 2)
+          throw new Error("دفعة البحث السابقة غير مكتملة محاسبياً وتحتاج مراجعة");
+        return {
+          invalid: false as const,
+          duplicate: true as const,
+          order: lockedOrder,
+          targetPaid: numeric(lockedOrder.paidAmount),
+          remaining: numeric(lockedOrder.remainingAmount),
+          status: lockedOrder.paymentStatus,
+          transaction: existing,
+        };
+      }
+    }
     const total = numeric(lockedOrder.totalAmount); const previousPaid = numeric(lockedOrder.paidAmount); const targetPaid = Math.min(total, previousPaid + amount);
     if (targetPaid <= previousPaid) return { invalid: true as const, order: lockedOrder, targetPaid: previousPaid, remaining: Math.max(0, total - previousPaid), status: lockedOrder.paymentStatus };
     const remaining = Math.max(0, total - targetPaid); const status = remaining <= 0 ? "paid" : "partial";
     await tx.update(researchOrdersTable).set({ paidAmount: String(targetPaid), remainingAmount: String(remaining), paymentStatus: status, updatedAt: new Date() }).where(eq(researchOrdersTable.id, orderId));
     if (lockedOrder.invoiceId) await tx.update(salesInvoicesTable).set({ paidAmount: String(targetPaid), remainingAmount: String(remaining), paymentMethod, paymentStatus: status, updatedAt: new Date() }).where(eq(salesInvoicesTable.id, lockedOrder.invoiceId));
-    return { invalid: false as const, order: lockedOrder, targetPaid, remaining, status };
+    const transaction = await createAndExecuteSourceFinancialTransaction(tx, {
+      direction: "revenue",
+      amount: targetPaid - previousPaid,
+      department: "research",
+      transactionType: "research_payment",
+      description: `دفعة طلب البحث ${lockedOrder.researchNo}`,
+      paymentMethod: paymentMethod as "cash" | "transfer" | "card" | "pos" | "other",
+      sourceType: "research_order",
+      sourceId: String(orderId),
+      sourceEvent: "payment",
+      idempotencyKey: financialKey ?? `research-payment:${orderId}:${targetPaid.toFixed(2)}:v1`,
+      customerId: lockedOrder.customerId,
+      customerName: lockedOrder.title,
+      dueDate: lockedOrder.deadline,
+      attachments: [],
+    }, financialActor(user));
+    return { invalid: false as const, duplicate: false as const, order: lockedOrder, targetPaid, remaining, status, transaction };
   });
   if (!payment) return { response: error("طلب البحث غير موجود", 404) };
   if (payment.invalid) return { response: error("تم سداد كامل مبلغ البحث", 400) };
-  const { order, targetPaid, remaining, status } = payment;
-  const transaction = await syncSourcePaymentTarget({ sourceType: "research_order", sourceId: order.id, sourceEvent: "payment", targetAmount: targetPaid, normalDirection: "revenue", department: "research", transactionType: "research_payment", description: `دفعة طلب البحث ${order.researchNo}`, paymentMethod: paymentMethod as any, customerId: order.customerId, customerName: order.title, dueDate: order.deadline }, financialActor(user));
-  await trace(order.id, "research_payment_received", `تم استلام دفعة بقيمة ${amount}`, user, { amount, targetPaid, transactionId: transaction?.id });
-  return { paidAmount: targetPaid, remainingAmount: remaining, paymentStatus: status, transaction };
+  const { order, targetPaid, remaining, status, transaction, duplicate } = payment;
+  if (!duplicate)
+    await trace(order.id, "research_payment_received", `تم استلام دفعة بقيمة ${amount}`, user, { amount, targetPaid, transactionId: transaction?.id });
+  return { paidAmount: targetPaid, remainingAmount: remaining, paymentStatus: status, transaction, duplicate };
 }
 
 async function orderDetail(id: number, customerSafe = false) {
@@ -262,7 +416,29 @@ async function orderDetail(id: number, customerSafe = false) {
     customerSafe ? Promise.resolve([]) : db.select({ assignment: researchAssignmentsTable, staffName: staffTable.fullName, username: staffTable.username }).from(researchAssignmentsTable).leftJoin(staffTable, eq(staffTable.id, researchAssignmentsTable.staffId)).where(eq(researchAssignmentsTable.researchOrderId, id)),
   ]);
   const customerRecord = customerSafe ? { name: customer?.fullName || customer?.name || "", phone: customer?.phone || "" } : customer;
-  return { order, customer: customerRecord, chapters, sources: sourceRows.map((row) => ({ ...row.source, link: row.link })), citations, files, plagiarism, messages, timeline, assignments };
+  const authorizedFiles = await Promise.all(files.map(async (file) => ({ ...file, fileUrl: await authorizedResearchFileUrl(file.fileUrl) })));
+  if (customerSafe) {
+    return {
+      order: {
+        title: order.title,
+        researchNo: order.researchNo,
+        status: order.status,
+        progress: order.progress,
+        deadline: order.deadline,
+        remainingAmount: order.remainingAmount,
+      },
+      customer: customerRecord,
+      chapters: chapters.map((chapter) => ({ id: chapter.id, title: chapter.title, status: chapter.status, progress: chapter.progress, approvalStatus: chapter.approvalStatus })),
+      sources: sourceRows.map((row) => ({ id: row.source.id, title: row.source.title, authors: row.source.authors, provider: row.source.provider, link: { selectedByCustomer: row.link.selectedByCustomer } })),
+      citations: citations.map((citation) => ({ id: citation.id, bibliographyText: citation.bibliographyText })),
+      files: authorizedFiles.map((file) => ({ id: file.id, title: file.title, fileUrl: file.fileUrl, version: file.version })),
+      plagiarism: plagiarism.map((report) => ({ id: report.id, similarityPercentage: report.similarityPercentage })),
+      messages: messages.map((message) => ({ id: message.id, senderType: message.senderType, senderName: message.senderName, message: message.message })),
+      timeline: timeline.map((event) => ({ id: event.id, title: event.title, createdAt: event.createdAt })),
+      assignments: [],
+    };
+  }
+  return { order, customer: customerRecord, chapters, sources: sourceRows.map((row) => ({ ...row.source, link: row.link })), citations, files: authorizedFiles, plagiarism, messages, timeline, assignments };
 }
 
 type SourceResult = { provider: string; externalId: string; title: string; authors: string[]; journal?: string; year?: number; abstract?: string; doi?: string; language?: string; category?: string; url?: string; pdfUrl?: string; openAccess?: boolean; metadata?: Record<string, unknown> };
@@ -358,7 +534,7 @@ export async function handleAdminResearch(req: NextRequest, parts: string[], use
   if (resource === "orders") {
     if (method === "GET" && !parts[3]) { const search = req.nextUrl.searchParams.get("search")?.trim() || ""; const status = req.nextUrl.searchParams.get("status") || ""; const page = Math.max(1, Number(req.nextUrl.searchParams.get("page") || 1)); const where = and(isNull(researchOrdersTable.archivedAt), status ? eq(researchOrdersTable.status, status) : undefined, search ? or(ilike(researchOrdersTable.researchNo, `%${search}%`), ilike(researchOrdersTable.title, `%${search}%`), ilike(researchOrdersTable.universityName, `%${search}%`), sql`${researchOrdersTable.customerId} in (select id from customers where name ilike ${`%${search}%`} or full_name ilike ${`%${search}%`} or phone ilike ${`%${search}%`})`) : undefined); const [items, count] = await Promise.all([db.select().from(researchOrdersTable).where(where).orderBy(desc(researchOrdersTable.createdAt)).limit(30).offset((page - 1) * 30), db.select({ count: sql<number>`count(*)::int` }).from(researchOrdersTable).where(where)]); return json({ items, pagination: { page, pageSize: 30, total: count[0]?.count || 0 } }); }
     if (method === "POST" && !parts[3]) { const permission = denied(user, "research.create"); if (permission) return permission; const result = await createResearchOrder(await requestBody(req), user); return result.response ?? json(result, 201); }
-    if (parts[3]) { const id = Number(parts[3]); if (!Number.isFinite(id)) return error("معرف البحث غير صحيح", 400); if (method === "GET") { const detail = await orderDetail(id); return detail ? json(detail) : error("طلب البحث غير موجود", 404); } if (method === "PATCH") { const permission = denied(user, "research.edit"); if (permission) return permission; const result = await updateOrder(id, await requestBody(req), user); return result.response ?? json(result); } if (method === "POST" && parts[4] === "payment") { const permission = denied(user, "research.payment.receive"); if (permission) return permission; const body = await requestBody(req); const result = await applyPayment(id, numeric(body?.amount), String(body?.paymentMethod || "cash"), user); return result.response ?? json(result); } if (method === "POST" && parts[4] === "sources") { const permission = denied(user, "research.sources.manage"); if (permission) return permission; const body = await requestBody(req); const source = body?.source as SourceResult; if (!source?.provider || !source?.externalId || !source?.title) return error("بيانات المصدر غير مكتملة", 400); const [saved] = await db.insert(researchSourcesTable).values({ provider: source.provider, externalId: source.externalId, title: source.title, authors: source.authors || [], journal: source.journal || null, publicationYear: source.year || null, abstract: source.abstract || null, doi: source.doi || null, language: source.language || null, category: source.category || null, url: source.url || null, pdfUrl: source.pdfUrl || null, isOpenAccess: Boolean(source.openAccess), metadata: source.metadata || {} }).onConflictDoUpdate({ target: [researchSourcesTable.provider, researchSourcesTable.externalId], set: { title: source.title, authors: source.authors || [], journal: source.journal || null, abstract: source.abstract || null, updatedAt: new Date() } }).returning(); await db.insert(researchOrderSourcesTable).values({ researchOrderId: id, sourceId: saved.id, addedBy: user.id }).onConflictDoNothing(); const [count] = await db.select({ count: sql<number>`count(*)::int` }).from(researchOrderSourcesTable).where(eq(researchOrderSourcesTable.researchOrderId, id)); await db.update(researchOrdersTable).set({ sourceCount: count.count, updatedAt: new Date() }).where(eq(researchOrdersTable.id, id)); await trace(id, "research_source_added", `تمت إضافة المصدر ${saved.title}`, user, { sourceId: saved.id }); return json({ source: saved }, 201); } }
+    if (parts[3]) { const id = Number(parts[3]); if (!Number.isFinite(id)) return error("معرف البحث غير صحيح", 400); if (method === "GET") { const detail = await orderDetail(id); return detail ? json(detail) : error("طلب البحث غير موجود", 404); } if (method === "PATCH") { const permission = denied(user, "research.edit"); if (permission) return permission; const result = await updateOrder(id, await requestBody(req), user); return result.response ?? json(result); } if (method === "POST" && parts[4] === "payment") { const permission = denied(user, "research.payment.receive"); if (permission) return permission; const body = await requestBody(req); const result = await applyPayment(id, numeric(body?.amount), String(body?.paymentMethod || "cash"), user, body?.idempotencyKey); return result.response ?? json(result); } if (method === "POST" && parts[4] === "sources") { const permission = denied(user, "research.sources.manage"); if (permission) return permission; const body = await requestBody(req); const source = body?.source as SourceResult; if (!source?.provider || !source?.externalId || !source?.title) return error("بيانات المصدر غير مكتملة", 400); const [saved] = await db.insert(researchSourcesTable).values({ provider: source.provider, externalId: source.externalId, title: source.title, authors: source.authors || [], journal: source.journal || null, publicationYear: source.year || null, abstract: source.abstract || null, doi: source.doi || null, language: source.language || null, category: source.category || null, url: source.url || null, pdfUrl: source.pdfUrl || null, isOpenAccess: Boolean(source.openAccess), metadata: source.metadata || {} }).onConflictDoUpdate({ target: [researchSourcesTable.provider, researchSourcesTable.externalId], set: { title: source.title, authors: source.authors || [], journal: source.journal || null, abstract: source.abstract || null, updatedAt: new Date() } }).returning(); await db.insert(researchOrderSourcesTable).values({ researchOrderId: id, sourceId: saved.id, addedBy: user.id }).onConflictDoNothing(); const [count] = await db.select({ count: sql<number>`count(*)::int` }).from(researchOrderSourcesTable).where(eq(researchOrderSourcesTable.researchOrderId, id)); await db.update(researchOrdersTable).set({ sourceCount: count.count, updatedAt: new Date() }).where(eq(researchOrdersTable.id, id)); await trace(id, "research_source_added", `تمت إضافة المصدر ${saved.title}`, user, { sourceId: saved.id }); return json({ source: saved }, 201); } }
   }
   if (resource === "chapters" && parts[3] && method === "PATCH") { const permission = denied(user, "research.chapters.manage"); if (permission) return permission; const chapterId = Number(parts[3]); const chapter = await db.query.researchChaptersTable.findFirst({ where: eq(researchChaptersTable.id, chapterId) }); if (!chapter) return error("الفصل غير موجود", 404); const body = await requestBody(req); const content = body?.content === undefined ? (chapter.content || "") : String(body.content ?? ""); const version = chapter.currentVersion + (body?.content !== undefined && content !== chapter.content ? 1 : 0); if (version !== chapter.currentVersion) await db.insert(researchChapterVersionsTable).values({ chapterId, version, content, wordCount: content.trim() ? content.trim().split(/\s+/).length : 0, changeNote: String(body?.changeNote || "تحديث الفصل"), createdBy: user.id, createdByName: actorName(user) }); const [saved] = await db.update(researchChaptersTable).set({ title: body?.title ?? chapter.title, status: body?.status ?? chapter.status, progress: Math.max(0, Math.min(100, Number(body?.progress ?? chapter.progress))), assignedWriterId: body?.assignedWriterId ?? chapter.assignedWriterId, deadline: body?.deadline ?? chapter.deadline, content, wordCount: content.trim() ? content.trim().split(/\s+/).length : 0, currentVersion: version, approvalStatus: body?.approvalStatus ?? chapter.approvalStatus, approvedAt: body?.approvalStatus === "approved" ? new Date() : chapter.approvedAt, updatedAt: new Date() }).where(eq(researchChaptersTable.id, chapterId)).returning(); await trace(chapter.researchOrderId, "research_chapter_updated", `تم تحديث ${saved.title}`, user, { chapterId, version }); return json({ chapter: saved }); }
   if (resource === "files" && method === "POST") {
@@ -367,7 +543,7 @@ export async function handleAdminResearch(req: NextRequest, parts: string[], use
     if (!Number.isFinite(orderId) || !title || !fileName || !body?.fileUrl) return error("بيانات الملف غير مكتملة", 400);
     const order = await db.query.researchOrdersTable.findFirst({ where: eq(researchOrdersTable.id, orderId) }); if (!order) return error("طلب البحث غير موجود", 404);
     const [latest] = await db.select({ version: sql<number>`coalesce(max(${researchFilesTable.version}), 0)::int` }).from(researchFilesTable).where(and(eq(researchFilesTable.researchOrderId, orderId), eq(researchFilesTable.fileType, fileType), eq(researchFilesTable.title, title)));
-    const fileUrl = await persistFile(String(body.fileUrl), fileName, orderId); const version = (latest?.version || 0) + 1;
+    const fileUrl = await persistFile(String(body.fileUrl), fileName, orderId, body?.mimeType); const version = (latest?.version || 0) + 1;
     const [saved] = await db.insert(researchFilesTable).values({ researchOrderId: orderId, chapterId: body?.chapterId ? Number(body.chapterId) : null, fileType, title, fileUrl, fileName, mimeType: body?.mimeType || null, fileSize: body?.fileSize ? Number(body.fileSize) : null, version, isCustomerVisible: Boolean(body?.isCustomerVisible), uploadedBy: user.id, uploadedByName: actorName(user) }).returning();
     await trace(orderId, "research_file_uploaded", `تم رفع ${title} - الإصدار ${version}`, user, { fileId: saved.id, fileType, version }); return json({ file: saved }, 201);
   }
