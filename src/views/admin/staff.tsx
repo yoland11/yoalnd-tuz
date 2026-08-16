@@ -37,6 +37,27 @@ const PERMISSIONS = ALL_PERMISSIONS.map((id) => ({
   label: PERMISSION_LABELS[id],
 }));
 
+const SALES_AND_INVOICE_PERMISSION_IDS = new Set<string>([
+  "orders",
+  "invoices",
+  "print.sales_invoice",
+  "print.reprint",
+  "sales_invoice.cancel",
+  "sales_invoice.view_cancelled",
+  "sales_invoice.print_cancelled",
+  "sales_invoice.approve_cancellation",
+  "sales_invoice.permanent_delete",
+  "sales_invoice.customer.link",
+  "sales_invoice.customer.relink",
+  "sales_invoice.customer.repair",
+]);
+const SALES_AND_INVOICE_PERMISSIONS = PERMISSIONS.filter(({ id }) =>
+  SALES_AND_INVOICE_PERMISSION_IDS.has(id),
+);
+const OTHER_PERMISSIONS = PERMISSIONS.filter(
+  ({ id }) => !SALES_AND_INVOICE_PERMISSION_IDS.has(id),
+);
+
 const ROLES = [
   { value: "admin", label: "مدير رئيسي" },
   { value: "manager", label: "مدير" },
@@ -143,6 +164,48 @@ function cleanErrorMessage(err: any): string {
   return String(err?.message ?? "فشل الاتصال بالخادم").replace(
     /^HTTP\s+\d+:\s*/,
     "",
+  );
+}
+
+function PermissionGroup({
+  title,
+  description,
+  permissions,
+  selected,
+  disabled,
+  onToggle,
+}: {
+  title: string;
+  description: string;
+  permissions: typeof PERMISSIONS;
+  selected: string[];
+  disabled: boolean;
+  onToggle: (permission: string, enabled: boolean) => void;
+}) {
+  return (
+    <section className="space-y-3 rounded-xl border border-border/50 bg-muted/20 p-3">
+      <div>
+        <h5 className="font-semibold text-primary">{title}</h5>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {permissions.map((permission) => (
+          <label
+            key={permission.id}
+            className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 text-sm"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(permission.id)}
+              disabled={disabled}
+              onChange={(event) => onToggle(permission.id, event.target.checked)}
+              className="mt-1 accent-primary disabled:opacity-70"
+            />
+            <span>{permission.label}</span>
+          </label>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -446,29 +509,45 @@ export default function StaffPage() {
               <label className="block text-xs text-muted-foreground mb-2">
                 الصلاحيات
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                {PERMISSIONS.map((p) => (
-                  <label
-                    key={p.id}
-                    className="flex items-center gap-2 text-sm cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editing.permissions.includes(p.id)}
-                      disabled={editing.role === "admin"}
-                      onChange={(e) =>
-                        setEditing((s) => ({
-                          ...s!,
-                          permissions: e.target.checked
-                            ? [...s!.permissions, p.id]
-                            : s!.permissions.filter((x) => x !== p.id),
-                        }))
-                      }
-                      className="accent-primary disabled:opacity-70"
-                    />
-                    {p.label}
-                  </label>
-                ))}
+              <div className="space-y-3">
+                <PermissionGroup
+                  title="المبيعات والفواتير"
+                  description="نقطة البيع، فواتير المبيعات، الطباعة، الإلغاء، وربط العميل بالفاتورة."
+                  permissions={SALES_AND_INVOICE_PERMISSIONS}
+                  selected={editing.permissions}
+                  disabled={editing.role === "admin"}
+                  onToggle={(permission, enabled) =>
+                    setEditing((current) => ({
+                      ...current!,
+                      permissions: enabled
+                        ? Array.from(
+                            new Set([...current!.permissions, permission]),
+                          )
+                        : current!.permissions.filter(
+                            (value) => value !== permission,
+                          ),
+                    }))
+                  }
+                />
+                <PermissionGroup
+                  title="الصلاحيات الأخرى"
+                  description="بقية صلاحيات النظام، بما فيها المحاسبة والمشتريات والتقارير."
+                  permissions={OTHER_PERMISSIONS}
+                  selected={editing.permissions}
+                  disabled={editing.role === "admin"}
+                  onToggle={(permission, enabled) =>
+                    setEditing((current) => ({
+                      ...current!,
+                      permissions: enabled
+                        ? Array.from(
+                            new Set([...current!.permissions, permission]),
+                          )
+                        : current!.permissions.filter(
+                            (value) => value !== permission,
+                          ),
+                    }))
+                  }
+                />
               </div>
             </div>
             {editing.id && <ApprovalPermissionsPanel staff={editing} />}

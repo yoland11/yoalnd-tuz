@@ -10,8 +10,10 @@ export function thermalPageWidth(size: ThermalPaperSize) {
 export function thermalBaseCss(size: ThermalPaperSize, fontSize?: string) {
   const isNarrow = size === "58mm" || size === "80mm";
   const pageWidth = thermalPageWidth(size);
-  const margin = size === "58mm" ? "2mm 3mm" : size === "80mm" ? "3mm 4mm" : "12mm";
-  const bodyFontSize = fontSize ?? (size === "58mm" ? "8px" : isNarrow ? "9px" : "12px");
+  const margin =
+    size === "58mm" ? "2mm 3mm" : size === "80mm" ? "3mm 4mm" : "12mm";
+  const bodyFontSize =
+    fontSize ?? (size === "58mm" ? "8px" : isNarrow ? "9px" : "12px");
 
   return `
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
@@ -200,6 +202,7 @@ export type SalesInvoiceReceiptInput = {
   companyPhone?: string | null;
   companyAddress?: string | null;
   footerText?: string | null;
+  documentTitle?: string | null;
   showLogo?: boolean;
   showQr?: boolean;
   showCustomerPhone?: boolean;
@@ -209,19 +212,28 @@ export type SalesInvoiceReceiptInput = {
 
 /** Escapes dynamic invoice content before it is written to a print-window HTML document. */
 function escapePrintHtml(value: unknown) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character] ?? character);
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character] ?? character,
+  );
 }
 
-function thermalPaymentStatusLabel(status?: string | null, paid?: number | string, remaining?: number | string) {
+function thermalPaymentStatusLabel(
+  status?: string | null,
+  paid?: number | string,
+  remaining?: number | string,
+) {
   const normalized = String(status ?? "").toLowerCase();
   if (normalized === "overpaid") return "دفع أكثر من المطلوب";
-  if (normalized === "paid" || Number(remaining) <= 0 && Number(paid) > 0) return "مدفوع بالكامل";
+  if (normalized === "paid" || (Number(remaining) <= 0 && Number(paid) > 0))
+    return "مدفوع بالكامل";
   if (normalized === "partial" || Number(paid) > 0) return "مدفوع جزئياً";
   return "غير مدفوع";
 }
@@ -264,16 +276,26 @@ function salesInvoicePrintWindowFeatures(paperSize: SalesInvoicePrintSize) {
  * Open the browser print surface during the original user gesture. This keeps
  * local printing reliable on mobile after the invoice save request finishes.
  */
-export function prepareSalesInvoicePrintWindow(paperSize: SalesInvoicePrintSize): Window {
-  const popup = window.open("", "_blank", salesInvoicePrintWindowFeatures(paperSize));
+export function prepareSalesInvoicePrintWindow(
+  paperSize: SalesInvoicePrintSize,
+): Window {
+  const popup = window.open(
+    "",
+    "_blank",
+    salesInvoicePrintWindowFeatures(paperSize),
+  );
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
-  popup.document.write("<!doctype html><html dir=\"rtl\"><head><meta charset=\"utf-8\"><title>AJN</title></head><body style=\"font-family:Tahoma,Arial,sans-serif;padding:24px\">جارٍ حفظ الفاتورة وتجهيز الطباعة...</body></html>");
+  popup.document.write(
+    '<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>AJN</title></head><body style="font-family:Tahoma,Arial,sans-serif;padding:24px">جارٍ حفظ الفاتورة وتجهيز الطباعة...</body></html>',
+  );
   popup.document.close();
   return popup;
 }
 
 /** Builds a hidden thermal receipt node for the real PDF export path. */
-export function createSalesInvoiceThermalPdfElement(input: SalesInvoiceReceiptInput): HTMLDivElement {
+export function createSalesInvoiceThermalPdfElement(
+  input: SalesInvoiceReceiptInput,
+): HTMLDivElement {
   const documentHtml = buildSalesInvoiceThermalHtml({
     paperSize: input.paperSize === "58mm" ? "58mm" : "80mm",
     invoiceNo: input.invoiceNo,
@@ -300,6 +322,7 @@ export function createSalesInvoiceThermalPdfElement(input: SalesInvoiceReceiptIn
     companyPhone: input.companyPhone,
     companyAddress: input.companyAddress,
     footerText: input.footerText,
+    documentTitle: input.documentTitle,
     showLogo: input.showLogo,
     showQr: input.showQr,
     showCustomerPhone: input.showCustomerPhone,
@@ -315,11 +338,19 @@ export function createSalesInvoiceThermalPdfElement(input: SalesInvoiceReceiptIn
   return wrapper;
 }
 
-export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, existingWindow?: Window | null) {
+export function openSalesInvoicePrintWindow(
+  input: SalesInvoiceReceiptInput,
+  existingWindow?: Window | null,
+) {
   const isThermal = input.paperSize === "58mm" || input.paperSize === "80mm";
-  const popup = existingWindow && !existingWindow.closed
-    ? existingWindow
-    : window.open("", "_blank", salesInvoicePrintWindowFeatures(input.paperSize));
+  const popup =
+    existingWindow && !existingWindow.closed
+      ? existingWindow
+      : window.open(
+          "",
+          "_blank",
+          salesInvoicePrintWindowFeatures(input.paperSize),
+        );
   if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
   popup.document.open();
 
@@ -353,13 +384,19 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
       companyPhone: input.companyPhone,
       companyAddress: input.companyAddress,
       footerText: input.footerText,
+      documentTitle: input.documentTitle,
       showLogo: input.showLogo,
       showQr: input.showQr,
       showCustomerPhone: input.showCustomerPhone,
       showEmployeeName: input.showEmployeeName,
       showAddress: input.showAddress,
     });
-    popup.document.write(thermalDocument.replace("</body>", `${printWhenImagesReadyScript()}</body>`));
+    popup.document.write(
+      thermalDocument.replace(
+        "</body>",
+        `${printWhenImagesReadyScript()}</body>`,
+      ),
+    );
     popup.document.close();
     return;
   }
@@ -367,14 +404,31 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
   const esc = escapePrintHtml;
   const company = input.companyName?.trim() || "مجموعة علي جان نهاد";
   const issuedAt = input.issuedAt ? new Date(input.issuedAt) : null;
-  const dateTime = issuedAt && !Number.isNaN(issuedAt.getTime())
-    ? new Intl.DateTimeFormat("en-CA", { dateStyle: "medium", timeStyle: "short" }).format(issuedAt)
-    : String(input.issuedAt ?? "");
-  const kv = (label: string, value: unknown, className = "") => value === undefined || value === null || String(value).trim() === ""
-    ? ""
-    : `<div class="kv"><span>${esc(label)}</span><span class="v ${className}">${esc(value)}</span></div>`;
-  const paymentMethodLabel = ({ cash: "نقدي", card: "بطاقة", transfer: "تحويل", credit: "آجل" } as Record<string, string>)[String(input.paymentMethod ?? "").toLowerCase()] ?? input.paymentMethod;
-  const paymentStatus = thermalPaymentStatusLabel(input.paymentStatus, input.paid, input.remaining);
+  const dateTime =
+    issuedAt && !Number.isNaN(issuedAt.getTime())
+      ? new Intl.DateTimeFormat("en-CA", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        }).format(issuedAt)
+      : String(input.issuedAt ?? "");
+  const kv = (label: string, value: unknown, className = "") =>
+    value === undefined || value === null || String(value).trim() === ""
+      ? ""
+      : `<div class="kv"><span>${esc(label)}</span><span class="v ${className}">${esc(value)}</span></div>`;
+  const paymentMethodLabel =
+    (
+      {
+        cash: "نقدي",
+        card: "بطاقة",
+        transfer: "تحويل",
+        credit: "آجل",
+      } as Record<string, string>
+    )[String(input.paymentMethod ?? "").toLowerCase()] ?? input.paymentMethod;
+  const paymentStatus = thermalPaymentStatusLabel(
+    input.paymentStatus,
+    input.paid,
+    input.remaining,
+  );
   const amounts = {
     subtotal: Number(input.subtotal ?? 0),
     discount: Number(input.discount ?? 0),
@@ -386,13 +440,21 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
     kv("رقم الفاتورة", input.invoiceNo, "num big"),
     kv("التاريخ والوقت", dateTime, "num"),
     kv("العميل", input.customerName),
-    input.showCustomerPhone !== false ? kv("الهاتف", input.customerPhone, "num") : "",
+    input.showCustomerPhone !== false
+      ? kv("الهاتف", input.customerPhone, "num")
+      : "",
     kv("نوع الدفع", paymentMethodLabel),
     kv("حالة الدفع", paymentStatus),
     input.showEmployeeName !== false ? kv("الموظف", input.employeeName) : "",
   ].join("");
-  const itemRows = input.items.map((item, index) => `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`).join("");
-  const itemHead = "<tr><th>#</th><th class=\"name\">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>";
+  const itemRows = input.items
+    .map(
+      (item, index) =>
+        `<tr><td class="num center">${index + 1}</td><td class="name">${esc(item.productName)}</td><td class="num center">${esc(item.quantity)}</td><td class="num center">${esc(formatCurrency(item.unitPrice))}</td><td class="num" style="text-align:left">${esc(formatCurrency(item.total))}</td></tr>`,
+    )
+    .join("");
+  const itemHead =
+    '<tr><th>#</th><th class="name">الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>';
   const totals = `
     <div class="totals">
       ${amounts.subtotal ? `<div class="row"><span>المجموع الفرعي</span><span class="num">${esc(formatCurrency(amounts.subtotal))}</span></div>` : ""}
@@ -406,17 +468,20 @@ export function openSalesInvoicePrintWindow(input: SalesInvoiceReceiptInput, exi
     </div>`;
   const header = `<div class="r-head">
     ${input.showLogo !== false && input.logoUrl ? `<img class="r-logo" src="${esc(input.logoUrl)}" alt="" onerror="this.remove()">` : ""}
-    <div class="r-company">${esc(company)}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">فاتورة مبيعات</div>
+    <div class="r-company">${esc(company)}</div><div class="r-sub">لتنظيم المناسبات</div><div class="r-sub">${esc(input.documentTitle?.trim() || "فاتورة مبيعات")}</div>
   </div>`;
   const footer = `<div class="thanks">${esc(input.footerText?.trim() || "شكراً لاختياركم مجموعة علي جان نهاد")}</div>
     ${input.companyPhone ? `<div class="r-sub center num">${esc(input.companyPhone)}</div>` : ""}
     ${input.showAddress !== false && input.companyAddress ? `<div class="r-sub center">${esc(input.companyAddress)}</div>` : ""}`;
-  const qr = input.showQr !== false && input.qrDataUrl
-    ? `<div class="qr"><img src="${esc(input.qrDataUrl)}" alt="QR"><div class="cap num">${esc(input.qrCaption || input.invoiceNo)}</div></div>`
-    : "";
+  const qr =
+    input.showQr !== false && input.qrDataUrl
+      ? `<div class="qr"><img src="${esc(input.qrDataUrl)}" alt="QR"><div class="cap num">${esc(input.qrCaption || input.invoiceNo)}</div></div>`
+      : "";
   const body = `<main class="sales-sheet">${header}<hr class="rule"><div class="kv-grid">${metaRows}</div><table class="items"><thead>${itemHead}</thead><tbody>${itemRows}</tbody></table>${totals}${qr}${footer}</main>`;
   const css = salesInvoiceSheetCss();
-  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.write(
+    `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${esc(input.invoiceNo)}</title><style>${css}</style></head><body>${body}${printWhenImagesReadyScript()}</body></html>`,
+  );
   popup.document.close();
 }
 
@@ -475,7 +540,8 @@ export function custodyStatementCss() {
  * downloadable PDF preview use this builder so A4 and thermal never drift.
  */
 export function depreciationReportCss(kind: "a4" | "80mm") {
-  if (kind === "80mm") return `${thermalReceiptCss("80mm")}
+  if (kind === "80mm")
+    return `${thermalReceiptCss("80mm")}
     .depreciation-thermal .asset { padding:4px 0; border-bottom:1.5px solid #000; }
     .depreciation-thermal .asset b { display:block; font-size:1.03em; }
     .depreciation-thermal .asset .line { display:flex; justify-content:space-between; gap:5px; font-size:.88em; }
@@ -613,14 +679,22 @@ export function luxuryWeddingInvoiceCss() {
 }
 
 /** Print the current document only after every logo/QR/decorative image settles. */
-export async function printDocumentWhenImagesReady(root: ParentNode = document) {
+export async function printDocumentWhenImagesReady(
+  root: ParentNode = document,
+) {
   const images = Array.from(root.querySelectorAll("img"));
-  await Promise.all(images.map((img) => img.complete && img.naturalWidth > 0 ? Promise.resolve() : new Promise<void>((resolve) => {
-    const done = () => resolve();
-    img.addEventListener("load", done, { once: true });
-    img.addEventListener("error", done, { once: true });
-    window.setTimeout(done, 2500);
-  })));
+  await Promise.all(
+    images.map((img) =>
+      img.complete && img.naturalWidth > 0
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            const done = () => resolve();
+            img.addEventListener("load", done, { once: true });
+            img.addEventListener("error", done, { once: true });
+            window.setTimeout(done, 2500);
+          }),
+    ),
+  );
   window.print();
 }
 
@@ -675,9 +749,10 @@ export function openQrPrintWindow({
   if (!qrDataUrl) {
     throw new Error("تعذر توليد QR للطباعة");
   }
-  const amountText = amount === null || amount === undefined || amount === ""
-    ? ""
-    : formatCurrency(amount);
+  const amountText =
+    amount === null || amount === undefined || amount === ""
+      ? ""
+      : formatCurrency(amount);
   const safeName = customerName?.trim() || "عميل";
   const html = `<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8">
     <title>${title}</title>
@@ -705,7 +780,8 @@ export function openQrPrintWindow({
 }
 
 export function graduationLabelCss(size: "40x30" | "58mm" | "80mm" = "40x30") {
-  if (size !== "40x30") return thermalBaseCss(size, size === "58mm" ? "9px" : "10px");
+  if (size !== "40x30")
+    return thermalBaseCss(size, size === "58mm" ? "9px" : "10px");
   return `
     @page { size: 40mm 30mm; margin: 0; }
     * { box-sizing: border-box; }
@@ -772,12 +848,29 @@ export function openGraduationProductionSheet({
     packaging: "قائمة التغليف",
     delivery: "ملف التسليم",
   };
-  const safe = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+  const safe = (value: unknown) =>
+    String(value ?? "").replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[character] || character,
+    );
   const details = Object.entries(snapshot || {})
-    .filter(([key]) => !["orderId", "studentName", "studentCode", "orderNo"].includes(key))
-    .map(([key, value]) => `<tr><th>${safe(key)}</th><td><pre>${safe(typeof value === "object" ? JSON.stringify(value, null, 2) : value)}</pre></td></tr>`)
+    .filter(
+      ([key]) =>
+        !["orderId", "studentName", "studentCode", "orderNo"].includes(key),
+    )
+    .map(
+      ([key, value]) =>
+        `<tr><th>${safe(key)}</th><td><pre>${safe(typeof value === "object" ? JSON.stringify(value, null, 2) : value)}</pre></td></tr>`,
+    )
     .join("");
-  const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${safe(labels[sheetType] || sheetType)} - ${safe(studentCode)}</title><style>${sheetReportCss("a4")} pre{white-space:pre-wrap;font:inherit;margin:0}.sheet-title{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.check{height:18px;width:18px;border:1px solid #111;display:inline-block;margin-left:7px}</style></head><body><main class="sheet"><header class="sheet-title"><div><div class="eyebrow">AJN · مجموعة علي جان نهاد</div><h1>${safe(labels[sheetType] || sheetType)}</h1><p>${safe(studentName)} · ${safe(studentCode)}</p></div><div><strong>${safe(orderNo)}</strong><p>${new Date().toLocaleDateString("ar-IQ")}</p></div></header><table><tbody>${details || '<tr><td>لا توجد تفاصيل إضافية.</td></tr>'}</tbody></table><section class="signature-row"><div><span class="check"></span>تم التنفيذ</div><div>اسم الموظف: __________________</div><div>التوقيع: __________________</div></section></main>${printWhenImagesReadyScript()}</body></html>`;
+  const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${safe(labels[sheetType] || sheetType)} - ${safe(studentCode)}</title><style>${sheetReportCss("a4")} pre{white-space:pre-wrap;font:inherit;margin:0}.sheet-title{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.check{height:18px;width:18px;border:1px solid #111;display:inline-block;margin-left:7px}</style></head><body><main class="sheet"><header class="sheet-title"><div><div class="eyebrow">AJN · مجموعة علي جان نهاد</div><h1>${safe(labels[sheetType] || sheetType)}</h1><p>${safe(studentName)} · ${safe(studentCode)}</p></div><div><strong>${safe(orderNo)}</strong><p>${new Date().toLocaleDateString("ar-IQ")}</p></div></header><table><tbody>${details || "<tr><td>لا توجد تفاصيل إضافية.</td></tr>"}</tbody></table><section class="signature-row"><div><span class="check"></span>تم التنفيذ</div><div>اسم الموظف: __________________</div><div>التوقيع: __________________</div></section></main>${printWhenImagesReadyScript()}</body></html>`;
   const popup = window.open("", "_blank", "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة طباعة ملف الإنتاج");
   popup.document.write(html);
@@ -793,9 +886,31 @@ export function openResearchReceiptPrint({
   chapters?: Array<Record<string, any>>;
   sources?: Array<Record<string, any>>;
 }) {
-  const safe = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
-  const rows = chapters.map((chapter) => `<tr><td>${safe(chapter.title)}</td><td>${safe(chapter.status)}</td><td class="num">${safe(chapter.progress)}%</td></tr>`).join("");
-  const references = sources.slice(0, 12).map((source, index) => `<li><strong>[${index + 1}]</strong> ${safe(source.authors?.join?.(", ") || "")}. ${safe(source.title)}. ${safe(source.publicationYear || "")}${source.doi ? `. DOI: ${safe(source.doi)}` : ""}</li>`).join("");
+  const safe = (value: unknown) =>
+    String(value ?? "").replace(
+      /[&<>"']/g,
+      (character) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[character] || character,
+    );
+  const rows = chapters
+    .map(
+      (chapter) =>
+        `<tr><td>${safe(chapter.title)}</td><td>${safe(chapter.status)}</td><td class="num">${safe(chapter.progress)}%</td></tr>`,
+    )
+    .join("");
+  const references = sources
+    .slice(0, 12)
+    .map(
+      (source, index) =>
+        `<li><strong>[${index + 1}]</strong> ${safe(source.authors?.join?.(", ") || "")}. ${safe(source.title)}. ${safe(source.publicationYear || "")}${source.doi ? `. DOI: ${safe(source.doi)}` : ""}</li>`,
+    )
+    .join("");
   const html = `<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${safe(order.researchNo)}</title><style>${sheetReportCss("a4")}.research-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:20px}.research-code{font-family:ui-monospace,Consolas,monospace}.research-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}.research-meta>div{border:1px solid #111;padding:8px}.references{font-size:10px;line-height:1.7;padding-right:18px}.num{font-variant-numeric:tabular-nums}@media(max-width:700px){.research-meta{grid-template-columns:1fr}}</style></head><body><main class="sheet"><header class="research-head"><div><div class="eyebrow">مجموعة علي جان نهاد</div><h1>ملف طلب بحث أكاديمي</h1><p>${safe(order.title)}</p></div><div><strong class="research-code">${safe(order.researchNo)}</strong><p>${new Date().toLocaleDateString("ar-IQ")}</p></div></header><section class="research-meta"><div><strong>الجامعة</strong><br>${safe(order.universityName)}</div><div><strong>الكلية والقسم</strong><br>${safe(order.college)} · ${safe(order.department)}</div><div><strong>نمط التوثيق</strong><br>${safe(order.citationStyle)}</div><div><strong>الإجمالي</strong><br>${formatCurrency(order.totalAmount)}</div><div><strong>المدفوع</strong><br>${formatCurrency(order.paidAmount)}</div><div><strong>المتبقي</strong><br>${formatCurrency(order.remainingAmount)}</div></section><h2>الفصول والتقدم</h2><table><thead><tr><th>الفصل</th><th>الحالة</th><th>الإنجاز</th></tr></thead><tbody>${rows}</tbody></table>${references ? `<h2>المراجع المختارة</h2><ol class="references">${references}</ol>` : ""}<footer><p>هذا المستند ملخص تشغيلي صادر من AJN Research Center.</p></footer></main>${printWhenImagesReadyScript()}</body></html>`;
   const popup = window.open("", "_blank", "width=980,height=760");
   if (!popup) throw new Error("تعذر فتح نافذة طباعة ملف البحث");
@@ -803,7 +918,10 @@ export function openResearchReceiptPrint({
   popup.document.close();
 }
 
-export function downloadDataUrl(dataUrl: string | undefined | null, filename: string) {
+export function downloadDataUrl(
+  dataUrl: string | undefined | null,
+  filename: string,
+) {
   if (!dataUrl) throw new Error("لا توجد صورة QR للتحميل");
   const a = document.createElement("a");
   a.href = dataUrl;

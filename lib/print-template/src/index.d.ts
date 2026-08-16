@@ -1,4 +1,10 @@
-export type SalesInvoiceThermalItem = { productName?: string; name?: string; quantity: number | string; unitPrice: number | string; total: number | string };
+export type SalesInvoiceThermalItem = {
+  productName?: string;
+  name?: string;
+  quantity: number | string;
+  unitPrice: number | string;
+  total: number | string;
+};
 export type SalesInvoiceThermalInput = {
   paperSize: "58mm" | "80mm" | "a5" | "a4" | "custom";
   orientation?: "portrait" | "landscape";
@@ -28,6 +34,7 @@ export type SalesInvoiceThermalInput = {
   companyPhone?: string | null;
   companyAddress?: string | null;
   footerText?: string | null;
+  documentTitle?: string | null;
   showLogo?: boolean;
   showQr?: boolean;
   showCustomerPhone?: boolean;
@@ -38,8 +45,20 @@ export type SalesInvoiceThermalInput = {
 };
 
 export function toLatinDigits(value: unknown): string;
-export function formatLatinNumber(value: unknown, options?: Intl.NumberFormatOptions): string;
+export function formatLatinNumber(
+  value: unknown,
+  options?: Intl.NumberFormatOptions,
+): string;
 export function formatLatinMoney(value: unknown): string;
 export function formatLatinDate(value: unknown): string;
-export function salesInvoiceThermalCss(size: SalesInvoiceThermalInput["paperSize"], horizontalOffsetMm?: number | string | null, verticalOffsetMm?: number | string | null, orientation?: "portrait" | "landscape", customWidthMm?: number | string | null, customHeightMm?: number | string | null): string;
-export function buildSalesInvoiceThermalHtml(input: SalesInvoiceThermalInput): string;
+export function salesInvoiceThermalCss(
+  size: SalesInvoiceThermalInput["paperSize"],
+  horizontalOffsetMm?: number | string | null,
+  verticalOffsetMm?: number | string | null,
+  orientation?: "portrait" | "landscape",
+  customWidthMm?: number | string | null,
+  customHeightMm?: number | string | null,
+): string;
+export function buildSalesInvoiceThermalHtml(
+  input: SalesInvoiceThermalInput,
+): string;

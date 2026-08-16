@@ -33,6 +33,8 @@ import {
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { isCashPaymentMethod } from "@/lib/payment-settlement";
 import { INVOICE_PAYMENT_STATUS_OPTIONS } from "@/lib/invoice-payment-status";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import { openSalesInvoicePrintWindow } from "./print-helpers";
 import {
   InvoicePaymentStatusBadge,
   InvoiceRegisterSummaryCards,
@@ -138,6 +140,7 @@ function newForm() {
 export default function PurchasesPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { data: settings } = usePublicSettings();
 
   const [form, setForm] = useState(newForm());
   const [items, setItems] = useState<PurchaseItem[]>([blankItem()]);
@@ -187,7 +190,14 @@ export default function PurchasesPage() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const { data: invoicesList, isLoading: invoicesLoading, isError: invoicesError, error: invoicesLoadError, isFetching: invoicesFetching, refetch: refetchInvoices } = useQuery<PurchaseInvoiceRegisterResponse>({
+  const {
+    data: invoicesList,
+    isLoading: invoicesLoading,
+    isError: invoicesError,
+    error: invoicesLoadError,
+    isFetching: invoicesFetching,
+    refetch: refetchInvoices,
+  } = useQuery<PurchaseInvoiceRegisterResponse>({
     queryKey: [
       "admin",
       "purchase-invoices",
@@ -214,7 +224,9 @@ export default function PurchasesPage() {
       if (listBranchId) params.set("branchId", listBranchId);
       if (listCashBox) params.set("cashBox", listCashBox);
       if (deferredListSearch) params.set("search", deferredListSearch);
-      return adminFetch<PurchaseInvoiceRegisterResponse>(`/admin/purchase-invoices?${params}`);
+      return adminFetch<PurchaseInvoiceRegisterResponse>(
+        `/admin/purchase-invoices?${params}`,
+      );
     },
     enabled: listMode,
   });
@@ -527,39 +539,45 @@ export default function PurchasesPage() {
     } catch {
       /* fall back to row */
     }
-    const items: any[] = full.items ?? [];
-    const win = window.open("", "_blank", "width=900,height=1100");
-    if (!win) return;
-    const rows = items
-      .map(
-        (it, i) => `<tr>
-      <td style="text-align:center">${i + 1}</td>
-      <td style="text-align:center">${it.image ? `<img src="${it.image}" style="width:42px;height:42px;object-fit:cover;border-radius:4px"/>` : "—"}</td>
-      <td>${it.productName ?? ""}</td>
-      <td style="text-align:center">${Number(it.quantity) || 0}</td>
-      <td style="text-align:center">${formatCurrency(it.costPrice)}</td>
-      <td style="text-align:center">${formatCurrency(it.total)}</td>
-    </tr>`,
-      )
-      .join("");
-    win.document
-      .write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>${full.invoiceNo ?? "فاتورة شراء"}</title>
-      <style>@page{size:A4;margin:14mm}body{font-family:Tahoma,sans-serif;color:#111}h1{font-size:20px;margin:0}.muted{color:#555;font-size:12px;margin-top:4px}table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}th,td{border:1px solid #ccc;padding:6px}th{background:#f3f4f6}.tot{margin-top:14px;width:280px;margin-inline-start:auto;font-size:13px}.tot div{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed #e5e7eb}.tot .g{font-weight:700;font-size:15px;border-bottom:2px solid #111}</style>
-      </head><body onload="window.print()">
-      <h1>فاتورة شراء</h1>
-      <div class="muted">رقم: ${full.invoiceNo ?? "—"} · التاريخ: ${full.date ?? "—"} · المورد: ${full.supplierName || "—"}</div>
-      <table><thead><tr><th>#</th><th>الصورة</th><th>المنتج</th><th>الكمية</th><th>التكلفة</th><th>الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="tot">
-        <div><span>الإجمالي الفرعي</span><span>${formatCurrency(full.subtotal)}</span></div>
-        <div><span>الخصم</span><span>${formatCurrency(full.discountAmount)}</span></div>
-        <div><span>الشحن</span><span>${formatCurrency(full.shippingCost)}</span></div>
-        <div><span>الضريبة</span><span>${formatCurrency(full.taxAmount)}</span></div>
-        <div class="g"><span>الإجمالي</span><span>${formatCurrency(full.total)}</span></div>
-        <div><span>المدفوع</span><span>${formatCurrency(full.paidAmount)}</span></div>
-        <div><span>المتبقي</span><span>${formatCurrency(full.remainingAmount)}</span></div>
-      </div>
-      </body></html>`);
-    win.document.close();
+    const items: any[] = Array.isArray(full.items) ? full.items : [];
+    try {
+      openSalesInvoicePrintWindow({
+        paperSize: "80mm",
+        documentTitle: "فاتورة مشتريات",
+        invoiceNo: String(full.invoiceNo ?? inv.invoiceNo),
+        issuedAt: full.date ?? full.createdAt ?? inv.date,
+        customerName: full.supplierName ?? inv.supplierName,
+        customerPhone: full.supplierPhone ?? full.supplier?.phone ?? null,
+        paymentMethod: full.paymentMethod ?? inv.paymentMethod,
+        paymentStatus: full.paymentStatus ?? inv.paymentStatus,
+        employeeName: full.createdByName ?? inv.createdByName,
+        items: items.map((item) => ({
+          productName: String(item.productName ?? item.name ?? ""),
+          quantity: item.quantity ?? 0,
+          unitPrice: item.costPrice ?? item.unitPrice ?? 0,
+          total: item.total ?? 0,
+        })),
+        subtotal: full.subtotal ?? inv.subtotal,
+        discount: full.discountAmount ?? inv.discountAmount,
+        tax: full.taxAmount ?? inv.taxAmount,
+        deliveryFee: full.shippingCost ?? inv.shippingCost,
+        total: full.total ?? inv.total,
+        paid: full.paidAmount ?? inv.paidAmount,
+        remaining: full.remainingAmount ?? inv.remainingAmount,
+        notes: full.notes ?? inv.notes,
+        logoUrl: logoSrc(settings),
+        companyName: settings?.site_name,
+        companyPhone: settings?.phone ?? settings?.whatsapp,
+        companyAddress: settings?.address,
+      });
+    } catch (error) {
+      toast({
+        title: "تعذر فتح نافذة الطباعة",
+        description:
+          error instanceof Error ? error.message : "تعذر تجهيز الفاتورة",
+        variant: "destructive",
+      });
+    }
   }
 
   async function deleteInvoice(inv: PurchaseInvoice) {
@@ -602,12 +620,18 @@ export default function PurchasesPage() {
     return (
       <PurchaseListView
         invoices={invoiceRows}
-        total={Number.isFinite(invoicesList?.total) ? Number(invoicesList?.total) : invoiceRows.length}
+        total={
+          Number.isFinite(invoicesList?.total)
+            ? Number(invoicesList?.total)
+            : invoiceRows.length
+        }
         summary={invoicesList?.summary}
         loading={invoicesLoading}
         error={invoicesError ? invoicesLoadError : null}
         refreshing={invoicesFetching}
-        onRefresh={() => { void refetchInvoices(); }}
+        onRefresh={() => {
+          void refetchInvoices();
+        }}
         page={listPage}
         onPage={setListPage}
         from={listFrom}
@@ -1277,7 +1301,9 @@ function PurchaseListView({
         </Button>
         <div>
           <h1 className="text-xl font-bold">سجل فواتير المشتريات</h1>
-          <p className="text-xs text-muted-foreground">{loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}</p>
+          <p className="text-xs text-muted-foreground">
+            {loading ? "جارٍ تحميل السجل..." : `${total} فاتورة`}
+          </p>
         </div>
       </div>
       <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
@@ -1430,7 +1456,13 @@ function PurchaseListView({
         </div>
       </div>
       <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
-        {error ? <PurchaseListLoadError error={error} onRetry={onRefresh} retrying={refreshing} /> : null}
+        {error ? (
+          <PurchaseListLoadError
+            error={error}
+            onRetry={onRefresh}
+            retrying={refreshing}
+          />
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -1447,7 +1479,10 @@ function PurchaseListView({
             <tbody className="divide-y divide-border/20">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <td
+                    colSpan={7}
+                    className="py-10 text-center text-muted-foreground"
+                  >
                     جارٍ تحميل فواتير المشتريات...
                   </td>
                 </tr>
@@ -1601,16 +1636,38 @@ function PurchaseListView({
   );
 }
 
-function PurchaseListLoadError({ error, onRetry, retrying }: { error: unknown; onRetry: () => void; retrying: boolean }) {
+function PurchaseListLoadError({
+  error,
+  onRetry,
+  retrying,
+}: {
+  error: unknown;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
   const status = apiErrorStatus(error);
   const permissionDenied = status === 401 || status === 403;
   const message = permissionDenied
     ? "ليس لديك صلاحية عرض سجل فواتير المشتريات."
     : "تعذر تحميل فواتير المشتريات. لم يتم اعتبار ذلك نتيجة بحث فارغة.";
   return (
-    <div className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive" role="alert">
-      <span>{message}{!permissionDenied && apiErrorMessage(error) ? ` ${apiErrorMessage(error)}` : ""}</span>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+    <div
+      className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+      role="alert"
+    >
+      <span>
+        {message}
+        {!permissionDenied && apiErrorMessage(error)
+          ? ` ${apiErrorMessage(error)}`
+          : ""}
+      </span>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={onRetry}
+        disabled={retrying}
+      >
         {retrying ? "جارٍ إعادة المحاولة..." : "إعادة المحاولة"}
       </Button>
     </div>
