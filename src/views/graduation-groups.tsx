@@ -7,6 +7,7 @@ import {
   Check,
   ClipboardList,
   Copy,
+  Gift,
   GraduationCap,
   Loader2,
   LockKeyhole,
@@ -35,7 +36,11 @@ import { formatCurrency } from "@/lib/money";
 import { processImageFile } from "@/lib/image-tools";
 import { formatIraqiPhoneInput } from "@/lib/phone";
 import type { GraduationConfig } from "@/lib/graduation";
-import { GRADUATION_STEPS, GRADUATION_THEME_STYLE, GraduationStepRail } from "@/components/graduation-step-rail";
+import {
+  GRADUATION_STEPS,
+  GRADUATION_THEME_STYLE,
+  GraduationStepRail,
+} from "@/components/graduation-step-rail";
 
 type PublicGraduationConfig = GraduationConfig & { aiAvailable: boolean };
 
@@ -66,21 +71,24 @@ export function GraduationOrderTypeChoice({
   const [code, setCode] = useState("");
   const Root = embedded ? "section" : "main";
   return (
-    <Root className={embedded ? "" : "min-h-dvh bg-background px-4 py-10"} dir="rtl">
+    <Root
+      className={embedded ? "" : "min-h-dvh bg-background px-4 py-10"}
+      dir="rtl"
+    >
       <div className={embedded ? "" : "mx-auto max-w-5xl"}>
         {!embedded && (
-        <header className="mb-8 text-center">
-          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/30 bg-primary/10 text-primary">
-            <GraduationCap className="h-6 w-6" />
-          </span>
-          <h1 className="mt-4 text-2xl font-bold text-foreground sm:text-3xl">
-            كيف تريد إنشاء طلب التخرج؟
-          </h1>
-          <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-            اختر طلباً فردياً لتخصيص كل التفاصيل، أو أنشئ مجموعة موحدة لدفعة
-            التخرج.
-          </p>
-        </header>
+          <header className="mb-8 text-center">
+            <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-primary/30 bg-primary/10 text-primary">
+              <GraduationCap className="h-6 w-6" />
+            </span>
+            <h1 className="mt-4 text-2xl font-bold text-foreground sm:text-3xl">
+              كيف تريد إنشاء طلب التخرج؟
+            </h1>
+            <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+              اختر طلباً فردياً لتخصيص كل التفاصيل، أو أنشئ مجموعة موحدة لدفعة
+              التخرج.
+            </p>
+          </header>
         )}
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -179,6 +187,42 @@ const initialGroup = {
   defaultDesign: "",
   accessories: [] as string[],
   defaultFont: "cairo",
+  sashText: "",
+  robeText: "",
+  customGraduationText: "",
+  extras: {
+    flowers: [] as Array<{
+      productId: number;
+      name: string;
+      quantity: number;
+      unitPrice: number;
+    }>,
+    photography: null as null | {
+      serviceId: number;
+      serviceName: string;
+      price: number;
+    },
+  },
+};
+
+type GroupBookingForm = typeof initialGroup;
+type DesignerCatalogProduct = {
+  id: number;
+  name: string;
+  nameAr: string;
+  price: number;
+  stock: number;
+  designerSection: string;
+  images: string[];
+  variants: Array<{ id: number; price: number | null; stock: number }>;
+};
+type PhotographyService = {
+  id: number;
+  name: string;
+  description: string;
+  image: string | null;
+  duration: string | null;
+  price: number | null;
 };
 
 export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
@@ -190,6 +234,23 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
     queryKey: ["graduation", "config"],
     queryFn: () => graduationFetch<PublicGraduationConfig>("/config"),
     staleTime: 5 * 60_000,
+  });
+  const flowerCatalog = useQuery({
+    queryKey: ["graduation-extras", "flowers"],
+    queryFn: async () => {
+      const response = await fetch("/api/products/designer-catalog", {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("تعذر تحميل كتالوج الورود");
+      return response.json() as Promise<{ products: DesignerCatalogProduct[] }>;
+    },
+  });
+  const photoServices = useQuery({
+    queryKey: ["graduation-extras", "photo-services"],
+    queryFn: () =>
+      graduationFetch<{ services: PhotographyService[] }>(
+        "/photography-services",
+      ),
   });
   const create = useMutation({
     mutationFn: () =>
@@ -222,7 +283,12 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
             customText: {
               university: form.university,
               college: form.college,
+              department: form.department,
+              graduationBatch: form.graduationBatch,
               graduationYear: form.graduationYear,
+              sashText: form.sashText,
+              robeText: form.robeText,
+              text: form.customGraduationText,
               font: form.defaultFont,
             },
             universityTemplate: {
@@ -233,6 +299,7 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
               collegeLogoUrl: form.collegeLogo,
               defaultDesign: form.defaultDesign,
             },
+            extras: form.extras,
           },
         }),
       }),
@@ -315,147 +382,60 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
     form.representativePhone.replace(/\D/g, "").length >= 10 &&
     form.styleKey &&
     form.fabricKey;
-  const selectedStyle = config.styles.find((item) => item.key === form.styleKey);
-  const selectedPackage = config.packages.find((item) => item.key === form.packageKey);
-  const unitPrice = Number(selectedStyle?.price || 0) + Number(selectedPackage?.price || 0);
-  const groupTotal = unitPrice * Number(form.expectedStudentCount || 0);
-  const next = () => setStep((current) => Math.min(GRADUATION_STEPS.length - 1, current + 1));
+  const selectedStyle = config.styles.find(
+    (item) => item.key === form.styleKey,
+  );
+  const selectedPackage = config.packages.find(
+    (item) => item.key === form.packageKey,
+  );
+  const selectedFabric = config.fabrics.find(
+    (item) => item.key === form.fabricKey,
+  );
+  const selectedAccessories = config.accessories.filter((item) =>
+    form.accessories.includes(item.key),
+  );
+  const accessoryUnitPrice = selectedAccessories.reduce(
+    (total, item) => total + Number(item.price || 0),
+    0,
+  );
+  const unitPrice =
+    Number(selectedStyle?.price || 0) +
+    Number(selectedPackage?.price || 0) +
+    Number(selectedFabric?.price || 0) +
+    accessoryUnitPrice;
+  const groupItemsTotal = unitPrice * Number(form.expectedStudentCount || 0);
+  const extrasTotal =
+    form.extras.flowers.reduce(
+      (total, item) => total + item.quantity * item.unitPrice,
+      0,
+    ) + Number(form.extras.photography?.price || 0);
+  const groupTotal = groupItemsTotal + extrasTotal;
+  const flowerProducts = (flowerCatalog.data?.products ?? []).filter(
+    (product) =>
+      ["flowers", "bridal_bouquets", "ready_bouquets"].includes(
+        product.designerSection,
+      ),
+  );
+  const next = () =>
+    setStep((current) => Math.min(GRADUATION_STEPS.length - 1, current + 1));
   const previous = () => setStep((current) => Math.max(0, current - 1));
-  return (
-    <main className="min-h-dvh bg-background pb-24" dir="rtl" style={GRADUATION_THEME_STYLE}>
-      <GraduationStepRail current={step} />
-      <div className="container mx-auto max-w-[1500px] space-y-5 px-3 py-5 sm:px-5">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-primary">طلب تخرج جماعي</p>
-            <h1 className="mt-1 text-2xl font-bold">
-              إنشاء المجموعة والإعدادات المشتركة
-            </h1>
-          </div>
-          <Button variant="outline" onClick={onBack}>
-            <ArrowRight className="ml-2 h-4 w-4" />
-            رجوع
-          </Button>
-        </header>
-
-        <section className={step === 0 ? "rounded-xl border border-border bg-card p-4 sm:p-5" : "hidden"}>
-          <div className="mb-4 flex items-center gap-2">
-            <Users className="h-5 w-5 text-primary" />
-            <h2 className="font-bold">معلومات المجموعة</h2>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              ["university", "الجامعة"],
-              ["college", "الكلية"],
-              ["department", "القسم"],
-              ["graduationBatch", "دفعة التخرج"],
-              ["title", "اسم المجموعة"],
-              ["representativeName", "اسم ممثل المجموعة"],
-            ].map(([key, label]) => (
-              <div key={key}>
-                <Label>{label}</Label>
-                <Input
-                  className="mt-2"
-                  value={(form as any)[key]}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      [key]: event.target.value,
-                    }))
-                  }
-                />
+  const updateText = (key: keyof GroupBookingForm, value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
+  const renderCurrentStep = () => {
+    switch (step) {
+      case 0:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <div className="mb-5 flex items-center gap-2">
+              <GraduationCap className="h-5 w-5 text-primary" />
+              <div>
+                <h2 className="font-bold">نوع تجهيزات التخرج</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  اختر الروب والباقة الموحدة للدفعة.
+                </p>
               </div>
-            ))}
-            <div>
-              <Label>هاتف ممثل المجموعة</Label>
-              <Input
-                className="mt-2"
-                inputMode="tel"
-                value={form.representativePhone}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    representativePhone: formatIraqiPhoneInput(
-                      event.target.value,
-                    ),
-                  }))
-                }
-              />
             </div>
-            <div>
-              <Label>العدد المتوقع</Label>
-              <Input
-                className="mt-2"
-                type="number"
-                min={1}
-                value={form.expectedStudentCount}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    expectedStudentCount: Math.max(
-                      1,
-                      Number(event.target.value) || 1,
-                    ),
-                  }))
-                }
-              />
-            </div>
-            <div>
-              <Label>موعد التسليم</Label>
-              <Input
-                className="mt-2"
-                type="date"
-                value={form.deliveryDate}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    deliveryDate: event.target.value,
-                  }))
-                }
-              />
-            </div>
-          </div>
-          <div className="mt-4">
-            <Label>ملاحظات المجموعة</Label>
-            <Textarea
-              className="mt-2"
-              value={form.notes}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  notes: event.target.value,
-                }))
-              }
-            />
-          </div>
-        </section>
-
-        {step === 1 ? (
-          <section className="rounded-xl border border-border bg-card p-5 sm:p-6">
-            <div className="flex items-start gap-3">
-              <Users className="mt-0.5 h-5 w-5 text-primary" />
-              <div><h2 className="font-bold">قائمة الطلبة والقياسات</h2><p className="mt-1 text-sm leading-6 text-muted-foreground">احفظ إعدادات المجموعة أولاً، ثم أضف الطلبة أو شارك رابط التسجيل. تبقى القياسات الخاصة بكل طالب مستقلة عن إعدادات المجموعة المشتركة.</p></div>
-            </div>
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">عدد الطلبة المتوقع</p><strong className="mt-2 block text-2xl text-primary">{form.expectedStudentCount}</strong></div>
-              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">الحالة</p><strong className="mt-2 block">بانتظار حفظ المجموعة</strong></div>
-              <div className="rounded-lg border border-border p-4"><p className="text-sm text-muted-foreground">طريقة الإضافة</p><strong className="mt-2 block">الرابط أو الإدارة</strong></div>
-            </div>
-          </section>
-        ) : null}
-
-        <section className={step >= 2 && step <= 7 ? "rounded-xl border border-border bg-card p-4 sm:p-5" : "hidden"}>
-          <div className="mb-4 flex items-center gap-2">
-            <LockKeyhole className="h-5 w-5 text-primary" />
-            <div>
-              <h2 className="font-bold">القالب المشترك المقفل</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                يرثه جميع الطلبة ولا يمكنهم تغييره بعد الانضمام.
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-5 lg:grid-cols-2">
-            <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label>نوع الروب</Label>
                 <Select
@@ -469,26 +449,6 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   </SelectTrigger>
                   <SelectContent>
                     {config.styles.map((item) => (
-                      <SelectItem key={item.key} value={item.key}>
-                        {item.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>نوع القماش</Label>
-                <Select
-                  value={form.fabricKey}
-                  onValueChange={(value) =>
-                    setForm((current) => ({ ...current, fabricKey: value }))
-                  }
-                >
-                  <SelectTrigger className="mt-2">
-                    <SelectValue placeholder="اختر القماش" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {config.fabrics.map((item) => (
                       <SelectItem key={item.key} value={item.key}>
                         {item.name}
                       </SelectItem>
@@ -520,156 +480,649 @@ export function GraduationGroupBuilder({ onBack }: { onBack: () => void }) {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+          </section>
+        );
+      case 1:
+        return (
+          <section className="rounded-xl border border-border bg-card p-5 sm:p-6">
+            <div className="flex items-start gap-3">
+              <Ruler className="mt-0.5 h-5 w-5 text-primary" />
               <div>
-                <Label>طريقة الشعار</Label>
-                <Select
-                  value={form.decorationType}
-                  onValueChange={(value) =>
-                    setForm((current) => ({
-                      ...current,
-                      decorationType: value,
-                    }))
-                  }
+                <h2 className="font-bold">إعداد القياسات للمجموعة</h2>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  حدّد عدد الطلبة المتوقع. بعد إنشاء المجموعة، يسجل كل طالب
+                  قياساته الخاصة من الرابط الآمن دون تغيير الإعدادات المشتركة.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 max-w-sm">
+              <Label>عدد الطلبة المتوقع</Label>
+              <Input
+                className="mt-2"
+                type="number"
+                min={1}
+                value={form.expectedStudentCount}
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    expectedStudentCount: Math.max(
+                      1,
+                      Number(event.target.value) || 1,
+                    ),
+                  }))
+                }
+              />
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-sm text-muted-foreground">القياسات</p>
+                <strong className="mt-2 block">لكل طالب</strong>
+              </div>
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-sm text-muted-foreground">الإعداد المشترك</p>
+                <strong className="mt-2 block">مقفل بعد الحفظ</strong>
+              </div>
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-sm text-muted-foreground">طريقة التسجيل</p>
+                <strong className="mt-2 block">الرابط أو الإدارة</strong>
+              </div>
+            </div>
+          </section>
+        );
+      case 2:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <div className="mb-5">
+              <h2 className="font-bold">الألوان المشتركة</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                تطبّق هذه الألوان على جميع تجهيزات المجموعة.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              {[
+                ["robe", "الروب"],
+                ["sash", "الوشاح"],
+                ["cap", "القبعة"],
+                ["tassel", "الشرابة"],
+                ["embroidery", "التطريز"],
+              ].map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-border p-3 text-sm"
                 >
-                  <SelectTrigger className="mt-2">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">بدون</SelectItem>
-                    <SelectItem value="printing">طباعة</SelectItem>
-                    <SelectItem value="embroidery">تطريز</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                  <span>{label}</span>
+                  <input
+                    type="color"
+                    value={(form.colors as Record<string, string>)[key]}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        colors: {
+                          ...current.colors,
+                          [key]: event.target.value,
+                        },
+                      }))
+                    }
+                    className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent"
+                  />
+                </label>
+              ))}
             </div>
-            <div>
-              <Label>الألوان المشتركة</Label>
-              <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {[
-                  ["robe", "الروب"],
-                  ["sash", "الوشاح"],
-                  ["cap", "القبعة"],
-                  ["tassel", "الشرابة"],
-                  ["embroidery", "التطريز"],
-                ].map(([key, label]) => (
-                  <label
-                    key={key}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-border p-2 text-sm"
-                  >
-                    <span>{label}</span>
-                    <input
-                      type="color"
-                      value={(form.colors as any)[key]}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          colors: {
-                            ...current.colors,
-                            [key]: event.target.value,
-                          },
-                        }))
-                      }
-                      className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent"
-                    />
-                  </label>
-                ))}
-              </div>
-              <Label className="mt-5 block">الإكسسوارات المضمنة</Label>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                {config.accessories.map((item) => (
-                  <label
-                    key={item.key}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg border border-border p-2 text-sm"
-                  >
-                    <Checkbox
-                      checked={form.accessories.includes(item.key)}
-                      onCheckedChange={(checked) =>
-                        setForm((current) => ({
-                          ...current,
-                          accessories: checked
-                            ? [...current.accessories, item.key]
-                            : current.accessories.filter(
-                                (key) => key !== item.key,
-                              ),
-                        }))
-                      }
-                    />
-                    <span>{item.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="mt-5 grid gap-3 sm:grid-cols-3">
-            {[
-              ["universityLogo", "شعار الجامعة"],
-              ["collegeLogo", "شعار الكلية"],
-              ["defaultDesign", "التصميم الافتراضي"],
-            ].map(([key, label]) => (
-              <label
-                key={key}
-                className="cursor-pointer rounded-lg border border-dashed border-border p-3 text-center text-sm hover:border-primary/60"
+          </section>
+        );
+      case 3:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <h2 className="font-bold">القماش</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              اختر نوع القماش الموحد للروب.
+            </p>
+            <div className="mt-5 max-w-xl">
+              <Label>نوع القماش</Label>
+              <Select
+                value={form.fabricKey}
+                onValueChange={(value) =>
+                  setForm((current) => ({ ...current, fabricKey: value }))
+                }
               >
-                <span>{label}</span>
-                {(form as any)[key] ? (
-                  <Check className="mx-auto mt-2 h-5 w-5 text-primary" />
-                ) : (
-                  <span className="mt-2 block text-xs text-muted-foreground">
-                    اختيار صورة
-                  </span>
-                )}
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="sr-only"
-                  onChange={(event) =>
-                    event.target.files?.[0] &&
-                    setImage(key as any, event.target.files[0])
-                  }
-                />
-              </label>
-            ))}
-          </div>
-        </section>
-
-        {step === 8 ? (
+                <SelectTrigger className="mt-2">
+                  <SelectValue placeholder="اختر القماش" />
+                </SelectTrigger>
+                <SelectContent>
+                  {config.fabrics.map((item) => (
+                    <SelectItem key={item.key} value={item.key}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedFabric?.description ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {selectedFabric.description}
+                </p>
+              ) : null}
+            </div>
+          </section>
+        );
+      case 4:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <h2 className="font-bold">الطباعة / التطريز</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              حدّد طريقة الشعار وارفع ملفات الطباعة أو التطريز الخاصة بالمجموعة.
+            </p>
+            <div className="mt-5 max-w-xl">
+              <Label>طريقة الشعار</Label>
+              <Select
+                value={form.decorationType}
+                onValueChange={(value) =>
+                  setForm((current) => ({ ...current, decorationType: value }))
+                }
+              >
+                <SelectTrigger className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">بدون</SelectItem>
+                  <SelectItem value="printing">طباعة</SelectItem>
+                  <SelectItem value="embroidery">تطريز</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {[
+                ["universityLogo", "شعار الجامعة"],
+                ["collegeLogo", "شعار الكلية"],
+                ["defaultDesign", "ملف التصميم المرجعي"],
+              ].map(([key, label]) => (
+                <label
+                  key={key}
+                  className="cursor-pointer rounded-lg border border-dashed border-border p-3 text-center text-sm hover:border-primary/60"
+                >
+                  <span>{label}</span>
+                  {(form as Record<string, unknown>)[key] ? (
+                    <Check className="mx-auto mt-2 h-5 w-5 text-primary" />
+                  ) : (
+                    <span className="mt-2 block text-xs text-muted-foreground">
+                      اختيار صورة
+                    </span>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) =>
+                      event.target.files?.[0] &&
+                      setImage(
+                        key as
+                          "universityLogo" | "collegeLogo" | "defaultDesign",
+                        event.target.files[0],
+                      )
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+          </section>
+        );
+      case 5:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <h2 className="font-bold">النصوص المشتركة</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              تظهر هذه النصوص على الروب أو الوشاح بحسب إعداد الطباعة أو التطريز.
+            </p>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ["university", "اسم الجامعة"],
+                ["college", "اسم الكلية"],
+                ["department", "القسم"],
+                ["graduationBatch", "دفعة التخرج"],
+                ["graduationYear", "سنة التخرج"],
+                ["sashText", "النص على الوشاح"],
+                ["robeText", "النص على الروب"],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <Label>{label}</Label>
+                  <Input
+                    className="mt-2"
+                    value={(form as any)[key]}
+                    onChange={(event) =>
+                      updateText(
+                        key as keyof GroupBookingForm,
+                        event.target.value,
+                      )
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="mt-4">
+              <Label>نص تخرج مخصص</Label>
+              <Textarea
+                className="mt-2"
+                value={form.customGraduationText}
+                onChange={(event) =>
+                  updateText("customGraduationText", event.target.value)
+                }
+              />
+            </div>
+          </section>
+        );
+      case 6:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <h2 className="font-bold">إكسسوارات التخرج</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              اختر الإكسسوارات المضمنة لكل طالب من الخيارات المتاحة.
+            </p>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {config.accessories.map((item) => (
+                <label
+                  key={item.key}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-border p-3 text-sm"
+                >
+                  <Checkbox
+                    checked={form.accessories.includes(item.key)}
+                    onCheckedChange={(checked) =>
+                      setForm((current) => ({
+                        ...current,
+                        accessories: checked
+                          ? [...current.accessories, item.key]
+                          : current.accessories.filter(
+                              (key) => key !== item.key,
+                            ),
+                      }))
+                    }
+                  />
+                  <span className="flex-1">{item.name}</span>
+                  {Number(item.price || 0) > 0 ? (
+                    <small className="text-muted-foreground">
+                      {formatCurrency(Number(item.price))}
+                    </small>
+                  ) : null}
+                </label>
+              ))}
+            </div>
+          </section>
+        );
+      case 7:
+        return (
+          <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <div>
+              <h2 className="flex items-center gap-2 font-bold">
+                <Gift className="h-5 w-5 text-primary" />
+                خدمات إضافية
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                خدمات اختيارية للمجموعة، ولا تعيد إعدادات الروب أو الطباعة.
+              </p>
+            </div>
+            <div className="mt-6 space-y-6">
+              <div>
+                <h3 className="font-semibold">الورود وباقات التخرج</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {flowerCatalog.isLoading ? (
+                    <Skeleton className="col-span-full h-28" />
+                  ) : flowerProducts.length ? (
+                    flowerProducts.map((product) => {
+                      const selected = form.extras.flowers.find(
+                        (item) => item.productId === product.id,
+                      );
+                      const price = Number(
+                        product.variants[0]?.price ?? product.price,
+                      );
+                      return (
+                        <div
+                          key={product.id}
+                          className="rounded-xl border border-border p-3"
+                        >
+                          <div className="flex gap-3">
+                            {product.images?.[0] ? (
+                              <img
+                                src={product.images[0]}
+                                alt={product.nameAr || product.name}
+                                className="h-14 w-14 rounded-lg object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <Gift className="h-8 w-8 text-primary" />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium">
+                                {product.nameAr || product.name}
+                              </p>
+                              <small className="text-muted-foreground">
+                                {formatCurrency(price)}
+                              </small>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={selected ? "outline" : "default"}
+                            className="mt-3 w-full"
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                extras: {
+                                  ...current.extras,
+                                  flowers: selected
+                                    ? current.extras.flowers.filter(
+                                        (item) => item.productId !== product.id,
+                                      )
+                                    : [
+                                        ...current.extras.flowers,
+                                        {
+                                          productId: product.id,
+                                          name: product.nameAr || product.name,
+                                          quantity: 1,
+                                          unitPrice: price,
+                                        },
+                                      ],
+                                },
+                              }))
+                            }
+                          >
+                            {selected ? "إزالة" : "إضافة"}
+                          </Button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="col-span-full text-sm text-muted-foreground">
+                      لا توجد منتجات ورود متاحة حالياً.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div>
+                <h3 className="font-semibold">جلسة تصوير التخرج</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {photoServices.isLoading ? (
+                    <Skeleton className="col-span-full h-28" />
+                  ) : (photoServices.data?.services ?? []).length ? (
+                    photoServices.data!.services.map((service) => {
+                      const selected =
+                        form.extras.photography?.serviceId === service.id;
+                      return (
+                        <button
+                          key={service.id}
+                          type="button"
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              extras: {
+                                ...current.extras,
+                                photography: selected
+                                  ? null
+                                  : {
+                                      serviceId: service.id,
+                                      serviceName: service.name,
+                                      price: Number(service.price || 0),
+                                    },
+                              },
+                            }))
+                          }
+                          className={`rounded-xl border p-3 text-right transition ${selected ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`}
+                        >
+                          {service.image ? (
+                            <img
+                              src={service.image}
+                              alt={service.name}
+                              className="mb-2 h-20 w-full rounded-lg object-cover"
+                              loading="lazy"
+                            />
+                          ) : null}
+                          <p className="font-medium">{service.name}</p>
+                          {service.description ? (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {service.description}
+                            </p>
+                          ) : null}
+                          <small className="mt-2 block text-muted-foreground">
+                            {service.price
+                              ? formatCurrency(Number(service.price))
+                              : "السعر عند التأكيد"}
+                          </small>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <p className="col-span-full text-sm text-muted-foreground">
+                      لا توجد خدمات تصوير متاحة حالياً.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        );
+      case 8:
+        return (
           <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
             <div className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="font-bold">معاينة المجموعة</h2><span className="text-xs text-muted-foreground">معاينة طالب ممثل</span></div>
+              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <h2 className="font-bold">معاينة المجموعة</h2>
+                <span className="text-xs text-muted-foreground">
+                  معاينة طالب ممثل
+                </span>
+              </div>
               <div className="flex aspect-[4/3] items-center justify-center bg-muted/40 p-5">
-                {form.defaultDesign || selectedStyle?.imageUrl ? <img src={form.defaultDesign || selectedStyle?.imageUrl || ""} alt="معاينة تجهيزات المجموعة" className="h-full w-full object-contain" /> : <div className="text-center"><Shirt className="mx-auto h-20 w-20 text-primary" style={{ color: form.colors.robe }} /><p className="mt-4 text-sm text-muted-foreground">اختر نوع الروب أو ارفع التصميم الافتراضي لإظهار المعاينة.</p></div>}
+                {form.defaultDesign || selectedStyle?.imageUrl ? (
+                  <img
+                    src={form.defaultDesign || selectedStyle?.imageUrl || ""}
+                    alt="معاينة تجهيزات المجموعة"
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <div className="text-center">
+                    <Shirt
+                      className="mx-auto h-20 w-20 text-primary"
+                      style={{ color: form.colors.robe }}
+                    />
+                    <p className="mt-4 text-sm text-muted-foreground">
+                      اختر نوع الروب أو ارفع التصميم المرجعي لإظهار المعاينة.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
-            <aside className="rounded-xl border border-border bg-card p-4"><h2 className="font-bold">تفاصيل المعاينة</h2><div className="mt-4 space-y-3 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">الروب</span><b>{selectedStyle?.name || "—"}</b></div><div className="flex justify-between"><span className="text-muted-foreground">القماش</span><b>{config.fabrics.find((item) => item.key === form.fabricKey)?.name || "—"}</b></div><div className="flex justify-between"><span className="text-muted-foreground">الطلبة</span><b>{form.expectedStudentCount}</b></div></div></aside>
+            <aside className="rounded-xl border border-border bg-card p-4">
+              <h2 className="font-bold">كل الاختيارات</h2>
+              <div className="mt-4 space-y-3 text-sm">
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">الروب</span>
+                  <b>{selectedStyle?.name || "—"}</b>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">القماش</span>
+                  <b>{selectedFabric?.name || "—"}</b>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">الشعار</span>
+                  <b>
+                    {form.decorationType === "printing"
+                      ? "طباعة"
+                      : form.decorationType === "embroidery"
+                        ? "تطريز"
+                        : "بدون"}
+                  </b>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">الإكسسوارات</span>
+                  <b>
+                    {selectedAccessories.map((item) => item.name).join("، ") ||
+                      "—"}
+                  </b>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">
+                    الخدمات الإضافية
+                  </span>
+                  <b>
+                    {form.extras.flowers.length +
+                      (form.extras.photography ? 1 : 0)}
+                  </b>
+                </div>
+              </div>
+            </aside>
           </section>
-        ) : null}
+        );
+      case 9:
+        return (
+          <section className="rounded-xl border border-border bg-card p-5">
+            <h2 className="font-bold">ملخص السعر للمجموعة</h2>
+            <div className="mt-4 divide-y divide-border rounded-xl border border-border">
+              <div className="flex justify-between px-4 py-3 text-sm">
+                <span>تجهيز الطالب (الروب، القماش، الباقة والإكسسوارات)</span>
+                <strong>{formatCurrency(unitPrice)}</strong>
+              </div>
+              <div className="flex justify-between px-4 py-3 text-sm">
+                <span>عدد الطلبة</span>
+                <strong>{form.expectedStudentCount}</strong>
+              </div>
+              <div className="flex justify-between px-4 py-3 text-sm">
+                <span>خدمات إضافية للمجموعة</span>
+                <strong>{formatCurrency(extrasTotal)}</strong>
+              </div>
+              <div className="flex justify-between px-4 py-4 text-lg">
+                <strong>الإجمالي التقديري</strong>
+                <strong className="text-primary">
+                  {formatCurrency(groupTotal)}
+                </strong>
+              </div>
+            </div>
+          </section>
+        );
+      case 10:
+        return (
+          <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h2 className="font-bold">تأكيد بيانات المجموعة</h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                عند الإنشاء تُقفل كل الاختيارات السابقة، ويستطيع كل طالب إكمال
+                بياناته وقياساته فقط من الرابط الآمن.
+              </p>
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label>اسم المجموعة</Label>
+                  <Input
+                    className="mt-2"
+                    value={form.title}
+                    onChange={(event) =>
+                      updateText("title", event.target.value)
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>اسم ممثل المجموعة</Label>
+                  <Input
+                    className="mt-2"
+                    value={form.representativeName}
+                    onChange={(event) =>
+                      updateText("representativeName", event.target.value)
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>هاتف ممثل المجموعة</Label>
+                  <Input
+                    className="mt-2"
+                    inputMode="tel"
+                    value={form.representativePhone}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        representativePhone: formatIraqiPhoneInput(
+                          event.target.value,
+                        ),
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>موعد التسليم</Label>
+                  <Input
+                    className="mt-2"
+                    type="date"
+                    value={form.deliveryDate}
+                    onChange={(event) =>
+                      updateText("deliveryDate", event.target.value)
+                    }
+                  />
+                </div>
+              </div>
+              <div className="mt-4">
+                <Label>ملاحظات المجموعة</Label>
+                <Textarea
+                  className="mt-2"
+                  value={form.notes}
+                  onChange={(event) => updateText("notes", event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-5">
+              <p className="text-sm text-muted-foreground">
+                إجمالي المجموعة التقديري
+              </p>
+              <strong className="mt-1 block text-2xl text-primary">
+                {formatCurrency(groupTotal)}
+              </strong>
+              <Button
+                className="mt-5 w-full"
+                size="lg"
+                disabled={!valid || create.isPending}
+                onClick={() => create.mutate()}
+              >
+                {create.isPending ? (
+                  <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Users className="ml-2 h-4 w-4" />
+                )}
+                إنشاء المجموعة وقفل القالب
+              </Button>
+            </div>
+          </section>
+        );
+      default:
+        return null;
+    }
+  };
+  return (
+    <main
+      className="min-h-dvh bg-background pb-24"
+      dir="rtl"
+      style={GRADUATION_THEME_STYLE}
+    >
+      <GraduationStepRail current={step} onStepChange={setStep} />
+      <div className="container mx-auto max-w-[1500px] space-y-5 px-3 py-5 sm:px-5">
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-primary">طلب تخرج جماعي</p>
+            <h1 className="mt-1 text-2xl font-bold">
+              إنشاء المجموعة والإعدادات المشتركة
+            </h1>
+          </div>
+          <Button variant="outline" onClick={onBack}>
+            <ArrowRight className="ml-2 h-4 w-4" />
+            رجوع
+          </Button>
+        </header>
 
-        {step === 9 ? (
-          <section className="rounded-xl border border-border bg-card p-5"><h2 className="font-bold">ملخص السعر للمجموعة</h2><div className="mt-4 divide-y divide-border rounded-xl border border-border"><div className="flex justify-between px-4 py-3 text-sm"><span>سعر تجهيز الطالب</span><strong>{formatCurrency(unitPrice)}</strong></div><div className="flex justify-between px-4 py-3 text-sm"><span>عدد الطلبة</span><strong>{form.expectedStudentCount}</strong></div><div className="flex justify-between px-4 py-4 text-lg"><strong>الإجمالي التقديري</strong><strong className="text-primary">{formatCurrency(groupTotal)}</strong></div></div></section>
-        ) : null}
-
-        {step === 10 ? (
-          <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]"><div className="rounded-xl border border-border bg-card p-5"><h2 className="font-bold">تأكيد إعدادات المجموعة</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">سيتم قفل الإعدادات المشتركة عند إنشاء المجموعة، ثم يستطيع كل طالب إكمال بياناته وقياساته الخاصة من الرابط الآمن.</p></div><div className="rounded-xl border border-primary/30 bg-primary/5 p-5"><p className="text-sm text-muted-foreground">إجمالي المجموعة التقديري</p><strong className="mt-1 block text-2xl text-primary">{formatCurrency(groupTotal)}</strong><Button className="mt-5 w-full" size="lg" disabled={!valid || create.isPending} onClick={() => create.mutate()}>{create.isPending ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Users className="ml-2 h-4 w-4" />}إنشاء المجموعة وقفل القالب</Button></div></section>
-        ) : null}
+        {renderCurrentStep()}
 
         <div className="flex items-center justify-between border-t border-border pt-4">
-          <Button variant="outline" onClick={previous} disabled={step === 0}><ArrowRight className="ml-2 h-4 w-4" />السابق</Button>
-          {step < GRADUATION_STEPS.length - 1 ? <Button onClick={next}>التالي<ArrowLeft className="mr-2 h-4 w-4" /></Button> : null}
-        </div>
-
-        <div className={step === 10 ? "hidden" : "hidden"}>
-          <Button
-            size="lg"
-            disabled={!valid || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            {create.isPending ? (
-              <Loader2 className="ml-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Users className="ml-2 h-4 w-4" />
-            )}
-            إنشاء المجموعة وقفل القالب
+          <Button variant="outline" onClick={previous} disabled={step === 0}>
+            <ArrowRight className="ml-2 h-4 w-4" />
+            السابق
           </Button>
+          {step < GRADUATION_STEPS.length - 1 ? (
+            <Button onClick={next}>
+              التالي
+              <ArrowLeft className="mr-2 h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       </div>
     </main>
@@ -947,7 +1400,8 @@ export function GraduationGroupStudentRegistration({
                 const raw = (form.measurements as any)[key];
                 const num = Number(raw);
                 const invalid =
-                  String(raw).trim() !== "" && (Number.isNaN(num) || num < min || num > max);
+                  String(raw).trim() !== "" &&
+                  (Number.isNaN(num) || num < min || num > max);
                 return (
                   <div key={key}>
                     <Label>{label}</Label>

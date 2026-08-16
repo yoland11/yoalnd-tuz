@@ -36,6 +36,7 @@
     "test:kosha-operations": "node ./scripts/verify-kosha-operations.mjs",
     "test:graduation-center": "node ./scripts/verify-graduation-order-center.mjs",
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
+    "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",
     "test:production-safety": "node ./scripts/run-production-safety-tests.mjs",
