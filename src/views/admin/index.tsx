@@ -33,6 +33,7 @@ const AdminKoshaBookingsPage = lazy(() =>
 const KoshatTasksPage = lazy(() => import("./koshat-tasks"));
 const KoshaCollectionsPage = lazy(() => import("./kosha-collections"));
 const ProductsPage = lazy(() => import("./products"));
+const ProductLookupPage = lazy(() => import("./product-lookup"));
 const ProductBundlesPage = lazy(() => import("./product-bundles"));
 const BouquetDesignerAdminPage = lazy(() => import("./bouquet-designer"));
 const CategoriesPage = lazy(() => import("./categories"));
@@ -510,6 +511,13 @@ export default function Admin() {
             {() => (
               <Guard me={me} perm="products">
                 <ProductsPage />
+              </Guard>
+            )}
+          </Route>
+          <Route path="/admin/products-lookup">
+            {() => (
+              <Guard me={me} anyPerm={["products", "invoices", "accounting"]}>
+                <ProductLookupPage />
               </Guard>
             )}
           </Route>

@@ -8422,6 +8422,7 @@ async function ensureAdminProductsColumns(): Promise<void> {
 let rentalProductsTablesPromise: Promise<void> | null = null;
 async function ensureRentalProductsTables(): Promise<void> {
   await ensureAdminProductsColumns();
+  await ensureVariantTables();
   if (!rentalProductsTablesPromise) {
     rentalProductsTablesPromise = db
       .execute(sql`select 1`)
@@ -32704,6 +32705,92 @@ function normalizeScannedServerCode(raw: string): string {
   return v.trim();
 }
 
+/** Read-only, permission-aware product lookup for the standalone staff page. */
+async function handleProductLookup(
+  req: NextRequest,
+  _parts: string[],
+  section: string | undefined,
+) {
+  if (section !== "product-lookup" || req.method !== "GET") return null;
+  const auth = await requireAnyPermission(req, [
+    "products",
+    "invoices",
+    "accounting",
+  ]);
+  if (isResponse(auth)) return auth;
+  await ensureAdminProductsColumns();
+
+  const query = String(req.nextUrl.searchParams.get("q") ?? "").trim().slice(0, 100);
+  if (!query) return json({ data: [] });
+  const likeQuery = `%${query}%`;
+  const matchingVariantRows: any = await db.execute(sql`
+    select distinct product_id from product_variants
+    where sku ilike ${likeQuery} or barcode ilike ${likeQuery}
+    limit 60
+  `);
+  const variantProductIds = (matchingVariantRows.rows ?? [])
+    .map((row: any) => Number(row.product_id))
+    .filter(Number.isFinite);
+  const conditions = [
+    isNull(productsTable.archivedAt),
+    or(
+      ilike(productsTable.nameAr, likeQuery),
+      ilike(productsTable.name, likeQuery),
+      ilike(productsTable.nameKu, likeQuery),
+      ilike(productsTable.nameTr, likeQuery),
+      ilike(productsTable.barcode, likeQuery),
+      ilike(productsTable.category, likeQuery),
+      /^\d+$/.test(query) ? eq(productsTable.id, Number(query)) : sql`false`,
+      variantProductIds.length ? inArray(productsTable.id, variantProductIds) : sql`false`,
+    ),
+  ];
+  const products = await db.query.productsTable.findMany({
+    where: and(...conditions),
+    orderBy: [asc(productsTable.nameAr), asc(productsTable.id)],
+    limit: 60,
+  });
+  const productIds = products.map((product) => product.id);
+  const stockRows = productIds.length
+    ? await db
+      .select({
+        productId: warehouseStockTable.productId,
+        warehouse: warehousesTable.name,
+        quantity: warehouseStockTable.quantity,
+      })
+      .from(warehouseStockTable)
+      .innerJoin(
+        warehousesTable,
+        eq(warehouseStockTable.warehouseId, warehousesTable.id),
+      )
+      .where(inArray(warehouseStockTable.productId, productIds))
+    : [];
+  const locations = new Map<number, Array<{ warehouse: string; quantity: number }>>();
+  for (const row of stockRows) {
+    const list = locations.get(row.productId) ?? [];
+    list.push({ warehouse: row.warehouse, quantity: Number(row.quantity ?? 0) });
+    locations.set(row.productId, list);
+  }
+  const canViewCost = auth.role === "admin" || auth.role === "manager" || hasPermission(auth, "accounting");
+  return json({
+    data: products.map((product) => ({
+      id: product.id,
+      name: product.name,
+      nameAr: product.nameAr,
+      description: product.description,
+      descriptionAr: product.descriptionAr,
+      category: product.category ?? product.subcategory ?? null,
+      barcode: product.barcode,
+      code: `AJN-P${String(product.id).padStart(6, "0")}`,
+      price: product.price,
+      ...(canViewCost ? { costPrice: product.costPrice } : {}),
+      stock: product.stock,
+      minStock: product.minStock,
+      images: product.images,
+      locations: locations.get(product.id) ?? [],
+    })),
+  });
+}
+
 /**
  * Unified scanner lookup for the sales & purchase invoice camera/USB scanner.
  * Reuses the existing products, product_variants and asset tables — no new table.
@@ -34674,6 +34761,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 
   if (section === "bouquet-designer")
     return handleBouquetDesignerAdmin(req, parts.slice(2));
+
+  const productLookup = await handleProductLookup(req, parts, section);
+  if (productLookup) return productLookup;
 
   const scanLookup = await handleScanLookup(req, parts, section);
   if (scanLookup) return scanLookup;
