@@ -51,6 +51,7 @@
     "test:public-invoice-qr": "node ./scripts/verify-public-sales-invoice-qr.mjs",
     "test:remote-printing": "node ./scripts/verify-remote-printing.mjs",
     "test:sales-invoice-print-template": "node ./scripts/verify-sales-invoice-print-template.mjs",
+    "test:wedding-invoice-layout": "node ./scripts/verify-wedding-invoice-layout.mjs",
     "test:save-smoke": "node ./scripts/test-save-smoke.mjs",
     "verify:critical": "pnpm run typecheck && pnpm run test:save-smoke && git diff --check"
   },

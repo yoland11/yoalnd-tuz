@@ -163,6 +163,18 @@ check("scanner prevents concurrent duplicate submissions", staffOperations.inclu
 check("no-damage acknowledgement is idempotent", staffApi.includes("where not exists (") && staffApi.includes("status = ${\"none\"}"), true);
 check("PWA never caches staff pages or Next runtime chunks", serviceWorker.includes('url.pathname.startsWith("/staff/")') && serviceWorker.includes('url.pathname.startsWith("/_next/")'), true);
 check("service worker is not registered in development", appShell.includes('process.env.NODE_ENV !== "production"'), true);
+check(
+  "public kosha tracking accepts the readable booking code",
+  staffApi.includes("const isReadableCode = /^AJN-KOSHA-\\d{1,10}$/.test(readableCode);") &&
+    staffApi.includes("eq(koshaBookingsTable.trackingCode, readableCode)"),
+  true,
+);
+check(
+  "public kosha tracking keeps QR-token lookup support",
+  staffApi.includes("const isQrToken = /^[a-f0-9]{32,80}$/i.test(ref);") &&
+    staffApi.includes("eq(qrTokensTable.token, ref)"),
+  true,
+);
 
 // ── Damage report validation ──
 const ok = (draft) => validateDamageReport(draft);

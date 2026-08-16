@@ -13918,23 +13918,33 @@ async function handleKoshas(req: NextRequest, parts: string[]) {
   }
 
   // Public kosha tracking — resolve by readable code (AJN-KOSHA-0001) OR the scanned QR token,
-  // so the customer never types anything. Mirrors order tracking.
+  // so the customer never has to use an implementation-specific QR token.
   if (method === "GET" && parts[1] === "track" && parts[2]) {
     await ensureAdminExtensionsTables();
     const ref = decodeURIComponent(parts[2]).trim();
-    if (!/^[a-f0-9]{32,80}$/i.test(ref))
+    const isQrToken = /^[a-f0-9]{32,80}$/i.test(ref);
+    const readableCode = ref.toUpperCase().replace(/\s+/g, "");
+    const isReadableCode = /^AJN-KOSHA-\d{1,10}$/.test(readableCode);
+    if (!isQrToken && !isReadableCode)
       return error("رمز التتبع غير صالح", 404);
-    const qr = await db.query.qrTokensTable.findFirst({
-      where: and(
-        eq(qrTokensTable.entityType, "kosha_booking"),
-        eq(qrTokensTable.token, ref),
-      ),
-    });
-    const booking = qr
-      ? await db.query.koshaBookingsTable.findFirst({
-          where: eq(koshaBookingsTable.id, qr.entityId),
-        })
-      : null;
+    const booking = isQrToken
+      ? await db.query.qrTokensTable
+          .findFirst({
+            where: and(
+              eq(qrTokensTable.entityType, "kosha_booking"),
+              eq(qrTokensTable.token, ref),
+            ),
+          })
+          .then((qr) =>
+            qr
+              ? db.query.koshaBookingsTable.findFirst({
+                  where: eq(koshaBookingsTable.id, qr.entityId),
+                })
+              : null,
+          )
+      : await db.query.koshaBookingsTable.findFirst({
+          where: eq(koshaBookingsTable.trackingCode, readableCode),
+        });
     if (!booking) return error("لم يتم العثور على الحجز", 404);
     const formatted = await formatKoshaBooking(booking);
     const currentIndex = Math.max(
