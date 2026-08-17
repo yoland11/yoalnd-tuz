@@ -33687,6 +33687,16 @@ async function handleRemotePrintingAdmin(
             copies: result.job.copies,
           },
         );
+        if (!result.duplicate) {
+          void addEntityTimeline({
+            entityType: "sales_invoice",
+            entityId: Number(data?.invoiceId),
+            type: "invoice_print_requested",
+            title: "تم طلب طباعة الفاتورة",
+            actor: erpActorFromAdmin(auth),
+            metadata: { jobId: result.job.id, jobNo: result.job.jobNo, printerId: result.job.printerId },
+          });
+        }
         return json(
           { job: result.job, duplicate: result.duplicate },
           result.duplicate ? 200 : 201,
@@ -47689,6 +47699,8 @@ const invoiceRegisterQuerySchema = z.object({
   status: z.string().trim().max(30).optional(),
   paymentStatus: z.enum(INVOICE_PAYMENT_STATUSES).optional(),
   paymentMethod: z.string().trim().max(30).optional(),
+  employeeId: z.coerce.number().int().positive().optional(),
+  scope: z.enum(["mine"]).optional(),
   branchId: z.coerce.number().int().positive().optional(),
   cashBox: z.string().trim().max(30).optional(),
   reversed: z.enum(["true", "false"]).optional(),
@@ -47732,6 +47744,11 @@ async function invoiceRegisterSummary(
   const [row] = await db
     .select({
       totalInvoices: sql<number>`COUNT(*)::int`,
+      totalSales: sql<string>`COALESCE(SUM(${total}), 0)::text`,
+      collectedTotal: sql<string>`COALESCE(SUM(LEAST(${paid}, ${total})), 0)::text`,
+      averageInvoice: sql<string>`COALESCE(AVG(${total}), 0)::text`,
+      cancelledInvoices: sql<number>`COUNT(*) FILTER (WHERE ${columns.status} = 'cancelled')::int`,
+      refundedInvoices: sql<number>`COUNT(*) FILTER (WHERE ${columns.status} = 'refunded')::int`,
       unpaidTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} = 0), 0)::text`,
       partialTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} > 0 AND ${paid} < ${total}), 0)::text`,
       paidTotal: sql<string>`COALESCE(SUM(${total}) FILTER (WHERE ${paid} > 0 AND ${paid} = ${total}), 0)::text`,
@@ -47746,6 +47763,11 @@ async function invoiceRegisterSummary(
   return (
     row ?? {
       totalInvoices: 0,
+      totalSales: "0",
+      collectedTotal: "0",
+      averageInvoice: "0",
+      cancelledInvoices: 0,
+      refundedInvoices: 0,
       unpaidTotal: "0",
       partialTotal: "0",
       paidTotal: "0",
@@ -47753,6 +47775,66 @@ async function invoiceRegisterSummary(
       remainingTotal: "0",
     }
   );
+}
+
+/**
+ * Branch ownership is intentionally read from the existing generic entity
+ * assignment table.  This avoids a second branch field/table for invoices and
+ * keeps historical MAIN-branch fallback behaviour intact.
+ */
+async function attachSalesInvoiceTracking<T extends Record<string, any>>(
+  invoices: T[],
+) {
+  if (!invoices.length) return invoices;
+  const ids = invoices.map((invoice) => Number(invoice.id)).filter(Boolean);
+  const assignments = await db
+    .select({ entityId: branchEntityAssignmentsTable.entityId, branchId: enterpriseBranchesTable.id, branchName: enterpriseBranchesTable.name, branchCode: enterpriseBranchesTable.code })
+    .from(branchEntityAssignmentsTable)
+    .leftJoin(enterpriseBranchesTable, eq(branchEntityAssignmentsTable.branchId, enterpriseBranchesTable.id))
+    .where(and(eq(branchEntityAssignmentsTable.entityType, "sales_invoice"), inArray(branchEntityAssignmentsTable.entityId, ids)));
+  const byInvoice = new Map(assignments.map((row) => [Number(row.entityId), row]));
+  return invoices.map((invoice) => {
+    const branch = byInvoice.get(Number(invoice.id));
+    return {
+      ...invoice,
+      branchId: branch?.branchId ?? null,
+      branchName: branch?.branchName ?? "الرئيسي",
+      branchCode: branch?.branchCode ?? "MAIN",
+    };
+  });
+}
+
+async function resolveSalesInvoiceBranchId(tx: any, user: AdminUser) {
+  const profile = await tx.query.employeeApprovalPermissionsTable.findFirst({
+    where: and(eq(employeeApprovalPermissionsTable.staffId, user.id), eq(employeeApprovalPermissionsTable.isActive, true)),
+  });
+  const allowed = Array.isArray(profile?.allowedBranchIds)
+    ? profile.allowedBranchIds.map(Number).filter((value: number) => Number.isInteger(value) && value > 0)
+    : [];
+  if (allowed.length) {
+    const [branch] = await tx.select({ id: enterpriseBranchesTable.id }).from(enterpriseBranchesTable)
+      .where(and(inArray(enterpriseBranchesTable.id, allowed), eq(enterpriseBranchesTable.isActive, true))).limit(1);
+    if (branch) return branch.id;
+  }
+  const [main] = await tx.select({ id: enterpriseBranchesTable.id }).from(enterpriseBranchesTable)
+    .where(eq(enterpriseBranchesTable.isActive, true))
+    .orderBy(sql`CASE WHEN ${enterpriseBranchesTable.code} = 'MAIN' THEN 0 ELSE 1 END`, asc(enterpriseBranchesTable.id))
+    .limit(1);
+  return main?.id ?? null;
+}
+
+async function canAccessSalesInvoice(user: AdminUser, invoice: any) {
+  if (user.role === "admin") return true;
+  if (user.role === "employee") return Number(invoice.createdBy) === user.id;
+  if (user.role !== "manager") return true;
+  if (!invoice.createdBy) return true; // safe visibility for valid legacy records
+  const result: any = await db.execute(sql`
+    SELECT creator.department = manager.department AS allowed
+    FROM staff creator JOIN staff manager ON manager.id = ${user.id}
+    WHERE creator.id = ${Number(invoice.createdBy)}
+    LIMIT 1
+  `);
+  return Boolean((result.rows ?? result ?? [])[0]?.allowed);
 }
 
 /**
@@ -48777,6 +48859,8 @@ async function handleSalesInvoices(
       status,
       paymentStatus,
       paymentMethod,
+      employeeId,
+      scope,
       branchId,
       cashBox,
       limit: limitQ,
@@ -48791,6 +48875,23 @@ async function handleSalesInvoices(
     if (status) baseConds.push(eq(salesInvoicesTable.status, status));
     if (paymentMethod)
       baseConds.push(eq(salesInvoicesTable.paymentMethod, paymentMethod));
+    if (employeeId) baseConds.push(eq(salesInvoicesTable.createdBy, employeeId));
+    if (scope === "mine") baseConds.push(eq(salesInvoicesTable.createdBy, auth.id));
+    // Employees see only their own invoices. Managers see their department's
+    // invoices (plus legacy rows with no newer creator field); administrators
+    // retain the existing full-register access.
+    if (auth.role === "employee") {
+      baseConds.push(eq(salesInvoicesTable.createdBy, auth.id));
+    } else if (auth.role === "manager") {
+      baseConds.push(sql`(
+        ${salesInvoicesTable.createdBy} IS NULL OR EXISTS (
+          SELECT 1 FROM staff invoice_creator
+          JOIN staff current_manager ON current_manager.id = ${auth.id}
+          WHERE invoice_creator.id = ${salesInvoicesTable.createdBy}
+            AND invoice_creator.department = current_manager.department
+        )
+      )`);
+    }
     if (cashBox === "MASTER")
       baseConds.push(eq(salesInvoicesTable.paymentMethod, "cash"));
     if (branchId)
@@ -48892,10 +48993,18 @@ async function handleSalesInvoices(
         conds,
       ),
     ]);
+    const data = await attachSalesInvoiceTracking(rows.map(invoiceRegisterView));
+    const employees = await db
+      .select({ id: staffTable.id, name: staffTable.fullName, username: staffTable.username, role: staffTable.role })
+      .from(staffTable)
+      .where(eq(staffTable.isActive, true))
+      .orderBy(asc(staffTable.fullName))
+      .limit(2_000);
     return json({
-      data: rows.map(invoiceRegisterView),
+      data,
       total: countRow?.c ?? 0,
       summary,
+      filters: { employees: employees.map((employee) => ({ id: employee.id, name: employee.name || employee.username, role: employee.role })) },
       exportTruncated: exportQ === "true" && Number(countRow?.c ?? 0) > 5_000,
     });
   }
@@ -49498,6 +49607,9 @@ async function handleSalesInvoices(
             financeReversed: financialReversalComplete,
             stockApplied: 0,
             stockRestoredAt: now,
+            updatedBy: a.id,
+            updatedByName: a.name,
+            updatedByRole: cancellationAuth.role,
             updatedAt: now,
           } as any)
           .where(eq(salesInvoicesTable.id, id))
@@ -49617,6 +49729,7 @@ async function handleSalesInvoices(
       where: eq(salesInvoicesTable.id, id),
     });
     if (!inv) return error("الفاتورة غير موجودة", 404);
+    if (!(await canAccessSalesInvoice(auth, inv))) return error("لا تملك صلاحية عرض هذه الفاتورة", 403);
     const items = await db
       .select()
       .from(salesInvoiceItemsTable)
@@ -49627,13 +49740,40 @@ async function handleSalesInvoices(
     const delivery = deliveryRow
       ? formatDeliveryDetail(deliveryRow.detail, deliveryRow.order)
       : null;
+    const [tracked] = await attachSalesInvoiceTracking([inv as any]);
     return json({
-      ...inv,
+      ...tracked,
       items,
       qr,
       delivery,
       lastPayment: lastPayments.get(id) ?? null,
     });
+  }
+
+  if (method === "POST" && id && parts[3] === "print-audit") {
+    const printAuth = await requireSalesInvoicePrintPermission(req);
+    if (isResponse(printAuth)) return printAuth;
+    const invoice = await db.query.salesInvoicesTable.findFirst({
+      where: eq(salesInvoicesTable.id, id),
+    });
+    if (!invoice) return error("الفاتورة غير موجودة", 404);
+    if (!(await canAccessSalesInvoice(printAuth, invoice))) return error("لا تملك صلاحية طباعة هذه الفاتورة", 403);
+    const payload = await body(req);
+    const paperSize = String(payload?.paperSize ?? "local").slice(0, 30);
+    void logAdminActivity(req, "sales_invoice_printed", "sales_invoice", id, {
+      invoiceNo: invoice.invoiceNo,
+      paperSize,
+      channel: "local_browser",
+    });
+    void addEntityTimeline({
+      entityType: "sales_invoice",
+      entityId: id,
+      type: "invoice_printed",
+      title: "تمت طباعة الفاتورة",
+      actor: erpActorFromAdmin(printAuth),
+      metadata: { invoiceNo: invoice.invoiceNo, paperSize, channel: "local_browser" },
+    });
+    return json({ ok: true });
   }
 
   if (method === "POST") {
@@ -49800,6 +49940,10 @@ async function handleSalesInvoices(
             notes: b.notes ?? null,
             createdBy: a.id,
             createdByName: a.name,
+            createdByRole: auth.role,
+            updatedBy: a.id,
+            updatedByName: a.name,
+            updatedByRole: auth.role,
           } as any)
           .onConflictDoNothing({
             target: salesInvoicesTable.idempotencyKey,
@@ -49831,6 +49975,16 @@ async function handleSalesInvoices(
         }
 
         const invoiceNo = inv.invoiceNo;
+        const branchId = await resolveSalesInvoiceBranchId(tx, auth);
+        if (branchId) {
+          await tx.insert(branchEntityAssignmentsTable).values({
+            branchId,
+            entityType: "sales_invoice",
+            entityId: inv.id,
+          }).onConflictDoNothing({
+            target: [branchEntityAssignmentsTable.entityType, branchEntityAssignmentsTable.entityId],
+          });
+        }
         let insertedItems: any[] = [];
 
         if (items.length > 0) {
@@ -49975,6 +50129,7 @@ async function handleSalesInvoices(
           invoiceNo,
           deliveryResult,
           items: insertedItems ?? [],
+          branchId,
           replayed: false,
         };
       });
@@ -50078,8 +50233,18 @@ async function handleSalesInvoices(
         "sales_invoice_created",
         "sales_invoice",
         inv.id,
-        { invoiceNo, itemCount: finalItems.length },
+        { invoiceNo, itemCount: finalItems.length, branchId: saved.branchId ?? null },
       );
+    if (final && !replayed) {
+      void addEntityTimeline({
+        entityType: "sales_invoice",
+        entityId: final.id,
+        type: "invoice_created",
+        title: "تم إنشاء الفاتورة",
+        actor: erpActorFromAdmin(auth),
+        metadata: { invoiceNo: final.invoiceNo, branchId: saved.branchId ?? null },
+      });
+    }
     if (final && !replayed) {
       void notifyTelegramInvoice({
         id: final.id,
@@ -50106,7 +50271,7 @@ async function handleSalesInvoices(
       : null;
     return json(
       {
-        ...final,
+        ...(final ? (await attachSalesInvoiceTracking([final]))[0] : final),
         qr,
         items: finalItems,
         financialTransaction,
@@ -50128,6 +50293,7 @@ async function handleSalesInvoices(
       where: eq(salesInvoicesTable.id, id),
     });
     if (!existing) return error("الفاتورة غير موجودة", 404);
+    if (!(await canAccessSalesInvoice(auth, existing))) return error("لا تملك صلاحية تعديل هذه الفاتورة", 403);
     if ((existing as any).financiallyReversed)
       return error(
         "هذه الفاتورة تم عكس أثرها المالي — للعرض والتدقيق فقط، ولا يمكن تعديلها أو إضافة دفعات أو تحصيل",
@@ -50214,6 +50380,9 @@ async function handleSalesInvoices(
               ? 1
               : 0
             : existing.isInternal,
+        updatedBy: a.id,
+        updatedByName: a.name,
+        updatedByRole: auth.role,
         updatedAt: new Date(),
       } as any)
       .where(eq(salesInvoicesTable.id, id));
@@ -50318,6 +50487,16 @@ async function handleSalesInvoices(
         : 0,
     });
     if (final) {
+      void addEntityTimeline({
+        entityType: "sales_invoice",
+        entityId: final.id,
+        type: "invoice_modified",
+        title: "تم تعديل الفاتورة",
+        actor: erpActorFromAdmin(auth),
+        metadata: { invoiceNo: final.invoiceNo, changedFields: Object.keys(b ?? {}) },
+      });
+    }
+    if (final) {
       void notifyTelegramOrderEdited({
         kind: "store",
         id: final.id,
@@ -50349,7 +50528,7 @@ async function handleSalesInvoices(
       });
     }
     return json({
-      ...final,
+      ...(final ? (await attachSalesInvoiceTracking([final]))[0] : final),
       items: finalItems,
       qr,
       financialTransaction,
@@ -52063,6 +52242,9 @@ async function handleReports(
           COALESCE(NULLIF(si.created_by_name, ''), 'غير محدد') AS staff_name,
           COUNT(*)::int AS invoice_count,
           SUM(si.total)::text AS total_revenue,
+          SUM(LEAST(COALESCE(si.paid_amount::numeric, 0), COALESCE(si.total::numeric, 0)))::text AS collected_amount,
+          SUM(GREATEST(COALESCE(si.total::numeric, 0) - COALESCE(si.paid_amount::numeric, 0), 0))::text AS outstanding_amount,
+          AVG(si.total)::text AS average_invoice,
           SUM(item_profit.profit)::text AS profit
         FROM sales_invoices si
         LEFT JOIN LATERAL (

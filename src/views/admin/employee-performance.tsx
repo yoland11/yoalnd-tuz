@@ -24,6 +24,8 @@ type Details = {
   errorEvents: number; negativeReviews: number;
   brokenAssets: number; lostAssets: number; repairCost: number;
   jobsCompleted: number; revenue: number; salesRevenue: number; avgPerJob: number;
+  invoicesCreated: number; salesCollected: number; salesOutstanding: number; averageInvoice: number;
+  highestInvoice: number; cancelledInvoices: number; todaySales: number; monthlySales: number; lastInvoiceActivity: string | null;
   reviewsCount: number; avgRating: number; positiveReviews: number; recommendRate: number;
 };
 type EmployeeScore = {
@@ -251,6 +253,13 @@ function ProfilePanel({ staffId, isManager, levelLabels }: { staffId: number; is
   const d = p.details;
 
   const metrics: Array<[string, string]> = [
+    ["الفواتير المنشأة", String(d.invoicesCreated)],
+    ["إجمالي المبيعات", formatCurrency(d.salesRevenue)],
+    ["المبالغ المحصّلة", formatCurrency(d.salesCollected)],
+    ["الرصيد المتبقي", formatCurrency(d.salesOutstanding)],
+    ["متوسط / أعلى فاتورة", `${formatCurrency(d.averageInvoice)} / ${formatCurrency(d.highestInvoice)}`],
+    ["مبيعات اليوم / الشهر", `${formatCurrency(d.todaySales)} / ${formatCurrency(d.monthlySales)}`],
+    ["الفواتير الملغاة", String(d.cancelledInvoices)],
     ["المهام المسندة", String(d.tasksAssigned)],
     ["المهام المنجزة", String(d.tasksCompleted)],
     ["المهام المتأخرة/الفائتة", String(d.tasksMissed)],

@@ -92,6 +92,12 @@ export const salesInvoicesTable = pgTable("sales_invoices", {
   notes: text("notes"),
   createdBy: integer("created_by").references(() => staffTable.id),
   createdByName: text("created_by_name").notNull().default(""),
+  // Identity snapshots keep financial attribution intelligible even if a staff
+  // member is later renamed or their role changes.
+  createdByRole: varchar("created_by_role", { length: 30 }).notNull().default(""),
+  updatedBy: integer("updated_by").references(() => staffTable.id),
+  updatedByName: text("updated_by_name").notNull().default(""),
+  updatedByRole: varchar("updated_by_role", { length: 30 }).notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

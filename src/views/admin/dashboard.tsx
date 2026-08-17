@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle, Bell, CalendarDays, CreditCard, ShoppingBag, DollarSign, Package, Users, Clock, XCircle, Truck, Sparkles,
   CalendarPlus, FileText, ImagePlus, MessageCircle, PlusCircle, UserCheck, Activity, WalletCards,
+  Trophy,
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -67,6 +68,8 @@ type DashboardData = {
 type RecentOrder = {
   id: number; trackingCode: string; customerName: string; status: string; total: number; createdAt: string;
 };
+type EmployeeSalesSnapshot = { staffId: number; name: string; details: { salesRevenue: number; invoicesCreated: number; salesOutstanding: number; todaySales: number; monthlySales: number } };
+type EmployeePerformanceSnapshot = { employees: EmployeeSalesSnapshot[] };
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "قيد الانتظار", confirmed: "مؤكد", processing: "قيد التجهيز",
@@ -126,6 +129,15 @@ export default function DashboardPage() {
     refetchOnWindowFocus: false,
     staleTime: 30000,
   });
+  // Reuse the employee-performance aggregation; dashboard cards never issue
+  // their own invoice totals query.
+  const { data: employeePerformance } = useQuery({
+    queryKey: ["admin", "employee-performance", "dashboard-sales"],
+    queryFn: () => adminFetch<EmployeePerformanceSnapshot>("/admin/employee-performance"),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+  });
 
   if (isLoading || !data) {
     return (
@@ -179,6 +191,10 @@ export default function DashboardPage() {
     { label: "حجوزات غير مسددة", value: fmtNum(data.receivables?.unpaidBookings ?? 0), icon: CalendarDays, color: "text-status-warning", href: "/admin/orders" },
     { label: "عملاء مدينون", value: fmtNum(data.receivables?.debtorCount ?? 0), icon: Users, color: "text-status-danger", href: "/admin/accounting?tab=receivables" },
   ];
+  const employeeSales = employeePerformance?.employees ?? [];
+  const topEmployee = employeeSales.slice().sort((a, b) => b.details.salesRevenue - a.details.salesRevenue)[0];
+  const mostInvoicesEmployee = employeeSales.slice().sort((a, b) => b.details.invoicesCreated - a.details.invoicesCreated)[0];
+  const employeeOutstanding = employeeSales.reduce((sum, employee) => sum + Number(employee.details.salesOutstanding || 0), 0);
 
   const pieData = data.statusBreakdown.map(s => ({
     name: STATUS_LABELS[s.status] ?? s.status,
@@ -268,6 +284,18 @@ export default function DashboardPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section>
+        <SectionHeader icon={Trophy} title="أداء المبيعات" hint="حسب منشئ الفاتورة" />
+        <KpiGrid cards={[
+          { label: "أفضل موظف مبيعات", value: topEmployee?.name ?? "—", icon: Trophy, color: "text-primary", href: "/admin/employee-performance" },
+          { label: "أعلى مبيعات", value: formatCurrency(topEmployee?.details.salesRevenue ?? 0), icon: DollarSign, color: "text-status-success", href: "/admin/employee-performance" },
+          { label: "أكثر فواتير", value: mostInvoicesEmployee ? `${mostInvoicesEmployee.name} · ${fmtNum(mostInvoicesEmployee.details.invoicesCreated)}` : "—", icon: FileText, color: "text-primary", href: "/admin/employee-performance" },
+          { label: "متبقي حسب الموظف", value: formatCurrency(employeeOutstanding), icon: WalletCards, color: "text-status-warning", href: "/admin/sales" },
+          { label: "مبيعات الموظفين اليوم", value: formatCurrency(employeeSales.reduce((sum, employee) => sum + Number(employee.details.todaySales || 0), 0)), icon: CalendarDays, color: "text-status-success", href: "/admin/employee-performance" },
+          { label: "مبيعات الموظفين للشهر", value: formatCurrency(employeeSales.reduce((sum, employee) => sum + Number(employee.details.monthlySales || 0), 0)), icon: Activity, color: "text-primary", href: "/admin/employee-performance" },
+        ]} />
       </section>
 
       <section className="rounded-xl border border-border/30 bg-card p-5">

@@ -72,6 +72,15 @@ export type EmployeeDetails = {
   revenue: number;
   salesRevenue: number;
   avgPerJob: number;
+  invoicesCreated: number;
+  salesCollected: number;
+  salesOutstanding: number;
+  averageInvoice: number;
+  highestInvoice: number;
+  cancelledInvoices: number;
+  todaySales: number;
+  monthlySales: number;
+  lastInvoiceActivity: string | null;
   // satisfaction
   reviewsCount: number;
   avgRating: number;
@@ -182,7 +191,7 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
   const to = range.to;
   const toPlus = `${to} 23:59:59`;
 
-  const [staffR, tasksR, attR, finR, revR, dmgR, actR] = await Promise.all([
+  const [staffR, tasksR, attR, finR, salesR, revR, dmgR, actR] = await Promise.all([
     db.execute(sql`select id, full_name, username, role, permissions from staff where is_active = true order by id`),
     db.execute(sql`
       select sid::int as staff_id,
@@ -212,6 +221,22 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
       where approval_status = 'executed' and direction = 'revenue' and requested_by is not null
         and transaction_date >= ${from} and transaction_date <= ${to}
       group by requested_by, department
+    `),
+    db.execute(sql`
+      select created_by as staff_id,
+        count(*)::int as invoices_created,
+        coalesce(sum(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as sales_revenue,
+        coalesce(sum(least(paid_amount::numeric, total::numeric)) filter (where status = 'active' and financially_reversed = false),0)::float as sales_collected,
+        coalesce(sum(greatest(total::numeric - paid_amount::numeric, 0)) filter (where status = 'active' and financially_reversed = false),0)::float as sales_outstanding,
+        coalesce(avg(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as average_invoice,
+        coalesce(max(total::numeric) filter (where status = 'active' and financially_reversed = false),0)::float as highest_invoice,
+        count(*) filter (where status = 'cancelled')::int as cancelled_invoices,
+        coalesce(sum(total::numeric) filter (where status = 'active' and financially_reversed = false and date = current_date),0)::float as today_sales,
+        coalesce(sum(total::numeric) filter (where status = 'active' and financially_reversed = false and date_trunc('month', date::timestamp) = date_trunc('month', current_date::timestamp)),0)::float as monthly_sales,
+        max(updated_at) as last_invoice_activity
+      from sales_invoices
+      where created_by is not null and date >= ${from} and date <= ${to}
+      group by created_by
     `),
     db.execute(sql`
       select staff_id, count(*)::int as cnt, coalesce(avg(rating),0)::float as avg_rating,
@@ -250,6 +275,7 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
   const tasksBy = new Map<number, any>(rows(tasksR).map((r) => [Number(r.staff_id), r]));
   const attBy = new Map<number, any>(rows(attR).map((r) => [Number(r.staff_id), r]));
   const revBy = new Map<number, any>(rows(revR).map((r) => [Number(r.staff_id), r]));
+  const salesBy = new Map<number, any>(rows(salesR).map((r) => [Number(r.staff_id), r]));
   const dmgBy = new Map<number, any>(rows(dmgR).map((r) => [Number(r.staff_id), r]));
 
   // financial rows are per (staff, department) — fold to per staff.
@@ -283,6 +309,7 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
     const a = attBy.get(id) ?? {};
     const f = finBy.get(id) ?? { revenue: 0, jobs: 0, salesRevenue: 0 };
     const rv = revBy.get(id) ?? {};
+    const sales = salesBy.get(id) ?? {};
     const dm = dmgBy.get(id) ?? {};
 
     const negativeReviews = Number(rv.negative || 0);
@@ -306,8 +333,17 @@ export async function computeEmployeeScores(range: PerfRange = defaultRange()): 
       repairCost: Number(dm.repair_cost || 0),
       jobsCompleted: Number(f.jobs || 0),
       revenue: Number(f.revenue || 0),
-      salesRevenue: Number(f.salesRevenue || 0),
+      salesRevenue: Number(sales.sales_revenue || f.salesRevenue || 0),
       avgPerJob: Number(f.jobs || 0) ? Number(f.revenue || 0) / Number(f.jobs) : 0,
+      invoicesCreated: Number(sales.invoices_created || 0),
+      salesCollected: Number(sales.sales_collected || 0),
+      salesOutstanding: Number(sales.sales_outstanding || 0),
+      averageInvoice: Number(sales.average_invoice || 0),
+      highestInvoice: Number(sales.highest_invoice || 0),
+      cancelledInvoices: Number(sales.cancelled_invoices || 0),
+      todaySales: Number(sales.today_sales || 0),
+      monthlySales: Number(sales.monthly_sales || 0),
+      lastInvoiceActivity: sales.last_invoice_activity ? String(sales.last_invoice_activity) : null,
       reviewsCount: Number(rv.cnt || 0),
       avgRating: Number(rv.avg_rating || 0),
       positiveReviews: Number(rv.positive || 0),

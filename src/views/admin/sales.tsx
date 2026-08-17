@@ -68,6 +68,8 @@ type SalesInvoice = {
   subtotal: string; discountAmount: string; taxAmount: string; offerDeliveryFee?: string; total: string;
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
+  createdByRole?: string; updatedByName?: string; updatedByRole?: string; updatedAt?: string;
+  branchId?: number | null; branchName?: string | null; branchCode?: string | null;
   financiallyReversed?: boolean;
   cancelledAt?: string | null; cancelledByName?: string | null; cancellationReason?: string | null;
   cancelledOriginalPaidAmount?: string | null;
@@ -96,6 +98,7 @@ type InvoiceRegisterResponse = {
   invoices?: SalesInvoice[];
   total?: number;
   summary?: InvoiceRegisterSummary;
+  filters?: { employees: Array<{ id: number; name: string; role: string }> };
 };
 
 type PrinterSettings = {
@@ -300,6 +303,8 @@ export default function SalesPage() {
   const [listStatus, setListStatus] = useState("");
   const [listBranchId, setListBranchId] = useState("");
   const [listCashBox, setListCashBox] = useState("");
+  const [listEmployeeId, setListEmployeeId] = useState("");
+  const [listScope, setListScope] = useState<"" | "mine">("");
   const [listSearch, setListSearch] = useState("");
   const deferredListSearch = useDeferredValue(listSearch.trim());
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<number | null>(null);
@@ -354,7 +359,7 @@ export default function SalesPage() {
 
   // Invoices list
   const { data: invoicesList, isLoading: invoicesLoading, isError: invoicesError, error: invoicesLoadError, isFetching: invoicesFetching, refetch: refetchInvoices } = useQuery<InvoiceRegisterResponse>({
-    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, deferredListSearch],
+    queryKey: ["admin", "sales-invoices", listPage, listFrom, listTo, listReversed, listPaymentStatus, listPaymentMethod, listStatus, listBranchId, listCashBox, listEmployeeId, listScope, deferredListSearch],
     queryFn: () => {
       const params = new URLSearchParams({ limit: "20", offset: String((listPage - 1) * 20) });
       if (listFrom) params.set("from", listFrom);
@@ -365,6 +370,8 @@ export default function SalesPage() {
       if (listStatus) params.set("status", listStatus);
       if (listBranchId) params.set("branchId", listBranchId);
       if (listCashBox) params.set("cashBox", listCashBox);
+      if (listEmployeeId) params.set("employeeId", listEmployeeId);
+      if (listScope) params.set("scope", listScope);
       if (deferredListSearch) params.set("search", deferredListSearch);
       return adminFetch<InvoiceRegisterResponse>(
         `/admin/sales-invoices?${params}`,
@@ -759,8 +766,11 @@ export default function SalesPage() {
           paymentMethod={listPaymentMethod} onPaymentMethod={setListPaymentMethod}
           invoiceStatus={listStatus} onInvoiceStatus={setListStatus}
           branchId={listBranchId} onBranchId={setListBranchId}
+          employeeId={listEmployeeId} onEmployeeId={setListEmployeeId}
+          scope={listScope} onScope={setListScope}
           cashBox={listCashBox} onCashBox={setListCashBox}
           options={registerOptions}
+          employees={invoicesList?.filters?.employees ?? []}
           search={listSearch} onSearch={setListSearch}
           onBack={() => setListMode(false)}
           onOpen={setSelectedInvoiceId}
@@ -1265,7 +1275,7 @@ export default function SalesPage() {
 function InvoiceListView({
   invoices, total, summary, page, onPage, from, to, onFrom, onTo, reversed, onReversed,
   paymentStatus, onPaymentStatus, paymentMethod, onPaymentMethod, invoiceStatus, onInvoiceStatus,
-  branchId, onBranchId, cashBox, onCashBox, options, search, onSearch, onBack, onOpen,
+  branchId, onBranchId, employeeId, onEmployeeId, scope, onScope, cashBox, onCashBox, options, employees, search, onSearch, onBack, onOpen,
   loading, error, refreshing, onRefresh,
 }: {
   invoices: SalesInvoice[]; total: number; page: number; onPage: (p: number) => void;
@@ -1276,8 +1286,11 @@ function InvoiceListView({
   paymentMethod: string; onPaymentMethod: (v: string) => void;
   invoiceStatus: string; onInvoiceStatus: (v: string) => void;
   branchId: string; onBranchId: (v: string) => void;
+  employeeId: string; onEmployeeId: (v: string) => void;
+  scope: "" | "mine"; onScope: (v: "" | "mine") => void;
   cashBox: string; onCashBox: (v: string) => void;
   options?: InvoiceRegisterOptions;
+  employees: Array<{ id: number; name: string; role: string }>;
   search: string; onSearch: (v: string) => void;
   onBack: () => void; onOpen: (id: number) => void;
   loading: boolean; error: unknown; refreshing: boolean; onRefresh: () => void;
@@ -1369,6 +1382,19 @@ function InvoiceListView({
       <InvoiceRegisterSummaryCards summary={summary} loading={loading} />
       {/* Filters */}
       <div className="flex flex-wrap gap-3 bg-card rounded-xl border border-border/40 p-4">
+        <div className="flex flex-wrap items-end gap-1">
+          <span className="w-full text-xs text-muted-foreground">الفترة</span>
+          {[
+            ["اليوم", 0, 0],
+            ["هذا الأسبوع", 6, 0],
+            ["هذا الشهر", 31, 0],
+          ].map(([label, days]) => <Button key={String(label)} type="button" variant="outline" size="sm" onClick={() => {
+            const end = new Date(); const start = new Date();
+            if (label === "هذا الشهر") start.setDate(1); else start.setDate(start.getDate() - Number(days));
+            const iso = (date: Date) => date.toISOString().slice(0, 10);
+            onFrom(iso(start)); onTo(iso(end)); onPage(1);
+          }}>{label}</Button>)}
+        </div>
         <div className="min-w-[280px] flex-1">
           <label className="text-xs text-muted-foreground mb-1 block">بحث</label>
           <div className="relative">
@@ -1414,6 +1440,19 @@ function InvoiceListView({
             <option value="">الكل</option><option value="active">نشطة</option><option value="draft">مسودة</option><option value="cancelled">ملغاة</option>
           </select>
         </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">👤 الموظف</label>
+          <select value={employeeId} onChange={e => { onEmployeeId(e.target.value); onScope(""); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <option value="">كل الموظفين</option>
+            {employees.map(employee => <option key={employee.id} value={employee.id}>{employee.name} · {employee.role}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground mb-1 block">النطاق</label>
+          <Button type="button" variant={scope === "mine" ? "default" : "outline"} size="sm" onClick={() => { onScope(scope === "mine" ? "" : "mine"); onEmployeeId(""); onPage(1); }}>
+            فواتيري
+          </Button>
+        </div>
         {!!options?.branches?.length && <div>
           <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
           <select value={branchId} onChange={e => { onBranchId(e.target.value); onPage(1); }} className="bg-background border border-border/40 rounded-lg px-3 py-2 text-sm">
@@ -1448,19 +1487,24 @@ function InvoiceListView({
                 <th className="px-4 py-3 text-right">العميل</th>
                 <th className="px-4 py-3 text-right">المورد</th>
                 <th className="px-4 py-3 text-center">الإجمالي</th>
+                <th className="px-4 py-3 text-center">المدفوع</th>
+                <th className="px-4 py-3 text-center">المتبقي</th>
                 <th className="px-4 py-3 text-center">الحالة</th>
                 <th className="px-4 py-3 text-center">الدفع</th>
                 <th className="px-4 py-3 text-center">النوع</th>
+                <th className="px-4 py-3 text-right">أنشأها</th>
+                <th className="px-4 py-3 text-right">الفرع</th>
+                <th className="px-4 py-3 text-right">آخر تعديل</th>
                 <th className="px-4 py-3 text-center">إجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
               {loading
-                ? <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">جارٍ تحميل فواتير المبيعات...</td></tr>
+                ? <tr><td colSpan={14} className="py-10 text-center text-muted-foreground">جارٍ تحميل فواتير المبيعات...</td></tr>
                 : error
                   ? null
                   : invoices.length === 0
-                ? <tr><td colSpan={9} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
+                ? <tr><td colSpan={14} className="text-center py-10 text-muted-foreground">لا توجد فواتير مطابقة.</td></tr>
                 : invoices.map(inv => (
                     <tr key={inv.id} className="hover:bg-muted/10">
                       <td className="px-4 py-3 font-mono text-primary font-medium">{inv.invoiceNo}{inv.financiallyReversed && <span className="mt-1 block w-fit rounded-full bg-status-warning/15 px-2 py-0.5 text-[11px] font-bold text-status-warning">تم عكس الأثر المالي</span>}</td>
@@ -1468,6 +1512,8 @@ function InvoiceListView({
                       <td className="px-4 py-3">{inv.customerName || "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">{inv.supplierName || "—"}</td>
                       <td className="px-4 py-3 text-center font-medium">{formatCurrency(inv.total)}</td>
+                      <td className="px-4 py-3 text-center">{formatCurrency(inv.paidAmount)}</td>
+                      <td className="px-4 py-3 text-center font-medium text-status-warning">{formatCurrency(inv.remainingAmount)}</td>
                       <td className="px-4 py-3 text-center">
                         <StatusBadge status={inv.status} />
                       </td>
@@ -1489,6 +1535,9 @@ function InvoiceListView({
                           : <span className="text-xs bg-muted/30 text-muted-foreground px-2 py-0.5 rounded-full">عادية</span>
                         }
                       </td>
+                      <td className="px-4 py-3 text-right text-xs">{inv.createdByName || "—"}</td>
+                      <td className="px-4 py-3 text-right text-xs">{inv.branchName || "الرئيسي"}</td>
+                      <td className="px-4 py-3 text-right text-xs">{inv.updatedByName || inv.createdByName || "—"}</td>
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-1"><Button variant="ghost" size="sm" onClick={() => onOpen(inv.id)}>
                           تفاصيل
@@ -1909,8 +1958,17 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     }
   }
 
-  function printInvoice() {
+  async function printInvoice() {
     if (!invoice) return;
+    try {
+      await adminFetch(`/admin/sales-invoices/${invoice.id}/print-audit`, {
+        method: "POST",
+        body: JSON.stringify({ paperSize: printSize }),
+      });
+    } catch (cause) {
+      toast({ title: "تعذر تسجيل الطباعة", description: apiErrorMessage(cause), variant: "destructive" });
+      return;
+    }
     const copies = printSize === "a4" ? 1 : Math.min(Math.max(printerSettings?.copies ?? 1, 1), 2);
     try {
       for (let copy = 0; copy < copies; copy += 1) {
@@ -2103,6 +2161,16 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 queryClient.invalidateQueries({ queryKey: ["admin", "sales-invoices"] });
               }}
             />
+            <section className="rounded-xl border border-border/30 bg-card p-4" aria-label="معلومات الموظف">
+              <h3 className="mb-3 text-sm font-semibold text-foreground">معلومات الموظف</h3>
+              <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div><dt className="text-xs text-muted-foreground">أنشأها</dt><dd className="mt-1 font-medium">{invoice.createdByName || "—"}{invoice.createdByRole ? ` · ${invoice.createdByRole}` : ""}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">آخر تعديل بواسطة</dt><dd className="mt-1 font-medium">{invoice.updatedByName || invoice.createdByName || "—"}{invoice.updatedByRole ? ` · ${invoice.updatedByRole}` : ""}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">الفرع</dt><dd className="mt-1 font-medium">{invoice.branchName || "الرئيسي"}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">تاريخ ووقت الإنشاء</dt><dd className="mt-1 font-medium">{invoice.createdAt ? new Date(invoice.createdAt).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" }) : "—"}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">آخر تعديل</dt><dd className="mt-1 font-medium">{invoice.updatedAt ? new Date(invoice.updatedAt).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" }) : "—"}</dd></div>
+              </dl>
+            </section>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="bg-background/40 rounded-xl border border-border/30 p-4 space-y-3">
                 <h3 className="font-semibold text-sm">بيانات العميل</h3>

@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Clock, Gauge, ReceiptText, WalletCards } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock, Gauge, ReceiptText, WalletCards, TrendingUp, CircleDollarSign, Ban } from "lucide-react";
 import { formatCurrency } from "./_lib";
 import {
   INVOICE_PAYMENT_STATUS_LABELS,
@@ -7,6 +7,11 @@ import {
 
 export type InvoiceRegisterSummary = {
   totalInvoices: number;
+  totalSales?: string;
+  collectedTotal?: string;
+  averageInvoice?: string;
+  cancelledInvoices?: number;
+  refundedInvoices?: number;
   unpaidTotal: string;
   partialTotal: string;
   paidTotal: string;
@@ -72,6 +77,24 @@ export function InvoiceRegisterSummaryCards({
       className: "text-primary bg-primary/10",
     },
     {
+      label: "إجمالي المبيعات",
+      value: formatCurrency(summary?.totalSales ?? 0),
+      icon: TrendingUp,
+      className: "text-primary bg-primary/10",
+    },
+    {
+      label: "المحصل",
+      value: formatCurrency(summary?.collectedTotal ?? 0),
+      icon: CircleDollarSign,
+      className: "text-status-success bg-status-success/10",
+    },
+    {
+      label: "متوسط الفاتورة",
+      value: formatCurrency(summary?.averageInvoice ?? 0),
+      icon: ReceiptText,
+      className: "text-muted-foreground bg-muted",
+    },
+    {
       label: "إجمالي غير المدفوع",
       value: formatCurrency(summary?.unpaidTotal ?? 0),
       icon: AlertCircle,
@@ -95,10 +118,16 @@ export function InvoiceRegisterSummaryCards({
       icon: WalletCards,
       className: "text-purple-500 bg-purple-500/10",
     },
+    {
+      label: "ملغاة / معكوسة",
+      value: `${summary?.cancelledInvoices ?? 0} / ${summary?.refundedInvoices ?? 0}`,
+      icon: Ban,
+      className: "text-status-warning bg-status-warning/10",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-9">
       {cards.map((card) => (
         <div
           key={card.label}
