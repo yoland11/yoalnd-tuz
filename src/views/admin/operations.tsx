@@ -970,7 +970,7 @@ export function AssetsPage() {
                       <div className="font-medium text-foreground">{highlightAssetMatch(row.name, deferredSearch)}</div>
                       <div dir="ltr" className="mt-1 font-mono text-[11px] text-muted-foreground">{highlightAssetMatch(row.assetCode, deferredSearch)}</div>
                     </td>
-                    <td className="p-3 text-xs text-muted-foreground"><div dir="ltr">SN: {highlightAssetMatch(row.serialNumber, deferredSearch)}</div><div dir="ltr" className="mt-1">{row.barcode ? <>BC: {highlightAssetMatch(row.barcode, deferredSearch)}</> : "—"}</div></td>
+                    <td className="p-3 text-xs text-muted-foreground"><div dir="ltr">SN: {highlightAssetMatch(row.serialNumber, deferredSearch)}</div><div dir="ltr" className="mt-1">{row.barcode ? <>BC: {highlightAssetMatch(row.barcode, deferredSearch)}</> : "—"}</div>{row.qrToken ? <div dir="ltr" title={row.qrToken} className="mt-1 max-w-44 truncate">QR: {highlightAssetMatch(row.qrToken, deferredSearch)}</div> : null}</td>
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.category, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.brand, row.model].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.responsibleName, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.warehouseName, row.storageLocation].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
                     <td className="p-3 text-xs text-muted-foreground">{highlightAssetMatch(row.bookingNumber, deferredSearch)}</td>

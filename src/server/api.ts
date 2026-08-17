@@ -39768,7 +39768,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const assetOrder = req.nextUrl.searchParams.get("order")?.trim() === "asc" ? "asc" : "desc";
     const assetPage = Math.max(1, Math.min(10_000, Number(req.nextUrl.searchParams.get("page")) || 1));
     const assetLimit = Math.max(10, Math.min(100, Number(req.nextUrl.searchParams.get("limit")) || 25));
-    const normalizedAssetSearch = assetSearch.toLocaleLowerCase("ar-IQ");
+    // A camera or hardware scanner can return either the raw token or the full
+    // QR URL. Keep every safe representation so both forms resolve through the
+    // same search endpoint (without introducing a second lookup API).
+    const decodedAssetSearch = (() => {
+      try {
+        return decodeURIComponent(assetSearch).trim();
+      } catch {
+        return assetSearch;
+      }
+    })();
+    const assetSearchTail =
+      decodedAssetSearch.split(/[/?#]/).filter(Boolean).at(-1) ??
+      decodedAssetSearch;
+    const assetCodeMatch = decodedAssetSearch.match(/AJN-A0*(\d+)/i);
+    const assetSearchTerms = [
+      assetSearch,
+      decodedAssetSearch,
+      assetSearchTail,
+      assetCodeMatch
+        ? `AJN-A${String(Number(assetCodeMatch[1])).padStart(6, "0")}`
+        : "",
+    ]
+      .map((value) => value.toLocaleLowerCase("ar-IQ"))
+      .filter((value, index, values) => value && values.indexOf(value) === index);
     const normalizeAssetValue = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("ar-IQ");
     const valueIncludes = (value: unknown, needle: string) =>
       !needle || normalizeAssetValue(value).includes(normalizeAssetValue(needle));
@@ -39781,8 +39804,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         orderBy: [asc(productsTable.id)],
         limit: 2000,
       }),
-      db.query.assetProfilesTable.findMany({ limit: 500 }),
-      db.query.assetPassportsTable.findMany({ limit: 500 }),
+      // Keep the metadata coverage aligned with the maximum asset product
+      // result. A 500-row cap here made later assets impossible to find by
+      // serial, QR, staff, warehouse, or booking even though they existed.
+      db.query.assetProfilesTable.findMany({ limit: 2000 }),
+      db.query.assetPassportsTable.findMany({ limit: 2000 }),
       db.query.equipmentCustodyTable.findMany({
         where: eq(equipmentCustodyTable.status, "issued"),
         limit: 2000,
@@ -39958,7 +39984,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           row.warehouseName, row.storageLocation, row.bookingNumber, row.serviceText,
         ].join(" ").toLocaleLowerCase("ar-IQ");
         return (
-          (!normalizedAssetSearch || searchText.includes(normalizedAssetSearch)) &&
+          (!assetSearchTerms.length ||
+            assetSearchTerms.some((term) => searchText.includes(term))) &&
           (!assetStatusFilter || row.availabilityStatus === assetStatusFilter || row.status === assetStatusFilter) &&
           valueIncludes(row.category, assetCategoryFilter) &&
           valueIncludes(row.brand, assetBrandFilter) &&
