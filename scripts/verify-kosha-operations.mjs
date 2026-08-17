@@ -17,6 +17,8 @@ const outFile = join(mkdtempSync(join(tmpdir(), "ajn-kosha-")), "kosha.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
 const staffBookingDetail = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
 const staffApi = readFileSync("src/server/api.ts", "utf8");
+const staffClient = readFileSync("src/views/staff/lib.ts", "utf8");
+const staffPortal = readFileSync("src/views/staff/index.tsx", "utf8");
 const staffOperations = readFileSync("src/views/staff/operations.tsx", "utf8");
 const serviceWorker = readFileSync("public/sw.js", "utf8");
 const appShell = readFileSync("src/App.tsx", "utf8");
@@ -157,6 +159,16 @@ check("stages without scanning return null",
 // ── Status integrity, authorization and PWA cache safeguards ──
 check("execution stage is preferred over generic booking-operation stage",
   /const explicit = String\(fallback \?\? ""\);\s*if \(\(KOSHA_EXECUTION_STAGES as readonly string\[\]\)\.includes\(explicit\)\)\s*return explicit;/.test(staffApi), true);
+check("native kosha requests always carry an explicit source discriminator",
+  staffClient.includes("return `?source=${source}`;") && staffClient.includes("opsSourceQuery"), true);
+check("native kosha links preserve their source after navigation",
+  staffPortal.includes('?source=${b.source === "service" ? "service" : "kosha"}'), true);
+check("failed stage lookup logs identifier, user and stage diagnostics",
+  staffApi.includes("[KOSHA_BOOKING_LOOKUP_FAILED]") && staffApi.includes("requestedStage") && staffApi.includes("bookingCode") && staffApi.includes("currentStage"), true);
+check("detail reload and stage mutation share the same source resolver",
+  staffApi.includes("Detail reload and stage mutation must resolve the same physical row") &&
+    (staffApi.match(/authorizeKoshaPortalBooking\(auth, id, sourceHint/g) ?? []).length >= 1,
+  true);
 check("all field operation mutations use the central booking access guard",
   ["operations", "action === \"stage\"", "action === \"media\"", "action === \"delivery\"", "action === \"collect\""].every((token) => staffApi.includes(token)) && (staffApi.match(/authorizeKoshaPortalBooking\(/g) ?? []).length >= 6, true);
 check("scanner prevents concurrent duplicate submissions", staffOperations.includes("requestInFlight.current") && staffOperations.includes("setSubmitting(true)"), true);

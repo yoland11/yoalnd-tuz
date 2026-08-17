@@ -143,7 +143,10 @@ export async function filesToMedia(files: FileList | File[]): Promise<MediaInput
 
 const base = "/staff/koshas";
 function sourceQuery(source: "kosha" | "service" = "kosha") {
-  return source === "service" ? "?source=service" : "";
+  // `kosha_bookings` and `service_orders` use independent numeric sequences.
+  // Keep the physical source on every detail and mutation request so a native
+  // kosha booking can never become ambiguous after its stage changes.
+  return `?source=${source}`;
 }
 export const staffApi = {
   dashboard: () => adminFetch<{ today: string; counts: Record<Bucket, number>; todayBookings: CrewBooking[]; tomorrowBookings: CrewBooking[] }>(`${base}/dashboard`),
@@ -274,24 +277,26 @@ export type KoshaOpsReport = {
   maintenance: Array<{ bookingId: number; item: string; customerName: string }>;
 };
 
+const opsSourceQuery = (source: string) =>
+  `?source=${encodeURIComponent(source || "kosha")}`;
 const opsBase = (id: number, source: string) =>
-  `${base}/operations/${id}${source && source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`;
+  `${base}/operations/${id}${opsSourceQuery(source)}`;
 
 export const koshaOpsApi = {
   get: (id: number, source = "kosha") => adminFetch<OperationsPayload>(opsBase(id, source)),
   saveChecklist: (id: number, entries: Array<Record<string, unknown>>, source = "kosha") =>
     adminFetch<{ ok: boolean; checklist: ChecklistRow[]; checklistCovered: boolean; checklistIssues: Array<{ item: string; condition: string }> }>(
-      `${base}/operations/${id}/checklist${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      `${base}/operations/${id}/checklist${opsSourceQuery(source)}`,
       { method: "POST", body: JSON.stringify({ entries }) },
     ),
   reportDamage: (id: number, payload: Record<string, unknown>, source = "kosha") =>
     adminFetch<{ ok: boolean; id: number | null; status: string }>(
-      `${base}/operations/${id}/damage${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      `${base}/operations/${id}/damage${opsSourceQuery(source)}`,
       { method: "POST", body: JSON.stringify(payload) },
     ),
   scanItem: (id: number, payload: Record<string, unknown>, source = "kosha") =>
     adminFetch<{ ok: boolean; productId: number; name: string; scanPoint: string; scanPointLabel: string }>(
-      `${base}/operations/${id}/scan${source !== "kosha" ? `?source=${encodeURIComponent(source)}` : ""}`,
+      `${base}/operations/${id}/scan${opsSourceQuery(source)}`,
       { method: "POST", body: JSON.stringify(payload) },
     ),
   board: () => adminFetch<KoshaOpsBoard>(`${base}/ops-board`),

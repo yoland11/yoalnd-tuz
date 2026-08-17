@@ -105,7 +105,7 @@ function Login({ onDone }: { onDone: () => void }) {
 }
 
 function BookingCard({ b }: { b: CrewBooking }) {
-  const source = b.source === "service" ? "?source=service" : "";
+  const source = `?source=${b.source === "service" ? "service" : "kosha"}`;
   return (
     <Link href={`/staff/koshas/booking/${b.id}${source}`} className="block rounded-xl border border-border bg-card p-3 active:scale-[0.99]">
       <div className="flex items-start justify-between gap-2">

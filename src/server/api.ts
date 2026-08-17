@@ -58588,6 +58588,33 @@ type AuthorizedKoshaPortalBooking = Exclude<
 type KoshaBookingAuthorization =
   { resolved: AuthorizedKoshaPortalBooking } | { response: NextResponse };
 
+type KoshaBookingLookupContext = {
+  req?: NextRequest;
+  requestedStage?: string | null;
+};
+
+function logKoshaBookingLookupFailure(input: {
+  auth: AdminUser;
+  bookingId: number;
+  source: KoshaPortalSource | null;
+  requestedStage?: string | null;
+  requestId?: string;
+  bookingCode?: string | null;
+  currentStage?: string | null;
+  reason: "not_found" | "ambiguous_source" | "assignment_denied";
+}) {
+  console.warn("[KOSHA_BOOKING_LOOKUP_FAILED]", {
+    requestId: input.requestId ?? null,
+    bookingId: input.bookingId,
+    bookingCode: input.bookingCode ?? null,
+    userId: input.auth.id,
+    requestedStage: input.requestedStage ?? null,
+    currentStage: input.currentStage ?? null,
+    source: input.source ?? null,
+    reason: input.reason,
+  });
+}
+
 /**
  * Single staff-assignment guard for every direct booking mutation. The route
  * list, detail screen, equipment actions, photos, delivery and field operations
@@ -58597,10 +58624,25 @@ async function authorizeKoshaPortalBooking(
   auth: AdminUser,
   id: number,
   source: KoshaPortalSource | null,
+  context: KoshaBookingLookupContext = {},
 ): Promise<KoshaBookingAuthorization> {
   const resolved = await resolveKoshaPortalBooking(id, source);
-  if (!resolved || resolved.kind === "ambiguous")
+  const requestId = context.req
+    ? makeRequestId(context.req.headers.get("x-request-id"))
+    : undefined;
+  if (!resolved || resolved.kind === "ambiguous") {
+    logKoshaBookingLookupFailure({
+      auth,
+      bookingId: id,
+      source,
+      requestedStage: context.requestedStage,
+      requestId,
+      bookingCode: null,
+      currentStage: null,
+      reason: resolved?.kind === "ambiguous" ? "ambiguous_source" : "not_found",
+    });
     return { response: error("الحجز غير موجود", 404) };
+  }
   const crewBooking =
     resolved.kind === "kosha"
       ? await formatKoshaBookingForCrew(resolved.native)
@@ -58608,8 +58650,21 @@ async function authorizeKoshaPortalBooking(
           resolved.routed.order,
           resolved.routed.service,
         );
-  if (!canStaffOpenKoshaBooking(auth, crewBooking))
+  if (!canStaffOpenKoshaBooking(auth, crewBooking)) {
+    logKoshaBookingLookupFailure({
+      auth,
+      bookingId: id,
+      source,
+      requestedStage: context.requestedStage,
+      requestId,
+      bookingCode:
+        crewBooking.trackingCode ??
+        (resolved.kind === "service" ? resolved.routed.order.trackingCode : null),
+      currentStage: crewBooking.executionStage ?? null,
+      reason: "assignment_denied",
+    });
     return { response: error("لا تملك صلاحية الوصول إلى هذا الحجز", 403) };
+  }
   return { resolved };
 }
 
@@ -60444,35 +60499,36 @@ async function handleStaffPortal(
 
   // ── Booking detail ──
   if (resource === "bookings" && id && !action && method === "GET") {
+    if (req.nextUrl.searchParams.has("source") && !koshaSourceHint(req))
+      return error("مصدر الحجز غير معروف", 400);
     const sourceHint = koshaSourceHint(req);
-    const detail =
-      sourceHint === "service" ? null : await loadKoshaBookingDetail(id);
-    if (detail && sourceHint !== "service") {
-      // Direct-URL guard: the list is filtered by assignment, so the detail
-      // endpoint must enforce the same rule or the filter is bypassable.
-      if (!canStaffOpenKoshaBooking(auth, detail.booking))
-        return error("هذا الحجز غير مُسند إليك", 403);
-      return json(detail);
+    // Detail reload and stage mutation must resolve the same physical row.
+    // Previously GET assumed native kosha while POST rejected that same id as
+    // ambiguous when a service order shared it, producing "الحجز غير موجود"
+    // immediately after a successful-looking transition.
+    const authorized = await authorizeKoshaPortalBooking(auth, id, sourceHint, {
+      req,
+    });
+    if ("response" in authorized) return authorized.response;
+    if (authorized.resolved.kind === "kosha") {
+      const detail = await loadKoshaBookingDetail(id);
+      if (detail) return json(detail);
+      logKoshaBookingLookupFailure({
+        auth,
+        bookingId: id,
+        source: sourceHint,
+        requestId: makeRequestId(req.headers.get("x-request-id")),
+        bookingCode: authorized.resolved.native.trackingCode ?? null,
+        currentStage: authorized.resolved.native.executionStage ?? null,
+        reason: "not_found",
+      });
+      return error("الحجز غير موجود", 404);
     }
-    // Resolve by the explicit source when the client sends one: kosha_bookings
-    // and service_orders share an id space, so id alone can select the wrong row.
-    const resolved = await resolveKoshaPortalBooking(id, sourceHint);
-    if (resolved?.kind === "ambiguous")
-      return error(
-        "هذا الرقم يطابق حجزين — افتح الحجز من القائمة لتحديد مصدره",
-        409,
-      );
-    const nativeBooking = resolved?.kind === "kosha" ? resolved.native : null;
-    const routed = resolved?.kind === "service" ? resolved.routed : null;
-    if (!routed) return error("الحجز غير موجود", 404);
-    const crewBooking = await formatRoutedKoshaServiceBookingForCrew(
-      routed.order,
-      routed.service,
-    );
-    if (!canStaffOpenKoshaBooking(auth, crewBooking))
-      return error("هذا الحجز غير مُسند إليك", 403);
     return json(
-      await loadRoutedKoshaServiceBookingDetail(routed.order, routed.service),
+      await loadRoutedKoshaServiceBookingDetail(
+        authorized.resolved.routed.order,
+        authorized.resolved.routed.service,
+      ),
     );
   }
 
@@ -60497,6 +60553,7 @@ async function handleStaffPortal(
       auth,
       id,
       koshaSourceHint(req),
+      { req, requestedStage: toStage },
     );
     if ("response" in authorized) return authorized.response;
     const nativeBooking =
