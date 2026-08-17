@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Archive,
+  ArrowLeft,
+  ArrowRight,
   ArrowDownToLine,
   ArrowUpFromLine,
   BarChart3,
@@ -50,6 +52,7 @@ import {
   hasPerm,
 } from "./_lib";
 import { AssetSaleDialog } from "./asset-sale-dialog";
+import { LiveScanner } from "../staff/live-scanner";
 
 type ApprovalRow = {
   id: number;
@@ -115,9 +118,43 @@ type AssetRow = {
   serialNumber?: string | null;
   dna?: string | null;
   category?: string | null;
+  assetCode?: string;
+  qrToken?: string | null;
+  barcode?: string | null;
+  brand?: string | null;
+  model?: string | null;
+  responsibleNames?: string[];
+  responsibleName?: string | null;
+  warehouseName?: string | null;
+  storageLocation?: string | null;
+  bookingRefs?: string[];
+  bookingNumber?: string | null;
+  availabilityStatus?: string;
   status: string;
   depreciationPaused?: boolean;
   maintenanceDue: boolean;
+};
+
+type AssetSearchResponse = {
+  data: AssetRow[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+  summary: {
+    total: number;
+    available: number;
+    inUse: number;
+    maintenance: number;
+    damaged: number;
+    currentValue: number;
+    purchaseValue: number;
+  };
+  filters: {
+    categories: string[];
+    brands: string[];
+    models: string[];
+    employees: string[];
+    warehouses: string[];
+    locations: string[];
+  };
 };
 
 type MovementAsset = {
@@ -636,21 +673,86 @@ const ASSET_STATUS_LABEL: Record<string, string> = {
   locked: "🔒 مقفول",
 };
 
+const ASSET_AVAILABILITY_LABEL: Record<string, string> = {
+  available: "متاح",
+  in_use: "قيد الاستخدام",
+  reserved: "محجوز",
+  maintenance: "صيانة",
+  damaged: "متضرر",
+  retired: "مُستبعد",
+};
+
+const ASSET_QUICK_FILTERS = [
+  ["all", "كل الأصول"],
+  ["available", "متاح"],
+  ["in_use", "قيد الاستخدام"],
+  ["reserved", "محجوز"],
+  ["maintenance", "صيانة"],
+  ["damaged", "متضرر"],
+  ["rentals", "الإيجارات"],
+  ["koshat", "الكوشات"],
+  ["photography", "التصوير"],
+  ["audio", "المعدات الصوتية"],
+] as const;
+
+function highlightAssetMatch(value: string | number | null | undefined, query: string) {
+  const text = String(value ?? "—");
+  const needle = query.trim();
+  if (!needle) return text;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  return parts.map((part, index) =>
+    part.localeCompare(needle, undefined, { sensitivity: "accent" }) === 0 ? (
+      <mark key={`${part}-${index}`} className="rounded bg-primary/25 px-0.5 text-inherit">{part}</mark>
+    ) : part,
+  );
+}
+
 export function AssetsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { data, isLoading } = useQuery<{ data: AssetRow[] }>({ queryKey: ["admin", "assets"], queryFn: () => adminFetch("/admin/assets"), staleTime: 60_000 });
   const [adding, setAdding] = useState(false);
   const [saleTarget, setSaleTarget] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [quickFilter, setQuickFilter] = useState<(typeof ASSET_QUICK_FILTERS)[number][0]>("all");
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState("updated");
+  const [order, setOrder] = useState<"asc" | "desc">("desc");
+  const [showFilters, setShowFilters] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [assetFilters, setAssetFilters] = useState({
+    status: "",
+    category: "",
+    brand: "",
+    model: "",
+    responsible: "",
+    warehouse: "",
+    location: "",
+  });
+  const assetParams = useMemo(() => {
+    const params = new URLSearchParams({ page: String(page), limit: "25", quick: quickFilter, sort, order });
+    if (deferredSearch.trim()) params.set("q", deferredSearch.trim());
+    for (const [key, value] of Object.entries(assetFilters)) if (value) params.set(key, value);
+    return params.toString();
+  }, [assetFilters, deferredSearch, order, page, quickFilter, sort]);
+  const { data, isLoading, isFetching } = useQuery<AssetSearchResponse>({
+    queryKey: ["admin", "assets", assetParams],
+    queryFn: () => adminFetch(`/admin/assets?${assetParams}`),
+    placeholderData: (previous) => previous,
+    staleTime: 20_000,
+  });
+  const assetPickerQuery = useQuery<AssetSearchResponse>({
+    queryKey: ["admin", "assets", "picker"],
+    queryFn: () => adminFetch("/admin/assets?limit=100&sort=name&order=asc"),
+    enabled: adding,
+    staleTime: 60_000,
+  });
   const meQuery = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
   const rows = data?.data ?? [];
-  const totalValue = rows.reduce((sum, row) => sum + row.currentValue, 0);
-  const totalPurchase = rows.reduce((sum, row) => sum + row.purchasePrice, 0);
-  const [filter, setFilter] = useState<"all" | "maintenance">("all");
+  const summary = data?.summary;
+  const pagination = data?.pagination;
   const [removeTarget, setRemoveTarget] = useState<AssetRow | null>(null);
-  const filtered = filter === "maintenance" ? rows.filter((r) => r.maintenanceDue) : rows;
-  // Removing an asset from depreciation keeps it in `rows` (the Assets page) but drops it
-  // from every depreciation surface until a depreciation record is created again.
   const depreciationRows = [...rows]
     .filter((row) => row.hasDepreciationRecord && row.purchasePrice > 0)
     .sort(
@@ -659,6 +761,30 @@ export function AssetsPage() {
         (1 - a.currentValue / a.purchasePrice),
     )
     .slice(0, 8);
+  const resolveScan = useMutation({
+    mutationFn: (code: string) => adminFetch<{ assetCode: string; name: string }>(`/admin/assets/scan?code=${encodeURIComponent(code)}`),
+    onSuccess: (asset) => {
+      setSearch(asset.assetCode);
+      setPage(1);
+      setScannerOpen(false);
+      toast({ title: "تم العثور على الأصل", description: `${asset.name} · ${asset.assetCode}` });
+    },
+    onError: (error) => toast({ title: "لم يتم العثور على الأصل", description: apiErrorMessage(error), variant: "destructive" }),
+  });
+  const setQuick = (next: (typeof ASSET_QUICK_FILTERS)[number][0]) => {
+    setQuickFilter(next);
+    setPage(1);
+  };
+  const setFilter = (key: keyof typeof assetFilters, value: string) => {
+    setAssetFilters((current) => ({ ...current, [key]: value }));
+    setPage(1);
+  };
+  const clearSearchFilters = () => {
+    setSearch("");
+    setQuickFilter("all");
+    setAssetFilters({ status: "", category: "", brand: "", model: "", responsible: "", warehouse: "", location: "" });
+    setPage(1);
+  };
   const toggleDepreciation = useMutation({
     mutationFn: ({ productId, paused }: { productId: number; paused: boolean }) =>
       adminFetch("/admin/assets/depreciation", {
@@ -700,8 +826,8 @@ export function AssetsPage() {
     <div className="space-y-4" dir="rtl">
       <PageHeader
         icon={Package}
-        title="إهلاك الأصول"
-        description="قيمة المواد الحالية وعدد مرات استخدامها وجدولة الصيانة."
+        title="إدارة الأصول"
+        description="ابحث فوراً بالاسم أو الرمز أو QR أو الباركود أو الحجز، ثم فرز النتائج ومتابعة حالة الأصل."
         action={(
           <div className="flex items-center gap-2">
             <Link href="/admin/assets/new">
@@ -716,11 +842,67 @@ export function AssetsPage() {
         )}
       />
       <div className="grid gap-3 md:grid-cols-4">
-        <StatCard icon={Package} label="عدد الأصول" value={rows.length.toLocaleString("ar-IQ")} onClick={() => setFilter("all")} active={filter === "all"} />
-        <StatCard icon={Gauge} label="إجمالي الشراء" value={formatCurrency(totalPurchase)} onClick={() => setFilter("all")} />
-        <StatCard icon={Gauge} label="القيمة الحالية" value={formatCurrency(totalValue)} onClick={() => setFilter("all")} />
-        <StatCard icon={Wrench} label="تحتاج صيانة" value={rows.filter((row) => row.maintenanceDue).length.toLocaleString("ar-IQ")} onClick={() => setFilter("maintenance")} active={filter === "maintenance"} />
+        <StatCard icon={Package} label="كل الأصول" value={(summary?.total ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("all")} active={quickFilter === "all"} />
+        <StatCard icon={CheckCircle2} label="متاح" value={(summary?.available ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("available")} active={quickFilter === "available"} />
+        <StatCard icon={UserRound} label="قيد الاستخدام" value={(summary?.inUse ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("in_use")} active={quickFilter === "in_use"} />
+        <StatCard icon={Wrench} label="تحتاج صيانة" value={(summary?.maintenance ?? 0).toLocaleString("ar-IQ")} onClick={() => setQuick("maintenance")} active={quickFilter === "maintenance"} />
       </div>
+      <Card className="space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <label className="relative block min-w-0 flex-1">
+            <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+              placeholder="بحث بالاسم، كود الأصل، QR، باركود، تسلسل، فئة، موظف، مخزن أو رقم الحجز..."
+              className="w-full rounded-lg border border-border/40 bg-background py-2 pr-10 pl-3 text-sm text-foreground outline-none transition focus:border-primary"
+              aria-label="بحث متقدم في الأصول"
+            />
+          </label>
+          <Button type="button" variant="outline" className="gap-1" onClick={() => setScannerOpen((open) => !open)}>
+            <ScanLine className="h-4 w-4" /> مسح QR / باركود
+          </Button>
+          <Button type="button" variant="outline" className="gap-1" onClick={() => setShowFilters((open) => !open)}>
+            <Search className="h-4 w-4" /> فلاتر متقدمة
+          </Button>
+        </div>
+        {scannerOpen ? (
+          <div className="rounded-xl border border-primary/30 bg-background/50 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-foreground">امسح رمز الأصل بالكاميرا أو أدخله يدوياً</p>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setScannerOpen(false)}>إغلاق</Button>
+            </div>
+            <LiveScanner onDetect={(code) => !resolveScan.isPending && resolveScan.mutate(code)} active={!resolveScan.isPending} stopOnDetect />
+          </div>
+        ) : null}
+        <div className="flex gap-2 overflow-x-auto pb-1" aria-label="فلاتر سريعة للأصول">
+          {ASSET_QUICK_FILTERS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setQuick(value)}
+              className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${quickFilter === value ? "border-primary bg-primary text-primary-foreground" : "border-border/50 bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {showFilters ? (
+          <div className="grid gap-2 border-t border-border/30 pt-3 sm:grid-cols-2 lg:grid-cols-4">
+            <select value={assetFilters.status} onChange={(event) => setFilter("status", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
+              <option value="">كل الحالات</option>
+              <option value="available">متاح</option><option value="in_use">قيد الاستخدام</option><option value="reserved">محجوز</option><option value="maintenance">صيانة</option><option value="damaged">متضرر</option><option value="retired">مُستبعد</option>
+            </select>
+            <select value={assetFilters.category} onChange={(event) => setFilter("category", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل الفئات</option>{(data?.filters.categories ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <select value={assetFilters.brand} onChange={(event) => setFilter("brand", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل العلامات التجارية</option>{(data?.filters.brands ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <select value={assetFilters.model} onChange={(event) => setFilter("model", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل الموديلات</option>{(data?.filters.models ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <select value={assetFilters.responsible} onChange={(event) => setFilter("responsible", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل الموظفين المسؤولين</option>{(data?.filters.employees ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <select value={assetFilters.warehouse} onChange={(event) => setFilter("warehouse", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل المخازن</option>{(data?.filters.warehouses ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <select value={assetFilters.location} onChange={(event) => setFilter("location", event.target.value)} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">كل مواقع التخزين</option>{(data?.filters.locations ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select>
+            <Button type="button" variant="ghost" onClick={clearSearchFilters}>مسح البحث والفلاتر</Button>
+          </div>
+        ) : null}
+      </Card>
       <Card>
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
@@ -763,13 +945,17 @@ export function AssetsPage() {
           </div>
         )}
       </Card>
-      {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول" /> : (
+      {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد أصول مطابقة للبحث" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="min-w-[1100px] w-full text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
                   <th className="p-3 text-right">الأصل</th>
+                  <th className="p-3 text-right">التعريف</th>
+                  <th className="p-3 text-right">الفئة / العلامة</th>
+                  <th className="p-3 text-right">المسؤول والموقع</th>
+                  <th className="p-3 text-right">الحجز</th>
                   <th className="p-3 text-right">سعر الشراء</th>
                   <th className="p-3 text-right">الاستخدام / العمر الافتراضي</th>
                   <th className="p-3 text-right">القيمة المتبقية</th>
@@ -778,19 +964,21 @@ export function AssetsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا توجد بيانات مطابقة</td></tr>
-                ) : filtered.map((row) => (
+                {rows.map((row) => (
                   <tr key={row.productId} className="hover:bg-background/40">
                     <td className="p-3">
-                      <div className="font-medium text-foreground">{row.name}</div>
-                      {row.serialNumber && <div className="font-mono text-[11px] text-muted-foreground">SN: {row.serialNumber}</div>}
+                      <div className="font-medium text-foreground">{highlightAssetMatch(row.name, deferredSearch)}</div>
+                      <div dir="ltr" className="mt-1 font-mono text-[11px] text-muted-foreground">{highlightAssetMatch(row.assetCode, deferredSearch)}</div>
                     </td>
+                    <td className="p-3 text-xs text-muted-foreground"><div dir="ltr">SN: {highlightAssetMatch(row.serialNumber, deferredSearch)}</div><div dir="ltr" className="mt-1">{row.barcode ? <>BC: {highlightAssetMatch(row.barcode, deferredSearch)}</> : "—"}</div></td>
+                    <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.category, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.brand, row.model].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
+                    <td className="p-3 text-xs text-muted-foreground"><div>{highlightAssetMatch(row.responsibleName, deferredSearch)}</div><div className="mt-1">{highlightAssetMatch([row.warehouseName, row.storageLocation].filter(Boolean).join(" · ") || "—", deferredSearch)}</div></td>
+                    <td className="p-3 text-xs text-muted-foreground">{highlightAssetMatch(row.bookingNumber, deferredSearch)}</td>
                     <td className="p-3">{formatCurrency(row.purchasePrice)}</td>
                     <td className="p-3 text-muted-foreground">{row.usageCount} / {row.expectedLifeUses}</td>
                     <td className="p-3 text-primary">{formatCurrency(row.currentValue)}</td>
                       <td className="p-3">
-                        <div>{row.maintenanceDue ? <span className="text-status-warning">صيانة</span> : (ASSET_STATUS_LABEL[row.status] ?? "نشط")}</div>
+                        <div>{row.maintenanceDue ? <span className="text-status-warning">صيانة</span> : (ASSET_AVAILABILITY_LABEL[row.availabilityStatus ?? ""] ?? ASSET_STATUS_LABEL[row.status] ?? "نشط")}</div>
                         {row.depreciationPaused ? (
                           <span className="mt-1 inline-flex rounded-full bg-status-warning/10 px-2 py-0.5 text-[11px] text-status-warning">
                             الإهلاك متوقف
@@ -854,12 +1042,23 @@ export function AssetsPage() {
               </tbody>
             </table>
           </div>
+          <div className="flex flex-col gap-2 border-t border-border/30 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-muted-foreground">{isFetching ? "جارٍ تحديث النتائج…" : `عرض ${rows.length.toLocaleString("ar-IQ")} من ${(pagination?.total ?? 0).toLocaleString("ar-IQ")} أصل`}</span>
+            <div className="flex items-center gap-2">
+              <select value={`${sort}:${order}`} onChange={(event) => { const [nextSort, nextOrder] = event.target.value.split(":"); setSort(nextSort); setOrder(nextOrder as "asc" | "desc"); setPage(1); }} className="rounded-lg border border-border/40 bg-background px-2 py-1.5 text-xs">
+                <option value="updated:desc">الأحدث أولاً</option><option value="name:asc">الاسم أ-ي</option><option value="code:asc">كود الأصل</option><option value="status:asc">الحالة</option><option value="value:desc">القيمة الأعلى</option><option value="uses:desc">الأكثر استخداماً</option>
+              </select>
+              <Button type="button" variant="outline" size="sm" disabled={(pagination?.page ?? 1) <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))} className="gap-1"><ArrowRight className="h-3.5 w-3.5" /> السابق</Button>
+              <span className="whitespace-nowrap text-xs text-muted-foreground">{pagination?.page ?? 1} / {pagination?.totalPages ?? 1}</span>
+              <Button type="button" variant="outline" size="sm" disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)} onClick={() => setPage((current) => current + 1)} className="gap-1">التالي <ArrowLeft className="h-3.5 w-3.5" /></Button>
+            </div>
+          </div>
         </div>
       )}
       {adding && (
         <DepreciationModal
           asset={null}
-          assets={rows}
+          assets={assetPickerQuery.data?.data ?? rows}
           onClose={() => setAdding(false)}
         />
       )}

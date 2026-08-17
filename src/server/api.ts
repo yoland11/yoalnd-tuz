@@ -39774,7 +39774,30 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
     }
 
-    const [products, profiles, passports] = await Promise.all([
+    // Asset Management uses this same endpoint for its live search.  Keep the
+    // data assembly here so search never needs a second asset API or a shadow
+    // index/table that could drift away from the actual asset records.
+    const assetSearch = req.nextUrl.searchParams.get("q")?.trim().slice(0, 160) ?? "";
+    const assetStatusFilter = req.nextUrl.searchParams.get("status")?.trim().slice(0, 40) ?? "";
+    const assetCategoryFilter = req.nextUrl.searchParams.get("category")?.trim().slice(0, 120) ?? "";
+    const assetBrandFilter = req.nextUrl.searchParams.get("brand")?.trim().slice(0, 120) ?? "";
+    const assetModelFilter = req.nextUrl.searchParams.get("model")?.trim().slice(0, 120) ?? "";
+    const assetResponsibleFilter = req.nextUrl.searchParams.get("responsible")?.trim().slice(0, 120) ?? "";
+    const assetWarehouseFilter = req.nextUrl.searchParams.get("warehouse")?.trim().slice(0, 120) ?? "";
+    const assetLocationFilter = req.nextUrl.searchParams.get("location")?.trim().slice(0, 120) ?? "";
+    const assetQuickFilter = req.nextUrl.searchParams.get("quick")?.trim().slice(0, 40) ?? "all";
+    const assetSort = req.nextUrl.searchParams.get("sort")?.trim() ?? "updated";
+    const assetOrder = req.nextUrl.searchParams.get("order")?.trim() === "asc" ? "asc" : "desc";
+    const assetPage = Math.max(1, Math.min(10_000, Number(req.nextUrl.searchParams.get("page")) || 1));
+    const assetLimit = Math.max(10, Math.min(100, Number(req.nextUrl.searchParams.get("limit")) || 25));
+    const normalizedAssetSearch = assetSearch.toLocaleLowerCase("ar-IQ");
+    const normalizeAssetValue = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("ar-IQ");
+    const valueIncludes = (value: unknown, needle: string) =>
+      !needle || normalizeAssetValue(value).includes(normalizeAssetValue(needle));
+    const uniqueText = (values: Array<string | null | undefined>) =>
+      [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+
+    const [products, profiles, passports, custodyRows, staffRows, warehouseRows, timelineRows, assetLinkResult] = await Promise.all([
       db.query.productsTable.findMany({
         where: eq(productsTable.isAsset, true),
         orderBy: [asc(productsTable.id)],
@@ -39782,6 +39805,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }),
       db.query.assetProfilesTable.findMany({ limit: 500 }),
       db.query.assetPassportsTable.findMany({ limit: 500 }),
+      db.query.equipmentCustodyTable.findMany({
+        where: eq(equipmentCustodyTable.status, "issued"),
+        limit: 2000,
+      }),
+      db.query.staffTable.findMany({ limit: 2000 }),
+      db.query.warehousesTable.findMany({ limit: 500 }),
+      db.query.entityTimelineTable.findMany({
+        where: eq(entityTimelineTable.entityType, "asset"),
+        orderBy: [desc(entityTimelineTable.createdAt)],
+        limit: 10000,
+      }),
+      db.execute(sql`select product_id, entity_type, entity_id from asset_links order by id desc limit 10000`),
     ]);
     const profileByProduct = new Map(
       profiles
@@ -39796,56 +39831,201 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
     const passportByProduct = new Map(
       passports.map((row) => [row.productId, row]),
     );
-    return json({
-      data: products.map((product) => {
-        const profile = profileByProduct.get(product.id);
-        const removedProfile = removedProfileByProduct.get(product.id);
-        const passport = passportByProduct.get(product.id);
-        const purchasePrice = Number(
-          profile?.purchasePrice ??
-            removedProfile?.purchasePrice ??
-            product.costPrice ??
-            0,
-        );
-        const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
-        const usageCount = Number(profile?.usageCount ?? 0);
-        const currentValue = Math.max(
+    const staffById = new Map(staffRows.map((row) => [row.id, row]));
+    const warehouseById = new Map(warehouseRows.map((row) => [row.id, row.name]));
+    const custodyByProduct = new Map<number, typeof custodyRows>();
+    for (const row of custodyRows)
+      custodyByProduct.set(row.productId, [
+        ...(custodyByProduct.get(row.productId) ?? []),
+        row,
+      ]);
+    const timelineByProduct = new Map<number, typeof timelineRows>();
+    for (const row of timelineRows)
+      timelineByProduct.set(row.entityId, [
+        ...(timelineByProduct.get(row.entityId) ?? []),
+        row,
+      ]);
+    const linksByProduct = new Map<number, Array<{ entityType: string; entityId: number }>>();
+    for (const row of ((assetLinkResult as any).rows ?? []) as Array<any>) {
+      const productId = Number(row.product_id);
+      const entityId = Number(row.entity_id);
+      if (!productId || !entityId) continue;
+      linksByProduct.set(productId, [
+        ...(linksByProduct.get(productId) ?? []),
+        { entityType: String(row.entity_type ?? "").trim(), entityId },
+      ]);
+    }
+    const allRows = products.map((product) => {
+      const profile = profileByProduct.get(product.id);
+      const removedProfile = removedProfileByProduct.get(product.id);
+      const passport = passportByProduct.get(product.id);
+      const metadata = assetMetadataObject(passport?.metadata);
+      const custody = custodyByProduct.get(product.id) ?? [];
+      const events = timelineByProduct.get(product.id) ?? [];
+      const links = linksByProduct.get(product.id) ?? [];
+      const purchasePrice = Number(
+        profile?.purchasePrice ??
+          removedProfile?.purchasePrice ??
+          product.costPrice ??
           0,
-          Number(
-            profile
-              ? profile.currentValue
-              : purchasePrice -
-                  (purchasePrice * Math.min(usageCount, expectedLifeUses)) /
-                    expectedLifeUses,
-          ),
+      );
+      const expectedLifeUses = Number(profile?.expectedLifeUses ?? 50) || 50;
+      const usageCount = Number(profile?.usageCount ?? 0);
+      const currentValue = Math.max(
+        0,
+        Number(
+          profile
+            ? profile.currentValue
+            : purchasePrice -
+                (purchasePrice * Math.min(usageCount, expectedLifeUses)) /
+                  expectedLifeUses,
+        ),
+      );
+      const serialNumber = passport?.serialNumber ?? profile?.serialNumber ?? null;
+      const rawStatus = profile?.status ?? "active";
+      const latestCondition = events.find((event) =>
+        ["damage", "repair", "available", "maintenance", "retired"].includes(event.type),
+      );
+      const damaged = rawStatus === "damaged" || latestCondition?.type === "damage";
+      const status = damaged
+        ? "damaged"
+        : custody.length > 0
+          ? "in_use"
+          : rawStatus === "active"
+            ? "available"
+            : rawStatus;
+      const warehouseId = passport?.warehouseId ?? null;
+      const warehouseName = warehouseId ? (warehouseById.get(warehouseId) ?? null) : null;
+      const responsibleNames = uniqueText([
+        passport?.lastStaffId
+          ? staffById.get(passport.lastStaffId)?.fullName || staffById.get(passport.lastStaffId)?.username
+          : null,
+        ...custody.map((row) => staffById.get(row.staffId)?.fullName || staffById.get(row.staffId)?.username),
+      ]);
+      const bookingRefs = uniqueText(
+        links.map((link) => `${link.entityType} #${link.entityId}`),
+      );
+      const searchableMetadata = JSON.stringify(metadata);
+      const serviceText = [
+        product.nameAr,
+        product.name,
+        product.category,
+        product.subcategory,
+        searchableMetadata,
+        ...links.map((link) => link.entityType),
+        ...events.map((event) => `${event.type} ${event.title} ${event.body ?? ""}`),
+      ].join(" ");
+      return {
+        productId: product.id,
+        depreciationRecordId: profile?.id ?? null,
+        depreciationRecordDate: profile?.updatedAt?.toISOString?.() ?? null,
+        hasDepreciationRecord: Boolean(profile),
+        name: product.nameAr || product.name || `#${product.id}`,
+        productName: product.nameAr || product.name || `#${product.id}`,
+        assetCode: `AJN-A${String(product.id).padStart(6, "0")}`,
+        qrToken: passport?.qrToken ?? null,
+        barcode: product.barcode ?? null,
+        purchasePrice,
+        expectedLifeUses,
+        usageCount,
+        currentValue,
+        serialNumber,
+        dna: assetDigitalDna(product.id, serialNumber, profile?.purchaseDate, purchasePrice),
+        category: product.category ?? product.subcategory ?? null,
+        brand: nullableText(metadata.brand),
+        model: nullableText(metadata.model),
+        responsibleNames,
+        responsibleName: responsibleNames.join("، ") || null,
+        warehouseId,
+        warehouseName,
+        storageLocation: passport?.lastLocation ?? passport?.shelfCode ?? nullableText(metadata.currentLocation),
+        shelfCode: passport?.shelfCode ?? null,
+        bookingRefs,
+        bookingNumber: bookingRefs.join("، ") || null,
+        bookingTypes: uniqueText(links.map((link) => link.entityType)),
+        isRental: Boolean((product as any).isRental),
+        // `status` remains the persisted profile status for legacy edit/sale flows.
+        // `availabilityStatus` is the operational state used by the search filters.
+        rawStatus,
+        status: rawStatus,
+        availabilityStatus: status,
+        depreciationPaused: assetMetadataObject(passport?.metadata).depreciationPaused === true,
+        maintenanceDue:
+          rawStatus === "maintenance" ||
+          (usageCount > 0 && usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0),
+        updatedAt: profile?.updatedAt ?? passport?.updatedAt ?? product.updatedAt ?? null,
+        serviceText,
+      };
+    });
+    const assetMatchesQuickFilter = (row: (typeof allRows)[number]) => {
+      const text = normalizeAssetValue(row.serviceText);
+      switch (assetQuickFilter) {
+        case "available": return row.availabilityStatus === "available";
+        case "in_use": return row.availabilityStatus === "in_use";
+        case "reserved": return row.availabilityStatus === "reserved";
+        case "maintenance": return row.availabilityStatus === "maintenance" || row.maintenanceDue;
+        case "damaged": return row.availabilityStatus === "damaged";
+        case "rentals": return row.isRental || row.bookingTypes.includes("rental") || text.includes("إيجار") || text.includes("rental");
+        case "koshat": return row.bookingTypes.includes("kosha") || text.includes("كوش") || text.includes("kosha");
+        case "photography": return row.bookingTypes.some((type) => type.includes("photography")) || text.includes("تصوير") || text.includes("photography");
+        case "audio": return text.includes("صوت") || text.includes("audio") || text.includes("سماعة") || text.includes("مكبر");
+        default: return true;
+      }
+    };
+    const filteredRows = allRows
+      .filter((row) => {
+        const searchText = [
+          row.name, row.assetCode, row.qrToken, row.barcode, row.serialNumber,
+          row.category, row.brand, row.model, row.responsibleName,
+          row.warehouseName, row.storageLocation, row.bookingNumber, row.serviceText,
+        ].join(" ").toLocaleLowerCase("ar-IQ");
+        return (
+          (!normalizedAssetSearch || searchText.includes(normalizedAssetSearch)) &&
+          (!assetStatusFilter || row.availabilityStatus === assetStatusFilter || row.status === assetStatusFilter) &&
+          valueIncludes(row.category, assetCategoryFilter) &&
+          valueIncludes(row.brand, assetBrandFilter) &&
+          valueIncludes(row.model, assetModelFilter) &&
+          valueIncludes(row.responsibleName, assetResponsibleFilter) &&
+          valueIncludes(row.warehouseName, assetWarehouseFilter) &&
+          valueIncludes(row.storageLocation, assetLocationFilter) &&
+          assetMatchesQuickFilter(row)
         );
-        const serialNumber = profile?.serialNumber ?? null;
-        return {
-          productId: product.id,
-          depreciationRecordId: profile?.id ?? null,
-          depreciationRecordDate: profile?.updatedAt?.toISOString?.() ?? null,
-          hasDepreciationRecord: Boolean(profile),
-          name: product.nameAr || product.name,
-          purchasePrice,
-          expectedLifeUses,
-          usageCount,
-          currentValue,
-          serialNumber,
-          dna: assetDigitalDna(
-            product.id,
-            serialNumber,
-            profile?.purchaseDate,
-            purchasePrice,
-          ),
-          category: product.category ?? null,
-          status: profile?.status ?? "active",
-          depreciationPaused:
-            assetMetadataObject(passport?.metadata).depreciationPaused === true,
-          maintenanceDue:
-            usageCount > 0 &&
-            usageCount % Number(profile?.maintenanceEveryUses ?? 50) === 0,
-        };
-      }),
+      })
+      .sort((left, right) => {
+        const numeric = (value: unknown) => Number(value ?? 0) || 0;
+        let result = 0;
+        if (assetSort === "value") result = numeric(left.currentValue) - numeric(right.currentValue);
+        else if (assetSort === "uses") result = numeric(left.usageCount) - numeric(right.usageCount);
+        else if (assetSort === "status") result = left.availabilityStatus.localeCompare(right.availabilityStatus, "ar");
+        else if (assetSort === "name") result = left.name.localeCompare(right.name, "ar");
+        else if (assetSort === "code") result = left.assetCode.localeCompare(right.assetCode, "en");
+        else result = numeric(new Date(left.updatedAt ?? 0).getTime()) - numeric(new Date(right.updatedAt ?? 0).getTime());
+        return assetOrder === "asc" ? result : -result;
+      });
+    const total = filteredRows.length;
+    const totalPages = Math.max(1, Math.ceil(total / assetLimit));
+    const page = Math.min(assetPage, totalPages);
+    const data = filteredRows.slice((page - 1) * assetLimit, page * assetLimit);
+    return json({
+      data,
+      pagination: { page, limit: assetLimit, total, totalPages },
+      summary: {
+        total: allRows.length,
+        available: allRows.filter((row) => row.availabilityStatus === "available").length,
+        inUse: allRows.filter((row) => row.availabilityStatus === "in_use").length,
+        maintenance: allRows.filter((row) => row.availabilityStatus === "maintenance" || row.maintenanceDue).length,
+        damaged: allRows.filter((row) => row.availabilityStatus === "damaged").length,
+        currentValue: allRows.reduce((sum, row) => sum + row.currentValue, 0),
+        purchaseValue: allRows.reduce((sum, row) => sum + row.purchasePrice, 0),
+      },
+      filters: {
+        categories: uniqueText(allRows.map((row) => row.category)).sort((a, b) => a.localeCompare(b, "ar")),
+        brands: uniqueText(allRows.map((row) => row.brand)).sort((a, b) => a.localeCompare(b, "ar")),
+        models: uniqueText(allRows.map((row) => row.model)).sort((a, b) => a.localeCompare(b, "ar")),
+        employees: uniqueText(allRows.flatMap((row) => row.responsibleNames)).sort((a, b) => a.localeCompare(b, "ar")),
+        warehouses: uniqueText(allRows.map((row) => row.warehouseName)).sort((a, b) => a.localeCompare(b, "ar")),
+        locations: uniqueText(allRows.map((row) => row.storageLocation)).sort((a, b) => a.localeCompare(b, "ar")),
+      },
     });
   }
 
