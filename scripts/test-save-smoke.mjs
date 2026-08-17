@@ -22,6 +22,17 @@ const bundle = await build({
 const output = join(mkdtempSync(join(tmpdir(), "ajn-save-smoke-")), "write-safety.mjs");
 writeFileSync(output, bundle.outputFiles[0].text);
 const { createApiErrorPayload, mapWriteError } = await import(pathToFileURL(output).href);
+const paymentBundle = await build({
+  entryPoints: ["src/lib/payment-settlement.ts"],
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  write: false,
+  logLevel: "silent",
+});
+const paymentOutput = join(mkdtempSync(join(tmpdir(), "ajn-payment-smoke-")), "payment-settlement.mjs");
+writeFileSync(paymentOutput, paymentBundle.outputFiles[0].text);
+const { settlePaymentAmounts } = await import(pathToFileURL(paymentOutput).href);
 
 let failures = 0;
 function check(name, actual, expected = true) {
@@ -47,6 +58,13 @@ check("serialization conflict is retryable", mapWriteError({ code: "40001" }), (
 check("database outage is not exposed as raw driver error", mapWriteError({ code: "08006" }), (v) => v.status === 500 && v.code === "DATABASE_ERROR" && v.retryable);
 check("partial-index conflict maps to a safe actionable response", mapWriteError({ code: "42P10" }), (v) => v.status === 409 && v.code === "CONFLICT" && !v.retryable);
 
+// Payment-state cases used by the sales invoice API. These run without a DB
+// and keep full, partial and unpaid server-side calculations consistent.
+check("full payment settles the full total", settlePaymentAmounts(5000, 5000, undefined, "transfer"), { paid: 5000, remaining: 0, status: "paid" });
+check("partial payment keeps the outstanding balance", settlePaymentAmounts(5000, 1250, undefined, "transfer"), { paid: 1250, remaining: 3750, status: "partial" });
+check("unpaid transfer invoice remains unpaid", settlePaymentAmounts(5000, 0, undefined, "transfer"), { paid: 0, remaining: 5000, status: "unpaid" });
+check("payment cannot exceed the invoice total", settlePaymentAmounts(5000, 9000, undefined, "transfer"), { paid: 5000, remaining: 0, status: "paid" });
+
 // Fast source assertions protect the high-risk save paths without running them
 // against production. Runtime integration tests belong in a separately
 // configured test database adapter, never in a developer's normal .env.
@@ -62,6 +80,9 @@ check("purchase invoice save keeps a database transaction", api.includes("const 
 check("sales idempotency target matches its partial unique index", api.includes("where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`"));
 check("purchase idempotency target matches its partial unique index", api.includes("where: sql`${purchaseInvoicesTable.idempotencyKey} IS NOT NULL`"));
 check("sales invoice errors include a safe transaction step trace", api.includes("[SALES_INVOICE_SAVE_FAILED]") && api.includes("invoiceSaveStep"));
+check("sales invoice supports decimal inventory quantities to three places", api.includes("الكمية تدعم حتى 3 منازل عشرية") && api.includes("stock::numeric >="));
+check("sales invoice persists payments within the invoice transaction", api.includes("createAndExecuteSourceFinancialTransaction(") && api.includes('traceInvoiceSave("payment_and_cashbox")'));
+check("sales invoice does not require optional tracking columns on insert", api.includes(".returning(salesInvoiceRecordColumns)") && !api.includes("createdByRole: auth.role"));
 check("sales invoice client sends an idempotency key", sales.includes('"x-idempotency-key": submitKeyRef.current'));
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));
 check("shared client preserves error code and request id", client.includes("class AjNApiError") && client.includes("x-request-id"));

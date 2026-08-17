@@ -248,6 +248,7 @@ import {
   approveAndExecuteFinancialTransaction,
   cancelFinancialTransactionRequest,
   canApproveFinancialTransactions,
+  createAndExecuteSourceFinancialTransaction,
   createFinancialTransaction,
   createSourceFinancialRequest,
   ensureMasterCashBoxTables,
@@ -47579,7 +47580,15 @@ const salesInvoiceItemSchema = z.object({
   productId: z.coerce.number().int().positive().nullable().optional(),
   productName: z.string().trim().min(1).max(500),
   barcode: z.string().trim().max(100).optional().nullable(),
-  quantity: z.coerce.number().finite().positive().max(1_000_000),
+  quantity: z.coerce
+    .number()
+    .finite()
+    .positive()
+    .max(1_000_000)
+    .refine(
+      (value) => Math.abs(value * 1_000 - Math.round(value * 1_000)) < 1e-8,
+      "الكمية تدعم حتى 3 منازل عشرية",
+    ),
   unitPrice: z.coerce.number().finite().min(0).max(100_000_000),
   discount: z.coerce.number().finite().min(0).max(100_000_000).default(0),
   discountPct: z.coerce.number().finite().min(0).max(100).default(0),
@@ -47642,15 +47651,19 @@ async function resolveSalesInvoiceBundleLines(
       .where(inArray(productBundleItemsTable.bundleId, bundleIds)),
   ]);
   const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]));
-  const components = new Map<number, BundleComponentDraft[]>();
+  const components = new Map<
+    number,
+    Array<BundleComponentDraft & { isActive: boolean; validQuantity: boolean }>
+  >();
   for (const row of rows) {
-    if (!row.isActive || money(row.quantity) <= 0) continue;
     const list = components.get(row.bundleId) ?? [];
     list.push({
       productId: row.productId,
       productName: textFallback(row.nameAr, row.name),
       quantityPerBundle: money(row.quantity),
       costPrice: money(row.costPrice),
+      isActive: Boolean(row.isActive),
+      validQuantity: money(row.quantity) > 0,
     });
     components.set(row.bundleId, list);
   }
@@ -47666,16 +47679,25 @@ async function resolveSalesInvoiceBundleLines(
       !bundle.showInSalesInvoices ||
       (bundle.startsAt && bundle.startsAt > now) ||
       (bundle.endsAt && bundle.endsAt < now) ||
-      !componentRows.length
+      !componentRows.length ||
+      componentRows.some(
+        (component) =>
+          !component.isActive ||
+          !component.validQuantity ||
+          !component.productName,
+      )
     )
-      throw new CheckoutError("العرض المحدد غير متاح حالياً", 422);
+      throw new CheckoutError("العرض المحدد غير مكتمل أو غير متاح حالياً", 422);
     const unitPrice = money(bundle.offerPrice || bundle.normalPrice);
     const gross = item.quantity * unitPrice;
     const discount = Math.min(item.discount, gross);
     resolved.set(bundle.id, {
       bundleId: bundle.id,
       deliveryFeePerBundle: money(bundle.deliveryFee),
-      components: componentRows,
+      components: componentRows.map(
+        ({ isActive: _isActive, validQuantity: _validQuantity, ...component }) =>
+          component,
+      ),
     });
     return {
       ...item,
@@ -47773,6 +47795,56 @@ function invoicePaymentStatusCondition(
   if (status === "partial") return sql`${paid} > 0 AND ${paid} < ${total}`;
   if (status === "paid") return sql`${paid} > 0 AND ${paid} = ${total}`;
   return sql`${paid} > ${total}`;
+}
+
+function mapSalesInvoiceSaveError(errorValue: unknown, step: string) {
+  const pgError = errorValue as {
+    code?: string;
+    constraint?: string;
+    cause?: { code?: string; constraint?: string };
+  } | null;
+  const pgCode = pgError?.cause?.code ?? pgError?.code;
+  if (pgCode === "42703" || pgCode === "42P10") {
+    return {
+      status: 409,
+      code: "CONFLICT" as ApiErrorCode,
+      message: "بنية قاعدة بيانات الفواتير غير محدثة. طبّق تحديث قاعدة البيانات ثم أعد المحاولة.",
+      retryable: false,
+    };
+  }
+  if (step === "stock_deduction") {
+    return {
+      status: 409,
+      code: "STOCK_INSUFFICIENT" as ApiErrorCode,
+      message: "تعذر تحديث المخزون. تحقق من الكميات المتاحة ثم أعد المحاولة.",
+      retryable: false,
+    };
+  }
+  if (step === "payment_and_cashbox") {
+    return {
+      status: 422,
+      code: "PAYMENT_INVALID" as ApiErrorCode,
+      message: "تعذر تسجيل الدفعة. تحقق من إعدادات الصندوق والحسابات المالية.",
+      retryable: false,
+    };
+  }
+  if (step === "delivery_persist") {
+    return {
+      status: 422,
+      code: "INVOICE_INVALID" as ApiErrorCode,
+      message: "تعذر حفظ بيانات التوصيل. راجع بيانات المستلم والعنوان.",
+      retryable: false,
+    };
+  }
+  if (step === "invoice_items_insert") {
+    return {
+      status: 422,
+      code: "INVOICE_INVALID" as ApiErrorCode,
+      message: "تعذر حفظ أصناف الفاتورة. راجع المنتجات والكميات.",
+      retryable: false,
+    };
+  }
+  return mapWriteError(errorValue);
 }
 
 function invoiceRegisterView<T extends Record<string, any>>(row: T) {
@@ -48369,14 +48441,14 @@ async function salesInvoiceCustomerLinkPrecheck(invoiceId: number) {
   } as const;
 }
 
-async function getOrCreateSalesCashCustomer() {
+async function getOrCreateSalesCashCustomer(executor: any = db) {
   const key = "salesCashCustomer";
-  const setting = await db.query.settingsTable.findFirst({
+  const setting = await executor.query.settingsTable.findFirst({
     where: eq(settingsTable.key, key),
   });
   const configuredId = Number((setting?.value as any)?.customerId);
   if (configuredId > 0) {
-    const configured = await db.query.customersTable.findFirst({
+    const configured = await executor.query.customersTable.findFirst({
       where: and(
         eq(customersTable.id, configuredId),
         eq(customersTable.status, "active"),
@@ -48384,7 +48456,7 @@ async function getOrCreateSalesCashCustomer() {
     });
     if (configured) return configured;
   }
-  const existing = await db.query.customersTable.findFirst({
+  const existing = await executor.query.customersTable.findFirst({
     where: and(
       eq(customersTable.phone, "00000000000"),
       eq(customersTable.status, "active"),
@@ -48392,7 +48464,7 @@ async function getOrCreateSalesCashCustomer() {
   });
   const inserted = existing
     ? [existing]
-    : await db
+    : await executor
         .insert(customersTable)
         .values({
           phone: "00000000000",
@@ -48404,7 +48476,7 @@ async function getOrCreateSalesCashCustomer() {
         .returning();
   const customer =
     inserted[0] ??
-    (await db.query.customersTable.findFirst({
+    (await executor.query.customersTable.findFirst({
       where: eq(customersTable.phone, "00000000000"),
     }));
   if (!customer) throw new Error("تعذر إعداد العميل النقدي");
@@ -49904,9 +49976,15 @@ async function handleSalesInvoices(
       0,
     );
     const paymentMethod = b.paymentMethod ?? "cash";
-    // A sales invoice never becomes paid from browser fields. Initial or later
-    // payments are recorded through a receipt voucher + allocation instead.
-    const payment = paymentSummary(total, 0, undefined, paymentMethod);
+    // The browser may suggest a payment status, but amounts and status are
+    // derived together on the server.  This keeps paid/partial/unpaid coherent
+    // and prevents a client from saving a paid invoice with a remaining balance.
+    const payment = paymentSummary(
+      total,
+      b.paidAmount,
+      undefined,
+      paymentMethod,
+    );
     const paidAmount = payment.deposit;
     const remainingAmount = payment.remaining;
     const paymentStatus = payment.status;
@@ -49930,15 +50008,13 @@ async function handleSalesInvoices(
       if (!customer) return error("العميل المحدد غير موجود", 400);
     }
 
+    const useCashCustomer = !customerId && b.useCashCustomer === true;
     if (!customerId) {
       if (b.useCashCustomer !== true)
         return error(
           "اختر عميلاً أو استخدم العميل النقدي قبل حفظ الفاتورة",
           400,
         );
-      // Anonymous walk-in invoices use one configured generic customer rather
-      // than leaving the financial document without a customer reference.
-      customerId = (await getOrCreateSalesCashCustomer()).id;
     }
 
     // Header, lines, stock, coupon use, and delivery are a single unit of work.
@@ -49946,6 +50022,7 @@ async function handleSalesInvoices(
     // traceable without logging customer data or payment secrets.
     const invoiceRequestId = makeRequestId(req.headers.get("x-request-id"));
     let invoiceSaveStep = "transaction_start";
+    let invoiceSaveInvoiceNo: string | null = null;
     const traceInvoiceSave = (step: string) => {
       invoiceSaveStep = step;
       if (
@@ -49962,6 +50039,12 @@ async function handleSalesInvoices(
     let saved: any;
     try {
       saved = await db.transaction(async (tx) => {
+        if (useCashCustomer) {
+          traceInvoiceSave("cash_customer_resolve");
+          // The generic walk-in customer is created/resolved through the same
+          // transaction, so a failed invoice cannot leave a stray customer row.
+          customerId = (await getOrCreateSalesCashCustomer(tx)).id;
+        }
         traceInvoiceSave("invoice_insert");
         const inserted = await tx
           .insert(salesInvoicesTable)
@@ -49988,29 +50071,30 @@ async function handleSalesInvoices(
             dueDate: normalizeDateOnly(b.dueDate) ?? null,
             status: "active",
             isInternal: b.isInternal ? 1 : 0,
-            notes: b.notes ?? null,
+            notes: nullableText(b.notes),
             createdBy: a.id,
             createdByName: a.name,
-            createdByRole: auth.role,
-            updatedBy: a.id,
-            updatedByName: a.name,
-            updatedByRole: auth.role,
-          } as any)
+            // The attribution columns added by migration 0098 use their
+            // database defaults. Omitting them keeps invoice creation safe on
+            // a valid 0097 database while the additive migration is rolled out.
+          })
           .onConflictDoNothing({
             target: salesInvoicesTable.idempotencyKey,
             // The production index is intentionally partial so legacy rows may
             // keep a NULL key. PostgreSQL requires the same predicate here.
             where: sql`${salesInvoicesTable.idempotencyKey} IS NOT NULL`,
           })
-          .returning();
+          .returning(salesInvoiceRecordColumns);
 
         const inv = inserted[0];
         if (!inv) {
           if (!idempotencyKey)
             throw new Error("Invoice insert did not return a row");
-          const existing = await tx.query.salesInvoicesTable.findFirst({
-            where: eq(salesInvoicesTable.idempotencyKey, idempotencyKey),
-          });
+          const [existing] = await tx
+            .select(salesInvoiceRecordColumns)
+            .from(salesInvoicesTable)
+            .where(eq(salesInvoicesTable.idempotencyKey, idempotencyKey))
+            .limit(1);
           if (!existing) throw new Error("Idempotent invoice was not found");
           const existingItems = await tx
             .select()
@@ -50026,6 +50110,7 @@ async function handleSalesInvoices(
         }
 
         const invoiceNo = inv.invoiceNo;
+        invoiceSaveInvoiceNo = invoiceNo;
         const branchId = await resolveSalesInvoiceBranchId(tx, auth);
         if (branchId) {
           await tx.insert(branchEntityAssignmentsTable).values({
@@ -50174,6 +50259,33 @@ async function handleSalesInvoices(
           }
         }
 
+        let financialTransaction: any = null;
+        if (paidAmount > 0) {
+          traceInvoiceSave("payment_and_cashbox");
+          financialTransaction = await createAndExecuteSourceFinancialTransaction(
+            tx,
+            {
+              transactionDate: dateVal,
+              direction: "revenue",
+              amount: paidAmount,
+              department: "store",
+              transactionType: "sales_invoice",
+              description: `فاتورة مبيعات ${invoiceNo}`,
+              paymentMethod: financialPaymentMethod(paymentMethod),
+              sourceType: "sales_invoice",
+              sourceId: inv.id,
+              sourceEvent: "initial_payment",
+              idempotencyKey: `sales-invoice:${inv.id}:initial-payment`,
+              customerId,
+              customerName: inv.customerName,
+              customerPhone: inv.customerPhone,
+              dueDate: inv.dueDate,
+              notes: inv.notes,
+            },
+            financialActor(auth),
+          );
+        }
+
         traceInvoiceSave("transaction_ready_to_commit");
         return {
           inv,
@@ -50181,6 +50293,7 @@ async function handleSalesInvoices(
           deliveryResult,
           items: insertedItems ?? [],
           branchId,
+          financialTransaction,
           replayed: false,
         };
       });
@@ -50189,20 +50302,31 @@ async function handleSalesInvoices(
         err instanceof CheckoutError
           ? {
               status: err.status,
-              code: "INVOICE_INVALID" as ApiErrorCode,
+              code:
+                invoiceSaveStep === "stock_deduction"
+                  ? ("STOCK_INSUFFICIENT" as ApiErrorCode)
+                  : ("INVOICE_INVALID" as ApiErrorCode),
               message: err.message,
               retryable: false,
             }
-          : mapWriteError(err);
+          : mapSalesInvoiceSaveError(err, invoiceSaveStep);
+      const safeError = safeServerError(err);
+      const constraint = String(
+        (err as any)?.cause?.constraint ?? (err as any)?.constraint ?? "",
+      )
+        .replace(/[^a-zA-Z0-9_.-]/g, "")
+        .slice(0, 160) || null;
       console.error("[SALES_INVOICE_SAVE_FAILED]", {
         requestId: invoiceRequestId,
         step: invoiceSaveStep,
+        invoiceNo: invoiceSaveInvoiceNo,
         actorId: a.id,
         paymentMethod,
         itemCount: items.length,
-        code: (err as any)?.code,
+        databaseCode: safeError.code,
+        constraint,
         mappedCode: mapped.code,
-        error: err instanceof Error ? err.message : "unknown",
+        error: safeError.message,
       });
       return error(mapped.message, mapped.status, {
         code: mapped.code,
@@ -50242,42 +50366,10 @@ async function handleSalesInvoices(
         });
       }
     }
-    let financialTransaction: any = null;
-    if (final && !replayed) {
-      try {
-        financialTransaction = await syncSourcePaymentTarget(
-          {
-            sourceType: "sales_invoice",
-            sourceId: final.id,
-            sourceEvent: "payment",
-            targetAmount: Number(final.paidAmount),
-            normalDirection: "revenue",
-            transactionDate: final.date,
-            department: "store",
-            transactionType: "sales_invoice",
-            description: `فاتورة مبيعات ${final.invoiceNo}`,
-            paymentMethod: financialPaymentMethod(final.paymentMethod),
-            customerId: final.customerId,
-            customerName: final.customerName,
-            customerPhone: final.customerPhone,
-            dueDate: final.dueDate,
-            notes: final.notes,
-          },
-          financialActor(auth),
-        );
-      } catch (err) {
-        // The transaction has committed.  Financial synchronization is
-        // idempotent and may be retried; never report a false failed-save.
-        console.error("sales invoice financial sync failed", {
-          invoiceId: final.id,
-          invoiceNo: final.invoiceNo,
-          customerId: final.customerId,
-          actorId: a.id,
-          error: err instanceof Error ? err.message : err,
-          stack: err instanceof Error ? err.stack : undefined,
-        });
-      }
-    }
+    // The invoice, inventory movements, delivery, and the initial collection
+    // are committed atomically. A payment failure therefore rolls the invoice
+    // back instead of leaving a saved header with missing cashbox/journal data.
+    const financialTransaction = saved.financialTransaction ?? null;
     if (!replayed)
       void logAdminActivity(
         req,
