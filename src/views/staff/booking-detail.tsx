@@ -285,7 +285,9 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
   const setup = data.setup;
   const current = b.executionStage as StageKey;
   const next = nextWorkflowStage(current);
-  const pendingPay = data.paymentRequests.find((p) => p.status === "pending");
+  const pendingPay = data.paymentRequests.find(
+    (p) => p.status === "pending" || p.status === "pending_manager_approval",
+  );
   const pendingPricing = isKoshaPendingPricing(b);
   const preparationPercent = current === "booked" ? 0 : workflowStageRank(current) >= workflowStageRank("ready") ? 100 : 50;
   const installationPercent = workflowStageRank(current) < workflowStageRank("executing") ? 0 : workflowStageRank(current) < workflowStageRank("executed") ? 50 : 100;
@@ -456,10 +458,10 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
         {panel === "delivered" && <DeliveryPanel busy={busy} onCancel={() => setPanel(null)} onSave={(payload) => run(() => staffApi.delivery(id, payload, source))} />}
 
         {/* Collect remaining */}
-        {source === "kosha" && !pendingPricing && current === "delivered" && b.remainingAmount > 0 && (
+        {source === "kosha" && !pendingPricing && b.remainingAmount > 0 && (
           pendingPay
-            ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> طلب تحصيل {money(pendingPay.amount)} د.ع بانتظار موافقة المدير.</Banner>
-            : <CollectPanel remaining={b.remainingAmount} busy={busy} onSubmit={(amount, note) => run(() => staffApi.collect(id, amount, note, source))} />
+            ? <Banner kind="info"><AlertTriangle className="ml-1 inline h-4 w-4" /> تم استلام {money(pendingPay.amount)} د.ع ميدانيًا وهي بانتظار موافقة الإدارة الرئيسية. لا تدخل هذه الدفعة ضمن الرصيد الرسمي قبل الاعتماد.</Banner>
+            : <CollectPanel total={b.totalAmount} paid={b.paidAmount} remaining={b.remainingAmount} busy={busy} onSubmit={(input) => run(() => staffApi.collect(id, input, source))} />
         )}
 
         {/* Payment requests history */}
@@ -468,11 +470,14 @@ export default function StaffBookingDetail({ id, source, onBack }: { id: number;
             <div className="mb-2 text-sm font-bold">سجل التحصيل</div>
             <div className="space-y-1.5 text-sm">
               {data.paymentRequests.map((p) => (
-                <div key={p.id} className="flex items-center justify-between">
-                  <span>{money(p.amount)} د.ع</span>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-status-success/15 text-status-success dark:text-status-success" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>
-                    {p.status === "approved" ? "معتمد" : p.status === "rejected" ? "مرفوض" : "بالانتظار"}
-                  </span>
+                <div key={p.id} className="rounded-lg border border-border/50 p-2">
+                  <div className="flex items-center justify-between gap-2"><span>{money(p.amount)} د.ع · {p.paymentMethod === "transfer" ? "تحويل" : p.paymentMethod === "card" || p.paymentMethod === "pos" ? "بطاقة" : p.paymentMethod === "other" ? "أخرى" : "نقداً"}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${p.status === "approved" ? "bg-status-success/15 text-status-success dark:text-status-success" : p.status === "rejected" ? "bg-destructive/15 text-destructive" : "bg-status-warning/15 text-status-warning"}`}>
+                      {p.status === "approved" ? "معتمد" : p.status === "rejected" ? "مرفوض" : "بانتظار اعتماد الإدارة"}
+                    </span>
+                  </div>
+                  {p.rejectionReason ? <div className="mt-1 text-xs text-destructive">سبب الرفض: {p.rejectionReason}</div> : null}
+                  {p.receiptImage ? <a className="mt-1 block text-xs text-primary underline" href={p.receiptImage} target="_blank" rel="noreferrer">فتح صورة الوصل</a> : null}
                 </div>
               ))}
             </div>
@@ -639,22 +644,34 @@ function DeliveryPanel({ busy, onCancel, onSave }: { busy: boolean; onCancel: ()
   );
 }
 
-function CollectPanel({ remaining, busy, onSubmit }: { remaining: number; busy: boolean; onSubmit: (amount: number, note: string) => void }) {
+function CollectPanel({ total, paid, remaining, busy, onSubmit }: {
+  total: number;
+  paid: number;
+  remaining: number;
+  busy: boolean;
+  onSubmit: (input: { amount: number; paymentMethod: "cash" | "transfer" | "card" | "pos" | "other"; note?: string; receiptImage?: string | null }) => void;
+}) {
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "transfer" | "card" | "pos" | "other">("cash");
+  const [receipt, setReceipt] = useState<MediaInput[]>([]);
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const val = Number(amount) || 0;
   return (
     <div className="rounded-xl border-2 border-primary/40 bg-card p-3">
-      <div className="mb-2 flex items-center gap-1.5 font-bold"><Banknote className="h-4 w-4" /> المبلغ المتبقي على العميل</div>
-      <div className="mb-3 rounded-lg bg-muted/40 p-2 text-center text-lg font-extrabold">{money(remaining)} د.ع</div>
+      <div className="mb-2 flex items-center gap-1.5 font-bold"><Banknote className="h-4 w-4" /> تحصيل المبلغ المتبقي</div>
+      <div className="mb-3 grid grid-cols-3 gap-2 text-center text-xs"><div className="rounded-lg bg-muted/40 p-2"><span className="block text-muted-foreground">إجمالي الحجز</span><b>{money(total)} د.ع</b></div><div className="rounded-lg bg-muted/40 p-2"><span className="block text-muted-foreground">المدفوع سابقًا</span><b>{money(paid)} د.ع</b></div><div className="rounded-lg bg-primary/10 p-2"><span className="block text-muted-foreground">المتبقي الآن</span><b className="text-primary">{money(remaining)} د.ع</b></div></div>
       <label className="mb-1 block text-sm font-medium">قيمة المبلغ المستلم</label>
       <input value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" className="w-full rounded-lg border border-border bg-background p-2 text-center text-lg font-bold" />
+      <label className="mb-1 mt-2 block text-sm font-medium">طريقة الدفع</label>
+      <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as typeof paymentMethod)} className="w-full rounded-lg border border-border bg-background p-2 text-sm"><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="card">بطاقة</option><option value="pos">نقطة بيع</option><option value="other">أخرى</option></select>
       <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="ملاحظة (اختياري)" rows={2} className="mt-2 w-full rounded-lg border border-border bg-background p-2 text-sm" />
-      <button disabled={busy || val <= 0 || val > remaining} onClick={() => onSubmit(val, note)}
+      <div className="mt-2"><MediaPicker media={receipt} setMedia={setReceipt} label="صورة وصل الاستلام (اختياري)" imagesOnly onUploadingChange={setUploadingReceipt} /></div>
+      <button disabled={busy || uploadingReceipt || val <= 0 || val > remaining} onClick={() => onSubmit({ amount: val, paymentMethod, note: note || undefined, receiptImage: receipt[0]?.url ?? null })}
         className="mt-3 w-full rounded-lg bg-primary py-2.5 font-bold text-primary-foreground disabled:opacity-60">
-        {busy ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "تم استلام المبلغ"}
+        {busy || uploadingReceipt ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "تأكيد التحصيل وإرساله للاعتماد"}
       </button>
-      <div className="mt-1.5 text-center text-xs text-muted-foreground">يُرسل للمدير للموافقة — لا يُسجَّل المال إلا بعد الاعتماد</div>
+      <div className="mt-1.5 text-center text-xs text-muted-foreground">يمكن إكمال مرحلة التشغيل بشكل مستقل؛ الدفعة لا تدخل الصندوق أو الرصيد الرسمي إلا بعد اعتماد الإدارة الرئيسية.</div>
     </div>
   );
 }

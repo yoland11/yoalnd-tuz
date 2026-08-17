@@ -36,7 +36,8 @@ const criticalTables = new Set([
   "sales_invoice_bundle_snapshots", "financial_transactions", "financial_ledger_entries",
   "payment_vouchers", "receipt_vouchers", "receipt_voucher_allocations",
   "delivery_details", "delivery_orders", "print_agents", "printers", "print_jobs",
-  "kosha_bookings", "notifications",
+  "kosha_bookings", "kosha_payment_requests", "kosha_booking_events",
+  "kosha_staff_notifications", "notifications",
 ]);
 try {
   client = await pool.connect();

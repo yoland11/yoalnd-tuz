@@ -16,7 +16,7 @@ import { getTableColumns, getTableName, is } from "drizzle-orm";
 import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
 
 const REQUIRED_SCHEMA_REVISION = Number(
-  process.env.AJN_REQUIRED_SCHEMA_REVISION ?? "99",
+  process.env.AJN_REQUIRED_SCHEMA_REVISION ?? "101",
 );
 const configuredConnectionString = process.env.AJN_SCHEMA_DATABASE_URL;
 
@@ -157,11 +157,13 @@ try {
     indexname: string;
     is_unique: boolean;
     columns: string[];
+    definition: string;
   }>(`
     SELECT
       table_rel.relname AS tablename,
       index_rel.relname AS indexname,
       index_meta.indisunique AS is_unique,
+      pg_get_indexdef(index_rel.oid) AS definition,
       COALESCE(
         json_agg(attribute.attname ORDER BY index_column.ordinality)
           FILTER (WHERE attribute.attname IS NOT NULL),
@@ -176,7 +178,7 @@ try {
       ON attribute.attrelid = table_rel.oid
       AND attribute.attnum = index_column.attribute_number
     WHERE namespace.nspname = 'public'
-    GROUP BY table_rel.relname, index_rel.relname, index_meta.indisunique
+    GROUP BY table_rel.relname, index_rel.relname, index_rel.oid, index_meta.indisunique
   `);
   const actualIndexes = indexRows.rows.map((row) => ({
     ...row,
@@ -241,8 +243,16 @@ try {
           (actual) =>
             actual.tablename === index.table &&
             (index.unique ? actual.is_unique : true) &&
-            actual.columns.length === index.columns.length &&
-            actual.columns.every((column, position) => column === index.columns[position]),
+            (
+              (actual.columns.length === index.columns.length &&
+                actual.columns.every((column, position) => column === index.columns[position])) ||
+              // PostgreSQL expression indexes (for example COALESCE used to
+              // enforce NULL-safe favorites uniqueness) have no attname in
+              // pg_index.indkey. A same-named unique index containing every
+              // expected column is therefore the verified equivalent.
+              (index.unique && actual.is_unique && actual.indexname === index.name &&
+                index.columns.every((column) => actual.definition.includes(column)))
+            ),
         ),
     )
     .map(

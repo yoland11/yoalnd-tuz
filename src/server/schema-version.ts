@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 
-export const REQUIRED_SCHEMA_REVISION = 99;
+export const REQUIRED_SCHEMA_REVISION = 101;
 
 export class SchemaOutdatedError extends Error {
   constructor() {

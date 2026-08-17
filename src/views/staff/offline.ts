@@ -9,7 +9,7 @@ import { adminFetch } from "@/views/admin/_lib";
 const DB_NAME = "ajn-staff-queue";
 const STORE = "ops";
 
-export type QueuedOp = { id?: number; path: string; method: string; body: string; createdAt: number };
+export type QueuedOp = { id?: number; path: string; method: string; body: string; idempotencyKey?: string; createdAt: number };
 export type QueuedResult = { queued: true };
 
 function hasIDB() {
@@ -101,16 +101,23 @@ function isOffline(): boolean {
 export async function mutateOrQueue<T>(path: string, init: RequestInit): Promise<T | QueuedResult> {
   const body = typeof init.body === "string" ? init.body : JSON.stringify(init.body ?? {});
   const method = init.method ?? "POST";
+  const headers = new Headers(init.headers);
+  const idempotencyKey =
+    headers.get("x-idempotency-key") ||
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  headers.set("x-idempotency-key", idempotencyKey);
   if (isOffline()) {
-    await enqueueOp({ path, method, body });
+    await enqueueOp({ path, method, body, idempotencyKey });
     return { queued: true };
   }
   try {
-    return await adminFetch<T>(path, { ...init, method, body });
+    return await adminFetch<T>(path, { ...init, method, body, headers });
   } catch (e: any) {
     // No HTTP status => network failure => queue it. HTTP errors (validation) bubble up.
     if (e?.status === undefined) {
-      await enqueueOp({ path, method, body });
+      await enqueueOp({ path, method, body, idempotencyKey });
       return { queued: true };
     }
     throw e;
@@ -124,7 +131,13 @@ export async function flushQueue(): Promise<number> {
   let flushed = 0;
   for (const op of ops) {
     try {
-      await adminFetch(op.path, { method: op.method, body: op.body });
+      await adminFetch(op.path, {
+        method: op.method,
+        body: op.body,
+        headers: op.idempotencyKey
+          ? { "x-idempotency-key": op.idempotencyKey }
+          : undefined,
+      });
       if (op.id != null) await removeOp(op.id);
       flushed++;
     } catch (e: any) {

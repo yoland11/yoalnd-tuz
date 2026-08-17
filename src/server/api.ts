@@ -19613,7 +19613,7 @@ async function handleAdminKoshas(
         );
         const pendingCollectionAmount = money(
           requests
-            .filter((r) => r.status === "pending")
+            .filter((r) => isKoshaPendingCollectionStatus(r.status))
             .reduce((sum, r) => sum + money(r.amount), 0),
         );
         const refundedAmount = money(
@@ -58972,6 +58972,25 @@ async function addKoshaNotification(input: {
   }
 }
 
+const KOSHA_PENDING_COLLECTION_STATUSES = [
+  "pending",
+  "pending_manager_approval",
+] as const;
+
+function isKoshaPendingCollectionStatus(status: unknown) {
+  return KOSHA_PENDING_COLLECTION_STATUSES.includes(
+    String(status ?? "") as (typeof KOSHA_PENDING_COLLECTION_STATUSES)[number],
+  );
+}
+
+function canApproveKoshaFieldCollection(user: AdminUser) {
+  return (
+    ["admin", "main_admin", "super_admin"].includes(user.role) ||
+    user.permissions.includes("sales_payment:approve_field_collection") ||
+    user.permissions.includes("voucher_approve")
+  );
+}
+
 async function saveKoshaMedia(input: {
   bookingId: number;
   eventId?: number | null;
@@ -60228,7 +60247,12 @@ async function handleStaffPortal(
         where:
           status === "all"
             ? undefined
-            : eq(koshaPaymentRequestsTable.status, status),
+            : status === "pending"
+              ? inArray(
+                  koshaPaymentRequestsTable.status,
+                  KOSHA_PENDING_COLLECTION_STATUSES,
+                )
+              : eq(koshaPaymentRequestsTable.status, status),
         orderBy: [desc(koshaPaymentRequestsTable.createdAt)],
         limit: 200,
       });
@@ -60240,12 +60264,16 @@ async function handleStaffPortal(
           return {
             ...r,
             amount: Number(r.amount),
+            remainingBefore: Number(r.remainingBefore ?? 0),
             createdAt: r.createdAt?.toISOString?.() ?? String(r.createdAt),
             reviewedAt: r.reviewedAt?.toISOString?.() ?? null,
             booking: b
               ? {
                   id: b.id,
+                  bookingNo: b.trackingCode ?? `KB-${b.id}`,
                   customerName: b.customerName,
+                  customerPhone: b.phone,
+                  customerId: (b as any).customerId ?? null,
                   totalAmount: Number(b.totalAmount),
                   paidAmount: Number(b.paidAmount),
                   remainingAmount: Number(b.remainingAmount),
@@ -60262,194 +60290,193 @@ async function handleStaffPortal(
       id &&
       (action === "approve" || action === "reject")
     ) {
-      if (
-        action === "approve" &&
-        !canApproveFinancialTransactions(financialActor(auth))
-      )
-        return error("اعتماد التحصيل متاح للمدير فقط", 403);
-      const reqRow = await db.query.koshaPaymentRequestsTable.findFirst({
-        where: eq(koshaPaymentRequestsTable.id, id),
-      });
-      if (!reqRow) return error("الطلب غير موجود", 404);
-      if (reqRow.status !== "pending")
-        return error("تمت معالجة هذا الطلب مسبقًا", 409);
-      const booking = await db.query.koshaBookingsTable.findFirst({
-        where: eq(koshaBookingsTable.id, reqRow.bookingId),
-      });
-      if (!booking) return error("الحجز غير موجود", 404);
+      if (!canApproveKoshaFieldCollection(auth))
+        return error("اعتماد التحصيل الميداني متاح للإدارة الرئيسية فقط", 403);
+      const approvalBody = await body(req);
+      const rejectionReason = String(approvalBody?.reason ?? "").trim();
+      if (action === "reject" && rejectionReason.length < 3)
+        return error("سبب رفض التحصيل مطلوب", 400);
 
-      if (action === "reject") {
-        await db
-          .update(koshaPaymentRequestsTable)
-          .set({
-            status: "rejected",
-            reviewedByStaffId: auth.id,
-            reviewedByName: auth.fullName || auth.username,
-            reviewedAt: new Date(),
-          })
-          .where(eq(koshaPaymentRequestsTable.id, id));
-        await addKoshaEvent({
-          bookingId: booking.id,
-          staff: auth,
-          type: "payment_rejected",
-          note: reqRow.note,
-          meta: { amount: Number(reqRow.amount) },
-        });
-        await addKoshaNotification({
-          staffId: reqRow.staffId,
-          audience: "staff",
-          type: "payment_rejected",
-          title: "رُفض تحصيل المبلغ",
-          body: `رفض المدير تحصيل ${formatCurrency(reqRow.amount)}`,
-          href: `/staff/koshas/booking/${booking.id}`,
-          bookingId: booking.id,
-        });
-        return json({ ok: true, status: "rejected" });
-      }
-
-      // approve → record payment, push to finance.
-      const amount = Number(reqRow.amount);
-      const newPaid = Number(booking.paidAmount) + amount;
-      const newRemaining = Math.max(
-        0,
-        Number(booking.remainingAmount) - amount,
-      );
-      const paymentStatus = newRemaining <= 0 ? "paid" : "partial";
-      // Claim the request atomically before touching the booking. This closes
-      // the double-click/concurrent approval race and prevents duplicate
-      // financial postings for the same collection request.
-      const [claimedRequest] = await db
-        .update(koshaPaymentRequestsTable)
-        .set({
-          status: "approved",
-          reviewedByStaffId: auth.id,
-          reviewedByName: auth.fullName || auth.username,
-          reviewedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(koshaPaymentRequestsTable.id, id),
-            eq(koshaPaymentRequestsTable.status, "pending"),
-          ),
-        )
-        .returning();
-      if (!claimedRequest)
-        return error("ØªÙ…Øª Ù…Ø¹Ø§Ù„Ø¬Ø© Ù‡Ø°Ø§ Ø§Ù„Ø·Ù„Ø¨ Ù…Ø³Ø¨Ù‚Ù‹Ø§", 409);
-
-      let updated: typeof booking | undefined;
+      let result: any;
       try {
-        [updated] = await db
-          .update(koshaBookingsTable)
-          .set({
-            paidAmount: String(newPaid),
-            remainingAmount: String(newRemaining),
-            paymentStatus,
-            updatedAt: new Date(),
+        result = await db.transaction(async (tx) => {
+        // Claim and lock the collection in the same transaction as the cashbox,
+        // receipt allocation, booking totals, ledger, and audit entries.
+        const claimed = await tx.execute(sql`
+          UPDATE kosha_payment_requests
+          SET status = 'processing'
+          WHERE id = ${id} AND status IN ('pending', 'pending_manager_approval')
+          RETURNING *
+        `);
+        const request = (claimed.rows ?? [])[0] as any;
+        if (!request) {
+          const current = await tx.execute(
+            sql`SELECT * FROM kosha_payment_requests WHERE id = ${id} LIMIT 1`,
+          );
+          const existing = (current.rows ?? [])[0] as any;
+          if (!existing) return { state: "missing" as const };
+          return {
+            state: "already_processed" as const,
+            status: String(existing.status),
+            financialTransactionId: existing.financial_transaction_id ?? null,
+          };
+        }
+
+        const bookingResult = await tx.execute(
+          sql`SELECT * FROM kosha_bookings WHERE id = ${Number(request.booking_id)} FOR UPDATE`,
+        );
+        const booking = (bookingResult.rows ?? [])[0] as any;
+        if (!booking) throw new Error("الحجز المرتبط بالتحصيل غير موجود");
+        const amount = money(request.amount);
+
+        if (action === "reject") {
+          await tx.execute(sql`
+            UPDATE kosha_payment_requests SET
+              status = 'rejected', rejection_reason = ${rejectionReason},
+              reviewed_by_staff_id = ${auth.id},
+              reviewed_by_name = ${auth.fullName || auth.username}, reviewed_at = now()
+            WHERE id = ${id}
+          `);
+          await tx.insert(koshaBookingEventsTable).values({
+            bookingId: Number(booking.id), staffId: auth.id,
+            staffName: auth.fullName || auth.username, type: "payment_rejected",
+            note: rejectionReason,
+            meta: { amount, collectionId: id, requestId: req.headers.get("x-request-id") ?? null },
+          });
+          return {
+            state: "rejected" as const,
+            bookingId: Number(booking.id), staffId: request.staff_id ? Number(request.staff_id) : null,
+            amount,
+          };
+        }
+
+        if (amount <= 0 || amount - money(booking.remaining_amount) > 0.005)
+          throw new Error("مبلغ التحصيل لا يطابق الرصيد المتبقي الحالي للحجز");
+
+        let customerId = Number(booking.customer_id) || 0;
+        if (!customerId) {
+          const customerResult = await tx.execute(sql`
+            SELECT id FROM customers
+            WHERE regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') =
+                  regexp_replace(coalesce(${String(booking.phone ?? "")}), '[^0-9]', '', 'g')
+              AND regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') <> ''
+            ORDER BY id LIMIT 1
+          `);
+          customerId = Number((customerResult.rows ?? [])[0]?.id ?? 0);
+          if (!customerId)
+            throw new Error("لا يمكن اعتماد التحصيل قبل ربط الحجز بحساب العميل");
+          await tx.execute(
+            sql`UPDATE kosha_bookings SET customer_id = ${customerId}, updated_at = now() WHERE id = ${Number(booking.id)}`,
+          );
+        }
+
+        const [voucher] = await tx
+          .insert(receiptVouchersTable)
+          .values({
+            voucherNo: temporaryVoucherNo(),
+            date: baghdadToday(),
+            amount: String(amount),
+            payerName: String(booking.customer_name ?? "زبون"),
+            customerId,
+            koshaBookingId: Number(booking.id),
+            reference: String(booking.tracking_code ?? `KB-${booking.id}`),
+            method: String(request.payment_method ?? "cash"),
+            notes: request.note ?? null,
+            createdBy: request.staff_id ? Number(request.staff_id) : null,
+            createdByName: String(request.staff_name ?? ""),
+            approvalStatus: "pending",
           })
-          .where(eq(koshaBookingsTable.id, booking.id))
           .returning();
-      } catch (bookingError) {
-        await db
-          .update(koshaPaymentRequestsTable)
-          .set({
-            status: "pending",
-            reviewedByStaffId: null,
-            reviewedByName: null,
-            reviewedAt: null,
-          })
-          .where(eq(koshaPaymentRequestsTable.id, id));
-        throw bookingError;
-      }
-      if (!updated) {
-        await db
-          .update(koshaPaymentRequestsTable)
-          .set({
-            status: "pending",
-            reviewedByStaffId: null,
-            reviewedByName: null,
-            reviewedAt: null,
-          })
-          .where(eq(koshaPaymentRequestsTable.id, id));
-        return error("ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø­Ø¬Ø²", 409);
-      }
-      let financial: Awaited<ReturnType<typeof syncKoshaFinancialPayment>> =
-        null;
-      try {
-        financial = await syncKoshaFinancialPayment(
-          updated,
+        const [savedVoucher] = await tx
+          .update(receiptVouchersTable)
+          .set({ voucherNo: fmtVoucherNo("REC", voucher.id, voucher.createdAt) })
+          .where(eq(receiptVouchersTable.id, voucher.id))
+          .returning();
+        await tx.insert(receiptVoucherAllocationsTable).values({
+          receiptVoucherId: savedVoucher.id,
+          customerId,
+          sourceType: "kosha_booking",
+          sourceId: Number(booking.id),
+          amount: String(amount),
+        });
+        const financial = await createAndExecuteSourceFinancialTransaction(
+          tx,
+          {
+            transactionDate: baghdadToday(), direction: "revenue", amount,
+            department: "koshas", transactionType: "receipt_voucher",
+            description: `تحصيل ميداني لحجز كوشة ${booking.tracking_code ?? `KB-${booking.id}`}`,
+            paymentMethod: String(request.payment_method ?? "cash") as "cash" | "transfer" | "card" | "pos" | "other",
+            sourceType: "receipt_voucher", sourceId: savedVoucher.id,
+            sourceEvent: "kosha_field_collection",
+            idempotencyKey: `kosha-field-collection:${id}`,
+            customerId, customerName: String(booking.customer_name ?? ""),
+            customerPhone: String(booking.phone ?? ""), dueDate: booking.due_date ?? null,
+            notes: request.note ?? null,
+            attachments: request.receipt_image ? [String(request.receipt_image)] : [],
+          },
           financialActor(auth),
         );
-        if (
-          financial?.approvalStatus === "pending" &&
-          canApproveFinancialTransactions(financialActor(auth))
-        ) {
-          financial = await approveAndExecuteFinancialTransaction(
-            financial.id,
-            financialActor(auth),
-            "Ù…ÙˆØ§ÙÙ‚Ø© ØªØ­ØµÙŠÙ„ ÙƒÙˆØ´Ø©",
-          );
-        }
-      } catch (financeError) {
-        // Do not leave a booking marked paid when the unified posting failed.
-        // Any newly-created pending request is cancelled (never deleted) so
-        // the retry remains auditable and cannot be executed accidentally.
-        if (
-          financial?.approvalStatus &&
-          financial.approvalStatus !== "executed"
-        ) {
-          await cancelFinancialTransactionRequest(
-            financial.id,
-            financialActor(auth),
-            "ÙØ´Ù„ Ù†Ø´Ø± ØªØ­ØµÙŠÙ„ Ø§Ù„ÙƒÙˆØ´Ø©",
-          );
-        }
-        await db
-          .update(koshaBookingsTable)
-          .set({
-            paidAmount: booking.paidAmount,
-            remainingAmount: booking.remainingAmount,
-            paymentStatus: booking.paymentStatus,
-            updatedAt: new Date(),
-          })
-          .where(eq(koshaBookingsTable.id, booking.id));
-        await db
-          .update(koshaPaymentRequestsTable)
-          .set({
-            status: "pending",
-            reviewedByStaffId: null,
-            reviewedByName: null,
-            reviewedAt: null,
-          })
-          .where(eq(koshaPaymentRequestsTable.id, id));
-        throw financeError;
+        const after = await tx.execute(
+          sql`SELECT paid_amount, remaining_amount, payment_status FROM kosha_bookings WHERE id = ${Number(booking.id)}`,
+        );
+        const financialRow = financial as any;
+        await tx.execute(sql`
+          UPDATE kosha_payment_requests SET
+            status = 'approved', financial_transaction_id = ${financialRow.id},
+            reviewed_by_staff_id = ${auth.id},
+            reviewed_by_name = ${auth.fullName || auth.username}, reviewed_at = now(),
+            rejection_reason = NULL
+          WHERE id = ${id}
+        `);
+        await tx.insert(koshaBookingEventsTable).values({
+          bookingId: Number(booking.id), staffId: auth.id,
+          staffName: auth.fullName || auth.username, type: "payment_approved",
+          note: request.note ?? null,
+          meta: { amount, collectionId: id, receiptVoucherId: savedVoucher.id, financialTransactionId: financialRow.id },
+        });
+        const updated = (after.rows ?? [])[0] as any;
+        return {
+          state: "approved" as const,
+          bookingId: Number(booking.id), staffId: request.staff_id ? Number(request.staff_id) : null,
+          amount, financialTransactionId: financialRow.id,
+          paidAmount: money(updated?.paid_amount), remainingAmount: money(updated?.remaining_amount),
+          paymentStatus: String(updated?.payment_status ?? "partial"),
+        };
+        });
+      } catch (cause) {
+        // Business conflicts are shown to the approving administrator. Database
+        // faults continue to the central safe error mapper with their request id.
+        const message = cause instanceof Error ? cause.message : "";
+        const knownMessages = new Set([
+          "الحجز المرتبط بالتحصيل غير موجود",
+          "مبلغ التحصيل لا يطابق الرصيد المتبقي الحالي للحجز",
+          "لا يمكن اعتماد التحصيل قبل ربط الحجز بحساب العميل",
+        ]);
+        if (knownMessages.has(message)) return error(message, 409);
+        throw cause;
       }
-      await db
-        .update(koshaPaymentRequestsTable)
-        .set({ financialTransactionId: financial?.id ?? null })
-        .where(eq(koshaPaymentRequestsTable.id, reqRow.id));
-      await addKoshaEvent({
-        bookingId: booking.id,
-        staff: auth,
-        type: "payment_approved",
-        note: reqRow.note,
-        meta: { amount },
-      });
+
+      if (result.state === "missing") return error("طلب التحصيل غير موجود", 404);
+      if (result.state === "already_processed")
+        return json({ ok: true, alreadyProcessed: true, status: result.status, financialTransactionId: result.financialTransactionId });
+      if (result.state === "rejected") {
+        await addKoshaNotification({
+          staffId: result.staffId, audience: "staff", type: "payment_rejected",
+          title: "رُفض تحصيل المبلغ",
+          body: `رُفض تحصيل ${formatCurrency(result.amount)}. السبب: ${rejectionReason}`,
+          href: `/staff/koshas/booking/${result.bookingId}`, bookingId: result.bookingId,
+        });
+        await logAdminActivity(req, "kosha_field_collection_rejected", "kosha_payment_request", id, { reason: rejectionReason, amount: result.amount, bookingId: result.bookingId });
+        return json({ ok: true, status: "rejected" });
+      }
       await addKoshaNotification({
-        staffId: reqRow.staffId,
-        audience: "staff",
-        type: "payment_approved",
+        staffId: result.staffId, audience: "staff", type: "payment_approved",
         title: "اعتُمد تحصيل المبلغ",
-        body: `وافق المدير على تحصيل ${formatCurrency(amount)} ودخل النظام`,
-        href: `/staff/koshas/booking/${booking.id}`,
-        bookingId: booking.id,
+        body: `اعتُمد تحصيل ${formatCurrency(result.amount)} وأضيف إلى الصندوق الرئيسي.`,
+        href: `/staff/koshas/booking/${result.bookingId}`, bookingId: result.bookingId,
       });
-      return json({
-        ok: true,
-        status: "approved",
-        paidAmount: newPaid,
-        remainingAmount: newRemaining,
-        financialTransactionId: financial?.id ?? null,
-      });
+      await logAdminActivity(req, "kosha_field_collection_approved", "kosha_payment_request", id, { amount: result.amount, bookingId: result.bookingId, financialTransactionId: result.financialTransactionId });
+      return json({ ok: true, status: "approved", paidAmount: result.paidAmount, remainingAmount: result.remainingAmount, paymentStatus: result.paymentStatus, financialTransactionId: result.financialTransactionId });
     }
     return error("المسار غير موجود", 404);
   }
@@ -61422,64 +61449,133 @@ async function handleStaffPortal(
       return error("التحصيل الميداني غير متاح لهذا المصدر", 400);
     const authorized = await authorizeKoshaPortalBooking(auth, id, "kosha");
     if ("response" in authorized) return authorized.response;
-    const data = await body(req);
-    const amount = Number(data?.amount ?? 0);
-    const note = String(data?.note ?? "").trim();
-    const booking = await db.query.koshaBookingsTable.findFirst({
-      where: eq(koshaBookingsTable.id, id),
-    });
-    if (!booking) return error("الحجز غير موجود", 404);
-    if (
-      booking.paymentStatus === "pending_pricing" ||
-      Number(booking.totalAmount) <= 0
-    )
-      return error("يجب تسعير الحجز من الإدارة قبل تسجيل أي تحصيل", 400);
-    const remaining = Number(booking.remainingAmount);
-    if (!(amount > 0)) return error("أدخل مبلغًا صحيحًا", 400);
-    if (amount > remaining)
-      return error("المبلغ أكبر من المتبقي على العميل", 400);
-    const pending = await db.query.koshaPaymentRequestsTable.findFirst({
-      where: and(
-        eq(koshaPaymentRequestsTable.bookingId, id),
-        eq(koshaPaymentRequestsTable.status, "pending"),
-      ),
-    });
-    if (pending)
-      return error("يوجد طلب تحصيل بانتظار موافقة المدير لهذا الحجز", 409);
-
-    const [reqRow] = await db
-      .insert(koshaPaymentRequestsTable)
-      .values({
-        bookingId: id,
-        staffId: auth.id,
-        staffName: auth.fullName || auth.username,
-        amount: String(amount),
-        note: note || null,
-        status: "pending",
+    const parsed = z
+      .object({
+        amount: z.coerce.number().finite().positive().max(999_999_999_999),
+        paymentMethod: z.enum(["cash", "transfer", "card", "pos", "other"]).default("cash"),
+        note: z.string().trim().max(2000).optional().nullable(),
+        receiptImage: z.string().trim().max(20_000_000).optional().nullable(),
       })
-      .returning();
-    await addKoshaEvent({
-      bookingId: id,
-      staff: auth,
-      type: "payment_request",
-      note: note || null,
-      meta: { amount },
-    });
-    await addKoshaNotification({
+      .safeParse(await body(req));
+    if (!parsed.success)
+      return validationError("kosha_field_collection.submit", parsed);
+    const idempotencyKey =
+      req.headers.get("x-idempotency-key")?.trim().slice(0, 180) ||
+      null;
+    if (!idempotencyKey)
+      return error("مفتاح منع التكرار مطلوب لتسجيل التحصيل", 400);
+    const data = parsed.data;
+    const receiptImage = data.receiptImage
+      ? await persistMediaValue(data.receiptImage, `kosha/field-collections/${id}`)
+      : null;
+    let submitted: { request: typeof koshaPaymentRequestsTable.$inferSelect; duplicate: boolean };
+    try {
+      submitted = await db.transaction(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(koshaPaymentRequestsTable)
+        .where(eq(koshaPaymentRequestsTable.idempotencyKey, idempotencyKey))
+        .limit(1);
+      if (existing[0]) return { request: existing[0], duplicate: true };
+      const bookingResult = await tx.execute(
+        sql`SELECT * FROM kosha_bookings WHERE id = ${id} FOR UPDATE`,
+      );
+      const booking = (bookingResult.rows ?? [])[0] as any;
+      if (!booking) throw new Error("الحجز غير موجود");
+      if (
+        booking.payment_status === "pending_pricing" ||
+        money(booking.total_amount) <= 0
+      )
+        throw new Error("يجب تسعير الحجز من الإدارة قبل تسجيل أي تحصيل");
+      const remaining = money(booking.remaining_amount);
+      if (data.amount - remaining > 0.005)
+        throw new Error("المبلغ أكبر من المتبقي على العميل");
+      const pending = await tx.execute(sql`
+        SELECT id FROM kosha_payment_requests
+        WHERE booking_id = ${id} AND status IN ('pending', 'pending_manager_approval', 'processing')
+        LIMIT 1 FOR UPDATE
+      `);
+      if ((pending.rows ?? []).length)
+        throw new Error("يوجد طلب تحصيل بانتظار موافقة الإدارة لهذا الحجز");
+      const [request] = await tx
+        .insert(koshaPaymentRequestsTable)
+        .values({
+          bookingId: id,
+          staffId: auth.id,
+          staffName: auth.fullName || auth.username,
+          amount: String(data.amount),
+          paymentMethod: data.paymentMethod,
+          receiptImage,
+          remainingBefore: String(remaining),
+          idempotencyKey,
+          note: data.note || null,
+          status: "pending_manager_approval",
+          collectionMeta: {
+            requestId: req.headers.get("x-request-id") ?? null,
+            device: req.headers.get("user-agent")?.slice(0, 500) ?? null,
+            ip: ip(req),
+          },
+        })
+        .onConflictDoNothing({
+          target: koshaPaymentRequestsTable.idempotencyKey,
+          where: sql`${koshaPaymentRequestsTable.idempotencyKey} IS NOT NULL`,
+        })
+        .returning();
+      if (!request) {
+        const [duplicate] = await tx
+          .select()
+          .from(koshaPaymentRequestsTable)
+          .where(eq(koshaPaymentRequestsTable.idempotencyKey, idempotencyKey))
+          .limit(1);
+        if (duplicate) return { request: duplicate, duplicate: true };
+        throw new Error("تعذر تسجيل طلب التحصيل");
+      }
+      await tx.insert(koshaBookingEventsTable).values({
+        bookingId: id, staffId: auth.id, staffName: auth.fullName || auth.username,
+        type: "payment_request", note: data.note || null,
+        meta: { amount: data.amount, paymentMethod: data.paymentMethod, receiptImage, remainingBefore: remaining, requestId: req.headers.get("x-request-id") ?? null },
+      });
+        return { request, duplicate: false };
+      });
+    } catch (cause) {
+      // These are expected validation/concurrency outcomes. Unexpected database
+      // failures are deliberately rethrown to preserve the structured AJN error
+      // contract and its request-id server log.
+      const message = cause instanceof Error ? cause.message : "";
+      const knownMessages = new Set([
+        "الحجز غير موجود",
+        "يجب تسعير الحجز من الإدارة قبل تسجيل أي تحصيل",
+        "المبلغ أكبر من المتبقي على العميل",
+        "يوجد طلب تحصيل بانتظار موافقة الإدارة لهذا الحجز",
+        "تعذر تسجيل طلب التحصيل",
+      ]);
+      if (knownMessages.has(message)) return error(message, message.includes("بانتظار") ? 409 : 422);
+      throw cause;
+    }
+    const reqRow = submitted.request;
+    const customerName =
+      (authorized.resolved as any).native?.customerName ?? "العميل";
+    if (!submitted.duplicate) {
+      await logAdminActivity(req, "kosha_field_collection_submitted", "kosha_payment_request", reqRow.id, {
+        bookingId: id, amount: data.amount, paymentMethod: data.paymentMethod,
+        remainingBefore: Number(reqRow.remainingBefore ?? 0), hasReceiptImage: Boolean(receiptImage),
+      });
+    }
+    if (!submitted.duplicate) await addKoshaNotification({
       audience: "manager",
       type: "payment_request",
       title: "طلب تحصيل ميداني",
-      body: `${auth.fullName || auth.username} استلم ${formatCurrency(amount)} — ${booking.customerName}`,
+      body: `${auth.fullName || auth.username} استلم ${formatCurrency(data.amount)} — ${customerName}`,
       href: "/admin/kosha-collections",
       bookingId: id,
     });
-    // Surface the request inside the site admin panel (notifications bell + manager push).
-    try {
+    // Surface a newly-created request inside the admin notification center.
+    if (!submitted.duplicate) try {
       await createNotification({
         audienceType: "admin",
         type: "kosha_collection_request",
         title: "طلب تحصيل كوشة",
-        body: `${auth.fullName || auth.username} استلم ${formatCurrency(amount)} من ${booking.customerName} — بانتظار اعتمادك`,
+        body: `${auth.fullName || auth.username} استلم ${formatCurrency(data.amount)} من ${customerName} — بانتظار اعتمادك`,
         entityType: "kosha_payment_request",
         entityId: reqRow.id,
         href: "/admin/kosha-collections",
@@ -61488,7 +61584,7 @@ async function handleStaffPortal(
       /* notification is best-effort */
     }
     return json(
-      { ok: true, request: { ...reqRow, amount: Number(reqRow.amount) } },
+      { ok: true, duplicate: submitted.duplicate, request: { ...reqRow, amount: Number(reqRow.amount), remainingBefore: Number(reqRow.remainingBefore ?? 0) } },
       201,
     );
   }

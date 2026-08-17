@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, XCircle, ShieldCheck, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, XCircle, ShieldCheck, Loader2, ExternalLink, ImageIcon } from "lucide-react";
 import { staffApi } from "@/views/staff/lib";
 import { formatCurrency } from "./_lib";
 import { EmptyState } from "./_layout";
 
 export default function KoshaCollectionsPage() {
   const qc = useQueryClient();
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
   const { data, isLoading } = useQuery({
     queryKey: ["kosha-collections", "pending"],
     queryFn: () => staffApi.paymentRequests("pending"),
@@ -19,8 +22,8 @@ export default function KoshaCollectionsPage() {
       qc.invalidateQueries({ queryKey: ["admin", "kosha-bookings"] });
     },
   });
-  const reject = useMutation({ mutationFn: (id: number) => staffApi.reject(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["kosha-collections"] }) });
-  const busyId = approve.isPending ? approve.variables : reject.isPending ? reject.variables : null;
+  const reject = useMutation({ mutationFn: ({ id, reason }: { id: number; reason: string }) => staffApi.reject(id, reason), onSuccess: () => { setRejectingId(null); setRejectionReason(""); qc.invalidateQueries({ queryKey: ["kosha-collections"] }); } });
+  const busyId = approve.isPending ? approve.variables : reject.isPending ? reject.variables?.id : null;
 
   return (
     <div className="space-y-5">
@@ -44,14 +47,11 @@ export default function KoshaCollectionsPage() {
                 <div className="text-xl font-bold text-foreground">{formatCurrency(p.amount)}</div>
                 <span className="rounded-full bg-status-warning/15 px-2.5 py-1 text-xs font-bold text-status-warning">بانتظار الاعتماد</span>
               </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">{p.staffName}</span> · {p.booking?.customerName ?? "—"}
-              </div>
-              {p.booking && (
-                <div className="mt-1 text-xs text-muted-foreground">المتبقي على الحجز: {formatCurrency(p.booking.remainingAmount)}</div>
-              )}
-              {p.note && <div className="mt-1 text-sm">{p.note}</div>}
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground"><div>الحجز: <b className="text-foreground">{p.booking?.bookingNo ?? `KB-${p.booking?.id ?? "—"}`}</b></div><div>العميل: <b className="text-foreground">{p.booking?.customerName ?? "—"}</b></div><div>الهاتف: <b dir="ltr" className="text-foreground">{p.booking?.customerPhone ?? "—"}</b></div><div>المستلم: <b className="text-foreground">{p.staffName}</b></div><div>قبل التحصيل: <b className="text-foreground">{formatCurrency(p.remainingBefore ?? p.booking?.remainingAmount ?? 0)}</b></div><div>طريقة الدفع: <b className="text-foreground">{p.paymentMethod === "transfer" ? "تحويل" : p.paymentMethod === "card" || p.paymentMethod === "pos" ? "بطاقة" : p.paymentMethod === "other" ? "أخرى" : "نقداً"}</b></div></div>
+              {p.note && <div className="mt-2 text-sm">{p.note}</div>}
+              {p.receiptImage ? <a href={p.receiptImage} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-primary underline"><ImageIcon className="h-4 w-4" /> فتح صورة الوصل</a> : null}
               <div className="mt-1 text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString("ar-IQ")}</div>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs"><a className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-primary" href={`/admin/kosha-bookings?booking=${p.booking?.id ?? ""}`}><ExternalLink className="h-3.5 w-3.5" /> فتح الحجز</a><a className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-primary" href={`/admin/customers?search=${encodeURIComponent(p.booking?.customerPhone ?? p.booking?.customerName ?? "")}`}><ExternalLink className="h-3.5 w-3.5" /> حساب العميل</a></div>
               <div className="mt-3 flex gap-2">
                 <button
                   disabled={busyId === p.id}
@@ -62,12 +62,13 @@ export default function KoshaCollectionsPage() {
                 </button>
                 <button
                   disabled={busyId === p.id}
-                  onClick={() => reject.mutate(p.id)}
+                  onClick={() => { setRejectingId(p.id); setRejectionReason(""); }}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-destructive/40 py-2 text-sm font-bold text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-60"
                 >
                   <XCircle className="h-4 w-4" /> رفض
                 </button>
               </div>
+              {rejectingId === p.id ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><label className="mb-1 block text-xs font-bold text-destructive">سبب الرفض مطلوب</label><textarea value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} rows={2} placeholder="مثال: الوصل غير واضح أو المبلغ غير صحيح" className="w-full rounded-md border border-border bg-background p-2 text-sm" /><div className="mt-2 flex gap-2"><button disabled={reject.isPending || rejectionReason.trim().length < 3} onClick={() => reject.mutate({ id: p.id, reason: rejectionReason.trim() })} className="rounded-md bg-destructive px-3 py-1.5 text-sm font-bold text-white disabled:opacity-60">تأكيد الرفض</button><button disabled={reject.isPending} onClick={() => setRejectingId(null)} className="rounded-md border border-border px-3 py-1.5 text-sm">إلغاء</button></div></div> : null}
             </div>
           ))}
         </div>

@@ -374,7 +374,12 @@ function Approvals() {
   useEffect(() => { load(); }, [load]);
   async function act(id: number, kind: "approve" | "reject") {
     setBusy(id);
-    try { kind === "approve" ? await staffApi.approve(id) : await staffApi.reject(id); await load(); }
+    try {
+      const reason = kind === "reject" ? window.prompt("سبب رفض التحصيل مطلوب")?.trim() : "";
+      if (kind === "reject" && (!reason || reason.length < 3)) return;
+      kind === "approve" ? await staffApi.approve(id) : await staffApi.reject(id, reason!);
+      await load();
+    }
     finally { setBusy(null); }
   }
   return (

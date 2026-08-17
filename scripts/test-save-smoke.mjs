@@ -74,6 +74,11 @@ const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 const bundleSchema = readFileSync("lib/db/src/schema/product-bundles.ts", "utf8");
 const bundlePage = readFileSync("src/views/admin/product-bundles.tsx", "utf8");
+const koshaSchema = readFileSync("lib/db/src/schema/kosha-staff.ts", "utf8");
+const koshaMigration = readFileSync("lib/db/migrations/0100_kosha_field_collection_approval.sql", "utf8");
+const schemaIndexRecovery = readFileSync("lib/db/migrations/0101_schema_index_recovery.sql", "utf8");
+const koshaStaff = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
+const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "utf8");
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
@@ -93,6 +98,17 @@ check("bundle snapshot schema preserves original components", bundleSchema.inclu
 check("used bundles archive instead of deleting invoice history", api.includes('operation: "archived"') && api.includes("sales_invoice_bundle_snapshots"));
 check("bundle management has live component search and duplicate protection", bundlePage.includes("componentSearch") && bundlePage.includes("selectedIds.has"));
 check("bundle delivery fee is server-derived and kept separate from component stock", api.includes("offerDeliveryFee = bundleResolution.offerDeliveryFee") && api.includes("deliveryFeePerBundle") && bundleSchema.includes("deliveryFee"));
+// Kosha field collection: the staff report is deliberately separate from the
+// official booking payment. The atomic approval path is the only path allowed
+// to execute cash, voucher allocation, booking totals, and accounting.
+check("kosha field collection schema records method, receipt, balance snapshot and idempotency", koshaSchema.includes("paymentMethod") && koshaSchema.includes("receiptImage") && koshaSchema.includes("remainingBefore") && koshaSchema.includes("idempotencyKey"));
+check("kosha field collection migration preserves history and prevents duplicate submits", koshaMigration.includes("ADD COLUMN IF NOT EXISTS") && koshaMigration.includes("kosha_payment_requests_idempotency_idx") && !/^\s*(?:UPDATE|DELETE\s+FROM|TRUNCATE|DROP)\b/im.test(koshaMigration));
+check("production index recovery remains additive and tracks its applied revision", schemaIndexRecovery.includes("CREATE INDEX IF NOT EXISTS") && schemaIndexRecovery.includes("VALUES (101") && !/^\s*(?:UPDATE|DELETE\s+FROM|TRUNCATE|DROP)\b/im.test(schemaIndexRecovery));
+check("kosha field collection starts pending manager approval without a financial movement", api.includes('status: "pending_manager_approval"') && api.includes("kosha_field_collection.submit") && api.includes("x-idempotency-key"));
+check("kosha approval posts booking, receipt allocation, cash and journal in one transaction", api.includes('result = await db.transaction(async (tx) =>') && api.includes('sourceEvent: "kosha_field_collection"') && api.includes("createAndExecuteSourceFinancialTransaction(") && api.includes("receiptVoucherAllocationsTable"));
+check("kosha rejection requires a recorded reason and never posts cash", api.includes("سبب رفض التحصيل مطلوب") && api.includes("rejection_reason") && api.includes("payment_rejected"));
+check("kosha staff collection is embedded in booking details with method and receipt proof", koshaStaff.includes("CollectPanel") && koshaStaff.includes("طريقة الدفع") && koshaStaff.includes("صورة وصل الاستلام"));
+check("main approval screen exposes booking, customer, receipt and required rejection reason", koshaCollections.includes("فتح الحجز") && koshaCollections.includes("حساب العميل") && koshaCollections.includes("فتح صورة الوصل") && koshaCollections.includes("سبب الرفض مطلوب"));
 
 const safeTestDb = process.env.AJN_ENV === "test"
   && process.env.ALLOW_TEST_WRITES === "true"

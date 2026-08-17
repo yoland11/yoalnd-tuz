@@ -1,4 +1,4 @@
-import { boolean, integer, jsonb, numeric, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, numeric, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { koshaBookingsTable } from "./koshas";
@@ -88,7 +88,7 @@ export const koshaDeliveryReportsTable = pgTable("kosha_delivery_reports", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// Field collection of a remaining balance — pending until a manager approves.
+// Field collection of a remaining balance — pending until a main administrator approves.
 export const koshaPaymentRequestsTable = pgTable("kosha_payment_requests", {
   id: serial("id").primaryKey(),
   bookingId: integer("booking_id").notNull().references(() => koshaBookingsTable.id, { onDelete: "cascade" }),
@@ -96,14 +96,26 @@ export const koshaPaymentRequestsTable = pgTable("kosha_payment_requests", {
   staffName: text("staff_name").notNull().default(""),
   amount: numeric("amount", { precision: 14, scale: 2 }).notNull().default("0"),
   note: text("note"),
-  status: varchar("status", { length: 12 }).notNull().default("pending"), // pending | approved | rejected
+  // A field collection is reported by the crew first, then becomes official
+  // only after the main-admin approval posts its cash and ledger movement.
+  paymentMethod: varchar("payment_method", { length: 20 }).notNull().default("cash"),
+  receiptImage: text("receipt_image"),
+  remainingBefore: numeric("remaining_before", { precision: 14, scale: 2 }).notNull().default("0"),
+  idempotencyKey: varchar("idempotency_key", { length: 180 }),
+  rejectionReason: text("rejection_reason"),
+  collectionMeta: jsonb("collection_meta").$type<Record<string, unknown>>().notNull().default({}),
+  status: varchar("status", { length: 32 }).notNull().default("pending_manager_approval"), // pending_manager_approval | approved | rejected
   reviewedByStaffId: integer("reviewed_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   reviewedByName: text("reviewed_by_name"),
   reviewedAt: timestamp("reviewed_at"),
   // Idempotent link to the single financial movement posted for this request.
   financialTransactionId: integer("financial_transaction_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  // PostgreSQL permits multiple NULLs in this unique index, so legacy rows remain valid
+  // while every submitted field collection is retry-safe.
+  idempotencyKeyUnique: uniqueIndex("kosha_payment_requests_idempotency_idx").on(table.idempotencyKey),
+}));
 
 // Lightweight per-staff / manager in-app notifications for the portal.
 export const koshaStaffNotificationsTable = pgTable("kosha_staff_notifications", {

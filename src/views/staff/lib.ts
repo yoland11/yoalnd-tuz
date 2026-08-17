@@ -100,7 +100,20 @@ export type CrewBooking = {
 export type MediaRow = { id: number; url: string; kind: "image" | "video"; purpose: string; stage: string | null; createdAt: string };
 export type TimelineRow = { id: number; type: string; staffName: string; fromStage: string | null; toStage: string | null; note: string | null; meta: Record<string, unknown>; createdAt: string };
 export type DeliveryRow = { id: number; hasLoss: boolean; hasBreakage: boolean; note: string | null; compensationAmount: number; signatureUrl: string | null; createdAt: string } | null;
-export type PaymentReq = { id: number; amount: number; note: string | null; status: "pending" | "approved" | "rejected"; staffName: string; reviewedByName: string | null; createdAt: string; reviewedAt: string | null };
+export type PaymentReq = {
+  id: number;
+  amount: number;
+  remainingBefore?: number;
+  note: string | null;
+  paymentMethod?: "cash" | "transfer" | "card" | "pos" | "other";
+  receiptImage?: string | null;
+  rejectionReason?: string | null;
+  status: "pending" | "pending_manager_approval" | "approved" | "rejected";
+  staffName: string;
+  reviewedByName: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+};
 export type SetupItem = { name: string; image: string | null; price: number | null; description?: string | null };
 export type KoshaSetup = {
   kosha: { name: string; image: string | null; price: number; specs: string[] } | null;
@@ -159,8 +172,8 @@ export const staffApi = {
     mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/media${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ media, purpose, note }) }),
   delivery: (id: number, payload: { hasLoss: boolean; hasBreakage: boolean; note?: string; media?: MediaInput[]; signature?: string; compensationAmount?: number }, source: "kosha" | "service" = "kosha"): Promise<BookingDetail | QueuedResult> =>
     mutateOrQueue<BookingDetail>(`${base}/bookings/${id}/delivery${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(payload) }),
-  collect: (id: number, amount: number, note?: string, source: "kosha" | "service" = "kosha"): Promise<{ ok: boolean } | QueuedResult> =>
-    mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect${sourceQuery(source)}`, { method: "POST", body: JSON.stringify({ amount, note }) }),
+  collect: (id: number, input: { amount: number; paymentMethod: "cash" | "transfer" | "card" | "pos" | "other"; note?: string; receiptImage?: string | null }, source: "kosha" | "service" = "kosha"): Promise<{ ok: boolean } | QueuedResult> =>
+    mutateOrQueue<{ ok: boolean }>(`${base}/bookings/${id}/collect${sourceQuery(source)}`, { method: "POST", body: JSON.stringify(input) }),
   assets: (id: number, source: "kosha" | "service" = "kosha") => adminFetch<{
     assets: Array<{ productId: number; name: string; assetCode: string; imageUrl?: string | null; quantity?: number; warehouse?: string | null; status?: string; checkedOut: boolean }>;
     products?: Array<{ productId?: number | null; name: string; quantity: number; barcode?: string | null }>;
@@ -174,9 +187,9 @@ export const staffApi = {
   markAllRead: () => adminFetch(`${base}/notifications/read-all`, { method: "POST", body: "{}" }),
   reportMe: () => adminFetch<{ executed: number; delivered: number; breakage: number; loss: number; collected: number; collectedCount: number }>(`${base}/reports/me`),
   // manager
-  paymentRequests: (status = "pending") => adminFetch<Array<PaymentReq & { booking: { id: number; customerName: string; totalAmount: number; remainingAmount: number } | null }>>(`${base}/payment-requests?status=${status}`),
+  paymentRequests: (status = "pending") => adminFetch<Array<PaymentReq & { booking: { id: number; bookingNo?: string; customerName: string; customerPhone?: string; customerId?: number | null; totalAmount: number; paidAmount?: number; remainingAmount: number } | null }>>(`${base}/payment-requests?status=${status}`),
   approve: (id: number) => adminFetch(`${base}/payment-requests/${id}/approve`, { method: "POST", body: "{}" }),
-  reject: (id: number) => adminFetch(`${base}/payment-requests/${id}/reject`, { method: "POST", body: "{}" }),
+  reject: (id: number, reason: string) => adminFetch(`${base}/payment-requests/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }),
   workOrders: () => adminFetch<KoshatWorkOrder[]>(`${base}/work-orders`),
   workOrder: (id: number) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}`),
   acceptWorkOrder: (id: number) => adminFetch<KoshatWorkOrder>(`${base}/work-orders/${id}/accept`, { method: "POST", body: "{}" }),
