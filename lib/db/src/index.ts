@@ -7,6 +7,14 @@ const { Pool } = pg;
 let poolInstance: pg.Pool | null = null;
 let dbInstance: NodePgDatabase<typeof schema> | null = null;
 
+/**
+ * A serverless function can be replicated many times.  Keeping the local
+ * connection pool small prevents one burst of requests from exhausting a
+ * session-pooler connection limit.  Deployments can still override this with
+ * DB_POOL_MAX, while local long-running development keeps the existing limit.
+ */
+const defaultPoolMax = process.env.VERCEL ? 1 : 5;
+
 export function getPool(): pg.Pool {
   if (!poolInstance) {
     if (!process.env.DATABASE_URL) {
@@ -16,7 +24,11 @@ export function getPool(): pg.Pool {
     }
     poolInstance = new Pool({
       connectionString: process.env.DATABASE_URL,
-      max: Number.parseInt(process.env.DB_POOL_MAX ?? "5", 10) || 5,
+      max:
+        Number.parseInt(
+          process.env.DB_POOL_MAX ?? String(defaultPoolMax),
+          10,
+        ) || defaultPoolMax,
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
       allowExitOnIdle: true,
