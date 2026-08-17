@@ -327,16 +327,19 @@ export default function SalesPage() {
     queryFn: () => adminFetch("/admin/products?limit=500"),
     staleTime: 3 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
+    enabled: !listMode,
   });
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers", "sales"],
     queryFn: () => adminFetch("/admin/suppliers"),
     staleTime: 5 * 60 * 1000,
+    enabled: !listMode,
   });
   const { data: productBundles = [] } = useQuery<any[]>({
     queryKey: ["admin", "product-bundles", "sales"],
     queryFn: async () => (await adminFetch<{ bundles: any[] }>("/admin/product-bundles")).bundles ?? [],
     staleTime: 30_000,
+    enabled: !listMode,
   });
   // Do not turn a transient /me failure into a missing permission. The shared
   // session helper intentionally treats 401/403 as logged-out; this scoped
@@ -346,17 +349,19 @@ export default function SalesPage() {
     queryKey: ["admin", "me", "sales-create-print"],
     queryFn: async () => (await adminFetch<{ user: AdminMe }>("/admin/auth/me")).user,
     staleTime: 5 * 60 * 1000,
+    enabled: !listMode,
   });
   const canCreateRemotePrint = canPrintSalesInvoice(printCurrentUser);
   const { data: createPrinterSettings } = useQuery<PrinterSettings>({
     queryKey: ["admin", "printer-settings"],
     queryFn: () => adminFetch("/admin/settings/printer"),
     staleTime: 5 * 60 * 1000,
+    enabled: !listMode,
   });
   const { data: createRemotePrinters = [] } = useQuery<RemotePrinter[]>({
     queryKey: ["admin", "remote-printers", "sales-create"],
     queryFn: async () => (await adminFetch<{ printers: RemotePrinter[] }>("/admin/printers")).printers?.filter((printer) => printer.isActive) ?? [],
-    enabled: canCreateRemotePrint,
+    enabled: !listMode && canCreateRemotePrint,
     staleTime: 30_000,
   });
 

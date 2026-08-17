@@ -8292,33 +8292,11 @@ async function ensureActivityTables(): Promise<void> {
   await activityTablesPromise;
 }
 
-// Additive migration for the device-session columns. Memoized so the hot auth
-// path (getAdminUser runs on every guarded request) pays the cost once, then
-// awaits an already-resolved promise. Never drops or rewrites the secret
-// `token` column — existing live sessions keep working.
+// Session columns are provided by the reviewed production migration. Keep this
+// compatibility hook so callers remain stable, but do not run a database
+// update in the authentication path on every cold serverless instance.
 async function ensureAdminSessionsShape(): Promise<void> {
-  if (!adminSessionsShapePromise) {
-    adminSessionsShapePromise = db
-      .execute(sql`select 1`)
-      // Set the DB-side default so new rows auto-populate session_id (the
-      // ensure-shape migration is raw SQL, so drizzle's .defaultRandom() alone
-      // would not create the default and createSession's RETURNING would be null).
-      .then(() => db.execute(sql`select 1`))
-      .then(() =>
-        db.execute(
-          sql`update "admin_sessions" set "session_id" = gen_random_uuid() where "session_id" is null`,
-        ),
-      )
-      .then(() => db.execute(sql`select 1`))
-      .then(() => undefined)
-      .catch((err) => {
-        // Reset so a transient failure retries on the next call rather than
-        // permanently poisoning every session lookup.
-        adminSessionsShapePromise = null;
-        console.warn("ensureAdminSessionsShape failed", safeServerError(err));
-        throw err;
-      });
-  }
+  adminSessionsShapePromise ??= Promise.resolve();
   await adminSessionsShapePromise;
 }
 

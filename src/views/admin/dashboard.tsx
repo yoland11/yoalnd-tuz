@@ -128,6 +128,7 @@ export default function DashboardPage() {
     refetchInterval: 60000,
     refetchOnWindowFocus: false,
     staleTime: 30000,
+    enabled: Boolean(data),
   });
   // Reuse the employee-performance aggregation; dashboard cards never issue
   // their own invoice totals query.
@@ -137,6 +138,7 @@ export default function DashboardPage() {
     refetchInterval: 60_000,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
+    enabled: Boolean(data),
   });
 
   if (isLoading || !data) {

@@ -182,12 +182,14 @@ export default function PurchasesPage() {
     queryFn: () => adminFetch("/admin/products?limit=500"),
     staleTime: 3 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
+    enabled: !listMode,
   });
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["admin", "suppliers"],
     queryFn: () => adminFetch("/admin/suppliers"),
     staleTime: 5 * 60 * 1000,
+    enabled: !listMode,
   });
 
   const {
