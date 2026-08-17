@@ -535,6 +535,71 @@ export function custodyStatementCss() {
   `;
 }
 
+export type CustomerStatementPrintTransaction = {
+  reference: string;
+  date: string;
+  serviceType: string;
+  total: number;
+  paid: number;
+  remaining: number;
+  paymentHistory?: Array<{ date: string; amount: number; reference?: string }>;
+};
+
+export type CustomerStatementPrintInput = {
+  companyName?: string;
+  logoUrl?: string;
+  customerName: string;
+  customerPhone?: string | null;
+  totalCharges: number;
+  totalPayments: number;
+  outstandingBalance: number;
+  customerCredit: number;
+  transactions: CustomerStatementPrintTransaction[];
+};
+
+/** Shared A4 customer-account statement used by both browser print and PDF export. */
+export function customerStatementSheetCss() {
+  return `${sheetReportCss("a4")}
+    @page { size: A4 portrait; margin: 12mm; }
+    .customer-statement-sheet { max-width: 186mm; margin: 0 auto; }
+    .customer-statement-sheet .statement-customer { display:grid; grid-template-columns:1fr auto; gap:14px; align-items:center; margin:12px 0; padding:10px; border:1px solid #000; }
+    .customer-statement-sheet .statement-customer img { width:44px; max-height:44px; object-fit:contain; }
+    .customer-statement-sheet .statement-summary { grid-template-columns:repeat(4,1fr); }
+    .customer-statement-sheet .statement-table { font-size:10px; }
+    .customer-statement-sheet .statement-table th,.customer-statement-sheet .statement-table td { padding:5px; }
+    .customer-statement-sheet .num,.customer-statement-sheet .reference { direction:ltr; unicode-bidi:isolate; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .customer-statement-sheet .payment-history { font-size:8px; line-height:1.55; }
+    .customer-statement-sheet tr { break-inside:avoid; page-break-inside:avoid; }
+    .customer-statement-pdf-host { position:fixed; left:-10000px; top:0; width:186mm; background:#fff; color:#000; }
+  `;
+}
+
+function statementEsc(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function customerStatementPrintHtml(input: CustomerStatementPrintInput) {
+  const rows = input.transactions.map((transaction) => {
+    const history = transaction.paymentHistory?.length
+      ? transaction.paymentHistory.map((payment) => `<div>${statementEsc(new Date(payment.date).toLocaleDateString("ar-IQ"))} · <span class="num">${statementEsc(formatCurrency(payment.amount))}</span>${payment.reference ? ` · ${statementEsc(payment.reference)}` : ""}</div>`).join("")
+      : "—";
+    return `<tr><td class="reference">${statementEsc(transaction.reference)}</td><td>${statementEsc(new Date(transaction.date).toLocaleDateString("ar-IQ"))}</td><td>${statementEsc(transaction.serviceType)}</td><td class="num">${statementEsc(formatCurrency(transaction.total))}</td><td class="num">${statementEsc(formatCurrency(transaction.paid))}</td><td class="num">${statementEsc(formatCurrency(transaction.remaining))}</td><td class="payment-history">${history}</td></tr>`;
+  }).join("") || "<tr><td colspan=\"7\" style=\"text-align:center;padding:18px\">لا توجد عمليات لهذا العميل</td></tr>";
+  return `<main class="report-sheet customer-statement-sheet"><header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">كشف حساب العميل</div><div class="report-meta">تاريخ الإنشاء: ${statementEsc(new Date().toLocaleString("ar-IQ"))}</div></div>${input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN">` : ""}</header><section class="statement-customer"><div><strong>العميل: ${statementEsc(input.customerName)}</strong><br><span class="num">${statementEsc(input.customerPhone || "—")}</span></div>${input.logoUrl ? `<img src="${statementEsc(input.logoUrl)}" alt="">` : ""}</section><section class="report-summary statement-summary"><div class="report-stat">إجمالي المستحق<strong class="num">${statementEsc(formatCurrency(input.totalCharges))}</strong></div><div class="report-stat">إجمالي المدفوع<strong class="num">${statementEsc(formatCurrency(input.totalPayments))}</strong></div><div class="report-stat">الرصيد المستحق<strong class="num">${statementEsc(formatCurrency(input.outstandingBalance))}</strong></div><div class="report-stat">رصيد العميل<strong class="num">${statementEsc(formatCurrency(input.customerCredit))}</strong></div></section><table class="report-table statement-table"><thead><tr><th>رقم العملية</th><th>التاريخ</th><th>نوع الخدمة</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th><th>سجل الدفعات</th></tr></thead><tbody>${rows}</tbody></table><footer class="report-footer">كشف حساب صادر من نظام AJN</footer></main>`;
+}
+
+export function openCustomerStatementPrintWindow(input: CustomerStatementPrintInput) {
+  const popup = window.open("", "_blank", "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.write(`<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>كشف حساب العميل</title><style>${customerStatementSheetCss()}</style></head><body>${customerStatementPrintHtml(input)}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.close();
+}
+
 /**
  * Shared depreciation report styles.  Both the browser print window and the
  * downloadable PDF preview use this builder so A4 and thermal never drift.

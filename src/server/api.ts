@@ -47431,6 +47431,55 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
 // ─── Sales Invoices ──────────────────────────────────────────────────────────
 
 let salesInvoicesMigrated = false;
+// Keep invoice-record reads compatible with databases that have not yet applied
+// the additive employee-tracking migration. New writes still require that
+// migration, but managers must be able to open historical records meanwhile.
+// Do not use `select()`/`findFirst()` for the register: those select every
+// schema column, including new tracking fields that an older database lacks.
+const salesInvoiceRecordColumns = {
+  id: salesInvoicesTable.id,
+  invoiceNo: salesInvoicesTable.invoiceNo,
+  idempotencyKey: salesInvoicesTable.idempotencyKey,
+  qrToken: salesInvoicesTable.qrToken,
+  date: salesInvoicesTable.date,
+  customerName: salesInvoicesTable.customerName,
+  customerPhone: salesInvoicesTable.customerPhone,
+  customerId: salesInvoicesTable.customerId,
+  supplierId: salesInvoicesTable.supplierId,
+  supplierName: salesInvoicesTable.supplierName,
+  subtotal: salesInvoicesTable.subtotal,
+  discountAmount: salesInvoicesTable.discountAmount,
+  couponCode: salesInvoicesTable.couponCode,
+  couponDiscountAmount: salesInvoicesTable.couponDiscountAmount,
+  taxAmount: salesInvoicesTable.taxAmount,
+  offerDeliveryFee: salesInvoicesTable.offerDeliveryFee,
+  total: salesInvoicesTable.total,
+  paidAmount: salesInvoicesTable.paidAmount,
+  remainingAmount: salesInvoicesTable.remainingAmount,
+  paymentMethod: salesInvoicesTable.paymentMethod,
+  paymentStatus: salesInvoicesTable.paymentStatus,
+  dueDate: salesInvoicesTable.dueDate,
+  status: salesInvoicesTable.status,
+  financiallyReversed: salesInvoicesTable.financiallyReversed,
+  cancelledAt: salesInvoicesTable.cancelledAt,
+  cancelledBy: salesInvoicesTable.cancelledBy,
+  cancelledByName: salesInvoicesTable.cancelledByName,
+  cancellationReason: salesInvoicesTable.cancellationReason,
+  cancelledOriginalPaidAmount: salesInvoicesTable.cancelledOriginalPaidAmount,
+  cancelledOriginalRemainingAmount: salesInvoicesTable.cancelledOriginalRemainingAmount,
+  reversalReferences: salesInvoicesTable.reversalReferences,
+  reversalCompletedAt: salesInvoicesTable.reversalCompletedAt,
+  inventoryReversed: salesInvoicesTable.inventoryReversed,
+  financeReversed: salesInvoicesTable.financeReversed,
+  isInternal: salesInvoicesTable.isInternal,
+  stockApplied: salesInvoicesTable.stockApplied,
+  stockRestoredAt: salesInvoicesTable.stockRestoredAt,
+  notes: salesInvoicesTable.notes,
+  createdBy: salesInvoicesTable.createdBy,
+  createdByName: salesInvoicesTable.createdByName,
+  createdAt: salesInvoicesTable.createdAt,
+  updatedAt: salesInvoicesTable.updatedAt,
+};
 async function ensureSalesInvoicesTables() {
   if (salesInvoicesMigrated) return;
   try {
@@ -48972,7 +49021,7 @@ async function handleSalesInvoices(
       if (!status) conds.push(eq(salesInvoicesTable.status, "active"));
     }
     const rows = await db
-      .select()
+      .select(salesInvoiceRecordColumns)
       .from(salesInvoicesTable)
       .where(and(...conds) as any)
       .orderBy(desc(salesInvoicesTable.date), desc(salesInvoicesTable.id))
@@ -49725,9 +49774,11 @@ async function handleSalesInvoices(
   }
 
   if (method === "GET" && id) {
-    const inv = await db.query.salesInvoicesTable.findFirst({
-      where: eq(salesInvoicesTable.id, id),
-    });
+    const [inv] = await db
+      .select(salesInvoiceRecordColumns)
+      .from(salesInvoicesTable)
+      .where(eq(salesInvoicesTable.id, id))
+      .limit(1);
     if (!inv) return error("الفاتورة غير موجودة", 404);
     if (!(await canAccessSalesInvoice(auth, inv))) return error("لا تملك صلاحية عرض هذه الفاتورة", 403);
     const items = await db
@@ -63279,6 +63330,11 @@ async function handleAccounting(
         receipts,
         salesInvoices,
         receiptAllocations,
+        graduationOrders,
+        photographyOrders,
+        rentalOrders,
+        researchOrders,
+        customerCredit,
       ] = await Promise.all([
         db
           .select({
@@ -63389,6 +63445,98 @@ async function handleAccounting(
               ORDER BY rv.date, a.id
             `)
           : Promise.resolve({ rows: [] } as any),
+        db
+          .select({
+            id: graduationOrdersTable.id,
+            orderNo: graduationOrdersTable.orderNo,
+            totalAmount: graduationOrdersTable.totalAmount,
+            paidAmount: graduationOrdersTable.paidAmount,
+            remainingAmount: graduationOrdersTable.remainingAmount,
+            createdAt: graduationOrdersTable.createdAt,
+          })
+          .from(graduationOrdersTable)
+          .where(
+            and(
+              sql`${graduationOrdersTable.archivedAt} is null`,
+              ne(graduationOrdersTable.status, "cancelled"),
+              customer
+                ? or(
+                    eq(graduationOrdersTable.customerId, customer.id),
+                    inArray(graduationOrdersTable.phone, phoneVariants),
+                  )
+                : inArray(graduationOrdersTable.phone, phoneVariants),
+            ),
+          )
+          .orderBy(desc(graduationOrdersTable.createdAt)),
+        db
+          .select({
+            id: photographyOrdersTable.id,
+            orderNo: photographyOrdersTable.orderNo,
+            totalAmount: photographyOrdersTable.totalAmount,
+            paidAmount: photographyOrdersTable.paidAmount,
+            remainingAmount: photographyOrdersTable.remainingAmount,
+            createdAt: photographyOrdersTable.createdAt,
+          })
+          .from(photographyOrdersTable)
+          .where(
+            and(
+              inArray(photographyOrdersTable.phone, phoneVariants),
+              isNull(photographyOrdersTable.cancelledAt),
+            ),
+          )
+          .orderBy(desc(photographyOrdersTable.createdAt)),
+        db
+          .select({
+            id: rentalOrdersTable.id,
+            orderNo: rentalOrdersTable.orderNo,
+            totalAmount: rentalOrdersTable.totalAmount,
+            paidAmount: rentalOrdersTable.paidAmount,
+            remainingAmount: rentalOrdersTable.remainingAmount,
+            createdAt: rentalOrdersTable.createdAt,
+          })
+          .from(rentalOrdersTable)
+          .where(
+            and(
+              ne(rentalOrdersTable.status, "cancelled"),
+              customer
+                ? or(
+                    eq(rentalOrdersTable.customerId, customer.id),
+                    inArray(rentalOrdersTable.phone, phoneVariants),
+                  )
+                : inArray(rentalOrdersTable.phone, phoneVariants),
+            ),
+          )
+          .orderBy(desc(rentalOrdersTable.createdAt)),
+        customer
+          ? db
+              .select({
+                id: researchOrdersTable.id,
+                researchNo: researchOrdersTable.researchNo,
+                invoiceId: researchOrdersTable.invoiceId,
+                totalAmount: researchOrdersTable.totalAmount,
+                paidAmount: researchOrdersTable.paidAmount,
+                remainingAmount: researchOrdersTable.remainingAmount,
+                createdAt: researchOrdersTable.createdAt,
+              })
+              .from(researchOrdersTable)
+              .where(
+                and(
+                  eq(researchOrdersTable.customerId, customer.id),
+                  isNull(researchOrdersTable.archivedAt),
+                ),
+              )
+              .orderBy(desc(researchOrdersTable.createdAt))
+          : Promise.resolve([] as any[]),
+        customer
+          ? db.execute(sql`
+              SELECT coalesce(sum(amount::numeric), 0)::float AS total
+              FROM receipt_voucher_allocations
+              WHERE customer_id = ${customer.id}
+                AND source_type = 'customer_credit'
+                AND posted_at IS NOT NULL
+                AND reversed_at IS NULL
+            `)
+          : Promise.resolve({ rows: [] } as any),
       ]);
       type Entry = {
         date: string;
@@ -63438,7 +63586,16 @@ async function handleAccounting(
                 money(allocation.amount),
             ),
           );
+      const rentalOrderNumbers = new Set(
+        rentalOrders.map((order) => order.orderNo),
+      );
+      const researchInvoiceIds = new Set(
+        researchOrders
+          .map((order) => order.invoiceId)
+          .filter((id): id is number => typeof id === "number"),
+      );
       for (const o of orders) {
+        if (rentalOrderNumbers.has(o.trackingCode)) continue;
         entries.push({
           date: o.createdAt.toISOString(),
           kind: "order",
@@ -63477,6 +63634,7 @@ async function handleAccounting(
       }
       // Sales invoices — the charge (debit) and any amount paid against it (credit).
       for (const si of salesInvoices) {
+        if (researchInvoiceIds.has(si.id)) continue;
         const when = si.createdAt
           ? si.createdAt.toISOString()
           : new Date(`${si.date}T00:00:00`).toISOString();
@@ -63530,6 +63688,50 @@ async function handleAccounting(
               href: `/admin/sales?invoice=${si.id}`,
             });
         }
+      }
+      for (const order of graduationOrders) {
+        entries.push({
+          date: order.createdAt.toISOString(),
+          kind: "booking",
+          ref: order.orderNo,
+          description: "طلب تجهيزات تخرج",
+          debit: Number.parseFloat(order.totalAmount),
+          credit: Number.parseFloat(order.paidAmount),
+          href: `/admin/graduation/orders?order=${order.id}`,
+        });
+      }
+      for (const order of photographyOrders) {
+        entries.push({
+          date: order.createdAt.toISOString(),
+          kind: "booking",
+          ref: order.orderNo,
+          description: "طلب تصوير",
+          debit: Number.parseFloat(order.totalAmount),
+          credit: Number.parseFloat(order.paidAmount),
+          href: "/staff/photography",
+        });
+      }
+      for (const order of rentalOrders) {
+        entries.push({
+          date: order.createdAt.toISOString(),
+          kind: "order",
+          ref: order.orderNo,
+          description: "طلب تأجير",
+          debit: Number.parseFloat(order.totalAmount),
+          credit: Number.parseFloat(order.paidAmount),
+          href: `/admin/rental-orders?order=${order.id}`,
+        });
+      }
+      for (const order of researchOrders) {
+        entries.push({
+          date: order.createdAt.toISOString(),
+          kind: "booking",
+          ref: order.researchNo,
+          description: "طلب خدمة بحثية",
+          debit: Number.parseFloat(order.totalAmount),
+          credit: Number.parseFloat(order.paidAmount),
+          href: `/admin/research/orders?order=${order.id}`,
+        });
       }
       for (const r of receipts) {
         if (allocatedReceiptIds.has(r.id)) continue;
@@ -63591,15 +63793,53 @@ async function handleAccounting(
         running += e.debit - e.credit;
         return { ...e, balance: running };
       });
+      const paymentHistoryFor = (reference: string, paid: number, date: Date) => {
+        const history = withBalance
+          .filter((entry) => entry.ref === reference && entry.credit > 0)
+          .map((entry) => ({ date: entry.date, amount: entry.credit, reference: entry.ref }));
+        return history.length || paid <= 0
+          ? history
+          : [{ date: date.toISOString(), amount: paid, reference }];
+      };
+      const record = (
+        reference: string,
+        date: Date,
+        serviceType: string,
+        total: string | number,
+        paid: string | number,
+        remaining: string | number,
+        href: string | null,
+      ) => ({
+        reference,
+        date: date.toISOString(),
+        serviceType,
+        total: money(total),
+        paid: money(paid),
+        remaining: money(remaining),
+        paymentHistory: paymentHistoryFor(reference, money(paid), date),
+        href,
+      });
+      const transactions = [
+        ...orders.filter((order) => !rentalOrderNumbers.has(order.trackingCode)).map((order) => record(order.trackingCode, order.createdAt, "طلب متجر", order.total, order.depositAmount ?? "0", Number.parseFloat(order.total) - Number.parseFloat(order.depositAmount ?? "0"), `/admin/invoice/${order.id}`)),
+        ...bookings.map((order) => record(order.trackingCode ?? `SRV-${order.id}`, order.createdAt, "حجز خدمة", order.totalAmount ?? "0", order.depositAmount ?? "0", Number.parseFloat(order.totalAmount ?? "0") - Number.parseFloat(order.depositAmount ?? "0"), `/admin/invoice/${order.id}?type=booking`)),
+        ...koshaBookings.map((booking) => record(booking.trackingCode ?? `KB-${booking.id}`, booking.createdAt, "حجز كوشة", booking.totalAmount ?? "0", booking.paidAmount ?? "0", booking.remainingAmount ?? "0", `/admin/kosha-bookings?booking=${booking.id}`)),
+        ...salesInvoices.filter((invoice) => !researchInvoiceIds.has(invoice.id)).map((invoice) => record(invoice.invoiceNo, invoice.createdAt ?? new Date(`${invoice.date}T00:00:00`), "فاتورة مبيعات", invoice.total, invoice.status === "cancelled" ? (invoice.cancelledOriginalPaidAmount ?? invoice.paidAmount) : invoice.paidAmount, invoice.status === "cancelled" ? (invoice.cancelledOriginalRemainingAmount ?? invoice.remainingAmount) : invoice.remainingAmount, `/admin/sales?invoice=${invoice.id}`)),
+        ...graduationOrders.map((order) => record(order.orderNo, order.createdAt, "تجهيزات تخرج", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/graduation/orders?order=${order.id}`)),
+        ...photographyOrders.map((order) => record(order.orderNo, order.createdAt, "تصوير", order.totalAmount, order.paidAmount, order.remainingAmount, "/staff/photography")),
+        ...rentalOrders.map((order) => record(order.orderNo, order.createdAt, "تأجير", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/rental-orders?order=${order.id}`)),
+        ...researchOrders.map((order) => record(order.researchNo, order.createdAt, "خدمات بحثية", order.totalAmount, order.paidAmount, order.remainingAmount, `/admin/research/orders?order=${order.id}`)),
+      ].sort((a, b) => b.date.localeCompare(a.date));
       return json({
         customer: customer
           ? { id: customer.id, name: customer.name, phone: customer.phone }
           : { id: null, name: phone, phone },
         entries: withBalance,
+        transactions,
         totals: {
           totalCharges: entries.reduce((s, e) => s + e.debit, 0),
           totalPayments: entries.reduce((s, e) => s + e.credit, 0),
           balance: running,
+          customerCredit: money((customerCredit.rows?.[0] as any)?.total),
         },
       });
     }

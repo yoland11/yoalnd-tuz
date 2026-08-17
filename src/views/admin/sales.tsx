@@ -10,7 +10,7 @@ import {
   Plus, Trash2, Search, FileText, Save, RefreshCw,
   ShoppingCart, X, ChevronLeft, ChevronRight, Barcode, PauseCircle, PlayCircle,
   QrCode, Download,
-  Printer, Ban, ScanLine,
+  Printer, Ban, ScanLine, MessageCircle,
 } from "lucide-react";
 import { BarcodeScanDialog, type ScanProduct } from "./barcode-scan-dialog";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,9 @@ import {
   createSalesInvoiceThermalPdfElement,
   downloadDataUrl,
   openQrPrintWindow,
+  customerStatementPrintHtml,
+  customerStatementSheetCss,
+  openCustomerStatementPrintWindow,
   openSalesInvoicePrintWindow,
   prepareSalesInvoicePrintWindow,
   type SalesInvoicePrintSize,
@@ -64,7 +67,7 @@ type CartItem = {
   total: number; costPrice: number; offerDeliveryFee?: number;
 };
 type SalesInvoice = {
-  id: number; invoiceNo: string; date: string; customerName: string; customerPhone?: string;
+  id: number; invoiceNo: string; date: string; customerId?: number | null; customerName: string; customerPhone?: string;
   subtotal: string; discountAmount: string; taxAmount: string; offerDeliveryFee?: string; total: string;
   paidAmount: string; remainingAmount: string; paymentMethod: string; paymentStatus: string;
   status: string; isInternal: number; notes?: string; createdByName: string; createdAt: string;
@@ -1699,6 +1702,114 @@ function toNumber(value: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
+type CustomerStatementTransaction = {
+  reference: string;
+  date: string;
+  serviceType: string;
+  total: number;
+  paid: number;
+  remaining: number;
+  paymentHistory?: Array<{ date: string; amount: number; reference?: string }>;
+  href?: string | null;
+};
+
+type CustomerStatementData = {
+  customer: { id: number | null; name: string; phone: string };
+  transactions: CustomerStatementTransaction[];
+  totals: { totalCharges: number; totalPayments: number; balance: number; customerCredit?: number };
+};
+
+function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
+  const { toast } = useToast();
+  const customerId = invoice.customerId ?? null;
+  const customerPhone = invoice.customerPhone?.trim() ?? "";
+  const statementQuery = customerId
+    ? `customerId=${customerId}`
+    : customerPhone
+      ? `phone=${encodeURIComponent(customerPhone)}`
+      : null;
+  const { data, isLoading, error } = useQuery<CustomerStatementData>({
+    queryKey: ["admin", "sales-invoice-customer-statement", customerId, customerPhone],
+    queryFn: () => adminFetch(`/admin/accounting/statement?${statementQuery}`),
+    enabled: Boolean(statementQuery),
+  });
+  const { data: settings } = usePublicSettings();
+
+  const statementInput = data ? {
+    companyName: settings?.site_name,
+    logoUrl: logoSrc(settings),
+    customerName: data.customer.name || invoice.customerName || "—",
+    customerPhone: data.customer.phone || invoice.customerPhone,
+    totalCharges: data.totals.totalCharges,
+    totalPayments: data.totals.totalPayments,
+    outstandingBalance: data.totals.balance,
+    customerCredit: data.totals.customerCredit ?? 0,
+    transactions: data.transactions ?? [],
+  } : null;
+
+  function printStatement() {
+    if (!statementInput) return;
+    try {
+      openCustomerStatementPrintWindow(statementInput);
+    } catch (cause) {
+      toast({ title: "تعذر فتح كشف الحساب للطباعة", description: apiErrorMessage(cause), variant: "destructive" });
+    }
+  }
+
+  async function exportPdf() {
+    if (!statementInput) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = `<style>${customerStatementSheetCss()}</style>${customerStatementPrintHtml(statementInput)}`;
+    wrapper.className = "customer-statement-pdf-host";
+    document.body.appendChild(wrapper);
+    try {
+      await downloadElementPdf(wrapper, `كشف-حساب-${statementInput.customerName}.pdf`, { format: "a4", margin: 8, pagebreakMode: ["css", "legacy"] });
+    } catch (cause) {
+      toast({ title: "تعذر تصدير كشف الحساب PDF", description: apiErrorMessage(cause), variant: "destructive" });
+    } finally {
+      wrapper.remove();
+    }
+  }
+
+  function shareWhatsApp() {
+    if (!statementInput) return;
+    const message = [
+      "كشف حساب العميل — AJN",
+      `العميل: ${statementInput.customerName}`,
+      `إجمالي المستحق: ${formatCurrency(statementInput.totalCharges)}`,
+      `إجمالي المدفوع: ${formatCurrency(statementInput.totalPayments)}`,
+      `الرصيد المستحق: ${formatCurrency(statementInput.outstandingBalance)}`,
+      statementInput.customerCredit > 0 ? `رصيد العميل: ${formatCurrency(statementInput.customerCredit)}` : "",
+    ].filter(Boolean).join("\n");
+    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+  }
+
+  if (!statementQuery) return <div className="rounded-xl border border-border/30 bg-background/40 p-8 text-center text-sm text-muted-foreground">لا يوجد عميل أو رقم هاتف مرتبط بهذه الفاتورة لعرض كشف الحساب.</div>;
+  if (isLoading) return <div className="rounded-xl border border-border/30 bg-background/40 p-8 text-center text-sm text-muted-foreground">جارٍ تحميل كشف حساب العميل...</div>;
+  if (error || !data || !statementInput) return <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-5 text-sm text-destructive">{error instanceof Error ? error.message : "تعذر تحميل كشف حساب العميل."}</div>;
+
+  return <section className="space-y-4" aria-label="كشف حساب العميل">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/30 bg-background/40 p-4">
+      <div><h3 className="font-bold text-foreground">كشف حساب العميل</h3><p className="mt-1 text-xs text-muted-foreground">{data.customer.name || invoice.customerName} · <span dir="ltr">{formatIraqiPhone(data.customer.phone || customerPhone)}</span></p></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={printStatement}><Printer className="ml-1 h-4 w-4" />طباعة كشف الحساب</Button><Button variant="outline" size="sm" onClick={() => void exportPdf()}><Download className="ml-1 h-4 w-4" />تصدير PDF</Button><Button variant="outline" size="sm" onClick={shareWhatsApp}><MessageCircle className="ml-1 h-4 w-4" />مشاركة واتساب</Button></div>
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <StatementStat label="عدد العمليات" value={String(data.transactions?.length ?? 0)} />
+      <StatementStat label="إجمالي المستحق" value={formatCurrency(data.totals.totalCharges)} />
+      <StatementStat label="إجمالي المدفوع" value={formatCurrency(data.totals.totalPayments)} />
+      <StatementStat label="الرصيد المستحق" value={formatCurrency(data.totals.balance)} accent={data.totals.balance > 0 ? "text-status-warning" : "text-status-success"} />
+      <StatementStat label="رصيد العميل" value={formatCurrency(data.totals.customerCredit ?? 0)} accent="text-status-success" />
+    </div>
+    <div className="overflow-x-auto rounded-xl border border-border/30 bg-background/40">
+      <table className="w-full min-w-[940px] text-sm"><thead><tr className="border-b border-border/30 bg-muted/30 text-xs text-muted-foreground"><th className="p-3 text-right">رقم العملية</th><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">نوع الخدمة</th><th className="p-3 text-left">الإجمالي</th><th className="p-3 text-left">المدفوع</th><th className="p-3 text-left">المتبقي</th><th className="p-3 text-right">سجل الدفعات</th></tr></thead><tbody className="divide-y divide-border/20">{data.transactions?.length ? data.transactions.map((row) => <tr key={`${row.serviceType}-${row.reference}-${row.date}`} className="hover:bg-muted/10"><td className="p-3 font-mono text-xs text-primary" dir="ltr">{row.reference}</td><td className="p-3 text-xs">{new Date(row.date).toLocaleDateString("ar-IQ")}</td><td className="p-3">{row.serviceType}</td><td className="p-3 text-left tabular-nums" dir="ltr">{formatCurrency(row.total)}</td><td className="p-3 text-left tabular-nums text-status-success" dir="ltr">{formatCurrency(row.paid)}</td><td className="p-3 text-left tabular-nums font-semibold" dir="ltr">{formatCurrency(row.remaining)}</td><td className="p-3 text-xs text-muted-foreground">{row.paymentHistory?.length ? row.paymentHistory.map((payment, index) => <div key={`${payment.reference}-${payment.date}-${index}`} className="mb-1 last:mb-0"><span dir="ltr">{new Date(payment.date).toLocaleDateString("ar-IQ")}</span> · <strong className="text-status-success" dir="ltr">{formatCurrency(payment.amount)}</strong></div>) : "—"}</td></tr>) : <tr><td colSpan={7} className="p-10 text-center text-sm text-muted-foreground">لا توجد عمليات لهذا العميل.</td></tr>}</tbody></table>
+    </div>
+  </section>;
+}
+
+function StatementStat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return <div className="rounded-xl border border-border/30 bg-background/40 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className={`mt-1 text-sm font-bold ${accent ?? "text-foreground"}`} dir="auto">{value}</div></div>;
+}
+
 function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; onClose: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -1711,6 +1822,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   const [remotePrinting, setRemotePrinting] = useState(false);
   const [remotePrinterId, setRemotePrinterId] = useState("");
   const [lastPrintJob, setLastPrintJob] = useState<RemotePrintJob | null>(null);
+  const [detailTab, setDetailTab] = useState<"invoice" | "statement">("invoice");
   const [draft, setDraft] = useState({
     date: "",
     customerName: "",
@@ -2133,6 +2245,11 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           <div className="py-20 text-center text-muted-foreground">تعذر تحميل الفاتورة</div>
         ) : (
           <div className="overflow-y-auto max-h-[calc(92vh-76px)] p-5 space-y-4">
+            <div className="flex gap-1 border-b border-border/30" role="tablist" aria-label="تفاصيل فاتورة المبيعات">
+              <button type="button" role="tab" aria-selected={detailTab === "invoice"} onClick={() => setDetailTab("invoice")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "invoice" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>تفاصيل الفاتورة</button>
+              <button type="button" role="tab" aria-selected={detailTab === "statement"} onClick={() => setDetailTab("statement")} className={`border-b-2 px-4 py-2 text-sm font-semibold transition-colors ${detailTab === "statement" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>كشف حساب العميل</button>
+            </div>
+            {detailTab === "statement" ? <CustomerAccountStatementTab invoice={invoice} /> : <>
             {invoice.financiallyReversed && (
               <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 px-4 py-3 text-sm font-semibold text-status-warning">
                 هذه الفاتورة تم عكس أثرها المالي ولا تدخل ضمن الإيرادات الصافية — للعرض والتدقيق فقط (لا يمكن تعديلها أو إضافة دفعات أو تحصيل).
@@ -2399,6 +2516,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 {saving ? <><RefreshCw className="w-4 h-4 ml-2 animate-spin" />جاري الحفظ...</> : <><Save className="w-4 h-4 ml-2" />حفظ التعديل</>}
               </Button>
             </div>
+            </>}
           </div>
         )}
       </div>
