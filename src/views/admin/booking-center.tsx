@@ -44,7 +44,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { adminFetch, formatCurrency } from "./_lib";
+import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
@@ -148,6 +148,7 @@ type UnifiedBooking = {
   createdAt?: string;
   bookingSource?: string;
   detailHref?: string;
+  assignedStaff?: Array<{ id: number; name: string }>;
   raw: ServiceOrder | KoshaBooking;
 };
 
@@ -493,13 +494,14 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-services">{booking.services.slice(0, 5).map((service) => { const meta = SERVICE_META.find((item) => item.key === service.type)!; const Icon = meta.icon; return <span key={service.type} title={meta.label}><Icon /><small>{meta.short}</small></span>; })}</div>
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
+      {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
       <div className="flex items-center justify-between border-t border-border/60 pt-3"><span className="flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" />{booking.hall || "الموقع غير محدد"}</span><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div>
     </article>
   );
 }
 
 /** Searchable customer selector with an inline "add new customer" dialog. */
-function BookingCustomerSelector({ value, onChange }: { value: Customer | null; onChange: (customer: Customer | null) => void }) {
+function BookingCustomerSelector({ value, onChange, error }: { value: Customer | null; onChange: (customer: Customer | null) => void; error?: string }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
@@ -514,13 +516,14 @@ function BookingCustomerSelector({ value, onChange }: { value: Customer | null; 
     return (
       <div className="space-y-2">
         <Label>العميل *</Label>
-        <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background px-3 py-2">
+        <div className={`flex items-center justify-between rounded-lg border bg-background px-3 py-2 ${error ? "border-destructive" : "border-border/40"}`}>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{value.fullName || value.name}</p>
             <p className="text-xs text-muted-foreground" dir="ltr">{formatIraqiPhone(value.phone)}</p>
           </div>
           <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>تغيير</Button>
         </div>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
     );
   }
@@ -538,7 +541,8 @@ function BookingCustomerSelector({ value, onChange }: { value: Customer | null; 
           onBlur={() => window.setTimeout(() => setOpen(false), 150)}
           placeholder="ابحث بالاسم أو رقم الهاتف"
           autoComplete="off"
-          className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-invalid={Boolean(error)}
+          className={`w-full rounded-lg border bg-background px-3 py-2 pr-9 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${error ? "border-destructive" : "border-border/40"}`}
         />
         {open && query.trim().length >= 2 ? (
           <div className="absolute inset-x-0 top-full z-40 mt-1 max-h-56 overflow-y-auto rounded-lg border border-border/40 bg-card shadow-xl">
@@ -565,6 +569,7 @@ function BookingCustomerSelector({ value, onChange }: { value: Customer | null; 
       <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
         <Plus className="h-4 w-4" /> إضافة عميل جديد
       </Button>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <CustomerQuickAddDialog
         open={addOpen}
         onOpenChange={setAddOpen}
@@ -586,19 +591,43 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
   const [totalAmount, setTotalAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [selected, setSelected] = useState<ServiceKey[]>(["kosha"]);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const focusField = (field: string) => {
+    const fieldId: Record<string, string> = {
+      customer: "booking-customer-search",
+      phone: "booking-customer-search",
+      eventDate: "booking-date",
+      totalAmount: "booking-total",
+      serviceId: "booking-service-picker",
+    };
+    window.requestAnimationFrame(() =>
+      document.getElementById(fieldId[field] ?? "booking-date")?.focus(),
+    );
+  };
+  const failField = (field: string, message: string): never => {
+    setFieldErrors({ [field]: message });
+    focusField(field);
+    throw new Error(message);
+  };
   const mutation = useMutation({
     mutationFn: async () => {
-      if (!customer) throw new Error("اختر العميل أولاً");
-      if (!eventDate) throw new Error("حدد تاريخ المناسبة");
-      if (!selected.length) throw new Error("اختر خدمة واحدة على الأقل");
+      setFieldErrors({});
+      const selectedCustomer = customer;
+      if (!selectedCustomer) {
+        setFieldErrors({ customer: "اختر العميل أولاً" });
+        focusField("customer");
+        throw new Error("اختر العميل أولاً");
+      }
+      if (!eventDate) failField("eventDate", "حدد تاريخ المناسبة");
+      if (!selected.length) failField("serviceId", "اختر خدمة واحدة على الأقل");
       const primary = resolveUnifiedBookingService(selected, services);
-      if (!primary) throw new Error("لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
+      if (!primary) failField("serviceId", "لا توجد خدمة فعالة. أضف خدمة من إدارة الخدمات أولاً.");
       return adminFetch("/admin/service-orders", {
         method: "POST",
         body: JSON.stringify({
           serviceId: primary.id,
-          customerName: customer.fullName || customer.name,
-          phone: customer.phone,
+          customerName: selectedCustomer.fullName || selectedCustomer.name,
+          phone: selectedCustomer.phone,
           eventDate,
           eventLocation: hallName,
           totalAmount: num(totalAmount),
@@ -607,7 +636,7 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
           notes,
           customFields: {
             bookingCenterVersion: 1,
-            customerId: customer.id,
+            customerId: selectedCustomer.id,
             eventTime,
             hallName,
             mapUrl,
@@ -619,7 +648,14 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       });
     },
     onSuccess: onCreated,
-    onError: (error: any) => toast({ title: "تعذر حفظ الحجز", description: error?.message || "تحقق من البيانات وحاول مرة أخرى.", variant: "destructive" }),
+    onError: (error: any) => {
+      const returnedErrors = error?.fieldErrors;
+      if (returnedErrors && typeof returnedErrors === "object" && Object.keys(returnedErrors).length) {
+        setFieldErrors(returnedErrors);
+        focusField(Object.keys(returnedErrors)[0]);
+      }
+      toast({ title: "تعذر حفظ الحجز", description: apiErrorMessage(error, "تحقق من البيانات وحاول مرة أخرى."), variant: "destructive" });
+    },
   });
   const toggle = (type: ServiceKey) => setSelected((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type]);
   return (
@@ -628,19 +664,20 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
       <div className="grid gap-4 p-5 lg:grid-cols-[1.15fr_.85fr]">
         <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <BookingCustomerSelector value={customer} onChange={setCustomer} />
+            <BookingCustomerSelector value={customer} onChange={setCustomer} error={fieldErrors.customer || fieldErrors.phone} />
             <div className="space-y-2"><Label htmlFor="booking-contract">رقم العقد</Label><Input id="booking-contract" value={contractNumber} onChange={(event) => setContractNumber(event.target.value)} placeholder="يُترك فارغاً عند عدم وجود عقد" /></div>
-            <div className="space-y-2"><Label htmlFor="booking-date">تاريخ المناسبة *</Label><Input id="booking-date" type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="booking-date">تاريخ المناسبة *</Label><Input id="booking-date" type="date" aria-invalid={Boolean(fieldErrors.eventDate)} className={fieldErrors.eventDate ? "border-destructive" : ""} value={eventDate} onChange={(event) => { setEventDate(event.target.value); setFieldErrors((current) => ({ ...current, eventDate: "" })); }} />{fieldErrors.eventDate ? <p className="text-xs text-destructive">{fieldErrors.eventDate}</p> : null}</div>
             <div className="space-y-2"><Label htmlFor="booking-time">وقت المناسبة</Label><Input id="booking-time" type="time" value={eventTime} onChange={(event) => setEventTime(event.target.value)} /></div>
             <div className="space-y-2"><Label htmlFor="booking-hall">القاعة / الموقع</Label><Input id="booking-hall" value={hallName} onChange={(event) => setHallName(event.target.value)} placeholder="اسم القاعة والعنوان" /></div>
             <div className="space-y-2"><Label htmlFor="booking-map">رابط Google Maps</Label><Input id="booking-map" dir="ltr" value={mapUrl} onChange={(event) => setMapUrl(event.target.value)} placeholder="https://maps.google.com/..." /></div>
-            <div className="space-y-2"><Label htmlFor="booking-total">إجمالي الحجز</Label><Input id="booking-total" inputMode="numeric" value={totalAmount} onChange={(event) => setTotalAmount(event.target.value.replace(/[^0-9.]/g, ""))} placeholder="0 د.ع" /></div>
+            <div className="space-y-2"><Label htmlFor="booking-total">إجمالي الحجز</Label><Input id="booking-total" inputMode="numeric" aria-invalid={Boolean(fieldErrors.totalAmount)} className={fieldErrors.totalAmount ? "border-destructive" : ""} value={totalAmount} onChange={(event) => { setTotalAmount(event.target.value.replace(/[^0-9.]/g, "")); setFieldErrors((current) => ({ ...current, totalAmount: "" })); }} placeholder="0 د.ع" />{fieldErrors.totalAmount ? <p className="text-xs text-destructive">{fieldErrors.totalAmount}</p> : null}</div>
           </div>
           <div className="space-y-2"><Label htmlFor="booking-notes">ملاحظات</Label><Textarea id="booking-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="تفاصيل خاصة بالمناسبة أو العميل" /></div>
         </div>
-        <div className="ajn-service-picker">
+        <div id="booking-service-picker" tabIndex={-1} className={`ajn-service-picker ${fieldErrors.serviceId ? "ring-1 ring-destructive" : ""}`}>
           <div><span>الخدمات المطلوبة</span><strong>{selected.length} خدمات محددة</strong></div>
           <div className="grid grid-cols-2 gap-2">{SERVICE_META.map((meta) => { const Icon = meta.icon; const checked = selected.includes(meta.key); return <button type="button" key={meta.key} className={checked ? "is-selected" : ""} onClick={() => toggle(meta.key)} aria-pressed={checked}><Icon /><span>{meta.short}</span>{checked && <CheckCircle2 />}</button>; })}</div>
+          {fieldErrors.serviceId ? <p className="text-xs text-destructive">{fieldErrors.serviceId}</p> : null}
           <div className="mt-auto flex gap-2 pt-4"><Button variant="outline" onClick={onCancel} className="flex-1">إلغاء</Button><Button onClick={() => mutation.mutate()} disabled={mutation.isPending} className="ajn-rose-button flex-1">{mutation.isPending ? "جارٍ الحفظ..." : "حفظ الحجز"}</Button></div>
         </div>
       </div>

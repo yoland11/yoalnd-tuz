@@ -636,6 +636,7 @@ export const ALL_PERMISSIONS = [
   "dashboard",
   "orders",
   "bookings",
+  "booking_staff_assign",
   "booking_operations_view",
   "booking_edit",
   "booking_status_change",
@@ -1136,6 +1137,11 @@ class CheckoutError extends Error {
   constructor(
     message: string,
     readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 500 = 422,
+    readonly options: {
+      code?: ApiErrorCode;
+      fieldErrors?: Record<string, string>;
+      retryable?: boolean;
+    } = {},
   ) {
     super(message);
   }
@@ -9023,20 +9029,27 @@ async function cleanupOtpCodes(): Promise<void> {
   `);
 }
 
-async function findCustomerByPhone(phone: string) {
-  await ensureCustomerProfileColumns();
+async function findCustomerByPhone(
+  phone: string,
+  executor: any = db,
+  ensureProfile = true,
+) {
+  if (ensureProfile) await ensureCustomerProfileColumns();
   const variants = iraqiPhoneVariants(phone);
   if (variants.length === 0) return null;
-  return db.query.customersTable.findFirst({
-    where: inArray(customersTable.phone, variants),
-  });
+  const [customer] = await executor
+    .select()
+    .from(customersTable)
+    .where(inArray(customersTable.phone, variants))
+    .limit(1);
+  return customer ?? null;
 }
 
-async function ensureCustomerForPhone(phone: string, name?: string) {
-  await ensureCustomerProfileColumns();
+async function ensureCustomerForPhone(phone: string, name?: string, executor: any = db) {
+  if (executor === db) await ensureCustomerProfileColumns();
   const normalized = normalizeIraqiPhone(phone);
   if (!normalized) return null;
-  const existing = await findCustomerByPhone(normalized);
+  const existing = await findCustomerByPhone(normalized, executor, false);
   if (existing) {
     // Backfill a real name onto a customer that was created as a bare phone placeholder,
     // so the customers page shows "حسين" instead of the phone once we know it.
@@ -9049,7 +9062,7 @@ async function ensureCustomerForPhone(phone: string, name?: string) {
     );
     if (existing.phone !== normalized || (cleanName && !hasRealName)) {
       try {
-        const [updated] = await db
+        const [updated] = await executor
           .update(customersTable)
           .set({
             phone: normalized,
@@ -9066,7 +9079,7 @@ async function ensureCustomerForPhone(phone: string, name?: string) {
     return existing;
   }
   const cleanName = (name ?? "").trim();
-  const [created] = await db
+  const [created] = await executor
     .insert(customersTable)
     .values({
       phone: normalized,
@@ -9078,7 +9091,7 @@ async function ensureCustomerForPhone(phone: string, name?: string) {
   if (created) return created;
   // A simultaneous booking may have created the customer after our lookup.
   // Re-read the canonical row instead of failing the booking with a 23505.
-  return findCustomerByPhone(normalized);
+  return findCustomerByPhone(normalized, executor, false);
 }
 
 let customerBackfillPromise: Promise<void> | null = null;
@@ -10099,8 +10112,6 @@ async function insertServiceOrderWithTracking(
   >,
   options?: { executor?: any; skipCustomerSync?: boolean },
 ) {
-  await ensureTrackingColumns();
-  await ensurePaymentWorkflowColumns();
   // Surface the service customer on /admin/customers — create-or-link by phone.
   if (values.phone && !options?.skipCustomerSync)
     await ensureCustomerForPhone(values.phone, (values as any).customerName);
@@ -10127,6 +10138,20 @@ async function insertServiceOrderWithTracking(
   return row;
 }
 
+function logServiceBookingStep(input: {
+  step: "validate" | "customer" | "booking" | "services" | "accounting" | "tracking" | "timeline" | "notifications";
+  serviceId: number;
+  orderId?: number;
+  phone: string;
+}) {
+  console.info("[SERVICE_BOOKING_CREATE]", {
+    step: input.step,
+    serviceId: input.serviceId,
+    orderId: input.orderId ?? null,
+    phoneLast4: phoneLast4(input.phone),
+  });
+}
+
 async function createServiceOrderWithHistory(
   values: Omit<
     typeof serviceOrdersTable.$inferInsert,
@@ -10134,9 +10159,42 @@ async function createServiceOrderWithHistory(
   >,
   historyNote: string,
 ) {
+  // Schema setup must complete before the transaction starts. The customer
+  // upsert, booking row, and status-history row below use one transaction.
+  await Promise.all([
+    ensureTrackingColumns(),
+    ensurePaymentWorkflowColumns(),
+    ensureCustomerProfileColumns(),
+  ]);
   return db.transaction(async (tx) => {
-    const order = await insertServiceOrderWithTracking(values, {
-      executor: tx,
+    logServiceBookingStep({
+      step: "customer",
+      serviceId: values.serviceId,
+      phone: values.phone,
+    });
+    const customer = await ensureCustomerForPhone(
+      values.phone,
+      (values as any).customerName,
+      tx,
+    );
+    const customFields = {
+      ...((values.customFields as Record<string, unknown> | null) ?? {}),
+      ...(customer ? { customerId: customer.id } : {}),
+    };
+    logServiceBookingStep({
+      step: "booking",
+      serviceId: values.serviceId,
+      phone: values.phone,
+    });
+    const order = await insertServiceOrderWithTracking(
+      { ...values, customFields },
+      { executor: tx, skipCustomerSync: true },
+    );
+    logServiceBookingStep({
+      step: "services",
+      serviceId: values.serviceId,
+      orderId: order.id,
+      phone: values.phone,
     });
     await tx.insert(serviceOrderStatusHistoryTable).values({
       serviceOrderId: order.id,
@@ -10148,24 +10206,65 @@ async function createServiceOrderWithHistory(
 }
 
 function serviceBookingSaveError(err: unknown): CheckoutError {
-  const code = (err as any)?.code;
+  const driverError = err as { code?: string; column?: string };
+  const code = driverError?.code;
   if (code === "23503")
-    return new CheckoutError("الخدمة أو العميل المرتبط بالحجز غير موجود", 409);
+    return new CheckoutError("الخدمة أو العميل المرتبط بالحجز غير موجود", 409, {
+      code: "FOREIGN_KEY_CONFLICT",
+    });
   if (code === "23505")
     return new CheckoutError(
       "تم إنشاء هذا الحجز بالتزامن. حدّث القائمة وتحقق من رقم الحجز",
       409,
+      { code: "DUPLICATE" },
     );
   if (code === "22003")
-    return new CheckoutError("مبلغ الحجز أكبر من الحد المسموح", 422);
-  if (code === "22P02" || code === "23514")
+    return new CheckoutError("مبلغ الحجز أكبر من الحد المسموح", 422, {
+      code: "BOOKING_INVALID",
+      fieldErrors: { totalAmount: "مبلغ الحجز أكبر من الحد المسموح" },
+    });
+  if (code === "22007")
+    return new CheckoutError("تاريخ الحجز غير صالح", 422, {
+      code: "BOOKING_INVALID",
+      fieldErrors: { eventDate: "تاريخ الحجز غير صالح" },
+    });
+  if (code === "23502") {
+    const field =
+      driverError.column === "service_id"
+        ? "serviceId"
+        : driverError.column === "customer_name"
+          ? "customer"
+          : driverError.column === "phone"
+            ? "phone"
+            : driverError.column === "event_date"
+              ? "eventDate"
+              : "booking";
+    return new CheckoutError("أحد الحقول المطلوبة للحجز مفقود", 422, {
+      code: "BOOKING_INVALID",
+      fieldErrors: { [field]: "هذا الحقل مطلوب" },
+    });
+  }
+  if (code === "22P02" || code === "23514" || code === "22001")
     return new CheckoutError(
       "بيانات الحجز المالية أو التشغيلية غير صالحة",
       422,
+      { code: "BOOKING_INVALID" },
     );
+  if (code === "42P01" || code === "42703")
+    return new CheckoutError(
+      "مخطط قاعدة بيانات الحجوزات غير مكتمل. يجب تطبيق ترحيل إصلاح الحجوزات قبل المحاولة.",
+      500,
+      { code: "DATABASE_ERROR", retryable: false },
+    );
+  if (code === "40001" || code === "40P01")
+    return new CheckoutError("تم تعديل بيانات الحجز بالتزامن. حدّث الصفحة وحاول مجدداً.", 409, {
+      code: "STALE_DATA",
+      retryable: true,
+    });
   return new CheckoutError(
-    "تعذر حفظ سجل الحجز الأساسي. لم يتم إنشاء حجز جزئي",
+    "تعذر حفظ الحجز بسبب خطأ في قاعدة البيانات. لم يتم إنشاء أي سجل جزئي.",
     500,
+    { code: "DATABASE_ERROR", retryable: true },
   );
 }
 
@@ -14857,6 +14956,19 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       "";
     const phone = normalizeIraqiPhone(data.phone);
     if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+    const eventDate = data.eventDate
+      ? normalizeDateOnly(data.eventDate)
+      : null;
+    if (data.eventDate && !eventDate)
+      return error("تاريخ الحجز غير صالح", 400, {
+        code: "BOOKING_INVALID",
+        fieldErrors: { eventDate: "أدخل تاريخاً صحيحاً" },
+      });
+    logServiceBookingStep({
+      step: "validate",
+      serviceId: data.serviceId,
+      phone,
+    });
     const serviceOrderLimit = await consumeRateLimit({
       action: "service-order-submit",
       keyParts: [ip(req), phone],
@@ -14869,10 +14981,9 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       formatIraqiPhone(phone),
       "زبون",
     );
-    await ensureTrackingColumns();
     const conflict = await findBookingConflict({
       serviceId: data.serviceId,
-      eventDate: data.eventDate ?? "",
+      eventDate,
       customFields,
     });
     if (conflict)
@@ -14887,7 +14998,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
           serviceId: data.serviceId,
           customerName: safeCustomerName,
           phone,
-          eventDate: data.eventDate ?? "",
+          eventDate: eventDate ?? "",
           eventLocation,
           notes: data.notes,
           customFields,
@@ -14902,6 +15013,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       });
       throw serviceBookingSaveError(err);
     }
+    logServiceBookingStep({ step: "tracking", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
     const orderQr = await ensureQrForEntity("service_order", order, req).catch(
       (err) => {
         console.error("service booking QR creation failed", {
@@ -14918,6 +15030,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
       status: order.status,
       service: service?.nameAr ?? service?.name ?? "",
     });
+    logServiceBookingStep({ step: "notifications", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
     void createNotification({
       type: "booking_new",
       title: "حجز جديد",
@@ -14938,6 +15051,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         message: err?.message,
       }),
     );
+    logServiceBookingStep({ step: "timeline", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
     void addEntityTimeline({
       entityType: "service_order",
       entityId: order.id,
@@ -14985,7 +15099,8 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
         message: err?.message,
       }),
     );
-    if (Number(order.depositAmount) > 0)
+    logServiceBookingStep({ step: "accounting", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
+    if (Number(order.depositAmount) > 0) {
       await syncServiceOrderFinancialPayment(
         order,
         SYSTEM_FINANCIAL_ACTOR,
@@ -14995,6 +15110,7 @@ async function handleServiceOrders(req: NextRequest, parts: string[]) {
           message: err instanceof Error ? err.message : "unknown",
         }),
       );
+    }
     void notifyTelegramOrder({
       kind: "service",
       id: order.id,
@@ -28387,6 +28503,115 @@ type BookingOperationsReference = {
   eventDate: string | null;
 };
 
+const BOOKING_ASSIGNMENT_TYPES = [
+  "kosha",
+  "photography",
+  "sound",
+  "flowers",
+  "gifts",
+  "graduation",
+  "led",
+  "transportation",
+  "decorations",
+] as const;
+
+type BookingAssignmentType = (typeof BOOKING_ASSIGNMENT_TYPES)[number];
+
+const BOOKING_ASSIGNMENT_RULES: Record<
+  BookingAssignmentType,
+  { permissions: string[]; departments: string[] }
+> = {
+  kosha: { permissions: ["koshas"], departments: ["kosha", "koshat", "decor"] },
+  photography: { permissions: ["photography", "photography.booking.view"], departments: ["photography", "photo", "camera"] },
+  sound: { permissions: ["sound", "audio"], departments: ["sound", "audio"] },
+  flowers: { permissions: ["flowers", "floral"], departments: ["flowers", "floral", "flower"] },
+  gifts: { permissions: ["gifts", "gift"], departments: ["gifts", "gift", "distribution"] },
+  graduation: { permissions: ["graduation", "graduation_production"], departments: ["graduation"] },
+  led: { permissions: ["led", "screens"], departments: ["led", "screen"] },
+  transportation: { permissions: ["transportation", "delivery"], departments: ["transportation", "transport", "delivery"] },
+  decorations: { permissions: ["decorations", "decor"], departments: ["decorations", "decor", "events"] },
+};
+
+const BookingStaffAssignmentSchema = z.object({
+  assignedStaffIds: z.array(z.coerce.number().int().positive()).max(30),
+});
+
+function bookingAssignmentType(value: unknown): BookingAssignmentType | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (/kosha|كوش/.test(normalized)) return "kosha";
+  if (/photo|camera|تصوير/.test(normalized)) return "photography";
+  if (/sound|audio|speaker|صوت/.test(normalized)) return "sound";
+  if (/flower|floral|ورد/.test(normalized)) return "flowers";
+  if (/gift|distribution|هدية|توزيع/.test(normalized)) return "gifts";
+  if (/graduation|تخرج/.test(normalized)) return "graduation";
+  if (/led|screen|شاش/.test(normalized)) return "led";
+  if (/transport|vehicle|delivery|نقل/.test(normalized)) return "transportation";
+  if (/decor|event|ديكور|مناسب/.test(normalized)) return "decorations";
+  return null;
+}
+
+async function bookingAssignmentTypes(reference: BookingOperationsReference) {
+  const values: unknown[] = [
+    ...(reference.source === "kosha" ? ["kosha"] : []),
+    ...(Array.isArray(reference.details.departments) ? reference.details.departments : []),
+    reference.details.department,
+    reference.details.serviceType,
+    ...(Array.isArray(reference.details.bookingCenterServices)
+      ? reference.details.bookingCenterServices.map((row: any) => row?.type)
+      : []),
+  ];
+  if (reference.source === "service" && reference.row.serviceId) {
+    const service = await db.query.servicesTable.findFirst({
+      where: eq(servicesTable.id, reference.row.serviceId),
+    });
+    values.push(service?.type, service?.name, service?.nameAr);
+  }
+  const types = [...new Set(values.map(bookingAssignmentType).filter(Boolean))] as BookingAssignmentType[];
+  return types.length ? types : (["decorations"] as BookingAssignmentType[]);
+}
+
+function bookingAssignedStaff(details: Record<string, any>) {
+  const saved = Array.isArray(details.bookingStaffAssignments)
+    ? details.bookingStaffAssignments
+    : [];
+  const ids = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(details.assignedStaffIds) ? details.assignedStaffIds : []),
+        details.primaryEmployeeId,
+        details.assistantEmployeeId,
+        ...saved.map((row: any) => row?.id),
+      ]
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+  return {
+    ids,
+    staff: saved.filter((row: any) => ids.includes(Number(row?.id))),
+  };
+}
+
+function canManageBookingStaffAssignments(user: AdminUser) {
+  return ["admin", "main_admin", "super_admin", "main_manager", "manager"].includes(String(user.role ?? "").toLowerCase()) || hasPermission(user, "booking_staff_assign");
+}
+
+function staffMatchesBookingAssignment(staff: any, types: BookingAssignmentType[]) {
+  if (["admin", "main_admin", "super_admin", "main_manager", "manager"].includes(String(staff.role ?? "").toLowerCase())) return true;
+  const permissions = Array.isArray(staff.permissions) ? staff.permissions.map((value: unknown) => String(value).toLowerCase()) : [];
+  const department = String(staff.department ?? "").toLowerCase();
+  return types.some((type) => {
+    const rule = BOOKING_ASSIGNMENT_RULES[type];
+    const typePermission = rule.permissions.some((permission) => permissions.includes(permission));
+    const departmentMatch = rule.departments.some((value) => department.includes(value));
+    // Existing booking staff retain their broad assignment eligibility, but only
+    // when their department is intentionally general/booking/operations.
+    const generalBookingStaff = permissions.includes("bookings") && /general|booking|operations/.test(department);
+    return typePermission || departmentMatch || generalBookingStaff;
+  });
+}
+
 const BOOKING_OPERATION_STAGES = [
   "booked",
   "preparing",
@@ -29495,7 +29720,7 @@ async function handleBookingOperations(
   section: string | undefined,
 ) {
   if (section !== "booking-operations") return null;
-  const auth = await requireAnyPermission(req, [
+  const authResult = await requireAnyPermission(req, [
     "bookings",
     "koshas",
     "orders",
@@ -29517,8 +29742,17 @@ async function handleBookingOperations(
     "booking_documents_manage",
     "booking_close",
     "booking_cancel",
+    "booking_staff_assign",
   ]);
-  if (isResponse(auth)) return auth;
+  let auth: AdminUser;
+  if (isResponse(authResult)) {
+    // The Main Manager is an explicit supervisory role and must retain full
+    // booking-assignment access even on legacy accounts without the newer
+    // granular permissions persisted yet.
+    const supervisor = await getAdminUser(req);
+    if (!supervisor || !["main_admin", "super_admin", "main_manager", "manager"].includes(String(supervisor.role ?? "").toLowerCase())) return authResult;
+    auth = supervisor;
+  } else auth = authResult;
   const can = (...permissions: Permission[]) =>
     auth.role === "admin" ||
     auth.role === "manager" ||
@@ -29526,6 +29760,7 @@ async function handleBookingOperations(
     permissions.some((permission) => hasPermission(auth, permission));
   await Promise.all([
     ensureAdminExtensionsTables(),
+    ensureKoshaStaffTables(),
     ensureVariantTables(),
     ensureMasterCashBoxTables(),
   ]);
@@ -29537,6 +29772,149 @@ async function handleBookingOperations(
   const reference = await loadBookingOperationsReference(source, id);
   if (!reference) return error("الحجز غير موجود", 404);
   const method = req.method;
+
+  if (resource === "staff-assignment") {
+    if (!canManageBookingStaffAssignments(auth))
+      return error("تخصيص الموظفين متاح للمدير فقط", 403);
+    const types = await bookingAssignmentTypes(reference);
+    const staffRows = await db.query.staffTable.findMany({
+      where: eq(staffTable.isActive, true),
+      orderBy: [asc(staffTable.fullName), asc(staffTable.username)],
+    });
+    const eligible = staffRows.filter((staff) => staffMatchesBookingAssignment(staff, types));
+    const detailAssignment = bookingAssignedStaff(reference.details);
+    const previous = {
+      ...detailAssignment,
+      ids: Array.from(new Set([
+        ...detailAssignment.ids,
+        ...(reference.source === "kosha" && Number(reference.row.assignedStaffId) > 0 ? [Number(reference.row.assignedStaffId)] : []),
+      ])),
+    };
+    const assignedStaff = previous.ids
+      .map((id) => staffRows.find((staff) => staff.id === id))
+      .filter(Boolean)
+      .map((staff: any) => ({
+        id: staff.id,
+        name: staff.fullName || staff.username,
+        role: staff.jobTitle || staff.role,
+        department: staff.department,
+      }));
+
+    if (method === "GET") {
+      return json({
+        types,
+        assignedStaff,
+        eligibleStaff: eligible.map((staff) => ({
+          id: staff.id,
+          name: staff.fullName || staff.username,
+          role: staff.jobTitle || staff.role,
+          department: staff.department,
+        })),
+      });
+    }
+
+    if (method === "PATCH") {
+      const parsed = BookingStaffAssignmentSchema.safeParse(await body(req));
+      if (!parsed.success)
+        return validationError("booking-operations.staff-assignment", parsed);
+      const nextIds = Array.from(new Set(parsed.data.assignedStaffIds));
+      const eligibleById = new Map(eligible.map((staff) => [staff.id, staff]));
+      const unavailable = nextIds.filter((staffId) => !eligibleById.has(staffId));
+      if (unavailable.length)
+        return error("أحد الموظفين المحددين غير نشط أو غير مخول لهذا النوع من الحجز", 422);
+      const currentIds = previous.ids;
+      if (currentIds.length === nextIds.length && currentIds.every((staffId) => nextIds.includes(staffId)))
+        return json({ ok: true, assignedStaff, duplicate: true });
+
+      const nextStaff = nextIds.map((staffId) => eligibleById.get(staffId)!);
+      const nextAssignments = nextStaff.map((staff) => ({
+        id: staff.id,
+        name: staff.fullName || staff.username,
+        role: staff.jobTitle || staff.role,
+        department: staff.department,
+      }));
+      const removedIds = currentIds.filter((staffId) => !nextIds.includes(staffId));
+      const addedIds = nextIds.filter((staffId) => !currentIds.includes(staffId));
+      const beforeNames = assignedStaff.map((staff: any) => staff.name);
+      const afterNames = nextAssignments.map((staff) => staff.name);
+      const nextDetails = {
+        ...reference.details,
+        assignedStaffIds: nextIds,
+        bookingStaffAssignments: nextAssignments,
+        primaryEmployeeId: null,
+        primaryEmployeeName: null,
+        assistantEmployeeId: null,
+        assistantEmployeeName: null,
+        // Existing Kosha staff screens consume names from this field. Keeping it
+        // in sync means a newly assigned crew member sees the booking immediately.
+        assignedEmployees: afterNames,
+      };
+      const href = reference.source === "kosha"
+        ? `/staff/koshas/booking/${reference.id}`
+        : types.some((type) => type === "kosha" || type === "sound")
+          ? `/staff/koshas/booking/${reference.id}?source=service`
+          : `/admin/bookings/service/${reference.id}`;
+
+      await db.transaction(async (tx) => {
+        if (reference.source === "kosha") {
+          await tx.update(koshaBookingsTable)
+            .set({ bookingDetails: nextDetails, assignedStaffId: nextIds[0] ?? null, updatedAt: new Date() })
+            .where(eq(koshaBookingsTable.id, reference.id));
+        } else {
+          await tx.update(serviceOrdersTable)
+            .set({ customFields: nextDetails })
+            .where(eq(serviceOrdersTable.id, reference.id));
+        }
+        await tx.insert(entityTimelineTable).values({
+          entityType: reference.entityType,
+          entityId: reference.id,
+          type: "booking_staff_assignment_changed",
+          title: "تم تحديث فريق الحجز",
+          body: afterNames.length ? `الفريق الحالي: ${afterNames.join("، ")}` : "تمت إزالة جميع الموظفين من الحجز",
+          actorId: auth.id,
+          actorName: auth.fullName || auth.username,
+          metadata: { before: beforeNames, after: afterNames, addedIds, removedIds, types },
+        });
+        if (addedIds.length) {
+          await tx.insert(notificationsTable).values(addedIds.map((staffId) => ({
+            audienceType: "staff",
+            staffId,
+            type: "booking_staff_assigned",
+            title: "تم تعيينك في حجز",
+            body: `${reference.customerName} · ${reference.eventDate || "الموعد غير محدد"}`,
+            entityType: reference.entityType,
+            entityId: reference.id,
+            href,
+            metadata: { source: reference.source, bookingId: reference.id, types },
+          })));
+          // The native Kosha Staff Portal has its own lightweight notification
+          // feed. Mirror native bookings there so assignment appears both in the
+          // platform-wide notification centre and the crew's in-portal bell.
+          if (reference.source === "kosha") {
+            await tx.insert(koshaStaffNotificationsTable).values(addedIds.map((staffId) => ({
+              staffId,
+              audience: "staff",
+              type: "booking_assigned",
+              title: "تم تعيينك في حجز",
+              body: `${reference.customerName} · ${reference.eventDate || "الموعد غير محدد"}`,
+              href,
+              bookingId: reference.id,
+            })));
+          }
+        }
+      });
+      reference.details = nextDetails;
+      await logAdminActivity(req, "booking_staff_assignment_changed", reference.entityType, reference.id, {
+        before: beforeNames,
+        after: afterNames,
+        addedIds,
+        removedIds,
+        types,
+      });
+      return json({ ok: true, assignedStaff: nextAssignments, addedIds, removedIds });
+    }
+    return error("إجراء تخصيص الموظفين غير مدعوم", 405);
+  }
 
   if (resource === "catalog" && method === "GET") {
     const q = String(req.nextUrl.searchParams.get("q") ?? "").trim();
@@ -30835,6 +31213,10 @@ async function handleCentralBookingCenter(
         remaining: Number(order.remainingAmount ?? 0),
         paymentStatus: order.paymentStatus ?? "unpaid",
         notes: order.notes ?? "",
+        assignedStaff: bookingAssignedStaff(fields).staff.map((staff: any) => ({
+          id: Number(staff.id),
+          name: String(staff.name ?? ""),
+        })).filter((staff: any) => staff.id > 0 && staff.name),
         createdAt: order.createdAt.toISOString(),
         detailHref: `/admin/bookings/service/${order.id}`,
       };
@@ -30884,6 +31266,10 @@ async function handleCentralBookingCenter(
       remaining: Number(booking.remainingAmount ?? 0),
       paymentStatus: booking.paymentStatus ?? "unpaid",
       notes: booking.notes ?? "",
+      assignedStaff: bookingAssignedStaff((booking.bookingDetails ?? {}) as Record<string, any>).staff.map((staff: any) => ({
+        id: Number(staff.id),
+        name: String(staff.name ?? ""),
+      })).filter((staff: any) => staff.id > 0 && staff.name),
       createdAt: booking.createdAt.toISOString(),
       detailHref: `/admin/bookings/kosha/${booking.id}`,
     })),
@@ -45598,6 +45984,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         "";
       const phone = normalizeIraqiPhone(data.phone);
       if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
+      const eventDate = data.eventDate
+        ? normalizeDateOnly(data.eventDate)
+        : null;
+      if (data.eventDate && !eventDate)
+        return error("تاريخ الحجز غير صالح", 400, {
+          code: "BOOKING_INVALID",
+          fieldErrors: { eventDate: "أدخل تاريخاً صحيحاً" },
+        });
+      logServiceBookingStep({
+        step: "validate",
+        serviceId: data.serviceId,
+        phone,
+      });
       const safeCustomerName = textFallback(
         data.customerName,
         formatIraqiPhone(phone),
@@ -45605,7 +46004,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       );
       const conflict = await findBookingConflict({
         serviceId: data.serviceId,
-        eventDate: data.eventDate ?? "",
+        eventDate,
         customFields,
       });
       if (conflict)
@@ -45620,7 +46019,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             serviceId: data.serviceId,
             customerName: safeCustomerName,
             phone,
-            eventDate: data.eventDate ?? "",
+            eventDate: eventDate ?? "",
             eventLocation,
             notes: data.notes,
             internalNotes:
@@ -45645,6 +46044,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         throw serviceBookingSaveError(err);
       }
+      logServiceBookingStep({ step: "tracking", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
       const orderQr = await ensureQrForEntity(
         "service_order",
         order,
@@ -45666,6 +46066,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         status: order.status,
         service: service.nameAr ?? service.name ?? "",
       });
+      logServiceBookingStep({ step: "notifications", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
       void createNotification({
         type: "booking_new",
         title: "حجز جديد",
@@ -45687,6 +46088,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           message: err?.message,
         }),
       );
+      logServiceBookingStep({ step: "timeline", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
       void addEntityTimeline({
         entityType: "service_order",
         entityId: order.id,
@@ -45735,7 +46137,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           message: err?.message,
         }),
       );
-      if (Number(order.depositAmount) > 0)
+      logServiceBookingStep({ step: "accounting", serviceId: order.serviceId, orderId: order.id, phone: order.phone });
+      if (Number(order.depositAmount) > 0) {
         await syncServiceOrderFinancialPayment(
           order,
           financialActor(auth),
@@ -45746,6 +46149,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             message: err instanceof Error ? err.message : "unknown",
           }),
         );
+      }
       void notifyTelegramOrder({
         kind: "service",
         id: order.id,
@@ -58736,6 +59140,7 @@ function isKoshaBookingAssignedTo(row: any, staffId: number | null) {
     row?.primaryEmployeeId,
     row?.assistantEmployeeId,
     row?.assignedStaffId,
+    ...(Array.isArray(row?.assignedStaffIds) ? row.assignedStaffIds : []),
   ];
   return candidates.some((value) => Number(value) === Number(staffId));
 }
@@ -58749,7 +59154,8 @@ function isKoshaBookingUnassigned(row: any) {
   return (
     !Number(row?.assignedStaffId) &&
     !Number(row?.primaryEmployeeId) &&
-    !Number(row?.assistantEmployeeId)
+    !Number(row?.assistantEmployeeId) &&
+    !(Array.isArray(row?.assignedStaffIds) && row.assignedStaffIds.some((value: unknown) => Number(value) > 0))
   );
 }
 
@@ -58867,6 +59273,7 @@ async function formatKoshaBookingForCrew(row: any) {
     ...base,
     executionStage,
     assignedStaffId: row.assignedStaffId ?? row.assigned_staff_id ?? null,
+    assignedStaffIds: bookingAssignedStaff(details).ids,
     // Carry the raw assignment ids onto the crew row so the visibility predicate
     // (isKoshaBookingAssignedTo) works identically for the counter, the list and
     // the detail guard — they must all scope on the same fields.
@@ -59236,6 +59643,7 @@ async function formatRoutedKoshaServiceBookingForCrew(
     ...(await formatRoutedKoshaServiceBooking(order, service)),
     executionStage,
     assignedStaffId: fields.assignedStaffId ?? null,
+    assignedStaffIds: bookingAssignedStaff(fields).ids,
     bucket: crewBucket(
       { eventDate: order.eventDate, executionStage },
       baghdadToday(),
@@ -66633,7 +67041,12 @@ export async function handleApi(req: NextRequest, rawParts: string[] = []) {
         requestId,
       });
     }
-    if (err instanceof CheckoutError) return error(err.message, err.status);
+    if (err instanceof CheckoutError)
+      return error(err.message, err.status, {
+        code: err.options.code,
+        fieldErrors: err.options.fieldErrors,
+        retryable: err.options.retryable,
+      });
     if (err instanceof SchemaOutdatedError) {
       const requestId = makeRequestId(req.headers.get("x-request-id"));
       console.error("AJN database schema is outdated", {

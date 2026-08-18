@@ -86,6 +86,7 @@ const ROLE_PRESETS: Record<string, string[]> = {
     "dashboard",
     "orders",
     "bookings",
+    "booking_staff_assign",
     "services",
     "products",
     "gallery",

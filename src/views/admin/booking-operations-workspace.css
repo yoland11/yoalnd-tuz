@@ -47,6 +47,22 @@
 .ajn-op-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .ajn-op-header-actions .button,
 .ajn-op-header-actions a { white-space: nowrap; }
+.ajn-op-assign-trigger { max-width: 17rem; overflow: hidden; text-overflow: ellipsis; }
+.ajn-op-staff-dialog { max-width: 38rem; }
+.ajn-op-assignment-context { padding: .55rem .65rem; border: 1px solid var(--op-border); border-radius: .55rem; background: var(--op-elevated); color: var(--op-muted); font-size: .67rem; }
+.ajn-op-assignment-context span { margin-inline: .25rem; color: var(--op-rose); }
+.ajn-op-staff-picker { display: grid; max-height: min(52vh, 28rem); gap: .45rem; overflow: auto; padding-inline-end: .15rem; }
+.ajn-op-staff-picker > label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .65rem; min-height: 3.5rem; padding: .65rem .7rem; border: 1px solid var(--op-border); border-radius: .6rem; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.ajn-op-staff-picker > label:hover { border-color: var(--op-rose); }
+.ajn-op-staff-picker > label.is-selected { border-color: var(--op-rose); background: var(--op-rose-soft); }
+.ajn-op-staff-picker input { width: 1rem; height: 1rem; accent-color: var(--op-rose); }
+.ajn-op-staff-picker b,
+.ajn-op-staff-picker small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ajn-op-staff-picker b { font-size: .72rem; }
+.ajn-op-staff-picker small { margin-top: .15rem; color: var(--op-muted); font-size: .58rem; }
+.ajn-op-staff-picker label > svg { color: var(--op-rose); opacity: 0; }
+.ajn-op-staff-picker label.is-selected > svg { opacity: 1; }
+.ajn-op-dialog-actions { gap: .45rem; }
 .ajn-op-primary { border-color: transparent !important; background: var(--op-rose) !important; color: #fff !important; }
 .ajn-op-primary:hover { background: color-mix(in srgb, var(--op-rose) 88%, #000) !important; }
 
@@ -557,6 +573,8 @@
   .ajn-op-facts { grid-template-columns: 1fr 1fr; }
   .ajn-op-header-actions { grid-template-columns: 1fr 1fr; }
   .ajn-op-header-actions > :last-child { width: auto; }
+  .ajn-op-assign-trigger { width: 100%; max-width: none; justify-content: start; grid-column: 1 / -1; }
+  .ajn-op-staff-dialog { width: calc(100vw - 1rem); max-width: none; padding: 1rem; }
   .ajn-op-command-summary { display: flex; overflow-x: auto; }
   .ajn-op-command-summary button { min-width: 10.5rem; }
   .ajn-op-quickbar { align-items: stretch; }

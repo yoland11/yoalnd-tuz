@@ -79,6 +79,7 @@ const koshaMigration = readFileSync("lib/db/migrations/0100_kosha_field_collecti
 const schemaIndexRecovery = readFileSync("lib/db/migrations/0101_schema_index_recovery.sql", "utf8");
 const koshaStaff = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
 const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "utf8");
+const bookingCenter = readFileSync("src/views/admin/booking-center.tsx", "utf8");
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
@@ -92,6 +93,10 @@ check("sales invoice client sends an idempotency key", sales.includes('"x-idempo
 check("purchase invoice client sends an idempotency key", purchases.includes('"x-idempotency-key": submitKeyRef.current'));
 check("shared client preserves error code and request id", client.includes("class AjNApiError") && client.includes("x-request-id"));
 check("shared client coalesces duplicate in-flight writes", client.includes("inFlightWrites") && client.includes("if (pending) return pending"));
+check("service booking creates or links the customer inside its booking transaction", api.includes("ensureCustomerForPhone(\n      values.phone") && api.includes("tx,\n    );") && api.includes("skipCustomerSync: true"));
+check("service booking writes its status history in the same transaction", api.includes("await tx.insert(serviceOrderStatusHistoryTable).values"));
+check("service booking errors classify schema, date, and database failures", api.includes('code === "42P01"') && api.includes('fieldErrors: { eventDate') && api.includes('code: "DATABASE_ERROR"'));
+check("booking center keeps form values and focuses returned invalid fields", bookingCenter.includes("const [fieldErrors, setFieldErrors]") && bookingCenter.includes("focusField(Object.keys(returnedErrors)[0])") && bookingCenter.includes("aria-invalid={Boolean(fieldErrors.eventDate)}"));
 check("bundle sale resolves components server-side", api.includes("resolveSalesInvoiceBundleLines") && api.includes("salesInvoiceBundleSnapshotsTable"));
 check("bundle stock uses the same conditional invoice transaction", api.includes("sales_invoice_bundle_stock_deducted") && api.includes("stock::numeric >="));
 check("bundle snapshot schema preserves original components", bundleSchema.includes("salesInvoiceBundleSnapshotsTable") && bundleSchema.includes("components"));

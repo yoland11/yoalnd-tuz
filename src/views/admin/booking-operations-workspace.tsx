@@ -48,6 +48,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -172,6 +173,8 @@ type AssetRow = {
 };
 
 type TimelineRow = { id: number; type: string; title: string; body?: string | null; actorName?: string; createdAt: string; metadata?: Record<string, any> };
+type AssignableStaff = { id: number; name: string; role?: string | null; department?: string | null };
+type StaffAssignmentData = { types: string[]; assignedStaff: AssignableStaff[]; eligibleStaff: AssignableStaff[] };
 
 const BOOKING_STEPS = [
   ["booked", "تم الحجز"],
@@ -243,6 +246,50 @@ function ConfirmAction({ open, title, description, actionLabel, busy, danger, on
   return <AlertDialog open={open} onOpenChange={onOpenChange}><AlertDialogContent dir="rtl"><AlertDialogHeader><AlertDialogTitle>{title}</AlertDialogTitle><AlertDialogDescription>{description}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>الرجوع</AlertDialogCancel><AlertDialogAction className={danger ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "ajn-op-primary"} disabled={busy} onClick={(event) => { event.preventDefault(); onConfirm(); }}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}{actionLabel}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>;
 }
 
+function StaffAssignmentControl({ base, queryKey, booking }: { base: string; queryKey: unknown[]; booking: BookingOperationsBooking }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<number[]>([]);
+  const query = useQuery<StaffAssignmentData>({ queryKey: [...queryKey, "staff-assignment"], queryFn: () => adminFetch(`${base}/staff-assignment`) });
+  useEffect(() => {
+    if (open) setSelected(query.data?.assignedStaff.map((staff) => staff.id) ?? []);
+  }, [open, query.data]);
+  const mutation = useMutation({
+    mutationFn: () => adminFetch(`${base}/staff-assignment`, { method: "PATCH", body: JSON.stringify({ assignedStaffIds: selected }) }),
+    onSuccess: () => {
+      setOpen(false);
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
+      toast({ title: "تم تحديث فريق الحجز", description: "سيظهر الحجز فوراً للموظفين المعيّنين." });
+    },
+    onError: (error: any) => toast({ title: "تعذر تحديث فريق الحجز", description: error?.message, variant: "destructive" }),
+  });
+  const assigned = query.data?.assignedStaff ?? [];
+  const toggle = (staffId: number) => setSelected((current) => current.includes(staffId) ? current.filter((id) => id !== staffId) : [...current, staffId]);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <Button variant="outline" className="ajn-op-assign-trigger" onClick={() => setOpen(true)} disabled={query.isLoading}>
+      <Users /> {assigned.length ? assigned.map((staff) => staff.name).join("، ") : "تعيين الموظفين"}
+    </Button>
+    <DialogContent dir="rtl" className="ajn-op-staff-dialog">
+      <DialogHeader><DialogTitle>تعيين فريق الحجز</DialogTitle><DialogDescription>اختر موظفاً واحداً أو أكثر من المخولين لخدمات هذا الحجز. لا ينشئ التعيين مهاماً مكررة.</DialogDescription></DialogHeader>
+      <div className="ajn-op-assignment-context">{booking.services.map((service) => service.type).join(" · ")} <span>·</span> {booking.number}</div>
+      <div className="ajn-op-staff-picker" aria-label="الموظفون المخولون">
+        {query.isLoading ? <Skeleton className="h-28" /> : query.data?.eligibleStaff.length ? query.data.eligibleStaff.map((staff) => {
+          const checked = selected.includes(staff.id);
+          return <label key={staff.id} className={checked ? "is-selected" : ""}>
+            <input type="checkbox" checked={checked} onChange={() => toggle(staff.id)} />
+            <span><b>{staff.name}</b><small>{[staff.role, staff.department].filter(Boolean).join(" · ") || "موظف مخول"}</small></span>
+            <CheckCircle2 aria-hidden="true" />
+          </label>;
+        }) : <div className="ajn-op-empty compact"><Users /><h3>لا يوجد موظف مخول لهذه الخدمة</h3><p>راجع قسم الموظف وصلاحياته ثم أعد المحاولة.</p></div>}
+      </div>
+      <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button className="ajn-op-primary" disabled={mutation.isPending || query.isLoading} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ..." : selected.length ? `حفظ ${selected.length} موظف` : "إزالة كل الموظفين"}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
 export function BookingOperationsWorkspace({ booking }: { booking: BookingOperationsBooking }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -296,7 +343,7 @@ export function BookingOperationsWorkspace({ booking }: { booking: BookingOperat
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions"><Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> استلام دفعة</Link></Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><Button variant="outline" onClick={() => window.print()}><Printer /> طباعة العقد</Button><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+        <div className="ajn-op-header-actions"><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> استلام دفعة</Link></Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><Button variant="outline" onClick={() => window.print()}><Printer /> طباعة العقد</Button><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
       </div>
     </header>
 
