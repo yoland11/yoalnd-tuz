@@ -3,6 +3,11 @@ import localFont from "next/font/local";
 import "@/index.css";
 import { getCachedPublicSettings } from "@/server/public-settings";
 
+// Public settings are sourced from the live database. Rendering the root
+// layout dynamically keeps the production build independent from credentials
+// while preserving runtime error visibility if the database is unavailable.
+export const dynamic = "force-dynamic";
+
 const cairo = localFont({
   src: [
     { path: "../public/fonts/Cairo-Variable.ttf", weight: "400 700", style: "normal" },

@@ -5,12 +5,21 @@
 // are present. Production DATABASE_URL is deliberately never accepted here.
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { build } = require("../node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild/lib/main.js");
+// esbuild is transitive in this workspace, so pnpm does not create a root
+// symlink. Resolve its installed virtual-store entry instead of pinning a
+// specific version, which changes whenever the supported override moves.
+const esbuildStoreEntry = readdirSync("node_modules/.pnpm")
+  .find((entry) => entry.startsWith("esbuild@"));
+if (!esbuildStoreEntry)
+  throw new Error("esbuild is required for the save-smoke suite");
+const { build } = require(
+  `../node_modules/.pnpm/${esbuildStoreEntry}/node_modules/esbuild/lib/main.js`,
+);
 const bundle = await build({
   entryPoints: ["src/server/write-safety.ts"],
   bundle: true,

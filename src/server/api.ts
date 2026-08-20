@@ -105,6 +105,8 @@ import {
   employeeAdvancesTable,
   employeeSalarySettingsTable,
   employeeSalarySettingAuditsTable,
+  payrollLinesTable,
+  payrollRunsTable,
   disasterRecoverySnapshotsTable,
   entityDocumentsTable,
   entityTimelineTable,
@@ -6915,6 +6917,36 @@ async function updateRoutedKoshaServiceBooking(
       entityId: row.id,
       status: row.status,
       actor: erpActorFromAdmin(auth),
+    });
+  }
+  const oldFields = (order.customFields ?? {}) as Record<string, any>;
+  const scheduleChanged =
+    row.eventDate !== order.eventDate ||
+    row.eventLocation !== order.eventLocation ||
+    fields.eventTime !== oldFields.eventTime ||
+    fields.province !== oldFields.province ||
+    fields.area !== oldFields.area ||
+    fields.mahalla !== oldFields.mahalla ||
+    fields.nearestPoint !== oldFields.nearestPoint;
+  if (scheduleChanged || row.status !== order.status) {
+    notifyAssignedBookingStaffSafely({
+      req,
+      staffIds: bookingAssignedStaff((row.customFields ?? {}) as Record<string, unknown>).ids,
+      type: row.status === "cancelled"
+        ? "booking_cancelled"
+        : scheduleChanged
+          ? "booking_schedule_changed"
+          : "booking_status_changed",
+      title: row.status === "cancelled"
+        ? "تم إلغاء الحجز"
+        : scheduleChanged
+          ? "تم تغيير موعد أو موقع الحجز"
+          : "تم تحديث حالة الحجز",
+      body: `${row.customerName} · ${row.eventDate ?? "الموعد غير محدد"}`,
+      entityType: "service_order",
+      entityId: row.id,
+      href: `/staff/koshas/booking/${row.id}?source=service`,
+      metadata: { source: "service", scheduleChanged, previousStatus: order.status, currentStatus: row.status },
     });
   }
   void logAdminActivity(
@@ -20797,6 +20829,39 @@ async function handleAdminKoshas(
             },
           });
         }
+        const scheduleChanged =
+          row.eventDate !== existing.eventDate ||
+          row.eventTime !== existing.eventTime ||
+          row.province !== existing.province ||
+          row.area !== existing.area ||
+          row.mahalla !== existing.mahalla ||
+          row.nearestPoint !== existing.nearestPoint ||
+          row.addressNotes !== existing.addressNotes;
+        if (scheduleChanged || row.status !== existing.status) {
+          const assignmentDetails = (row.bookingDetails ?? {}) as Record<string, unknown>;
+          notifyAssignedBookingStaffSafely({
+            req,
+            staffIds: Array.from(new Set([
+              ...bookingAssignedStaff(assignmentDetails).ids,
+              ...(Number(row.assignedStaffId) > 0 ? [Number(row.assignedStaffId)] : []),
+            ])),
+            type: row.status === "cancelled"
+              ? "booking_cancelled"
+              : scheduleChanged
+                ? "booking_schedule_changed"
+                : "booking_status_changed",
+            title: row.status === "cancelled"
+              ? "تم إلغاء الحجز"
+              : scheduleChanged
+                ? "تم تغيير موعد أو موقع الحجز"
+                : "تم تحديث حالة الحجز",
+            body: `${row.customerName} · ${row.eventDate ?? "الموعد غير محدد"}${row.eventTime ? ` · ${row.eventTime}` : ""}`,
+            entityType: "kosha_booking",
+            entityId: row.id,
+            href: `/staff/koshas/booking/${row.id}`,
+            metadata: { scheduleChanged, previousStatus: existing.status, currentStatus: row.status },
+          });
+        }
         await syncKoshaFinancialPayment(row, financialActor(auth));
         const wasPendingPricing =
           existing.paymentStatus === "pending_pricing" ||
@@ -20894,6 +20959,20 @@ async function handleAdminKoshas(
           entityId: id,
           status: "cancelled",
           actor: erpActorFromAdmin(auth),
+        });
+        notifyAssignedBookingStaffSafely({
+          req,
+          staffIds: Array.from(new Set([
+            ...bookingAssignedStaff((archived.bookingDetails ?? {}) as Record<string, unknown>).ids,
+            ...(Number(archived.assignedStaffId) > 0 ? [Number(archived.assignedStaffId)] : []),
+          ])),
+          type: "booking_cancelled",
+          title: "تم إلغاء الحجز",
+          body: `${archived.customerName} · ${archived.eventDate ?? "الموعد غير محدد"}`,
+          entityType: "kosha_booking",
+          entityId: id,
+          href: "/staff/koshas",
+          metadata: { source: "kosha", cancelledBy: auth.id },
         });
         void addEntityTimeline({
           entityType: "kosha_booking",
@@ -30723,6 +30802,20 @@ async function handleBookingOperations(
         .update(serviceOrdersTable)
         .set({ status })
         .where(eq(serviceOrdersTable.id, reference.id));
+    // Keep staff informed without making the canonical booking update depend on
+    // the notification channel. The assignment is read from the same booking
+    // payload written by Booking Center; no secondary booking is created.
+    notifyAssignedBookingStaffSafely({
+      req,
+      staffIds: bookingAssignedStaff(reference.details).ids,
+      type: next === "cancelled" ? "booking_cancelled" : "booking_status_changed",
+      title: next === "cancelled" ? "تم إلغاء الحجز" : "تم تحديث حالة الحجز",
+      body: `${reference.customerName} · ${next}`,
+      entityType: reference.entityType,
+      entityId: reference.id,
+      href: reference.source === "kosha" ? `/staff/koshas/booking/${reference.id}` : `/admin/bookings/service/${reference.id}`,
+      metadata: { source: reference.source, bookingId: reference.id, before: current, after: next },
+    });
     await addEntityTimeline({
       entityType: reference.entityType,
       entityId: reference.id,
@@ -59830,6 +59923,337 @@ async function recordDepreciationCategoryAudit(
     );
 }
 
+/**
+ * Notifications are intentionally best-effort: a push/database issue must not
+ * turn a successfully saved booking into a failed request or hide it from My
+ * Bookings. The canonical timeline and booking writes run independently.
+ */
+function notifyAssignedBookingStaffSafely(input: {
+  req: NextRequest;
+  staffIds: number[];
+  type: string;
+  title: string;
+  body: string;
+  entityType: string;
+  entityId: number;
+  href: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const staffIds = [...new Set(input.staffIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!staffIds.length) return;
+  void db.insert(notificationsTable).values(
+    staffIds.map((staffId) => ({
+      audienceType: "staff" as const,
+      staffId,
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      href: input.href,
+      metadata: input.metadata ?? {},
+    })),
+  ).catch((notificationError) => {
+    console.error("[BOOKING_STAFF_NOTIFICATION_FAILED]", {
+      requestId: makeRequestId(input.req.headers.get("x-request-id")),
+      bookingId: input.entityId,
+      message: notificationError instanceof Error ? notificationError.message : "unknown",
+    });
+  });
+}
+
+/**
+ * Shared, role-aware staff home.  This deliberately reads the canonical task,
+ * booking, notification and payroll records; it never materialises a second
+ * "staff booking" or "staff task" record.
+ */
+async function handleUnifiedStaffPortal(
+  req: NextRequest,
+  parts: string[],
+): Promise<NextResponse> {
+  const auth = await getAdminUser(req);
+  if (!auth) return error("غير مخوّل", 401);
+  const resource = parts[2] ?? "dashboard";
+  const method = req.method;
+
+  if (resource === "dashboard" && method === "GET") {
+    const today = baghdadToday();
+    const [staff, tasks, latestAttendance] = await Promise.all([
+      db.query.staffTable.findFirst({ where: eq(staffTable.id, auth.id) }),
+      db.query.tasksTable.findMany({
+        where: and(
+          sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`,
+          sql`${tasksTable.archivedAt} is null`,
+        ),
+        orderBy: [asc(tasksTable.dueAt), desc(tasksTable.updatedAt)],
+        limit: 100,
+      }),
+      db.query.attendanceRecordsTable.findFirst({
+        where: eq(attendanceRecordsTable.staffId, auth.id),
+        orderBy: [desc(attendanceRecordsTable.checkInAt)],
+      }),
+    ]);
+    const formattedTasks = tasks.map((task) => formatTask(task));
+    const actionable = formattedTasks.filter((task) =>
+      ["new", "in_progress"].includes(task.status),
+    );
+    return json({
+      today,
+      staff: {
+        id: auth.id,
+        name: auth.fullName || auth.username,
+        role: auth.role,
+        department: staff?.department ?? null,
+        jobTitle: staff?.jobTitle ?? null,
+        permissions: auth.permissions,
+      },
+      tasks: formattedTasks,
+      summary: {
+        todayTasks: actionable.filter((task) => task.dueAt?.slice(0, 10) === today).length,
+        overdueTasks: actionable.filter(
+          (task) => Boolean(task.dueAt) && task.dueAt! < new Date().toISOString(),
+        ).length,
+        openTasks: actionable.length,
+      },
+      attendance: latestAttendance
+        ? {
+            status: latestAttendance.status,
+            checkInAt: latestAttendance.checkInAt.toISOString(),
+            checkOutAt: latestAttendance.checkOutAt?.toISOString() ?? null,
+          }
+        : null,
+    });
+  }
+
+  if (resource === "notifications") {
+    if (method === "GET") {
+      const rows = await db.query.notificationsTable.findMany({
+        where: and(
+          eq(notificationsTable.audienceType, "staff"),
+          eq(notificationsTable.staffId, auth.id),
+          sql`${notificationsTable.archivedAt} is null`,
+        ),
+        orderBy: [desc(notificationsTable.createdAt)],
+        limit: 80,
+      });
+      return json({
+        data: rows.map((row) => ({
+          id: row.id,
+          type: row.type,
+          title: row.title,
+          body: row.body,
+          href: row.href,
+          entityType: row.entityType,
+          entityId: row.entityId,
+          readAt: row.readAt?.toISOString() ?? null,
+          createdAt: row.createdAt.toISOString(),
+        })),
+      });
+    }
+    const notificationId = int(parts[3] ?? "");
+    if (method === "POST" && parts[4] === "read" && notificationId) {
+      const [updated] = await db
+        .update(notificationsTable)
+        .set({ readAt: new Date() })
+        .where(
+          and(
+            eq(notificationsTable.id, notificationId),
+            eq(notificationsTable.audienceType, "staff"),
+            eq(notificationsTable.staffId, auth.id),
+          ),
+        )
+        .returning();
+      if (!updated) return error("الإشعار غير موجود", 404);
+      return json({ ok: true, id: updated.id });
+    }
+    return error("إجراء الإشعارات غير مدعوم", 405);
+  }
+
+  if (resource === "bookings" && method === "GET") {
+    const manager = ["admin", "manager", "main_manager", "super_admin"].includes(
+      String(auth.role).toLowerCase(),
+    );
+    const bookings: any[] = [];
+    if (hasPermission(auth, "koshas")) {
+      const kosha = await getVisibleKoshaBookingsForStaff(auth);
+      const visible = manager
+        ? kosha.visible
+        : kosha.visible.filter((row) => isKoshaBookingAssignedTo(row, auth.id));
+      bookings.push(
+        ...visible.map((row: any) => ({
+          id: row.id,
+          source: row.source ?? "kosha",
+          service: "كوشات",
+          customer: row.customerName ?? row.customer ?? "العميل",
+          date: row.eventDate ?? null,
+          time: row.eventTime ?? row.eventStartTime ?? null,
+          location: row.hallName ?? row.location ?? null,
+          status: row.executionStage ?? row.status,
+          href: `/staff/koshas/booking/${row.id}${row.source === "service" ? "?source=service" : ""}`,
+        })),
+      );
+    }
+    if (hasPermission(auth, "photography")) {
+      const events = await db.query.photographyEventsTable.findMany({
+        where: manager
+          ? sql`${photographyEventsTable.status} <> 'archived'`
+          : and(
+              eq(photographyEventsTable.assignedStaffId, auth.id),
+              sql`${photographyEventsTable.status} <> 'archived'`,
+            ),
+        orderBy: [asc(photographyEventsTable.eventDate)],
+        limit: 100,
+      });
+      bookings.push(
+        ...events.map((event) => ({
+          id: event.id,
+          source: "photography",
+          service: "تصوير",
+          customer: event.groomName,
+          date: String(event.eventDate),
+          time: event.eventStartTime ?? null,
+          location: event.location ?? null,
+          status: event.status,
+          href: `/staff/photography/events/${event.clientToken}/register`,
+        })),
+      );
+    }
+    // Booking Center can assign warehouse and service staff to a normal service
+    // order as well. Surface that same order here, while excluding routed Kosha
+    // work already represented by its specialist portal above.
+    const serviceOrders = await db.query.serviceOrdersTable.findMany({
+      where: and(
+        sql`${serviceOrdersTable.archivedAt} is null`,
+        sql`${serviceOrdersTable.status} <> 'cancelled'`,
+      ),
+      orderBy: [asc(serviceOrdersTable.eventDate)],
+      limit: 500,
+    });
+    const serviceIds = [...new Set(serviceOrders.map((order) => order.serviceId))];
+    const services = serviceIds.length
+      ? await db.query.servicesTable.findMany({ where: inArray(servicesTable.id, serviceIds) })
+      : [];
+    const serviceById = new Map(services.map((service) => [service.id, service]));
+    bookings.push(
+      ...serviceOrders
+        .filter((order) => !isKoshaOrSoundBooking(order, serviceById.get(order.serviceId)))
+        .filter((order) => manager || bookingAssignedStaff(order.customFields ?? {}).ids.includes(auth.id))
+        .map((order) => ({
+          id: order.id,
+          source: "service",
+          service: serviceById.get(order.serviceId)?.name ?? "خدمة",
+          customer: order.customerName,
+          date: order.eventDate ?? null,
+          time: String((order.customFields as any)?.eventTime ?? (order.customFields as any)?.startTime ?? "") || null,
+          location: order.eventLocation ?? null,
+          status: order.status,
+          href: `/admin/bookings/service/${order.id}`,
+        })),
+    );
+    bookings.sort((a, b) => String(a.date ?? "9999-12-31").localeCompare(String(b.date ?? "9999-12-31")));
+    return json({ today: baghdadToday(), data: bookings.slice(0, 100) });
+  }
+
+  if (resource === "payroll") {
+    if (method === "GET") {
+      const lines = await db.query.payrollLinesTable.findMany({
+        where: eq(payrollLinesTable.staffId, auth.id),
+        orderBy: [desc(payrollLinesTable.createdAt)],
+        limit: 24,
+      });
+      const runIds = [...new Set(lines.map((line) => line.payrollRunId))];
+      const runs = runIds.length
+        ? await db.query.payrollRunsTable.findMany({
+            where: inArray(payrollRunsTable.id, runIds),
+          })
+        : [];
+      const runById = new Map(runs.map((run) => [run.id, run]));
+      return json({
+        data: lines.map((line) => {
+          const run = runById.get(line.payrollRunId);
+          return {
+            id: line.id,
+            runNo: run?.runNo ?? null,
+            period: run?.period ?? null,
+            status: run?.status ?? null,
+            paidAt: run?.paidAt?.toISOString() ?? null,
+            baseSalary: Number(line.baseSalary),
+            overtimeAmount: Number(line.overtimeAmount),
+            bonusAmount: Number(line.bonusAmount),
+            penaltyAmount: Number(line.penaltyAmount),
+            advanceDeduction: Number(line.advanceDeduction),
+            insuranceAmount: Number(line.insuranceAmount),
+            grossSalary: Number(line.grossSalary),
+            netSalary: Number(line.netSalary),
+            receivedAt: line.signedAt?.toISOString() ?? null,
+            receivedBy: line.signatureName ?? null,
+            canAcknowledge: Boolean(run?.paidAt) && !line.signedAt,
+          };
+        }),
+      });
+    }
+    const lineId = int(parts[3] ?? "");
+    if (method === "POST" && lineId && parts[4] === "acknowledge") {
+      const result = await db.transaction(async (tx) => {
+        const line = await tx.query.payrollLinesTable.findFirst({
+          where: and(eq(payrollLinesTable.id, lineId), eq(payrollLinesTable.staffId, auth.id)),
+        });
+        if (!line) return { kind: "not_found" as const };
+        if (line.signedAt) return { kind: "duplicate" as const, line };
+        const run = await tx.query.payrollRunsTable.findFirst({
+          where: eq(payrollRunsTable.id, line.payrollRunId),
+        });
+        if (!run?.paidAt) return { kind: "not_paid" as const };
+        const [updated] = await tx
+          .update(payrollLinesTable)
+          .set({ signatureName: auth.fullName || auth.username, signedAt: new Date() })
+          .where(and(eq(payrollLinesTable.id, line.id), eq(payrollLinesTable.staffId, auth.id)))
+          .returning();
+        await tx.insert(entityTimelineTable).values({
+          entityType: "payroll_line",
+          entityId: line.id,
+          type: "payroll_received_acknowledged",
+          title: "تم تأكيد استلام الراتب",
+          body: run.period,
+          actorId: auth.id,
+          actorName: auth.fullName || auth.username,
+          metadata: { payrollRunId: run.id, payrollRunNo: run.runNo },
+        });
+        return { kind: "updated" as const, line: updated, run };
+      });
+      if (result.kind === "not_found") return error("سجل الراتب غير موجود", 404);
+      if (result.kind === "not_paid") return error("لا يمكن تأكيد الاستلام قبل تسجيل دفع الراتب", 409);
+      if (result.kind === "updated") {
+        void createNotification({
+          audienceType: "staff",
+          staffId: auth.id,
+          type: "payroll_received_acknowledged",
+          title: "تم تسجيل استلام الراتب",
+          body: `تم تأكيد استلام راتب ${result.run.period}`,
+          entityType: "payroll_line",
+          entityId: lineId,
+          href: "/staff?tab=account",
+        }).catch((notificationError) => {
+          console.error("[STAFF_PORTAL_PAYROLL_NOTIFICATION_FAILED]", {
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+            staffId: auth.id,
+            payrollLineId: lineId,
+            message: notificationError instanceof Error ? notificationError.message : "unknown",
+          });
+        });
+        void logAdminActivity(req, "payroll_received_acknowledged", "payroll_line", lineId, {
+          payrollRunId: result.run.id,
+          payrollRunNo: result.run.runNo,
+        });
+      }
+      return json({ ok: true, duplicate: result.kind === "duplicate" });
+    }
+    return error("إجراء الراتب غير مدعوم", 405);
+  }
+
+  return error("مسار بوابة الموظف غير موجود", 404);
+}
+
 async function handleStaffPortal(
   req: NextRequest,
   parts: string[],
@@ -59983,6 +60407,8 @@ async function handleStaffPortal(
     }
     return error("المسار غير موجود", 404);
   }
+  if (parts[1] === "portal")
+    return handleUnifiedStaffPortal(req, parts);
   if (parts[1] === "photography")
     return handlePhotographyStaffPortal(req, parts);
   if (parts[1] !== "koshas") return null;
