@@ -25,6 +25,7 @@ import {
   MoreHorizontal,
   PackageCheck,
   PartyPopper,
+  Pencil,
   Plus,
   Printer,
   QrCode,
@@ -48,6 +49,8 @@ import { adminFetch, apiErrorMessage, formatCurrency } from "./_lib";
 import { formatIraqiPhone } from "@/lib/phone";
 import { CustomerQuickAddDialog } from "./customer-quick-add";
 import { BookingOperationsWorkspace } from "./booking-operations-workspace";
+import { EditServiceOrderModal } from "./orders";
+import { EditKoshaBookingModal } from "./koshas";
 import "./booking-center.css";
 
 type ServiceKey =
@@ -485,6 +488,11 @@ function BookingDashboard() {
 
 function BookingPreview({ booking }: { booking: UnifiedBooking }) {
   const readiness = getReadiness(booking);
+  const editHref = booking.source === "service" || booking.source === "kosha"
+    ? `/admin/bookings/${booking.source}/${booking.id}?edit=1`
+    : booking.source === "store"
+      ? `/admin/orders?editOrder=${booking.id}`
+      : booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`;
   return (
     <article className="ajn-booking-preview">
       <div className="flex items-start justify-between gap-3">
@@ -495,7 +503,7 @@ function BookingPreview({ booking }: { booking: UnifiedBooking }) {
       <div className="ajn-preview-progress"><span><i style={{ width: `${readiness}%` }} /></span><small>الجاهزية {readiness}%</small></div>
       <div className="ajn-preview-finance"><div><small>الإجمالي</small><Money value={booking.total} /></div><div><small>المتبقي</small><Money value={booking.remaining} className={booking.remaining > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600"} /></div></div>
       {booking.assignedStaff?.length ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Users className="h-3.5 w-3.5 text-primary" /><span className="truncate">{booking.assignedStaff.map((staff) => staff.name).join("، ")}</span></div> : null}
-      <div className="flex items-center justify-between border-t border-border/60 pt-3"><span className="flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5" />{booking.hall || "الموقع غير محدد"}</span><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3"><span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{booking.hall || "الموقع غير محدد"}</span></span><div className="flex items-center gap-1"><Button size="sm" variant="outline" asChild><Link href={editHref}><Pencil className="h-3.5 w-3.5" /> تعديل الحجز</Link></Button><Button size="sm" variant="ghost" asChild><Link href={booking.detailHref || `/admin/bookings/${booking.source}/${booking.id}`}>فتح مساحة العمل <ChevronLeft className="h-4 w-4" /></Link></Button></div></div>
     </article>
   );
 }
@@ -686,12 +694,29 @@ function UnifiedBookingForm({ services, customers, onCancel, onCreated }: { serv
 }
 
 function BookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("edit") === "1");
   const serviceOrdersQuery = useQuery({ queryKey: ["admin", "booking-workspace", "service-orders"], queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=250"), enabled: source === "service" });
   const koshaQuery = useQuery({ queryKey: ["admin", "booking-workspace", "kosha"], queryFn: () => adminFetch<KoshaBooking[]>("/admin/kosha-bookings?search=&status="), enabled: source === "kosha" });
   const data = useMemo(() => unify(serviceOrdersQuery.data ?? [], koshaQuery.data ?? []).find((booking) => booking.source === source && booking.id === id), [source, id, serviceOrdersQuery.data, koshaQuery.data]);
   if (serviceOrdersQuery.isLoading || koshaQuery.isLoading) return <div className="space-y-4"><Skeleton className="h-44 rounded-2xl" /><Skeleton className="h-[520px] rounded-2xl" /></div>;
   if (!data) return <div className="ajn-empty"><AlertTriangle /><h2>الحجز غير موجود</h2><p>قد يكون مؤرشفاً أو لم تعد لديك صلاحية عرضه.</p><Button asChild><Link href="/admin/bookings">العودة إلى مركز الحجوزات</Link></Button></div>;
-  return <BookingOperationsWorkspace booking={data as any} />;
+  const closeEditor = () => {
+    setEditing(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("edit");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  };
+  const saved = () => {
+    queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+    closeEditor();
+  };
+  return <>
+    <BookingOperationsWorkspace booking={data as any} onEdit={() => setEditing(true)} />
+    {editing && source === "service" ? <EditServiceOrderModal order={data.raw as any} onClose={closeEditor} onSaved={saved} /> : null}
+    {editing && source === "kosha" ? <EditKoshaBookingModal booking={data.raw as any} onClose={closeEditor} onSaved={saved} /> : null}
+  </>;
 }
 
 function LegacyBookingWorkspace({ source, id }: { source: "service" | "kosha"; id: number }) {

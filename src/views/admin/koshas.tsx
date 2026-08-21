@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, BarChart3, Check, Edit2, Eye, EyeOff, FileDown, Gift, Image as ImageIcon, Layers, LayoutGrid, MapPin, Minus, Package, Plus, Printer, Save, ScanLine, Sparkles, Trash2, X } from "lucide-react";
@@ -11,17 +11,18 @@ import { usePublicSettings } from "@/lib/public-settings";
 import { adminFetch, apiErrorMessage, apiErrorStatus, formatCurrency } from "./_lib";
 import { thermalReceiptCss, printWhenImagesReadyScript } from "./print-helpers";
 import { EmptyState } from "./_layout";
-import type { Kosha, KoshaImage, KoshaCategory } from "@/views/koshas";
+import type { Kosha, KoshaImage, KoshaCategory, KoshaPackage } from "@/views/koshas";
 import { formatMoney } from "@/lib/money";
 import { AccountSummaryCard } from "./payment-collection";
 import { AssignWorkOrderDialog } from "./koshat-tasks";
+import { useEditFormGuard } from "@/hooks/use-edit-form-guard";
 
 type KoshaFormState = Omit<Kosha, "id" | "galleryImages"> & {
   id?: number;
   galleryImages: KoshaImage[];
 };
 
-type KoshaBooking = {
+export type KoshaBooking = {
   id: number;
   koshaId: number | null;
   koshaName: string | null;
@@ -59,6 +60,7 @@ type KoshaBooking = {
   assistantEmployeeName?: string | null;
   notes: string;
   status: string;
+  executionStage?: string | null;
   trackingCode?: string | null;
   trackingStatus?: string;
   internalNotes: string;
@@ -2026,7 +2028,7 @@ function BookingProductionSection({ bookingId }: { bookingId: number }) {
   );
 }
 
-function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
+export function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBooking; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
   const [previewReady, setPreviewReady] = useState(false);
   const [editorTab, setEditorTab] = useState<"details" | "products">("details");
@@ -2034,6 +2036,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
   const textNumber = (value: unknown) => String(Number(value ?? 0) || 0);
   const [form, setForm] = useState({
     koshaId: booking.koshaId ?? 0,
+    packageId: booking.packageId ?? null as number | null,
     customerName: booking.customerName ?? "",
     phone: booking.phone ?? "",
     brideName: booking.brideName ?? "",
@@ -2043,6 +2046,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     alternatePhone: booking.alternatePhone ?? "",
     eventDate: booking.eventDate ?? "",
     eventTime: booking.eventTime ?? "",
+    hallLocation: booking.hallLocation ?? "",
     eventType: booking.eventType ?? "",
     serviceLevel: booking.serviceLevel ?? "",
     venueType: booking.venueType ?? "",
@@ -2057,6 +2061,10 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     selectedAccessories: booking.selectedAccessories ?? [],
     notes: booking.notes ?? "",
     internalNotes: booking.internalNotes ?? "",
+    status: booking.status ?? "pending",
+    trackingStatus: booking.trackingStatus ?? "booked",
+    executionStage: booking.executionStage ?? "preparing",
+    dueDate: booking.dueDate ?? "",
     koshaPrice: textNumber(savedPricing.koshaPrice),
     welcomeBoardPrice: textNumber(savedPricing.welcomeBoardPrice),
     accessoriesPrice: textNumber(savedPricing.accessoriesPrice),
@@ -2067,8 +2075,12 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
     paymentMethod: String(savedPricing.paymentMethod ?? (booking.paymentStatus === "paid" ? "cash" : "transfer")),
     financialNotes: String(savedPricing.financialNotes ?? ""),
   });
+  const initialForm = useRef(JSON.stringify(form));
+  const dirty = JSON.stringify(form) !== initialForm.current;
+  const { requestClose, guardDialog } = useEditFormGuard(dirty, onClose);
   useEffect(() => setPreviewReady(false), [form]);
   const { data: koshas = [] } = useQuery<Kosha[]>({ queryKey: ["admin", "koshas", "booking-editor"], queryFn: () => adminFetch("/admin/koshas") });
+  const { data: packages = [] } = useQuery<KoshaPackage[]>({ queryKey: ["admin", "kosha-packages", "booking-editor"], queryFn: () => adminFetch("/admin/kosha-packages") });
   const { data: options } = useQuery<{ addons: KoshaOption[]; welcomeBoards: KoshaOption[]; accessories: KoshaOption[]; provinces: Array<{ id: number; name: string }> }>({
     queryKey: ["koshas", "options", "booking-editor"], queryFn: () => fetch("/api/koshas/options").then((response) => response.json()),
   });
@@ -2089,6 +2101,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
       method: "PATCH",
       body: JSON.stringify({
         ...form,
+        dueDate: form.dueDate || null,
         totalAmount: pricedTotal,
         paidAmount,
         paymentStatus: computedPaymentStatus,
@@ -2107,7 +2120,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
         },
       }),
     }),
-    onSuccess: () => { toast({ title: "تم حفظ تعديل حجز الكوشة" }); onSaved(); },
+    onSuccess: () => { toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${booking.trackingCode ?? `KB-${booking.id}`}.` }); onSaved(); },
     onError: (error: any) => toast({ title: "تعذر حفظ التعديل", description: error?.message, variant: "destructive" }),
   });
   const projectedTotal = pricedTotal;
@@ -2121,7 +2134,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
       <form onSubmit={(event) => { event.preventDefault(); if (!previewReady) { setPreviewReady(true); return; } save.mutate(); }} className="flex max-h-[94dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border/40 bg-card shadow-2xl">
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 sm:p-5">
           <div><h3 className="font-bold text-foreground">تعديل حجز الكوشة KB-{booking.id}</h3><p className="mt-1 text-xs text-muted-foreground">التغييرات المالية تظهر قبل اعتماد الحفظ.</p></div>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+          <button type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
         </div>
         <div className="space-y-5 overflow-y-auto p-4 sm:p-5">
           <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
@@ -2131,6 +2144,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           <div className={editorTab === "details" ? "space-y-5" : "hidden"}>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div><label className="mb-1 block text-xs text-muted-foreground">الكوشة</label><select value={form.koshaId} onChange={(event) => setForm({ ...form, koshaId: Number(event.target.value) })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{koshas.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">الباقة</label><select value={form.packageId ?? ""} onChange={(event) => setForm({ ...form, packageId: event.target.value ? Number(event.target.value) : null })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="">بدون باقة</option>{packages.filter((item) => item.isActive || item.id === booking.packageId).map((item) => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.configuredPrice ?? item.price)}</option>)}</select></div>
             <Field label="اسم الزبون" value={form.customerName} onChange={(value) => setForm({ ...form, customerName: value })} />
             <Field label="رقم الهاتف" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} />
             <Field label="اسم العروس" value={form.brideName} onChange={(value) => setForm({ ...form, brideName: value })} />
@@ -2140,6 +2154,7 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
             <Field label="هاتف آخر" value={form.alternatePhone} onChange={(value) => setForm({ ...form, alternatePhone: value })} />
             <Field label="تاريخ المناسبة" type="date" value={form.eventDate} onChange={(value) => setForm({ ...form, eventDate: value })} />
             <Field label="وقت المناسبة" type="time" value={form.eventTime} onChange={(value) => setForm({ ...form, eventTime: value })} />
+            <Field label="القاعة / الموقع" value={form.hallLocation} onChange={(value) => setForm({ ...form, hallLocation: value })} />
             <Field label="نوع الحفل" value={form.eventType} onChange={(value) => setForm({ ...form, eventType: value })} />
             <Field label="مستوى الخدمة" value={form.serviceLevel} onChange={(value) => setForm({ ...form, serviceLevel: value })} />
             <Field label="نوع المكان" value={form.venueType} onChange={(value) => setForm({ ...form, venueType: value })} />
@@ -2149,6 +2164,10 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
             <Field label="المحلة" value={form.mahalla} onChange={(value) => setForm({ ...form, mahalla: value })} />
             <Field label="أقرب نقطة" value={form.nearestPoint} onChange={(value) => setForm({ ...form, nearestPoint: value })} />
             <Field label="ملاحظة العنوان" value={form.addressNotes} onChange={(value) => setForm({ ...form, addressNotes: value })} />
+            <div><label className="mb-1 block text-xs text-muted-foreground">حالة الحجز</label><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">مرحلة التنفيذ</label><select value={form.executionStage} onChange={(event) => setForm({ ...form, executionStage: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{[["booked", "محجوزة"], ["preparing", "قيد التجهيز"], ["ready", "جاهزة"], ["out_of_warehouse", "جاري التحميل"], ["on_the_way", "في الطريق"], ["executing", "جاري التنصيب"], ["executed", "تم التنصيب"], ["event_running", "المناسبة جارية"], ["before_return", "قبل الإرجاع"], ["dismantling", "جاري الفك"], ["returned", "تم الإرجاع"], ["delivered", "مكتمل"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">حالة التتبع</label><select value={form.trackingStatus} onChange={(event) => setForm({ ...form, trackingStatus: event.target.value })} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">{[["booked", "تم الحجز"], ["preparing", "قيد التجهيز"], ["accessories", "تجهيز الإكسسوارات"], ["welcome_board", "تجهيز البورد الترحيبي"], ["ready", "جاهزة للتنفيذ"], ["executed", "تم التنفيذ"], ["completed", "مكتمل"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <Field label="تاريخ استحقاق المتبقي" type="date" value={form.dueDate} onChange={(value) => setForm({ ...form, dueDate: value })} />
           </div>
 
           <KoshaBookingOptionPicker title="الخدمات الإضافية" options={options?.addons ?? []} selected={form.selectedAddons} onToggle={(name) => toggle("selectedAddons", name)} />
@@ -2197,8 +2216,9 @@ function EditKoshaBookingModal({ booking, onClose, onSaved }: { booking: KoshaBo
           </div>
           {editorTab === "products" ? <KoshaBookingProducts bookingId={booking.id} onChanged={onSaved} /> : null}
         </div>
-        <div className="flex shrink-0 justify-end gap-2 border-t border-border/30 p-4"><Button type="button" variant="outline" onClick={onClose}>إلغاء</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? "جاري الحفظ..." : previewReady ? "تأكيد وحفظ" : "معاينة التغييرات"}</Button></div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-border/30 p-4"><Button type="button" variant="outline" onClick={requestClose}>إلغاء</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? "جاري الحفظ..." : previewReady ? "حفظ التعديلات" : "معاينة التغييرات"}</Button></div>
       </form>
+      {guardDialog}
     </div>
   );
 }

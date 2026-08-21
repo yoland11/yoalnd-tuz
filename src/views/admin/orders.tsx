@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useListOrders, getListOrdersQueryKey } from "@workspace/api-client-react";
 import { useSearch } from "wouter";
@@ -10,6 +10,7 @@ import { buildWhatsAppLink, getStagesFor, getStageLabel } from "@/lib/order-stag
 import {
   type CrewOption,
   defaultServiceDetails,
+  getServiceDetailFields,
   primaryLocationFromDetails,
   serviceDetailsToRows,
   validateServiceDetails,
@@ -23,8 +24,9 @@ import { EventCountdown } from "@/components/interactive/event-countdown";
 import { useToast } from "@/hooks/use-toast";
 import { AccountSummaryCard, type LastPayment } from "./payment-collection";
 import { LinkedAssetsPanel } from "./linked-assets-panel";
+import { useEditFormGuard } from "@/hooks/use-edit-form-guard";
 
-type ServiceOrder = {
+export type ServiceOrder = {
   id: number; trackingCode: string | null; serviceId: number; serviceName: string;
   serviceType: string | null; customerName: string; phone: string;
   eventDate: string | null; eventLocation: string | null; notes: string | null;
@@ -127,6 +129,18 @@ export default function OrdersPage() {
     queryKey: ["admin", "service-orders"],
     queryFn: () => adminFetch<ServiceOrder[]>("/admin/service-orders?limit=200"),
   });
+
+  useEffect(() => {
+    const params = new URLSearchParams(routeSearch);
+    const productId = Number(params.get("editOrder"));
+    const serviceId = Number(params.get("editServiceOrder"));
+    if (productId > 0 && productOrders?.length) {
+      setEditingProductOrder(productOrders.find((order: any) => order.id === productId) ?? null);
+    }
+    if (serviceId > 0 && serviceOrders?.length) {
+      setEditingServiceOrder(serviceOrders.find((order) => order.id === serviceId) ?? null);
+    }
+  }, [routeSearch, productOrders, serviceOrders]);
 
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
@@ -1289,27 +1303,36 @@ function CreateOrderModal({ initialMode, onClose }: { initialMode: "product" | "
   );
 }
 
-function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClose: () => void }) {
+export function EditServiceOrderModal({ order, onClose, onSaved }: { order: ServiceOrder; onClose: () => void; onSaved?: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [form, setForm] = useState({
+    serviceId: order.serviceId,
     customerName: order.customerName,
     phone: formatIraqiPhone(order.phone),
     eventDate: order.eventDate ?? "",
+    eventLocation: order.eventLocation ?? "",
+    status: order.status,
     notes: order.notes ?? "",
     internalNotes: order.internalNotes ?? "",
     totalAmount: String(order.totalAmount ?? 0),
     depositAmount: String(order.depositAmount ?? 0),
-    paymentStatus: order.paymentStatus ?? "unpaid",
     paymentMethod: String((order.customFields as any)?.paymentMethod ?? ""),
     customFields: {
       ...defaultServiceDetails(order.serviceType),
       ...(order.customFields ?? {}),
     } as Record<string, any>,
   });
+  const initialForm = useRef(JSON.stringify(form));
+  const dirty = JSON.stringify(form) !== initialForm.current;
+  const { requestClose, guardDialog } = useEditFormGuard(dirty, onClose);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [previewReady, setPreviewReady] = useState(false);
   useEffect(() => setPreviewReady(false), [form]);
+  const { data: services = [] } = useQuery({
+    queryKey: ["admin", "services", "booking-editor"],
+    queryFn: () => adminFetch<AdminService[]>("/admin/services"),
+  });
   const { data: crews = [] } = useQuery({
     queryKey: ["crews"],
     queryFn: async () => {
@@ -1318,6 +1341,13 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       return res.json() as Promise<CrewOption[]>;
     },
   });
+  const selectedService = services.find((service) => service.id === form.serviceId);
+  const selectedServiceType = selectedService?.type ?? order.serviceType;
+  const totalAmount = Math.max(0, Number(form.totalAmount || 0) || 0);
+  const enteredPaidAmount = Math.max(0, Number(form.depositAmount || 0) || 0);
+  const paidAmount = Math.min(totalAmount, form.paymentMethod === "cash" ? totalAmount : enteredPaidAmount);
+  const remainingAmount = Math.max(0, totalAmount - paidAmount);
+  const computedPaymentStatus = remainingAmount <= 0 && totalAmount > 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
   const save = useMutation({
     mutationFn: (body: any) =>
@@ -1325,6 +1355,10 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin", "service-orders"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-workspace"] });
+      toast({ title: "تم حفظ التعديلات", description: `بقي الحجز على نفس الرقم ${order.trackingCode ?? `#${order.id}`}.` });
+      onSaved?.();
       onClose();
     },
     onError: (err: any) => toast({ title: "تعذر حفظ تعديل الحجز", description: err?.message, variant: "destructive" }),
@@ -1336,8 +1370,8 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       alert("أدخل رقم عراقي صحيح مثل 07700000000");
       return;
     }
-    const details = withDerivedServiceDetails(order.serviceType, form.customFields);
-    const nextErrors = validateServiceDetails(order.serviceType, details);
+    const details = withDerivedServiceDetails(selectedServiceType, form.customFields);
+    const nextErrors = validateServiceDetails(selectedServiceType, details);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     if (!previewReady) {
@@ -1345,56 +1379,68 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
       return;
     }
     save.mutate({
+      serviceId: form.serviceId,
       customerName: form.customerName,
       phone,
       eventDate: form.eventDate,
-      eventLocation: primaryLocationFromDetails(order.serviceType, details),
+      eventLocation: form.eventLocation || primaryLocationFromDetails(selectedServiceType, details),
+      status: form.status,
       notes: form.notes,
       internalNotes: form.internalNotes,
-      totalAmount: parseFloat(form.totalAmount) || 0,
-      depositAmount: parseFloat(form.depositAmount) || 0,
-      paymentStatus: form.paymentStatus,
+      totalAmount,
+      depositAmount: paidAmount,
+      paymentStatus: computedPaymentStatus,
       paymentMethod: form.paymentMethod || undefined,
       customFields: details,
     });
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" dir="rtl" onClick={onClose}>
-      <div className="bg-card border border-border/40 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 sm:p-4" dir="rtl" onClick={requestClose}>
+      <div className="bg-card border border-border/40 rounded-xl max-w-4xl w-full max-h-[94dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-6 border-b border-border/30">
           <div>
             <h3 className="font-bold text-foreground">تعديل الحجز</h3>
             <p className="text-xs text-muted-foreground mt-1">{order.serviceName}</p>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          <button type="button" onClick={requestClose} aria-label="إغلاق نموذج التعديل" className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="p-6 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">نوع الخدمة</label>
+              <select value={form.serviceId} onChange={e => {
+                const serviceId = Number(e.target.value);
+                const serviceType = services.find((service) => service.id === serviceId)?.type;
+                setForm(current => ({ ...current, serviceId, customFields: { ...defaultServiceDetails(serviceType), ...current.customFields } }));
+              }} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                {services.filter(service => service.isActive || service.id === order.serviceId).map(service => <option key={service.id} value={service.id}>{service.nameAr || service.name}</option>)}
+              </select>
+            </div>
             <Input label="اسم الزبون" value={form.customerName} onChange={v => setForm(f => ({ ...f, customerName: v }))} />
             <Input label="رقم الهاتف" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: formatIraqiPhoneInput(v) }))} />
             <Input label="تاريخ الحجز" type="date" value={form.eventDate} onChange={v => setForm(f => ({ ...f, eventDate: v }))} />
+            <Input label="الموقع / القاعة" value={form.eventLocation} onChange={v => setForm(f => ({ ...f, eventLocation: v }))} />
+            <div>
+              <label className="block text-xs text-muted-foreground mb-1">حالة الحجز / المرحلة</label>
+              <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                {STATUS_FILTERS.filter(item => item.value).map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                {!STATUS_FILTERS.some(item => item.value === form.status) ? <option value={form.status}>{form.status}</option> : null}
+              </select>
+            </div>
             <Input label="السعر الكلي" type="number" value={form.totalAmount} onChange={v => setForm(f => ({ ...f, totalAmount: v }))} />
             <Input label="العربون" type="number" value={form.depositAmount} onChange={v => setForm(f => ({ ...f, depositAmount: v }))} />
             <div>
               <label className="block text-xs text-muted-foreground mb-1">طريقة الدفع</label>
-              <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value, depositAmount: e.target.value === "cash" ? f.totalAmount : f.depositAmount, paymentStatus: e.target.value === "cash" ? "paid" : f.paymentStatus }))}
+              <select value={form.paymentMethod} onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value, depositAmount: e.target.value === "cash" ? f.totalAmount : f.depositAmount }))}
                 className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
                 <option value="">غير محدد</option><option value="cash">نقداً</option><option value="transfer">تحويل</option><option value="pos">بطاقة</option>
               </select>
             </div>
-            <div>
-              <label className="block text-xs text-muted-foreground mb-1">حالة الدفع</label>
-              <select value={form.paymentStatus} onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value }))}
-                className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                <option value="unpaid">غير مدفوع</option>
-                <option value="partial">جزئي</option>
-                <option value="paid">مدفوع</option>
-              </select>
-            </div>
+            <div className="rounded-lg border border-border/30 bg-background/50 px-3 py-2"><span className="block text-xs text-muted-foreground">المتبقي وحالة الدفع</span><strong className="mt-1 block text-sm">{formatCurrency(remainingAmount)} · {PAYMENT_STATUS_LABELS[computedPaymentStatus]}</strong></div>
           </div>
           <ServiceDetailFields
-            serviceType={order.serviceType}
+            serviceType={selectedServiceType}
             value={form.customFields}
             onChange={(customFields) => {
               setForm((current) => ({ ...current, customFields }));
@@ -1402,6 +1448,11 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
             }}
             crews={crews}
             errors={errors}
+          />
+          <AdditionalCustomBookingFields
+            serviceType={selectedServiceType}
+            value={form.customFields}
+            onChange={(customFields) => setForm((current) => ({ ...current, customFields }))}
           />
           <Input label="ملاحظات" value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} />
           <Input label="ملاحظات داخلية" value={form.internalNotes} onChange={v => setForm(f => ({ ...f, internalNotes: v }))} />
@@ -1419,13 +1470,54 @@ function EditServiceOrderModal({ order, onClose }: { order: ServiceOrder; onClos
               <p className="text-xs text-muted-foreground">سيُحفظ الاسم والهاتف والموعد وتفاصيل الخدمة والدفع مع نسخة القيم السابقة في سجل النشاط.</p>
             </div>
           )}
-          <Button type="submit" disabled={save.isPending} className="w-full">
-            {save.isPending ? "جاري الحفظ..." : previewReady ? "تأكيد وحفظ" : "معاينة التغييرات"}
-          </Button>
+          <div className="flex flex-col-reverse gap-2 border-t border-border/30 pt-4 sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" onClick={requestClose}>إلغاء</Button>
+            <Button type="submit" disabled={save.isPending}>
+              {save.isPending ? "جاري الحفظ..." : previewReady ? "حفظ التعديلات" : "معاينة التغييرات"}
+            </Button>
+          </div>
         </form>
       </div>
+      {guardDialog}
     </div>
   );
+}
+
+const CUSTOM_FIELD_LABELS: Record<string, string> = {
+  eventTime: "وقت الحجز",
+  hallName: "القاعة",
+  mapUrl: "رابط الموقع",
+  contractNumber: "رقم العقد",
+  bookingType: "نوع الحجز",
+  packageName: "الباقة",
+  deliveryFee: "أجرة التوصيل / النقل",
+  discount: "الخصم",
+  branchId: "الفرع",
+  departments: "الأقسام والخدمات",
+  bookingCenterServices: "تفاصيل الخدمات المتعددة",
+};
+
+function AdditionalCustomBookingFields({ serviceType, value, onChange }: { serviceType?: string | null; value: Record<string, any>; onChange: (next: Record<string, any>) => void }) {
+  const known = new Set(getServiceDetailFields(serviceType).map((field) => field.key));
+  const protectedKeys = new Set(["customerId", "bookingCenterVersion", "storeOrderId", "bookingStaffAssignments", "assignedStaffIds", "paymentMethod"]);
+  const entries = Object.entries(value).filter(([key]) => !known.has(key) && !protectedKeys.has(key));
+  if (!entries.length) return null;
+  return <section className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
+    <div><h4 className="text-sm font-semibold text-foreground">الحقول الأصلية والإضافية</h4><p className="mt-1 text-xs text-muted-foreground">تظهر هنا تلقائياً الحقول الخاصة بنوع الحجز أو الحقول القديمة المحفوظة في السجل.</p></div>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {entries.map(([key, fieldValue]) => <CustomBookingField key={key} fieldKey={key} value={fieldValue} onChange={(next) => onChange({ ...value, [key]: next })} />)}
+    </div>
+  </section>;
+}
+
+function CustomBookingField({ fieldKey, value, onChange }: { fieldKey: string; value: any; onChange: (next: any) => void }) {
+  const structured = Array.isArray(value) || (value !== null && typeof value === "object");
+  const [text, setText] = useState(structured ? JSON.stringify(value, null, 2) : String(value ?? ""));
+  const [error, setError] = useState("");
+  const label = CUSTOM_FIELD_LABELS[fieldKey] ?? fieldKey;
+  if (structured) return <div className="sm:col-span-2"><label className="mb-1 block text-xs text-muted-foreground">{label}</label><textarea dir="auto" value={text} onChange={event => { const nextText = event.target.value; setText(nextText); setError(""); try { onChange(JSON.parse(nextText)); } catch { /* Keep the last valid value while the manager is still typing. */ } }} onBlur={() => { try { onChange(JSON.parse(text)); setError(""); } catch { setError("صيغة البيانات غير صحيحة"); } }} className="min-h-24 w-full rounded-lg border border-border/40 bg-background px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />{error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}</div>;
+  if (typeof value === "boolean") return <div><label className="mb-1 block text-xs text-muted-foreground">{label}</label><select value={value ? "true" : "false"} onChange={event => onChange(event.target.value === "true")} className="w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm"><option value="true">نعم</option><option value="false">لا</option></select></div>;
+  return <Input label={label} type={typeof value === "number" ? "number" : "text"} value={String(value ?? "")} onChange={next => onChange(typeof value === "number" ? Number(next || 0) : next)} />;
 }
 
 function Input({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {

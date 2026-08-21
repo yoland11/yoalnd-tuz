@@ -6498,6 +6498,7 @@ async function formatKoshaBooking(row: any) {
     ],
     notes: row.notes ?? "",
     status: row.status ?? "new",
+    executionStage: row.executionStage ?? row.execution_stage ?? "preparing",
     trackingCode: row.trackingCode ?? row.tracking_code ?? null,
     trackingStatus: row.trackingStatus ?? row.tracking_status ?? "booked",
     totalAmount: Number(row.totalAmount ?? row.total_amount ?? 0),
@@ -20640,24 +20641,25 @@ async function handleAdminKoshas(
         const sameStringList = (left: unknown, right: unknown) =>
           JSON.stringify(normalizeKoshaStringList(left)) ===
           JSON.stringify(normalizeKoshaStringList(right));
-        const selectionChanged = parsed.data.packageId === undefined &&
-          (parsed.data.koshaId !== undefined &&
+        const selectionChanged =
+          parsed.data.packageId === undefined &&
+          ((parsed.data.koshaId !== undefined &&
             parsed.data.koshaId !== existing.koshaId) ||
-          parsed.data.packageId === undefined && (parsed.data.selectedAddons !== undefined &&
-            !sameStringList(
-              parsed.data.selectedAddons,
-              existing.selectedAddons,
-            )) ||
-          parsed.data.packageId === undefined && (parsed.data.welcomeBoards !== undefined &&
-            !sameStringList(
-              parsed.data.welcomeBoards,
-              existing.welcomeBoards,
-            )) ||
-          parsed.data.packageId === undefined && (parsed.data.selectedAccessories !== undefined &&
-            !sameStringList(
-              parsed.data.selectedAccessories,
-              existing.selectedAccessories,
-            ));
+            (parsed.data.selectedAddons !== undefined &&
+              !sameStringList(
+                parsed.data.selectedAddons,
+                existing.selectedAddons,
+              )) ||
+            (parsed.data.welcomeBoards !== undefined &&
+              !sameStringList(
+                parsed.data.welcomeBoards,
+                existing.welcomeBoards,
+              )) ||
+            (parsed.data.selectedAccessories !== undefined &&
+              !sameStringList(
+                parsed.data.selectedAccessories,
+                existing.selectedAccessories,
+              )));
         if (selectionChanged) {
           if (existing.packageId) {
             update.packageId = null;

@@ -26,6 +26,7 @@ import {
   MoreHorizontal,
   PackageCheck,
   PackageOpen,
+  Pencil,
   Plus,
   Printer,
   QrCode,
@@ -175,6 +176,10 @@ type AssetRow = {
 type TimelineRow = { id: number; type: string; title: string; body?: string | null; actorName?: string; createdAt: string; metadata?: Record<string, any> };
 type AssignableStaff = { id: number; name: string; role?: string | null; department?: string | null };
 type StaffAssignmentData = { types: string[]; assignedStaff: AssignableStaff[]; eligibleStaff: AssignableStaff[] };
+type BranchData = {
+  data: Array<{ id: number; name: string; code?: string | null; isActive?: boolean }>;
+  assignments: Array<{ branchId: number; entityType: string; entityId: number }>;
+};
 
 const BOOKING_STEPS = [
   ["booked", "تم الحجز"],
@@ -290,7 +295,45 @@ function StaffAssignmentControl({ base, queryKey, booking }: { base: string; que
   </Dialog>;
 }
 
-export function BookingOperationsWorkspace({ booking }: { booking: BookingOperationsBooking }) {
+function BookingBranchControl({ booking }: { booking: BookingOperationsBooking }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const entityType = booking.source === "kosha" ? "kosha_booking" : "service_order";
+  const query = useQuery<BranchData>({
+    queryKey: ["admin", "enterprise", "branches", entityType, booking.id],
+    queryFn: () => adminFetch("/admin/enterprise/branches"),
+  });
+  const current = query.data?.assignments.find((row) => row.entityType === entityType && row.entityId === booking.id);
+  const [branchId, setBranchId] = useState("");
+  useEffect(() => {
+    if (open) setBranchId(current?.branchId ? String(current.branchId) : "");
+  }, [open, current?.branchId]);
+  const mutation = useMutation({
+    mutationFn: () => adminFetch("/admin/enterprise/branches/assign", {
+      method: "POST",
+      body: JSON.stringify({ branchId: Number(branchId), entityType, entityId: booking.id }),
+    }),
+    onSuccess: () => {
+      setOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["admin", "enterprise", "branches"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "booking-center"] });
+      toast({ title: "تم تحديث فرع الحجز" });
+    },
+    onError: (error: any) => toast({ title: "تعذر تحديث الفرع", description: error?.message, variant: "destructive" }),
+  });
+  const currentBranch = query.data?.data.find((row) => row.id === current?.branchId);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <Button variant="outline" onClick={() => setOpen(true)} disabled={query.isLoading || Boolean(query.error)}><Building2 /> {currentBranch?.name || "تحديد الفرع"}</Button>
+    <DialogContent dir="rtl">
+      <DialogHeader><DialogTitle>فرع الحجز</DialogTitle><DialogDescription>يرتبط الفرع بالحجز نفسه دون نسخ السجل أو تغيير رقمه.</DialogDescription></DialogHeader>
+      <div className="space-y-2"><Label htmlFor="booking-branch">الفرع</Label><select id="booking-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"><option value="">اختر الفرع</option>{query.data?.data.filter((branch) => branch.isActive !== false || branch.id === current?.branchId).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}{branch.code ? ` · ${branch.code}` : ""}</option>)}</select></div>
+      <DialogFooter className="ajn-op-dialog-actions"><Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button className="ajn-op-primary" disabled={!branchId || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? "جارٍ الحفظ..." : "حفظ الفرع"}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+export function BookingOperationsWorkspace({ booking, onEdit }: { booking: BookingOperationsBooking; onEdit?: () => void }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const base = `/admin/booking-operations/${booking.source}/${booking.id}`;
@@ -343,7 +386,7 @@ export function BookingOperationsWorkspace({ booking }: { booking: BookingOperat
           <span><CircleDollarSign /><b>{booking.paymentStatus || "غير مكتمل"}</b><small>حالة الدفع</small></span>
           <span><Warehouse /><b>{STAGE_LABELS[overview.data?.warehouseStage ?? "reserved"]}</b><small>حالة المستودع</small></span>
         </div>
-        <div className="ajn-op-header-actions"><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> استلام دفعة</Link></Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><Button variant="outline" onClick={() => window.print()}><Printer /> طباعة العقد</Button><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+        <div className="ajn-op-header-actions">{onEdit ? <Button variant="outline" onClick={onEdit}><Pencil /> تعديل الحجز</Button> : null}<BookingBranchControl booking={booking} /><StaffAssignmentControl base={base} queryKey={key} booking={booking} /><Button className="ajn-op-primary" asChild><Link href={paymentUrl}><Banknote /> استلام دفعة</Link></Button><Button variant="outline" asChild><Link href={invoiceUrl}><ReceiptText /> إصدار فاتورة</Link></Button><Button variant="outline" onClick={() => window.print()}><Printer /> طباعة العقد</Button><DropdownMenu dir="rtl"><DropdownMenuTrigger asChild><Button variant="outline" size="icon" aria-label="المزيد"><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="ajn-op-more-menu"><DropdownMenuItem onSelect={() => changeTab("documents")}><FileText /> مستندات الحجز</DropdownMenuItem><DropdownMenuItem onSelect={() => changeTab("activity")}><History /> سجل النشاط</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => changeTab("finance")}><CircleDollarSign /> الملخص المالي</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
       </div>
     </header>
 
