@@ -330,6 +330,7 @@ import {
   evaluateAutomaticIncentives,
   executiveDashboard,
   getPayrollRun,
+  getEmployeePayrollSummary,
   hrDashboard,
   listPayrollRuns,
   payPayrollRun,
@@ -339,6 +340,7 @@ import {
   payrollDashboard,
   previewPayrollRun,
   recalculatePayrollRun,
+  recalculatePayrollDraftsForAttendance,
   reversePayrollRunPayment,
   submitPayrollForApproval,
   reviewPayrollRun,
@@ -346,6 +348,7 @@ import {
   reopenPayrollRun,
   upsertTarget,
 } from "@/server/hr-intelligence";
+import { normalizeAttendancePolicy } from "@/server/attendance-payroll";
 import {
   addEmployeeSalaryAdjustment,
   addEmployeeSalaryAttachment,
@@ -2235,7 +2238,7 @@ function messageStatus(value: unknown): string {
 
 function attendanceStatus(value: unknown): string {
   const status = String(value ?? "present");
-  return ["present", "out", "late", "absent"].includes(status)
+  return ["present", "out", "late", "absent", "paid_leave", "unpaid_leave"].includes(status)
     ? status
     : "present";
 }
@@ -5631,6 +5634,7 @@ const KoshaBookingCreateSchema = z.object({
 
 const KoshaBookingUpdateSchema = z.object({
   koshaId: z.coerce.number().int().positive().optional(),
+  packageId: z.coerce.number().int().positive().optional().nullable(),
   customerName: z.string().optional(),
   phone: z.string().optional(),
   brideName: z.string().optional().nullable(),
@@ -5656,6 +5660,9 @@ const KoshaBookingUpdateSchema = z.object({
   selectedAccessories: z.array(z.string()).optional(),
   notes: z.string().optional().nullable(),
   status: z.enum(KOSHA_BOOKING_STATUS_VALUES).optional(),
+  executionStage: z
+    .enum(KOSHA_EXECUTION_STAGES as unknown as [string, ...string[]])
+    .optional(),
   trackingStatus: z
     .enum(KOSHA_TRACKING_KEYS as unknown as [string, ...string[]])
     .optional(),
@@ -20544,6 +20551,49 @@ async function handleAdminKoshas(
           if (!kosha) return error("الكوشة المختارة غير موجودة", 404);
           update.koshaId = kosha.id;
         }
+        if (parsed.data.packageId !== undefined) {
+          if (parsed.data.packageId === null) {
+            update.packageId = null;
+            update.packageName = null;
+            update.packagePrice = null;
+            update.bookingDetails = {
+              ...((existing.bookingDetails as Record<string, unknown>) ?? {}),
+              packageId: null,
+              packageName: null,
+              packagePrice: null,
+              packageFeatures: [],
+            };
+          } else {
+            const packageRow = await db.query.koshaPackagesTable.findFirst({
+              where: eq(koshaPackagesTable.id, parsed.data.packageId),
+            });
+            if (!packageRow || (!packageRow.isActive && packageRow.id !== existing.packageId))
+              return error("الباقة المختارة غير متاحة", 404);
+            const packageDetails = await formatKoshaPackage(packageRow, false);
+            const nextKoshaId = update.koshaId ?? existing.koshaId;
+            if (!packageDetails.koshas.some((item) => item.id === nextKoshaId))
+              return error("الكوشة لا تنتمي إلى الباقة المختارة", 400);
+            const selectedAddons = packageDetails.addons.map((item) => item.name);
+            const welcomeBoards = packageDetails.welcomeBoards.map((item) => item.name);
+            const selectedAccessories = packageDetails.accessories.map((item) => item.name);
+            update.packageId = packageDetails.id;
+            update.packageName = packageDetails.name;
+            update.packagePrice = String(packageDetails.price);
+            update.selectedAddons = selectedAddons;
+            update.welcomeBoards = welcomeBoards;
+            update.selectedAccessories = selectedAccessories;
+            update.bookingDetails = {
+              ...((existing.bookingDetails as Record<string, unknown>) ?? {}),
+              packageId: packageDetails.id,
+              packageName: packageDetails.name,
+              packagePrice: packageDetails.price,
+              packageFeatures: packageDetails.features,
+              selectedAddons,
+              welcomeBoards,
+              selectedAccessories,
+            };
+          }
+        }
         if (parsed.data.phone !== undefined) {
           const phone = normalizeIraqiPhone(parsed.data.phone);
           if (!phone) return error("رقم الهاتف العراقي غير صحيح", 400);
@@ -20565,20 +20615,22 @@ async function handleAdminKoshas(
             update[key] = phone;
           }
         }
-        if (parsed.data.selectedAddons !== undefined)
+        if (parsed.data.packageId === undefined && parsed.data.selectedAddons !== undefined)
           update.selectedAddons = normalizeKoshaStringList(
             parsed.data.selectedAddons,
           );
-        if (parsed.data.welcomeBoards !== undefined)
+        if (parsed.data.packageId === undefined && parsed.data.welcomeBoards !== undefined)
           update.welcomeBoards = normalizeKoshaStringList(
             parsed.data.welcomeBoards,
           ).slice(0, 1);
-        if (parsed.data.selectedAccessories !== undefined)
+        if (parsed.data.packageId === undefined && parsed.data.selectedAccessories !== undefined)
           update.selectedAccessories = normalizeKoshaStringList(
             parsed.data.selectedAccessories,
           );
         if (parsed.data.status !== undefined)
           update.status = parsed.data.status;
+        if (parsed.data.executionStage !== undefined)
+          update.executionStage = parsed.data.executionStage;
         if (parsed.data.trackingStatus !== undefined)
           update.trackingStatus = parsed.data.trackingStatus;
         if (parsed.data.internalNotes !== undefined)
@@ -20588,20 +20640,20 @@ async function handleAdminKoshas(
         const sameStringList = (left: unknown, right: unknown) =>
           JSON.stringify(normalizeKoshaStringList(left)) ===
           JSON.stringify(normalizeKoshaStringList(right));
-        const selectionChanged =
+        const selectionChanged = parsed.data.packageId === undefined &&
           (parsed.data.koshaId !== undefined &&
             parsed.data.koshaId !== existing.koshaId) ||
-          (parsed.data.selectedAddons !== undefined &&
+          parsed.data.packageId === undefined && (parsed.data.selectedAddons !== undefined &&
             !sameStringList(
               parsed.data.selectedAddons,
               existing.selectedAddons,
             )) ||
-          (parsed.data.welcomeBoards !== undefined &&
+          parsed.data.packageId === undefined && (parsed.data.welcomeBoards !== undefined &&
             !sameStringList(
               parsed.data.welcomeBoards,
               existing.welcomeBoards,
             )) ||
-          (parsed.data.selectedAccessories !== undefined &&
+          parsed.data.packageId === undefined && (parsed.data.selectedAccessories !== undefined &&
             !sameStringList(
               parsed.data.selectedAccessories,
               existing.selectedAccessories,
@@ -20678,6 +20730,10 @@ async function handleAdminKoshas(
           parsed.data.paymentMethod !== undefined ||
           parsed.data.pricing !== undefined
         ) {
+          if (!canEditOrderFinancials(auth))
+            return error("لا تملك صلاحية تعديل المبالغ المالية للحجز", 403, {
+              code: "PERMISSION_DENIED",
+            });
           const pricing = parsed.data.pricing;
           const totalAmount = money(
             parsed.data.totalAmount ??
@@ -20783,6 +20839,12 @@ async function handleAdminKoshas(
         ) {
           return error("لم تُحفظ حالة التتبع المطلوبة", 409);
         }
+        if (
+          parsed.data.executionStage !== undefined &&
+          row.executionStage !== parsed.data.executionStage
+        ) {
+          return error("لم تُحفظ مرحلة التنفيذ المطلوبة", 409);
+        }
         if (update.status !== undefined && row.status !== existing.status) {
           await syncAutomaticTasksForEntityStatus({
             entityType: "kosha_booking",
@@ -20837,7 +20899,8 @@ async function handleAdminKoshas(
           row.mahalla !== existing.mahalla ||
           row.nearestPoint !== existing.nearestPoint ||
           row.addressNotes !== existing.addressNotes;
-        if (scheduleChanged || row.status !== existing.status) {
+        const executionStageChanged = row.executionStage !== existing.executionStage;
+        if (scheduleChanged || row.status !== existing.status || executionStageChanged) {
           const assignmentDetails = (row.bookingDetails ?? {}) as Record<string, unknown>;
           notifyAssignedBookingStaffSafely({
             req,
@@ -20849,18 +20912,52 @@ async function handleAdminKoshas(
               ? "booking_cancelled"
               : scheduleChanged
                 ? "booking_schedule_changed"
-                : "booking_status_changed",
+                : executionStageChanged
+                  ? "booking_stage_changed"
+                  : "booking_status_changed",
             title: row.status === "cancelled"
               ? "تم إلغاء الحجز"
               : scheduleChanged
                 ? "تم تغيير موعد أو موقع الحجز"
-                : "تم تحديث حالة الحجز",
+                : executionStageChanged
+                  ? "تم تحديث مرحلة تنفيذ الحجز"
+                  : "تم تحديث حالة الحجز",
             body: `${row.customerName} · ${row.eventDate ?? "الموعد غير محدد"}${row.eventTime ? ` · ${row.eventTime}` : ""}`,
             entityType: "kosha_booking",
             entityId: row.id,
             href: `/staff/koshas/booking/${row.id}`,
-            metadata: { scheduleChanged, previousStatus: existing.status, currentStatus: row.status },
+            metadata: { scheduleChanged, executionStageChanged, previousStatus: existing.status, currentStatus: row.status, previousStage: existing.executionStage, currentStage: row.executionStage },
           });
+        }
+        const importantChanges = [
+          ["customerName", existing.customerName, row.customerName],
+          ["phone", existing.phone, row.phone],
+          ["koshaId", existing.koshaId, row.koshaId],
+          ["packageId", existing.packageId, row.packageId],
+          ["eventDate", existing.eventDate, row.eventDate],
+          ["eventTime", existing.eventTime, row.eventTime],
+          ["hallLocation", existing.hallLocation, row.hallLocation],
+          ["status", existing.status, row.status],
+          ["executionStage", existing.executionStage, row.executionStage],
+          ["totalAmount", existing.totalAmount, row.totalAmount],
+          ["paidAmount", existing.paidAmount, row.paidAmount],
+          ["remainingAmount", existing.remainingAmount, row.remainingAmount],
+          ["paymentStatus", existing.paymentStatus, row.paymentStatus],
+        ].filter(([, before, after]) => String(before ?? "") !== String(after ?? ""));
+        if (importantChanges.length) {
+          void addEntityTimeline({
+            entityType: "kosha_booking",
+            entityId: row.id,
+            type: "booking_edited",
+            title: "تم تعديل بيانات الحجز",
+            body: importantChanges.map(([field]) => String(field)).join("، "),
+            actor: erpActorFromAdmin(auth),
+            metadata: { changes: importantChanges.map(([field, before, after]) => ({ field, before, after })) },
+          }).catch((timelineError) => console.error("kosha booking edit timeline failed", {
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+            bookingId: row.id,
+            message: timelineError instanceof Error ? timelineError.message : "unknown",
+          }));
         }
         await syncKoshaFinancialPayment(row, financialActor(auth));
         const wasPendingPricing =
@@ -25326,6 +25423,11 @@ async function handleHrAdmin(
 ) {
   if (section !== "hr") return null;
   await ensureHrTables();
+  if (req.method === "GET" && parts[2] === "payroll" && parts[3] === "self") {
+    const signedIn = await getAdminUser(req);
+    if (!signedIn) return error("غير مخول", 401);
+    return json(await getEmployeePayrollSummary(signedIn.id));
+  }
   const auth = await requireAnyPermission(req, [
     "staff",
     "accounting",
@@ -25890,6 +25992,7 @@ async function handleHrAdmin(
               period: payload.period,
             },
           });
+        if (payload?.manual !== true) void createNotificationOnce({ audienceType: "admin", type: "payroll_ready_for_review", title: "مسودة الرواتب جاهزة للمراجعة", body: `تم احتساب دورة ${run.run_no} من سجلات الحضور. لن تُعتمد أو تُدفع تلقائيًا.`, entityType: "payroll_run", entityId: run.id, href: "/admin/hr?tab=payroll" });
         return json(run, 201);
       }
       if (method === "POST" && id && parts[4] === "recalculate") {
@@ -25908,6 +26011,7 @@ async function handleHrAdmin(
           title: "تمت إعادة حساب الراتب",
           actor: erpActorFromAdmin(auth),
         });
+        void createNotification({ audienceType: "admin", type: "payroll_ready_for_review", title: "أعيد احتساب مسودة الرواتب", body: `الدورة ${run.run_no} جاهزة لمراجعة المدير بعد إعادة الحساب.`, entityType: "payroll_run", entityId: id, href: "/admin/hr?tab=payroll" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "review") {
@@ -26213,6 +26317,8 @@ async function handleHrAdmin(
         if (denied) return denied;
         const lineId = int(parts[5])!;
         const payload = await body(req);
+        const beforePaymentRun = await getPayrollRun(id);
+        const employeeLine = beforePaymentRun?.lines.find((line: any) => Number(line.id) === lineId);
         const result = await payEmployeeSalary(id, lineId, payload, actor);
         void logAdminActivity(
           req,
@@ -26234,6 +26340,7 @@ async function handleHrAdmin(
           actor: erpActorFromAdmin(auth),
           metadata: result,
         });
+        if (employeeLine) void createNotification({ audienceType: "staff", staffId: Number(employeeLine.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم تسجيل دفعة راتب بقيمة ${formatCurrency(result.payment?.amount ?? payload?.amount)}.`, entityType: "payroll_line", entityId: lineId, href: "/admin/attendance" });
         return json(result, 201);
       }
       if (
@@ -26523,6 +26630,7 @@ async function handleHrAdmin(
           ip: ip(req),
           device: req.headers.get("user-agent") || "",
         });
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_approved", title: "تم اعتماد الراتب", body: `تم اعتماد راتب ${run.period}. يمكنك مراجعة تفاصيل احتساب الراتب.`, entityType: "payroll_run", entityId: id, href: "/admin/attendance" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "pay") {
@@ -26547,6 +26655,7 @@ async function handleHrAdmin(
         } catch {
           /* non-blocking */
         }
+        for (const line of run?.lines ?? []) void createNotification({ audienceType: "staff", staffId: Number(line.staff_id), type: "payroll_paid", title: "تم دفع الراتب", body: `تم دفع راتب ${run.period} بقيمة ${formatCurrency(line.netSalary)}.`, entityType: "payroll_run", entityId: id, href: "/admin/attendance" });
         return json(run);
       }
       if (method === "POST" && id && parts[4] === "close") {
@@ -40776,7 +40885,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           orderBy: [desc(tasksTable.updatedAt), desc(tasksTable.createdAt)],
           limit: 200,
         }),
-        db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
+        db.query.staffTable.findMany({ where: canManageAll ? undefined : eq(staffTable.id, auth.id), orderBy: (s, { asc }) => [asc(s.id)] }),
       ]);
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
       const taskIds = rows.map((row) => row.id);
@@ -41793,10 +41902,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
   }
 
   if (section === "attendance") {
-    const auth = await requireAnyPermission(req, ["staff", "tasks"]);
-    if (isResponse(auth)) return auth;
+    const auth = await getAdminUser(req);
+    if (!auth) return error("غير مخول", 401);
     await ensureAdminExtensionsTables();
-    const canManageAll = auth.role === "admin" || hasPermission(auth, "staff");
+    const canManageAll = ["admin", "manager"].includes(auth.role) || hasPermission(auth, "staff");
+    const attendanceActor = { id: auth.id, name: auth.fullName || auth.username, role: auth.role };
+    const attendanceRows = <T = any>(value: any): T[] => (value?.rows ?? value ?? []) as T[];
+    const getPolicy = async () => normalizeAttendancePolicy((await db.query.settingsTable.findFirst({ where: eq(settingsTable.key, "attendancePolicy") }))?.value);
+    if (parts[2] === "policy") {
+      if (!canManageAll) return error("إدارة سياسة الحضور متاحة للمدير فقط", 403);
+      if (method === "GET") return json(await getPolicy());
+      if (method === "PATCH" || method === "PUT") {
+        const previous = await getPolicy();
+        const saved = normalizeAttendancePolicy(await body(req));
+        await db.insert(settingsTable).values({ key: "attendancePolicy", value: saved as any, updatedAt: new Date() }).onConflictDoUpdate({ target: settingsTable.key, set: { value: saved as any, updatedAt: new Date() } });
+        void logAdminActivity(req, "attendance_policy_updated", "settings", undefined, { oldValues: previous, newValues: saved });
+        return json(saved);
+      }
+      return error("الطلب غير مدعوم", 405);
+    }
     if (method === "GET") {
       const params = req.nextUrl.searchParams;
       const filters: any[] = [];
@@ -41824,45 +41948,79 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
       ]);
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
+      for (const record of rows) {
+        const checkIn = record.checkInAt?.getTime?.() ?? 0;
+        if (!record.checkOutAt && checkIn > 0 && Date.now() - checkIn > 12 * 60 * 60 * 1000) {
+          void createNotificationOnce({ audienceType: "admin", type: "attendance_missing_checkout", title: "بصمة انصراف مفقودة", body: `${staffById.get(record.staffId)?.fullName || staffById.get(record.staffId)?.username || `موظف #${record.staffId}`} لديه حضور مفتوح يحتاج مراجعة.`, entityType: "attendance", entityId: record.id, href: "/admin/attendance" });
+          void createNotificationOnce({ audienceType: "staff", staffId: record.staffId, type: "attendance_missing_fingerprint", title: "بصمة انصراف مفقودة", body: "لديك تسجيل حضور بلا بصمة انصراف. راجع المدير لتصحيحه.", entityType: "attendance", entityId: record.id, href: "/admin/attendance" });
+        }
+      }
       return json({
         data: rows.map((row) =>
           formatAttendance(row, staffById.get(row.staffId)),
         ),
         staff: staffRows.map(formatStaff),
+        policy: await getPolicy(),
+        canManageAll,
       });
     }
     if (method === "POST") {
-      const action =
-        parts[2] || String((await body(req))?.action ?? "check-in");
-      if (action === "check-out") {
-        const open = await db.query.attendanceRecordsTable.findFirst({
-          where: and(
-            eq(attendanceRecordsTable.staffId, auth.id),
-            sql`${attendanceRecordsTable.checkOutAt} is null`,
-          ),
-          orderBy: [desc(attendanceRecordsTable.checkInAt)],
+      const payload = await body(req);
+      const action = parts[2] || String(payload?.action ?? "check-in");
+      if (action === "leave") {
+        if (!canManageAll) return error("اعتماد الإجازة متاح للمدير فقط", 403);
+        const staffId = Number(payload?.staffId);
+        const from = String(payload?.from ?? "");
+        const to = String(payload?.to ?? from);
+        const leaveStatus = payload?.leaveType === "unpaid" ? "unpaid_leave" : "paid_leave";
+        const reason = String(payload?.reason ?? "").trim();
+        if (!Number.isInteger(staffId) || staffId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || reason.length < 3) return error("الموظف والفترة وسبب الإجازة مطلوبة", 400);
+        const created = await db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(${staffId})`);
+          const saved: any[] = [];
+          const date = new Date(`${from}T00:00:00Z`), last = new Date(`${to}T00:00:00Z`);
+          while (date <= last) {
+            const day = date.toISOString().slice(0, 10);
+            const existing = attendanceRows<any>(await tx.execute(sql`select id from attendance_records where staff_id=${staffId} and check_in_at::date=${day}::date and status in ('paid_leave','unpaid_leave') limit 1`))[0];
+            if (!existing) saved.push(attendanceRows<any>(await tx.execute(sql`insert into attendance_records(staff_id,check_in_at,check_out_at,status,notes,edited_by) values(${staffId},${`${day}T12:00:00Z`},${`${day}T12:00:00Z`},${leaveStatus},${`إجازة معتمدة: ${reason}`},${auth.id}) returning *`))[0]);
+            date.setUTCDate(date.getUTCDate() + 1);
+          }
+          return saved;
         });
-        if (!open) return error("لا يوجد حضور مفتوح لتسجيل الانصراف", 409);
-        const [row] = await db
-          .update(attendanceRecordsTable)
-          .set({ checkOutAt: new Date(), status: "out", updatedAt: new Date() })
-          .where(eq(attendanceRecordsTable.id, open.id))
-          .returning();
+        const recalculation = await recalculatePayrollDraftsForAttendance(staffId, from, attendanceActor, to);
+        void logAdminActivity(req, "attendance_leave_approved", "attendance", created[0]?.id ?? staffId, { staffId, from, to, leaveStatus, reason, createdIds: created.map((row) => row.id), recalculatedPayrollIds: recalculation.recalculated.map((run: any) => run.id), protectedPayroll: recalculation.protectedRuns });
+        void createNotification({ audienceType: "staff", staffId, type: "attendance_correction", title: "تم اعتماد الإجازة", body: `${from} إلى ${to} · ${reason}`, entityType: "attendance", entityId: created[0]?.id ?? null, href: "/admin/attendance" });
+        return json({ records: created.map((row) => formatAttendance(row)), recalculation }, 201);
+      }
+      if (action === "check-out") {
+        const row = await db.transaction(async (tx) => {
+          await tx.execute(sql`select pg_advisory_xact_lock(${auth.id})`);
+          const open = attendanceRows<any>(await tx.execute(sql`select * from attendance_records where staff_id=${auth.id} and check_out_at is null order by check_in_at desc,id desc limit 1 for update`))[0];
+          if (!open) return null;
+          const now = new Date();
+          if (now.getTime() < new Date(open.check_in_at).getTime()) throw new Error("وقت الانصراف لا يمكن أن يسبق الحضور");
+          return attendanceRows<any>(await tx.execute(sql`update attendance_records set check_out_at=${now},status='out',notes=concat_ws(E'\n',notes,'source:fingerprint'),updated_at=now() where id=${open.id} and check_out_at is null returning *`))[0] ?? null;
+        });
+        if (!row) return error("لا يوجد حضور مفتوح لتسجيل الانصراف", 409);
         void logAdminActivity(req, "attendance_checkout", "attendance", row.id);
         return json(formatAttendance(row));
       }
-      const open = await db.query.attendanceRecordsTable.findFirst({
-        where: and(
-          eq(attendanceRecordsTable.staffId, auth.id),
-          sql`${attendanceRecordsTable.checkOutAt} is null`,
-        ),
+      const policy = await getPolicy();
+      const row = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(${auth.id})`);
+        const open = attendanceRows<any>(await tx.execute(sql`select id from attendance_records where staff_id=${auth.id} and check_out_at is null limit 1 for update`))[0];
+        if (open) return null;
+        const now = new Date();
+        const baghdad = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(now);
+        const hour = Number(baghdad.find((part) => part.type === "hour")?.value ?? 0), minute = Number(baghdad.find((part) => part.type === "minute")?.value ?? 0);
+        const salarySettings = attendanceRows<any>(await tx.execute(sql`select shift_start from employee_salary_settings where staff_id=${auth.id} limit 1`))[0];
+        const [startHour, startMinute] = String(salarySettings?.shift_start || policy.workStart).slice(0, 5).split(":").map(Number);
+        const late = hour * 60 + minute > startHour * 60 + startMinute + policy.lateGraceMinutes;
+        return attendanceRows<any>(await tx.execute(sql`insert into attendance_records(staff_id,status,notes) values(${auth.id},${late ? "late" : "present"},'source:fingerprint') returning *`))[0];
       });
-      if (open) return error("لديك تسجيل حضور مفتوح بالفعل", 409);
-      const [row] = await db
-        .insert(attendanceRecordsTable)
-        .values({ staffId: auth.id, status: "present" })
-        .returning();
+      if (!row) return error("لديك تسجيل حضور مفتوح بالفعل", 409);
       void logAdminActivity(req, "attendance_checkin", "attendance", row.id);
+      if (row.status === "late") void createNotificationOnce({ audienceType: "admin", type: "attendance_abnormal", title: "حضور متأخر", body: `${auth.fullName || auth.username} سجل حضورًا بعد فترة السماح.`, entityType: "attendance", entityId: row.id, href: "/admin/attendance" });
       return json(formatAttendance(row), 201);
     }
     if (method === "PATCH" && parts[2]) {
@@ -41873,6 +42031,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       const correctionReason = String(b?.reason ?? "").trim();
       if (correctionReason.length < 3)
         return error("سبب تصحيح الحضور مطلوب", 400);
+      const current = await db.query.attendanceRecordsTable.findFirst({ where: eq(attendanceRecordsTable.id, id) });
+      if (!current) return error("السجل غير موجود", 404);
       const update: any = { updatedAt: new Date(), editedBy: auth.id };
       if (b?.staffId !== undefined) update.staffId = Number(b.staffId);
       if (b?.checkInAt !== undefined) update.checkInAt = safeDate(b.checkInAt);
@@ -41880,17 +42040,25 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.checkOutAt = safeDate(b.checkOutAt);
       if (b?.status !== undefined) update.status = attendanceStatus(b.status);
       if (b?.notes !== undefined) update.notes = nullableText(b.notes);
-      const [row] = await db
-        .update(attendanceRecordsTable)
-        .set(update)
-        .where(eq(attendanceRecordsTable.id, id))
-        .returning();
+      const nextIn = update.checkInAt ?? current.checkInAt;
+      const nextOut = update.checkOutAt === undefined ? current.checkOutAt : update.checkOutAt;
+      if (nextOut && new Date(nextOut).getTime() < new Date(nextIn).getTime()) return error("وقت الانصراف لا يمكن أن يسبق وقت الحضور", 400);
+      update.notes = [update.notes ?? current.notes, `تصحيح: ${correctionReason}`].filter(Boolean).join("\n");
+      const [row] = await db.update(attendanceRecordsTable).set(update).where(eq(attendanceRecordsTable.id, id)).returning();
       if (!row) return error("السجل غير موجود", 404);
+      const attendanceDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit", day: "2-digit" }).format(row.checkInAt);
+      const recalculation = await recalculatePayrollDraftsForAttendance(row.staffId, attendanceDate, attendanceActor);
       void logAdminActivity(req, "attendance_updated", "attendance", id, {
         fields: Object.keys(update),
         reason: correctionReason,
+        oldValues: formatAttendance(current),
+        newValues: formatAttendance(row),
+        recalculatedPayrollIds: recalculation.recalculated.map((run: any) => run.id),
+        protectedPayroll: recalculation.protectedRuns,
       });
-      return json(formatAttendance(row));
+      void createNotification({ audienceType: "staff", staffId: row.staffId, type: "attendance_correction", title: "تم تصحيح سجل الحضور", body: correctionReason, entityType: "attendance", entityId: row.id, href: "/admin/attendance" });
+      if (recalculation.protectedRuns.length) void createNotification({ audienceType: "admin", type: "payroll_attendance_correction_pending", title: "تصحيح حضور يؤثر في راتب محمي", body: `يحتاج تصحيح حضور الموظف #${row.staffId} إلى مراجعة مدير للراتب المعتمد/المدفوع.`, entityType: "attendance", entityId: row.id, href: "/admin/hr?tab=payroll", metadata: { protectedPayroll: recalculation.protectedRuns, reason: correctionReason } });
+      return json({ ...formatAttendance(row), recalculation });
     }
   }
 
@@ -46423,6 +46591,19 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: eq(serviceOrdersTable.id, id),
       });
       if (!prev) return error("غير موجود", 404);
+      let nextService = await db.query.servicesTable.findFirst({
+        where: eq(servicesTable.id, prev.serviceId),
+      });
+      if (b?.serviceId !== undefined) {
+        const serviceId = Number(b.serviceId);
+        if (!Number.isInteger(serviceId) || serviceId <= 0)
+          return error("معرف الخدمة غير صالح", 400);
+        nextService = await db.query.servicesTable.findFirst({
+          where: eq(servicesTable.id, serviceId),
+        });
+        if (!nextService) return error("الخدمة غير موجودة", 404);
+        update.serviceId = nextService.id;
+      }
       if (
         update.customerName !== undefined &&
         !String(update.customerName ?? "").trim()
@@ -46436,18 +46617,15 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.phoneLast4 = phoneLast4(phone);
       }
       if (b?.customFields !== undefined) {
-        const service = await db.query.servicesTable.findFirst({
-          where: eq(servicesTable.id, prev.serviceId),
-        });
         update.customFields = normalizeUnifiedBookingCustomFields(
           withDerivedServiceDetails(
-            service?.type,
+            nextService?.type,
             normalizeDetailsInput(b.customFields),
           ),
         );
         if (b?.eventLocation === undefined) {
           update.eventLocation =
-            primaryLocationFromDetails(service?.type, update.customFields) ||
+            primaryLocationFromDetails(nextService?.type, update.customFields) ||
             prev.eventLocation;
         }
       }
@@ -46463,9 +46641,9 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           paymentMethod,
         };
       }
-      if (update.eventDate !== undefined || update.customFields !== undefined) {
+      if (update.serviceId !== undefined || update.eventDate !== undefined || update.customFields !== undefined) {
         const conflict = await findBookingConflict({
-          serviceId: prev.serviceId,
+          serviceId: update.serviceId ?? prev.serviceId,
           eventDate: update.eventDate ?? prev.eventDate,
           customFields: update.customFields ?? (prev.customFields as any),
           excludeId: id,
@@ -46482,6 +46660,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         b?.paymentStatus !== undefined ||
         b?.paymentMethod !== undefined
       ) {
+        if (!canEditOrderFinancials(auth))
+          return error("لا تملك صلاحية تعديل المبالغ المالية للحجز", 403, {
+            code: "PERMISSION_DENIED",
+          });
         if (
           b?.paymentStatus !== undefined &&
           !["paid", "partial", "unpaid"].includes(String(b.paymentStatus))
@@ -46581,6 +46763,54 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           actor: erpActorFromAdmin(auth),
           metadata: { from: prev.status, to: row.status },
         }).catch(() => null);
+      }
+      const importantChanges = [
+        ["customerName", prev.customerName, row.customerName],
+        ["phone", prev.phone, row.phone],
+        ["serviceId", prev.serviceId, row.serviceId],
+        ["eventDate", prev.eventDate, row.eventDate],
+        ["eventLocation", prev.eventLocation, row.eventLocation],
+        ["status", prev.status, row.status],
+        ["totalAmount", prev.totalAmount, row.totalAmount],
+        ["depositAmount", prev.depositAmount, row.depositAmount],
+        ["remainingAmount", prev.remainingAmount, row.remainingAmount],
+        ["paymentStatus", prev.paymentStatus, row.paymentStatus],
+      ].filter(([, before, after]) => String(before ?? "") !== String(after ?? ""));
+      if (importantChanges.length) {
+        void addEntityTimeline({
+          entityType: "service_order",
+          entityId: row.id,
+          type: "booking_edited",
+          title: "تم تعديل بيانات الحجز",
+          body: importantChanges.map(([field]) => String(field)).join("، "),
+          actor: erpActorFromAdmin(auth),
+          metadata: {
+            changes: importantChanges.map(([field, before, after]) => ({ field, before, after })),
+          },
+        }).catch((timelineError) => console.error("service order edit timeline failed", {
+          requestId: makeRequestId(req.headers.get("x-request-id")),
+          orderId: row.id,
+          message: timelineError instanceof Error ? timelineError.message : "unknown",
+        }));
+      }
+      const scheduleChanged =
+        row.eventDate !== prev.eventDate ||
+        row.eventLocation !== prev.eventLocation ||
+        String((row.customFields as any)?.eventTime ?? "") !== String((prev.customFields as any)?.eventTime ?? "");
+      if (scheduleChanged || row.status !== prev.status || row.serviceId !== prev.serviceId) {
+        const previousAssignments = bookingAssignedStaff((prev.customFields ?? {}) as Record<string, any>).ids;
+        const currentAssignments = bookingAssignedStaff((row.customFields ?? {}) as Record<string, any>).ids;
+        notifyAssignedBookingStaffSafely({
+          req,
+          staffIds: [...previousAssignments, ...currentAssignments],
+          type: row.status === "cancelled" ? "booking_cancelled" : scheduleChanged ? "booking_schedule_changed" : "booking_status_changed",
+          title: row.status === "cancelled" ? "تم إلغاء الحجز" : scheduleChanged ? "تم تغيير موعد أو موقع الحجز" : "تم تحديث الحجز",
+          body: `${row.customerName} · ${row.eventDate ?? "الموعد غير محدد"}${(row.customFields as any)?.eventTime ? ` · ${(row.customFields as any).eventTime}` : ""}`,
+          entityType: "service_order",
+          entityId: row.id,
+          href: `/staff/koshas/booking/${row.id}?source=service`,
+          metadata: { scheduleChanged, previousStatus: prev.status, currentStatus: row.status },
+        });
       }
       if (
         update.paymentStatus !== undefined ||

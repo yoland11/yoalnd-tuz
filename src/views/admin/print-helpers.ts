@@ -600,6 +600,172 @@ export function openCustomerStatementPrintWindow(input: CustomerStatementPrintIn
   popup.document.close();
 }
 
+export type EmployeeAccountStatementPayment = {
+  date: string;
+  amount: number;
+  method?: string | null;
+  reference?: string | null;
+  status?: string | null;
+  recordedBy?: string | null;
+  balanceBefore?: number | null;
+  balanceAfter?: number | null;
+};
+
+export type EmployeeAccountStatementTransaction = {
+  date: string;
+  type: string;
+  direction: "addition" | "deduction";
+  amount: number;
+  reference?: string | null;
+  description?: string | null;
+  status?: string | null;
+};
+
+export type EmployeeAccountStatementPrintInput = {
+  companyName?: string;
+  logoUrl?: string;
+  companyPhone?: string | null;
+  companyAddress?: string | null;
+  companyEmail?: string | null;
+  statementNumber: string;
+  employeeName: string;
+  employeeCode?: string | null;
+  department?: string | null;
+  jobTitle?: string | null;
+  periodStart: string;
+  periodEnd: string;
+  baseSalary: number;
+  attendance: {
+    scheduledDays: number;
+    attendedDays: number;
+    absentDays: number;
+    paidLeaveDays: number;
+    unpaidLeaveDays: number;
+    workingHours: number;
+    lateMinutes: number;
+    earlyLeaveMinutes: number;
+  };
+  overtimeHours: number;
+  overtimeAmount: number;
+  bonuses: number;
+  allowances: number;
+  otherEarnings: number;
+  deductions: number;
+  advances: number;
+  grossSalary: number;
+  amountPaid: number;
+  remainingBalance: number;
+  netSalary: number;
+  payments: EmployeeAccountStatementPayment[];
+  transactions?: EmployeeAccountStatementTransaction[];
+};
+
+/** A4 employee salary/account statement shared by browser printing and PDF export. */
+export function employeeAccountStatementSheetCss() {
+  return `${sheetReportCss("a4")}
+    @page { size: A4 portrait; margin: 11mm; }
+    .employee-account-statement { max-width:188mm; margin:0 auto; }
+    .employee-account-statement .report-head { align-items:flex-start; }
+    .employee-account-statement .company-contact { margin-top:3px; font-size:9px; line-height:1.65; }
+    .employee-account-statement .statement-id { direction:ltr; unicode-bidi:isolate; font-variant-numeric:tabular-nums; }
+    .employee-account-statement .employee-card { display:grid; grid-template-columns:repeat(4,1fr); gap:0; border:1px solid #000; margin:10px 0; }
+    .employee-account-statement .employee-field { min-height:52px; padding:7px; border-inline-start:1px solid #000; }
+    .employee-account-statement .employee-field:first-child { border-inline-start:0; }
+    .employee-account-statement .employee-field span { display:block; font-size:9px; margin-bottom:3px; }
+    .employee-account-statement .employee-field strong { display:block; font-size:11px; }
+    .employee-account-statement .statement-summary { grid-template-columns:repeat(4,1fr); }
+    .employee-account-statement .statement-summary .net { border-width:2px; }
+    .employee-account-statement .statement-section { margin-top:12px; break-inside:avoid; page-break-inside:avoid; }
+    .employee-account-statement .statement-section.allow-break { break-inside:auto; page-break-inside:auto; }
+    .employee-account-statement .section-title { border-bottom:1.5px solid #000; padding-bottom:4px; margin-bottom:6px; font-size:12px; font-weight:800; }
+    .employee-account-statement .attendance-grid { display:grid; grid-template-columns:repeat(4,1fr); border:1px solid #000; }
+    .employee-account-statement .attendance-item { padding:6px; border-inline-start:1px solid #000; border-bottom:1px solid #000; }
+    .employee-account-statement .attendance-item:nth-child(4n + 1) { border-inline-start:0; }
+    .employee-account-statement .attendance-item:nth-last-child(-n + 4) { border-bottom:0; }
+    .employee-account-statement .attendance-item span { display:block; font-size:9px; }
+    .employee-account-statement .attendance-item strong { display:block; margin-top:2px; font-size:11px; }
+    .employee-account-statement .financial-columns { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .employee-account-statement .financial-table { width:100%; border-collapse:collapse; }
+    .employee-account-statement .financial-table td { border:1px solid #000; padding:5px 7px; }
+    .employee-account-statement .financial-table td:last-child { width:42%; text-align:left; }
+    .employee-account-statement .ledger-table { font-size:9px; }
+    .employee-account-statement .ledger-table thead { display:table-header-group; }
+    .employee-account-statement .ledger-table th,
+    .employee-account-statement .ledger-table td { padding:4px; }
+    .employee-account-statement .ledger-table tr { break-inside:avoid; page-break-inside:avoid; }
+    .employee-account-statement .num { direction:ltr; unicode-bidi:isolate; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .employee-account-statement .empty-row { text-align:center; padding:16px !important; }
+    .employee-account-statement-pdf-host { position:fixed; left:-10000px; top:0; width:188mm; padding:0; background:#fff; color:#000; }
+    @media print {
+      nav, aside, button, .no-print { display:none !important; }
+      .employee-account-statement { width:100%; max-width:none; }
+    }
+  `;
+}
+
+const englishNumber = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+const englishDate = new Intl.DateTimeFormat("en-GB", { year: "numeric", month: "2-digit", day: "2-digit" });
+const englishDateTime = new Intl.DateTimeFormat("en-GB", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+
+function statementDate(value: string) {
+  if (!value) return "—";
+  const date = new Date(value.length <= 10 ? `${value}T00:00:00` : value);
+  return Number.isNaN(date.getTime()) ? value : englishDate.format(date);
+}
+
+function statementMoney(value: number) {
+  return formatCurrency(Number.isFinite(Number(value)) ? Number(value) : 0);
+}
+
+export function employeeAccountStatementPrintHtml(input: EmployeeAccountStatementPrintInput) {
+  const info = [input.companyAddress, input.companyPhone, input.companyEmail].filter(Boolean).map(statementEsc).join(" · ");
+  const attendance = [
+    ["أيام الدوام", input.attendance.scheduledDays],
+    ["أيام الحضور", input.attendance.attendedDays],
+    ["أيام الغياب", input.attendance.absentDays],
+    ["إجازة مدفوعة", input.attendance.paidLeaveDays],
+    ["إجازة غير مدفوعة", input.attendance.unpaidLeaveDays],
+    ["ساعات العمل", input.attendance.workingHours],
+    ["دقائق التأخير", input.attendance.lateMinutes],
+    ["دقائق الانصراف المبكر", input.attendance.earlyLeaveMinutes],
+  ].map(([label, value]) => `<div class="attendance-item"><span>${label}</span><strong class="num">${statementEsc(englishNumber.format(Number(value) || 0))}</strong></div>`).join("");
+  const earnings: Array<[string, number]> = [
+    ["الراتب الأساسي", input.baseSalary],
+    ["العمل الإضافي", input.overtimeAmount],
+    ["المكافآت", input.bonuses],
+    ["البدلات", input.allowances],
+    ["إضافات وعمولات أخرى", input.otherEarnings],
+    ["إجمالي الراتب", input.grossSalary],
+  ];
+  const settlement: Array<[string, number]> = [
+    ["إجمالي الاستقطاعات", input.deductions],
+    ["السلف", input.advances],
+    ["الدفعات", input.amountPaid],
+    ["الرصيد المتبقي", input.remainingBalance],
+    ["صافي الراتب", input.netSalary],
+  ];
+  const financialRows = (rows: Array<[string, number]>) => rows.map(([label, value]) => `<tr><td>${label}</td><td class="num">${statementEsc(statementMoney(value))}</td></tr>`).join("");
+  const paymentRows = input.payments.map((payment) => ({ date: payment.date, html: `<tr><td class="num">${statementEsc(statementDate(payment.date))}</td><td>دفعة راتب${payment.method ? ` · ${statementEsc(payment.method)}` : ""}</td><td class="statement-id">${statementEsc(payment.reference || "—")}</td><td class="num">${statementEsc(statementMoney(payment.amount))}</td><td>${statementEsc(payment.status || "مسجلة")}${payment.recordedBy ? `<br><small>${statementEsc(payment.recordedBy)}</small>` : ""}</td></tr>` }));
+  const transactionRows = (input.transactions || []).map((transaction) => ({ date: transaction.date, html: `<tr><td class="num">${statementEsc(statementDate(transaction.date))}</td><td>${transaction.direction === "addition" ? "إضافة" : "استقطاع"} · ${statementEsc(transaction.type)}</td><td class="statement-id">${statementEsc(transaction.reference || "—")}</td><td class="num">${statementEsc(statementMoney(transaction.amount))}</td><td>${statementEsc(transaction.status || "مسجلة")}${transaction.description ? `<br><small>${statementEsc(transaction.description)}</small>` : ""}</td></tr>` }));
+  const ledgerRows = [...paymentRows, ...transactionRows].sort((a, b) => String(b.date).localeCompare(String(a.date))).map((entry) => entry.html).join("") || `<tr><td class="empty-row" colspan="5">لا توجد معاملات أو دفعات مسجلة لهذه الفترة</td></tr>`;
+  return `<main class="report-sheet employee-account-statement">
+    <header class="report-head"><div><div class="report-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div><div class="report-title">كشف حساب موظف</div>${info ? `<div class="company-contact">${info}</div>` : ""}</div>${input.logoUrl ? `<img class="report-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : ""}<div class="report-meta">رقم الكشف: <span class="statement-id">${statementEsc(input.statementNumber)}</span><br>تاريخ الطباعة: <span class="num">${statementEsc(englishDateTime.format(new Date()))}</span></div></header>
+    <section class="employee-card"><div class="employee-field"><span>الموظف</span><strong>${statementEsc(input.employeeName)}</strong></div><div class="employee-field"><span>الرمز الوظيفي</span><strong class="statement-id">${statementEsc(input.employeeCode || "—")}</strong></div><div class="employee-field"><span>القسم / المسمى</span><strong>${statementEsc([input.department, input.jobTitle].filter(Boolean).join(" · ") || "—")}</strong></div><div class="employee-field"><span>فترة الكشف</span><strong class="num">${statementEsc(statementDate(input.periodStart))} — ${statementEsc(statementDate(input.periodEnd))}</strong></div></section>
+    <section class="report-summary statement-summary"><div class="report-stat">الراتب الأساسي<strong class="num">${statementEsc(statementMoney(input.baseSalary))}</strong></div><div class="report-stat">الدفعات<strong class="num">${statementEsc(statementMoney(input.amountPaid))}</strong></div><div class="report-stat">الرصيد المتبقي<strong class="num">${statementEsc(statementMoney(input.remainingBalance))}</strong></div><div class="report-stat net">صافي الراتب<strong class="num">${statementEsc(statementMoney(input.netSalary))}</strong></div></section>
+    <section class="statement-section"><div class="section-title">ملخص الحضور والإضافي</div><div class="attendance-grid">${attendance}</div><div class="report-meta" style="margin-top:5px">ساعات الإضافي: <span class="num">${statementEsc(englishNumber.format(Number(input.overtimeHours) || 0))}</span> · قيمة الإضافي: <span class="num">${statementEsc(statementMoney(input.overtimeAmount))}</span></div></section>
+    <section class="statement-section"><div class="section-title">التفاصيل المالية</div><div class="financial-columns"><table class="financial-table"><tbody>${financialRows(earnings)}</tbody></table><table class="financial-table"><tbody>${financialRows(settlement)}</tbody></table></div></section>
+    <section class="statement-section allow-break"><div class="section-title">سجل المعاملات والدفعات</div><table class="report-table ledger-table"><thead><tr><th>التاريخ</th><th>البيان</th><th>المرجع</th><th>المبلغ</th><th>الحالة / المنفذ</th></tr></thead><tbody>${ledgerRows}</tbody></table></section>
+    <footer class="report-footer">كشف مالي للقراءة فقط صادر من نظام AJN · لا ينشئ أو يعدل أي قيد محاسبي</footer>
+  </main>`;
+}
+
+export function openEmployeeAccountStatementPrintWindow(input: EmployeeAccountStatementPrintInput) {
+  const popup = window.open("", "_blank", "width=980,height=760");
+  if (!popup) throw new Error("تعذر فتح نافذة الطباعة");
+  popup.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>كشف حساب ${statementEsc(input.employeeName)}</title><style>${employeeAccountStatementSheetCss()}</style></head><body>${employeeAccountStatementPrintHtml(input)}${printWhenImagesReadyScript()}</body></html>`);
+  popup.document.close();
+}
+
 /**
  * Shared depreciation report styles.  Both the browser print window and the
  * downloadable PDF preview use this builder so A4 and thermal never drift.

@@ -38,7 +38,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { adminFetch, getCachedAdminMe, hasPerm, formatCurrency } from "./_lib";
 import { downloadElementPdf } from "@/lib/pdf";
-import { printWhenImagesReadyScript, salarySlipCss, sheetReportCss } from "./print-helpers";
+import { logoSrc, usePublicSettings } from "@/lib/public-settings";
+import {
+  employeeAccountStatementPrintHtml,
+  employeeAccountStatementSheetCss,
+  openEmployeeAccountStatementPrintWindow,
+  printWhenImagesReadyScript,
+  salarySlipCss,
+  sheetReportCss,
+  type EmployeeAccountStatementPrintInput,
+} from "./print-helpers";
 
 type SalaryLine = {
   id: number;
@@ -64,9 +73,23 @@ type SalaryLine = {
   attendanceDeduction: number;
   absenceDeduction: number;
   lateDeduction: number;
+  earlyLeaveDeduction: number;
+  unpaidLeaveDeduction: number;
   manualDeduction: number;
   otherDeductions: number;
   fixedDeduction: number;
+  scheduledWorkingDays: number;
+  attendanceDays: number;
+  paidLeaveDays: number;
+  unpaidLeaveDays: number;
+  absenceDays: number;
+  totalLateMinutes: number;
+  earlyLeaveMinutes: number;
+  totalWorkingHours: number;
+  overtimeHours: number;
+  missingCheckIn: number;
+  missingCheckOut: number;
+  calculationDetails?: { formulas?: Record<string, string>; attendance?: Record<string, any>; originalCalculated?: Record<string, number>; manualEdit?: Record<string, any> };
   grossSalary: number;
   netSalary: number;
   totalDeductions: number;
@@ -194,6 +217,7 @@ type EditorState = { mode: "create" | "edit" | "add" | "reduce"; row?: SalaryRow
 export default function EmployeeSalariesPage() {
   const qc = useQueryClient();
   const me = getCachedAdminMe();
+  const settingsQuery = usePublicSettings();
   const [location, navigate] = useLocation();
   const params = useMemo(() => new URLSearchParams(location.split("?")[1] || ""), [location]);
   const [search, setSearch] = useState(params.get("search") || "");
@@ -212,6 +236,7 @@ export default function EmployeeSalariesPage() {
   const [correctionRow, setCorrectionRow] = useState<SalaryRow | null>(null);
   const [attachmentRow, setAttachmentRow] = useState<SalaryRow | null>(null);
   const [reversePayment, setReversePayment] = useState<{ row: SalaryRow; payment: SalaryManagement["payments"][number] } | null>(null);
+  const [statementPdfRowId, setStatementPdfRowId] = useState<number | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
 
   const runsQuery = useQuery({ queryKey: ["employee-salaries"], queryFn: () => adminFetch<PayrollRun[]>("/admin/hr/payroll") });
@@ -330,7 +355,7 @@ export default function EmployeeSalariesPage() {
       return;
     }
     editMutation.mutate({ row, payload: {
-      baseSalary: n(form.baseSalary), bonusAmount: n(form.bonusAmount), overtimeAmount: n(form.overtimeAmount), otherEarnings: n(form.otherEarnings), manualDeduction: n(form.manualDeduction), advanceDeduction: n(form.advanceDeduction), paymentMethod: form.paymentMethod || "cash", paymentDate: form.paymentDate || null, notes: form.notes || null,
+      reason: form.reason, baseSalary: n(form.baseSalary), bonusAmount: n(form.bonusAmount), overtimeAmount: n(form.overtimeAmount), otherEarnings: n(form.otherEarnings), manualDeduction: n(form.manualDeduction), advanceDeduction: n(form.advanceDeduction), paymentMethod: form.paymentMethod || "cash", paymentDate: form.paymentDate || null, notes: form.notes || null,
     } });
   }
 
@@ -367,7 +392,108 @@ export default function EmployeeSalariesPage() {
     popup.document.close();
   }
 
-  const canEdit = (row: SalaryRow) => ["draft", "calculated", "under_review", "pending_manager_approval", "rejected"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
+  function employeeStatementInput(row: SalaryRow, management: SalaryManagement): EmployeeAccountStatementPrintInput {
+    const settings = settingsQuery.data;
+    const allowances = n(row.attendanceAllowance) + n(row.transportationAllowance) + n(row.foodAllowance) + n(row.phoneAllowance) + n(row.housingAllowance) + n(row.otherFixedAllowances);
+    const paymentMethodLabels: Record<string, string> = { cash: "نقدي", main_cash_box: "الصندوق الرئيسي", bank: "مصرف", transfer: "تحويل", card: "بطاقة" };
+    const paymentStatusLabels: Record<string, string> = { paid: "مدفوعة", reversed: "معكوسة", pending: "قيد الانتظار" };
+    const adjustmentTypeLabels: Record<string, string> = { salary_adjustment: "تعديل راتب", additional_work: "عمل إضافي", overtime: "تعديل إضافي", allowance: "بدل", commission: "عمولة", manual: "تعديل يدوي", advance: "سلفة", absence: "غياب", late: "تأخير", other: "أخرى" };
+    const payments = management.payments.map((payment) => ({
+      date: payment.payment_date,
+      amount: n(payment.amount),
+      method: paymentMethodLabels[payment.payment_method] || payment.payment_method,
+      reference: payment.transaction_no,
+      status: paymentStatusLabels[payment.status] || payment.status,
+      recordedBy: payment.created_by_name,
+    }));
+    if (!payments.length && n(row.amountPaid) > 0) {
+      payments.push({
+        date: row.paymentDate || row.periodEnd || row.periodStart,
+        amount: n(row.amountPaid),
+        method: paymentMethodLabels[row.paymentMethod] || row.paymentMethod || "—",
+        reference: row.salaryNumber,
+        status: "دفعة تاريخية مجمعة",
+        recordedBy: row.paidBy || "النظام القديم",
+      });
+    }
+    return {
+      companyName: settings?.site_name || "مجموعة علي جان نهاد",
+      logoUrl: logoSrc(settings),
+      companyPhone: settings?.phone,
+      companyAddress: [settings?.address, settings?.city].filter(Boolean).join(" · "),
+      companyEmail: settings?.email,
+      statementNumber: row.salaryNumber,
+      employeeName: row.employeeName,
+      employeeCode: row.employeeCode,
+      department: row.department,
+      jobTitle: row.jobTitle,
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd || row.periodStart,
+      baseSalary: n(row.baseSalary),
+      attendance: {
+        scheduledDays: n(row.scheduledWorkingDays),
+        attendedDays: n(row.attendanceDays),
+        absentDays: n(row.absenceDays),
+        paidLeaveDays: n(row.paidLeaveDays),
+        unpaidLeaveDays: n(row.unpaidLeaveDays),
+        workingHours: n(row.totalWorkingHours),
+        lateMinutes: n(row.totalLateMinutes),
+        earlyLeaveMinutes: n(row.calculationDetails?.attendance?.earlyLeaveMinutes ?? row.earlyLeaveMinutes),
+      },
+      overtimeHours: n(row.overtimeHours),
+      overtimeAmount: n(row.overtimeAmount),
+      bonuses: n(row.bonusAmount),
+      allowances,
+      otherEarnings: n(row.otherEarnings) + n(row.commissionAmount),
+      deductions: Math.max(0, n(row.totalDeductions) - n(row.advanceDeduction)),
+      advances: n(row.advanceDeduction),
+      grossSalary: n(row.grossSalary),
+      amountPaid: n(row.amountPaid),
+      remainingBalance: n(row.remainingSalary),
+      netSalary: n(row.netSalary),
+      payments,
+      transactions: management.adjustments.map((adjustment) => ({
+        date: adjustment.effective_date || adjustment.created_at,
+        type: adjustmentTypeLabels[adjustment.adjustment_type] || adjustment.adjustment_type || "تعديل راتب",
+        direction: adjustment.direction === "addition" ? "addition" : "deduction",
+        amount: n(adjustment.amount),
+        reference: `ADJ-${adjustment.id}`,
+        description: `${adjustment.reason}${adjustment.include_in === "next" ? " · ضمن الراتب القادم" : " · ضمن الراتب الحالي"}`,
+        status: adjustment.status === "active" ? "فعّال" : adjustment.status === "reversed" ? "معكوس" : adjustment.status,
+      })),
+    };
+  }
+
+  function printEmployeeStatement(row: SalaryRow) {
+    if (!managementQuery.data) { toast.error("سجل المعاملات والدفعات لم يكتمل تحميله بعد"); return; }
+    try {
+      openEmployeeAccountStatementPrintWindow(employeeStatementInput(row, managementQuery.data));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "تعذر طباعة كشف الحساب");
+    }
+  }
+
+  async function saveEmployeeStatementPdf(row: SalaryRow) {
+    if (!managementQuery.data) { toast.error("سجل المعاملات والدفعات لم يكتمل تحميله بعد"); return; }
+    const input = employeeStatementInput(row, managementQuery.data);
+    const wrapper = document.createElement("section");
+    wrapper.className = "employee-account-statement-pdf-host";
+    wrapper.dir = "rtl";
+    wrapper.innerHTML = `<style>${employeeAccountStatementSheetCss()}</style>${employeeAccountStatementPrintHtml(input)}`;
+    document.body.appendChild(wrapper);
+    setStatementPdfRowId(row.id);
+    try {
+      await downloadElementPdf(wrapper, `كشف-حساب-${row.employeeCode || row.id}-${row.period}.pdf`, { format: "a4", margin: 7, pagebreakMode: ["css", "legacy"] });
+      toast.success("تم حفظ كشف الحساب بصيغة PDF");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "تعذر حفظ كشف الحساب PDF");
+    } finally {
+      wrapper.remove();
+      setStatementPdfRowId(null);
+    }
+  }
+
+  const canEdit = (row: SalaryRow) => ["draft", "calculated", "under_review", "reopened", "rejected"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
   const canAdjust = (row: SalaryRow) => !["cancelled", "reversed"].includes(row.payrollStatus);
   const canDelete = (row: SalaryRow) => ["draft", "calculated", "under_review", "pending_manager_approval", "rejected"].includes(row.payrollStatus) && !row.financial_transaction_id && n(row.amountPaid) === 0;
   const metrics = [
@@ -405,13 +531,13 @@ export default function EmployeeSalariesPage() {
           <td className="px-3 py-3"><b>{periodLabel(row.period)}</b><div className="text-xs text-muted-foreground">{row.periodStart} — {row.periodEnd || "—"}</div></td>
           <MoneyCell value={row.baseSalary} /><MoneyCell value={n(row.otherEarnings) + n(row.commissionAmount)} /><MoneyCell value={row.bonusAmount} /><MoneyCell value={allowances} /><MoneyCell value={Math.max(0, n(row.totalDeductions) - n(row.advanceDeduction))} /><MoneyCell value={row.advanceDeduction} /><MoneyCell value={row.grossSalary} strong /><MoneyCell value={row.netSalary} strong /><MoneyCell value={row.amountPaid} tone="text-emerald-600" /><MoneyCell value={row.remainingSalary} tone="text-amber-600" />
           <td className="px-3 py-3"><Badge variant="outline" className={statusTone(row.paymentStatus)}>{paymentLabels[row.paymentStatus] || row.paymentStatus}</Badge></td><td className="px-3 py-3"><Badge variant="outline" className={statusTone(row.payrollStatus)}>{payrollLabels[row.payrollStatus] || row.payrollStatus}</Badge></td>
-          <td className="px-3 py-3"><div className="flex flex-wrap gap-1"><IconButton label="عرض التفاصيل" onClick={() => setSelected(row)}><Eye /></IconButton><IconButton label="طباعة القسيمة" onClick={() => printSalary(row)}><Printer /></IconButton><IconButton label="إرفاق مستند" onClick={() => setAttachmentRow(row)}><Paperclip /></IconButton><IconButton label={canEdit(row) ? "تعديل الراتب" : "لا يمكن تعديل راتب مصروف أو مرحّل"} disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil /></IconButton><IconButton label={canAdjust(row) ? "إضافة مبلغ للحالي أو القادم" : "لا يمكن تعديل راتب ملغي أو معكوس"} disabled={!canAdjust(row)} onClick={() => openEditor("add", row)}><PlusCircle /></IconButton><IconButton label={canAdjust(row) ? "تقليل مبلغ من الحالي أو القادم" : "لا يمكن تعديل راتب ملغي أو معكوس"} disabled={!canAdjust(row)} onClick={() => openEditor("reduce", row)}><MinusCircle /></IconButton>{["draft", "calculated"].includes(row.payrollStatus) && <IconButton label="إرسال الراتب لاعتماد المدير" onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock /></IconButton>}{row.payrollStatus === "pending_manager_approval" && <IconButton label="اعتماد دورة الرواتب دون صرف" onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 /></IconButton>}{["approved", "partially_paid"].includes(row.payrollStatus) && row.remainingSalary > 0 && <IconButton label="دفع كلي أو جزئي لهذا الموظف" onClick={() => setPaymentRow(row)}><Banknote /></IconButton>}{row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <IconButton label="مطابقة الراتب القديم مع حركة مالية" onClick={() => setReconcileRow(row)}><Link2 /></IconButton>}{n(row.amountPaid) > 0 && <IconButton label="تصحيح راتب مصروف بأثر مالي واضح" onClick={() => setCorrectionRow(row)}><Wrench /></IconButton>}<IconButton label={canDelete(row) ? "حذف الراتب المسودة" : "لا يمكن حذف راتب مصروف؛ استخدم العكس المالي"} disabled={!canDelete(row)} onClick={() => setDeleteRow(row)} danger><Trash2 /></IconButton></div></td>
+          <td className="px-3 py-3"><div className="flex flex-wrap gap-1"><Button size="sm" variant="outline" onClick={() => setSelected(row)}><Eye className="ms-2 h-4 w-4" />تفاصيل احتساب الراتب</Button><IconButton label="طباعة القسيمة" onClick={() => printSalary(row)}><Printer /></IconButton><IconButton label="إرفاق مستند" onClick={() => setAttachmentRow(row)}><Paperclip /></IconButton><IconButton label={canEdit(row) ? "تعديل الراتب" : "لا يمكن تعديل راتب مصروف أو مرحّل"} disabled={!canEdit(row)} onClick={() => openEditor("edit", row)}><Pencil /></IconButton><IconButton label={canAdjust(row) ? "إضافة مبلغ للحالي أو القادم" : "لا يمكن تعديل راتب ملغي أو معكوس"} disabled={!canAdjust(row)} onClick={() => openEditor("add", row)}><PlusCircle /></IconButton><IconButton label={canAdjust(row) ? "تقليل مبلغ من الحالي أو القادم" : "لا يمكن تعديل راتب ملغي أو معكوس"} disabled={!canAdjust(row)} onClick={() => openEditor("reduce", row)}><MinusCircle /></IconButton>{["draft", "calculated"].includes(row.payrollStatus) && <IconButton label="إرسال الراتب لاعتماد المدير" onClick={() => runAction.mutate({ row, action: "submit" })}><FileClock /></IconButton>}{row.payrollStatus === "pending_manager_approval" && <IconButton label="اعتماد دورة الرواتب دون صرف" onClick={() => runAction.mutate({ row, action: "approve" })}><CheckCircle2 /></IconButton>}{["approved", "partially_paid"].includes(row.payrollStatus) && row.remainingSalary > 0 && <IconButton label="دفع كلي أو جزئي لهذا الموظف" onClick={() => setPaymentRow(row)}><Banknote /></IconButton>}{row.legacyIssues.some((issue) => issue.includes("غير مربوط ماليًا")) && <IconButton label="مطابقة الراتب القديم مع حركة مالية" onClick={() => setReconcileRow(row)}><Link2 /></IconButton>}{n(row.amountPaid) > 0 && <IconButton label="تصحيح راتب مصروف بأثر مالي واضح" onClick={() => setCorrectionRow(row)}><Wrench /></IconButton>}<IconButton label={canDelete(row) ? "حذف الراتب المسودة" : "لا يمكن حذف راتب مصروف؛ استخدم العكس المالي"} disabled={!canDelete(row)} onClick={() => setDeleteRow(row)} danger><Trash2 /></IconButton></div></td>
         </tr>;
       })}
       {!runsQuery.isLoading && !filtered.length && <tr><td colSpan={16} className="p-14 text-center"><WalletCards className="mx-auto mb-3 h-8 w-8 text-muted-foreground" /><b>لا توجد رواتب مطابقة</b><p className="mt-1 text-sm text-muted-foreground">غيّر البحث أو الفلاتر لعرض سجلات أخرى.</p></td></tr>}
     </tbody><tfoot className="border-t-2 bg-muted/40 font-semibold"><tr><td colSpan={3} className="px-3 py-4">{filtered.length.toLocaleString("ar-IQ")} سجل راتب</td>{[totals.base, totals.additions, totals.bonuses, totals.allowances, totals.deductions, totals.advances, totals.gross, totals.net, totals.paid, totals.remaining].map((v, i) => <td key={i} className="whitespace-nowrap px-3 py-4 text-xs">{money.format(v)}</td>)}<td colSpan={3} /></tr></tfoot></table></div></Card>
 
-    <SalaryDetails row={selected} management={managementQuery.data} loading={managementQuery.isLoading} onClose={() => setSelected(null)} onPrint={printSalary} onReversePayment={(payment) => selected && setReversePayment({ row: selected, payment })} onAttach={() => selected && setAttachmentRow(selected)} />
+    <SalaryDetails row={selected} management={managementQuery.data} loading={managementQuery.isLoading} statementError={managementQuery.isError} savingStatementPdf={statementPdfRowId === selected?.id} onClose={() => setSelected(null)} onPrint={printSalary} onPrintStatement={printEmployeeStatement} onSaveStatementPdf={(row) => void saveEmployeeStatementPdf(row)} onReversePayment={(payment) => selected && setReversePayment({ row: selected, payment })} onAttach={() => selected && setAttachmentRow(selected)} />
     <SalaryEditor state={editor} form={form} setForm={setForm} onClose={() => setEditor(null)} onSubmit={submitEditor} busy={editMutation.isPending || createMutation.isPending || adjustmentMutation.isPending} employees={staffQuery.data || []} />
     {paymentRow && <PaymentDialog key={`pay-${paymentRow.id}`} row={paymentRow} busy={paymentMutation.isPending} onClose={() => setPaymentRow(null)} onSubmit={(payload) => paymentMutation.mutate({ row: paymentRow, payload })} />}
     {reconcileRow && <ReconciliationDialog key={`reconcile-${reconcileRow.id}`} row={reconcileRow} management={managementQuery.data} loading={managementQuery.isLoading} busy={reconcileMutation.isPending} onClose={() => setReconcileRow(null)} onSubmit={(payload) => reconcileMutation.mutate({ row: reconcileRow, payload })} />}
@@ -429,13 +555,16 @@ function Filter({ value, onValue, placeholder, items }: { value: string; onValue
 function MoneyCell({ value, strong, tone = "" }: { value: number; strong?: boolean; tone?: string }) { return <td className={`whitespace-nowrap px-3 py-3 tabular-nums ${strong ? "font-bold" : ""} ${tone}`}>{money.format(n(value))}</td>; }
 function IconButton({ label, onClick, disabled, danger, children }: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean; children: React.ReactElement }) { return <Button type="button" size="icon" variant="ghost" className={`h-8 w-8 [&_svg]:h-4 [&_svg]:w-4 ${danger ? "text-destructive" : ""}`} title={label} aria-label={label} disabled={disabled} onClick={onClick}>{children}</Button>; }
 
-function SalaryDetails({ row, management, loading, onClose, onPrint, onReversePayment, onAttach }: { row: SalaryRow | null; management?: SalaryManagement; loading: boolean; onClose: () => void; onPrint: (row: SalaryRow) => void; onReversePayment: (payment: SalaryManagement["payments"][number]) => void; onAttach: () => void }) {
+function SalaryDetails({ row, management, loading, statementError, savingStatementPdf, onClose, onPrint, onPrintStatement, onSaveStatementPdf, onReversePayment, onAttach }: { row: SalaryRow | null; management?: SalaryManagement; loading: boolean; statementError: boolean; savingStatementPdf: boolean; onClose: () => void; onPrint: (row: SalaryRow) => void; onPrintStatement: (row: SalaryRow) => void; onSaveStatementPdf: (row: SalaryRow) => void; onReversePayment: (payment: SalaryManagement["payments"][number]) => void; onAttach: () => void }) {
   if (!row) return null;
   const allowances = n(row.attendanceAllowance) + n(row.transportationAllowance) + n(row.foodAllowance) + n(row.phoneAllowance) + n(row.housingAllowance) + n(row.otherFixedAllowances);
   const items = [["الراتب الأساسي", row.baseSalary], ["البدلات", allowances], ["المكافآت", row.bonusAmount], ["العمل الإضافي", row.overtimeAmount], ["الإضافات اليدوية والعمولة", n(row.otherEarnings) + n(row.commissionAmount)], ["الاستقطاعات", Math.max(0, n(row.totalDeductions) - n(row.advanceDeduction))], ["خصم السلفة", row.advanceDeduction], ["إجمالي الراتب", row.grossSalary], ["صافي الراتب", row.netSalary], ["المدفوع", row.amountPaid], ["المتبقي", row.remainingSalary]] as const;
   return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto" dir="rtl"><DialogHeader><DialogTitle className="flex flex-wrap items-center gap-2">تفاصيل الراتب <Badge variant="outline">{row.salaryNumber}</Badge></DialogTitle><DialogDescription>{row.employeeName} · {row.employeeCode} · {periodLabel(row.period)}</DialogDescription></DialogHeader>
     {row.legacyIssues.length > 0 && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200"><b>بيانات قديمة تحتاج مراجعة</b><ul className="mt-1 list-inside list-disc">{row.legacyIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></div>}
-    <Tabs defaultValue="components"><TabsList className="h-auto w-full flex-wrap justify-start"><TabsTrigger value="components">مكونات الراتب</TabsTrigger><TabsTrigger value="payments">المدفوعات</TabsTrigger><TabsTrigger value="adjustments">التعديلات</TabsTrigger><TabsTrigger value="accounting">المحاسبة والصندوق</TabsTrigger><TabsTrigger value="history">التدقيق والخط الزمني</TabsTrigger><TabsTrigger value="attachments">المرفقات</TabsTrigger></TabsList>
+    <section className="flex flex-col gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3 sm:flex-row sm:items-center sm:justify-between" aria-label="طباعة كشف الحساب"><div><b className="text-sm">طباعة كشف الحساب</b><p className="mt-0.5 text-xs text-muted-foreground">كشف A4 للموظف المحدد يشمل الحضور، مكونات الراتب، الرصيد وسجل الدفعات.</p></div><div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0"><Button type="button" variant="outline" disabled={loading || statementError || !management || savingStatementPdf} onClick={() => onPrintStatement(row)}><Printer className="ms-2 h-4 w-4" />طباعة</Button><Button type="button" variant="outline" disabled={loading || statementError || !management || savingStatementPdf} onClick={() => onSaveStatementPdf(row)}>{savingStatementPdf ? <Loader2 className="ms-2 h-4 w-4 animate-spin" /> : <FileDown className="ms-2 h-4 w-4" />}حفظ PDF</Button></div></section>
+    {statementError && <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">تعذر تحميل سجل المعاملات والدفعات؛ أعد فتح الكشف قبل الطباعة حتى لا يصدر كشف ناقص.</p>}
+    <Tabs defaultValue="calculation"><TabsList className="h-auto w-full flex-wrap justify-start"><TabsTrigger value="calculation">تفاصيل احتساب الراتب</TabsTrigger><TabsTrigger value="components">مكونات الراتب</TabsTrigger><TabsTrigger value="payments">المدفوعات</TabsTrigger><TabsTrigger value="adjustments">التعديلات</TabsTrigger><TabsTrigger value="accounting">المحاسبة والصندوق</TabsTrigger><TabsTrigger value="history">التدقيق والخط الزمني</TabsTrigger><TabsTrigger value="attachments">المرفقات</TabsTrigger></TabsList>
+      <TabsContent value="calculation"><PayrollCalculationDetails row={row} management={management} /></TabsContent>
       <TabsContent value="components" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{items.map(([label, value]) => <div key={label} className="rounded-xl border bg-muted/20 p-3"><span className="text-xs text-muted-foreground">{label}</span><b className="mt-1 block tabular-nums">{money.format(value)}</b></div>)}</TabsContent>
       <TabsContent value="payments" className="space-y-2">{loading ? <LoadingBlock /> : management?.payments.length ? management.payments.map((payment) => <div key={payment.id} className="flex flex-col gap-3 rounded-xl border p-3 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b>{money.format(n(payment.amount))}</b><Badge variant="outline" className={statusTone(payment.status)}>{payment.status === "paid" ? "مدفوعة" : "معكوسة"}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{payment.payment_date} · {payment.payment_method} · {payment.transaction_no} · {payment.created_by_name || "—"}</p></div>{payment.status === "paid" && <Button size="sm" variant="outline" className="text-destructive" onClick={() => onReversePayment(payment)}><Undo2 className="ms-2 h-4 w-4" />عكس الدفعة</Button>}</div>) : <EmptyBlock text="لا توجد دفعات تفصيلية مسجلة. قد يكون هذا سجلًا قديمًا يحتاج مطابقة." />}</TabsContent>
       <TabsContent value="adjustments" className="space-y-2">{loading ? <LoadingBlock /> : management?.adjustments.length ? management.adjustments.map((adjustment) => <div key={adjustment.id} className="rounded-xl border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><b>{adjustment.direction === "addition" ? "إضافة" : "تخفيض"} · {money.format(n(adjustment.amount))}</b><Badge variant="outline">{adjustment.include_in === "next" ? "الراتب القادم" : "الراتب الحالي"}</Badge></div><p className="mt-1 text-sm">{adjustment.reason}</p><p className="mt-1 text-xs text-muted-foreground">{adjustment.effective_date} · {adjustment.created_by_name}</p></div>) : <EmptyBlock text="لا توجد إضافات أو تخفيضات مسجلة." />}</TabsContent>
@@ -445,6 +574,31 @@ function SalaryDetails({ row, management, loading, onClose, onPrint, onReversePa
     </Tabs>
     <DialogFooter><Button variant="outline" onClick={onClose}>إغلاق</Button><Button onClick={() => onPrint(row)}><Printer className="ms-2 h-4 w-4" />طباعة القسيمة</Button></DialogFooter>
   </DialogContent></Dialog>;
+}
+
+function PayrollCalculationDetails({ row, management }: { row: SalaryRow; management?: SalaryManagement }) {
+  const formulas = row.calculationDetails?.formulas ?? {};
+  const attendance = row.calculationDetails?.attendance ?? {};
+  const allowances = n(row.attendanceAllowance) + n(row.transportationAllowance) + n(row.foodAllowance) + n(row.phoneAllowance) + n(row.housingAllowance) + n(row.otherFixedAllowances);
+  const additions = n(row.otherEarnings) + n(row.commissionAmount);
+  const values: Array<{ label: string; value: number; formula?: string; tone?: "add" | "deduct" | "net" }> = [
+    { label: "الراتب الأساسي", value: row.baseSalary, formula: formulas.baseSalary },
+    { label: "العمل الإضافي", value: row.overtimeAmount, formula: formulas.overtime, tone: "add" },
+    { label: "المكافآت", value: row.bonusAmount, tone: "add" },
+    { label: "البدلات", value: allowances, tone: "add" },
+    { label: "الإضافات اليدوية والعمولة", value: additions, formula: management?.adjustments.filter((item) => item.direction === "addition").map((item) => `${item.reason}: ${money.format(n(item.amount))}`).join(" · ") || undefined, tone: "add" },
+    { label: "خصم الغياب", value: row.absenceDeduction, formula: formulas.absenceDeduction, tone: "deduct" },
+    { label: "خصم التأخير", value: row.lateDeduction, formula: formulas.lateDeduction, tone: "deduct" },
+    { label: "خصم الانصراف المبكر", value: row.earlyLeaveDeduction, formula: formulas.earlyLeaveDeduction, tone: "deduct" },
+    { label: "خصم الإجازة غير المدفوعة", value: row.unpaidLeaveDeduction, formula: formulas.unpaidLeaveDeduction, tone: "deduct" },
+    { label: "الخصومات اليدوية", value: row.manualDeduction, formula: management?.adjustments.filter((item) => item.direction === "deduction").map((item) => `${item.reason}: ${money.format(n(item.amount))}`).join(" · ") || (row.calculationDetails?.manualEdit?.reason ? `تعديل المدير: ${row.calculationDetails.manualEdit.reason}` : undefined), tone: "deduct" },
+    { label: "السلف والخصومات الأخرى", value: n(row.advanceDeduction) + n(row.otherDeductions) + n(row.fixedDeduction), tone: "deduct" },
+    { label: "إجمالي الراتب", value: row.grossSalary },
+    { label: "إجمالي الخصومات", value: row.totalDeductions, tone: "deduct" },
+    { label: "صافي الراتب", value: row.netSalary, tone: "net" },
+  ];
+  const metrics: Array<[string, number]> = [["أيام الدوام", row.scheduledWorkingDays],["أيام الحضور", row.attendanceDays],["أيام الغياب", row.absenceDays],["إجازة مدفوعة", row.paidLeaveDays],["إجازة غير مدفوعة", row.unpaidLeaveDays],["ساعات العمل", row.totalWorkingHours],["دقائق التأخير", row.totalLateMinutes],["دقائق الانصراف المبكر", n(attendance.earlyLeaveMinutes ?? row.earlyLeaveMinutes)],["ساعات الإضافي", row.overtimeHours],["بصمة حضور مفقودة", row.missingCheckIn],["بصمة انصراف مفقودة", row.missingCheckOut]];
+  return <div className="space-y-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">{metrics.map(([label, value]) => <div key={label} className="rounded-lg bg-muted/50 p-2"><span className="text-xs text-muted-foreground">{label}</span><b className="mt-1 block tabular-nums">{n(value).toLocaleString("en-US", { maximumFractionDigits: 2 })}</b></div>)}</div><div className="divide-y rounded-xl border">{values.map((item) => <div key={item.label} className="p-3"><div className="flex items-center justify-between gap-4"><span className="text-sm text-muted-foreground">{item.label}</span><b className={`tabular-nums ${item.tone === "add" ? "text-emerald-700 dark:text-emerald-300" : item.tone === "deduct" ? "text-rose-700 dark:text-rose-300" : item.tone === "net" ? "text-primary" : ""}`}>{money.format(item.value)}</b></div>{item.formula && <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.formula}</p>}</div>)}</div>{row.calculationDetails?.originalCalculated && <div className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">القيم الأصلية المحسوبة محفوظة في سجل الراتب، وأي تعديل يدوي يظهر مع المدير والوقت والسبب في سجل التدقيق.</div>}</div>;
 }
 
 function InfoRows({ rows }: { rows: Array<[string, string]> }) { return <div className="divide-y rounded-xl border">{rows.map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4 p-3"><span className="text-sm text-muted-foreground">{label}</span><b className="text-sm">{value}</b></div>)}</div>; }
@@ -500,8 +654,8 @@ function SalaryEditor({ state, form, setForm, onClose, onSubmit, busy, employees
       <Field label="تاريخ السريان"><Input type="date" value={form.effectiveDate || new Date().toISOString().slice(0, 10)} onChange={(e) => set("effectiveDate", e.target.value)} /></Field>
       <Field label="مرفق اختياري"><Input type="file" accept="image/*,.pdf" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; if (file.size > 5_000_000) { toast.error("حجم المرفق يجب ألا يتجاوز 5 ميغابايت"); return; } const reader = new FileReader(); reader.onload = () => set("attachment", String(reader.result)); reader.onerror = () => toast.error("تعذر قراءة المرفق"); reader.readAsDataURL(file); }} /></Field>
     </div>
-    : <div className="grid gap-4 sm:grid-cols-2"><Field label="الراتب الأساسي"><Input inputMode="decimal" value={form.baseSalary || ""} onChange={(e) => set("baseSalary", e.target.value)} /></Field><Field label="البدلات"><Input inputMode="decimal" value={form.allowances || ""} disabled title="البدلات الثابتة تُدار من إعدادات راتب الموظف" /></Field><Field label="المكافآت"><Input inputMode="decimal" value={form.bonusAmount || ""} onChange={(e) => set("bonusAmount", e.target.value)} /></Field><Field label="العمل الإضافي"><Input inputMode="decimal" value={form.overtimeAmount || ""} onChange={(e) => set("overtimeAmount", e.target.value)} /></Field><Field label="إضافة يدوية"><Input inputMode="decimal" value={form.otherEarnings || ""} onChange={(e) => set("otherEarnings", e.target.value)} /></Field><Field label="خصم يدوي"><Input inputMode="decimal" value={form.manualDeduction || ""} onChange={(e) => set("manualDeduction", e.target.value)} /></Field><Field label="خصم السلفة"><Input inputMode="decimal" value={form.advanceDeduction || ""} onChange={(e) => set("advanceDeduction", e.target.value)} /></Field><Field label="طريقة الدفع"><Select value={form.paymentMethod || "cash"} onValueChange={(v) => set("paymentMethod", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent dir="rtl"><SelectItem value="cash">نقدي</SelectItem><SelectItem value="main_cash_box">الصندوق الرئيسي</SelectItem><SelectItem value="bank">مصرف</SelectItem><SelectItem value="transfer">تحويل</SelectItem></SelectContent></Select></Field><Field label="تاريخ الدفع"><Input type="date" value={form.paymentDate || ""} onChange={(e) => set("paymentDate", e.target.value)} /></Field><Field label="الملاحظات"><Textarea value={form.notes || ""} onChange={(e) => set("notes", e.target.value)} /></Field><div className="sm:col-span-2 rounded-xl bg-primary/10 p-4"><span className="text-sm text-muted-foreground">معاينة صافي الراتب</span><b className="mt-1 block text-xl text-primary">{money.format(Math.max(0, preview))}</b></div></div>}
-    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={busy} onClick={onSubmit}>{busy && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}حفظ</Button></DialogFooter>
+    : <div className="grid gap-4 sm:grid-cols-2"><Field label="الراتب الأساسي"><Input inputMode="decimal" value={form.baseSalary || ""} onChange={(e) => set("baseSalary", e.target.value)} /></Field><Field label="البدلات"><Input inputMode="decimal" value={form.allowances || ""} disabled title="البدلات الثابتة تُدار من إعدادات راتب الموظف" /></Field><Field label="المكافآت"><Input inputMode="decimal" value={form.bonusAmount || ""} onChange={(e) => set("bonusAmount", e.target.value)} /></Field><Field label="العمل الإضافي"><Input inputMode="decimal" value={form.overtimeAmount || ""} onChange={(e) => set("overtimeAmount", e.target.value)} /></Field><Field label="إضافة يدوية"><Input inputMode="decimal" value={form.otherEarnings || ""} onChange={(e) => set("otherEarnings", e.target.value)} /></Field><Field label="خصم يدوي"><Input inputMode="decimal" value={form.manualDeduction || ""} onChange={(e) => set("manualDeduction", e.target.value)} /></Field><Field label="خصم السلفة"><Input inputMode="decimal" value={form.advanceDeduction || ""} onChange={(e) => set("advanceDeduction", e.target.value)} /></Field><Field label="طريقة الدفع"><Select value={form.paymentMethod || "cash"} onValueChange={(v) => set("paymentMethod", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent dir="rtl"><SelectItem value="cash">نقدي</SelectItem><SelectItem value="main_cash_box">الصندوق الرئيسي</SelectItem><SelectItem value="bank">مصرف</SelectItem><SelectItem value="transfer">تحويل</SelectItem></SelectContent></Select></Field><Field label="تاريخ الدفع"><Input type="date" value={form.paymentDate || ""} onChange={(e) => set("paymentDate", e.target.value)} /></Field><Field label="الملاحظات"><Textarea value={form.notes || ""} onChange={(e) => set("notes", e.target.value)} /></Field><div className="sm:col-span-2"><Field label="سبب التعديل *"><Textarea value={form.reason || ""} onChange={(e) => set("reason", e.target.value)} placeholder="سبب واضح يُحفظ مع القيم الأصلية والمعدلة في سجل التدقيق" /></Field></div><div className="sm:col-span-2 rounded-xl bg-primary/10 p-4"><span className="text-sm text-muted-foreground">معاينة صافي الراتب</span><b className="mt-1 block text-xl text-primary">{money.format(Math.max(0, preview))}</b></div></div>}
+    <DialogFooter><Button variant="outline" onClick={onClose}>إلغاء</Button><Button disabled={busy || (state.mode === "edit" && String(form.reason || "").trim().length < 3)} onClick={onSubmit}>{busy && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}حفظ</Button></DialogFooter>
   </DialogContent></Dialog>;
 }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <div className="space-y-2"><Label>{label}</Label>{children}</div>; }

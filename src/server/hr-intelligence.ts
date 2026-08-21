@@ -7,6 +7,7 @@ import { applyPayrollAdvanceDeductions, ensureEmployeeAdvanceTables, getEmployee
 import { approveAndExecuteFinancialTransaction, createFinancialTransaction, ensureMasterCashBoxTables, reverseFinancialTransaction, type FinancialActor } from "@/server/master-cash-box";
 import { PAYROLL_PERIOD_TYPES, resolvePayrollPeriod, type PayrollPeriodType } from "@/server/payroll-periods";
 import { canEditPayroll } from "@/server/payroll-lifecycle";
+import { calculateAttendancePayroll, normalizeAttendancePolicy } from "@/server/attendance-payroll";
 
 export type HrActor = FinancialActor;
 const rows = <T = any>(value: any): T[] => (value?.rows ?? []) as T[];
@@ -42,6 +43,7 @@ const payrollInputSchema = z.object({
 
 /** Manual corrections are deliberately isolated from calculated attendance and advance data. */
 const payrollLineEditSchema = z.object({
+  reason: z.string().trim().min(3, "سبب تعديل الراتب مطلوب").max(1000),
   baseSalary: z.coerce.number().min(0).max(1_000_000_000).optional(),
   overtimeAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
   bonusAmount: z.coerce.number().min(0).max(1_000_000_000).optional(),
@@ -290,7 +292,7 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   const existing = rows<any>(await db.execute(sql`select * from payroll_runs where period_key=${dates.periodKey} and deleted_at is null limit 1`))[0];
   if (existing && persist && !replaceRunId) throw new PayrollConflictError(await getPayrollRun(Number(existing.id)));
   const ids = [...new Set(data.employeeIds ?? [])];
-  const staffResult = await db.execute(sql`select s.*, ss.approval_status as salary_settings_approval, ss.enable_overtime, ss.enable_attendance_integration, ss.enable_advance_deduction, ss.enable_bonuses, ss.enable_penalties, ss.risk_allowance, ss.tax_deduction, ss.insurance_deduction, ss.retirement_deduction, ss.late_deduction as setting_late_deduction, ss.absence_deduction as setting_absence_deduction, ss.other_deduction, ss.monthly_bonus, ss.performance_bonus, ss.commission, ss.annual_bonus, ss.other_bonus, ss.max_monthly_overtime from staff s left join employee_salary_settings ss on ss.staff_id=s.id where s.is_active=true ${data.department ? sql`and s.department=${data.department}` : sql``} ${ids.length ? sql`and s.id in (${sql.join(ids.map((id) => sql`${id}`), sql`,`)})` : sql``} order by s.id`);
+  const staffResult = await db.execute(sql`select s.*, ss.approval_status as salary_settings_approval, ss.enable_overtime, ss.enable_attendance_integration, ss.enable_advance_deduction, ss.enable_bonuses, ss.enable_penalties, ss.shift_start, ss.shift_end, ss.weekly_days_off, ss.risk_allowance, ss.weekend_hour_rate, ss.holiday_hour_rate, ss.tax_deduction, ss.insurance_deduction, ss.retirement_deduction, ss.late_deduction as setting_late_deduction, ss.absence_deduction as setting_absence_deduction, ss.other_deduction, ss.monthly_bonus, ss.performance_bonus, ss.commission, ss.annual_bonus, ss.other_bonus, ss.max_monthly_overtime from staff s left join employee_salary_settings ss on ss.staff_id=s.id where s.is_active=true ${data.department ? sql`and s.department=${data.department}` : sql``} ${ids.length ? sql`and s.id in (${sql.join(ids.map((id) => sql`${id}`), sql`,`)})` : sql``} order by s.id`);
   const staff = rows<any>(staffResult);
   if (!staff.length) throw new Error("لا يوجد موظفون نشطون يطابقون اختيار الرواتب");
   const incomplete = staff.map((s) => ({ staff: s, missing: [num(s.base_salary) <= 0 ? "الراتب الأساسي" : null, !["monthly", "weekly", "daily", "hourly"].includes(String(s.salary_type ?? "")) ? "نوع الراتب" : null, !["main_cash_box", "bank", "cash", "transfer", "card"].includes(String(s.payment_method ?? "")) ? "طريقة الدفع" : null, String(s.salary_status ?? "") !== "active" ? "حالة الرواتب النشطة" : null, !s.salary_settings_approval ? "إعدادات الراتب" : null, s.salary_settings_approval === "pending" ? "اعتماد إعدادات الراتب" : null].filter(Boolean) })).filter((entry) => entry.missing.length);
@@ -303,36 +305,104 @@ async function buildPayroll(input: unknown, persist: boolean, actor?: HrActor, r
   const selectedIncentiveLines = replaceRunId
     ? sql`(payroll_line_id is null or payroll_line_id in (select id from payroll_lines where payroll_run_id=${replaceRunId}))`
     : sql`payroll_line_id is null`;
-  const [attendanceResult, eventResult] = await Promise.all([
-    db.execute(sql`select staff_id, count(distinct check_in_at::date)::int as attendance_days, count(*) filter(where lower(status)='late')::int as late_arrivals, count(*) filter(where check_out_at is null)::int as missing_check_out, coalesce(sum(extract(epoch from (check_out_at-check_in_at))/3600.0) filter(where check_out_at is not null),0)::float as working_hours from attendance_records where check_in_at >= ${dates.start} and check_in_at < (${dates.end}::date + interval '1 day') group by staff_id`),
+  const existingLineState = new Map<number, any>();
+  if (replaceRunId) {
+    const existingLines = rows<any>(await db.execute(sql`select staff_id,manual_earnings,manual_deduction,line_notes,calculation_details from payroll_lines where payroll_run_id=${replaceRunId}`));
+    for (const line of existingLines) existingLineState.set(Number(line.staff_id), line);
+  }
+  const [attendanceResult, eventResult, policyResult] = await Promise.all([
+    db.execute(sql`select id,staff_id,status,check_in_at,check_out_at from attendance_records where check_in_at >= ${dates.start} and check_in_at < (${dates.end}::date + interval '1 day') order by staff_id,check_in_at,id`),
     // An approved bonus is only eligible for the picker.  It must not affect a
     // payroll line until an authorised user explicitly selects it for that line.
     db.execute(sql`select staff_id, kind, coalesce(sum(amount::numeric),0)::float as amount from hr_incentive_events where period=${dates.period} and status='applied_to_payroll' and ${selectedIncentiveLines} group by staff_id,kind`),
+    db.execute(sql`select value from settings where key='attendancePolicy' limit 1`),
   ]);
-  const attendance = new Map<number, any>(rows<any>(attendanceResult).map((a) => [Number(a.staff_id), a]));
+  const attendance = new Map<number, any[]>();
+  for (const record of rows<any>(attendanceResult)) attendance.set(Number(record.staff_id), [...(attendance.get(Number(record.staff_id)) ?? []), record]);
+  const attendancePolicy = normalizeAttendancePolicy(rows<any>(policyResult)[0]?.value);
   const incentives = new Map<number, { bonus: number; penalty: number }>();
   for (const event of rows<any>(eventResult)) { const row = incentives.get(Number(event.staff_id)) ?? { bonus: 0, penalty: 0 }; if (["bonus", "reward"].includes(String(event.kind))) row.bonus += num(event.amount); else if (event.kind === "penalty") row.penalty += num(event.amount); incentives.set(Number(event.staff_id), row); }
   const lines: any[] = [];
   for (const employee of staff) {
-    const attendanceEnabled = employee.enable_attendance_integration !== false; const overtimeEnabled = employee.enable_overtime !== false; const att = attendance.get(Number(employee.id)); const scheduled = scheduledDays(dates.start, dates.end, num(employee.working_days_per_week)); const attendanceDays = attendanceEnabled ? Math.min(scheduled, Number(att?.attendance_days ?? 0)) : scheduled; const absenceDays = attendanceEnabled ? Math.max(0, scheduled - attendanceDays) : 0; const hours = attendanceEnabled ? num(att?.working_hours) : scheduled * num(employee.daily_working_hours); const rawOvertimeHours = overtimeEnabled ? Math.max(0, hours - attendanceDays * num(employee.daily_working_hours)) : 0; const overtimeHours = Math.min(rawOvertimeHours, num(employee.max_monthly_overtime) || rawOvertimeHours); const type = String(employee.salary_type ?? "monthly"); const configuredBase = num(employee.base_salary);
+    const attendanceEnabled = employee.enable_attendance_integration !== false;
+    const overtimeEnabled = employee.enable_overtime !== false;
+    const attendanceRecords = attendance.get(Number(employee.id)) ?? [];
+    const attendanceMetrics = calculateAttendancePayroll({
+      periodStart: dates.start,
+      periodEnd: dates.end,
+      baseSalary: num(employee.base_salary),
+      dailyWorkingHours: num(employee.daily_working_hours),
+      workingDaysPerWeek: num(employee.working_days_per_week),
+      weeklyDaysOff: Array.isArray(employee.weekly_days_off) ? employee.weekly_days_off : undefined,
+      shiftStart: employee.shift_start,
+      shiftEnd: employee.shift_end,
+      overtimeRate: num(employee.overtime_rate) || num(employee.hourly_rate),
+      weekendHourRate: num(employee.weekend_hour_rate) || undefined,
+      holidayHourRate: num(employee.holiday_hour_rate) || undefined,
+      lateDeductionRate: num(employee.setting_late_deduction),
+      absenceDeductionRate: num(employee.setting_absence_deduction),
+      policy: attendancePolicy,
+      records: attendanceRecords.map((record) => ({ id: Number(record.id), staffId: Number(record.staff_id), status: String(record.status), checkInAt: record.check_in_at, checkOutAt: record.check_out_at })),
+    });
+    const scheduled = attendanceMetrics.scheduledWorkingDays;
+    const attendanceDays = attendanceEnabled ? attendanceMetrics.presentDays : scheduled;
+    const paidLeaveDays = attendanceEnabled ? attendanceMetrics.paidLeaveDays : 0;
+    const unpaidLeaveDays = attendanceEnabled ? attendanceMetrics.unpaidLeaveDays : 0;
+    const absenceDays = attendanceEnabled ? attendanceMetrics.absenceDays : 0;
+    const hours = attendanceEnabled ? attendanceMetrics.workedHours : scheduled * num(employee.daily_working_hours);
+    const rawOvertimeHours = attendanceEnabled && overtimeEnabled ? attendanceMetrics.overtimeHours : 0;
+    const overtimeHours = Math.min(rawOvertimeHours, num(employee.max_monthly_overtime) || rawOvertimeHours);
+    const overtimeScale = rawOvertimeHours > 0 ? overtimeHours / rawOvertimeHours : 0;
+    const type = String(employee.salary_type ?? "monthly"); const configuredBase = num(employee.base_salary);
     const monthEnd = new Date(`${dates.period}-01T00:00:00Z`); monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1, 0); const fullMonthDays = scheduledDays(`${dates.period}-01`, monthEnd.toISOString().slice(0, 10), num(employee.working_days_per_week)) || 1; const recurringScale = dates.periodType === "monthly" && dates.start === `${dates.period}-01` && dates.end === monthEnd.toISOString().slice(0, 10) ? 1 : Math.min(1, scheduled / fullMonthDays);
-    const base = type === "weekly" ? configuredBase * (dates.calendarDays / 7) : type === "daily" ? configuredBase * attendanceDays : type === "hourly" ? (num(employee.hourly_rate) || configuredBase) * hours : configuredBase * recurringScale;
-    const absenceDeduction = type === "monthly" && scheduled && att ? base / scheduled * absenceDays : 0; const overtimeAmount = overtimeHours * (num(employee.overtime_rate) || num(employee.hourly_rate)); const allowances = num((num(employee.attendance_allowance) + num(employee.transportation_allowance) + num(employee.food_allowance) + num(employee.phone_allowance) + num(employee.housing_allowance) + num(employee.other_fixed_allowances) + num(employee.risk_allowance)) * recurringScale); const incentive = incentives.get(Number(employee.id)) ?? { bonus: 0, penalty: 0 }; const fixedBonuses = (num(employee.monthly_bonus) + num(employee.performance_bonus) + num(employee.other_bonus)) * recurringScale + (dates.periodType === "monthly" && dates.period.endsWith("-12") ? num(employee.annual_bonus) : 0); const commissionAmount = num(employee.commission) * recurringScale; const gross = num(base + allowances + overtimeAmount + incentive.bonus + fixedBonuses + commissionAmount);
-    const advance = await getEmployeeAdvanceSummary(Number(employee.id)); const advanceInstallment = advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).reduce((sum: number, a: any) => sum + Math.min(num(a.monthlyDeduction) * recurringScale, num(a.remainingAmount)), 0); const fixedDeduction = num(employee.fixed_deduction) * recurringScale; const lateDeduction = num(employee.setting_late_deduction) * Number(att?.late_arrivals ?? 0); const insuranceAmount = (num(employee.tax_deduction) + num(employee.insurance_deduction) + num(employee.retirement_deduction)) * recurringScale; const otherDeductions = num(employee.other_deduction) * recurringScale; const configuredAbsenceDeduction = num(employee.setting_absence_deduction) * absenceDays; const advanceDeduction = employee.enable_advance_deduction === false ? 0 : Math.min(Math.max(0, gross - absenceDeduction - incentive.penalty - fixedDeduction - lateDeduction - insuranceAmount - otherDeductions - configuredAbsenceDeduction), advanceInstallment, advance.outstandingBalance); const deductions = absenceDeduction + configuredAbsenceDeduction + incentive.penalty + fixedDeduction + advanceDeduction + lateDeduction + insuranceAmount + otherDeductions; const net = Math.max(0, num(gross - deductions));
-    const calculationDetails = { formulas: { period: `${dates.periodType}:${dates.start} إلى ${dates.end}`, recurringScale: String(recurringScale), absenceDeduction: `${base} ÷ ${scheduled} × ${absenceDays}`, overtime: `${overtimeHours} × ${num(employee.overtime_rate) || num(employee.hourly_rate)}`, advanceDeduction: "نسبة الاستقطاع المسموح بها من السلف النشطة ضمن صافي الراتب المستحق" }, sources: { attendance: att ? "attendance_records" : "لا توجد سجلات حضور للفترة", advances: advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).map((a: any) => ({ advanceNo: a.advanceNo, monthlyDeduction: a.monthlyDeduction, remainingAmount: a.remainingAmount })) } };
-    lines.push({ employee, type, scheduled, attendanceDays, absenceDays, hours, overtimeHours, recurringScale, base, overtimeAmount, incentive, fixedBonuses, commissionAmount, allowances, advanceDeduction, absenceDeduction, lateDeduction, insuranceAmount, otherDeductions, fixedDeduction, gross, deductions, net, calculationDetails, att });
+    const payableDays = attendanceDays + (attendancePolicy.paidLeaveCountsAsPresent ? paidLeaveDays : 0);
+    const base = type === "weekly" ? configuredBase * (dates.calendarDays / 7) : type === "daily" ? configuredBase * payableDays : type === "hourly" ? (num(employee.hourly_rate) || configuredBase) * hours : configuredBase * recurringScale;
+    const absenceDeduction = type === "monthly" && attendanceEnabled ? attendanceMetrics.absenceDeduction * recurringScale : 0;
+    const unpaidLeaveDeduction = type === "monthly" && attendanceEnabled ? attendanceMetrics.unpaidLeaveDeduction * recurringScale : 0;
+    const lateDeduction = attendanceEnabled ? attendanceMetrics.lateDeduction * recurringScale : 0;
+    const earlyLeaveDeduction = attendanceEnabled ? attendanceMetrics.earlyLeaveDeduction * recurringScale : 0;
+    const overtimeAmount = overtimeEnabled ? num(attendanceMetrics.overtimeAmount * overtimeScale) : 0;
+    const previousLine = existingLineState.get(Number(employee.id));
+    const manualEarnings = num(previousLine?.manual_earnings);
+    const manualDeduction = num(previousLine?.manual_deduction);
+    const allowances = num((num(employee.attendance_allowance) + num(employee.transportation_allowance) + num(employee.food_allowance) + num(employee.phone_allowance) + num(employee.housing_allowance) + num(employee.other_fixed_allowances) + num(employee.risk_allowance)) * recurringScale); const incentive = incentives.get(Number(employee.id)) ?? { bonus: 0, penalty: 0 }; const fixedBonuses = (num(employee.monthly_bonus) + num(employee.performance_bonus) + num(employee.other_bonus)) * recurringScale + (dates.periodType === "monthly" && dates.period.endsWith("-12") ? num(employee.annual_bonus) : 0); const commissionAmount = num(employee.commission) * recurringScale; const gross = num(base + allowances + overtimeAmount + incentive.bonus + fixedBonuses + commissionAmount + manualEarnings);
+    const advance = await getEmployeeAdvanceSummary(Number(employee.id)); const advanceInstallment = advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).reduce((sum: number, a: any) => sum + Math.min(num(a.monthlyDeduction) * recurringScale, num(a.remainingAmount)), 0); const fixedDeduction = num(employee.fixed_deduction) * recurringScale; const insuranceAmount = (num(employee.tax_deduction) + num(employee.insurance_deduction) + num(employee.retirement_deduction)) * recurringScale; const otherDeductions = num(employee.other_deduction) * recurringScale; const advanceDeduction = employee.enable_advance_deduction === false ? 0 : Math.min(Math.max(0, gross - absenceDeduction - unpaidLeaveDeduction - incentive.penalty - fixedDeduction - lateDeduction - earlyLeaveDeduction - insuranceAmount - otherDeductions - manualDeduction), advanceInstallment, advance.outstandingBalance); const deductions = absenceDeduction + unpaidLeaveDeduction + incentive.penalty + fixedDeduction + advanceDeduction + lateDeduction + earlyLeaveDeduction + insuranceAmount + otherDeductions + manualDeduction; const net = Math.max(0, num(gross - deductions));
+    const calculationDetails = {
+      version: 2,
+      formulas: {
+        period: `${dates.periodType}:${dates.start} إلى ${dates.end}`,
+        recurringScale: String(recurringScale),
+        baseSalary: type === "monthly" ? `الراتب الأساسي ${base}` : `${type} حسب ${type === "hourly" ? `${hours} ساعة` : `${payableDays} يوم`}`,
+        absenceDeduction: attendanceMetrics.formulas.absence,
+        lateDeduction: attendanceMetrics.formulas.late,
+        earlyLeaveDeduction: attendanceMetrics.formulas.earlyLeave,
+        unpaidLeaveDeduction: attendanceMetrics.formulas.unpaidLeave,
+        overtime: attendanceMetrics.formulas.overtime,
+        advanceDeduction: "نسبة الاستقطاع المسموح بها من السلف النشطة ضمن صافي الراتب المستحق",
+      },
+      attendance: { ...attendanceMetrics, daily: attendanceMetrics.daily },
+      originalCalculated: { baseSalary: base, overtimeAmount, bonusAmount: incentive.bonus + fixedBonuses, allowances, commissionAmount, absenceDeduction, lateDeduction, earlyLeaveDeduction, unpaidLeaveDeduction, grossSalary: num(gross - manualEarnings), totalDeductions: num(deductions - manualDeduction), netSalary: Math.max(0, num(gross - manualEarnings - (deductions - manualDeduction))) },
+      manualEdit: previousLine?.calculation_details?.manualEdit ?? null,
+      manualAdjustment: previousLine?.calculation_details?.manualEdit ?? null,
+      sources: { attendance: attendanceRecords.map((record) => Number(record.id)), advances: advance.history.filter((a: any) => ["approved", "paid"].includes(a.status)).map((a: any) => ({ advanceNo: a.advanceNo, monthlyDeduction: a.monthlyDeduction, remainingAmount: a.remainingAmount })) },
+    };
+    lines.push({ employee, type, scheduled, attendanceDays, paidLeaveDays, unpaidLeaveDays, absenceDays, hours, overtimeHours, recurringScale, base, overtimeAmount, incentive, fixedBonuses, commissionAmount, allowances, manualEarnings, manualDeduction, lineNotes: previousLine?.line_notes ?? null, advanceDeduction, absenceDeduction, unpaidLeaveDeduction, lateDeduction, earlyLeaveDeduction, insuranceAmount, otherDeductions, fixedDeduction, gross, deductions, net, calculationDetails, att: attendanceMetrics });
   }
   const totals = lines.reduce((t, line) => ({ gross: t.gross + line.gross, deductions: t.deductions + line.deductions, net: t.net + line.net }), { gross: 0, deductions: 0, net: 0 });
-  const attendanceWarning = lines.some((l) => !l.att) ? "لا توجد سجلات حضور لبعض الموظفين؛ لم تُعامل الأيام المفقودة كحضور." : null;
-  if (!persist) return { ...dates, employees: lines.map((l) => ({ employeeId: l.employee.id, employeeName: l.employee.full_name || l.employee.username, department: l.employee.department, baseSalary: l.base, scheduledWorkingDays: l.scheduled, attendanceDays: l.attendanceDays, absenceDays: l.absenceDays, overtimeHours: l.overtimeHours, overtimeAmount: l.overtimeAmount, bonusAmount: l.incentive.bonus + l.fixedBonuses, commissionAmount: l.commissionAmount, penaltyAmount: l.incentive.penalty, advanceDeduction: l.advanceDeduction, absenceDeduction: l.absenceDeduction, lateDeduction: l.lateDeduction, totalAllowances: l.allowances, grossSalary: l.gross, totalDeductions: l.deductions, netSalary: l.net, calculationDetails: l.calculationDetails })), totals, attendanceWarning };
-  const [run] = replaceRunId ? rows<any>(await db.execute(sql`update payroll_runs set status='calculated',period=${dates.period},period_type=${dates.periodType},period_key=${dates.periodKey},notes=${data.notes || null},period_start_date=${dates.start},period_end_date=${dates.end},payment_date=${dates.paymentDate},department=${data.department || null},attendance_warning=${attendanceWarning},version_no=coalesce(version_no,1)+1,updated_at=now() where id=${replaceRunId} returning *`)) : rows<any>(await db.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,status,notes,period_start_date,period_end_date,payment_date,department,attendance_warning,created_by,created_by_name) values(${`PAY-${dates.period.replace('-', '')}-${randomUUID().slice(0, 6).toUpperCase()}`},${dates.period},${dates.periodType},${dates.periodKey},'calculated',${data.notes || null},${dates.start},${dates.end},${dates.paymentDate},${data.department || null},${attendanceWarning},${actor!.id},${actor!.name}) returning *`));
-  if (replaceRunId) { await db.execute(sql`update hr_incentive_events set payroll_line_id=null where payroll_line_id in (select id from payroll_lines where payroll_run_id=${replaceRunId}) and status='applied_to_payroll'`); await db.execute(sql`delete from payroll_lines where payroll_run_id=${replaceRunId}`); }
-  for (const l of lines) {
-    const [line] = rows<any>(await db.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,salary_type,payment_method,scheduled_working_days,attendance_days,absence_days,late_arrivals,total_working_hours,overtime_hours,missing_check_out,overtime_amount,attendance_allowance,transportation_allowance,food_allowance,phone_allowance,housing_allowance,other_fixed_allowances,bonus_amount,commission_amount,penalty_amount,advance_deduction,absence_deduction,late_deduction,insurance_amount,other_deductions,fixed_deduction,gross_salary,net_salary,calculation_details) values(${run.id},${l.employee.id},${l.base},${l.type},${l.employee.payment_method || 'cash'},${l.scheduled},${l.attendanceDays},${l.absenceDays},${Number(l.att?.late_arrivals ?? 0)},${l.hours},${l.overtimeHours},${Number(l.att?.missing_check_out ?? 0)},${l.overtimeAmount},${num(l.employee.attendance_allowance) * l.recurringScale},${num(l.employee.transportation_allowance) * l.recurringScale},${num(l.employee.food_allowance) * l.recurringScale},${num(l.employee.phone_allowance) * l.recurringScale},${num(l.employee.housing_allowance) * l.recurringScale},${(num(l.employee.other_fixed_allowances) + num(l.employee.risk_allowance)) * l.recurringScale},${l.incentive.bonus + l.fixedBonuses},${l.commissionAmount},${l.incentive.penalty},${l.advanceDeduction},${l.absenceDeduction},${l.lateDeduction},${l.insuranceAmount},${l.otherDeductions},${l.fixedDeduction},${l.gross},${l.net},${JSON.stringify(l.calculationDetails)}::jsonb) returning id`));
-    if (line && l.incentive.bonus > 0) await db.execute(sql`update hr_incentive_events set payroll_line_id=${line.id} where staff_id=${l.employee.id} and period=${dates.period} and status='applied_to_payroll' and payroll_line_id is null and kind in ('bonus','reward')`);
-  }
-  await db.execute(sql`update payroll_runs set total_gross=${totals.gross},total_deductions=${totals.deductions},total_net=${totals.net},updated_at=now() where id=${run.id}`);
-  return getPayrollRun(run.id);
+  const attendanceWarning = lines.some((l) => l.att.missingCheckIn > 0 || l.att.missingCheckOut > 0 || l.att.invalidTimeOrder > 0) ? "توجد بصمات ناقصة أو أوقات غير صحيحة؛ راجع ملخص الحضور قبل اعتماد الراتب." : null;
+  if (!persist) return { ...dates, employees: lines.map((l) => ({ employeeId: l.employee.id, employeeName: l.employee.full_name || l.employee.username, department: l.employee.department, baseSalary: l.base, scheduledWorkingDays: l.scheduled, attendanceDays: l.attendanceDays, paidLeaveDays: l.paidLeaveDays, unpaidLeaveDays: l.unpaidLeaveDays, absenceDays: l.absenceDays, lateArrivals: l.att.lateArrivals, totalLateMinutes: l.att.lateMinutes, earlyLeaveCount: l.att.earlyLeaveCount, earlyLeaveMinutes: l.att.earlyLeaveMinutes, totalWorkingHours: l.hours, missingCheckIn: l.att.missingCheckIn, missingCheckOut: l.att.missingCheckOut, overtimeHours: l.overtimeHours, overtimeAmount: l.overtimeAmount, bonusAmount: l.incentive.bonus + l.fixedBonuses, commissionAmount: l.commissionAmount, penaltyAmount: l.incentive.penalty, advanceDeduction: l.advanceDeduction, absenceDeduction: l.absenceDeduction, lateDeduction: l.lateDeduction, earlyLeaveDeduction: l.earlyLeaveDeduction, unpaidLeaveDeduction: l.unpaidLeaveDeduction, totalAllowances: l.allowances, grossSalary: l.gross, totalDeductions: l.deductions, netSalary: l.net, calculationDetails: l.calculationDetails })), totals, attendanceWarning };
+  const runId = await db.transaction(async (tx) => {
+    const [run] = replaceRunId ? rows<any>(await tx.execute(sql`update payroll_runs set status='calculated',period=${dates.period},period_type=${dates.periodType},period_key=${dates.periodKey},notes=${data.notes || null},period_start_date=${dates.start},period_end_date=${dates.end},payment_date=${dates.paymentDate},department=${data.department || null},attendance_warning=${attendanceWarning},version_no=coalesce(version_no,1)+1,updated_at=now() where id=${replaceRunId} and status in ('draft','calculated','under_review','reopened','rejected') and locked_at is null and deleted_at is null returning *`)) : rows<any>(await tx.execute(sql`insert into payroll_runs(run_no,period,period_type,period_key,status,notes,period_start_date,period_end_date,payment_date,department,attendance_warning,created_by,created_by_name) values(${`PAY-${dates.period.replace('-', '')}-${randomUUID().slice(0, 6).toUpperCase()}`},${dates.period},${dates.periodType},${dates.periodKey},'calculated',${data.notes || null},${dates.start},${dates.end},${dates.paymentDate},${data.department || null},${attendanceWarning},${actor!.id},${actor!.name}) returning *`));
+    if (!run) throw new Error("لا يمكن إعادة احتساب دورة رواتب محمية أو تغيرت حالتها");
+    if (replaceRunId) { await tx.execute(sql`update hr_incentive_events set payroll_line_id=null where payroll_line_id in (select id from payroll_lines where payroll_run_id=${replaceRunId}) and status='applied_to_payroll'`); await tx.execute(sql`delete from payroll_lines where payroll_run_id=${replaceRunId}`); }
+    for (const l of lines) {
+      const [line] = rows<any>(await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,salary_type,payment_method,scheduled_working_days,attendance_days,absence_days,paid_leave_days,unpaid_leave_days,late_arrivals,total_late_minutes,early_leave_count,total_working_hours,overtime_hours,missing_check_in,missing_check_out,overtime_amount,attendance_allowance,transportation_allowance,food_allowance,phone_allowance,housing_allowance,other_fixed_allowances,bonus_amount,commission_amount,manual_earnings,manual_deduction,penalty_amount,advance_deduction,absence_deduction,late_deduction,early_leave_deduction,unpaid_leave_deduction,insurance_amount,other_deductions,fixed_deduction,gross_salary,net_salary,line_notes,calculation_details) values(${run.id},${l.employee.id},${l.base},${l.type},${l.employee.payment_method || 'cash'},${l.scheduled},${l.attendanceDays},${l.absenceDays},${l.paidLeaveDays},${l.unpaidLeaveDays},${l.att.lateArrivals},${l.att.lateMinutes},${l.att.earlyLeaveCount},${l.hours},${l.overtimeHours},${l.att.missingCheckIn},${l.att.missingCheckOut},${l.overtimeAmount},${num(l.employee.attendance_allowance) * l.recurringScale},${num(l.employee.transportation_allowance) * l.recurringScale},${num(l.employee.food_allowance) * l.recurringScale},${num(l.employee.phone_allowance) * l.recurringScale},${num(l.employee.housing_allowance) * l.recurringScale},${(num(l.employee.other_fixed_allowances) + num(l.employee.risk_allowance)) * l.recurringScale},${l.incentive.bonus + l.fixedBonuses},${l.commissionAmount},${l.manualEarnings},${l.manualDeduction},${l.incentive.penalty},${l.advanceDeduction},${l.absenceDeduction},${l.lateDeduction},${l.earlyLeaveDeduction},${l.unpaidLeaveDeduction},${l.insuranceAmount},${l.otherDeductions},${l.fixedDeduction},${l.gross},${l.net},${l.lineNotes},${JSON.stringify(l.calculationDetails)}::jsonb) returning id`));
+      if (line && l.incentive.bonus > 0) await tx.execute(sql`update hr_incentive_events set payroll_line_id=${line.id} where staff_id=${l.employee.id} and period=${dates.period} and status='applied_to_payroll' and payroll_line_id is null and kind in ('bonus','reward')`);
+    }
+    await tx.execute(sql`update payroll_runs set total_gross=${totals.gross},total_deductions=${totals.deductions},total_net=${totals.net},updated_at=now() where id=${run.id}`);
+    return Number(run.id);
+  });
+  return getPayrollRun(runId);
 }
 
 export async function previewPayrollRun(input: unknown) { return buildPayroll(input, false); }
@@ -345,7 +415,7 @@ async function insertPreviewLines(tx: any, payrollRunId: number, previewLines: a
   for (const line of previewLines) {
     const staff = staffById.get(Number(line.employeeId));
     if (!staff) throw new Error("الموظف المختار غير متاح للرواتب");
-    await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,salary_type,payment_method,scheduled_working_days,attendance_days,absence_days,overtime_hours,overtime_amount,bonus_amount,commission_amount,penalty_amount,advance_deduction,absence_deduction,late_deduction,other_fixed_allowances,gross_salary,net_salary,payment_status,line_notes,calculation_details) values(${payrollRunId},${line.employeeId},${num(line.baseSalary)},${staff.salary_type || 'monthly'},${staff.payment_method || 'cash'},${Number(line.scheduledWorkingDays || 0)},${Number(line.attendanceDays || 0)},${Number(line.absenceDays || 0)},${num(line.overtimeHours)},${num(line.overtimeAmount)},${num(line.bonusAmount)},${num(line.commissionAmount)},${num(line.penaltyAmount)},${num(line.advanceDeduction)},${num(line.absenceDeduction)},${num(line.lateDeduction)},${num(line.totalAllowances)},${num(line.grossSalary)},${num(line.netSalary)},'unpaid',${note},${JSON.stringify(line.calculationDetails ?? {})}::jsonb)`);
+    await tx.execute(sql`insert into payroll_lines(payroll_run_id,staff_id,base_salary,salary_type,payment_method,scheduled_working_days,attendance_days,absence_days,paid_leave_days,unpaid_leave_days,late_arrivals,total_late_minutes,early_leave_count,total_working_hours,overtime_hours,missing_check_in,missing_check_out,overtime_amount,bonus_amount,commission_amount,penalty_amount,advance_deduction,absence_deduction,late_deduction,early_leave_deduction,unpaid_leave_deduction,other_fixed_allowances,gross_salary,net_salary,payment_status,line_notes,calculation_details) values(${payrollRunId},${line.employeeId},${num(line.baseSalary)},${staff.salary_type || 'monthly'},${staff.payment_method || 'cash'},${Number(line.scheduledWorkingDays || 0)},${Number(line.attendanceDays || 0)},${Number(line.absenceDays || 0)},${Number(line.paidLeaveDays || 0)},${Number(line.unpaidLeaveDays || 0)},${Number(line.lateArrivals || 0)},${Number(line.totalLateMinutes || 0)},${Number(line.earlyLeaveCount || 0)},${num(line.totalWorkingHours)},${num(line.overtimeHours)},${Number(line.missingCheckIn || 0)},${Number(line.missingCheckOut || 0)},${num(line.overtimeAmount)},${num(line.bonusAmount)},${num(line.commissionAmount)},${num(line.penaltyAmount)},${num(line.advanceDeduction)},${num(line.absenceDeduction)},${num(line.lateDeduction)},${num(line.earlyLeaveDeduction)},${num(line.unpaidLeaveDeduction)},${num(line.totalAllowances)},${num(line.grossSalary)},${num(line.netSalary)},'unpaid',${note},${JSON.stringify(line.calculationDetails ?? {})}::jsonb)`);
   }
 }
 
@@ -424,6 +494,60 @@ export async function recalculatePayrollRun(id: number, actor: HrActor) {
   return buildPayroll({ period: run.period, periodType: (run.periodType ?? "monthly") as PayrollPeriodType, department: run.department || undefined, employeeIds: run.lines.map((line: any) => Number(line.staff_id)), periodStartDate: run.periodStartDate || undefined, periodEndDate: run.periodEndDate || undefined, paymentDate: run.paymentDate || undefined, notes: run.notes || undefined }, true, actor, id);
 }
 
+/** Attendance corrections immediately refresh editable drafts only. Approved or
+ * paid payroll remains immutable and is returned for explicit manager action. */
+export async function recalculatePayrollDraftsForAttendance(staffId: number, attendanceDate: string, actor: HrActor, attendanceEndDate = attendanceDate) {
+  await ensureHrTables();
+  const affected = rows<any>(await db.execute(sql`
+    select distinct r.id,r.status,r.run_no
+    from payroll_runs r
+    join payroll_lines l on l.payroll_run_id=r.id
+    where l.staff_id=${staffId}
+      and r.deleted_at is null
+      and coalesce(r.period_end_date,((r.period||'-01')::date + interval '1 month - 1 day')::date) >= ${attendanceDate}::date
+      and coalesce(r.period_start_date,(r.period||'-01')::date) <= ${attendanceEndDate}::date
+    order by r.id
+  `));
+  const recalculated: any[] = [];
+  const protectedRuns: any[] = [];
+  for (const run of affected) {
+    if (canEditPayroll(String(run.status))) recalculated.push(await recalculatePayrollRun(Number(run.id), actor));
+    else protectedRuns.push({ id: Number(run.id), status: String(run.status), runNo: String(run.run_no) });
+  }
+  return { recalculated, protectedRuns };
+}
+
+export async function getEmployeePayrollSummary(staffId: number) {
+  await ensureHrTables();
+  const ids = rows<any>(await db.execute(sql`
+    select distinct r.id
+    from payroll_runs r
+    join payroll_lines l on l.payroll_run_id=r.id
+    where l.staff_id=${staffId} and r.deleted_at is null
+    order by r.id desc
+    limit 60
+  `)).map((row) => Number(row.id));
+  const summaries = [];
+  for (const id of ids) {
+    const run = await getPayrollRun(id);
+    const line = run?.lines.find((candidate: any) => Number(candidate.staff_id) === staffId);
+    if (!run || !line) continue;
+    summaries.push({
+      id: run.id,
+      runNo: run.run_no,
+      period: run.period,
+      status: run.status,
+      periodStartDate: run.periodStartDate,
+      periodEndDate: run.periodEndDate,
+      paymentDate: run.paymentDate,
+      approvedAt: run.approved_at ?? null,
+      paidAt: run.paid_at ?? null,
+      line,
+    });
+  }
+  return summaries;
+}
+
 async function payrollFinancialBlock(run: any) {
   await ensureEmployeeAdvanceTables();
   const linked = rows<any>(await db.execute(sql`select l.id from payroll_lines l where l.payroll_run_id=${run.id} and (l.financial_transaction_id is not null or l.amount_paid > 0 or exists (select 1 from financial_transactions ft where ft.source_type='payroll_line' and ft.source_id=cast(l.id as text))) limit 1`));
@@ -456,7 +580,7 @@ export async function editPayrollLine(runId: number, lineId: number, input: unkn
   const allowances = num(current.attendance_allowance) + num(current.transportation_allowance) + num(current.food_allowance) + num(current.phone_allowance) + num(current.housing_allowance) + num(current.other_fixed_allowances);
   const grossSalary = num(baseSalary + allowances + overtimeAmount + bonusAmount + commissionAmount + otherEarnings);
   const deductions = num(attendanceDeduction + absenceDeduction + lateDeduction + advanceDeduction + manualDeduction + otherDeductions + num(current.penalty_amount) + num(current.insurance_amount) + num(current.fixed_deduction) + num(current.early_leave_deduction) + num(current.unpaid_leave_deduction));
-  const netSalary = Math.max(0, num(grossSalary - deductions)); const details = { ...(current.calculation_details ?? {}), manualEdit: { actorId: actor.id, actorName: actor.name, at: new Date().toISOString(), totalDeductions: deductions } };
+  const netSalary = Math.max(0, num(grossSalary - deductions)); const details = { ...(current.calculation_details ?? {}), manualEdit: { actorId: actor.id, actorName: actor.name, at: new Date().toISOString(), reason: changes.reason, originalCalculated: current.calculation_details?.originalCalculated ?? null, before: { baseSalary: num(current.base_salary), overtimeAmount: num(current.overtime_amount), bonusAmount: num(current.bonus_amount), commissionAmount: num(current.commission_amount), manualEarnings: num(current.manual_earnings), attendanceDeduction: num(current.attendance_deduction), absenceDeduction: num(current.absence_deduction), lateDeduction: num(current.late_deduction), advanceDeduction: num(current.advance_deduction), manualDeduction: num(current.manual_deduction), otherDeductions: num(current.other_deductions), grossSalary: num(current.gross_salary), netSalary: num(current.net_salary) }, after: { baseSalary, overtimeAmount, bonusAmount, commissionAmount, otherEarnings, attendanceDeduction, absenceDeduction, lateDeduction, advanceDeduction, manualDeduction, otherDeductions, grossSalary, totalDeductions: deductions, netSalary } } };
   const saved = rows<any>(await db.execute(sql`update payroll_lines set base_salary=${baseSalary},overtime_amount=${overtimeAmount},bonus_amount=${bonusAmount},commission_amount=${commissionAmount},manual_earnings=${otherEarnings},attendance_deduction=${attendanceDeduction},absence_deduction=${absenceDeduction},late_deduction=${lateDeduction},advance_deduction=${advanceDeduction},manual_deduction=${manualDeduction},other_deductions=${otherDeductions},line_notes=${changes.notes === undefined ? current.line_notes : changes.notes || null},payment_method=${changes.paymentMethod ?? current.payment_method},gross_salary=${grossSalary},net_salary=${netSalary},calculation_details=${JSON.stringify(details)}::jsonb where id=${lineId} and payroll_run_id=${runId} and exists (select 1 from payroll_runs r where r.id=${runId} and r.status in ('draft','calculated','under_review','reopened','rejected') and r.locked_at is null and r.deleted_at is null) returning id`));
   if (!saved.length) throw new Error("لا يمكن تعديل الراتب بعد تغيّر حالته");
   if (changes.paymentDate !== undefined) await db.execute(sql`update payroll_runs set payment_date=${changes.paymentDate || null},updated_at=now() where id=${runId}`);
@@ -529,7 +653,7 @@ export async function getPayrollRun(id: number) {
       db.execute(sql`select id,transaction_no from financial_transactions where source_type='payroll_line' and source_id=${String(line.id)} order by id limit 1`),
     ]);
     const sourceRecords = { bonuses: rows<any>(bonuses), advances: rows<any>(advances), accounting: rows<any>(accounting)[0] ?? null, cashboxTransactionId: line.financial_transaction_id ?? null };
-    return { ...line, employeeId: Number(line.staff_id), employeeCode: `EMP-${String(line.staff_id).padStart(6, "0")}`, employeeName: line.full_name || line.username, department: line.department, jobTitle: line.job_title, salaryType: line.salary_type, paymentMethod: line.payment_method, paymentStatus: line.payment_status, baseSalary: num(line.base_salary), overtimeAmount: num(line.overtime_amount), bonusAmount: num(line.bonus_amount), commissionAmount: num(line.commission_amount), otherEarnings: num(line.manual_earnings), penaltyAmount: num(line.penalty_amount), advanceDeduction: num(line.advance_deduction), grossSalary: num(line.gross_salary), netSalary: num(line.net_salary), totalDeductions: num(line.gross_salary) - num(line.net_salary), amountPaid: num(line.amount_paid), remainingSalary: Math.max(0, num(line.net_salary) - num(line.amount_paid)), scheduledWorkingDays: Number(line.scheduled_working_days ?? 0), attendanceDays: Number(line.attendance_days ?? 0), absenceDays: Number(line.absence_days ?? 0), totalWorkingHours: num(line.total_working_hours), overtimeHours: num(line.overtime_hours), attendanceAllowance: num(line.attendance_allowance), transportationAllowance: num(line.transportation_allowance), foodAllowance: num(line.food_allowance), phoneAllowance: num(line.phone_allowance), housingAllowance: num(line.housing_allowance), otherFixedAllowances: num(line.other_fixed_allowances), attendanceDeduction: num(line.attendance_deduction), absenceDeduction: num(line.absence_deduction), lateDeduction: num(line.late_deduction), manualDeduction: num(line.manual_deduction), otherDeductions: num(line.other_deductions), fixedDeduction: num(line.fixed_deduction), lineNotes: line.line_notes ?? null, calculationDetails: line.calculation_details ?? {}, sourceRecords };
+    return { ...line, employeeId: Number(line.staff_id), employeeCode: `EMP-${String(line.staff_id).padStart(6, "0")}`, employeeName: line.full_name || line.username, department: line.department, jobTitle: line.job_title, salaryType: line.salary_type, paymentMethod: line.payment_method, paymentStatus: line.payment_status, baseSalary: num(line.base_salary), overtimeAmount: num(line.overtime_amount), bonusAmount: num(line.bonus_amount), commissionAmount: num(line.commission_amount), otherEarnings: num(line.manual_earnings), penaltyAmount: num(line.penalty_amount), advanceDeduction: num(line.advance_deduction), grossSalary: num(line.gross_salary), netSalary: num(line.net_salary), totalDeductions: num(line.gross_salary) - num(line.net_salary), amountPaid: num(line.amount_paid), remainingSalary: Math.max(0, num(line.net_salary) - num(line.amount_paid)), scheduledWorkingDays: Number(line.scheduled_working_days ?? 0), attendanceDays: Number(line.attendance_days ?? 0), paidLeaveDays: Number(line.paid_leave_days ?? 0), unpaidLeaveDays: Number(line.unpaid_leave_days ?? 0), absenceDays: Number(line.absence_days ?? 0), lateArrivals: Number(line.late_arrivals ?? 0), totalLateMinutes: Number(line.total_late_minutes ?? 0), earlyLeaveCount: Number(line.early_leave_count ?? 0), earlyLeaveMinutes: Number(line.calculation_details?.attendance?.earlyLeaveMinutes ?? 0), totalWorkingHours: num(line.total_working_hours), overtimeHours: num(line.overtime_hours), missingCheckIn: Number(line.missing_check_in ?? 0), missingCheckOut: Number(line.missing_check_out ?? 0), attendanceAllowance: num(line.attendance_allowance), transportationAllowance: num(line.transportation_allowance), foodAllowance: num(line.food_allowance), phoneAllowance: num(line.phone_allowance), housingAllowance: num(line.housing_allowance), otherFixedAllowances: num(line.other_fixed_allowances), attendanceDeduction: num(line.attendance_deduction), absenceDeduction: num(line.absence_deduction), lateDeduction: num(line.late_deduction), earlyLeaveDeduction: num(line.early_leave_deduction), unpaidLeaveDeduction: num(line.unpaid_leave_deduction), manualDeduction: num(line.manual_deduction), otherDeductions: num(line.other_deductions), fixedDeduction: num(line.fixed_deduction), insuranceAmount: num(line.insurance_amount), lineNotes: line.line_notes ?? null, calculationDetails: line.calculation_details ?? {}, sourceRecords };
   }));
   const extensionTables = rows<any>(await db.execute(sql`select to_regclass('public.admin_activity_logs') as audit, to_regclass('public.entity_timeline') as timeline, to_regclass('public.employee_salary_events') as salary_events`))[0] ?? {};
   const [auditLog, timeline, salaryEvents] = await Promise.all([
