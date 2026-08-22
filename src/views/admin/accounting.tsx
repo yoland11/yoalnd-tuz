@@ -753,6 +753,9 @@ function StatementTab() {
       openCustomerStatementPrintWindow({
         companyName: settings?.site_name,
         logoUrl: logoSrc(settings),
+        companyAddress: settings?.address,
+        companyPhone: settings?.phone,
+        companyWebsite: settings?.website,
         customerName: data.customer.name || selected?.name || "—",
         customerPhone: data.customer.phone || selected?.phone,
         totalCharges: data.totals.totalCharges,

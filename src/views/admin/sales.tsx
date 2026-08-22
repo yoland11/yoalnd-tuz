@@ -1743,6 +1743,9 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
   const statementInput = data ? {
     companyName: settings?.site_name,
     logoUrl: logoSrc(settings),
+    companyAddress: settings?.address,
+    companyPhone: settings?.phone,
+    companyWebsite: settings?.website,
     customerName: data.customer.name || invoice.customerName || "—",
     customerPhone: data.customer.phone || invoice.customerPhone,
     totalCharges: data.totals.totalCharges,
@@ -1768,7 +1771,7 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
     wrapper.className = "customer-statement-pdf-host";
     document.body.appendChild(wrapper);
     try {
-      await downloadElementPdf(wrapper, `كشف-حساب-${statementInput.customerName}.pdf`, { format: "a4", margin: 8, pagebreakMode: ["css", "legacy"] });
+      await downloadElementPdf(wrapper, `كشف-حساب-${statementInput.customerName}.pdf`, { format: "a4", margin: 15, pagebreakMode: ["css", "legacy"] });
     } catch (cause) {
       toast({ title: "تعذر تصدير كشف الحساب PDF", description: apiErrorMessage(cause), variant: "destructive" });
     } finally {

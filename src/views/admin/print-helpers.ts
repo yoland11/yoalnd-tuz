@@ -548,6 +548,9 @@ export type CustomerStatementPrintTransaction = {
 export type CustomerStatementPrintInput = {
   companyName?: string;
   logoUrl?: string;
+  companyAddress?: string | null;
+  companyPhone?: string | null;
+  companyWebsite?: string | null;
   customerName: string;
   customerPhone?: string | null;
   totalCharges: number;
@@ -560,16 +563,20 @@ export type CustomerStatementPrintInput = {
 /** Shared A4 customer-account statement used by both browser print and PDF export. */
 export function customerStatementSheetCss() {
   return `${sheetReportCss("a4")}
-    @page { size: A4 portrait; margin: 14mm; }
-    .customer-statement-sheet { width:100%; max-width:182mm; margin:0 auto; }
-    .customer-statement-sheet .statement-head { display:grid; grid-template-columns:42mm 1fr 42mm; align-items:center; gap:8mm; padding-bottom:8mm; border-bottom:1.5px solid #000; }
+    @page { size: A4 portrait; margin: 15mm; }
+    html,body { width:auto; min-width:0; min-height:0; overflow:visible; }
+    body { padding:15mm; }
+    .customer-statement-sheet { display:block; position:static; width:180mm; max-width:180mm; margin:0 auto; overflow:visible; transform:none; zoom:1; }
+    .customer-statement-sheet .statement-head { display:grid; grid-template-columns:42mm minmax(0,1fr) 42mm; align-items:center; gap:8mm; min-height:25mm; padding-bottom:6mm; border-bottom:1.5px solid #000; }
     .customer-statement-sheet .statement-logo { display:block; width:auto; max-width:38mm; height:20mm; object-fit:contain; object-position:right center; }
     .customer-statement-sheet .statement-title { text-align:center; font-size:22px; font-weight:800; }
-    .customer-statement-sheet .statement-company { text-align:left; font-size:13px; font-weight:800; line-height:1.7; }
-    .customer-statement-sheet .statement-period { margin:6mm 0 5mm; text-align:center; font-size:11px; font-weight:700; }
-    .customer-statement-sheet .statement-meta { display:grid; grid-template-columns:1fr 1fr; gap:5mm 14mm; margin-bottom:7mm; font-size:11px; }
-    .customer-statement-sheet .statement-meta div { display:flex; gap:5px; }
+    .customer-statement-sheet .statement-company { min-width:0; text-align:left; font-size:12px; font-weight:800; line-height:1.55; }
+    .customer-statement-sheet .statement-company-contact { display:block; font-size:8.5px; font-weight:600; overflow-wrap:anywhere; }
+    .customer-statement-sheet .statement-period { margin:5mm 0; text-align:center; font-size:11px; font-weight:700; }
+    .customer-statement-sheet .statement-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3mm 12mm; margin-bottom:6mm; padding:4mm; border:1px solid #000; font-size:10.5px; }
+    .customer-statement-sheet .statement-meta div { display:flex; min-width:0; gap:5px; }
     .customer-statement-sheet .statement-meta strong { font-weight:800; }
+    .customer-statement-sheet .statement-meta span { min-width:0; overflow-wrap:anywhere; }
     .customer-statement-sheet .statement-table { table-layout:fixed; font-size:10px; }
     .customer-statement-sheet .statement-table thead { display:table-header-group; }
     .customer-statement-sheet .statement-table th { background:#111827; color:#fff; border-color:#111827; padding:7px 5px; text-align:center; }
@@ -577,15 +584,20 @@ export function customerStatementSheetCss() {
     .customer-statement-sheet .statement-table td.description { text-align:right; }
     .customer-statement-sheet .statement-table tr { break-inside:avoid; page-break-inside:avoid; }
     .customer-statement-sheet .num,.customer-statement-sheet .reference { direction:ltr; unicode-bidi:isolate; white-space:nowrap; font-variant-numeric:tabular-nums; }
-    .customer-statement-sheet .statement-totals { margin-top:8mm; border:1px solid #000; break-inside:avoid; page-break-inside:avoid; }
-    .customer-statement-sheet .statement-total { display:grid; grid-template-columns:1fr 1fr; min-height:11mm; align-items:center; padding:0 6mm; border-bottom:1px solid #000; }
+    .customer-statement-sheet .statement-totals { display:block !important; visibility:visible !important; position:static; width:100%; margin-top:7mm; border:1px solid #000; overflow:visible; break-inside:avoid; page-break-inside:avoid; }
+    .customer-statement-sheet .statement-total { display:grid !important; visibility:visible !important; grid-template-columns:1fr 1fr; min-height:10mm; align-items:center; padding:0 6mm; border-bottom:1px solid #000; }
     .customer-statement-sheet .statement-total:last-child { border-bottom:0; }
     .customer-statement-sheet .statement-total strong:last-child { text-align:left; }
-    .customer-statement-pdf-host { position:fixed; left:-10000px; top:0; width:186mm; background:#fff; color:#000; }
+    .customer-statement-sheet .statement-footer { display:block !important; visibility:visible !important; margin-top:8mm; padding-top:3mm; border-top:1px solid #000; text-align:center; font-size:9px; line-height:1.7; break-inside:avoid; page-break-inside:avoid; }
+    .customer-statement-pdf-host { position:fixed; left:-10000px; top:0; width:180mm; max-width:180mm; overflow:visible; background:#fff; color:#000; }
+    @media screen {
+      .customer-statement-sheet { box-shadow:0 8px 28px rgba(0,0,0,.12); }
+    }
     @media print {
-      html,body { width:210mm; min-height:297mm; margin:0; padding:0; background:#fff !important; }
-      .no-print,button,nav,.filters { display:none !important; }
-      .customer-statement-sheet { width:100%; max-width:none; margin:0; box-shadow:none !important; }
+      html,body { width:auto !important; min-width:0 !important; min-height:0 !important; margin:0 !important; padding:0 !important; overflow:visible !important; background:#fff !important; }
+      aside,nav,button,[role="navigation"],.sidebar,.no-print,.filters,.search,.toaster,[data-sonner-toaster] { display:none !important; }
+      .customer-statement-sheet { display:block !important; visibility:visible !important; position:static !important; width:180mm !important; max-width:180mm !important; margin:0 auto !important; overflow:visible !important; transform:none !important; zoom:1 !important; box-shadow:none !important; }
+      .customer-statement-sheet .statement-head,.customer-statement-sheet .statement-period,.customer-statement-sheet .statement-meta,.customer-statement-sheet .statement-table,.customer-statement-sheet .statement-totals,.customer-statement-sheet .statement-footer { visibility:visible !important; }
       * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     }
   `;
@@ -601,14 +613,16 @@ function statementEsc(value: unknown) {
 }
 
 export function customerStatementPrintHtml(input: CustomerStatementPrintInput) {
-  const ordered = [...input.transactions].sort((a, b) => a.date.localeCompare(b.date));
-  const dates = ordered.map((transaction) => new Date(transaction.date)).filter((date) => !Number.isNaN(date.getTime()));
+  const transactions = [...input.transactions];
+  const dates = transactions.map((transaction) => new Date(transaction.date)).filter((date) => !Number.isNaN(date.getTime())).sort((a, b) => a.getTime() - b.getTime());
   const dateText = (date: Date) => date.toLocaleDateString("ar-IQ");
   const periodFrom = dates.length ? dateText(dates[0]) : "—";
   const periodTo = dates.length ? dateText(dates[dates.length - 1]) : "—";
-  const rows = ordered.map((transaction) => `<tr><td>${statementEsc(dateText(new Date(transaction.date)))}</td><td class="description">${statementEsc(transaction.serviceType)}</td><td class="reference">${statementEsc(transaction.reference)}</td><td class="num">${statementEsc(formatCurrency(transaction.total))}</td><td class="num">${statementEsc(formatCurrency(transaction.paid))}</td><td class="num">${statementEsc(formatCurrency(transaction.remaining))}</td></tr>`).join("") || "<tr><td colspan=\"6\" style=\"text-align:center;padding:18px\">لا توجد فواتير لهذا العميل</td></tr>";
+  const rows = transactions.map((transaction) => `<tr><td>${statementEsc(dateText(new Date(transaction.date)))}</td><td class="reference">${statementEsc(transaction.reference)}</td><td class="description">${statementEsc(transaction.serviceType)}</td><td class="num">${statementEsc(formatCurrency(transaction.total))}</td><td class="num">${statementEsc(formatCurrency(transaction.paid))}</td><td class="num">${statementEsc(formatCurrency(transaction.remaining))}</td></tr>`).join("") || "<tr><td colspan=\"6\" style=\"text-align:center;padding:18px\">لا توجد فواتير لهذا العميل</td></tr>";
   const logo = input.logoUrl ? `<img class="statement-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "<div></div>";
-  return `<main class="report-sheet customer-statement-sheet"><header class="statement-head">${logo}<h1 class="statement-title">كشف حساب العميل</h1><div class="statement-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}</div></header><div class="statement-period">الفترة من ${statementEsc(periodFrom)} إلى ${statementEsc(periodTo)}</div><section class="statement-meta"><div><strong>اسم العميل:</strong><span>${statementEsc(input.customerName)}</span></div><div><strong>رقم الهاتف:</strong><span class="num">${statementEsc(input.customerPhone || "—")}</span></div><div><strong>التاريخ:</strong><span>${statementEsc(dateText(new Date()))}</span></div></section><table class="report-table statement-table"><thead><tr><th>تاريخ الفاتورة</th><th>البيان</th><th>رقم الفاتورة</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>${rows}</tbody></table><section class="statement-totals"><div class="statement-total"><strong>إجمالي عدد الفواتير</strong><strong class="num">${statementEsc(ordered.length)}</strong></div><div class="statement-total"><strong>إجمالي المبلغ</strong><strong class="num">${statementEsc(formatCurrency(input.totalCharges))}</strong></div><div class="statement-total"><strong>إجمالي المدفوع</strong><strong class="num">${statementEsc(formatCurrency(input.totalPayments))}</strong></div><div class="statement-total"><strong>إجمالي المتبقي</strong><strong class="num">${statementEsc(formatCurrency(input.outstandingBalance))}</strong></div></section></main>`;
+  const companyContact = [input.companyAddress, input.companyPhone, input.companyWebsite].filter(Boolean).map((value) => `<span class="statement-company-contact">${statementEsc(value)}</span>`).join("");
+  const footerContact = [input.companyPhone, input.companyWebsite].filter(Boolean).map(statementEsc).join(" · ");
+  return `<main class="report-sheet customer-statement-sheet"><header class="statement-head">${logo}<h1 class="statement-title">كشف حساب العميل</h1><div class="statement-company">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${companyContact}</div></header><div class="statement-period">الفترة من ${statementEsc(periodFrom)} إلى ${statementEsc(periodTo)}</div><section class="statement-meta"><div><strong>اسم العميل:</strong><span>${statementEsc(input.customerName)}</span></div><div><strong>رقم الهاتف:</strong><span class="num">${statementEsc(input.customerPhone || "—")}</span></div><div><strong>تاريخ الطباعة:</strong><span>${statementEsc(dateText(new Date()))}</span></div><div><strong>فترة الكشف:</strong><span>${statementEsc(periodFrom)} — ${statementEsc(periodTo)}</span></div></section><table class="report-table statement-table"><thead><tr><th>التاريخ</th><th>رقم الفاتورة</th><th>البيان</th><th>الإجمالي</th><th>المدفوع</th><th>المتبقي</th></tr></thead><tbody>${rows}</tbody></table><section class="statement-totals"><div class="statement-total"><strong>إجمالي عدد الفواتير</strong><strong class="num">${statementEsc(transactions.length)}</strong></div><div class="statement-total"><strong>إجمالي المبلغ</strong><strong class="num">${statementEsc(formatCurrency(input.totalCharges))}</strong></div><div class="statement-total"><strong>إجمالي المدفوع</strong><strong class="num">${statementEsc(formatCurrency(input.totalPayments))}</strong></div><div class="statement-total"><strong>إجمالي المتبقي</strong><strong class="num">${statementEsc(formatCurrency(input.outstandingBalance))}</strong></div></section><footer class="statement-footer">${statementEsc(input.companyName || "مجموعة علي جان نهاد")}${footerContact ? `<br>${footerContact}` : ""}</footer></main>`;
 }
 
 export function openCustomerStatementPrintWindow(input: CustomerStatementPrintInput) {
