@@ -19,6 +19,11 @@ import {
   ScanLine,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { TableTotalsFooter } from "@/components/ui/table-totals-footer";
 import { useToast } from "@/hooks/use-toast";
 import CustomerAccountPrompt from "./customer-account-prompt";
@@ -762,53 +767,78 @@ export default function PurchasesPage() {
                         <td className="px-3 py-2 text-muted-foreground">
                           {idx + 1}
                         </td>
-                        <td className="px-3 py-2 relative min-w-[180px]">
-                          <div className="flex items-center gap-1">
-                            <input
-                              value={item.productName || searchQ[idx] || ""}
-                              onChange={(e) => {
-                                setSearchQ((prev) => ({
-                                  ...prev,
-                                  [idx]: e.target.value,
-                                }));
-                                updateItem(idx, "productName", e.target.value);
-                                setShowProductSearch(idx);
-                              }}
-                              onFocus={() => setShowProductSearch(idx)}
-                              placeholder="اسم الصنف..."
-                              className="bg-transparent w-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1 py-0.5"
-                            />
-                            <button
-                              onClick={() =>
-                                setShowProductSearch(
-                                  showProductSearch === idx ? null : idx,
-                                )
-                              }
-                              className="text-muted-foreground hover:text-primary shrink-0"
+                        <td className="min-w-[180px] px-3 py-2">
+                          <Popover
+                            open={
+                              showProductSearch === idx && filtered.length > 0
+                            }
+                            onOpenChange={(open) =>
+                              setShowProductSearch(open ? idx : null)
+                            }
+                          >
+                            <PopoverAnchor asChild>
+                              <div className="flex items-center gap-1">
+                                <input
+                                  value={
+                                    item.productName || searchQ[idx] || ""
+                                  }
+                                  onChange={(e) => {
+                                    setSearchQ((prev) => ({
+                                      ...prev,
+                                      [idx]: e.target.value,
+                                    }));
+                                    updateItem(
+                                      idx,
+                                      "productName",
+                                      e.target.value,
+                                    );
+                                    setShowProductSearch(idx);
+                                  }}
+                                  onFocus={() => setShowProductSearch(idx)}
+                                  placeholder="اسم الصنف..."
+                                  className="w-full rounded bg-transparent px-1 py-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setShowProductSearch(
+                                      showProductSearch === idx ? null : idx,
+                                    )
+                                  }
+                                  className="shrink-0 text-muted-foreground hover:text-primary"
+                                  aria-label="البحث عن منتج"
+                                >
+                                  <Search className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </PopoverAnchor>
+                            <PopoverContent
+                              dir="rtl"
+                              align="start"
+                              side="bottom"
+                              sideOffset={6}
+                              collisionPadding={12}
+                              className="max-h-[min(22rem,var(--radix-popover-content-available-height))] w-[min(22rem,calc(100vw-1.5rem))] overflow-y-auto p-1"
                             >
-                              <Search className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                          {showProductSearch === idx && filtered.length > 0 && (
-                            <div className="absolute top-full right-0 z-20 w-72 bg-card border border-border/40 rounded-lg shadow-lg overflow-hidden mt-1">
                               {filtered.map((p) => (
                                 <button
+                                  type="button"
                                   key={p.id}
                                   onClick={() => selectProduct(idx, p)}
-                                  className="w-full flex items-center justify-between px-3 py-2 hover:bg-primary/10 text-sm text-right"
+                                  className="flex min-h-14 w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-right text-sm hover:bg-primary/10 focus-visible:bg-primary/10 focus-visible:outline-none"
                                 >
-                                  <span>
-                                    <span className="block font-medium text-foreground">
+                                  <span className="min-w-0">
+                                    <span className="block break-words font-medium text-foreground">
                                       {p.nameAr || p.name}
                                     </span>
-                                    <span className="block text-[11px] text-muted-foreground">
+                                    <span className="block break-words text-[11px] text-muted-foreground">
                                       {p.barcode ? `${p.barcode} · ` : ""}
                                       {p.categoryName ||
                                         p.category ||
                                         "بدون قسم"}
                                     </span>
                                   </span>
-                                  <span className="text-xs text-muted-foreground text-left">
+                                  <span className="shrink-0 text-left text-xs text-muted-foreground">
                                     <span className="block">
                                       {formatCurrency(p.costPrice || "0")}
                                     </span>
@@ -818,8 +848,8 @@ export default function PurchasesPage() {
                                   </span>
                                 </button>
                               ))}
-                            </div>
-                          )}
+                            </PopoverContent>
+                          </Popover>
                         </td>
                         <td className="px-3 py-2">
                           <input
