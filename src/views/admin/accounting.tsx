@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSearch } from "wouter";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { printWhenImagesReadyScript, sheetReportCss } from "./print-helpers";
+import { openCustomerStatementPrintWindow, printWhenImagesReadyScript, sheetReportCss } from "./print-helpers";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "receivables" | "pnl";
 
@@ -514,7 +514,15 @@ type StatementEntry = {
 type StatementData = {
   customer: { id: number | null; name: string; phone: string };
   entries: StatementEntry[];
-  totals: { totalCharges: number; totalPayments: number; balance: number };
+  transactions: Array<{
+    reference: string;
+    date: string;
+    serviceType: string;
+    total: number;
+    paid: number;
+    remaining: number;
+  }>;
+  totals: { totalCharges: number; totalPayments: number; balance: number; customerCredit?: number };
 };
 
 type CustomerLite = { id: number; name: string; phone: string };
@@ -721,6 +729,8 @@ function MiniAccountStat({ label, value }: { label: string; value: string }) {
 }
 
 function StatementTab() {
+  const { toast } = useToast();
+  const { data: settings } = usePublicSettings();
   const [search, setSearch] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<CustomerLite | null>(null);
@@ -737,6 +747,24 @@ function StatementTab() {
     enabled: !!selected,
   });
 
+  function printStatement() {
+    if (!data) return;
+    try {
+      openCustomerStatementPrintWindow({
+        companyName: settings?.site_name,
+        logoUrl: logoSrc(settings),
+        customerName: data.customer.name || selected?.name || "—",
+        customerPhone: data.customer.phone || selected?.phone,
+        totalCharges: data.totals.totalCharges,
+        totalPayments: data.totals.totalPayments,
+        outstandingBalance: data.totals.balance,
+        transactions: data.transactions ?? [],
+      });
+    } catch (cause) {
+      toast({ title: "تعذر فتح كشف الحساب للطباعة", description: apiErrorMessage(cause), variant: "destructive" });
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2 items-center">
@@ -745,11 +773,14 @@ function StatementTab() {
           {selected ? "تغيير الزبون" : "اختر زبون"}
         </Button>
         {selected && (
-          <div className="text-sm text-foreground bg-card rounded-lg border border-border/30 px-3 py-2">
-            <strong className="text-primary">{selected.name || "—"}</strong>
-            <span className="text-muted-foreground mr-2">{formatIraqiPhone(selected.phone)}</span>
-            <button onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</button>
-          </div>
+          <>
+            <div className="text-sm text-foreground bg-card rounded-lg border border-border/30 px-3 py-2">
+              <strong className="text-primary">{selected.name || "—"}</strong>
+              <span className="text-muted-foreground mr-2">{formatIraqiPhone(selected.phone)}</span>
+              <button onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</button>
+            </div>
+            {data && <Button type="button" onClick={printStatement} className="mr-auto"><Printer className="ml-1 h-4 w-4" />طباعة</Button>}
+          </>
         )}
       </div>
 

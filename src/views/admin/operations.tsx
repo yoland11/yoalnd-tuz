@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   Database,
   Download,
+  Eye,
   FileText,
   Fingerprint,
   Gauge,
@@ -32,6 +33,7 @@ import {
   ScanLine,
   Search,
   ShieldCheck,
+  Wallet,
   Wrench,
   X,
   XCircle,
@@ -54,21 +56,33 @@ import {
 import { AssetSaleDialog } from "./asset-sale-dialog";
 import { LiveScanner } from "../staff/live-scanner";
 
-type ApprovalRow = {
+type FinancialApprovalRow = {
   id: number;
-  requestNo: string;
-  type: string;
-  title: string;
-  description: string | null;
-  entityType: string | null;
-  entityId: number | null;
-  amount: string | null;
-  status: string;
+  transactionNo: string;
+  transactionDate: string;
+  transactionTime?: string | null;
+  direction: string;
+  amount: string;
+  department: string;
+  transactionType: string;
+  referenceNo?: string | null;
+  description: string;
+  paymentMethod: string;
+  sourceType?: string | null;
+  sourceId?: string | null;
+  approvalStatus: string;
   requestedByName: string;
-  reviewedByName: string;
-  createdAt: string | null;
-  allowedActions?: string[];
-  requiresMainManager?: boolean;
+  customerName?: string | null;
+  approvedByName?: string | null;
+  approvedAt?: string | null;
+  rejectedByName?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+};
+
+type FinancialApprovalDetail = FinancialApprovalRow & {
+  entries: Array<{ id: number; accountCode: string; accountName: string; side: string; amount: string }>;
+  audits: Array<{ id: number; action: string; actorName: string; reason?: string | null; createdAt: string }>;
 };
 
 type DocumentRow = {
@@ -293,81 +307,123 @@ function JsonPreview({ value }: { value: unknown }) {
 export default function ApprovalCenterPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [filters, setFilters] = useState({ status: "", type: "", q: "" });
+  const me = useQuery({ queryKey: ["admin", "me"], queryFn: () => fetchAdminMe(), staleTime: 60_000 });
+  const [filters, setFilters] = useState({ status: "pending", type: "", q: "" });
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const query = useMemo(() => {
     const p = new URLSearchParams();
     if (filters.status) p.set("status", filters.status);
-    if (filters.type) p.set("type", filters.type);
-    if (filters.q.trim()) p.set("q", filters.q.trim());
+    if (filters.type) p.set("voucherType", filters.type);
+    if (filters.q.trim()) p.set("search", filters.q.trim());
+    p.set("limit", "5000");
     return p.toString();
   }, [filters]);
-  const { data, isLoading } = useQuery<{ data: ApprovalRow[] }>({
-    queryKey: ["admin", "approvals", query],
-    queryFn: () => adminFetch(`/admin/approvals${query ? `?${query}` : ""}`),
-    staleTime: 20_000,
+  const { data, isLoading } = useQuery<{ data: FinancialApprovalRow[]; total: number }>({
+    queryKey: ["admin", "financial-approvals", query],
+    queryFn: () => adminFetch(`/admin/master-cash/transactions?${query}`),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+  const all = useQuery<{ data: FinancialApprovalRow[]; total: number }>({
+    queryKey: ["admin", "financial-approvals", "summary"],
+    queryFn: () => adminFetch("/admin/master-cash/transactions?limit=5000"),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+  const detail = useQuery<FinancialApprovalDetail>({
+    queryKey: ["admin", "financial-approvals", "detail", selectedId],
+    queryFn: () => adminFetch(`/admin/master-cash/transactions/${selectedId}`),
+    enabled: selectedId !== null,
   });
   const review = useMutation({
-    mutationFn: ({ id, status, note }: { id: number; status: string; note?: string }) => adminFetch(`/admin/approvals/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ action: status, note }),
-    }),
-    onSuccess: () => {
-      toast({ title: "تم تحديث طلب الموافقة" });
-      qc.invalidateQueries({ queryKey: ["admin", "approvals"] });
+    mutationFn: ({ id, action, note }: { id: number; action: "approve" | "reject"; note?: string }) =>
+      adminFetch(`/admin/master-cash/transactions/${id}/${action}`, {
+        method: "POST",
+        body: JSON.stringify(action === "reject" ? { reason: note } : { note }),
+      }),
+    onSuccess: (_result, input) => {
+      toast({ title: input.action === "approve" ? "تم الاعتماد والترحيل بأمان" : "تم الرفض وإرجاع المستند لمنشئه" });
+      qc.invalidateQueries({ queryKey: ["admin", "financial-approvals"] });
+      qc.invalidateQueries({ queryKey: ["admin", "master-cash"] });
+      qc.invalidateQueries({ queryKey: ["admin", "finance"] });
     },
-    onError: (err) => toast({ title: "تعذر تحديث الموافقة", description: apiErrorMessage(err), variant: "destructive" }),
+    onError: (err) => toast({ title: "تعذر تحديث الموافقة المالية", description: apiErrorMessage(err), variant: "destructive" }),
   });
+
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad" }).format(new Date());
+  const summaryRows = all.data?.data ?? [];
+  const sum = (rows: FinancialApprovalRow[]) => rows.reduce((total, row) => total + Number(row.amount || 0), 0);
+  const pending = summaryRows.filter((row) => row.approvalStatus === "pending");
+  const approvedToday = summaryRows.filter((row) => row.approvalStatus === "executed" && (row.approvedAt?.slice(0, 10) === today || row.transactionDate === today));
+  const rejectedToday = summaryRows.filter((row) => row.approvalStatus === "rejected" && row.rejectedAt?.slice(0, 10) === today);
+  const rows = data?.data ?? [];
+  const canApprove = !!me.data && (
+    me.data.role === "admin" ||
+    me.data.role === "manager" ||
+    me.data.permissions.includes("voucher_approve") ||
+    me.data.permissions.includes("voucher_reverse")
+  );
+
+  const exportCsv = () => {
+    const values = [
+      ["رقم المستند", "النوع", "رقم المرجع", "الطرف", "القسم", "المبلغ", "طريقة الدفع", "الحالة", "المنشئ", "التاريخ"],
+      ...rows.map((row) => [row.transactionNo, row.sourceType || row.transactionType, row.referenceNo || row.sourceId || "", row.customerName || "", row.department, row.amount, row.paymentMethod, STATUS_LABELS[row.approvalStatus] || row.approvalStatus, row.requestedByName, row.transactionDate]),
+    ];
+    const csv = values.map((line) => line.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `financial-approvals-${today}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const reject = (id: number, modification = false) => {
+    const prompt = modification ? "اكتب التعديلات المطلوبة (3 أحرف على الأقل):" : "اكتب سبب الرفض (3 أحرف على الأقل):";
+    const reason = window.prompt(prompt)?.trim();
+    if (!reason || reason.length < 3) return;
+    review.mutate({ id, action: "reject", note: modification ? `طلب تعديل: ${reason}` : reason });
+  };
 
   return (
     <div className="space-y-4" dir="rtl">
-      <PageHeader icon={ShieldCheck} title="مركز الموافقات" description="طلبات الخصم والحذف والتحويلات والعمليات الحساسة قبل تنفيذها." />
+      <PageHeader icon={ShieldCheck} title="مركز الموافقات المالية" description="لا يظهر أي أثر محاسبي أو نقدي قبل الاعتماد. الاعتماد والترحيل يتمان داخل معاملة ذرّية واحدة." action={<div className="flex gap-2 print:hidden"><Button variant="outline" onClick={exportCsv} className="gap-1"><Download className="h-4 w-4" /> تصدير CSV</Button><Button variant="outline" onClick={() => window.print()} className="gap-1"><Printer className="h-4 w-4" /> طباعة / PDF</Button></div>} />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="بانتظار الموافقة" value={pending.length.toLocaleString("ar-IQ")} icon={History} />
+        <StatCard label="مبلغ قيد الانتظار" value={formatCurrency(sum(pending))} icon={Wallet} />
+        <StatCard label="المعتمد اليوم" value={`${approvedToday.length.toLocaleString("ar-IQ")} · ${formatCurrency(sum(approvedToday))}`} icon={CheckCircle2} />
+        <StatCard label="المرفوض اليوم" value={`${rejectedToday.length.toLocaleString("ar-IQ")} · ${formatCurrency(sum(rejectedToday))}`} icon={XCircle} />
+      </div>
+      <Card className="border-primary/20 bg-primary/[0.025]">
+        <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"><p><b>بانتظار قيد محاسبي:</b> 0</p><p><b>بانتظار ترحيل الصندوق:</b> 0</p><p className="text-muted-foreground sm:col-span-2">الترحيل المحاسبي والصندوقي ذري؛ لا يمكن نجاح أحدهما دون الآخر.</p></div>
+      </Card>
       <Card>
         <div className="grid gap-3 md:grid-cols-4">
-          <input value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="بحث برقم الطلب أو العنوان..." className="md:col-span-2 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <input value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="رقم المستند، المرجع، الطرف أو الوصف..." className="md:col-span-2 rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
           <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm">
             <option value="">كل الحالات</option>
             <option value="pending">بانتظار الموافقة</option>
-            <option value="approved">موافق عليه</option>
+            <option value="executed">معتمد ومُرحّل</option>
             <option value="rejected">مرفوض</option>
+            <option value="draft">مسودة</option>
           </select>
-          <input value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })} placeholder="نوع العملية" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
+          <input value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })} placeholder="نوع المستند" className="rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" />
         </div>
       </Card>
-      {isLoading ? <LoadingRows /> : !data?.data.length ? <EmptyState message="لا توجد طلبات موافقة" /> : (
+      {isLoading ? <LoadingRows /> : !rows.length ? <EmptyState message="لا توجد مستندات مالية ضمن الفلتر الحالي" /> : (
         <div className="overflow-hidden rounded-xl border border-border/30 bg-card">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[1180px] text-sm">
               <thead className="bg-background/50 text-muted-foreground">
                 <tr>
-                  <th className="p-3 text-right font-medium">الطلب</th>
-                  <th className="p-3 text-right font-medium">النوع</th>
-                  <th className="p-3 text-right font-medium">المبلغ</th>
-                  <th className="p-3 text-right font-medium">الحالة</th>
-                  <th className="p-3 text-right font-medium">بواسطة</th>
-                  <th className="p-3 text-right font-medium">الإجراء</th>
+                  {['رقم المستند','نوع المستند','رقم الفاتورة/المرجع','العميل/المورد/الموظف','الفرع/القسم','المبلغ','طريقة الدفع','الحالة','الأولوية','المنشئ والتاريخ','الإجراءات'].map((label) => <th key={label} className="p-3 text-right font-medium">{label}</th>)}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {data.data.map((row) => (
+                {rows.map((row) => (
                   <tr key={row.id} className="hover:bg-background/30">
-                    <td className="p-3">
-                      <p className="font-semibold text-foreground">{row.requestNo}</p>
-                      <p className="text-xs text-muted-foreground">{row.title}</p>
-                    </td>
-                    <td className="p-3 text-muted-foreground">{row.type}</td>
-                    <td className="p-3">{row.amount ? formatCurrency(row.amount) : "—"}</td>
-                    <td className="p-3"><span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.status)}`}>{STATUS_LABELS[row.status] ?? row.status}</span></td>
-                    <td className="p-3 text-muted-foreground">{row.requestedByName || "النظام"}<br /><span className="text-xs">{formatDate(row.createdAt)}</span></td>
-                    <td className="p-3">
-                      {["pending", "under_review", "pending_main_manager"].includes(row.status) ? (
-                        <div className="flex gap-2">
-                          {(row.allowedActions ?? []).some((action) => ["approve", "approvals.approve"].includes(action)) && <Button size="sm" onClick={() => review.mutate({ id: row.id, status: "approve" })} className="gap-1"><CheckCircle2 className="h-4 w-4" /> موافقة</Button>}
-                          {(row.allowedActions ?? []).some((action) => ["reject", "approvals.reject"].includes(action)) && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "reject" })} className="gap-1"><XCircle className="h-4 w-4" /> رفض</Button>}
-                          {(row.allowedActions ?? []).includes("approvals.return_for_edit") && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "return_for_edit" })}>إعادة للتعديل</Button>}
-                          {(row.allowedActions ?? []).includes("approvals.forward_to_main_manager") && <Button size="sm" variant="outline" onClick={() => review.mutate({ id: row.id, status: "forward_to_main_manager" })}>تحويل للمدير</Button>}
-                        </div>
-                      ) : <span className="text-xs text-muted-foreground">{row.reviewedByName || "تمت المراجعة"}</span>}
-                    </td>
+                    <td className="p-3 font-mono text-xs text-primary">{row.transactionNo}</td><td className="p-3">{row.sourceType || row.transactionType}</td><td className="p-3">{row.referenceNo || (row.sourceId ? `#${row.sourceId}` : "—")}</td><td className="p-3">{row.customerName || "—"}</td><td className="p-3">{row.department || "—"}</td><td className="p-3 font-bold">{formatCurrency(row.amount)}</td><td className="p-3">{row.paymentMethod}</td><td className="p-3"><span className={`rounded-full px-2.5 py-1 text-xs ${statusClass(row.approvalStatus)}`}>{STATUS_LABELS[row.approvalStatus] ?? row.approvalStatus}</span></td><td className="p-3">{row.approvalStatus === "pending" ? "تحتاج مراجعة" : "—"}</td><td className="p-3 text-muted-foreground">{row.requestedByName || "النظام"}<br/><span className="text-xs">{row.transactionDate}</span></td>
+                    <td className="p-3"><div className="flex gap-1"><Button size="sm" variant="outline" onClick={() => setSelectedId(row.id)} aria-label="عرض التفاصيل"><Eye className="h-4 w-4" /></Button>{row.approvalStatus === "pending" && canApprove && <><Button size="sm" disabled={review.isPending} onClick={() => review.mutate({ id: row.id, action: "approve" })}>اعتماد</Button><Button size="sm" variant="outline" disabled={review.isPending} onClick={() => reject(row.id)}>رفض</Button><Button size="sm" variant="outline" disabled={review.isPending} onClick={() => reject(row.id, true)}>طلب تعديل</Button></>}</div></td>
                   </tr>
                 ))}
               </tbody>
@@ -375,6 +431,7 @@ export default function ApprovalCenterPage() {
           </div>
         </div>
       )}
+      {selectedId !== null && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 print:static print:bg-transparent"><div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl bg-card p-5 shadow-xl print:max-h-none print:shadow-none"><div className="mb-4 flex items-center justify-between"><h2 className="text-lg font-bold">تفاصيل المستند وسجل التدقيق</h2><Button variant="ghost" onClick={() => setSelectedId(null)} className="print:hidden"><X className="h-4 w-4" /></Button></div>{detail.isLoading ? <LoadingRows/> : detail.data ? <div className="space-y-4"><div className="grid gap-2 rounded-lg bg-background/60 p-4 sm:grid-cols-2"><p>الرقم: <b>{detail.data.transactionNo}</b></p><p>المبلغ: <b>{formatCurrency(detail.data.amount)}</b></p><p>المصدر: {detail.data.sourceType || detail.data.transactionType}</p><p>المرجع: {detail.data.referenceNo || detail.data.sourceId || "—"}</p><p>الطرف: {detail.data.customerName || "—"}</p><p>الحالة: {STATUS_LABELS[detail.data.approvalStatus] || detail.data.approvalStatus}</p></div><section><h3 className="mb-2 font-semibold">الخط الزمني / سجل التدقيق</h3><div className="space-y-2">{detail.data.audits.length ? detail.data.audits.map((audit) => <div key={audit.id} className="rounded-lg border border-border/30 p-3"><div className="flex justify-between gap-2"><b>{audit.action}</b><time className="text-xs text-muted-foreground">{formatDate(audit.createdAt)}</time></div><p className="text-sm text-muted-foreground">{audit.actorName || "النظام"}{audit.reason ? ` · ${audit.reason}` : ""}</p></div>) : <p className="text-sm text-muted-foreground">لا توجد أحداث مسجلة.</p>}</div></section><section><h3 className="mb-2 font-semibold">القيد المحاسبي</h3>{detail.data.entries.length ? <div className="space-y-1">{detail.data.entries.map((entry) => <p key={entry.id} className="rounded bg-background/60 p-2 text-sm">{entry.accountCode} · {entry.accountName} — {entry.side === "debit" ? "مدين" : "دائن"} {formatCurrency(entry.amount)}</p>)}</div> : <p className="text-sm text-muted-foreground">لم يُنشأ قيد لأن المستند غير معتمد.</p>}</section></div> : <EmptyState message="تعذر تحميل التفاصيل"/>}</div></div>}
     </div>
   );
 }
