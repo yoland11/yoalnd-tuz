@@ -678,7 +678,9 @@ export function currentPortal(): string {
   // Sound operations live under the kosha portal today; a future dedicated
   // /staff/sound route is detected here so device rows label it correctly.
   if (path.startsWith("/staff/sound")) return "sound";
-  if (path.startsWith("/staff/koshas") || path.startsWith("/staff")) return "kosha";
+  if (path.startsWith("/staff/koshas")) return "kosha";
+  if (path.startsWith("/staff/tailors")) return "tailoring";
+  if (path === "/staff" || path.startsWith("/staff/login")) return "staff";
   if (path.startsWith("/representative")) return "representative";
   if (path.startsWith("/admin")) return "admin";
   return "";

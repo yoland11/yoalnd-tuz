@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import {
   Archive, Bell, BellRing, CalendarDays, CheckCircle2, ChevronLeft,
   ClipboardCheck, Clock3, Home, Loader2, LogOut, MapPin,
@@ -11,7 +12,8 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/query-client";
 import {
-  adminFetch, fetchAdminMe, hasPerm, loginAdmin, logoutAdmin,
+  adminFetch, apiErrorMessage, apiErrorStatus, fetchAdminMe, hasPerm,
+  isSessionDecision, loginAdmin, logoutAdmin,
   type AdminMe,
 } from "@/views/admin/_lib";
 
@@ -54,15 +56,29 @@ function Failure({ title, error }: { title: string; error: unknown }) {
   return <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive"><strong>{title}</strong><div className="mt-1">{details}</div></div>;
 }
 
-function PortalLogin({ onDone }: { onDone: () => void }) {
+function PortalLogin({ onDone }: { onDone: (user: AdminMe) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
-    try { await loginAdmin(username.trim(), password); onDone(); }
-    catch (reason: any) { setError(String(reason?.message ?? "تعذر تسجيل الدخول").replace(/^HTTP\s+\d+:\s*/, "")); }
+    try {
+      const user = await loginAdmin(username.trim(), password);
+      onDone(user);
+    }
+    catch (reason: unknown) {
+      if (isSessionDecision(reason) && typeof window !== "undefined" && window.confirm(reason.message)) {
+        try {
+          const user = await loginAdmin(username.trim(), password, { forceReplace: true });
+          onDone(user);
+        } catch (retryReason: unknown) {
+          setError(apiErrorMessage(retryReason, "تعذر تسجيل الدخول"));
+        }
+      } else if (!isSessionDecision(reason)) {
+        setError(apiErrorMessage(reason, "بيانات الدخول غير صحيحة"));
+      }
+    }
     finally { setBusy(false); }
   }
   return <main className="grid min-h-dvh place-items-center bg-background px-5" dir="rtl">
@@ -75,13 +91,24 @@ function PortalLogin({ onDone }: { onDone: () => void }) {
 }
 
 export default function UnifiedStaffPortal() {
+  const [, navigate] = useLocation();
   const [me, setMe] = useState<AdminMe | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>(() => {
     const value = new URLSearchParams(window.location.search).get("tab");
     return value === "tasks" || value === "bookings" || value === "notifications" || value === "account" ? value : "home";
   });
   const { toast } = useToast();
-  useEffect(() => { void fetchAdminMe({ force: true }).then(setMe); }, []);
+  useEffect(() => {
+    let active = true;
+    void fetchAdminMe({ force: true }).then((user) => {
+      if (!active) return;
+      setMe(user);
+      const onLoginRoute = window.location.pathname === "/staff/login";
+      if (user && onLoginRoute) navigate("/staff", { replace: true });
+      if (!user && !onLoginRoute) navigate("/staff/login", { replace: true });
+    });
+    return () => { active = false; };
+  }, [navigate]);
   const dashboard = useQuery({ queryKey: ["staff-portal", "dashboard"], queryFn: () => adminFetch<any>("/staff/portal/dashboard"), enabled: Boolean(me) });
   const bookings = useQuery({ queryKey: ["staff-portal", "bookings"], queryFn: () => adminFetch<{ today: string; data: Booking[] }>("/staff/portal/bookings"), enabled: Boolean(me) });
   const notifications = useQuery({ queryKey: ["staff-portal", "notifications"], queryFn: () => adminFetch<{ data: Notice[] }>("/staff/portal/notifications"), enabled: Boolean(me) });
@@ -93,6 +120,15 @@ export default function UnifiedStaffPortal() {
   const todayBookings = bookingRows.filter((booking) => booking.date === today);
   const upcomingBookings = bookingRows.filter((booking) => booking.date && booking.date >= today).slice(0, 6);
   const nextTask = tasks.find((task) => ["new", "in_progress"].includes(task.status));
+  const sessionError = dashboard.error ?? bookings.error ?? notifications.error ?? payroll.error;
+
+  useEffect(() => {
+    if (apiErrorStatus(sessionError) !== 401) return;
+    void logoutAdmin().finally(() => {
+      setMe(null);
+      navigate("/staff/login", { replace: true });
+    });
+  }, [navigate, sessionError]);
 
   const taskAction = useMutation({
     mutationFn: async ({ task, action }: { task: Task; action: "start" | "submit" }) => adminFetch(`/admin/tasks/${task.id}/${action === "start" ? "progress" : "submit"}`, { method: "POST", body: JSON.stringify(action === "start" ? { items: [] } : {}) }),
@@ -104,6 +140,11 @@ export default function UnifiedStaffPortal() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["staff-portal", "payroll"] }); queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] }); toast({ title: "تم تسجيل تأكيد الاستلام" }); },
     onError: (error: any) => toast({ variant: "destructive", title: "تعذر تسجيل الاستلام", description: error?.message }),
   });
+  const signOut = async () => {
+    await logoutAdmin();
+    setMe(null);
+    navigate("/staff/login", { replace: true });
+  };
 
   const selectTab = (next: Tab) => { setTab(next); window.history.replaceState(null, "", next === "home" ? "/staff" : `/staff?tab=${next}`); };
   const navigation = useMemo(() => [
@@ -111,7 +152,7 @@ export default function UnifiedStaffPortal() {
   ], []);
 
   if (me === undefined) return <div className="grid min-h-dvh place-items-center bg-background"><Loader2 className="h-7 w-7 animate-spin text-primary" /></div>;
-  if (!me) return <PortalLogin onDone={() => void fetchAdminMe({ force: true }).then(setMe)} />;
+  if (!me) return <PortalLogin onDone={(user) => { setMe(user); navigate("/staff", { replace: true }); }} />;
 
   const account = dashboard.data?.staff;
   return <div className="min-h-dvh bg-muted/35 text-foreground" dir="rtl">
@@ -127,7 +168,7 @@ export default function UnifiedStaffPortal() {
         {hasPerm(me, "staff") ? <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/hr/performance"><UsersRound className="h-4 w-4" />أدائي</a> : null}
         <a className="mb-3 flex min-h-10 items-center gap-3 hover:text-foreground" href="/admin/messages"><MessageCircle className="h-4 w-4" />الرسائل</a>
       </div>
-      <button type="button" onClick={() => void logoutAdmin().then(() => setMe(null))} className="mt-auto flex min-h-11 items-center gap-3 px-3 text-sm font-semibold text-muted-foreground hover:text-destructive"><LogOut className="h-4 w-4" />تسجيل الخروج</button>
+      <button type="button" onClick={() => void signOut()} className="mt-auto flex min-h-11 items-center gap-3 px-3 text-sm font-semibold text-muted-foreground hover:text-destructive"><LogOut className="h-4 w-4" />تسجيل الخروج</button>
     </aside>
 
     <main className="mx-auto max-w-7xl px-4 pb-24 pt-5 lg:mr-64 lg:px-8 lg:pb-10">
@@ -152,7 +193,7 @@ export default function UnifiedStaffPortal() {
 
       {tab === "notifications" ? <section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5"><SectionTitle>كل الإشعارات</SectionTitle></div><div className="divide-y divide-border">{notifications.isError ? <div className="p-5"><Failure title="تعذر تحميل الإشعارات" error={notifications.error} /></div> : null}{(notifications.data?.data ?? []).map((notice) => <button key={notice.id} type="button" onClick={() => { if (!notice.readAt) void adminFetch(`/staff/portal/notifications/${notice.id}/read`, { method: "POST" }).then(() => queryClient.invalidateQueries({ queryKey: ["staff-portal", "notifications"] })); if (notice.href) window.location.href = notice.href; }} className={`flex w-full gap-3 p-5 text-right hover:bg-muted/35 ${notice.readAt ? "text-muted-foreground" : "bg-primary/5"}`}><Bell className="mt-0.5 h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><div className="font-extrabold">{notice.title}</div><p className="mt-1 text-sm leading-6">{notice.body}</p><div className="mt-2 text-xs">{textDate(notice.createdAt, true)}</div></div></button>)}{!notifications.isLoading && !(notifications.data?.data ?? []).length ? <div className="p-5"><Empty>لا توجد إشعارات.</Empty></div> : null}</div></section> : null}
 
-      {tab === "account" ? <section className="space-y-5"><div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></span><div><h2 className="font-extrabold">{account?.name ?? me.fullName}</h2><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || me.role}</p></div></div></div><div className="rounded-2xl border border-border bg-card p-5"><SectionTitle>راتبي ومستحقاتي</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تظهر لك تفاصيل سجلاتك فقط، بما فيها المكافآت والخصومات وتأكيد الاستلام.</p>{payroll.isError ? <div className="mt-4"><Failure title="تعذر تحميل سجلات الراتب" error={payroll.error} /></div> : null}<div className="mt-4 space-y-3">{(payroll.data?.data ?? []).map((line) => <article key={line.id} className="rounded-xl bg-muted/45 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-extrabold">راتب {line.period ?? line.runNo ?? "غير محدد"}</h3><p className="mt-1 text-xs text-muted-foreground">{line.paidAt ? `تم الدفع: ${textDate(line.paidAt, true)}` : "بانتظار تسجيل الدفع"}</p></div><strong className="text-lg text-primary">{money.format(line.netSalary)}</strong></div><dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 text-sm sm:grid-cols-3"><div><dt className="text-xs text-muted-foreground">الأساسي</dt><dd className="font-bold">{money.format(line.baseSalary)}</dd></div><div><dt className="text-xs text-muted-foreground">المكافآت</dt><dd className="font-bold text-status-success">+ {money.format(line.bonusAmount + line.overtimeAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الغرامات والخصم</dt><dd className="font-bold text-destructive">− {money.format(line.penaltyAmount + line.advanceDeduction + line.insuranceAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الإجمالي</dt><dd className="font-bold">{money.format(line.grossSalary)}</dd></div></dl><div className="mt-4">{line.receivedAt ? <div className="flex items-center gap-2 text-sm font-bold text-status-success"><CheckCircle2 className="h-4 w-4" />تم التأكيد بواسطة {line.receivedBy} · {textDate(line.receivedAt, true)}</div> : line.canAcknowledge ? <Button className="min-h-11" onClick={() => receipt.mutate(line)} disabled={receipt.isPending}>{receipt.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <><ReceiptText className="h-4 w-4" />تم الاستلام</>}</Button> : <span className="text-sm text-muted-foreground">سيظهر زر التأكيد بعد تسجيل دفع الراتب.</span>}</div></article>)}{!payroll.isLoading && !(payroll.data?.data ?? []).length ? <Empty>لا توجد مسيرات راتب ظاهرة لك بعد.</Empty> : null}</div></div></section> : null}
+      {tab === "account" ? <section className="space-y-5"><div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><UserRound className="h-5 w-5" /></span><div><h2 className="font-extrabold">{account?.name ?? me.fullName}</h2><p className="mt-1 text-sm text-muted-foreground">{account?.jobTitle || account?.department || me.role}</p></div></div><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-muted-foreground">الرقم الوظيفي</dt><dd className="mt-1 font-bold">#{account?.id ?? me.id}</dd></div><div><dt className="text-xs text-muted-foreground">القسم</dt><dd className="mt-1 font-bold">{account?.department || "عام"}</dd></div><div><dt className="text-xs text-muted-foreground">الدور</dt><dd className="mt-1 font-bold">{account?.role ?? me.role}</dd></div><div><dt className="text-xs text-muted-foreground">الصلاحيات</dt><dd className="mt-1 font-bold">{(account?.permissions ?? me.permissions).length}</dd></div></dl><Button type="button" variant="outline" className="mt-5 min-h-11 w-full lg:hidden" onClick={() => void signOut()}><LogOut className="h-4 w-4" />تسجيل الخروج</Button></div><div className="rounded-2xl border border-border bg-card p-5"><SectionTitle>راتبي ومستحقاتي</SectionTitle><p className="mt-1 text-sm text-muted-foreground">تظهر لك تفاصيل سجلاتك فقط، بما فيها المكافآت والخصومات وتأكيد الاستلام.</p>{payroll.isError ? <div className="mt-4"><Failure title="تعذر تحميل سجلات الراتب" error={payroll.error} /></div> : null}<div className="mt-4 space-y-3">{(payroll.data?.data ?? []).map((line) => <article key={line.id} className="rounded-xl bg-muted/45 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-extrabold">راتب {line.period ?? line.runNo ?? "غير محدد"}</h3><p className="mt-1 text-xs text-muted-foreground">{line.paidAt ? `تم الدفع: ${textDate(line.paidAt, true)}` : "بانتظار تسجيل الدفع"}</p></div><strong className="text-lg text-primary">{money.format(line.netSalary)}</strong></div><dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 text-sm sm:grid-cols-3"><div><dt className="text-xs text-muted-foreground">الأساسي</dt><dd className="font-bold">{money.format(line.baseSalary)}</dd></div><div><dt className="text-xs text-muted-foreground">المكافآت</dt><dd className="font-bold text-status-success">+ {money.format(line.bonusAmount + line.overtimeAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الغرامات والخصم</dt><dd className="font-bold text-destructive">− {money.format(line.penaltyAmount + line.advanceDeduction + line.insuranceAmount)}</dd></div><div><dt className="text-xs text-muted-foreground">الإجمالي</dt><dd className="font-bold">{money.format(line.grossSalary)}</dd></div></dl><div className="mt-4">{line.receivedAt ? <div className="flex items-center gap-2 text-sm font-bold text-status-success"><CheckCircle2 className="h-4 w-4" />تم التأكيد بواسطة {line.receivedBy} · {textDate(line.receivedAt, true)}</div> : line.canAcknowledge ? <Button className="min-h-11" onClick={() => receipt.mutate(line)} disabled={receipt.isPending}>{receipt.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <><ReceiptText className="h-4 w-4" />تم الاستلام</>}</Button> : <span className="text-sm text-muted-foreground">سيظهر زر التأكيد بعد تسجيل دفع الراتب.</span>}</div></article>)}{!payroll.isLoading && !(payroll.data?.data ?? []).length ? <Empty>لا توجد مسيرات راتب ظاهرة لك بعد.</Empty> : null}</div></div></section> : null}
     </main>
     <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">{navigation.map((item) => <button key={item.id} type="button" onClick={() => selectTab(item.id)} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-bold ${tab === item.id ? "text-primary" : "text-muted-foreground"}`}><item.icon className="h-5 w-5" />{item.label}{item.id === "notifications" && unread ? <span className="absolute top-2 h-2 w-2 rounded-full bg-destructive" /> : null}</button>)}</nav>
   </div>;

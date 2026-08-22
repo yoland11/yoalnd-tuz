@@ -192,6 +192,11 @@ function Router() {
           <TailorsStaffPortal />
         </Suspense>
       </Route>
+      <Route path="/staff/login">
+        <Suspense fallback={<AdminSpinner />}>
+          <UnifiedStaffPortal />
+        </Suspense>
+      </Route>
       <Route path="/staff">
         <Suspense fallback={<AdminSpinner />}>
           <UnifiedStaffPortal />

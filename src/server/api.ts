@@ -60302,15 +60302,12 @@ async function handleUnifiedStaffPortal(
   }
 
   if (resource === "bookings" && method === "GET") {
-    const manager = ["admin", "manager", "main_manager", "super_admin"].includes(
-      String(auth.role).toLowerCase(),
-    );
     const bookings: any[] = [];
     if (hasPermission(auth, "koshas")) {
       const kosha = await getVisibleKoshaBookingsForStaff(auth);
-      const visible = manager
-        ? kosha.visible
-        : kosha.visible.filter((row) => isKoshaBookingAssignedTo(row, auth.id));
+      const visible = kosha.visible.filter((row) =>
+        isKoshaBookingAssignedTo(row, auth.id),
+      );
       bookings.push(
         ...visible.map((row: any) => ({
           id: row.id,
@@ -60327,12 +60324,10 @@ async function handleUnifiedStaffPortal(
     }
     if (hasPermission(auth, "photography")) {
       const events = await db.query.photographyEventsTable.findMany({
-        where: manager
-          ? sql`${photographyEventsTable.status} <> 'archived'`
-          : and(
-              eq(photographyEventsTable.assignedStaffId, auth.id),
-              sql`${photographyEventsTable.status} <> 'archived'`,
-            ),
+        where: and(
+          eq(photographyEventsTable.assignedStaffId, auth.id),
+          sql`${photographyEventsTable.status} <> 'archived'`,
+        ),
         orderBy: [asc(photographyEventsTable.eventDate)],
         limit: 100,
       });
@@ -60369,7 +60364,7 @@ async function handleUnifiedStaffPortal(
     bookings.push(
       ...serviceOrders
         .filter((order) => !isKoshaOrSoundBooking(order, serviceById.get(order.serviceId)))
-        .filter((order) => manager || bookingAssignedStaff(order.customFields ?? {}).ids.includes(auth.id))
+        .filter((order) => bookingAssignedStaff(order.customFields ?? {}).ids.includes(auth.id))
         .map((order) => ({
           id: order.id,
           source: "service",

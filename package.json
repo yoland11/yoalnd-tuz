@@ -39,6 +39,7 @@
     "test:graduation-enterprise": "node ./scripts/verify-graduation-enterprise.mjs",
     "test:graduation-group-step-flow": "node ./scripts/verify-graduation-group-step-flow.mjs",
     "test:representative-portal": "node ./scripts/verify-representative-portal.mjs",
+    "test:staff-portal-auth": "node ./scripts/verify-staff-portal-auth.mjs",
     "test:installments": "node ./scripts/verify-installments.mjs",
     "test:production-safety": "node ./scripts/run-production-safety-tests.mjs",
     "test:phase2-safety": "pnpm --filter @workspace/db exec tsx --tsconfig ../../tsconfig.json ../../scripts/test-phase2-production-safety.ts",
