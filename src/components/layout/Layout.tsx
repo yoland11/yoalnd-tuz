@@ -14,7 +14,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const t = useT();
 
   return (
-    <div dir={dir} lang={locale} className="min-h-[100dvh] flex flex-col bg-background text-foreground font-sans">
+    <div dir={dir} lang={locale} className="mobile-app-shell min-h-[100dvh] min-w-0 flex flex-col bg-background text-foreground font-sans max-md:overflow-x-clip">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:right-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
@@ -22,7 +22,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {t("تخطّى إلى المحتوى الرئيسي")}
       </a>
       <Navbar />
-      <main id="main-content" className="flex-1 pb-28 lg:pb-0">
+      <main id="main-content" className="min-w-0 flex-1 pb-28 lg:pb-0">
         {children}
       </main>
       {settings?.whatsapp && (
@@ -31,7 +31,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           target="_blank"
           rel="noreferrer"
           aria-label="تواصل واتساب"
-          className="fixed bottom-28 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 lg:bottom-6"
+          className="fixed bottom-[calc(7rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-status-success/30 bg-status-success text-white shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-28 md:left-4 lg:bottom-6"
         >
           <MessageCircle className="h-6 w-6" />
         </a>

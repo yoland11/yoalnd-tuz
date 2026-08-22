@@ -12,7 +12,14 @@ import { useToast } from "@/hooks/use-toast";
 import { useSearch } from "wouter";
 import { downloadElementPdf } from "@/lib/pdf";
 import { logoSrc, usePublicSettings } from "@/lib/public-settings";
-import { openCustomerStatementPrintWindow, printWhenImagesReadyScript, sheetReportCss } from "./print-helpers";
+import {
+  customerStatementDateInRange,
+  customerStatementTransactionTotals,
+  filterCustomerStatementTransactions,
+  openCustomerStatementPrintWindow,
+  printWhenImagesReadyScript,
+  sheetReportCss,
+} from "./print-helpers";
 
 type Tab = "receipts" | "payments" | "expenses" | "categories" | "statement" | "receivables" | "pnl";
 
@@ -521,6 +528,8 @@ type StatementData = {
     total: number;
     paid: number;
     remaining: number;
+    paymentHistory?: Array<{ date: string; amount: number; reference?: string }>;
+    href?: string | null;
   }>;
   totals: { totalCharges: number; totalPayments: number; balance: number; customerCredit?: number };
 };
@@ -734,6 +743,8 @@ function StatementTab() {
   const [search, setSearch] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<CustomerLite | null>(null);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const customers = useQuery({
     queryKey: ["admin", "customers-picker", search],
@@ -747,6 +758,27 @@ function StatementTab() {
     enabled: !!selected,
   });
 
+  const invalidDateRange = Boolean(fromDate && toDate && fromDate > toDate);
+  const filteredTransactions = useMemo(
+    () => invalidDateRange ? [] : filterCustomerStatementTransactions(data?.transactions ?? [], fromDate, toDate),
+    [data?.transactions, fromDate, invalidDateRange, toDate],
+  );
+  const filteredEntries = useMemo(
+    () => invalidDateRange ? [] : (data?.entries ?? []).filter((entry) => customerStatementDateInRange(entry.date, fromDate, toDate)),
+    [data?.entries, fromDate, invalidDateRange, toDate],
+  );
+  const filteredTotals = useMemo(
+    () => customerStatementTransactionTotals(filteredTransactions),
+    [filteredTransactions],
+  );
+  const statementTotals = fromDate || toDate
+    ? filteredTotals
+    : {
+        totalCharges: data?.totals.totalCharges ?? 0,
+        totalPayments: data?.totals.totalPayments ?? 0,
+        outstandingBalance: data?.totals.balance ?? 0,
+      };
+
   function printStatement() {
     if (!data) return;
     try {
@@ -758,10 +790,12 @@ function StatementTab() {
         companyWebsite: settings?.website,
         customerName: data.customer.name || selected?.name || "—",
         customerPhone: data.customer.phone || selected?.phone,
-        totalCharges: data.totals.totalCharges,
-        totalPayments: data.totals.totalPayments,
-        outstandingBalance: data.totals.balance,
-        transactions: data.transactions ?? [],
+        periodFrom: fromDate || undefined,
+        periodTo: toDate || undefined,
+        totalCharges: statementTotals.totalCharges,
+        totalPayments: statementTotals.totalPayments,
+        outstandingBalance: statementTotals.outstandingBalance,
+        transactions: filteredTransactions,
       });
     } catch (cause) {
       toast({ title: "تعذر فتح كشف الحساب للطباعة", description: apiErrorMessage(cause), variant: "destructive" });
@@ -782,10 +816,20 @@ function StatementTab() {
               <span className="text-muted-foreground mr-2">{formatIraqiPhone(selected.phone)}</span>
               <button onClick={() => setSelected(null)} className="text-destructive text-xs mr-3 hover:underline">إزالة</button>
             </div>
-            {data && <Button type="button" onClick={printStatement} className="mr-auto"><Printer className="ml-1 h-4 w-4" />طباعة</Button>}
+            {data && <Button type="button" disabled={invalidDateRange} onClick={printStatement} className="mr-auto"><Printer className="ml-1 h-4 w-4" />طباعة</Button>}
           </>
         )}
       </div>
+
+      {selected && (
+        <div className="filters grid gap-3 rounded-xl border border-border/30 bg-card/60 p-3 sm:grid-cols-2">
+          <Field label="من تاريخ"><input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className={inputCls} /></Field>
+          <Field label="إلى تاريخ"><input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className={inputCls} /></Field>
+          <div className={`text-xs sm:col-span-2 ${invalidDateRange ? "text-destructive" : "text-muted-foreground"}`}>
+            {invalidDateRange ? "يجب أن يكون تاريخ البداية قبل تاريخ النهاية." : fromDate || toDate ? `الفترة: من ${(fromDate || "بداية السجل").replaceAll("-", "/")} إلى ${(toDate || "نهاية السجل").replaceAll("-", "/")}` : "الفترة: كامل سجل الحساب"}
+          </div>
+        </div>
+      )}
 
       {pickerOpen && (
         <Modal title="اختر زبون" onClose={() => setPickerOpen(false)}>
@@ -814,18 +858,19 @@ function StatementTab() {
       : isError ? <div className="text-sm text-destructive">{(error as Error)?.message ?? "خطأ"}</div>
       : data && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <StatCard label="الزبون" value={data.customer.name} />
-            <StatCard label="إجمالي المستحق" value={formatCurrency(data.totals.totalCharges)} />
-            <StatCard label="إجمالي المدفوع" value={formatCurrency(data.totals.totalPayments)} />
-            <StatCard label="الرصيد" value={formatCurrency(data.totals.balance)}
-              accent={data.totals.balance > 0 ? "text-status-warning" : "text-status-success"} />
+            <StatCard label="عدد الفواتير" value={String(filteredTransactions.length)} />
+            <StatCard label="إجمالي المستحق" value={formatCurrency(statementTotals.totalCharges)} />
+            <StatCard label="إجمالي المدفوع" value={formatCurrency(statementTotals.totalPayments)} />
+            <StatCard label="الرصيد" value={formatCurrency(statementTotals.outstandingBalance)}
+              accent={statementTotals.outstandingBalance > 0 ? "text-status-warning" : "text-status-success"} />
           </div>
 
-          {data.entries.length === 0 ? <EmptyState message="لا توجد حركات لهذا الزبون" />
+          {filteredEntries.length === 0 ? <EmptyState message={fromDate || toDate ? "لا توجد حركات ضمن الفترة المحددة" : "لا توجد حركات لهذا الزبون"} />
           : <DataTable
               columns={["التاريخ", "النوع", "المرجع", "الوصف", "مدين", "دائن", "المبلغ المتبقي"]}
-              rows={data.entries.map(e => [
+              rows={filteredEntries.map(e => [
                 new Date(e.date).toLocaleDateString("ar-IQ"),
                 e.kind === "order" ? "طلب" : e.kind === "booking" ? "حجز" : e.kind === "invoice" ? "فاتورة" : e.kind === "invoice_payment" ? "دفعة" : "قبض",
                 <span className="inline-flex items-center gap-1.5 text-primary">
@@ -837,8 +882,8 @@ function StatementTab() {
                 e.credit ? <span className="text-status-success">{formatCurrency(e.credit)}</span> : "—",
                 <strong>{formatCurrency(e.balance)}</strong>,
               ])}
-              rowHrefs={data.entries.map((entry) => entry.href ?? null)}
-              footer={<TableTotalsFooter rows={data.entries} allRows={data.entries} labelColSpan={4} cells={[
+              rowHrefs={filteredEntries.map((entry) => entry.href ?? null)}
+              footer={<TableTotalsFooter rows={filteredEntries} allRows={filteredEntries} labelColSpan={4} cells={[
                 { key: "debit", label: "إجمالي المدين", value: (entry) => Number(entry.debit ?? 0), format: formatCurrency },
                 { key: "credit", label: "إجمالي الدائن", value: (entry) => Number(entry.credit ?? 0), format: formatCurrency },
                 { key: "balance", label: "الرصيد", value: (entry) => Number(entry.debit ?? 0) - Number(entry.credit ?? 0), format: formatCurrency },

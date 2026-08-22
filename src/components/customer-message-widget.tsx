@@ -49,16 +49,16 @@ export function CustomerMessageWidget() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="رسالة للمحل"
-        className="fixed bottom-36 left-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-20"
+        className="fixed bottom-[calc(9rem+env(safe-area-inset-bottom))] left-3 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-primary/30 bg-primary text-primary-foreground shadow-lg shadow-black/30 transition-transform hover:scale-105 md:bottom-20 md:left-4"
       >
         <MessageCircle className="h-6 w-6" />
       </button>
       {open && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end justify-center p-4 md:items-center" dir="rtl" onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur-sm md:items-center md:p-4" dir="rtl" onClick={() => setOpen(false)}>
           <form
             onSubmit={submit}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-2xl"
+            className="w-full max-w-md rounded-t-3xl border border-border/40 bg-card p-4 shadow-2xl max-md:max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] max-md:overflow-y-auto max-md:overscroll-contain md:rounded-2xl md:p-5"
           >
             <div className="flex items-center justify-between gap-3 mb-4">
               <div>

@@ -133,7 +133,9 @@ export function MobileNav() {
     let dt = (t2 - last.current) / 1000; last.current = t2;
     dt = Math.min(dt, 0.032);
     if (!dragging.current) {
-      const k = 240, c = 22;
+      // Phones use a near-critically damped response; tablet motion stays unchanged.
+      const k = 240;
+      const c = typeof window !== "undefined" && window.innerWidth < 768 ? 31 : 22;
       const a = -k * (spring.current.x - spring.current.target) - c * spring.current.v;
       spring.current.v += a * dt;
       spring.current.x += spring.current.v * dt;
@@ -247,7 +249,7 @@ export function MobileNav() {
         className="lg:hidden pointer-events-none fixed inset-x-0 bottom-0 z-50"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        <div className="pointer-events-auto relative mx-auto mb-2.5 w-[calc(100%-24px)] max-w-[560px]" style={{ paddingTop: TOPPAD }}>
+        <div className="pointer-events-auto relative mx-auto mb-2 w-[calc(100%-1rem)] max-w-[560px] md:mb-2.5 md:w-[calc(100%-24px)]" style={{ paddingTop: TOPPAD }}>
           <div
             ref={dockRef}
             role="tablist"
@@ -292,7 +294,7 @@ export function MobileNav() {
                     style={{ left, width }}
                   >
                     <span
-                      className="relative grid place-items-center transition-all duration-200"
+                      className="relative grid place-items-center transition-[opacity,transform] duration-150 ease-out md:transition-all md:duration-200"
                       style={{ opacity: isActive ? 0 : 1, transform: isActive ? "scale(.7)" : "none", color: "hsl(var(--muted-foreground))" }}
                     >
                       <Icon style={{ width: ICON, height: ICON }} strokeWidth={1.8} />
@@ -303,7 +305,7 @@ export function MobileNav() {
                       )}
                     </span>
                     <span
-                      className="pointer-events-none absolute bottom-2 text-[10.5px] font-bold transition-all duration-300"
+                      className="pointer-events-none absolute bottom-2 text-[10.5px] font-bold transition-[opacity,transform] duration-150 ease-out md:transition-all md:duration-300"
                       style={{ opacity: isActive ? 1 : 0, transform: isActive ? "none" : "translateY(4px)", color: "hsl(var(--primary))" }}
                     >
                       {label(it)}
@@ -354,7 +356,7 @@ export function MobileNav() {
                   aria-label={label(item)}
                   aria-current={isActive ? "page" : undefined}
                   onClick={() => { setSheetOpen(false); navigate(item.href); }}
-                  className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border p-3 text-center text-xs font-medium transition-colors ${isActive ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-foreground hover:border-primary/40"}`}
+                  className={`flex flex-col items-center justify-center gap-1.5 rounded-xl border p-3 text-center text-xs font-medium transition-colors ${(item.key === "favorites" || item.key === "admin") ? "md:hidden" : ""} ${isActive ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-foreground hover:border-primary/40"}`}
                 >
                   <Icon className="h-5 w-5" />
                   <span className="leading-tight">{label(item)}</span>

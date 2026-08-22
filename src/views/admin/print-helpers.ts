@@ -553,12 +553,62 @@ export type CustomerStatementPrintInput = {
   companyWebsite?: string | null;
   customerName: string;
   customerPhone?: string | null;
+  periodFrom?: string;
+  periodTo?: string;
   totalCharges: number;
   totalPayments: number;
   outstandingBalance: number;
   customerCredit?: number;
   transactions: CustomerStatementPrintTransaction[];
 };
+
+function customerStatementLocalDateKey(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function customerStatementDateInRange(value: string, from?: string, to?: string) {
+  const key = customerStatementLocalDateKey(value);
+  if (!key) return false;
+  return (!from || key >= from) && (!to || key <= to);
+}
+
+export function filterCustomerStatementTransactions(
+  transactions: CustomerStatementPrintTransaction[],
+  from?: string,
+  to?: string,
+) {
+  if (!from && !to) return transactions;
+  return transactions
+    .filter((transaction) => customerStatementDateInRange(transaction.date, from, to))
+    .map((transaction) => {
+      const paymentHistory = (transaction.paymentHistory ?? []).filter((payment) =>
+        customerStatementDateInRange(payment.date, from, to),
+      );
+      const paid = paymentHistory.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      return {
+        ...transaction,
+        paymentHistory,
+        paid,
+        remaining: Math.max(Number(transaction.total || 0) - paid, 0),
+      };
+    });
+}
+
+export function customerStatementTransactionTotals(transactions: CustomerStatementPrintTransaction[]) {
+  return transactions.reduce(
+    (totals, transaction) => ({
+      totalCharges: totals.totalCharges + Number(transaction.total || 0),
+      totalPayments: totals.totalPayments + Number(transaction.paid || 0),
+      outstandingBalance: totals.outstandingBalance + Number(transaction.remaining || 0),
+    }),
+    { totalCharges: 0, totalPayments: 0, outstandingBalance: 0 },
+  );
+}
 
 /** Shared A4 customer-account statement used by both browser print and PDF export. */
 export function customerStatementSheetCss() {
@@ -616,8 +666,10 @@ export function customerStatementPrintHtml(input: CustomerStatementPrintInput) {
   const transactions = [...input.transactions];
   const dates = transactions.map((transaction) => new Date(transaction.date)).filter((date) => !Number.isNaN(date.getTime())).sort((a, b) => a.getTime() - b.getTime());
   const dateText = (date: Date) => date.toLocaleDateString("ar-IQ");
-  const periodFrom = dates.length ? dateText(dates[0]) : "—";
-  const periodTo = dates.length ? dateText(dates[dates.length - 1]) : "—";
+  const selectedDateText = (value?: string) => value ? dateText(new Date(`${value}T00:00:00`)) : "";
+  const hasSelectedPeriod = Boolean(input.periodFrom || input.periodTo);
+  const periodFrom = selectedDateText(input.periodFrom) || (hasSelectedPeriod ? "بداية السجل" : dates.length ? dateText(dates[0]) : "—");
+  const periodTo = selectedDateText(input.periodTo) || (hasSelectedPeriod ? "نهاية السجل" : dates.length ? dateText(dates[dates.length - 1]) : "—");
   const rows = transactions.map((transaction) => `<tr><td>${statementEsc(dateText(new Date(transaction.date)))}</td><td class="reference">${statementEsc(transaction.reference)}</td><td class="description">${statementEsc(transaction.serviceType)}</td><td class="num">${statementEsc(formatCurrency(transaction.total))}</td><td class="num">${statementEsc(formatCurrency(transaction.paid))}</td><td class="num">${statementEsc(formatCurrency(transaction.remaining))}</td></tr>`).join("") || "<tr><td colspan=\"6\" style=\"text-align:center;padding:18px\">لا توجد فواتير لهذا العميل</td></tr>";
   const logo = input.logoUrl ? `<img class="statement-logo" src="${statementEsc(input.logoUrl)}" alt="AJN" onerror="this.remove()">` : "<div></div>";
   const companyContact = [input.companyAddress, input.companyPhone, input.companyWebsite].filter(Boolean).map((value) => `<span class="statement-company-contact">${statementEsc(value)}</span>`).join("");

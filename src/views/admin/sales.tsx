@@ -4,6 +4,7 @@ import {
   useEffect,
   useCallback,
   useDeferredValue,
+  useMemo,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,6 +26,8 @@ import {
   openQrPrintWindow,
   customerStatementPrintHtml,
   customerStatementSheetCss,
+  customerStatementTransactionTotals,
+  filterCustomerStatementTransactions,
   openCustomerStatementPrintWindow,
   openSalesInvoicePrintWindow,
   prepareSalesInvoicePrintWindow,
@@ -1726,6 +1729,8 @@ type CustomerStatementData = {
 
 function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
   const { toast } = useToast();
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const customerId = invoice.customerId ?? null;
   const customerPhone = invoice.customerPhone?.trim() ?? "";
   const statementQuery = customerId
@@ -1740,6 +1745,23 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
   });
   const { data: settings } = usePublicSettings();
 
+  const invalidDateRange = Boolean(fromDate && toDate && fromDate > toDate);
+  const filteredTransactions = useMemo(
+    () => invalidDateRange ? [] : filterCustomerStatementTransactions(data?.transactions ?? [], fromDate, toDate),
+    [data?.transactions, fromDate, invalidDateRange, toDate],
+  );
+  const filteredTotals = useMemo(
+    () => customerStatementTransactionTotals(filteredTransactions),
+    [filteredTransactions],
+  );
+  const statementTotals = fromDate || toDate
+    ? filteredTotals
+    : {
+        totalCharges: data?.totals.totalCharges ?? 0,
+        totalPayments: data?.totals.totalPayments ?? 0,
+        outstandingBalance: data?.totals.balance ?? 0,
+      };
+
   const statementInput = data ? {
     companyName: settings?.site_name,
     logoUrl: logoSrc(settings),
@@ -1748,15 +1770,17 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
     companyWebsite: settings?.website,
     customerName: data.customer.name || invoice.customerName || "—",
     customerPhone: data.customer.phone || invoice.customerPhone,
-    totalCharges: data.totals.totalCharges,
-    totalPayments: data.totals.totalPayments,
-    outstandingBalance: data.totals.balance,
+    periodFrom: fromDate || undefined,
+    periodTo: toDate || undefined,
+    totalCharges: statementTotals.totalCharges,
+    totalPayments: statementTotals.totalPayments,
+    outstandingBalance: statementTotals.outstandingBalance,
     customerCredit: data.totals.customerCredit ?? 0,
-    transactions: data.transactions ?? [],
+    transactions: filteredTransactions,
   } : null;
 
   function printStatement() {
-    if (!statementInput) return;
+    if (!statementInput || invalidDateRange) return;
     try {
       openCustomerStatementPrintWindow(statementInput);
     } catch (cause) {
@@ -1765,7 +1789,7 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
   }
 
   async function exportPdf() {
-    if (!statementInput) return;
+    if (!statementInput || invalidDateRange) return;
     const wrapper = document.createElement("div");
     wrapper.innerHTML = `<style>${customerStatementSheetCss()}</style>${customerStatementPrintHtml(statementInput)}`;
     wrapper.className = "customer-statement-pdf-host";
@@ -1799,17 +1823,24 @@ function CustomerAccountStatementTab({ invoice }: { invoice: SalesInvoice }) {
   return <section className="space-y-4" aria-label="كشف حساب العميل">
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/30 bg-background/40 p-4">
       <div><h3 className="font-bold text-foreground">كشف حساب العميل</h3><p className="mt-1 text-xs text-muted-foreground">{data.customer.name || invoice.customerName} · <span dir="ltr">{formatIraqiPhone(data.customer.phone || customerPhone)}</span></p></div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={printStatement}><Printer className="ml-1 h-4 w-4" />طباعة كشف الحساب</Button><Button variant="outline" size="sm" onClick={() => void exportPdf()}><Download className="ml-1 h-4 w-4" />تصدير PDF</Button><Button variant="outline" size="sm" onClick={shareWhatsApp}><MessageCircle className="ml-1 h-4 w-4" />مشاركة واتساب</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={invalidDateRange} onClick={printStatement}><Printer className="ml-1 h-4 w-4" />طباعة كشف الحساب</Button><Button variant="outline" size="sm" disabled={invalidDateRange} onClick={() => void exportPdf()}><Download className="ml-1 h-4 w-4" />تصدير PDF</Button><Button variant="outline" size="sm" onClick={shareWhatsApp}><MessageCircle className="ml-1 h-4 w-4" />مشاركة واتساب</Button></div>
+    </div>
+    <div className="filters grid gap-3 rounded-xl border border-border/30 bg-background/40 p-4 sm:grid-cols-2">
+      <label className="space-y-1.5 text-xs font-medium text-foreground">من تاريخ<input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
+      <label className="space-y-1.5 text-xs font-medium text-foreground">إلى تاريخ<input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} className="block w-full rounded-lg border border-border/40 bg-background px-3 py-2 text-sm" /></label>
+      <div className={`text-xs sm:col-span-2 ${invalidDateRange ? "text-destructive" : "text-muted-foreground"}`}>
+        {invalidDateRange ? "يجب أن يكون تاريخ البداية قبل تاريخ النهاية." : fromDate || toDate ? `الفترة: من ${(fromDate || "بداية السجل").replaceAll("-", "/")} إلى ${(toDate || "نهاية السجل").replaceAll("-", "/")}` : "الفترة: كامل سجل الحساب"}
+      </div>
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-      <StatementStat label="عدد العمليات" value={String(data.transactions?.length ?? 0)} />
-      <StatementStat label="إجمالي المستحق" value={formatCurrency(data.totals.totalCharges)} />
-      <StatementStat label="إجمالي المدفوع" value={formatCurrency(data.totals.totalPayments)} />
-      <StatementStat label="الرصيد المستحق" value={formatCurrency(data.totals.balance)} accent={data.totals.balance > 0 ? "text-status-warning" : "text-status-success"} />
+      <StatementStat label="عدد الفواتير" value={String(filteredTransactions.length)} />
+      <StatementStat label="إجمالي المستحق" value={formatCurrency(statementTotals.totalCharges)} />
+      <StatementStat label="إجمالي المدفوع" value={formatCurrency(statementTotals.totalPayments)} />
+      <StatementStat label="الرصيد المستحق" value={formatCurrency(statementTotals.outstandingBalance)} accent={statementTotals.outstandingBalance > 0 ? "text-status-warning" : "text-status-success"} />
       <StatementStat label="رصيد العميل" value={formatCurrency(data.totals.customerCredit ?? 0)} accent="text-status-success" />
     </div>
     <div className="overflow-x-auto rounded-xl border border-border/30 bg-background/40">
-      <table className="w-full min-w-[940px] text-sm"><thead><tr className="border-b border-border/30 bg-muted/30 text-xs text-muted-foreground"><th className="p-3 text-right">رقم العملية</th><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">نوع الخدمة</th><th className="p-3 text-left">الإجمالي</th><th className="p-3 text-left">المدفوع</th><th className="p-3 text-left">المتبقي</th><th className="p-3 text-right">سجل الدفعات</th></tr></thead><tbody className="divide-y divide-border/20">{data.transactions?.length ? data.transactions.map((row) => <tr key={`${row.serviceType}-${row.reference}-${row.date}`} className="hover:bg-muted/10"><td className="p-3 font-mono text-xs text-primary" dir="ltr">{row.reference}</td><td className="p-3 text-xs">{new Date(row.date).toLocaleDateString("ar-IQ")}</td><td className="p-3">{row.serviceType}</td><td className="p-3 text-left tabular-nums" dir="ltr">{formatCurrency(row.total)}</td><td className="p-3 text-left tabular-nums text-status-success" dir="ltr">{formatCurrency(row.paid)}</td><td className="p-3 text-left tabular-nums font-semibold" dir="ltr">{formatCurrency(row.remaining)}</td><td className="p-3 text-xs text-muted-foreground">{row.paymentHistory?.length ? row.paymentHistory.map((payment, index) => <div key={`${payment.reference}-${payment.date}-${index}`} className="mb-1 last:mb-0"><span dir="ltr">{new Date(payment.date).toLocaleDateString("ar-IQ")}</span> · <strong className="text-status-success" dir="ltr">{formatCurrency(payment.amount)}</strong></div>) : "—"}</td></tr>) : <tr><td colSpan={7} className="p-10 text-center text-sm text-muted-foreground">لا توجد عمليات لهذا العميل.</td></tr>}</tbody></table>
+      <table className="w-full min-w-[940px] text-sm"><thead><tr className="border-b border-border/30 bg-muted/30 text-xs text-muted-foreground"><th className="p-3 text-right">رقم العملية</th><th className="p-3 text-right">التاريخ</th><th className="p-3 text-right">نوع الخدمة</th><th className="p-3 text-left">الإجمالي</th><th className="p-3 text-left">المدفوع</th><th className="p-3 text-left">المتبقي</th><th className="p-3 text-right">سجل الدفعات</th></tr></thead><tbody className="divide-y divide-border/20">{filteredTransactions.length ? filteredTransactions.map((row) => <tr key={`${row.serviceType}-${row.reference}-${row.date}`} className="hover:bg-muted/10"><td className="p-3 font-mono text-xs text-primary" dir="ltr">{row.reference}</td><td className="p-3 text-xs">{new Date(row.date).toLocaleDateString("ar-IQ")}</td><td className="p-3">{row.serviceType}</td><td className="p-3 text-left tabular-nums" dir="ltr">{formatCurrency(row.total)}</td><td className="p-3 text-left tabular-nums text-status-success" dir="ltr">{formatCurrency(row.paid)}</td><td className="p-3 text-left tabular-nums font-semibold" dir="ltr">{formatCurrency(row.remaining)}</td><td className="p-3 text-xs text-muted-foreground">{row.paymentHistory?.length ? row.paymentHistory.map((payment, index) => <div key={`${payment.reference}-${payment.date}-${index}`} className="mb-1 last:mb-0"><span dir="ltr">{new Date(payment.date).toLocaleDateString("ar-IQ")}</span> · <strong className="text-status-success" dir="ltr">{formatCurrency(payment.amount)}</strong></div>) : "—"}</td></tr>) : <tr><td colSpan={7} className="p-10 text-center text-sm text-muted-foreground">{fromDate || toDate ? "لا توجد عمليات ضمن الفترة المحددة." : "لا توجد عمليات لهذا العميل."}</td></tr>}</tbody></table>
     </div>
   </section>;
 }

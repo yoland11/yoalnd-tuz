@@ -1,5 +1,5 @@
 import {
-  Armchair, Flower2, GraduationCap, Home, Images, Route as RouteIcon,
+  Armchair, Flower2, GraduationCap, Heart, Home, Images, Lock, Route as RouteIcon,
   ShoppingBag, Store, User, WandSparkles, type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +39,8 @@ export const navigationItems: NavItem[] = [
   { key: "track", href: "/track", label: "تتبع الطلب", Icon: RouteIcon, match: (l) => l.startsWith("/track"), translate: true, desktopIcon: true, surfaces: ["desktop", "sheet"] },
   { key: "cart", href: "/cart", label: "السلة", Icon: ShoppingBag, match: (l) => l.startsWith("/cart"), translate: true, desktopIcon: true, surfaces: ["dock"] },
   { key: "account", href: "/profile", label: "حسابي", Icon: User, match: (l) => l.startsWith("/profile") || l.startsWith("/account"), translate: true, desktopIcon: true, surfaces: ["dock"] },
+  { key: "favorites", href: "/favorites", label: "المفضّلة", Icon: Heart, match: (l) => l.startsWith("/favorites"), translate: true, desktopIcon: false, surfaces: ["sheet"] },
+  { key: "admin", href: "/admin/login", label: "دخول الإدارة", Icon: Lock, match: (l) => l.startsWith("/admin"), translate: false, desktopIcon: false, surfaces: ["sheet"] },
 ];
 
 export const desktopNavItems = navigationItems.filter((i) => i.surfaces.includes("desktop"));

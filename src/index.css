@@ -290,6 +290,254 @@ a:hover {
   .mb-safe { margin-bottom: env(safe-area-inset-bottom); }
 }
 
+/* AJN mobile application shell. All rules stop before the 768px tablet layout. */
+@media (max-width: 767px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  html {
+    scroll-padding-top: calc(4.5rem + env(safe-area-inset-top));
+  }
+
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  .mobile-app-shell,
+  .admin-mobile-shell {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+  }
+
+  .mobile-app-shell :where(main, section, article, form, fieldset),
+  .admin-mobile-shell :where(main, section, article, form, fieldset) {
+    min-width: 0;
+  }
+
+  .mobile-app-shell .container,
+  .admin-mobile-shell .container {
+    width: 100%;
+    max-width: 100%;
+    padding-inline: 0.75rem;
+  }
+
+  .ajn-site-header,
+  .admin-mobile-header {
+    box-shadow: 0 8px 24px hsl(var(--background) / 0.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.25);
+    backdrop-filter: blur(18px) saturate(1.25);
+  }
+
+  .ajn-site-header .ajn-nav-icon {
+    width: 2.75rem;
+    height: 2.75rem;
+    min-height: 2.75rem;
+    border-radius: 0.85rem;
+  }
+
+  .mobile-app-shell :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select),
+  .admin-mobile-shell :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select) {
+    min-height: 2.75rem;
+    max-width: 100%;
+    font-size: 1rem;
+  }
+
+  .mobile-app-shell textarea,
+  .admin-mobile-shell textarea {
+    min-height: 6rem;
+    max-width: 100%;
+    font-size: 1rem;
+  }
+
+  .mobile-app-shell :where(button, [role="button"], [role="tab"]),
+  .admin-mobile-shell :where(button, [role="button"], [role="tab"]) {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .admin-mobile-shell button:not([role="tab"]),
+  .admin-mobile-shell [role="button"] {
+    min-height: 2.75rem;
+  }
+
+  .ajn-home-dots button {
+    min-height: 2px;
+  }
+
+  .mobile-app-shell :where(h1, h2, h3, p, label, dd, dt),
+  .admin-mobile-shell :where(h1, h2, h3, p, label, dd, dt) {
+    overflow-wrap: anywhere;
+  }
+
+  .admin-mobile-shell h1 {
+    font-size: clamp(1.25rem, 6vw, 1.5rem);
+    line-height: 1.3;
+  }
+
+  .admin-mobile-shell :where([role="tablist"], .ajn-mobile-tabs) {
+    max-width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-mobile-shell :where([role="tablist"], .ajn-mobile-tabs)::-webkit-scrollbar {
+    display: none;
+  }
+
+  .admin-mobile-shell [role="tab"] {
+    min-height: 2.75rem;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .ajn-table-scroll,
+  .mobile-app-shell .overflow-x-auto,
+  .admin-mobile-shell .overflow-x-auto {
+    max-width: 100%;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.45) transparent;
+  }
+
+  .ajn-table-scroll table,
+  .mobile-app-shell table,
+  .admin-mobile-shell table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mobile-app-shell :where(img, video, canvas),
+  .admin-mobile-shell :where(img, video, canvas) {
+    max-width: 100%;
+  }
+
+  .mobile-app-shell pre,
+  .admin-mobile-shell pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .mobile-app-shell [role="dialog"],
+  .admin-mobile-shell [role="dialog"] {
+    max-width: calc(100vw - 1rem);
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 1rem);
+  }
+
+  .admin-mobile-shell :where(.sticky.bottom-0, .fixed.bottom-0) {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .ajn-home-section {
+    padding-block: 3.75rem;
+  }
+
+  .ajn-home-hero-content {
+    gap: 1.5rem;
+    padding: 3.5rem 0.9rem 4rem;
+  }
+
+  .ajn-home-hero h1 {
+    max-width: 11ch;
+    font-size: clamp(2.45rem, 12vw, 3.25rem);
+    line-height: 1.04;
+  }
+
+  .ajn-home-intro {
+    margin-top: 1.1rem;
+    font-size: 0.96rem;
+    line-height: 1.8;
+  }
+
+  .ajn-home-hero-actions > * {
+    min-height: 2.75rem;
+  }
+
+  .ajn-home-slide-card {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .ajn-home-story-image {
+    min-height: 17rem;
+  }
+
+  .ajn-home-review blockquote {
+    font-size: clamp(1.45rem, 7vw, 2rem);
+  }
+}
+
+@media (max-width: 479px) {
+  .admin-mobile-shell .grid-cols-2,
+  .admin-mobile-shell .grid-cols-3,
+  .admin-mobile-shell .grid-cols-4,
+  .admin-mobile-shell .grid-cols-5,
+  .admin-mobile-shell .grid-cols-6 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ajn-home-service-grid,
+  .ajn-home-product-grid,
+  .ajn-home-process ol {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ajn-home-product-card,
+  .ajn-home-service-card,
+  .ajn-home-review {
+    width: 100%;
+    border-radius: 1rem;
+  }
+
+  .ajn-home-mosaic {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(4, 13rem);
+  }
+
+  .ajn-home-mosaic-item.is-1,
+  .ajn-home-mosaic-item.is-4 {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 767px) and (orientation: landscape) {
+  .ajn-site-header > .container {
+    height: 3.5rem;
+  }
+
+  .admin-mobile-header > div {
+    padding-block: 0.35rem;
+  }
+
+  .admin-mobile-shell > main {
+    padding-top: calc(4rem + env(safe-area-inset-top));
+  }
+
+  .ajn-home-hero {
+    min-height: auto;
+  }
+
+  .ajn-home-hero-content {
+    padding-block: 2.5rem 3rem;
+  }
+}
+
+@media (max-width: 767px) and (prefers-reduced-transparency: reduce) {
+  .ajn-site-header,
+  .admin-mobile-header {
+    background: hsl(var(--background));
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 /**
  * Using the elevate system.
  * Automatic contrast adjustment.

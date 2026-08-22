@@ -59,7 +59,7 @@ export function Navbar() {
 
   return (
     <header
-      className={`sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
+      className={`ajn-site-header sticky top-0 z-50 w-full bg-background/95 pt-safe backdrop-blur supports-[backdrop-filter]:bg-background/60 md:pt-0 ${isFlowerStudio ? "flower-design-navbar" : ""}`}
       style={isFlowerStudio ? undefined : { backgroundColor: "hsl(var(--ajn-header) / 0.95)" }}
     >
       <div
@@ -124,9 +124,9 @@ export function Navbar() {
           </div>
         </div>
       </div>
-      <div className="container mx-auto flex h-20 items-center justify-between px-4">
+      <div className="container mx-auto flex h-16 min-w-0 items-center justify-between gap-2 px-3 md:h-20 md:px-4">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2">
+        <Link href="/" className="flex min-w-0 shrink items-center gap-2" aria-label={settings?.site_name ?? "AJN"}>
           <span className="h-10 w-10 rounded-lg border border-primary/20 bg-primary/5 p-1.5 flex items-center justify-center overflow-hidden">
             <img
               src={logoSrc(settings)}
@@ -160,7 +160,7 @@ export function Navbar() {
         </nav>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 md:gap-4">
+        <div className="ajn-mobile-header-actions flex shrink-0 items-center gap-1 md:gap-4">
           <Button
             variant="ghost"
             size="icon"
@@ -180,7 +180,7 @@ export function Navbar() {
             )}
           </Button>
           <LanguageSwitcher />
-          <Link href="/profile">
+          <Link href="/profile" className="hidden md:block">
             <Button variant="ghost" size="icon" className="ajn-nav-icon">
               {customer?.avatarUrl ? (
                 <img
@@ -193,7 +193,7 @@ export function Navbar() {
               )}
             </Button>
           </Link>
-          <Link href="/favorites" aria-label="المفضّلة">
+          <Link href="/favorites" aria-label="المفضّلة" className="hidden md:block">
             <Button
               variant="ghost"
               size="icon"
@@ -207,7 +207,7 @@ export function Navbar() {
               )}
             </Button>
           </Link>
-          <Link href="/cart">
+          <Link href="/cart" className="hidden md:block">
             <Button
               variant="ghost"
               size="icon"
@@ -225,6 +225,7 @@ export function Navbar() {
             href="/admin/login"
             aria-label="دخول الإدارة"
             title="دخول الإدارة"
+            className="hidden md:block"
           >
             <Button
               variant="ghost"
