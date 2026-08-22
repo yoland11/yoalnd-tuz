@@ -818,6 +818,12 @@ export default function PurchasesPage() {
                               side="bottom"
                               sideOffset={6}
                               collisionPadding={12}
+                              onOpenAutoFocus={(event) =>
+                                event.preventDefault()
+                              }
+                              onCloseAutoFocus={(event) =>
+                                event.preventDefault()
+                              }
                               className="max-h-[min(22rem,var(--radix-popover-content-available-height))] w-[min(22rem,calc(100vw-1.5rem))] overflow-y-auto p-1"
                             >
                               {filtered.map((p) => (
