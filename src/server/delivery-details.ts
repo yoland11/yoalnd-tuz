@@ -566,6 +566,133 @@ export async function persistInvoiceDelivery(
   return { deliveryDetail: detail, deliveryOrder: order, created: true };
 }
 
+/**
+ * Updates the delivery attached to an existing sales invoice without replacing
+ * its order or status history.  If the invoice predates delivery_details this
+ * safely falls back to the same idempotent insert path used by invoice create.
+ */
+export async function updateInvoiceDelivery(
+  opts: PersistDeliveryOptions,
+): Promise<{ deliveryDetail: DeliveryDetail; deliveryOrder: DeliveryOrder | null; created: boolean }> {
+  await ensureDeliveryDetailsTables();
+  const executor = opts.executor ?? db;
+  const { prep, actor } = opts;
+  const input = prep.input;
+  const existing = await executor.query.deliveryDetailsTable.findFirst({
+    where: eq(deliveryDetailsTable.salesInvoiceId, opts.salesInvoiceId),
+  });
+
+  if (!existing) return persistInvoiceDelivery(opts);
+
+  const existingOrder = await executor.query.deliveryOrdersTable.findFirst({
+    where: eq(deliveryOrdersTable.deliveryDetailsId, existing.id),
+  });
+  const codEnabled = input.codEnabled ?? false;
+  const [detail] = await executor
+    .update(deliveryDetailsTable)
+    .set({
+      customerId: opts.customerId,
+      customerAddressId: input.customerAddressId ?? existing.customerAddressId,
+      provinceId: prep.province?.id ?? existing.provinceId,
+      method: prep.method,
+      provinceName: prep.province?.governorateAr ?? existing.provinceName,
+      city: input.city ?? "",
+      district: input.district ?? "",
+      area: input.area ?? "",
+      landmark: input.landmark ?? "",
+      fullAddress: input.fullAddress ?? "",
+      mapsUrl: input.mapsUrl ?? null,
+      receiverName: input.receiverName ?? "",
+      receiverPhone: prep.receiverPhone,
+      receiverAltPhone: input.receiverAltPhone ?? null,
+      deliveryCompany: input.deliveryCompany ?? prep.province?.deliveryCompany ?? null,
+      deliveryType: input.deliveryType,
+      deliveryFee: String(money(opts.finalFee)),
+      baseFee: String(money(prep.resolvedFee)),
+      feeOverridden: opts.overridden,
+      feeOverrideReason: opts.overrideReason,
+      feePaidBy: input.feePaidBy,
+      codEnabled,
+      codFee: String(money(prep.codFee)),
+      codAmount: String(money(opts.codAmount)),
+      expectedShipDate: prep.expectedShipDate,
+      expectedArrivalDate: prep.expectedArrivalDate,
+      preferredTime: input.preferredTime ?? null,
+      notes: input.notes ?? null,
+      isFragile: input.isFragile ?? false,
+      needsRefrigeration: input.needsRefrigeration ?? false,
+      updatedAt: new Date(),
+    })
+    .where(eq(deliveryDetailsTable.id, existing.id))
+    .returning();
+  if (!detail) throw new Error("تعذر تحديث تفاصيل التوصيل");
+
+  let order = existingOrder ?? null;
+  if (order) {
+    const [updatedOrder] = await executor
+      .update(deliveryOrdersTable)
+      .set({
+        customerId: opts.customerId,
+        customerAddressId: input.customerAddressId ?? order.customerAddressId,
+        provinceId: prep.province?.id ?? order.provinceId,
+        updatedAt: new Date(),
+      })
+      .where(eq(deliveryOrdersTable.id, order.id))
+      .returning();
+    order = updatedOrder ?? order;
+  } else if (prep.method === "province") {
+    const [created] = await executor
+      .insert(deliveryOrdersTable)
+      .values({
+        deliveryNo: `DLV-TEMP-${randomBytes(6).toString("hex")}`,
+        deliveryDetailsId: detail.id,
+        salesInvoiceId: opts.salesInvoiceId,
+        customerId: opts.customerId,
+        customerAddressId: input.customerAddressId ?? null,
+        provinceId: prep.province?.id ?? null,
+        status: "pending_prep",
+        createdBy: actor.id,
+        createdByName: actor.name,
+      })
+      .returning();
+    const [renamed] = await executor
+      .update(deliveryOrdersTable)
+      .set({ deliveryNo: deliveryNo(created.id, new Date(created.createdAt)) })
+      .where(eq(deliveryOrdersTable.id, created.id))
+      .returning();
+    order = renamed ?? created;
+    if (!order) throw new Error("تعذر إنشاء طلب التوصيل");
+    await executor.insert(deliveryOrderStatusHistoryTable).values({
+      deliveryOrderId: order.id,
+      status: "pending_prep",
+      notes: "أُنشئ تلقائياً عند إضافة التوصيل إلى الفاتورة",
+      createdBy: actor.id,
+      createdByName: actor.name,
+    });
+  }
+
+  if (input.saveAddressToCustomer && opts.customerId && prep.method === "province") {
+    await executor.insert(customerAddressesTable).values({
+      customerId: opts.customerId,
+      type: "delivery",
+      fullName: input.receiverName ?? "",
+      phone: prep.receiverPhone ?? "",
+      provinceId: prep.province?.id ?? null,
+      governorate: prep.province?.governorateAr ?? "",
+      city: input.city ?? "",
+      district: input.district ?? "",
+      area: input.area ?? "",
+      address: input.fullAddress ?? "",
+      landmark: input.landmark ?? "",
+      altPhone: input.receiverAltPhone ?? null,
+      mapsUrl: input.mapsUrl ?? null,
+      isDefault: false,
+    });
+  }
+
+  return { deliveryDetail: detail, deliveryOrder: order, created: false };
+}
+
 export async function getInvoiceDelivery(salesInvoiceId: number) {
   const detail = await db.query.deliveryDetailsTable.findFirst({
     where: eq(deliveryDetailsTable.salesInvoiceId, salesInvoiceId),
@@ -597,6 +724,7 @@ export function formatDeliveryDetail(detail: DeliveryDetail, order: DeliveryOrde
     deliveryType: detail.deliveryType,
     deliveryTypeLabel: DELIVERY_TYPE_LABELS[detail.deliveryType] ?? detail.deliveryType,
     deliveryFee: money(detail.deliveryFee),
+    feePaidBy: detail.feePaidBy,
     codEnabled: detail.codEnabled,
     codFee: money(detail.codFee),
     codAmount: money(detail.codAmount),
@@ -604,6 +732,8 @@ export function formatDeliveryDetail(detail: DeliveryDetail, order: DeliveryOrde
     needsRefrigeration: detail.needsRefrigeration,
     expectedShipDate: detail.expectedShipDate,
     expectedArrivalDate: detail.expectedArrivalDate,
+    preferredTime: detail.preferredTime,
+    notes: detail.notes,
     order: order
       ? {
           id: order.id,

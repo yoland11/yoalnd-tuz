@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import CustomerAccountPrompt from "./customer-account-prompt";
 import { adminFetch, apiErrorMessage, apiErrorStatus, canPrintSalesInvoice, fetchAdminMe, formatCurrency, type AdminMe } from "./_lib";
-import DeliverySection, { type DeliveryOutput } from "./delivery-section";
+import DeliverySection, { type DeliveryInitialValue, type DeliveryOutput } from "./delivery-section";
 import { printDeliveryLabel } from "./delivery-label";
 import {
   createSalesInvoiceThermalPdfElement,
@@ -84,6 +84,7 @@ type SalesInvoice = {
   reversalCompletedAt?: string | null; inventoryReversed?: boolean; financeReversed?: boolean;
   supplierId?: number | null; supplierName?: string | null; lastPayment?: LastPayment;
   items?: CartItem[];
+  delivery?: DeliveryInitialValue | null;
   qr?: { dataUrl?: string; scanUrl?: string; token?: string; targetUrl?: string };
 };
 type HeldInvoice = { id: string; customerName: string; items: CartItem[]; createdAt: string };
@@ -289,8 +290,9 @@ export default function SalesPage() {
   const [pendingPrintOutput, setPendingPrintOutput] = useState<SalesInvoiceSavePrintOutput | null>(null);
   const { data: invoiceSettings } = usePublicSettings();
   const [delivery, setDelivery] = useState<DeliveryOutput>({
-    method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null,
+    method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, dirty: false, payload: null, summary: null,
   });
+  const [deliveryFormRevision, setDeliveryFormRevision] = useState(0);
 
   // Held invoices (localStorage)
   const [held, setHeld] = useState<HeldInvoice[]>(() => {
@@ -516,6 +518,7 @@ export default function SalesPage() {
     localStorage.setItem("ajn_held_invoices", JSON.stringify(updated));
     setCart([]);
     setForm(newInvoice());
+    setDeliveryFormRevision((revision) => revision + 1);
     toast({ title: "تم تعليق الفاتورة", description: `${cart.length} صنف` });
   }
 
@@ -667,7 +670,8 @@ export default function SalesPage() {
       queryClient.invalidateQueries({ queryKey: ["admin", "inventory-alert-count"] });
       setCart([]);
       setForm(newInvoice());
-      setDelivery({ method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, payload: null, summary: null });
+      setDelivery({ method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, dirty: false, payload: null, summary: null });
+      setDeliveryFormRevision((revision) => revision + 1);
       setSearchQ("");
       // Ready for the next invoice: focus the barcode/search field with no mouse.
       requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
@@ -831,7 +835,7 @@ export default function SalesPage() {
             <FileText className="w-4 h-4 ml-1" />
             سجل الفواتير
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { setCart([]); setForm(newInvoice()); }}>
+          <Button variant="outline" size="sm" onClick={() => { setCart([]); setForm(newInvoice()); setDeliveryFormRevision((revision) => revision + 1); }}>
             <RefreshCw className="w-4 h-4 ml-1" />
             جديدة
           </Button>
@@ -1146,7 +1150,7 @@ export default function SalesPage() {
           </div>
 
           {/* Delivery (province-based) */}
-          <DeliverySection subtotal={subtotal} customerPhone={form.customerPhone} onChange={setDelivery} />
+          <DeliverySection key={deliveryFormRevision} subtotal={subtotal} customerId={form.customerId ? Number(form.customerId) : null} customerPhone={form.customerPhone} onChange={setDelivery} />
 
           {/* Payment */}
           <div className="bg-card rounded-xl border border-border/40 p-4 space-y-3">
@@ -1876,6 +1880,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     isInternal: false,
   });
   const [items, setItems] = useState<CartItem[]>([]);
+  const [editDelivery, setEditDelivery] = useState<DeliveryOutput>({
+    method: "pickup", deliveryFee: 0, codFee: 0, codEnabled: false, valid: true, dirty: false, payload: null, summary: null,
+  });
   const { data: settings } = usePublicSettings();
   const { data: printerSettings } = useQuery<PrinterSettings>({
     queryKey: ["admin", "printer-settings"],
@@ -1943,6 +1950,16 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
         costPrice: toNumber(item.costPrice),
       };
     }));
+    setEditDelivery({
+      method: invoice.delivery?.method === "province" || invoice.delivery?.method === "city" ? invoice.delivery.method : "pickup",
+      deliveryFee: toNumber(invoice.delivery?.deliveryFee),
+      codFee: toNumber(invoice.delivery?.codFee),
+      codEnabled: Boolean(invoice.delivery?.codEnabled),
+      valid: true,
+      dirty: false,
+      payload: null,
+      summary: null,
+    });
   }, [invoice]);
 
   useEffect(() => {
@@ -1996,8 +2013,15 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
   const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
   const discountAmount = toNumber(draft.discountAmount);
   const taxAmount = toNumber(draft.taxAmount);
-  const total = Math.max(subtotal - discountAmount + taxAmount, 0);
-  const paidAmount = isCashPaymentMethod(draft.paymentMethod) ? total : toNumber(draft.paidAmount);
+  const offerDeliveryFee = toNumber(invoice?.offerDeliveryFee);
+  const deliveryFee = toNumber(editDelivery.deliveryFee);
+  const deliveryCodFee = toNumber(editDelivery.codFee);
+  const total = Math.max(subtotal - discountAmount + taxAmount + offerDeliveryFee + deliveryFee + deliveryCodFee, 0);
+  const paidAmount = editDelivery.codEnabled
+    ? Math.min(total, toNumber(draft.paidAmount))
+    : isCashPaymentMethod(draft.paymentMethod)
+      ? total
+      : Math.min(total, toNumber(draft.paidAmount));
   const remainingAmount = Math.max(total - paidAmount, 0);
   const paymentStatus = paidAmount >= total ? "paid" : paidAmount > 0 ? "partial" : "unpaid";
 
@@ -2005,6 +2029,10 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
     const validItems = items.filter((item) => item.productName.trim() && item.quantity > 0);
     if (validItems.length === 0) {
       toast({ title: "الفاتورة فارغة", description: "أضف منتجاً واحداً على الأقل.", variant: "destructive" });
+      return;
+    }
+    if (editDelivery.method === "province" && !editDelivery.valid) {
+      toast({ title: "بيانات التوصيل ناقصة", description: "اختر المحافظة والقضاء أو الناحية وأدخل رقم هاتف عراقي صحيح.", variant: "destructive" });
       return;
     }
     setSaving(true);
@@ -2027,6 +2055,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
           paymentStatus,
           isInternal: draft.isInternal ? 1 : 0,
           notes: draft.notes,
+          ...(editDelivery.dirty && editDelivery.payload ? { delivery: editDelivery.payload } : {}),
           items: validItems.map((item) => ({
             productId: item.productId > 0 ? item.productId : null,
             productName: item.productName,
@@ -2387,7 +2416,7 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     <button
                       type="button"
                       key={method.value}
-                      onClick={() => setDraft((current) => ({ ...current, paymentMethod: method.value, paidAmount: isCashPaymentMethod(method.value) ? String(total) : current.paidAmount }))}
+                      onClick={() => setDraft((current) => ({ ...current, paymentMethod: method.value, paidAmount: isCashPaymentMethod(method.value) && !editDelivery.codEnabled ? String(total) : current.paidAmount }))}
                       className={`rounded-lg py-2 text-sm font-medium border transition-colors ${
                         draft.paymentMethod === method.value
                           ? "bg-primary text-black border-primary"
@@ -2403,9 +2432,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                   <input
                     type="number"
                     min="0"
-                    value={isCashPaymentMethod(draft.paymentMethod) ? total : draft.paidAmount}
+                    value={isCashPaymentMethod(draft.paymentMethod) && !editDelivery.codEnabled ? total : draft.paidAmount}
                     onChange={(e) => updateDraft("paidAmount", e.target.value)}
-                    readOnly={isCashPaymentMethod(draft.paymentMethod)}
+                    readOnly={isCashPaymentMethod(draft.paymentMethod) && !editDelivery.codEnabled}
                     className="w-full bg-background border border-border/40 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     dir="ltr"
                   />
@@ -2453,6 +2482,9 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                     dir="ltr"
                   />
                 </div>
+                {offerDeliveryFee > 0 ? <div className="flex justify-between text-sm"><span className="text-muted-foreground">توصيل العروض</span><span>{formatCurrency(offerDeliveryFee)}</span></div> : null}
+                {deliveryFee > 0 ? <div className="flex justify-between text-sm"><span className="text-muted-foreground">أجرة التوصيل</span><span>{formatCurrency(deliveryFee)}</span></div> : null}
+                {deliveryCodFee > 0 ? <div className="flex justify-between text-sm"><span className="text-muted-foreground">أجرة الدفع عند الاستلام</span><span>{formatCurrency(deliveryCodFee)}</span></div> : null}
                 <div className="flex justify-between font-bold border-t border-border/30 pt-2">
                   <span>الإجمالي</span>
                   <span className="text-primary">{formatCurrency(total)}</span>
@@ -2463,6 +2495,16 @@ function SalesInvoiceDetailModal({ invoiceId, onClose }: { invoiceId: number; on
                 </div>
               </div>
             </div>
+
+            {invoice ? <DeliverySection
+              key={`invoice-delivery-${invoice.id}`}
+              subtotal={subtotal}
+              customerId={invoice.customerId ?? null}
+              customerPhone={draft.customerPhone}
+              initialValue={invoice.delivery}
+              lockInitialMethod={Boolean(invoice.delivery)}
+              onChange={setEditDelivery}
+            /> : null}
 
             <div className="bg-background/40 rounded-xl border border-border/30 overflow-hidden">
               <div className="px-4 py-3 border-b border-border/30 flex items-center justify-between">

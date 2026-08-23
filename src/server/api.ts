@@ -206,6 +206,7 @@ import {
   warehousesTable,
   warehouseStockTable,
   taskCommentsTable,
+  taskAttachmentsTable,
   taskChecklistItemsTable,
   taskItemAttachmentsTable,
   tasksTable,
@@ -543,8 +544,10 @@ import {
   saveCancelReason,
   saveReturnMetadata,
   setDeliveryAccountingMode,
+  updateInvoiceDelivery,
   updateDeliveryOrderStatus,
   type DeliveryAccountingMode,
+  type DeliveryPrep,
 } from "@/server/delivery-details";
 import {
   AddToCartBody,
@@ -2231,6 +2234,51 @@ function taskPriority(value: unknown): string {
     : "medium";
 }
 
+type TaskPhotoInput = {
+  id: number | null;
+  url: string;
+  thumbnailUrl: string | null;
+  fileName: string | null;
+  mediaType: string;
+  caption: string | null;
+};
+
+function taskPhotoInputs(value: unknown): TaskPhotoInput[] {
+  if (!Array.isArray(value)) return [];
+  const photos: TaskPhotoInput[] = [];
+  for (const item of value.slice(0, 60)) {
+    if (!item || typeof item !== "object") continue;
+    const source = item as Record<string, unknown>;
+    const url = String(source.url ?? source.fileUrl ?? "").trim();
+    if (!url || url.length > 4_000 || !/^(https?:\/\/|\/api\/media\/)/i.test(url)) continue;
+    const thumbnail = String(source.thumbnailUrl ?? "").trim();
+    photos.push({
+      id: optionalPositiveId(source.id),
+      url,
+      thumbnailUrl: thumbnail && /^(https?:\/\/|\/api\/media\/)/i.test(thumbnail) ? thumbnail.slice(0, 4_000) : null,
+      fileName: nullableText(source.fileName ?? source.name)?.slice(0, 300) ?? null,
+      mediaType: String(source.mediaType ?? "image").slice(0, 80),
+      caption: nullableText(source.caption)?.slice(0, 500) ?? null,
+    });
+  }
+  return photos;
+}
+
+function formatTaskPhoto(row: any) {
+  return {
+    id: row.id,
+    url: row.fileUrl ?? row.file_url,
+    thumbnailUrl: row.thumbnailUrl ?? row.thumbnail_url ?? null,
+    fileName: row.fileName ?? row.file_name ?? null,
+    mediaType: row.mediaType ?? row.media_type ?? "image",
+    category: row.category ?? "attachment",
+    caption: row.caption ?? null,
+    uploadedBy: row.uploadedBy ?? row.uploaded_by ?? null,
+    uploadedByName: row.uploadedByName ?? row.uploaded_by_name ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.created_at?.toISOString?.() ?? null,
+  };
+}
+
 function messageStatus(value: unknown): string {
   const status = String(value ?? "new");
   return ["new", "read", "replied", "closed"].includes(status) ? status : "new";
@@ -2263,6 +2311,7 @@ function formatTask(
     startAt:
       row.startAt?.toISOString?.() ?? row.start_at?.toISOString?.() ?? null,
     dueAt: row.dueAt?.toISOString?.() ?? row.due_at?.toISOString?.() ?? null,
+    location: row.location ?? "",
     estimatedMinutes:
       Number(row.estimatedMinutes ?? row.estimated_minutes ?? 0) || null,
     submittedAt:
@@ -2273,6 +2322,8 @@ function formatTask(
       row.completedAt?.toISOString?.() ??
       row.completed_at?.toISOString?.() ??
       null,
+    completionNotes: row.completionNotes ?? row.completion_notes ?? "",
+    completedBy: row.completedBy ?? row.completed_by ?? null,
     approvedBy: row.approvedBy ?? row.approved_by ?? null,
     approvedAt:
       row.approvedAt?.toISOString?.() ??
@@ -41001,9 +41052,11 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         return error("اختر موظفاً واحداً على الأقل", 422);
       const dueAt = safeDate(b?.dueAt);
       const checklistItems = taskChecklistInput(b?.checklistItems ?? b?.items);
-      const [row] = await db
-        .insert(tasksTable)
-        .values({
+      const managerPhotos = taskPhotoInputs(b?.managerPhotos);
+      if (Array.isArray(b?.managerPhotos) && (b.managerPhotos.length > 60 || managerPhotos.length !== b.managerPhotos.length))
+        return error("بيانات صور المدير غير صالحة أو ليست روابط تخزين معتمدة", 422);
+      const saved = await db.transaction(async (tx) => {
+        const [row] = await tx.insert(tasksTable).values({
           title,
           description: nullableText(b?.description),
           status: "new",
@@ -41012,6 +41065,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           taskType: taskType(b?.taskType),
           startAt: safeDate(b?.startAt) ?? new Date(),
           dueAt,
+          location: nullableText(b?.location),
           estimatedMinutes:
             Number.isFinite(Number(b?.estimatedMinutes)) &&
             Number(b.estimatedMinutes) > 0
@@ -41030,16 +41084,12 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             ? b.attachments.filter((item: unknown) => typeof item === "string")
             : [],
           createdBy: auth.id,
-        })
-        .returning();
-      const taskNo = `TSK-${String(row.id).padStart(6, "0")}`;
-      const [saved] = await db
-        .update(tasksTable)
-        .set({ taskNo })
-        .where(eq(tasksTable.id, row.id))
-        .returning();
-      if (checklistItems.length)
-        await db.insert(taskChecklistItemsTable).values(
+        }).returning();
+        const taskNo = `TSK-${String(row.id).padStart(6, "0")}`;
+        const [numbered] = await tx.update(tasksTable).set({ taskNo }).where(eq(tasksTable.id, row.id)).returning();
+        if (!numbered) throw new Error("تعذر ترقيم المهمة");
+        if (checklistItems.length)
+          await tx.insert(taskChecklistItemsTable).values(
           checklistItems.map((item, index) => ({
             taskId: row.id,
             title: item.title,
@@ -41048,6 +41098,21 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             sortOrder: index,
           })),
         );
+        if (managerPhotos.length)
+          await tx.insert(taskAttachmentsTable).values(managerPhotos.map((photo) => ({
+            taskId: row.id,
+            fileUrl: photo.url,
+            fileName: photo.fileName,
+            thumbnailUrl: photo.thumbnailUrl,
+            mediaType: photo.mediaType,
+            category: "manager_photo",
+            caption: photo.caption,
+            uploadedBy: auth.id,
+            uploadedByName: auth.fullName || auth.username,
+          })));
+        return numbered;
+      });
+      const taskNo = saved.taskNo!;
       await Promise.all(
         (assignedStaffIds.length ? assignedStaffIds : [null]).map((staffId) =>
           createNotification({
@@ -41056,20 +41121,23 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             body: title,
             staffId,
             entityType: "task",
-            entityId: row.id,
-            href: "/admin/tasks",
+            entityId: saved.id,
+            href: "/staff?tab=tasks",
           }),
         ),
       );
-      void logAdminActivity(req, "task_created", "task", row.id, {
+      void logAdminActivity(req, "task_created", "task", saved.id, {
         assignedStaffIds,
         title,
         taskNo,
         checklistItems: checklistItems.length,
+        managerPhotoCount: managerPhotos.length,
       });
+      if (managerPhotos.length)
+        void logAdminActivity(req, "task_manager_photo_added", "task", saved.id, { count: managerPhotos.length, source: "task_create" });
       void addEntityTimeline({
         entityType: "task",
-        entityId: row.id,
+        entityId: saved.id,
         type: "task_created",
         title: "تم إنشاء مهمة",
         body: title,
@@ -41078,6 +41146,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           taskNo,
           assignedStaffIds,
           checklistItems: checklistItems.length,
+          managerPhotoCount: managerPhotos.length,
         },
       });
       return json(formatTask(saved), 201);
@@ -41095,7 +41164,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (!task) return error("المهمة غير موجودة", 404);
       if (!canManageAll && !(task.assignedStaffIds ?? []).includes(auth.id))
         return error("ليس لديك صلاحية على هذه المهمة", 403);
-      const [staffRows, items, comments] = await Promise.all([
+      const [staffRows, items, comments, taskPhotos] = await Promise.all([
         db.query.staffTable.findMany({ orderBy: (s, { asc }) => [asc(s.id)] }),
         db.query.taskChecklistItemsTable.findMany({
           where: eq(taskChecklistItemsTable.taskId, id!),
@@ -41107,6 +41176,10 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         db.query.taskCommentsTable.findMany({
           where: eq(taskCommentsTable.taskId, id!),
           orderBy: (c, { desc }) => [desc(c.createdAt)],
+        }),
+        db.query.taskAttachmentsTable.findMany({
+          where: eq(taskAttachmentsTable.taskId, id!),
+          orderBy: (attachment, { asc }) => [asc(attachment.createdAt), asc(attachment.id)],
         }),
       ]);
       const attachments = items.length
@@ -41146,6 +41219,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       });
       return json({
         ...formatTask(task, staffById),
+        managerPhotos: taskPhotos.filter((photo) => photo.category === "manager_photo" || photo.category === "attachment").map(formatTaskPhoto),
+        employeePhotos: taskPhotos.filter((photo) => photo.category === "employee_photo").map(formatTaskPhoto),
         checklistItems,
         progress: taskItemProgress(checklistItems),
         comments: comments.map((comment) => ({
@@ -41186,6 +41261,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         where: eq(taskChecklistItemsTable.taskId, id!),
       });
       const byId = new Map(items.map((item) => [item.id, item]));
+      const validatedUpdates: Array<{ itemId: number; completedQuantity: number }> = [];
       for (const update of updates) {
         const item = byId.get(Number(update?.id));
         const completedQuantity = Number(update?.completedQuantity);
@@ -41196,19 +41272,18 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
           completedQuantity > Number(item.requiredQuantity)
         )
           return error("كمية الإنجاز غير صالحة", 422);
-        await db
-          .update(taskChecklistItemsTable)
-          .set({
-            completedQuantity: String(completedQuantity),
-            updatedAt: new Date(),
-          })
-          .where(eq(taskChecklistItemsTable.id, item.id));
+        validatedUpdates.push({ itemId: item.id, completedQuantity });
       }
-      const [updated] = await db
-        .update(tasksTable)
-        .set({ status: "in_progress", updatedAt: new Date() })
-        .where(eq(tasksTable.id, id!))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        for (const update of validatedUpdates)
+          await tx.update(taskChecklistItemsTable).set({
+            completedQuantity: String(update.completedQuantity),
+            updatedAt: new Date(),
+          }).where(eq(taskChecklistItemsTable.id, update.itemId));
+        const [row] = await tx.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+        if (!row) throw new Error("تعذر حفظ تقدم المهمة");
+        return row;
+      });
       void logAdminActivity(req, "task_progress_updated", "task", id, {
         oldStatus: task.status,
         newStatus: "in_progress",
@@ -41223,6 +41298,101 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         metadata: { items: updates },
       });
       return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "photos") {
+      const id = int(parts[2]);
+      const task = id ? await db.query.tasksTable.findFirst({
+        where: and(eq(tasksTable.id, id), sql`${tasksTable.archivedAt} is null`),
+      }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id))
+        return error("يمكن للموظف المعيّن فقط إضافة صور الإنجاز", 403);
+      if (["review", "completed", "cancelled"].includes(task.status))
+        return error("لا يمكن تعديل صور مهمة محمية", 409);
+      const b = await body(req);
+      const photos = taskPhotoInputs(b?.photos ?? b?.employeePhotos);
+      const rawPhotos = b?.photos ?? b?.employeePhotos;
+      if (Array.isArray(rawPhotos) && (rawPhotos.length > 60 || photos.length !== rawPhotos.length))
+        return error("بيانات صور الإنجاز غير صالحة أو ليست روابط تخزين معتمدة", 422);
+      const note = nullableText(b?.note ?? b?.progressNote)?.slice(0, 2_000) ?? null;
+      if (!photos.length && !note) return error("أضف صورة أو ملاحظة تقدم", 422);
+      const updated = await db.transaction(async (tx) => {
+        if (photos.length) await tx.insert(taskAttachmentsTable).values(photos.map((photo) => ({
+          taskId: id!, fileUrl: photo.url, fileName: photo.fileName,
+          thumbnailUrl: photo.thumbnailUrl, mediaType: photo.mediaType,
+          category: "employee_photo", caption: photo.caption,
+          uploadedBy: auth.id, uploadedByName: auth.fullName || auth.username,
+        })));
+        if (note) await tx.insert(taskCommentsTable).values({ taskId: id!, staffId: auth.id, body: note });
+        const [row] = await tx.update(tasksTable).set({ status: "in_progress", updatedAt: new Date() }).where(eq(tasksTable.id, id!)).returning();
+        return row;
+      });
+      void logAdminActivity(req, "task_employee_photos_added", "task", id!, { photoCount: photos.length, noteAdded: Boolean(note) });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: photos.length ? "task_employee_photos_added" : "task_progress_note_added", title: photos.length ? "تمت إضافة صور تقدم الموظف" : "أضاف الموظف ملاحظة تقدم", body: note, actor: erpActorFromAdmin(auth), metadata: { photoCount: photos.length } });
+      return json(formatTask(updated));
+    }
+
+    if (method === "POST" && parts[2] && parts[3] === "complete") {
+      const id = int(parts[2]);
+      const task = id ? await db.query.tasksTable.findFirst({
+        where: and(eq(tasksTable.id, id), sql`${tasksTable.archivedAt} is null`),
+      }) : null;
+      if (!task) return error("المهمة غير موجودة", 404);
+      if (!(task.assignedStaffIds ?? []).includes(auth.id))
+        return error("ليس لديك صلاحية إكمال هذه المهمة", 403);
+      if (["review", "completed", "cancelled"].includes(task.status))
+        return error("لا يمكن إكمال مهمة مرسلة أو مكتملة أو ملغاة", 409);
+      const b = await body(req);
+      const photos = taskPhotoInputs(b?.photos ?? b?.employeePhotos);
+      const rawPhotos = b?.photos ?? b?.employeePhotos;
+      if (Array.isArray(rawPhotos) && (rawPhotos.length > 60 || photos.length !== rawPhotos.length))
+        return error("بيانات صور الإنجاز غير صالحة أو ليست روابط تخزين معتمدة", 422);
+      const completionNotes = nullableText(b?.completionNotes ?? b?.notes)?.slice(0, 4_000) ?? null;
+      const submittedAt = new Date();
+      const updated = await db.transaction(async (tx) => {
+        if (photos.length) await tx.insert(taskAttachmentsTable).values(photos.map((photo) => ({
+          taskId: id!, fileUrl: photo.url, fileName: photo.fileName,
+          thumbnailUrl: photo.thumbnailUrl, mediaType: photo.mediaType,
+          category: "employee_photo", caption: photo.caption,
+          uploadedBy: auth.id, uploadedByName: auth.fullName || auth.username,
+        })));
+        if (completionNotes) await tx.insert(taskCommentsTable).values({
+          taskId: id!, staffId: auth.id, body: `ملاحظات الإنجاز: ${completionNotes}`,
+        });
+        const [row] = await tx.update(tasksTable).set({
+          status: "review", submittedAt, completionNotes, completedBy: auth.id,
+          updatedAt: submittedAt,
+        }).where(eq(tasksTable.id, id!)).returning();
+        return row;
+      });
+      await createNotification({
+        type: "task_submitted", title: "مهمة بانتظار المراجعة",
+        body: updated.title, entityType: "task", entityId: id!, href: "/admin/tasks",
+      });
+      void logAdminActivity(req, "task_completion_submitted", "task", id!, { oldStatus: task.status, newStatus: "review", photoCount: photos.length, completionNotes: Boolean(completionNotes) });
+      if (photos.length)
+        void logAdminActivity(req, "task_employee_photos_added", "task", id!, { photoCount: photos.length, source: "task_completion" });
+      void addEntityTimeline({ entityType: "task", entityId: id!, type: "task_completion_submitted", title: "أكد الموظف إنجاز المهمة", body: completionNotes, actor: erpActorFromAdmin(auth), metadata: { photoCount: photos.length, submittedAt: submittedAt.toISOString() } });
+      return json(formatTask(updated));
+    }
+
+    if (method === "DELETE" && parts[2] && parts[3] === "photos" && parts[4]) {
+      const taskId = int(parts[2]);
+      const photoId = int(parts[4]);
+      const [task, photo] = await Promise.all([
+        taskId ? db.query.tasksTable.findFirst({ where: eq(tasksTable.id, taskId) }) : null,
+        photoId ? db.query.taskAttachmentsTable.findFirst({ where: and(eq(taskAttachmentsTable.id, photoId), eq(taskAttachmentsTable.taskId, taskId!)) }) : null,
+      ]);
+      if (!task || !photo) return error("الصورة أو المهمة غير موجودة", 404);
+      const managerAllowed = canEditTasks && photo.category !== "employee_photo";
+      const employeeAllowed = photo.category === "employee_photo" && photo.uploadedBy === auth.id && (task.assignedStaffIds ?? []).includes(auth.id) && !["review", "completed", "cancelled"].includes(task.status);
+      if (!managerAllowed && !employeeAllowed) return error("ليس لديك صلاحية حذف هذه الصورة", 403);
+      await db.delete(taskAttachmentsTable).where(eq(taskAttachmentsTable.id, photoId!));
+      const action = photo.category === "employee_photo" ? "task_employee_photo_removed" : "task_manager_photo_removed";
+      void logAdminActivity(req, action, "task", taskId!, { photoId });
+      void addEntityTimeline({ entityType: "task", entityId: taskId!, type: action, title: photo.category === "employee_photo" ? "حذف الموظف صورة إنجاز" : "حُذفت صورة من تعليمات المدير", actor: erpActorFromAdmin(auth), metadata: { photoId } });
+      return json({ ok: true, id: photoId });
     }
 
     if (method === "POST" && parts[2] && parts[3] === "submit") {
@@ -41329,7 +41499,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             staffId,
             entityType: "task",
             entityId: id,
-            href: "/admin/tasks",
+            href: "/staff?tab=tasks",
           }),
         ),
       );
@@ -41410,8 +41580,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         .slice(0, 40);
       if (
         !url ||
-        url.length > 12_000_000 ||
-        !/^(data:(image|video|application\/pdf)|https?:\/)/i.test(url)
+        url.length > 4_000 ||
+        !/^(https?:\/\/|\/api\/media\/)/i.test(url)
       )
         return error("نوع المرفق غير مدعوم", 422);
       const [attachment] = await db
@@ -41535,6 +41705,7 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       if (b?.taskType !== undefined) update.taskType = taskType(b.taskType);
       if (b?.startAt !== undefined) update.startAt = safeDate(b.startAt);
       if (b?.dueAt !== undefined) update.dueAt = safeDate(b.dueAt);
+      if (b?.location !== undefined) update.location = nullableText(b.location);
       if (b?.estimatedMinutes !== undefined)
         update.estimatedMinutes =
           Number.isFinite(Number(b.estimatedMinutes)) &&
@@ -41555,22 +41726,107 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         update.attachments = Array.isArray(b.attachments)
           ? b.attachments.filter((item: unknown) => typeof item === "string")
           : [];
-      const [row] = await db
-        .update(tasksTable)
-        .set(update)
-        .where(eq(tasksTable.id, id))
-        .returning();
-      if ((row.assignedStaffIds ?? []).length)
+      const requestedManagerPhotos = b?.managerPhotos !== undefined
+        ? taskPhotoInputs(b.managerPhotos)
+        : null;
+      if (Array.isArray(b?.managerPhotos) && (b.managerPhotos.length > 60 || requestedManagerPhotos?.length !== b.managerPhotos.length))
+        return error("بيانات صور المدير غير صالحة أو ليست روابط تخزين معتمدة", 422);
+      const existingManagerPhotos = requestedManagerPhotos
+        ? await db.query.taskAttachmentsTable.findMany({
+            where: and(
+              eq(taskAttachmentsTable.taskId, id),
+              inArray(taskAttachmentsTable.category, ["manager_photo", "attachment"]),
+            ),
+          })
+        : [];
+      const existingManagerPhotoIds = new Set(existingManagerPhotos.map((photo) => photo.id));
+      const retainedManagerPhotoIds = new Set(
+        (requestedManagerPhotos ?? [])
+          .map((photo) => photo.id)
+          .filter((photoId): photoId is number => Boolean(photoId && existingManagerPhotoIds.has(photoId))),
+      );
+      const removedManagerPhotoIds = existingManagerPhotos
+        .map((photo) => photo.id)
+        .filter((photoId) => !retainedManagerPhotoIds.has(photoId));
+      const addedManagerPhotos = (requestedManagerPhotos ?? []).filter(
+        (photo) => !photo.id || !existingManagerPhotoIds.has(photo.id),
+      );
+      const row = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(tasksTable)
+          .set(update)
+          .where(eq(tasksTable.id, id))
+          .returning();
+        if (!updated) throw new Error("تعذر تعديل المهمة");
+        if (requestedManagerPhotos) {
+          if (removedManagerPhotoIds.length)
+            await tx.delete(taskAttachmentsTable).where(inArray(taskAttachmentsTable.id, removedManagerPhotoIds));
+          for (const photo of requestedManagerPhotos) {
+            if (!photo.id || !existingManagerPhotoIds.has(photo.id)) continue;
+            await tx.update(taskAttachmentsTable).set({
+              fileUrl: photo.url,
+              fileName: photo.fileName,
+              thumbnailUrl: photo.thumbnailUrl,
+              mediaType: photo.mediaType,
+              category: "manager_photo",
+              caption: photo.caption,
+              updatedAt: new Date(),
+            }).where(eq(taskAttachmentsTable.id, photo.id));
+          }
+          if (addedManagerPhotos.length)
+            await tx.insert(taskAttachmentsTable).values(addedManagerPhotos.map((photo) => ({
+              taskId: id,
+              fileUrl: photo.url,
+              fileName: photo.fileName,
+              thumbnailUrl: photo.thumbnailUrl,
+              mediaType: photo.mediaType,
+              category: "manager_photo",
+              caption: photo.caption,
+              uploadedBy: auth.id,
+              uploadedByName: auth.fullName || auth.username,
+            })));
+        }
+        return updated;
+      });
+      const changedFields = Object.keys(update).filter((field) => {
+        if (field === "updatedAt") return false;
+        const previousValue = (existing as any)[field];
+        const nextValue = update[field];
+        if (previousValue instanceof Date || nextValue instanceof Date)
+          return (previousValue ? new Date(previousValue).getTime() : null) !== (nextValue ? new Date(nextValue).getTime() : null);
+        if (Array.isArray(previousValue) || Array.isArray(nextValue))
+          return JSON.stringify(previousValue ?? []) !== JSON.stringify(nextValue ?? []);
+        return (previousValue ?? null) !== (nextValue ?? null);
+      });
+      const photoChanged = requestedManagerPhotos !== null && (
+        addedManagerPhotos.length > 0 ||
+        removedManagerPhotoIds.length > 0 ||
+        requestedManagerPhotos.some((photo) => {
+          if (!photo.id) return false;
+          const previous = existingManagerPhotos.find((item) => item.id === photo.id);
+          return Boolean(previous && (
+            previous.fileUrl !== photo.url ||
+            (previous.caption ?? null) !== photo.caption ||
+            (previous.thumbnailUrl ?? null) !== photo.thumbnailUrl
+          ));
+        })
+      );
+      const oldAssignments = existing.assignedStaffIds ?? [];
+      const newAssignments = row.assignedStaffIds ?? [];
+      const assignmentChanged = oldAssignments.length !== newAssignments.length || oldAssignments.some((staffId) => !newAssignments.includes(staffId));
+      const notificationStaffIds = [...new Set([...oldAssignments, ...newAssignments])];
+      const employeeVisibleChanged = photoChanged || assignmentChanged || ["title", "description", "priority", "startAt", "dueAt", "location", "department", "relatedType", "relatedId", "notes", "status"].some((field) => changedFields.includes(field));
+      if (employeeVisibleChanged && notificationStaffIds.length)
         await Promise.all(
-          (row.assignedStaffIds ?? []).map((staffId) =>
+          notificationStaffIds.map((staffId) =>
             createNotification({
               type: "task_updated",
-              title: "تم تحديث مهمة",
+              title: "تم تحديث صور أو تفاصيل المهمة",
               body: row.title,
               staffId,
               entityType: "task",
               entityId: row.id,
-              href: "/admin/tasks",
+              href: "/staff?tab=tasks",
             }),
           ),
         );
@@ -41586,10 +41842,29 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
             taskId: row.id,
             oldStatus: existing.status,
             newStatus: row.status,
-            fields: Object.keys(update),
+            fields: changedFields,
+            managerPhotosAdded: addedManagerPhotos.length,
+            managerPhotosRemoved: removedManagerPhotoIds.length,
           },
         });
       }
+      if (assignmentChanged)
+        void logAdminActivity(req, "task_assignment_changed", "task", id, {
+          oldAssignedStaffIds: oldAssignments,
+          newAssignedStaffIds: newAssignments,
+        });
+      if (changedFields.includes("status"))
+        void logAdminActivity(req, "task_status_changed", "task", id, { oldStatus: existing.status, newStatus: row.status });
+      if (addedManagerPhotos.length)
+        void logAdminActivity(req, "task_manager_photo_added", "task", id, { count: addedManagerPhotos.length });
+      if (removedManagerPhotoIds.length)
+        void logAdminActivity(req, "task_manager_photo_removed", "task", id, { photoIds: removedManagerPhotoIds });
+      if (photoChanged)
+        void logAdminActivity(req, "task_manager_photos_changed", "task", id, {
+          added: addedManagerPhotos.length,
+          removed: removedManagerPhotoIds.length,
+          retained: retainedManagerPhotoIds.size,
+        });
       void logAdminActivity(req, "task_updated", "task", id, {
         oldValues: {
           status: existing.status,
@@ -41599,6 +41874,8 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         newValues: Object.fromEntries(
           Object.entries(update).filter(([key]) => key !== "updatedAt"),
         ),
+        managerPhotosAdded: addedManagerPhotos.length,
+        managerPhotosRemoved: removedManagerPhotoIds.length,
       });
       void addEntityTimeline({
         entityType: "task",
@@ -41606,9 +41883,17 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         type: "task_updated",
         title: "تم تعديل المهمة",
         actor: erpActorFromAdmin(auth),
-        metadata: { fields: Object.keys(update) },
+        metadata: {
+          fields: changedFields,
+          assignmentChanged,
+          managerPhotosAdded: addedManagerPhotos.length,
+          managerPhotosRemoved: removedManagerPhotoIds.length,
+        },
       });
-      return json(formatTask(row));
+      return json({
+        ...formatTask(row),
+        managerPhotos: requestedManagerPhotos ?? existingManagerPhotos.map(formatTaskPhoto),
+      });
     }
   }
 
@@ -51372,8 +51657,50 @@ async function handleSalesInvoices(
       : money(existing.subtotal);
     const discountAmount = b.discountAmount ?? money(existing.discountAmount);
     const taxAmount = b.taxAmount ?? money(existing.taxAmount);
+    const existingDeliveryRow = await getInvoiceDelivery(id);
+    let deliveryPrep: DeliveryPrep | null = null;
+    let deliveryFee = money(existingDeliveryRow?.detail.deliveryFee);
+    let deliveryCodFee = money(existingDeliveryRow?.detail.codFee);
+    let deliveryOverridden = Boolean(existingDeliveryRow?.detail.feeOverridden);
+    let deliveryOverrideReason = existingDeliveryRow?.detail.feeOverrideReason ?? null;
+    if (b.delivery !== undefined) {
+      const deliveryPrepResult = await prepareInvoiceDelivery(b.delivery, subtotal);
+      if (!deliveryPrepResult.ok) return error(deliveryPrepResult.message, 400);
+      deliveryPrep = deliveryPrepResult.data;
+      if (
+        existingDeliveryRow &&
+        deliveryPrep &&
+        existingDeliveryRow.detail.method !== deliveryPrep.method
+      ) {
+        return error("لا يمكن تغيير طريقة التوصيل لطلب محفوظ؛ عدّل تفاصيل الطريقة الحالية فقط", 409);
+      }
+      if (deliveryPrep) {
+        deliveryFee = deliveryPrep.resolvedFee;
+        deliveryCodFee = deliveryPrep.codFee;
+        deliveryOverridden = false;
+        deliveryOverrideReason = null;
+        const requestedFee = deliveryPrep.input.deliveryFee;
+        if (
+          requestedFee !== undefined &&
+          Math.abs(requestedFee - deliveryPrep.resolvedFee) >= 0.01 &&
+          deliveryPrep.method === "province"
+        ) {
+          if (hasPermission(auth, "delivery_fee_override")) {
+            const reason = textFallback(deliveryPrep.input.feeOverrideReason);
+            if (!reason) return error("سبب تعديل أجور التوصيل مطلوب", 400);
+            deliveryFee = requestedFee;
+            deliveryOverridden = true;
+            deliveryOverrideReason = reason;
+          }
+        }
+      }
+    }
+    const offerDeliveryFee = money(existing.offerDeliveryFee);
     // Totals are derived server-side.  Never accept a browser-provided total.
-    const total = Math.max(subtotal - discountAmount + taxAmount, 0);
+    const total = Math.max(
+      subtotal - discountAmount + taxAmount + offerDeliveryFee + deliveryFee + deliveryCodFee,
+      0,
+    );
     const paymentMethod = b.paymentMethod ?? existing.paymentMethod;
     const payment = paymentSummary(
       total,
@@ -51406,9 +51733,9 @@ async function handleSalesInvoices(
         ? nullableText(b.supplierName ?? supplier?.name)
         : existing.supplierName;
 
-    await db
-      .update(salesInvoicesTable)
-      .set({
+    await ensureAccountingVoucherTables();
+    await db.transaction(async (tx) => {
+      await tx.update(salesInvoicesTable).set({
         date: b.date ?? existing.date,
         customerName: b.customerName ?? existing.customerName,
         customerPhone,
@@ -51441,13 +51768,23 @@ async function handleSalesInvoices(
         updatedByName: a.name,
         updatedByRole: auth.role,
         updatedAt: new Date(),
-      } as any)
-      .where(eq(salesInvoicesTable.id, id));
-    // Editing an invoice must never overwrite its payment status from the browser.
-    await ensureAccountingVoucherTables();
-    await db.transaction((tx) =>
-      recalculateSalesInvoicePaymentFromAllocations(tx, id),
-    );
+      } as any).where(eq(salesInvoicesTable.id, id));
+      if (deliveryPrep) {
+        await updateInvoiceDelivery({
+          salesInvoiceId: id,
+          prep: deliveryPrep,
+          finalFee: deliveryFee,
+          overridden: deliveryOverridden,
+          overrideReason: deliveryOverrideReason,
+          codAmount: deliveryPrep.input.codEnabled ? remainingAmount : 0,
+          customerId: existing.customerId,
+          actor: a,
+          executor: tx,
+        });
+      }
+      // Editing an invoice must never overwrite its payment status from the browser.
+      await recalculateSalesInvoicePaymentFromAllocations(tx, id);
+    });
 
     if (parsedItems) {
       if (hasAppliedStock(existing)) {
@@ -51509,6 +51846,10 @@ async function handleSalesInvoices(
       }
     }
     const qr = final ? await ensureQrForEntity("invoice", final, req) : null;
+    const finalDeliveryRow = await getInvoiceDelivery(id);
+    const delivery = finalDeliveryRow
+      ? formatDeliveryDetail(finalDeliveryRow.detail, finalDeliveryRow.order)
+      : null;
     const financialTransaction = final
       ? await syncSourcePaymentTarget(
           {
@@ -51588,8 +51929,9 @@ async function handleSalesInvoices(
       ...(final ? (await attachSalesInvoiceTracking([final]))[0] : final),
       items: finalItems,
       qr,
+      delivery,
       financialTransaction,
-      invoice: final ? { ...final, qr } : final,
+      invoice: final ? { ...final, qr, delivery } : final,
     });
   }
 

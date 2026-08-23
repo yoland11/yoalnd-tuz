@@ -13,8 +13,11 @@ export const tasksTable = pgTable("tasks", {
   taskType: varchar("task_type", { length: 50 }),
   startAt: timestamp("start_at"),
   dueAt: timestamp("due_at"),
+  location: text("location"),
   estimatedMinutes: integer("estimated_minutes"),
   submittedAt: timestamp("submitted_at"),
+  completionNotes: text("completion_notes"),
+  completedBy: integer("completed_by").references(() => staffTable.id),
   completedAt: timestamp("completed_at"),
   approvedBy: integer("approved_by").references(() => staffTable.id),
   approvedAt: timestamp("approved_at"),
@@ -46,7 +49,14 @@ export const taskAttachmentsTable = pgTable("task_attachments", {
   taskId: integer("task_id").notNull().references(() => tasksTable.id),
   fileUrl: text("file_url").notNull(),
   fileName: text("file_name"),
+  thumbnailUrl: text("thumbnail_url"),
+  mediaType: varchar("media_type", { length: 80 }).notNull().default("image"),
+  category: varchar("category", { length: 40 }).notNull().default("attachment"),
+  caption: text("caption"),
+  uploadedBy: integer("uploaded_by").references(() => staffTable.id),
+  uploadedByName: text("uploaded_by_name"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export const taskChecklistItemsTable = pgTable("task_checklist_items", {

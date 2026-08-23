@@ -79,6 +79,8 @@ check("payment cannot exceed the invoice total", settlePaymentAmounts(5000, 9000
 // configured test database adapter, never in a developer's normal .env.
 const api = readFileSync("src/server/api.ts", "utf8");
 const sales = readFileSync("src/views/admin/sales.tsx", "utf8");
+const deliverySection = readFileSync("src/views/admin/delivery-section.tsx", "utf8");
+const deliveryServer = readFileSync("src/server/delivery-details.ts", "utf8");
 const purchases = readFileSync("src/views/admin/purchases.tsx", "utf8");
 const client = readFileSync("src/views/admin/_lib.ts", "utf8");
 const bundleSchema = readFileSync("lib/db/src/schema/product-bundles.ts", "utf8");
@@ -89,6 +91,12 @@ const schemaIndexRecovery = readFileSync("lib/db/migrations/0101_schema_index_re
 const koshaStaff = readFileSync("src/views/staff/booking-detail.tsx", "utf8");
 const koshaCollections = readFileSync("src/views/admin/kosha-collections.tsx", "utf8");
 const bookingCenter = readFileSync("src/views/admin/booking-center.tsx", "utf8");
+const taskSchema = readFileSync("lib/db/src/schema/admin-extensions.ts", "utf8");
+const taskMigration = readFileSync("lib/db/migrations/0102_task_photo_workflow.sql", "utf8");
+const taskAdmin = readFileSync("src/views/admin/tasks.tsx", "utf8");
+const taskPortal = readFileSync("src/views/staff/unified-portal.tsx", "utf8");
+const taskPhotos = readFileSync("src/components/task-photo-gallery.tsx", "utf8");
+const taskPhotoParser = api.slice(api.indexOf("function taskPhotoInputs"), api.indexOf("function formatTaskPhoto"));
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
@@ -112,6 +120,10 @@ check("bundle snapshot schema preserves original components", bundleSchema.inclu
 check("used bundles archive instead of deleting invoice history", api.includes('operation: "archived"') && api.includes("sales_invoice_bundle_snapshots"));
 check("bundle management has live component search and duplicate protection", bundlePage.includes("componentSearch") && bundlePage.includes("selectedIds.has"));
 check("bundle delivery fee is server-derived and kept separate from component stock", api.includes("offerDeliveryFee = bundleResolution.offerDeliveryFee") && api.includes("deliveryFeePerBundle") && bundleSchema.includes("deliveryFee"));
+check("sales governorate delivery uses dependent searchable province areas", deliverySection.includes("SearchableDeliverySelect") && deliverySection.includes("province?.areas") && deliverySection.includes("disabled={!provinceId}"));
+check("sales governorate delivery keeps advanced details collapsed", deliverySection.includes("بقية تفاصيل التوصيل") && deliverySection.includes("detailsOpen"));
+check("sales invoice edit preserves and updates existing delivery atomically", sales.includes("initialValue={invoice.delivery}") && api.includes("await updateInvoiceDelivery({") && deliveryServer.includes("export async function updateInvoiceDelivery"));
+check("sales invoice edit total preserves separate delivery charges", api.includes("offerDeliveryFee + deliveryFee + deliveryCodFee") && sales.includes("offerDeliveryFee + deliveryFee + deliveryCodFee"));
 // Kosha field collection: the staff report is deliberately separate from the
 // official booking payment. The atomic approval path is the only path allowed
 // to execute cash, voucher allocation, booking totals, and accounting.
@@ -123,6 +135,16 @@ check("kosha approval posts booking, receipt allocation, cash and journal in one
 check("kosha rejection requires a recorded reason and never posts cash", api.includes("سبب رفض التحصيل مطلوب") && api.includes("rejection_reason") && api.includes("payment_rejected"));
 check("kosha staff collection is embedded in booking details with method and receipt proof", koshaStaff.includes("CollectPanel") && koshaStaff.includes("طريقة الدفع") && koshaStaff.includes("صورة وصل الاستلام"));
 check("main approval screen exposes booking, customer, receipt and required rejection reason", koshaCollections.includes("فتح الحجز") && koshaCollections.includes("حساب العميل") && koshaCollections.includes("فتح صورة الوصل") && koshaCollections.includes("سبب الرفض مطلوب"));
+// Task photo workflow reuses the original task and attachment records. The
+// source assertions are intentionally read-only and never touch storage or DB.
+check("task photo migration is additive and preserves all existing task data", taskMigration.includes("ADD COLUMN IF NOT EXISTS") && taskMigration.includes("task_attachments_task_category_idx") && !/^\s*(?:UPDATE|DELETE\s+FROM|TRUNCATE|DROP)\b/im.test(taskMigration));
+check("task manager and employee photos share the existing attachment table but remain categorized", taskSchema.includes('category: varchar("category"') && api.includes('category: "manager_photo"') && api.includes('category: "employee_photo"'));
+check("task create and edit keep task identity and photo metadata transactional", api.includes("const saved = await db.transaction(async (tx) =>") && api.includes("requestedManagerPhotos") && api.includes("const row = await db.transaction(async (tx) =>"));
+check("task completion accepts optional photos and records employee and notes", api.includes('parts[3] === "complete"') && api.includes("completionNotes") && api.includes("completedBy: auth.id"));
+check("task image metadata rejects database-embedded data URLs", taskPhotoParser.includes("/api\\/media") && !taskPhotoParser.includes("data:"));
+check("manager task editing exposes separated manager and employee galleries", taskAdmin.includes("صور وتوضيحات من المدير") && taskAdmin.includes("صور إنجاز الموظف") && taskAdmin.includes("TaskEditDialog"));
+check("staff task completion keeps photos optional and uses the completion route", taskPortal.includes("صور إنجاز المهمة (اختياري)") && taskPortal.includes("تأكيد الإنجاز") && taskPortal.includes("/complete"));
+check("task photo uploader uses optimized storage and retains each successful upload", taskPhotos.includes('folder: "uploads/tasks"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
 
 const safeTestDb = process.env.AJN_ENV === "test"
   && process.env.ALLOW_TEST_WRITES === "true"
