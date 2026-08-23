@@ -97,6 +97,7 @@ const taskAdmin = readFileSync("src/views/admin/tasks.tsx", "utf8");
 const taskPortal = readFileSync("src/views/staff/unified-portal.tsx", "utf8");
 const taskPhotos = readFileSync("src/components/task-photo-gallery.tsx", "utf8");
 const taskPhotoParser = api.slice(api.indexOf("function taskPhotoInputs"), api.indexOf("function formatTaskPhoto"));
+const staffWorkspaceHandler = api.slice(api.indexOf("async function handleUnifiedStaffPortal"), api.indexOf("async function handleStaffPortal"));
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
 check("sales invoice save keeps a database transaction", api.includes("saved = await db.transaction(async (tx) =>"));
 check("purchase invoice save keeps a database transaction", api.includes("const savedPurchase = await db.transaction(async (tx) =>"));
@@ -145,6 +146,10 @@ check("task image metadata rejects database-embedded data URLs", taskPhotoParser
 check("manager task editing exposes separated manager and employee galleries", taskAdmin.includes("صور وتوضيحات من المدير") && taskAdmin.includes("صور إنجاز الموظف") && taskAdmin.includes("TaskEditDialog"));
 check("staff task completion keeps photos optional and uses the completion route", taskPortal.includes("صور إنجاز المهمة (اختياري)") && taskPortal.includes("تأكيد الإنجاز") && taskPortal.includes("/complete"));
 check("task photo uploader uses optimized storage and retains each successful upload", taskPhotos.includes('folder: "uploads/tasks"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
+check("staff workspace reads stable task columns instead of optional task wildcard fields", staffWorkspaceHandler.includes("columns: {\n            id: true") && !staffWorkspaceHandler.slice(staffWorkspaceHandler.indexOf('resource === "dashboard"'), staffWorkspaceHandler.indexOf('resource === "notifications"')).includes("location: true"));
+check("staff workspace distinguishes missing mapping and missing portal permission", staffWorkspaceHandler.includes("حساب المستخدم غير مرتبط بموظف") && staffWorkspaceHandler.includes("لا توجد صلاحية للوصول إلى بوابة الموظفين"));
+check("staff workspace failures include request IDs and safe server diagnostics", staffWorkspaceHandler.includes("[STAFF_PORTAL_WORKSPACE_LOAD_FAILED]") && staffWorkspaceHandler.includes('code: "DATABASE_ERROR"') && taskPortal.includes("Request ID:") && taskPortal.includes("إعادة المحاولة"));
+check("staff task empty state appears only after a successful workspace response", taskPortal.includes('tab === "tasks" && dashboard.isSuccess') && taskPortal.includes("لا توجد مهام معينة لك الآن"));
 
 const safeTestDb = process.env.AJN_ENV === "test"
   && process.env.ALLOW_TEST_WRITES === "true"

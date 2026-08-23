@@ -60546,60 +60546,188 @@ async function handleUnifiedStaffPortal(
   parts: string[],
 ): Promise<NextResponse> {
   const auth = await getAdminUser(req);
-  if (!auth) return error("غير مخوّل", 401);
+  if (!auth) {
+    const token = readAdminToken(req);
+    if (token) {
+      const [activeSession] = await db
+        .select({ userId: adminSessionsTable.userId })
+        .from(adminSessionsTable)
+        .where(
+          and(
+            eq(adminSessionsTable.tokenHash, adminSessionTokenHash(token)),
+            gt(adminSessionsTable.expiresAt, new Date()),
+            isNull(adminSessionsTable.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (activeSession) {
+        const [linkedEmployee] = await db
+          .select({ id: staffTable.id, isActive: staffTable.isActive })
+          .from(staffTable)
+          .where(eq(staffTable.id, activeSession.userId))
+          .limit(1);
+        if (!linkedEmployee)
+          return error("حساب المستخدم غير مرتبط بموظف.", 409, {
+            code: "CONFLICT",
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+          });
+        if (!linkedEmployee.isActive)
+          return error("لا توجد صلاحية للوصول إلى بوابة الموظفين.", 403, {
+            code: "PERMISSION_DENIED",
+            requestId: makeRequestId(req.headers.get("x-request-id")),
+          });
+      }
+    }
+    return error("يرجى تسجيل الدخول أولاً.", 401, {
+      code: "AUTH_REQUIRED",
+      requestId: makeRequestId(req.headers.get("x-request-id")),
+    });
+  }
+  const requestId = makeRequestId(req.headers.get("x-request-id"));
+  let employee: {
+    id: number;
+    username: string;
+    fullName: string;
+    role: string;
+    permissions: string[];
+    department: string;
+    isActive: boolean;
+  } | undefined;
+  try {
+    [employee] = await db
+      .select({
+        id: staffTable.id,
+        username: staffTable.username,
+        fullName: staffTable.fullName,
+        role: staffTable.role,
+        permissions: staffTable.permissions,
+        department: staffTable.department,
+        isActive: staffTable.isActive,
+      })
+      .from(staffTable)
+      .where(eq(staffTable.id, auth.id))
+      .limit(1);
+  } catch (mappingError) {
+    console.error("[STAFF_PORTAL_EMPLOYEE_MAPPING_FAILED]", {
+      requestId,
+      staffId: auth.id,
+      code: (mappingError as any)?.code ?? null,
+      message: mappingError instanceof Error ? mappingError.message : "unknown",
+    });
+    return error("تعذر التحقق من ربط حساب الموظف.", 500, {
+      code: "DATABASE_ERROR",
+      requestId,
+      retryable: true,
+    });
+  }
+  if (!employee)
+    return error("حساب المستخدم غير مرتبط بموظف.", 409, {
+      code: "CONFLICT",
+      requestId,
+    });
+  const canAccessPortal =
+    ["admin", "manager"].includes(auth.role) ||
+    (["dashboard", "tasks", "koshas", "photography"] as Permission[]).some((permission) =>
+      hasPermission(auth, permission),
+    );
+  if (!canAccessPortal) {
+    void logAdminActivity(req, "portal_access_denied", "staff", auth.id, {
+      portal: "staff",
+      reason: "missing_staff_portal_permission",
+    });
+    return error("لا توجد صلاحية للوصول إلى بوابة الموظفين.", 403, {
+      code: "PERMISSION_DENIED",
+      requestId,
+    });
+  }
   const resource = parts[2] ?? "dashboard";
   const method = req.method;
 
   if (resource === "dashboard" && method === "GET") {
-    const today = baghdadToday();
-    const [staff, tasks, latestAttendance] = await Promise.all([
-      db.query.staffTable.findFirst({ where: eq(staffTable.id, auth.id) }),
-      db.query.tasksTable.findMany({
-        where: and(
-          sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`,
-          sql`${tasksTable.archivedAt} is null`,
-        ),
-        orderBy: [asc(tasksTable.dueAt), desc(tasksTable.updatedAt)],
-        limit: 100,
-      }),
-      db.query.attendanceRecordsTable.findFirst({
-        where: eq(attendanceRecordsTable.staffId, auth.id),
-        orderBy: [desc(attendanceRecordsTable.checkInAt)],
-      }),
-    ]);
-    const formattedTasks = tasks.map((task) => formatTask(task));
-    const actionable = formattedTasks.filter((task) =>
-      ["new", "in_progress"].includes(task.status),
-    );
-    return json({
-      today,
-      staff: {
-        id: auth.id,
-        name: auth.fullName || auth.username,
-        role: auth.role,
-        department: staff?.department ?? null,
-        jobTitle: staff?.jobTitle ?? null,
-        permissions: auth.permissions,
-      },
-      tasks: formattedTasks,
-      summary: {
-        todayTasks: actionable.filter((task) => task.dueAt?.slice(0, 10) === today).length,
-        overdueTasks: actionable.filter(
-          (task) => Boolean(task.dueAt) && task.dueAt! < new Date().toISOString(),
-        ).length,
-        openTasks: actionable.length,
-      },
-      attendance: latestAttendance
-        ? {
-            status: latestAttendance.status,
-            checkInAt: latestAttendance.checkInAt.toISOString(),
-            checkOutAt: latestAttendance.checkOutAt?.toISOString() ?? null,
-          }
-        : null,
-    });
+    try {
+      const today = baghdadToday();
+      const [tasks, latestAttendance] = await Promise.all([
+        db.query.tasksTable.findMany({
+          columns: {
+            id: true,
+            title: true,
+            description: true,
+            status: true,
+            priority: true,
+            startAt: true,
+            dueAt: true,
+            assignedStaffIds: true,
+            relatedType: true,
+            relatedId: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          where: and(
+            sql`${tasksTable.assignedStaffIds} @> ${JSON.stringify([auth.id])}::jsonb`,
+            sql`${tasksTable.archivedAt} is null`,
+          ),
+          orderBy: [asc(tasksTable.dueAt), desc(tasksTable.updatedAt)],
+          limit: 100,
+        }),
+        db.query.attendanceRecordsTable.findFirst({
+          columns: {
+            status: true,
+            checkInAt: true,
+            checkOutAt: true,
+          },
+          where: eq(attendanceRecordsTable.staffId, auth.id),
+          orderBy: [desc(attendanceRecordsTable.checkInAt)],
+        }),
+      ]);
+      const formattedTasks = tasks.map((task) => formatTask(task));
+      const actionable = formattedTasks.filter((task) =>
+        ["new", "in_progress"].includes(task.status),
+      );
+      return json({
+        today,
+        staff: {
+          id: employee.id,
+          name: employee.fullName || employee.username,
+          role: employee.role,
+          department: employee.department ?? null,
+          jobTitle: null,
+          permissions: employee.permissions ?? [],
+        },
+        tasks: formattedTasks,
+        summary: {
+          todayTasks: actionable.filter((task) => task.dueAt?.slice(0, 10) === today).length,
+          overdueTasks: actionable.filter(
+            (task) => Boolean(task.dueAt) && task.dueAt! < new Date().toISOString(),
+          ).length,
+          openTasks: actionable.length,
+        },
+        attendance: latestAttendance
+          ? {
+              status: latestAttendance.status,
+              checkInAt: latestAttendance.checkInAt.toISOString(),
+              checkOutAt: latestAttendance.checkOutAt?.toISOString() ?? null,
+            }
+          : null,
+      });
+    } catch (workspaceError) {
+      console.error("[STAFF_PORTAL_WORKSPACE_LOAD_FAILED]", {
+        requestId,
+        staffId: auth.id,
+        resource,
+        code: (workspaceError as any)?.code ?? null,
+        message: workspaceError instanceof Error ? workspaceError.message : "unknown",
+        stack: workspaceError instanceof Error ? workspaceError.stack : undefined,
+      });
+      return error("تعذر تحميل بيانات مساحة عمل الموظف من قاعدة البيانات.", 500, {
+        code: "DATABASE_ERROR",
+        requestId,
+        retryable: true,
+      });
+    }
   }
 
   if (resource === "notifications") {
+    try {
     if (method === "GET") {
       const rows = await db.query.notificationsTable.findMany({
         where: and(
@@ -60641,9 +60769,23 @@ async function handleUnifiedStaffPortal(
       return json({ ok: true, id: updated.id });
     }
     return error("إجراء الإشعارات غير مدعوم", 405);
+    } catch (notificationError) {
+      console.error("[STAFF_PORTAL_NOTIFICATIONS_LOAD_FAILED]", {
+        requestId,
+        staffId: auth.id,
+        code: (notificationError as any)?.code ?? null,
+        message: notificationError instanceof Error ? notificationError.message : "unknown",
+      });
+      return error("تعذر تحميل إشعارات الموظف من قاعدة البيانات.", 500, {
+        code: "DATABASE_ERROR",
+        requestId,
+        retryable: true,
+      });
+    }
   }
 
   if (resource === "bookings" && method === "GET") {
+    try {
     const bookings: any[] = [];
     if (hasPermission(auth, "koshas")) {
       const kosha = await getVisibleKoshaBookingsForStaff(auth);
@@ -60721,6 +60863,19 @@ async function handleUnifiedStaffPortal(
     );
     bookings.sort((a, b) => String(a.date ?? "9999-12-31").localeCompare(String(b.date ?? "9999-12-31")));
     return json({ today: baghdadToday(), data: bookings.slice(0, 100) });
+    } catch (bookingError) {
+      console.error("[STAFF_PORTAL_BOOKINGS_LOAD_FAILED]", {
+        requestId,
+        staffId: auth.id,
+        code: (bookingError as any)?.code ?? null,
+        message: bookingError instanceof Error ? bookingError.message : "unknown",
+      });
+      return error("تعذر تحميل الحجوزات المعيّنة للموظف.", 500, {
+        code: "DATABASE_ERROR",
+        requestId,
+        retryable: true,
+      });
+    }
   }
 
   if (resource === "payroll") {
