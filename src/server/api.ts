@@ -3908,7 +3908,9 @@ async function createSmartAlert(input: SmartAlertInput) {
   return { row, created: true };
 }
 
-function taskProgressFromRows(rows: Array<typeof tasksTable.$inferSelect>) {
+type TaskProgressRow = Pick<typeof tasksTable.$inferSelect, "archivedAt" | "status">;
+
+function taskProgressFromRows(rows: TaskProgressRow[]) {
   const active = rows.filter(
     (row) => !row.archivedAt && row.status !== "cancelled",
   );
@@ -3938,6 +3940,10 @@ async function taskProgressForRelated(
       const relatedId = Number(relatedIdText);
       if (!relatedType || !Number.isFinite(relatedId)) return;
       const relatedRows = await db.query.tasksTable.findMany({
+        columns: {
+          status: true,
+          archivedAt: true,
+        },
         where: and(
           eq(tasksTable.relatedType, relatedType),
           eq(tasksTable.relatedId, relatedId),
@@ -41195,15 +41201,36 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
       }
       const staffById = new Map(staffRows.map((staff) => [staff.id, staff]));
       const taskIds = rows.map((row) => row.id);
-      const checklistRows = taskIds.length
-        ? await db.query.taskChecklistItemsTable.findMany({
-            where: inArray(taskChecklistItemsTable.taskId, taskIds),
-            orderBy: [
-              asc(taskChecklistItemsTable.sortOrder),
-              asc(taskChecklistItemsTable.id),
-            ],
-          })
-        : [];
+      let checklistRows: Array<typeof taskChecklistItemsTable.$inferSelect>;
+      let progressByRelated: Map<string, ReturnType<typeof taskProgressFromRows>>;
+      try {
+        [checklistRows, progressByRelated] = await Promise.all([
+          taskIds.length
+            ? db.query.taskChecklistItemsTable.findMany({
+                where: inArray(taskChecklistItemsTable.taskId, taskIds),
+                orderBy: [
+                  asc(taskChecklistItemsTable.sortOrder),
+                  asc(taskChecklistItemsTable.id),
+                ],
+              })
+            : Promise.resolve([]),
+          taskProgressForRelated(rows),
+        ]);
+      } catch (loadError) {
+        const requestId = makeRequestId(req.headers.get("x-request-id"));
+        console.error("[INTERNAL_TASKS_AGGREGATION_FAILED]", {
+          requestId,
+          staffId: auth.id,
+          taskCount: rows.length,
+          code: (loadError as any)?.code ?? null,
+          message: loadError instanceof Error ? loadError.message : "unknown",
+        });
+        return error("تعذر تحميل تفاصيل المهام الداخلية.", 500, {
+          code: "DATABASE_ERROR",
+          requestId,
+          retryable: true,
+        });
+      }
       const itemsByTask = new Map<number, any[]>();
       for (const item of checklistRows) {
         const list = itemsByTask.get(item.taskId) ?? [];
@@ -41216,7 +41243,6 @@ async function handleAdmin(req: NextRequest, parts: string[]) {
         });
         itemsByTask.set(item.taskId, list);
       }
-      const progressByRelated = await taskProgressForRelated(rows);
       const formatted = rows.map((row) => {
         const key =
           row.relatedType && row.relatedId

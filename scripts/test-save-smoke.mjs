@@ -98,6 +98,7 @@ const taskPortal = readFileSync("src/views/staff/unified-portal.tsx", "utf8");
 const taskPhotos = readFileSync("src/components/task-photo-gallery.tsx", "utf8");
 const taskUploads = readFileSync("src/lib/large-image-upload.ts", "utf8");
 const taskPhotoParser = api.slice(api.indexOf("function taskPhotoInputs"), api.indexOf("function formatTaskPhoto"));
+const relatedTaskProgress = api.slice(api.indexOf("async function taskProgressForRelated"), api.indexOf("function completedStepsForEntityStatus"));
 const taskHandler = api.slice(api.indexOf('if (section === "tasks")'), api.indexOf('if (section === "calendar")'));
 const staffWorkspaceHandler = api.slice(api.indexOf("async function handleUnifiedStaffPortal"), api.indexOf("async function handleStaffPortal"));
 check("all uncaught API writes use central PostgreSQL mapping", api.includes("mapWriteError(err)") && api.includes("createApiErrorPayload"));
@@ -150,6 +151,8 @@ check("staff task completion keeps photos optional and uses the completion route
 check("task photo uploader uses optimized storage and retains each successful upload", taskPhotos.includes('folder: "uploads/tasks"') && taskPhotos.includes("onChange(next)") && taskPhotos.includes("failures.push"));
 check("task employee selector loads active staff with search, multi-select and exact empty state", taskHandler.includes("eq(staffTable.isActive, true)") && taskAdmin.includes("تحديد الكل") && taskAdmin.includes("ابحث باسم الموظف") && taskAdmin.includes("لا يوجد موظفون نشطون."));
 check("task list load errors are structured and never silently become an empty staff list", taskHandler.includes("[INTERNAL_TASKS_LOAD_FAILED]") && taskHandler.includes('code: "DATABASE_ERROR"') && taskHandler.includes("تعذر تحميل المهام أو الموظفين النشطين.") && taskAdmin.includes("إعادة المحاولة"));
+check("related task progress reads only legacy-safe status fields", relatedTaskProgress.includes("columns: {") && relatedTaskProgress.includes("status: true") && relatedTaskProgress.includes("archivedAt: true"));
+check("task checklist and related-progress failures return a scoped request ID", taskHandler.includes("[INTERNAL_TASKS_AGGREGATION_FAILED]") && taskHandler.includes("تعذر تحميل تفاصيل المهام الداخلية."));
 check("task workflow supports accept, start, manager review and reopen", taskHandler.includes('"accepted"') && taskHandler.includes('statusAction === "accept"') && taskHandler.includes('statusAction === "start"') && taskHandler.includes('"reopen"') && taskAdmin.includes("إعادة فتح المهمة"));
 check("task assignment and manager decisions use staff notifications", taskHandler.includes('audienceType: "staff"') && taskHandler.includes('type: "task_assigned"') && taskHandler.includes('"task_approved"'));
 check("task employee uploads support videos and documents with progress through existing resumable storage", taskUploads.includes("uploadTaskFile") && taskUploads.includes("MAX_TASK_FILE_UPLOAD_BYTES") && taskPhotos.includes("TaskFilePicker") && taskPhotos.includes("uploadProgressLabel"));
